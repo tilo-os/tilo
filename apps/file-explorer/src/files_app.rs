@@ -11848,7 +11848,7 @@ mod command_path_tests {
         .unwrap();
 
         let mut files = FileExplorerWidget::with_persistence(None, Some(temp.path().into()));
-        files.navigate(archive.clone());
+        files.navigate(archive);
         assert_eq!(files.entries_snapshot().len(), 2);
         assert!(
             files
