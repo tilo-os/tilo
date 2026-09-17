@@ -4886,6 +4886,7 @@ impl Widget for BooksApp {
                 self.search_provider = build.provider;
                 self.search_fingerprint = fingerprint;
                 self.search_revision = build.generation;
+                self.action_search_epoch.fetch_add(1, Ordering::AcqRel);
             }
         }
         if fingerprint != self.search_fingerprint && self.search_worker.is_none() {
@@ -4898,6 +4899,7 @@ impl Widget for BooksApp {
                     Arc::new(registry),
                     0,
                 );
+                self.action_search_epoch.fetch_add(1, Ordering::AcqRel);
                 return;
             };
             let registry = Arc::new(registry);
@@ -4918,6 +4920,7 @@ impl Widget for BooksApp {
                         Arc::new(Vec::new()),
                         0,
                     );
+                    self.action_search_epoch.fetch_add(1, Ordering::AcqRel);
                 }
             }
         }
