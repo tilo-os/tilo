@@ -47,6 +47,8 @@ mod design_token_audit;
 mod diagnostics_outlive_a_closed_log_pipe;
 #[path = "dnd_test.rs"]
 mod dnd_test;
+#[path = "f4_menu_highlight_render.rs"]
+mod f4_menu_highlight_render;
 #[path = "file_picker_render_test.rs"]
 mod file_picker_render_test;
 #[path = "filled_control_labels_are_readable.rs"]

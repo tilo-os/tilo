@@ -702,6 +702,19 @@ impl Widget for Dropdown {
             theme.tokens.colors.surfaces.raised
         };
         scene.fill(Fill::NonZero, transform, bg, None, &shape);
+        // Resting hover: the quiet veneer over the raised fill. `is_hovered`
+        // was tracked but never painted, so a pointer over the control gave
+        // no feedback at all until it was clicked (HIG §7: hover, press,
+        // focus and disabled must each be visible).
+        if self.is_hovered && !self.open && !self.is_focused && !disabled {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.overlay_subtle,
+                None,
+                &shape,
+            );
+        }
         let (bw, bc) = if self.open || self.is_focused {
             (2.0, theme.border_focus)
         } else {
@@ -807,7 +820,10 @@ impl Widget for Dropdown {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
 
         if filtered.is_empty() {
-            let ty = list.y0 + (ITEM_HEIGHT - f64::from(FONT)) / 2.0;
+            // Centre on the measured line, not the font size (the face's
+            // ascent/descent otherwise sits the label low in the row).
+            let (_, hint_h) = text_renderer.measure("No matches", FONT, None);
+            let ty = list.y0 + (ITEM_HEIGHT - f64::from(hint_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 "No matches",
@@ -851,7 +867,8 @@ impl Widget for Dropdown {
                 } else {
                     theme.text_primary
                 };
-                let ty = row_top + (ITEM_HEIGHT - f64::from(FONT)) / 2.0;
+                let (_, opt_h) = text_renderer.measure(opt, FONT, None);
+                let ty = row_top + (ITEM_HEIGHT - f64::from(opt_h)) / 2.0;
                 text_renderer.draw_text(
                     scene,
                     opt,
