@@ -517,30 +517,48 @@ impl Widget for ContextMenu {
             let row_height = self.row_height(item);
             match item {
                 MenuItem::Action { label, .. } => {
-                    if self.hovered == Some(idx) {
+                    // The row Enter / a click would activate. Painted the way
+                    // every other menu-like list in the toolkit paints its
+                    // armed row (`Popover`, `Dropdown`, `SlashMenu`,
+                    // `PageJumpPalette`): a solid accent fill with ink chosen
+                    // against it. The previous 10 % veneer measured only
+                    // ΔL* ≈ 11 on the near-black `surfaces.overlay` ground,
+                    // which reads as "no highlight" on a dark desktop
+                    // (2026-09-16 user report); see
+                    // `ui/tests/f4_menu_highlight_render.rs`.
+                    let armed = self.hovered == Some(idx);
+                    if armed {
+                        let inset = f64::from(theme.tokens.spacing.s1);
                         let hl = Rect::new(
-                            self.rect.x0 + 4.0,
+                            self.rect.x0 + inset,
                             y + 1.0,
-                            self.rect.x1 - 4.0,
+                            self.rect.x1 - inset,
                             y + row_height - 1.0,
                         );
                         let hl_shape = RoundedRect::from_rect(hl, f64::from(theme.tokens.radii.sm));
-                        // Matches the dropdown / autocomplete row hover.
                         scene.fill(
                             vello::peniko::Fill::NonZero,
                             transform,
-                            theme.tokens.colors.surface_white_10,
+                            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
                             None,
                             &hl_shape,
                         );
                     }
+                    let ink = if armed {
+                        theme
+                            .tokens
+                            .colors
+                            .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+                    } else {
+                        theme.tokens.colors.text_primary
+                    };
                     let (_, label_height) = text_renderer.measure_style(label, None, &style);
                     let label_y = y + (row_height - f64::from(label_height)) / 2.0;
                     if self.bounds.is_some() {
                         text_renderer.draw_style(
                             scene,
                             label,
-                            theme.tokens.colors.text_primary,
+                            ink,
                             transform.pre_translate(Vec2::new(self.rect.x0 + 10.0, label_y)),
                             None,
                             &style,
@@ -550,7 +568,7 @@ impl Widget for ContextMenu {
                             scene,
                             label,
                             text_size,
-                            theme.tokens.colors.text_primary,
+                            ink,
                             transform.pre_translate(Vec2::new(self.rect.x0 + 10.0, label_y)),
                             None,
                         );

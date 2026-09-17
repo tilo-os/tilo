@@ -418,7 +418,8 @@ impl LinkPopover {
         let tokens = &theme.tokens;
         let font_size = tokens.typography.scale.sm;
         if self.visible.is_empty() {
-            let y = self.rows_top() + (ROW_HEIGHT - f64::from(font_size)) / 2.0;
+            let (_, hint_h) = text_renderer.measure("No matches", font_size, None);
+            let y = self.rows_top() + (ROW_HEIGHT - f64::from(hint_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 "No matches",
@@ -443,22 +444,33 @@ impl LinkPopover {
             };
             let y0 = self.rows_top() + count_f64(i) * ROW_HEIGHT;
             let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
-            if visible_index == self.cursor {
-                let hl = RoundedRect::from_rect(row_rect, 4.0);
+            let armed = visible_index == self.cursor;
+            if armed {
+                let hl = RoundedRect::from_rect(row_rect, f64::from(tokens.radii.sm));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.accent[5],
+                    tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
                     None,
                     &hl,
                 );
             }
-            let text_y = row_rect.y0 + (row_rect.height() - f64::from(font_size)) / 2.0;
+            // Ink resolved against the accent fill (as `Popover` / `Dropdown`
+            // do), and centred on the measured line rather than the font size.
+            let ink = if armed {
+                tokens
+                    .colors
+                    .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+            } else {
+                tokens.colors.text_primary
+            };
+            let (_, title_h) = text_renderer.measure(&row.title, font_size, None);
+            let text_y = row_rect.y0 + (row_rect.height() - f64::from(title_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &row.title,
                 font_size,
-                tokens.colors.text_primary,
+                ink,
                 transform.pre_translate(Vec2::new(row_rect.x0 + PADDING_X, text_y)),
                 None,
             );
