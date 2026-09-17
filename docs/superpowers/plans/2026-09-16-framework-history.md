@@ -4,7 +4,7 @@
 
 **Goal:** Provide automatic shared History UI and isolated historical rendering across all managed persistent apps.
 
-**Architecture:** A window-independent history controller projects the existing CRDT graph. The shared AppComponent host presents one surface and owns a separate preview renderer; authorized restoration enters the canonical record action frame.
+**Architecture:** A window-independent history controller projects the existing CRDT graph. The shared App, FrameHarness and TileHost presentation owner presents one surface and owns a separate preview renderer; authorized restoration enters the canonical record action frame.
 
 **Tech Stack:** Rust, Automerge, existing ui/Vello/Taffy widgets and qos_actions.
 
@@ -46,7 +46,24 @@
 - [ ] Test wrong/stale resource review, current pending transaction refusal, and no-op restoration. Leave one pending transaction for host commit with Restore version provenance; ensure failed/no-op restore does not add a synthetic action.
 - [ ] Record focused RED/GREEN evidence and an independent task review. App allowlist declarations and live permission checks remain required in later tasks; engine tests alone cannot establish authorized restoration.
 
-### Task 3: Shared host surface and enforced preview/restore boundary
+### Task 2b: Explicit mixed-content schema selection
+
+**Discovery:** The complete app audit found dynamic root families (Browser bookmarks, Store drafts) and mixed nested trees (Sheets workbook content/view, Remote profile/presence). Whole-root restoration alone cannot satisfy the all-app contract.
+
+- [ ] Extend the checked engine with explicit audited root-family and nested content selectors. Resolve current/target key membership without guessing all roots or leaking generated static schemas. Reject ambiguous/overlapping/reserved selectors before mutation.
+- [ ] Preserve current operational fields and view state in mixed trees; define keyed deletion/resurrection behavior explicitly and test it using real app schema shapes. Never match list members by a mutable positional index when preserving per-item state.
+- [ ] Keep the same exact-frontier, typed-content, rollback, no-op and one-pending-transaction guarantees. Add separate focused RED/GREEN evidence and independent review before enabling mixed-root app restore.
+
+### Task 3a: Canonical owned restore transaction
+
+**Files:** narrow ui/src/state and bound_dispatch changes; focused history transaction tests.
+
+- [ ] Share a narrowly typed exclusive document/UndoLog guard and canonical stamp/span finalizer between existing legacy State and bound ActionFrame. Do not construct a temporary RecordStore, replace live documents, or fabricate a permissive callback binding.
+- [ ] Reserve undo/generation capacity before writing. Reject pending physical edits and unresolved logical undo baselines without committing them. Use the exact reviewed current frontier as the undo span start.
+- [ ] Apply the prepared engine without commit, then stamp exactly once with current authored context and add exactly one undo entry. No-op and failure preserve redo/history revision.
+- [ ] Prove legacy and bound undo, baseline/pending rejection, rollback, no-op and no duplicate action bookkeeping; review independently. Current authority and lifecycle admission remain mandatory in Task3b.
+
+### Task 3b: Shared host surface and enforced preview/restore boundary
 
 **Files:** ui/src/application.rs, ui/src/widget/app_widget.rs, new focused ui/src/history_mode host/surface/preview modules, and narrow bound_dispatch integration if necessary. Add focused integration tests beside owning modules.
 
