@@ -120,6 +120,7 @@ fn private_root() -> PathBuf {
         "qos-browser-owned-private-root-v1\n",
     )
     .unwrap();
+    std::fs::write(root.join(".qos-private-root.lock"), "private-root-lock\n").unwrap();
     root.canonicalize().unwrap()
 }
 
@@ -149,6 +150,41 @@ fn private_startup_failures_remove_owned_roots_after_reaping() {
     let readiness_root = private_root();
     assert!(ChromiumEngine::with_private_host(&host, &readiness_root).is_err());
     assert!(!readiness_root.exists());
+}
+
+#[test]
+#[ignore = "child entry point for isolated packaged-helper discovery"]
+#[cfg(unix)]
+fn private_packaged_helper_discovery_failure_child() {
+    let root = PathBuf::from(std::env::var_os("QOS_TEST_PRIVATE_ROOT").unwrap());
+    let result = ChromiumEngine::new_private(&root);
+    assert!(result.is_err(), "isolated discovery unexpectedly found a helper");
+    assert!(
+        !root.exists(),
+        "discovery failure must release the allocated private root"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn private_packaged_helper_discovery_failure_removes_root() {
+    let fixture = tempfile::tempdir().unwrap();
+    let isolated_executable = fixture.path().join("isolated/bin/browser-test");
+    std::fs::create_dir_all(isolated_executable.parent().unwrap()).unwrap();
+    let root = private_root();
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "webview::chromium::tests::private_packaged_helper_discovery_failure_child",
+            "--ignored",
+        ])
+        .env_remove("QOS_CHROMIUM_HOST")
+        .env("QOS_TEST_CHROMIUM_DISCOVERY_EXE", isolated_executable)
+        .env("QOS_TEST_PRIVATE_ROOT", &root)
+        .status()
+        .unwrap();
+    assert!(result.success());
+    assert!(!root.exists());
 }
 
 #[test]

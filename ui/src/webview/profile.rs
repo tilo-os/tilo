@@ -32,6 +32,7 @@ const SAMPLES: usize = 512;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static TRACE: AtomicBool = AtomicBool::new(false);
+static RESIZE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 
 /// Read the env once and latch the on/off + trace flags. Called from
@@ -176,6 +177,20 @@ pub fn record_draw(rect_w: f64, rect_h: f64, frame_dims: Option<(u32, u32)>) {
                 "[webview-profile] draw #{n} rect {rect_w:.0}x{rect_h:.0} PLACEHOLDER (no frame)"
             ),
         }
+    }
+}
+
+/// Record physical resize commands so startup traces can distinguish a stale
+/// frame from a missing or downgraded device-scale request.
+pub fn record_resize(width: u32, height: u32, scale_factor: f32) {
+    if !enabled() || !TRACE.load(Ordering::Relaxed) {
+        return;
+    }
+    let n = RESIZE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if n <= TRACE_FRAMES {
+        eprintln!(
+            "[webview-profile] resize #{n} {width}x{height} scale {scale_factor:.2}"
+        );
     }
 }
 
