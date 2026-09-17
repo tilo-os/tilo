@@ -5987,6 +5987,14 @@ struct TableLayoutContext<'a> {
     new_cache: &'a mut HashMap<String, (u64, RichTextLayout)>,
 }
 
+struct ParagraphPaginationContext<'a> {
+    text_renderer: &'a mut TextRenderer,
+    old_cache: &'a mut HashMap<String, (u64, RichTextLayout)>,
+    new_cache: &'a mut HashMap<String, (u64, RichTextLayout)>,
+    laid: &'a mut Vec<Laid>,
+    cursor: &'a mut PageCursor,
+}
+
 /// [`WordProcessorWidget::resolve_paragraph_shape`]'s output: everything
 /// [`WordProcessorWidget::paginate_paragraph`] needs to decide where the
 /// block lands and how to lay it out.
@@ -6364,15 +6372,14 @@ impl WordProcessorWidget {
                 self.paginate_image(b, fg, text_renderer, &mut new_cache, &mut laid, &mut cur);
                 bi += 1;
             } else {
-                self.paginate_paragraph(
-                    b,
-                    fg,
+                let mut paragraph = ParagraphPaginationContext {
                     text_renderer,
-                    &mut old_cache,
-                    &mut new_cache,
-                    &mut laid,
-                    &mut cur,
-                );
+                    old_cache: &mut old_cache,
+                    new_cache: &mut new_cache,
+                    laid: &mut laid,
+                    cursor: &mut cur,
+                };
+                self.paginate_paragraph(b, fg, &mut paragraph);
                 bi += 1;
             }
         }
@@ -6886,23 +6893,20 @@ impl WordProcessorWidget {
     /// page or needs to be split into per-page slices, and push its `Laid`
     /// entry/entries. Handles the paragraph side of float bookkeeping — a
     /// floated image only narrows blocks on its own page.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors emit_paragraph_slices below: one call site threading \
-                  the shared pagination cursor, both layout caches, and the \
-                  output vec through the single-paragraph pagination step"
-    )]
     fn paginate_paragraph(
         &mut self,
         b: &BlockView,
         fg: &FrameGeometry,
-        text_renderer: &mut TextRenderer,
-        old_cache: &mut HashMap<String, (u64, RichTextLayout)>,
-        new_cache: &mut HashMap<String, (u64, RichTextLayout)>,
-        laid: &mut Vec<Laid>,
-        cur: &mut PageCursor,
+        context: &mut ParagraphPaginationContext<'_>,
     ) {
-        let ps = self.resolve_paragraph_shape(b, fg, text_renderer, old_cache, cur);
+        let ps = self.resolve_paragraph_shape(
+            b,
+            fg,
+            context.text_renderer,
+            context.old_cache,
+            context.cursor,
+        );
+        let cur = &mut *context.cursor;
         let block_h = f64::from(ps.layout.height());
         // Place with the style's space-before as the leading gap, breaking
         // to the next page when the whole block would not fit before the
@@ -6943,7 +6947,7 @@ impl WordProcessorWidget {
         // so this is the fast, unchanged single-`Laid` path. Otherwise the
         // block is split at line boundaries across as many pages as needed.
         if item_top + block_h <= page_content_bottom(fg, cur.cur_page) + 0.5 {
-            laid.push(Laid {
+            context.laid.push(Laid {
                 id: b.id.clone(),
                 text: b.text.clone(),
                 kind: b.kind.clone(),
@@ -6963,9 +6967,9 @@ impl WordProcessorWidget {
             });
             cur.y = item_top + block_h + f64::from(pl.space_after);
         } else {
-            Self::emit_paragraph_slices(b, fg, &ps.layout, laid, cur, item_top, &pl);
+            Self::emit_paragraph_slices(b, fg, &ps.layout, context.laid, cur, item_top, &pl);
         }
-        new_cache.insert(b.id.clone(), (ps.key, ps.layout));
+        context.new_cache.insert(b.id.clone(), (ps.key, ps.layout));
         // Float bookkeeping: a float only narrows blocks on its own page and
         // only while text is still beside the image. Clear it once the page
         // has advanced past the float, or once this block has flowed down to
