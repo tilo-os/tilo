@@ -33,9 +33,11 @@
 //! change. Their historical `qos` prefix is protocol data, independent of
 //! the product's display name:
 //!
-//! - [`DEVCERT_PREIMAGE_TAG`]     — `qos-devcert-v1\0`
-//! - [`REVOCATION_PREIMAGE_TAG`]  — `qos-revocation-v1\0`
-//! - [`ENROLLMENT_PREIMAGE_TAG`]  — `qos-enrollment-v1\0`
+//! - [`DEVCERT_PREIMAGE_TAG`] — `qos-devcert-v1\0`
+//! - [`REVOCATION_PREIMAGE_TAG`] — `qos-revocation-v1\0`
+//! - [`ENROLLMENT_PREIMAGE_TAG`] — `qos-enrollment-v1\0`
+//! - [`APPROVAL_REQUEST_TAG`] — `qos-device-approval-request-v1\0`
+//! - [`APPROVAL_RESPONSE_TAG`] — `qos-device-approval-response-v1\0`
 //!
 //! The tag terminator (`\0`) plus a version marker (`v1`) inside the
 //! literal ensure two things: (a) prefix ambiguity is impossible
@@ -73,6 +75,7 @@
     )
 )]
 
+pub mod approval;
 pub mod canonical;
 pub mod cert;
 pub mod directory;
@@ -81,6 +84,10 @@ pub mod persist;
 pub mod projection;
 pub mod revocation;
 
+pub use approval::{
+    APPROVAL_REQUEST_TAG, APPROVAL_RESPONSE_TAG, APPROVAL_SCHEMA_VERSION, ApprovalError,
+    ApprovalLedger, ApprovalPurpose, ApprovalRequest, DeviceApproval,
+};
 pub use canonical::CanonicalError;
 pub use cert::{
     DEVCERT_PREIMAGE_TAG, DeviceCapabilities, DeviceCert, DeviceCertError,
@@ -237,6 +244,17 @@ mod tests {
 
         assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"qos-dir-delta-v1\0");
         assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG.len(), 17);
+
+        assert_eq!(
+            approval::APPROVAL_REQUEST_TAG,
+            b"qos-device-approval-request-v1\0"
+        );
+        assert_eq!(approval::APPROVAL_REQUEST_TAG.len(), 31);
+        assert_eq!(
+            approval::APPROVAL_RESPONSE_TAG,
+            b"qos-device-approval-response-v1\0"
+        );
+        assert_eq!(approval::APPROVAL_RESPONSE_TAG.len(), 32);
     }
 
     #[test]
