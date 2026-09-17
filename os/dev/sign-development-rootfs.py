@@ -42,6 +42,9 @@ LOCAL_STORAGE_ENVIRONMENT = (
 
 
 def inputs(args):
+    if (not re.fullmatch(r'0|[1-9][0-9]{0,11}', args.source_date_epoch)
+            or int(args.source_date_epoch) > 253402300799):
+        raise ValueError('source date epoch must be canonical nonnegative Unix seconds through year 9999')
     if not re.fullmatch(r'sha256:[0-9a-f]{64}', args.rootfs_id):
         raise ValueError('rootfs must be a full immutable local image ID')
     if args.architecture not in ARCHITECTURES or args.architecture != platform.machine():
@@ -146,6 +149,7 @@ def produce(args):
         shutil.copyfile(HERE.parent / 'Containerfile.development-loader', context / 'Containerfile')
         iidfile = work / 'signed-rootfs.iid'
         command(['podman', 'build', '--pull=never', '--network=none', '--no-cache',
+                 '--source-date-epoch', args.source_date_epoch, '--rewrite-timestamp',
                  '--iidfile', str(iidfile), '--build-context', f'raw-rootfs=container-image://{args.rootfs_id}',
                  '--build-context', f'signed-loader={payload}', '--build-context', f'loader-tools={tools}',
                  '--build-arg', f'LOADER_NAME={relative.name}', '--build-arg', f'ARCHITECTURE={args.architecture}',
@@ -169,13 +173,14 @@ def produce(args):
     return {'schema': 1, 'purpose': 'tilo-development-unsealed-signed-rootfs',
             'rootfs_id': args.rootfs_id, 'signed_rootfs_id': signed_id,
             'architecture': args.architecture, 'revision': args.revision,
+            'source_date_epoch': int(args.source_date_epoch),
             'manifest_sha256': args.manifest_sha256, 'target_update_ref': args.target,
             'hardware_profile': profile, 'loader': evidence}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ('rootfs-id', 'architecture', 'revision', 'manifest-sha256', 'target'):
+    for name in ('rootfs-id', 'architecture', 'revision', 'manifest-sha256', 'target', 'source-date-epoch'):
         parser.add_argument('--' + name, required=True)
     for name in ('public-bundle', 'signer'):
         parser.add_argument('--' + name, required=True, type=Path)

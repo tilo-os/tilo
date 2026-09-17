@@ -5,6 +5,7 @@ Builds a minimal Fedora fixture, not Tilo, and proves no boot or composefs seal.
 Private keys stay outside every build context. Run only inside native CI.
 """
 import json
+from datetime import datetime
 import os
 from pathlib import Path
 import platform
@@ -15,6 +16,7 @@ import tempfile
 DEV = Path(__file__).resolve().parents[1] / 'dev'
 BASE = 'registry.fedoraproject.org/fedora@sha256:61beafd34111e1cb85fb49377ceadeee0a53622dbc20670ed8ca303f0e17ed9c'
 REVISION = 'b' * 40
+EPOCH = 1700000000
 ENVIRONMENT = os.environ.copy()
 
 
@@ -81,6 +83,7 @@ def main():
             raw = iidfile.read_text().strip()
             images.append(raw)
             arguments = ['--rootfs-id', raw, '--architecture', architecture, '--revision', REVISION,
+                         '--source-date-epoch', str(EPOCH),
                          '--public-bundle', str(bundle), '--manifest-sha256', digest,
                          '--signer', metadata['signer'], '--target', target]
 
@@ -99,6 +102,9 @@ def main():
             images.append(signed)
             assert raw != signed and receipt['rootfs_id'] == raw
             assert receipt['revision'] == REVISION and receipt['manifest_sha256'] == digest
+            assert receipt['source_date_epoch'] == EPOCH
+            created = json.loads(podman('image', 'inspect', signed))[0]['Created']
+            assert datetime.fromisoformat(created.replace('Z', '+00:00')).timestamp() == EPOCH, created
             name = 'systemd-boot' + {'aarch64': 'aa64', 'x86_64': 'x64'}[architecture] + '.efi'
             relative = Path('usr/lib/systemd/boot/efi') / name
             original_mount = Path(podman('image', 'mount', raw).strip())
@@ -110,10 +116,26 @@ def main():
             signed_mount = Path(podman('image', 'mount', signed).strip())
             try:
                 signed_bytes = (signed_mount / Path(str(relative) + '.signed')).read_bytes()
+                assert (signed_mount / Path(str(relative) + '.signed')).stat().st_mtime == EPOCH
                 assert (signed_mount / relative).read_bytes() == original_bytes
                 assert signed_bytes != original_bytes
             finally:
                 podman('image', 'unmount', signed)
+            # Hold the already authenticated signing output constant to test
+            # layer reproducibility independently of a provider's signature
+            # timestamps. This fixture signer and payload stay outside contexts.
+            fixed_payload = root / 'fixed-signing-output.efi'
+            fixed_payload.write_bytes(signed_bytes)
+            fixed_signer = root / 'fixed-output-signer'
+            fixed_signer.write_text(
+                '#!/usr/bin/python3\nimport shutil,sys\n'
+                'assert len(sys.argv) == 4 and sys.argv[1] == "sign-efi"\n'
+                f'shutil.copyfile({str(fixed_payload)!r}, sys.argv[3])\n')
+            fixed_signer.chmod(0o700)
+            repeated = produce(['--signer', str(fixed_signer)])
+            if repeated['signed_rootfs_id'] != signed:
+                images.append(repeated['signed_rootfs_id'])
+            assert repeated['signed_rootfs_id'] == signed, 'identical signed bytes produced a different layer'
             produce(['--rootfs-id', signed], error='already has a signed loader companion')
 
             consumer = root / 'consumer'
