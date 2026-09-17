@@ -348,12 +348,19 @@ pub struct TrustAttestation {
 pub struct ContinuityContract {
     #[serde(default = "default_continuity_facets")]
     pub required: Vec<ContinuityFacet>,
+    /// Standard portable semantic shape emitted by this package. Keeping the
+    /// validator in the signed manifest lets third-party apps adopt native
+    /// handoff without teaching the shell their package id, while still
+    /// preventing arbitrary opaque JSON from becoming roaming state.
+    #[serde(default, rename = "semantic-schema")]
+    pub semantic_schema: Option<ContinuitySemanticSchema>,
 }
 
 impl Default for ContinuityContract {
     fn default() -> Self {
         Self {
             required: default_continuity_facets(),
+            semantic_schema: None,
         }
     }
 }
@@ -370,6 +377,21 @@ pub enum ContinuityFacet {
     Presentation,
     /// App-owned resource identity and domain state, sanitized for roaming.
     Semantic,
+}
+
+/// Portable semantic projections understood by the platform runtime.
+///
+/// These schemas describe meaning, not a particular application. A browser,
+/// documentation viewer, or third-party knowledge app may therefore share a
+/// standard location schema without gaining permission to serialize arbitrary
+/// process state.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContinuitySemanticSchema {
+    WebLocationV1,
+    PublicationPositionV1,
+    MediaPositionV1,
+    RealtimeSessionV1,
 }
 
 impl TrustAttestation {

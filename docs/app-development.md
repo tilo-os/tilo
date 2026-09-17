@@ -1156,6 +1156,17 @@ open resource; the shell reopens a collaborative file from its typed stable
 record intent. App-specific continuation data may augment this envelope but
 must follow the same privacy and identity rules.
 
+Portable semantic continuation is a signed package contract, not an
+application-id exception. Declare one of the platform schemas with
+`continuity.semantic-schema` (`web-location-v1`, `publication-position-v1`,
+`media-position-v1`, or `realtime-session-v1`) and include `semantic` in
+`continuity.required` when losing that projection would be a fidelity
+regression. The shell validates the declared shape, size, identifiers, and URL
+rules before retaining it. A third-party app can therefore participate in
+native continuation without serializing an opaque process snapshot, and a
+later release cannot silently weaken the promise because the contract is part
+of the signed manifest. Presentation remains mandatory for every GUI app.
+
 Put a mutation in a resource action when it changes a durable resource or is
 an observable effect. Do not make focus, viewport movement, or selection an
 action merely to let an agent drive the app: expose semantic controls for
