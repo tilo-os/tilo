@@ -267,6 +267,9 @@ mod device_fabric_ui_tests {
                 }],
                 transfers: Vec::new(),
                 remote_audio: Default::default(),
+                device_health: Vec::new(),
+                calibration_proposals: Vec::new(),
+                revertible_calibrations: Vec::new(),
             },
             remote,
         )
@@ -313,6 +316,52 @@ mod device_fabric_ui_tests {
         assert!(actions.contains(&DeviceFabricUiAction::GrantControl {
             controller: DeviceId::new("certified-laptop").unwrap(),
         }));
+    }
+
+    #[test]
+    fn device_pane_requires_explicit_apply_and_keeps_revert_reachable() {
+        let (mut view, remote) = fixture();
+        view.calibration_proposals = vec![crate::shell::spatial_calibration::CalibrationProposal {
+            peer: remote.clone(),
+            edge: crate::shell::device_fabric::DisplayEdge::Right,
+            previous: crate::shell::device_fabric::DisplayRect {
+                x: 800,
+                y: 0,
+                width: 100,
+                height: 80,
+            },
+            proposed: crate::shell::device_fabric::DisplayRect {
+                x: 100,
+                y: 0,
+                width: 100,
+                height: 80,
+            },
+            evidence_kind: crate::shell::spatial_calibration::SpatialEvidenceKind::UltraWideband,
+            confidence_milli: 900,
+            expires_unix_ms: 20_000,
+        }];
+        view.revertible_calibrations = vec![remote.clone()];
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(view.clone())
+        }));
+
+        assert!(
+            actions.borrow().is_empty(),
+            "proposals must never auto-apply"
+        );
+        let (apply, _) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+        host.handle_qs_device_fabric_click(apply.center());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+        let actions = actions.borrow();
+        assert!(actions.contains(&DeviceFabricUiAction::ApplyCalibration {
+            device: remote.clone(),
+        }));
+        assert!(actions.contains(&DeviceFabricUiAction::RevertCalibration { device: remote }));
     }
 
     #[test]
@@ -931,6 +980,9 @@ pub struct DeviceFabricView {
     pub local_outputs: Vec<LocalMediaOutputView>,
     pub transfers: Vec<FabricTransferView>,
     pub remote_audio: crate::shell::remote_audio::RemoteAudioView,
+    pub device_health: Vec<crate::shell::spatial_calibration::DeviceHealthView>,
+    pub calibration_proposals: Vec<crate::shell::spatial_calibration::CalibrationProposal>,
+    pub revertible_calibrations: Vec<crate::shell::personal_continuity::DeviceId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -978,6 +1030,15 @@ pub enum DeviceFabricUiAction {
         device: crate::shell::personal_continuity::DeviceId,
         edge: crate::shell::device_fabric::DisplayEdge,
     },
+    ApplyCalibration {
+        device: crate::shell::personal_continuity::DeviceId,
+    },
+    DismissCalibration {
+        device: crate::shell::personal_continuity::DeviceId,
+    },
+    RevertCalibration {
+        device: crate::shell::personal_continuity::DeviceId,
+    },
     GrantControl {
         controller: crate::shell::personal_continuity::DeviceId,
     },
@@ -1010,6 +1071,8 @@ pub type RealtimeContinuityBridge = std::rc::Rc<
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DeviceFabricPaneRow {
+    CalibrationProposal(crate::shell::spatial_calibration::CalibrationProposal),
+    CalibrationRevert(crate::shell::personal_continuity::DeviceId),
     RemoteAudioConsent(crate::shell::remote_audio::RemoteAudioConsentView),
     RemoteAudioSource(crate::shell::remote_audio::RemoteAudioSourceView),
     RemoteAudioRoute(crate::shell::remote_audio::RemoteAudioRouteView),
@@ -1027,11 +1090,23 @@ fn device_fabric_pane_rows(
     view: &DeviceFabricView,
     realtime: &crate::shell::collab_broker_capnp::RealtimeContinuityUiView,
 ) -> Vec<DeviceFabricPaneRow> {
-    view.remote_audio
-        .consents
+    view.calibration_proposals
         .iter()
         .cloned()
-        .map(DeviceFabricPaneRow::RemoteAudioConsent)
+        .map(DeviceFabricPaneRow::CalibrationProposal)
+        .chain(
+            view.revertible_calibrations
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::CalibrationRevert),
+        )
+        .chain(
+            view.remote_audio
+                .consents
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::RemoteAudioConsent),
+        )
         .chain(
             view.remote_audio
                 .routes
@@ -11318,6 +11393,44 @@ impl ShellOverlayHost {
             return;
         }
         let action = match item {
+            DeviceFabricPaneRow::CalibrationProposal(proposal) => {
+                let (apply, dismiss) =
+                    Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+                let device = view
+                    .devices
+                    .iter()
+                    .find(|device| device.id == proposal.peer)
+                    .map_or("certified display", |device| device.label.as_str());
+                if apply.contains(point) {
+                    Some((
+                        DeviceFabricUiAction::ApplyCalibration {
+                            device: proposal.peer,
+                        },
+                        format!("Applied the proposed placement for {device}"),
+                    ))
+                } else if dismiss.contains(point) {
+                    Some((
+                        DeviceFabricUiAction::DismissCalibration {
+                            device: proposal.peer,
+                        },
+                        format!("Dismissed the placement suggestion for {device}"),
+                    ))
+                } else {
+                    None
+                }
+            }
+            DeviceFabricPaneRow::CalibrationRevert(device) => Some((
+                DeviceFabricUiAction::RevertCalibration {
+                    device: device.clone(),
+                },
+                format!(
+                    "Restored the previous placement for {}",
+                    view.devices
+                        .iter()
+                        .find(|item| item.id == device)
+                        .map_or("the display", |item| item.label.as_str())
+                ),
+            )),
             DeviceFabricPaneRow::RemoteAudioConsent(consent) => {
                 let (allow, decline) =
                     Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
@@ -14193,6 +14306,41 @@ impl Widget for ShellOverlayHost {
                                 .enumerate()
                                 .map(|(index, item)| {
                                     let (name, description, children) = match item {
+                                        DeviceFabricPaneRow::CalibrationProposal(proposal) => {
+                                            let label = view
+                                                .devices
+                                                .iter()
+                                                .find(|device| device.id == proposal.peer)
+                                                .map_or(
+                                                    "Certified display",
+                                                    |device| device.label.as_str(),
+                                                );
+                                            (
+                                                format!("Suggested placement for {label}"),
+                                                "Fresh local sensor evidence proposes a reversible layout; proximity did not establish identity"
+                                                    .into(),
+                                                vec![
+                                                    AccessNode::new(Role::Button).with_name(
+                                                        "Apply this reversible display placement",
+                                                    ),
+                                                    AccessNode::new(Role::Button).with_name(
+                                                        "Dismiss this display placement suggestion",
+                                                    ),
+                                                ],
+                                            )
+                                        }
+                                        DeviceFabricPaneRow::CalibrationRevert(device) => (
+                                            format!(
+                                                "Undo placement for {}",
+                                                view.devices
+                                                    .iter()
+                                                    .find(|item| item.id == device)
+                                                    .map_or("display", |item| item.label.as_str())
+                                            ),
+                                            "Restore the exact placement saved before calibration"
+                                                .into(),
+                                            Vec::new(),
+                                        ),
                                         DeviceFabricPaneRow::RemoteAudioConsent(consent) => (
                                             format!("Play {} here", consent.label),
                                             "A certified device requested a one-session audio sink"
@@ -14293,16 +14441,27 @@ impl Widget for ShellOverlayHost {
                                             },
                                             Vec::new(),
                                         ),
-                                        DeviceFabricPaneRow::Device(device) => (
-                                            device.label.clone(),
-                                            Self::fabric_device_detail(
+                                        DeviceFabricPaneRow::Device(device) => {
+                                            let mut description = Self::fabric_device_detail(
                                                 &device,
                                                 selected,
                                                 view.transfers
                                                     .iter()
                                                     .rev()
                                                     .find(|transfer| transfer.target == device.id),
-                                            ),
+                                            );
+                                            if let Some(health) = view
+                                                .device_health
+                                                .iter()
+                                                .find(|health| health.peer == device.id)
+                                            {
+                                                description.push_str("; ");
+                                                description
+                                                    .push_str(&Self::fabric_health_detail(health));
+                                            }
+                                            (
+                                            device.label.clone(),
+                                            description,
                                             if device.is_local {
                                                 Vec::new()
                                             } else {
@@ -14324,7 +14483,8 @@ impl Widget for ShellOverlayHost {
                                                     ),
                                                 ]
                                             },
-                                        ),
+                                        )
+                                        }
                                     };
                                     AccessNode::new(Role::Button)
                                         .with_name(name)
@@ -18701,6 +18861,35 @@ impl ShellOverlayHost {
         }
     }
 
+    fn fabric_health_detail(
+        health: &crate::shell::spatial_calibration::DeviceHealthView,
+    ) -> String {
+        use crate::shell::spatial_calibration::{DevicePower, DeviceReachability};
+        let reachability = match health.reachability {
+            DeviceReachability::Online => "reachable",
+            DeviceReachability::Stale => "presence stale",
+            DeviceReachability::Offline => "offline",
+        };
+        let latency = health
+            .latency_ms
+            .map_or_else(|| "latency unknown".into(), |ms| format!("{ms} ms"));
+        let power = match health.power {
+            DevicePower::Unknown => "battery unknown".into(),
+            DevicePower::External => "external power".into(),
+            DevicePower::Charging(percent) => format!("charging {percent}%"),
+            DevicePower::Battery(percent) => format!("battery {percent}%"),
+        };
+        let saver = if health.energy_saver {
+            " · energy saver"
+        } else {
+            ""
+        };
+        format!(
+            "{reachability} · {latency} · {power}{saver} · {} active routes",
+            health.active_routes
+        )
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the bounded device rows share paint geometry with their capability and transport status"
@@ -18892,6 +19081,39 @@ impl ShellOverlayHost {
         {
             let row = self.qs_device_row_rect(index);
             let (title, detail, icon, selected_row, enabled) = match item {
+                DeviceFabricPaneRow::CalibrationProposal(proposal) => {
+                    let label = view
+                        .devices
+                        .iter()
+                        .find(|device| device.id == proposal.peer)
+                        .map_or("Certified display", |device| device.label.as_str());
+                    let side = match proposal.edge {
+                        crate::shell::device_fabric::DisplayEdge::Left => "left",
+                        crate::shell::device_fabric::DisplayEdge::Right => "right",
+                        crate::shell::device_fabric::DisplayEdge::Top => "above",
+                        crate::shell::device_fabric::DisplayEdge::Bottom => "below",
+                    };
+                    (
+                        format!("Place {label} {side}"),
+                        "Local sensor evidence · review before applying".into(),
+                        ui::icons::Icon::Monitor,
+                        false,
+                        true,
+                    )
+                }
+                DeviceFabricPaneRow::CalibrationRevert(device) => (
+                    format!(
+                        "Undo placement for {}",
+                        view.devices
+                            .iter()
+                            .find(|item| item.id == *device)
+                            .map_or("display", |item| item.label.as_str())
+                    ),
+                    "Restore the exact placement from before calibration".into(),
+                    ui::icons::Icon::Monitor,
+                    false,
+                    true,
+                ),
                 DeviceFabricPaneRow::RemoteAudioConsent(consent) => {
                     let source_label = view
                         .devices
@@ -19037,7 +19259,7 @@ impl ShellOverlayHost {
                             || self.qs_selected_remote_audio.is_some()
                             || self.qs_selected_realtime.is_some()
                             || selected.is_some_and(|media| media.targets.contains(&device.id)));
-                    let detail = if self.qs_selected_gamepad.is_some()
+                    let mut detail = if self.qs_selected_gamepad.is_some()
                         && !device.is_local
                         && device.online
                     {
@@ -19061,6 +19283,14 @@ impl ShellOverlayHost {
                                 .find(|transfer| transfer.target == device.id),
                         )
                     };
+                    if let Some(health) = view
+                        .device_health
+                        .iter()
+                        .find(|health| health.peer == device.id)
+                    {
+                        detail.push_str(" · ");
+                        detail.push_str(&Self::fabric_health_detail(health));
+                    }
                     (
                         device.label.clone(),
                         detail,
@@ -19082,6 +19312,7 @@ impl ShellOverlayHost {
             let trailing = if matches!(
                 item,
                 DeviceFabricPaneRow::Device(_)
+                    | DeviceFabricPaneRow::CalibrationProposal(_)
                     | DeviceFabricPaneRow::RemoteAudioConsent(_)
                     | DeviceFabricPaneRow::RealtimeConsent(_)
                     | DeviceFabricPaneRow::GamepadAuthorization(_)
@@ -19130,7 +19361,8 @@ impl ShellOverlayHost {
             );
             if matches!(
                 item,
-                DeviceFabricPaneRow::RemoteAudioConsent(_)
+                DeviceFabricPaneRow::CalibrationProposal(_)
+                    | DeviceFabricPaneRow::RemoteAudioConsent(_)
                     | DeviceFabricPaneRow::RealtimeConsent(_)
                     | DeviceFabricPaneRow::GamepadAuthorization(_)
             ) {
@@ -19145,6 +19377,9 @@ impl ShellOverlayHost {
                         .icon(ui::icons::Icon::Check)
                         .hovered(self.last_cursor.is_some_and(|point| allow.contains(point)))
                         .accessible_name(match item {
+                            DeviceFabricPaneRow::CalibrationProposal(_) => {
+                                "Apply this reversible display placement"
+                            }
                             DeviceFabricPaneRow::RemoteAudioConsent(_) => {
                                 "Allow this remote audio once"
                             }
@@ -19167,6 +19402,9 @@ impl ShellOverlayHost {
                                 .is_some_and(|point| decline.contains(point)),
                         )
                         .accessible_name(match item {
+                            DeviceFabricPaneRow::CalibrationProposal(_) => {
+                                "Dismiss this display placement suggestion"
+                            }
                             DeviceFabricPaneRow::RemoteAudioConsent(_) => {
                                 "Decline this remote audio"
                             }
