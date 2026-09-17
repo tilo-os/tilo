@@ -222,6 +222,7 @@ class CompileBoundaries(unittest.TestCase):
             env = driver.build_environment(WPE, '7', REVISION, 'c' * 64, '/private/signer', CACHE)
         self.assertEqual(env['TILO_WITH_BROWSER'], '1')
         self.assertEqual(env['TILO_SKIP_BUILD'], '0')
+        self.assertEqual(env['TILO_RAW_ROOTFS_ONLY'], '1')
         self.assertEqual(env['TILO_PUBLIC_TRUST_MODE'], 'development')
         self.assertEqual(env['WPE_BUILDROOT_REF'], WPE)
         self.assertEqual(env['TILO_GENERATION'], '7')
