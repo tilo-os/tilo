@@ -55,7 +55,7 @@ use ui::widget::{
 };
 use uuid::Uuid;
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::Key;
@@ -91,6 +91,10 @@ const HAMBURGER_W: f64 = 40.0;
 /// before any `apply_layout`). Wide enough to dock — a fresh desktop window
 /// and the 1280px `--shots` viewport both start docked.
 const DEFAULT_DOCKED_WIDTH_HINT: f64 = 1280.0;
+
+fn close_prompt_button_width(card_width: f64) -> f64 {
+    ((card_width - 56.0) / 3.0).min(116.0)
+}
 
 /// The available color themes, cycled by the palette command.
 fn themes() -> Vec<Theme> {
@@ -759,57 +763,27 @@ impl CodeApp {
     /// self-contained button over the tab bar's left corner (its own opaque
     /// background, so it reads as a button on top of the bar). Records its hit
     /// rect for `handle_event`.
-    fn draw_hamburger(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    fn draw_hamburger(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         // The bar is inset by HAMBURGER_W in overlay mode, so the hamburger
         // occupies the reserved strip from the window's left edge up to it.
         let bar = self.tabs.get_rect();
         let left = self.rect.x0;
         let rect = Rect::new(left, bar.y0, left + HAMBURGER_W, bar.y1);
         self.hamburger_rect = rect;
-        let c = &theme.tokens.colors;
-
-        // Button background (raised so it covers any tab edge underneath),
-        // tinted when the sidebar is open.
-        let bg = if self.sidebar_open() {
-            c.lift(0.72)
-        } else {
-            c.surfaces.raised
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &rect);
-        // Right divider, matching the tab bar's seams.
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            c.border_standard,
-            None,
-            &Line::new(
-                Point::new(rect.x1, rect.y0 + 6.0),
-                Point::new(rect.x1, rect.y1 - 6.0),
-            ),
-        );
-
-        // Three glyph lines.
-        let cx = rect.x0 + rect.width() / 2.0;
-        let cy = rect.y0 + rect.height() / 2.0;
-        let half = 8.0;
-        let line_color = if self.sidebar_open() {
-            c.text_primary
-        } else {
-            c.neutral[8]
-        };
-        let stroke = Stroke::new(1.6);
-        for dy in [-5.0, 0.0, 5.0] {
-            scene.stroke(
-                &stroke,
-                transform,
-                line_color,
-                None,
-                &Line::new(
-                    Point::new(cx - half, cy + dy),
-                    Point::new(cx + half, cy + dy),
-                ),
-            );
-        }
+        let face = ui::widget::ButtonFace::new(rect, "")
+            .icon(ui::icons::Icon::Menu)
+            .ghost()
+            .radius(0.0)
+            .hovered(rect.contains(self.last_cursor))
+            .focused(self.sidebar_open())
+            .accessible_name("Toggle project files");
+        ui::widget::Button::paint(scene, transform, text_renderer, theme, &face);
     }
 
     /// Seed every open buffer's text into the CRDT (idempotent) and bind the
@@ -2262,8 +2236,11 @@ impl CodeApp {
             Some((w - 40.0) as f32),
         );
 
-        let bw = 116.0;
-        let bh = 34.0;
+        // Three actions must fit inside the phone-width card with the same
+        // side padding as the copy. Keep the desktop width where possible,
+        // but shrink evenly instead of letting Cancel escape off-screen.
+        let bw = close_prompt_button_width(w);
+        let bh = 40.0;
         let by = y0 + h - 20.0 - bh;
         let mut bx = x0 + w - 20.0 - bw;
         for (choice, label, style) in [
@@ -4150,7 +4127,7 @@ impl Widget for CodeApp {
                         .draw(scene, transform, text_renderer, theme, presence);
                 }
                 // The hamburger toggle sits at the tab bar's left edge.
-                self.draw_hamburger(scene, transform, theme);
+                self.draw_hamburger(scene, transform, text_renderer, theme);
             }
         }
 
@@ -5979,5 +5956,14 @@ mod tests {
             "a saved tab closes without a prompt"
         );
         assert_eq!(app.session.open.len(), before - 1);
+    }
+
+    #[test]
+    fn close_prompt_actions_fit_a_phone_card() {
+        let card_width = 390.0 - 32.0;
+        let button_width = close_prompt_button_width(card_width);
+        let occupied = button_width * 3.0 + 16.0 + 40.0;
+        assert!(occupied <= card_width);
+        assert!(button_width >= 100.0, "labels remain comfortably readable");
     }
 }

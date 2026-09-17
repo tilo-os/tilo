@@ -16,7 +16,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::model::{NodeId as TreeId, NodeKind, Project};
 
-const BASE_ROW_HEIGHT: f64 = 24.0;
+const BASE_ROW_HEIGHT: f64 = 32.0;
 const BASE_HEADER_HEIGHT: f64 = 38.0;
 const BASE_INDENT: f64 = 14.0;
 const BASE_ICON_PAD: f64 = 10.0;

@@ -1481,10 +1481,14 @@ impl BrowserWidget {
         // `no_wrap` keeps the address input on the same line as the
         // buttons (a wrapping row would push the 100%-width input onto
         // its own line instead of shrinking it to the remaining space).
-        let mut toolbar = Row::new()
-            .no_wrap()
-            .push(Box::new(back))
-            .push(Box::new(reload));
+        let mut toolbar = Row::new().no_wrap().push(Box::new(back));
+        // On phone-width surfaces the destination field is the primary
+        // control. Reload remains available through Ctrl+R, the page resource,
+        // and the recovery action on failures; keeping its permanent 44px
+        // button here visibly truncates even an ordinary example.org address.
+        if !self.compact_chrome {
+            toolbar = toolbar.push(Box::new(reload));
+        }
         if !self.compact_chrome {
             toolbar = toolbar.push(Box::new(forward));
         }
@@ -4438,8 +4442,12 @@ mod tests {
         assert!(viewport.width() > 0.0 && viewport.height() > 0.0);
         assert!(viewport.y0 < 100.0, "viewport starts beneath the toolbar");
         assert!(
-            address.width() >= 140.0,
-            "compact chrome preserves a usable address/search field"
+            address.width() >= 180.0,
+            "compact chrome preserves enough room to read an ordinary address"
+        );
+        assert!(
+            widget.find_rect("browser.reload").is_none(),
+            "compact chrome moves reload to its shortcut/action surface"
         );
     }
 

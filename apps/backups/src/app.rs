@@ -2245,11 +2245,17 @@ impl BackupsApp {
         let dest = self.catalog.destination(&s.dest_id);
         let dest_name = dest.map(|found| found.name.clone()).unwrap_or_default();
         let dest_kind = dest.map_or("", |found| found.kind.label());
+        let metadata_width = (detail_rect.width() - 216.0).max(72.0) as f32;
+        let stored_on = tr.elide_to_width(
+            &format!("Stored on {dest_name}  ·  {dest_kind}"),
+            12.0,
+            metadata_width,
+        );
         paint::text(
             scene,
             tr,
             t,
-            &format!("Stored on {dest_name}  ·  {dest_kind}"),
+            &stored_on,
             12.0,
             c.text_dim,
             detail_rect.x0 + 16.0,
@@ -2260,16 +2266,21 @@ impl BackupsApp {
         } else {
             "plaintext"
         };
-        paint::text(
-            scene,
-            tr,
-            t,
+        let snapshot_meta = tr.elide_to_width(
             &format!(
                 "{} files · {} changed · {}",
                 s.files_changed,
                 ui::format::bytes(s.delta_bytes),
                 enc
             ),
+            11.5,
+            metadata_width,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            &snapshot_meta,
             11.5,
             c.text_dim,
             detail_rect.x0 + 16.0,
@@ -4249,14 +4260,31 @@ impl BackupsApp {
         } else {
             1.0
         };
+        let card = if *kind == ToastKind::Error {
+            msg.split_once(':').map_or_else(
+                || ToastCard::new(msg, *kind).alpha(alpha),
+                |(summary, detail)| {
+                    ToastCard::new(summary.trim(), *kind)
+                        .body(detail.trim())
+                        .alpha(alpha)
+                },
+            )
+        } else {
+            ToastCard::new(msg, *kind).alpha(alpha)
+        };
         paint_transient(
             scene,
             t,
             tr,
             theme,
-            self.rect,
+            Rect::new(
+                self.rect.x0,
+                self.rect.y0,
+                self.rect.x1,
+                self.rect.y1 - STATUS_SAFE_BOTTOM,
+            ),
             ToastAnchor::BottomCenter,
-            &ToastCard::new(msg, *kind).alpha(alpha),
+            &card,
         );
     }
 

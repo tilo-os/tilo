@@ -476,7 +476,7 @@ impl Default for FindBar {
 
 /// Width reserved on the right for the control cluster.
 const BTN_W: f64 = 34.0;
-const BTN_H: f64 = 28.0;
+const BTN_H: f64 = 32.0;
 const GAP: f64 = 6.0;
 const PAD: f64 = 10.0;
 /// Width reserved for the "3 of 17" readout.

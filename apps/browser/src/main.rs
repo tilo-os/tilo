@@ -103,6 +103,22 @@ pub fn main() {
                 "--size",
             ])
             .allowed_flags(&["--probe-pip", "--pip-active"])
+            .scenarios(&[
+                "page",
+                "error",
+                "loading",
+                "settings",
+                "history-paused",
+                "history",
+                "bookmarks",
+                "downloads-progress",
+                "downloads-completed",
+                "downloads-error",
+                "downloads-empty",
+                "extensions",
+                "pip-empty",
+                "pip-active",
+            ])
             .max_positionals(1)
             .command_handler(command)
             .live_handler(run_live),
@@ -311,6 +327,23 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
     let mut widget = BrowserWidget::new_headless();
+    match args.scenario.as_deref() {
+        Some("error") => widget.debug_show_load_error(),
+        Some("loading") => widget.debug_show_loading(),
+        Some("settings") => widget.debug_show_settings(),
+        Some("history-paused") => widget.debug_show_history_paused(),
+        Some("history" | "bookmarks" | "extensions") => {
+            widget.debug_show_library(args.scenario.as_deref().unwrap_or("history"));
+        }
+        Some("downloads-progress") => widget.debug_show_downloads("progress"),
+        Some("downloads-completed") => widget.debug_show_downloads("completed"),
+        Some("downloads-error") => widget.debug_show_downloads("error"),
+        Some("downloads-empty") => widget.debug_show_downloads("empty"),
+        Some("pip-empty") => widget.debug_show_empty_pip_feedback(),
+        Some("pip-active") => widget.debug_show_active_pip(),
+        Some("page") | None => {}
+        Some(_) => {}
+    }
     if args.has("--pip-active") {
         widget.debug_show_active_pip();
     }

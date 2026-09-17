@@ -625,7 +625,16 @@ pub fn paint_transient(
             .measure_weighted(card.title, title_size, None, TextWeight::Semibold)
             .0,
     );
-    let natural_width = title_width + 2.0 * CARD_PAD_X + CARD_ACCENT_BAR_W + 2.0;
+    let body_width = if card.body.is_empty() {
+        0.0
+    } else {
+        f64::from(
+            text_renderer
+                .measure(card.body, theme.tokens.typography.scale.xs, None)
+                .0,
+        )
+    };
+    let natural_width = title_width.max(body_width) + 2.0 * CARD_PAD_X + CARD_ACCENT_BAR_W + 2.0;
     let width = natural_width
         .max(MIN_WIDTH.min(available_width))
         .min(available_width);
@@ -1165,6 +1174,36 @@ mod tests {
         assert_eq!(hit.card_rect.x1, area.x1 - 24.0);
         assert_eq!(hit.card_rect.y1, area.y1 - 24.0);
         assert!(hit.card_rect.y0 >= area.y0);
+    }
+
+    #[test]
+    fn transient_card_width_accounts_for_its_recovery_detail() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let area = Rect::new(0.0, 0.0, 480.0, 320.0);
+        let title_only = paint_transient(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            area,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new("Backup paused", ToastKind::Error),
+        );
+        let with_detail = paint_transient(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            area,
+            ToastAnchor::BottomCenter,
+            &ToastCard::new("Backup paused", ToastKind::Error)
+                .body("The destination is unavailable. Reconnect it, then retry."),
+        );
+
+        assert!(with_detail.card_rect.width() > title_only.card_rect.width());
+        assert!(with_detail.card_rect.width() <= area.width() - 48.0);
     }
 
     #[test]
