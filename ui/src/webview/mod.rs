@@ -244,12 +244,7 @@ pub struct MediaElementInfo {
 
 /// One plane of a [`DmabufFrame`]: its own fd + layout. A GPU-tiled RGBA
 /// buffer has 2 planes (pixels + compression metadata); a linear one, 1.
-#[derive(Debug)]
-pub struct DmabufPlane {
-    pub fd: std::os::fd::OwnedFd,
-    pub stride: u32,
-    pub offset: u32,
-}
+pub use media::dmabuf::DmabufPlane;
 
 /// A GPU frame exported as a DMA-BUF handle (the `webview-wpe` EGL export
 /// path). Feature-neutral so it can cross the engine trait — only the WPE

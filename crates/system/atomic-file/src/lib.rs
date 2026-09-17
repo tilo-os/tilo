@@ -131,11 +131,36 @@ fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
         } else {
             dir
         };
-        if let Ok(d) = File::open(dir) {
-            let _ = d.sync_all();
-        }
+        let _ = sync_directory(dir);
     }
     Ok(())
+}
+
+/// Flush an existing directory after publishing or renaming a file inside it.
+///
+/// Windows requires a writable directory handle with backup semantics for
+/// `FlushFileBuffers`; opening it with `File::open` fails before the flush.
+/// Callers requiring a strict durability barrier should propagate this result.
+///
+/// # Errors
+/// Returns the open/flush error, or `InvalidInput` if `path` is not a directory.
+pub fn sync_directory(path: &Path) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        options.write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    }
+    let directory = options.open(path)?;
+    if !directory.metadata()?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a directory",
+        ));
+    }
+    directory.sync_all()
 }
 
 /// The temp file's path: beside the target so the rename never crosses a filesystem
@@ -156,6 +181,16 @@ fn temp_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_barrier_flushes_the_directory_and_reports_invalid_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("saved.txt");
+        fs::write(&file, b"saved").unwrap();
+        sync_directory(root.path()).unwrap();
+        assert!(sync_directory(&file).is_err());
+        assert!(sync_directory(&root.path().join("missing")).is_err());
+    }
     use tempfile::TempDir;
 
     #[test]

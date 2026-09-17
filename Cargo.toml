@@ -176,6 +176,7 @@ members = [
     "crates/system/accounts",
     "crates/system/app-state",
     "crates/system/atomic-file",
+    "crates/system/private-fs",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
     "crates/system/os-actions",

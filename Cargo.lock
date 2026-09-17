@@ -135,6 +135,7 @@ dependencies = [
  "dirs 6.0.0",
  "getrandom 0.2.17",
  "libc",
+ "private-fs",
  "serde",
  "serde_json",
  "tracing",
@@ -605,7 +606,9 @@ dependencies = [
  "atomic-file",
  "automerge",
  "cli",
+ "dirs 6.0.0",
  "libc",
+ "same-file",
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",
@@ -11067,6 +11070,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc375e1527247fe1a97d8b7156678dfe7c1af2fc075c9a4db3690ecd2a148068"
 
 [[package]]
+name = "private-fs"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13208,6 +13220,7 @@ dependencies = [
 name = "sheets"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "anyhow",
  "automerge",
  "calamine",
@@ -14828,6 +14841,7 @@ dependencies = [
  "blake3",
  "ed25519-dalek 2.2.0",
  "postcard",
+ "private-fs",
  "rand 0.8.8",
  "serde",
  "serde_bytes",
@@ -15885,6 +15899,7 @@ dependencies = [
  "image",
  "libc",
  "media",
+ "mime_guess",
  "open",
  "openh264",
  "percent-encoding",
@@ -15892,6 +15907,7 @@ dependencies = [
  "png 0.18.1",
  "pollster",
  "postcard",
+ "private-fs",
  "qdoc",
  "qrcode",
  "rand_core 0.6.4",
@@ -15933,6 +15949,8 @@ dependencies = [
  "vello",
  "vello_encoding",
  "wgpu",
+ "windows 0.62.2",
+ "windows-sys 0.61.2",
  "winit",
  "zbus 4.4.0",
  "zeroize",

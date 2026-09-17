@@ -57,6 +57,65 @@ that Cargo can discover the libraries with:
 pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 ```
 
+### Native Windows development
+
+Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
+architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
+ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides and Weather
+have been built and run on Windows. Other apps are still being ported; a
+workspace-wide build currently includes Linux
+services and is not a Windows application build command.
+
+From PowerShell at the workspace root:
+
+```powershell
+capnp --version
+cargo check --locked -p ui --tests --features portal
+cargo run --locked -p calculator
+cargo run --locked -p notes
+```
+
+Windows rendering defaults to Direct3D 12. `WGPU_BACKEND` remains an explicit
+developer override. Apps use the shared `portal` feature for native Open, Save,
+multiple-file and folder dialogs, with results delivered on the existing picker
+channel. To exercise the host picker without opening or modifying a document:
+
+```powershell
+cargo run --locked -p ui --example native-file-picker --features portal -- open
+# Also accepts: multiple, directory, save
+cargo test --locked -p ui --lib --features portal portal::
+```
+
+The example reports the selected path; even its Save mode does not write a file.
+Install the currently verified native apps into your Windows user profile, with
+Start menu entries under **Tilo**:
+
+```powershell
+./tools/install-windows-apps.ps1
+# Or select applications and a build profile:
+./tools/install-windows-apps.ps1 -Apps calculator,notes -Profile release
+```
+
+This builds before copying executables to `%LOCALAPPDATA%\Tilo\Applications`.
+Close an installed app before updating its executable. Application documents
+remain in their normal user data locations; the installer does not move them.
+
+Private identity files and local account-vault keys use the shared `private-fs`
+crate. On Windows, files are created with a protected, current-user-only DACL;
+reads validate the opened file's owner, access rules and reparse status. Existing
+keys with public access are rejected rather than silently replaced. Concurrent
+vault creators publish one complete key without overwriting the winner.
+
+```powershell
+cargo test --locked -p private-fs -p tilo-user-identity -p accounts --lib
+```
+
+For smaller local development artifacts, set `CARGO_PROFILE_DEV_DEBUG=0` and
+`CARGO_PROFILE_TEST_DEBUG=0` in the PowerShell environment before building. Do not
+set `CARGO_TARGET_DIR`. When checking Linux from WSL in the same worktree, run
+Cargo sequentially with Windows builds and use `--target` with the Linux host
+triple so the application artifacts are kept separate.
+
 ### If you build in a container (optional)
 
 For image-based hosts (Silverblue, Bazzite) where `/usr` is read-only and the
