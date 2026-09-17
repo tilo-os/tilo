@@ -367,7 +367,8 @@ fn verify_pci_catalog_against(
     }
     let public_key = decode_public_key(&document.public_key_hex)?;
     let payload = PciCatalogSigningPayload {
-        domain: "tilo.system-extension.pci-recommendations.v1",
+        // Existing catalogue signatures cover this historical domain verbatim.
+        domain: "qos.system-extension.pci-recommendations.v1",
         schema_version: signed.schema_version,
         key_id: &signed.key_id,
         catalog: &signed.catalog,

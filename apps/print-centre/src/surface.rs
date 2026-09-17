@@ -3210,9 +3210,10 @@ mod tests {
 
     #[test]
     fn scan_review_actions_wrap_inside_phone_viewports() {
-        fn inspect(widget: &dyn Widget, width: f64, buttons: &mut usize) {
-            let rect = widget.get_rect();
-            if widget.name() == "Button" && rect.area() > 0.0 {
+        fn inspect(widget: &ui::headless::InspectionNode, width: f64, buttons: &mut usize) {
+            let [x, y, w, h] = widget.rect;
+            let rect = Rect::new(x, y, x + w, y + h);
+            if widget.widget == "Button" && rect.area() > 0.0 {
                 *buttons += 1;
                 assert!(rect.width() >= 44.0, "button is too narrow: {rect:?}");
                 assert!(rect.height() >= 44.0, "button is too short: {rect:?}");
@@ -3222,61 +3223,47 @@ mod tests {
                     "button escaped {width}px phone viewport: {rect:?}"
                 );
             }
-            for child in widget.children() {
+            for child in &widget.children {
                 inspect(child, width, buttons);
             }
         }
 
         for width in [360.0, 390.0] {
-            let mut centre = PrintCentre::demo(DemoScenario::ScanResult);
-            let mut tree = TaffyTree::new();
-            let mut map = HashMap::new();
-            let node = centre.build_layout(&mut tree, &Theme::dark(), &mut map);
-            tree.compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(width as f32),
-                    height: taffy::AvailableSpace::Definite(760.0),
-                },
-            )
-            .unwrap();
-            centre.apply_layout(&tree, node, Point::ZERO);
+            let centre = ui::headless::Driver::new(
+                ui::State::new(),
+                Box::new(PrintCentre::demo(DemoScenario::ScanResult)),
+                (width as u32, 760),
+            );
             let mut buttons = 0;
-            inspect(&centre, width, &mut buttons);
+            inspect(&centre.inspection().root, width, &mut buttons);
             assert!(buttons >= 8, "expected the complete scan-review action set");
         }
     }
 
     #[test]
     fn print_setup_footer_stays_visible_and_touch_sized_on_phones() {
-        fn collect_buttons(widget: &dyn Widget, buttons: &mut Vec<Rect>) {
-            let rect = widget.get_rect();
-            if widget.name() == "Button" && rect.area() > 0.0 {
+        fn collect_buttons(widget: &ui::headless::InspectionNode, buttons: &mut Vec<Rect>) {
+            let [x, y, w, h] = widget.rect;
+            let rect = Rect::new(x, y, x + w, y + h);
+            if widget.widget == "Button" && rect.area() > 0.0 {
                 buttons.push(rect);
             }
-            for child in widget.children() {
+            for child in &widget.children {
                 collect_buttons(child, buttons);
             }
         }
 
         for width in [360.0_f32, 520.0_f32] {
             let height = 820.0_f32;
-            let mut centre = PrintCentre::demo(DemoScenario::PrintSetup);
-            let mut tree = TaffyTree::new();
-            let mut map = HashMap::new();
-            let node = centre.build_layout(&mut tree, &Theme::dark(), &mut map);
-            tree.compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(width),
-                    height: taffy::AvailableSpace::Definite(height),
-                },
-            )
-            .unwrap();
-            centre.apply_layout(&tree, node, Point::ZERO);
+            let centre = ui::headless::Driver::new(
+                ui::State::new(),
+                Box::new(PrintCentre::demo(DemoScenario::PrintSetup)),
+                (width as u32, height as u32),
+            );
+            let snapshot = centre.inspection();
 
             let mut buttons = Vec::new();
-            collect_buttons(&centre, &mut buttons);
+            collect_buttons(&snapshot.root, &mut buttons);
             buttons.sort_by(|left, right| left.y0.total_cmp(&right.y0));
             let footer_buttons = buttons.iter().skip(1).collect::<Vec<_>>();
             assert_eq!(
@@ -3284,7 +3271,7 @@ mod tests {
                 2,
                 "Cancel and Print must stay visible; buttons were {buttons:?}"
             );
-            let root_bottom = centre.get_rect().y1;
+            let root_bottom = snapshot.root.rect[1] + snapshot.root.rect[3];
             for rect in footer_buttons {
                 assert!(
                     rect.width() >= 44.0,
