@@ -64,17 +64,25 @@ pub enum BlockKind {
 }
 
 impl BlockKind {
+    /// Unscaled type size of a block's line — steps of the shared
+    /// [`TypeScale`](crate::tokens::TypeScale), so a page's body, headings
+    /// and code use the same ladder as every other surface: body `lg`
+    /// (16), H1 `x3l` (32, twice the body), H2 `x2l` (24), H3+ `xl` (20),
+    /// code `base` (14). The accessibility text scale is applied where
+    /// this is consumed (`RichTextLine`, the prefix painters). Before the
+    /// 2026-09-17 review the headings were 28 / 22 / 18 — off every step.
     pub fn font_size(&self) -> f32 {
+        let scale = crate::tokens::TypeScale::default();
         match self {
             BlockKind::Paragraph
             | BlockKind::Bullet { .. }
             | BlockKind::Numbered { .. }
             | BlockKind::Checklist { .. }
-            | BlockKind::Divider => 16.0,
-            BlockKind::Heading(1) => 28.0,
-            BlockKind::Heading(2) => 22.0,
-            BlockKind::Heading(_) => 18.0,
-            BlockKind::CodeBlock { .. } => 14.0,
+            | BlockKind::Divider => scale.lg,
+            BlockKind::Heading(1) => scale.x3l,
+            BlockKind::Heading(2) => scale.x2l,
+            BlockKind::Heading(_) => scale.xl,
+            BlockKind::CodeBlock { .. } => scale.base,
         }
     }
 
@@ -269,6 +277,9 @@ pub struct BlockEditor {
     /// Current accessibility text scale, retained for prefix and gutter
     /// geometry that is resolved after the taffy pass.
     text_scale: f64,
+    /// Drag-handle geometry from `theme.tokens`, captured in `build_layout`
+    /// for the hit-test and paint paths that have no theme of their own.
+    handle: HandleMetrics,
     child_nodes: Vec<NodeId>,
     dirty: bool,
     /// Set when the block list grows/shrinks; drained by
@@ -363,6 +374,7 @@ impl BlockEditor {
             is_focused: false,
             rect: Rect::ZERO,
             text_scale: 1.0,
+            handle: HandleMetrics::default(),
             child_nodes: Vec::new(),
             dirty: true,
             structure_dirty: true,
@@ -1322,19 +1334,37 @@ impl BlockEditor {
         })
     }
 
-    /// Small reserved target just left of an editable block. The main Notes
-    /// panel deliberately leaves a 32px gutter, so this never narrows text or
-    /// steals list/checkbox clicks.
+    /// Reserved target just left of an editable block, inside the gutter the
+    /// host leaves there (Notes: 32 px), so it never narrows text or steals
+    /// list/checkbox clicks. Geometry from [`HandleMetrics`]: a `width`
+    /// column ending `gap` before the block's leading edge, `height` tall at
+    /// 1× and growing with the text scale like the line beside it. The rect
+    /// is also the hit target, so it grows to the pointer minimum where the
+    /// block itself is that tall — never taller than the block, or two
+    /// single-line paragraphs would share one handle.
     fn block_drag_handle_rect(&self, index: usize) -> Option<Rect> {
         let block = self.blocks.get(index)?;
         let line = block.line.get_rect();
         let leading_edge = line.x0 - prefix_gutter_for(&block.kind) * self.text_scale;
         let center_y = line.center().y;
+        let HandleMetrics {
+            width,
+            height,
+            gap,
+            min_target,
+        } = self.handle;
+        // Grow to the pointer target where the block is that tall, and never
+        // past the block's own line: consecutive code lines butt together,
+        // so a handle overhanging its line would be found for the wrong one.
+        let half_height = ((height * self.text_scale) / 2.0)
+            .max(min_target.min(line.height()) / 2.0)
+            .min(line.height() / 2.0);
+        let right = leading_edge - gap;
         Some(Rect::new(
-            leading_edge - 22.0,
-            center_y - 10.0,
-            leading_edge - 6.0,
-            center_y + 10.0,
+            right - width,
+            center_y - half_height,
+            right,
+            center_y + half_height,
         ))
     }
 
@@ -1452,14 +1482,23 @@ impl BlockEditor {
             } else {
                 tokens.colors.text_dim.with_alpha_factor(0.58)
             };
+            // A 2×3 grip of 2.5 px dots, pitched 6 × 5 px at 1× and scaled
+            // with the text beside it. The column pitch is capped so the
+            // cluster stays inside the fixed-width handle column at any
+            // scale; the row pitch is free because the handle's height
+            // scales with the text.
             let center = handle.center();
-            for col in [-3.0, 3.0] {
-                for row in [-5.0, 0.0, 5.0] {
+            let scale = self.text_scale;
+            let dot_r = 1.25 * scale;
+            let col_pitch = (3.0 * scale).min(handle.width() / 2.0 - dot_r);
+            let row_pitch = 5.0 * scale;
+            for col in [-col_pitch, col_pitch] {
+                for row in [-row_pitch, 0.0, row_pitch] {
                     let dot = Rect::new(
-                        center.x + col - 1.25,
-                        center.y + row - 1.25,
-                        center.x + col + 1.25,
-                        center.y + row + 1.25,
+                        center.x + col - dot_r,
+                        center.y + row - dot_r,
+                        center.x + col + dot_r,
+                        center.y + row + dot_r,
                     );
                     scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &dot);
                 }
@@ -1938,6 +1977,44 @@ pub(crate) fn prefix_gutter_for(kind: &BlockKind) -> f64 {
 }
 
 pub(crate) const CHECKBOX_SIZE_PX: f64 = 16.0;
+
+/// Geometry of the block drag handle, resolved from `theme.tokens` in
+/// `build_layout` (the `Metrics::BASE` / `Spacing::BASE` values until then).
+///
+/// The handle lives in the gutter the host leaves left of the text (Notes
+/// reserves 32 px), so its **width** and the gap to the text are `ui_scale`
+/// metrics that stay inside that gutter; its **height** and the dot cluster
+/// follow the accessibility text scale like the line beside it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HandleMetrics {
+    /// Handle column width (`spacing.s4`, 16 px at 1×).
+    width: f64,
+    /// Handle height at 1× text (`metrics.icon_md`, 20 px), text-scaled.
+    height: f64,
+    /// Gap between the handle and the text's leading edge
+    /// (`metrics.icon_label_gap`, 6 px).
+    gap: f64,
+    /// `metrics.min_pointer_target`: the hit rect grows to this where the
+    /// block is tall enough not to overlap its neighbours' handles.
+    min_target: f64,
+}
+
+impl Default for HandleMetrics {
+    fn default() -> Self {
+        Self::from_tokens(&crate::tokens::Spacing::BASE, &crate::tokens::Metrics::BASE)
+    }
+}
+
+impl HandleMetrics {
+    fn from_tokens(spacing: &crate::tokens::Spacing, metrics: &crate::tokens::Metrics) -> Self {
+        Self {
+            width: f64::from(spacing.s4),
+            height: f64::from(metrics.icon_md),
+            gap: f64::from(metrics.icon_label_gap),
+            min_target: f64::from(metrics.min_pointer_target),
+        }
+    }
+}
 
 fn formula_descriptor(kind: &BlockKind) -> Option<crate::math::FormulaDescriptor> {
     let BlockKind::CodeBlock { lang } = kind else {
@@ -3385,6 +3462,7 @@ fn draw_numbered_prefix(
         f64::from(label_w),
         font_size,
         ctx.theme.text_scale,
+        ctx.theme.tokens.metrics.icon_label_gap,
     );
     ctx.text_renderer.draw_text(
         ctx.scene,
@@ -3396,18 +3474,23 @@ fn draw_numbered_prefix(
     );
 }
 
+/// `icon_label_gap` is the theme's `metrics.icon_label_gap` — the ordinal
+/// keeps the glyph-to-label gap from the item text and, like the prefix
+/// gutter it sits in, that gap follows the text scale.
 fn numbered_prefix_origin(
     line_rect: Rect,
     prefix_x0: f64,
     label_width: f64,
     font_size: f32,
     text_scale: f32,
+    icon_label_gap: f32,
 ) -> Point {
     // Matches RichTextLine's resolved shaped line height so the ordinal sits
     // on the item text's baseline at every accessibility scale.
     let line_height = f64::from(font_size * text_scale) * 1.25;
+    let gap = f64::from(icon_label_gap) * f64::from(text_scale);
     Point::new(
-        (line_rect.x0 - 6.0 - label_width).max(prefix_x0),
+        (line_rect.x0 - gap - label_width).max(prefix_x0),
         line_rect.y0 + (line_rect.height() - line_height) / 2.0,
     )
 }
@@ -3685,6 +3768,7 @@ impl Widget for BlockEditor {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
+        self.handle = HandleMetrics::from_tokens(&theme.tokens.spacing, &theme.tokens.metrics);
         self.child_nodes.clear();
         // Consecutive code lines butt together (no inter-line gap) so
         // they read as one fenced block.
@@ -5710,10 +5794,15 @@ mod tests {
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![heading, paragraph, numbered]);
 
+        // H1 is the `x3l` step (32) — the heading sizes moved onto the type
+        // scale in the 2026-09-17 review; what this test guards is that the
+        // shaped size is that step once, then exactly doubled at 2×.
+        let h1 = BlockKind::Heading(1).font_size();
+        assert_eq!(h1, crate::tokens::TypeScale::default().x3l);
         layout_and_draw_editor(&mut editor, &Theme::dark());
         assert_eq!(
             editor.blocks[0].line.inner().shaped_font_size_for_test(),
-            Some(28.0)
+            Some(h1)
         );
         assert_eq!(
             editor.blocks[1].line.inner().shaped_font_size_for_test(),
@@ -5724,7 +5813,7 @@ mod tests {
         layout_and_draw_editor(&mut editor, &large);
         assert_eq!(
             editor.blocks[0].line.inner().shaped_font_size_for_test(),
-            Some(56.0)
+            Some(h1 * 2.0)
         );
         for index in [1, 2] {
             assert_eq!(
@@ -5750,6 +5839,7 @@ mod tests {
             f64::from(label_width),
             16.0,
             2.0,
+            large.tokens.metrics.icon_label_gap,
         );
         let caret = numbered_line.caret_rect(&large, 0);
         assert!(

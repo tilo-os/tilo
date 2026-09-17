@@ -19,7 +19,11 @@ use ui::State;
 use ui::headless::FrameHarness;
 use ui::presence::PathSegment;
 use ui::theme::Theme;
-use ui::widget::{Button, Checkbox, Container, Dropdown, Row, TextInput, Toggle, Widget};
+use ui::widget::toggle_group::Segment;
+use ui::widget::{
+    Button, Checkbox, Chip, Container, Dropdown, NumberInput, Row, SearchField, TextInput,
+    Toggle, ToggleGroup, Widget,
+};
 use vello::kurbo::Rect;
 
 /// Fine-pointer minimum target (HIG §9.6).
@@ -188,6 +192,124 @@ fn fixed_controls_keep_their_size_beside_a_fluid_field() {
             field.width()
         );
     }
+}
+
+/// Round two (2026-09-17): the control kinds the first fixture did not hold —
+/// an outlined danger button, a chip, a number stepper, a segmented group and
+/// a search field — beside the default button and a fluid field. A chip is a
+/// 28 px selector by design (HIG §9.6), so this row checks the centre line and
+/// overlap for every item and the 32 px target for everything but the chip,
+/// whose pointer target is its grown `hit_rect` (covered in `chip::tests`).
+const DENSE_IDS: [&str; 7] = [
+    "save",
+    "delete",
+    "Row[0]/Chip",
+    "count",
+    "view",
+    "search",
+    "text_input",
+];
+
+fn dense_row() -> Box<dyn Widget> {
+    Box::new(
+        Row::new()
+            .no_wrap()
+            .push(Box::new(Button::new("save", "Save", None)))
+            .push(Box::new(
+                Button::new("delete", "Delete", None).danger_outline(),
+            ))
+            .push(Box::new(Chip::new("Filter").selectable()))
+            .push(Box::new(NumberInput::new(3.0).with_id("count")))
+            .push(Box::new(
+                ToggleGroup::new(vec![Segment::new("List"), Segment::new("Grid")], 0)
+                    .with_id("view"),
+            ))
+            .push(Box::new(SearchField::new().with_id("search")))
+            .push(Box::new(TextInput::new(vec![PathSegment::Field(
+                "query".into(),
+            )]))),
+    )
+}
+
+#[test]
+fn every_control_kind_in_one_row_shares_the_centre_line_at_one_and_two_x() {
+    for (name, theme, viewport) in [
+        ("dark", Theme::dark(), (1200, 200)),
+        ("light", Theme::light(), (1200, 200)),
+        ("dark @ 2× text", Theme::dark().with_text_scale(2.0), (1800, 260)),
+    ] {
+        let harness = FrameHarness::new_with_theme(State::new(), dense_row(), viewport, theme);
+        let rects = rects_for(&DENSE_IDS, &harness.targets());
+        let centre = rects[0].1.center().y;
+        for (id, rect) in &rects {
+            assert!(
+                rect.width() > 0.0 && rect.height() > 0.0,
+                "{name}: {id} has no geometry: {rect:?}"
+            );
+            assert!(
+                (rect.center().y - centre).abs() <= CENTRE_TOLERANCE,
+                "{name}: {id} centre-y {} drifts from the row's {centre} (rect {rect:?})",
+                rect.center().y
+            );
+            if *id != "Row[0]/Chip" {
+                assert!(
+                    rect.height() + 1e-6 >= MINIMUM_TARGET && rect.width() + 1e-6 >= MINIMUM_TARGET,
+                    "{name}: {id} {}×{} is under the {MINIMUM_TARGET} px target",
+                    rect.width(),
+                    rect.height()
+                );
+            }
+        }
+        for pair in rects.windows(2) {
+            let (left, right) = (pair[0], pair[1]);
+            assert!(
+                left.1.x1 <= right.1.x0 + 1e-6,
+                "{name}: {} (x1 {}) overlaps {} (x0 {})",
+                left.0,
+                left.1.x1,
+                right.0,
+                right.1.x0
+            );
+        }
+        let (_, field) = rects[6];
+        assert!(
+            field.x1 <= f64::from(viewport.0) + 1e-6,
+            "{name}: the fluid field must end inside the viewport, got x1 {}",
+            field.x1
+        );
+    }
+}
+
+/// The default `Button::new` face is exactly 120×40 at 1× and grows — not
+/// clips — at 2× text: the 28 px label's 35 px line no longer fits a 40 px
+/// face, so the face follows the line, and both default buttons in the row
+/// agree on the new height. This is the settings "Add account" defect
+/// (round-one F2-15) measured on the production layout path.
+#[test]
+fn default_buttons_hold_their_label_at_two_x_and_stay_120_by_40_at_one_x() {
+    let at = |scale: f32| {
+        let harness = FrameHarness::new_with_theme(
+            State::new(),
+            dense_row(),
+            (1800, 260),
+            Theme::dark().with_text_scale(scale),
+        );
+        let rects = rects_for(&["save", "delete"], &harness.targets());
+        (rects[0].1, rects[1].1)
+    };
+    let (save, delete) = at(1.0);
+    assert_eq!((save.width(), save.height()), (120.0, 40.0), "1× default: {save:?}");
+    assert_eq!((delete.width(), delete.height()), (120.0, 40.0), "1× outlined: {delete:?}");
+
+    let (save, delete) = at(2.0);
+    let scaled_line = 14.0 * 2.0 * 1.25;
+    assert!(
+        save.height() > scaled_line && save.height() > 40.0,
+        "2× default height {} must exceed the {scaled_line} px label line",
+        save.height()
+    );
+    assert_eq!(save.height(), delete.height(), "both default buttons share one height");
+    assert!(save.width() >= 120.0 && delete.width() >= 120.0);
 }
 
 #[test]
