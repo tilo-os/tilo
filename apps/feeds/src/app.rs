@@ -2116,20 +2116,25 @@ impl FeedsApp {
         } else {
             0.0
         };
+        let list_title = self.filter_title();
         draw_list(
-            scene,
-            t,
-            tr,
-            theme,
-            &self.list_rect,
-            &self.list_rows,
-            &self.store,
-            self.selected,
-            self.now,
-            &self.filter_title(),
-            self.store.count_for(self.filter),
-            list_inset,
-            &self.refresh,
+            PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            &ListView {
+                rect: &self.list_rect,
+                rows: &self.list_rows,
+                store: &self.store,
+                selected: self.selected,
+                now: self.now,
+                title: &list_title,
+                count: self.store.count_for(self.filter),
+                header_inset: list_inset,
+                refresh: &self.refresh,
+            },
         );
         // The reader shifts right to clear the top-left Back button whenever it
         // is the pushed single pane (middle + narrow).
@@ -2143,21 +2148,26 @@ impl FeedsApp {
             .selected
             .and_then(|id| self.store.article(id))
             .is_some();
+        let article = self.selected.and_then(|id| self.store.article(id));
+        let feed = article.and_then(|article| self.store.feed(article.feed_id));
         let (links, open_rect, content_h) = draw_reader(
-            scene,
-            t,
-            tr,
-            &self.reader_rect,
-            self.selected.and_then(|id| self.store.article(id)),
-            self.selected
-                .and_then(|id| self.store.article(id))
-                .and_then(|a| self.store.feed(a.feed_id)),
-            self.reader_scroll,
-            self.now,
-            reader_inset,
-            self.settings,
-            palette,
-            self.reader_family(),
+            PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            &ReaderView {
+                rect: &self.reader_rect,
+                article,
+                feed,
+                scroll: self.reader_scroll,
+                now: self.now,
+                header_inset: reader_inset,
+                settings: self.settings,
+                palette,
+                family: self.reader_family(),
+            },
         );
         self.reader_links = links;
         self.reader_open_rect = open_rect;
@@ -2433,7 +2443,17 @@ impl FeedsApp {
             plus.x0 - 8.0 - pctw - 8.0,
             y + bsz,
         );
-        self.step_button(scene, t, tr, theme, &minus, "−", SettingsAction::FontDec);
+        self.step_button(
+            PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            &minus,
+            "−",
+            SettingsAction::FontDec,
+        );
         tr.draw_text(
             scene,
             &pct,
@@ -2442,7 +2462,17 @@ impl FeedsApp {
             t * Affine::translate((minus.x1 + 8.0, y + 5.0)),
             None,
         );
-        self.step_button(scene, t, tr, theme, &plus, "+", SettingsAction::FontInc);
+        self.step_button(
+            PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            &plus,
+            "+",
+            SettingsAction::FontInc,
+        );
         y += bsz + 14.0;
 
         // Font family segmented control (Sans / Serif / Mono).
@@ -2467,10 +2497,12 @@ impl FeedsApp {
             );
             let active = self.settings.font == *f;
             self.seg_cell(
-                scene,
-                t,
-                tr,
-                theme,
+                PaintContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
                 &cell,
                 f.label(),
                 active,
@@ -2499,10 +2531,12 @@ impl FeedsApp {
             );
             let active = self.settings.theme == *th;
             self.seg_cell(
-                scene,
-                t,
-                tr,
-                theme,
+                PaintContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
                 &cell,
                 th.label(),
                 active,
@@ -2512,17 +2546,19 @@ impl FeedsApp {
     }
 
     /// A small square stepper button ("−"/"+") for the settings popover.
-    #[allow(clippy::too_many_arguments)]
     fn step_button(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         rect: &Rect,
         glyph: &str,
         action: SettingsAction,
     ) {
+        let PaintContext {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let hovered = rect.contains(self.last_mouse);
         let bg = if hovered { c.neutral[3] } else { c.neutral[1] };
@@ -2554,18 +2590,20 @@ impl FeedsApp {
     }
 
     /// One cell of a segmented control in the settings popover.
-    #[allow(clippy::too_many_arguments)]
     fn seg_cell(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         rect: &Rect,
         label: &str,
         active: bool,
         action: SettingsAction,
     ) {
+        let PaintContext {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let inner = Rect::new(rect.x0 + 2.0, rect.y0, rect.x1 - 2.0, rect.y1);
         let hovered = rect.contains(self.last_mouse);
@@ -2785,6 +2823,54 @@ impl FeedsApp {
 // Drawing free functions (explicit borrows keep the borrow checker happy)
 // ---------------------------------------------------------------------
 
+/// Shared renderer state passed through the custom-painted Feeds views.
+///
+/// Keeping these four values together makes view helpers describe the data
+/// they render instead of repeating backend plumbing in every signature.
+struct PaintContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+#[derive(Clone, Copy)]
+struct ListView<'a> {
+    rect: &'a Rect,
+    rows: &'a [ListRow],
+    store: &'a Store,
+    selected: Option<Id>,
+    now: i64,
+    title: &'a str,
+    count: usize,
+    header_inset: f64,
+    refresh: &'a RefreshState,
+}
+
+#[derive(Clone, Copy)]
+struct ReaderView<'a> {
+    rect: &'a Rect,
+    article: Option<&'a Article>,
+    feed: Option<&'a Feed>,
+    scroll: f64,
+    now: i64,
+    header_inset: f64,
+    settings: ReadSettings,
+    palette: ReaderPalette,
+    family: FontFamily,
+}
+
+struct BlockPaintContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    pane: &'a Rect,
+    links: &'a mut Vec<(Rect, String)>,
+    settings: ReadSettings,
+    palette: &'a ReaderPalette,
+    family: FontFamily,
+}
+
 fn alpha(c: Color, a: u8) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }
@@ -2810,22 +2896,13 @@ fn hline(scene: &mut Scene, t: Affine, x0: f64, x1: f64, y: f64, color: Color) {
 }
 
 /// Draw a pill badge with a number; returns its width.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "shares the standard (scene, t, tr, theme/palette) drawing-context params with \
-              every other draw helper in this file; bundling them into a context struct is a \
-              file-wide refactor out of scope here"
-)]
-fn badge(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    right_x: f64,
-    cy: f64,
-    n: usize,
-    bg: Color,
-    fg: Color,
-) -> f64 {
+fn badge(paint: PaintContext<'_>, right_x: f64, cy: f64, n: usize, bg: Color, fg: Color) -> f64 {
+    let PaintContext {
+        scene,
+        transform: t,
+        text: tr,
+        theme: _,
+    } = paint;
     if n == 0 {
         return 0.0;
     }
@@ -2972,7 +3049,19 @@ fn draw_sidebar(
             } else {
                 (alpha(c.neutral[3], 180), c.text_dim)
             };
-            badge(scene, t, tr, row.rect.x1 - 12.0, cy, row.badge, bg, fg)
+            badge(
+                PaintContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
+                row.rect.x1 - 12.0,
+                cy,
+                row.badge,
+                bg,
+                fg,
+            )
         } else {
             0.0
         };
@@ -3078,27 +3167,29 @@ fn draw_centered_onboarding(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 #[allow(
     clippy::too_many_lines,
     reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
               only relocate the line count, not the amount a reader must hold in mind"
 )]
-fn draw_list(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    rect: &Rect,
-    rows: &[ListRow],
-    store: &Store,
-    selected: Option<Id>,
-    now: i64,
-    title: &str,
-    count: usize,
-    header_inset: f64,
-    refresh: &RefreshState,
-) {
+fn draw_list(paint: PaintContext<'_>, view: &ListView<'_>) {
+    let PaintContext {
+        scene,
+        transform: t,
+        text: tr,
+        theme,
+    } = paint;
+    let ListView {
+        rect,
+        rows,
+        store,
+        selected,
+        now,
+        title,
+        count,
+        header_inset,
+        refresh,
+    } = *view;
     let c = &theme.tokens.colors;
     // Header. `header_inset` shifts the title right of the hamburger toggle
     // when the list is the narrow master pane.
@@ -3414,27 +3505,32 @@ fn draw_refresh_strip(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 #[allow(
     clippy::too_many_lines,
     reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
               only relocate the line count, not the amount a reader must hold in mind"
 )]
 fn draw_reader(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    rect: &Rect,
-    article: Option<&Article>,
-    feed: Option<&Feed>,
-    scroll: f64,
-    now: i64,
-    // Extra left margin so the body clears a narrow-mode Back affordance.
-    header_inset: f64,
-    settings: ReadSettings,
-    palette: ReaderPalette,
-    family: FontFamily,
+    paint: PaintContext<'_>,
+    view: &ReaderView<'_>,
 ) -> (Vec<(Rect, String)>, Option<Rect>, f64) {
+    let PaintContext {
+        scene,
+        transform: t,
+        text: tr,
+        theme: _,
+    } = paint;
+    let ReaderView {
+        rect,
+        article,
+        feed,
+        scroll,
+        now,
+        header_inset,
+        settings,
+        palette,
+        family,
+    } = *view;
     let mut links = Vec::new();
     let mut open_rect = None;
 
@@ -3623,8 +3719,20 @@ fn draw_reader(
     // Body blocks — rendered with the reader's chosen family, size, and palette.
     for block in &a.blocks {
         y = draw_block(
-            scene, t, tr, block, content_x, content_w, y, rect, &mut links, settings, &palette,
-            family,
+            BlockPaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                pane: rect,
+                links: &mut links,
+                settings,
+                palette: &palette,
+                family,
+            },
+            block,
+            content_x,
+            content_w,
+            y,
         );
     }
     y += 40.0;
@@ -3637,7 +3745,6 @@ fn draw_reader(
 /// Render one body block through `RichTextLayout` so the reader's chosen font
 /// family (incl. a genuine serif) is honoured. Body ink/rules come from the
 /// reading palette; sizes scale with the reading font setting.
-#[allow(clippy::too_many_arguments)]
 #[allow(
     clippy::too_many_lines,
     reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
@@ -3649,19 +3756,22 @@ fn draw_reader(
               size, x/y: position) used consistently across every draw_* function in this file"
 )]
 fn draw_block(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
+    paint: BlockPaintContext<'_>,
     block: &crate::model::ContentBlock,
     x: f64,
     w: f32,
     y: f64,
-    pane: &Rect,
-    links: &mut Vec<(Rect, String)>,
-    settings: ReadSettings,
-    palette: &ReaderPalette,
-    family: FontFamily,
 ) -> f64 {
+    let BlockPaintContext {
+        scene,
+        transform: t,
+        text: tr,
+        pane,
+        links,
+        settings,
+        palette,
+        family,
+    } = paint;
     let body_size = settings.body_size();
 
     // Lay out `text` in `fam` at `size` within width `width`, returning height.

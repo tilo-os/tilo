@@ -3027,7 +3027,12 @@ impl Widget for ChatApp {
         self.draw_header(scene, tf, tr, theme, &mut hits);
         let msg_area = self.messages_rect(tr);
         crate::paint::push_clip(scene, tf, msg_area);
-        self.draw_messages(scene, tf, tr, theme, presence, msg_area, &mut hits);
+        self.draw_messages(
+            crate::paint::PaintContext::new(scene, tf, tr, theme),
+            presence,
+            msg_area,
+            &mut hits,
+        );
         scene.pop_layer();
         self.draw_composer(scene, tf, tr, theme, presence, &mut hits);
 

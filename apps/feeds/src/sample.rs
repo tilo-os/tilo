@@ -127,15 +127,14 @@ pub fn store() -> Store {
     // --- Rust Blog -------------------------------------------------------
     article(
         &mut s,
-        rust,
-        "Announcing Rust 1.84.0",
-        "The Rust Release Team",
-        "https://blog.rust-lang.org/2026/06/20/Rust-1.84.0.html",
-        now - 5 * HOUR,
-        false,
-        true,
-        "The Rust team is happy to announce a new version of Rust, 1.84.0.",
-        vec![
+        SampleArticle::new(
+            rust,
+            "Announcing Rust 1.84.0",
+            "The Rust Release Team",
+            "https://blog.rust-lang.org/2026/06/20/Rust-1.84.0.html",
+            now - 5 * HOUR,
+            "The Rust team is happy to announce a new version of Rust, 1.84.0.",
+            vec![
             para(
                 "The Rust team is happy to announce a new version of Rust, 1.84.0. Rust is a programming language empowering everyone to build reliable and efficient software.",
             ),
@@ -156,19 +155,20 @@ pub fn store() -> Store {
             para(
                 "As always, if you spot a regression, please report it on the issue tracker — your reports keep the release train reliable.",
             ),
-        ],
+            ],
+        )
+        .starred(),
     );
     article(
         &mut s,
-        rust,
-        "A new era for the borrow checker",
-        "Niko Matsakis",
-        "https://blog.rust-lang.org/2026/06/12/polonius.html",
-        now - 2 * DAY,
-        true,
-        false,
-        "Polonius lands on nightly, unlocking patterns the old checker rejected.",
-        vec![
+        SampleArticle::new(
+            rust,
+            "A new era for the borrow checker",
+            "Niko Matsakis",
+            "https://blog.rust-lang.org/2026/06/12/polonius.html",
+            now - 2 * DAY,
+            "Polonius lands on nightly, unlocking patterns the old checker rejected.",
+            vec![
             para(
                 "After years of design work, the Polonius borrow checker is available on nightly. It models loans with a more precise dataflow analysis.",
             ),
@@ -178,137 +178,141 @@ pub fn store() -> Store {
             quote(
                 "The borrow checker should accept every program that is actually safe. Polonius gets us meaningfully closer to that goal.",
             ),
-        ],
+            ],
+        )
+        .read(),
     );
     article(
         &mut s,
-        rust,
-        "Async fn in traits, one year on",
-        "The Async WG",
-        "",
-        now - 9 * DAY,
-        true,
-        false,
-        "Lessons learned from shipping AFIT.",
-        vec![para(
-            "Async functions in traits shipped a year ago. Here's what we learned from real-world adoption across the ecosystem.",
-        )],
+        SampleArticle::new(
+            rust,
+            "Async fn in traits, one year on",
+            "The Async WG",
+            "",
+            now - 9 * DAY,
+            "Lessons learned from shipping AFIT.",
+            vec![para(
+                "Async functions in traits shipped a year ago. Here's what we learned from real-world adoption across the ecosystem.",
+            )],
+        )
+        .read(),
     );
 
     // --- Hacker News -----------------------------------------------------
     article(
         &mut s,
-        hn,
-        "Show HN: I built a spatial OS in Rust",
-        "throwaway2026",
-        "https://news.ycombinator.com/item?id=40000000",
-        now - 3 * HOUR,
-        false,
-        false,
-        "A collaborative, tiling desktop with a CRDT-native UI toolkit.",
-        vec![
-            para(
-                "I've spent the last eight months building a spatial operating system where every window tiles inside a 2D cluster and apps share a single CRDT document for live collaboration.",
-            ),
-            para(
-                "The UI toolkit is retained-mode and renders with wgpu + vello. State lives entirely in an Automerge document, which makes undo/redo and multiplayer fall out almost for free.",
-            ),
-            bullet("No floating windows — clusters tile on an infinite canvas."),
-            bullet("Each cluster is its own bubblewrap sandbox."),
-            para("Happy to answer questions in the comments!"),
-        ],
+        SampleArticle::new(
+            hn,
+            "Show HN: I built a spatial OS in Rust",
+            "throwaway2026",
+            "https://news.ycombinator.com/item?id=40000000",
+            now - 3 * HOUR,
+            "A collaborative, tiling desktop with a CRDT-native UI toolkit.",
+            vec![
+                para(
+                    "I've spent the last eight months building a spatial operating system where every window tiles inside a 2D cluster and apps share a single CRDT document for live collaboration.",
+                ),
+                para(
+                    "The UI toolkit is retained-mode and renders with wgpu + vello. State lives entirely in an Automerge document, which makes undo/redo and multiplayer fall out almost for free.",
+                ),
+                bullet("No floating windows — clusters tile on an infinite canvas."),
+                bullet("Each cluster is its own bubblewrap sandbox."),
+                para("Happy to answer questions in the comments!"),
+            ],
+        ),
     );
     article(
         &mut s,
-        hn,
-        "The hidden cost of microservices",
-        "patio11",
-        "https://news.ycombinator.com/item?id=40000001",
-        now - 7 * HOUR,
-        false,
-        false,
-        "When a monolith is the right call after all.",
-        vec![para(
-            "A thoughtful retrospective on splitting a 40-person startup into 60 services, and quietly merging half of them back two years later.",
-        )],
+        SampleArticle::new(
+            hn,
+            "The hidden cost of microservices",
+            "patio11",
+            "https://news.ycombinator.com/item?id=40000001",
+            now - 7 * HOUR,
+            "When a monolith is the right call after all.",
+            vec![para(
+                "A thoughtful retrospective on splitting a 40-person startup into 60 services, and quietly merging half of them back two years later.",
+            )],
+        ),
     );
     article(
         &mut s,
-        hn,
-        "SQLite is not a toy database",
-        "dang",
-        "https://news.ycombinator.com/item?id=40000002",
-        now - 14 * HOUR,
-        true,
-        false,
-        "Why SQLite powers more apps than you think.",
-        vec![para(
-            "SQLite runs in your phone, your browser, your car, and most of the planes you fly on. A look at the engineering that makes it bulletproof.",
-        )],
+        SampleArticle::new(
+            hn,
+            "SQLite is not a toy database",
+            "dang",
+            "https://news.ycombinator.com/item?id=40000002",
+            now - 14 * HOUR,
+            "Why SQLite powers more apps than you think.",
+            vec![para(
+                "SQLite runs in your phone, your browser, your car, and most of the planes you fly on. A look at the engineering that makes it bulletproof.",
+            )],
+        )
+        .read(),
     );
     article(
         &mut s,
-        hn,
-        "Ask HN: How do you stay focused?",
-        "anon",
-        "https://news.ycombinator.com/item?id=40000003",
-        now - 20 * HOUR,
-        false,
-        false,
-        "The eternal question, asked again.",
-        vec![para(
-            "With infinite tabs and infinite notifications, how do you actually ship? The thread has 800 comments and zero consensus.",
-        )],
+        SampleArticle::new(
+            hn,
+            "Ask HN: How do you stay focused?",
+            "anon",
+            "https://news.ycombinator.com/item?id=40000003",
+            now - 20 * HOUR,
+            "The eternal question, asked again.",
+            vec![para(
+                "With infinite tabs and infinite notifications, how do you actually ship? The thread has 800 comments and zero consensus.",
+            )],
+        ),
     );
 
     // --- Lobsters --------------------------------------------------------
     article(
         &mut s,
-        lob,
-        "Writing a WASM runtime in 500 lines",
-        "calvin",
-        "https://lobste.rs/s/abc/wasm_runtime",
-        now - DAY,
-        false,
-        false,
-        "A minimal but real interpreter you can read in an afternoon.",
-        vec![
-            para(
-                "WebAssembly's binary format is surprisingly approachable. This post implements a stack machine that runs real .wasm modules in half a kilobyte of code.",
-            ),
-            code(
-                "(module\n  (func (export \"add\") (param i32 i32) (result i32)\n    local.get 0\n    local.get 1\n    i32.add))",
-            ),
-            para("The decoder, validator, and interpreter together fit on one screen."),
-        ],
+        SampleArticle::new(
+            lob,
+            "Writing a WASM runtime in 500 lines",
+            "calvin",
+            "https://lobste.rs/s/abc/wasm_runtime",
+            now - DAY,
+            "A minimal but real interpreter you can read in an afternoon.",
+            vec![
+                para(
+                    "WebAssembly's binary format is surprisingly approachable. This post implements a stack machine that runs real .wasm modules in half a kilobyte of code.",
+                ),
+                code(
+                    "(module\n  (func (export \"add\") (param i32 i32) (result i32)\n    local.get 0\n    local.get 1\n    i32.add))",
+                ),
+                para("The decoder, validator, and interpreter together fit on one screen."),
+            ],
+        ),
     );
     article(
         &mut s,
-        lob,
-        "The case against config files",
-        "pushcx",
-        "",
-        now - 3 * DAY,
-        true,
-        false,
-        "Code as configuration, revisited.",
-        vec![para(
-            "Every config language eventually grows conditionals and loops until it's a worse programming language. Maybe we should just use a real one.",
-        )],
+        SampleArticle::new(
+            lob,
+            "The case against config files",
+            "pushcx",
+            "",
+            now - 3 * DAY,
+            "Code as configuration, revisited.",
+            vec![para(
+                "Every config language eventually grows conditionals and loops until it's a worse programming language. Maybe we should just use a real one.",
+            )],
+        )
+        .read(),
     );
 
     // --- Quanta ----------------------------------------------------------
     article(
         &mut s,
-        quanta,
-        "Mathematicians prove a long-standing knot conjecture",
-        "Erica Klarreich",
-        "https://www.quantamagazine.org/knot-2026",
-        now - 6 * HOUR,
-        false,
-        true,
-        "A 50-year-old question about slice knots finally falls.",
-        vec![
+        SampleArticle::new(
+            quanta,
+            "Mathematicians prove a long-standing knot conjecture",
+            "Erica Klarreich",
+            "https://www.quantamagazine.org/knot-2026",
+            now - 6 * HOUR,
+            "A 50-year-old question about slice knots finally falls.",
+            vec![
             para(
                 "A pair of mathematicians have resolved a decades-old question in low-dimensional topology, proving that a famous family of knots cannot bound a smooth disk in four dimensions.",
             ),
@@ -319,109 +323,113 @@ pub fn store() -> Store {
             quote(
                 "Topology is the mathematics of what survives stretching. Knots are where our intuition for that finally breaks down.",
             ),
-        ],
+            ],
+        )
+        .starred(),
     );
     article(
         &mut s,
-        quanta,
-        "The physics of how cells know their size",
-        "Yasemin Saplakoglu",
-        "",
-        now - 4 * DAY,
-        false,
-        false,
-        "A surprising answer involves dilution.",
-        vec![para(
-            "How does a single cell measure itself? New experiments suggest the answer is a molecule whose concentration drops as the cell grows.",
-        )],
+        SampleArticle::new(
+            quanta,
+            "The physics of how cells know their size",
+            "Yasemin Saplakoglu",
+            "",
+            now - 4 * DAY,
+            "A surprising answer involves dilution.",
+            vec![para(
+                "How does a single cell measure itself? New experiments suggest the answer is a molecule whose concentration drops as the cell grows.",
+            )],
+        ),
     );
 
     // --- NASA ------------------------------------------------------------
     article(
         &mut s,
-        nasa,
-        "Webb captures the deepest infrared image yet",
-        "NASA",
-        "https://www.nasa.gov/webb-deep-field",
-        now - 11 * HOUR,
-        false,
-        false,
-        "Thousands of galaxies in a patch of sky the size of a grain of sand.",
-        vec![
-            para(
-                "The James Webb Space Telescope has produced its deepest image of the early universe to date, revealing galaxies whose light has travelled for more than 13 billion years.",
-            ),
-            bullet("Exposure time: 120 hours across six filters."),
-            bullet("Faintest objects: roughly magnitude 31."),
-        ],
+        SampleArticle::new(
+            nasa,
+            "Webb captures the deepest infrared image yet",
+            "NASA",
+            "https://www.nasa.gov/webb-deep-field",
+            now - 11 * HOUR,
+            "Thousands of galaxies in a patch of sky the size of a grain of sand.",
+            vec![
+                para(
+                    "The James Webb Space Telescope has produced its deepest image of the early universe to date, revealing galaxies whose light has travelled for more than 13 billion years.",
+                ),
+                bullet("Exposure time: 120 hours across six filters."),
+                bullet("Faintest objects: roughly magnitude 31."),
+            ],
+        ),
     );
     article(
         &mut s,
-        nasa,
-        "Artemis IV crew completes splashdown rehearsal",
-        "NASA",
-        "",
-        now - 5 * DAY,
-        true,
-        false,
-        "Final water-recovery test before launch.",
-        vec![para(
-            "The Artemis IV astronauts and recovery teams completed a full splashdown rehearsal off the coast of San Diego this week.",
-        )],
+        SampleArticle::new(
+            nasa,
+            "Artemis IV crew completes splashdown rehearsal",
+            "NASA",
+            "",
+            now - 5 * DAY,
+            "Final water-recovery test before launch.",
+            vec![para(
+                "The Artemis IV astronauts and recovery teams completed a full splashdown rehearsal off the coast of San Diego this week.",
+            )],
+        )
+        .read(),
     );
 
     // --- Smashing --------------------------------------------------------
     article(
         &mut s,
-        smashing,
-        "Designing for the CRDT era",
-        "Rachel Andrew",
-        "https://www.smashingmagazine.com/2026/crdt-ux",
-        now - 8 * HOUR,
-        false,
-        false,
-        "What collaborative-by-default means for interface design.",
-        vec![
-            para(
-                "When every document is multiplayer, presence becomes a first-class design material. We explore patterns for cursors, selections, and conflict-free editing.",
-            ),
-            h2("Presence without noise"),
-            para(
-                "Showing five remote cursors is delightful. Showing fifty is chaos. Good presence design fades collaborators into the periphery until they act.",
-            ),
-            bullet("Use colour sparingly — one hue per collaborator, nothing more."),
-            bullet("Animate arrivals and departures so the eye can track them."),
-        ],
+        SampleArticle::new(
+            smashing,
+            "Designing for the CRDT era",
+            "Rachel Andrew",
+            "https://www.smashingmagazine.com/2026/crdt-ux",
+            now - 8 * HOUR,
+            "What collaborative-by-default means for interface design.",
+            vec![
+                para(
+                    "When every document is multiplayer, presence becomes a first-class design material. We explore patterns for cursors, selections, and conflict-free editing.",
+                ),
+                h2("Presence without noise"),
+                para(
+                    "Showing five remote cursors is delightful. Showing fifty is chaos. Good presence design fades collaborators into the periphery until they act.",
+                ),
+                bullet("Use colour sparingly — one hue per collaborator, nothing more."),
+                bullet("Animate arrivals and departures so the eye can track them."),
+            ],
+        ),
     );
     article(
         &mut s,
-        smashing,
-        "Modern CSS nesting in practice",
-        "Stephanie Eckles",
-        "",
-        now - 6 * DAY,
-        true,
-        false,
-        "Native nesting is here — use it well.",
-        vec![para(
-            "CSS nesting shipped in every major browser. A field guide to using it without recreating the specificity nightmares of preprocessors past.",
-        )],
+        SampleArticle::new(
+            smashing,
+            "Modern CSS nesting in practice",
+            "Stephanie Eckles",
+            "",
+            now - 6 * DAY,
+            "Native nesting is here — use it well.",
+            vec![para(
+                "CSS nesting shipped in every major browser. A field guide to using it without recreating the specificity nightmares of preprocessors past.",
+            )],
+        )
+        .read(),
     );
 
     // --- Gemini capsule (gemtext-rendered body) --------------------------
     let gem_body = "# Antenna — aggregated gemlogs\n\nWelcome to Antenna, a feed of recent posts from across Geminispace.\n\n## Recent entries\n\n=> gemini://example.org/log/2026-06-30.gmi On writing small software\n=> gemini://another.capsule/posts/tea.gmi A defence of loose-leaf tea\n\nGemini is a lightweight internet protocol sitting between Gopher and the Web. Pages are written in gemtext:\n\n```\n# A heading\n* a list item\n=> gemini://link.example a link line\n```\n\n> Slow down. Read one thing at a time.\n\nThat's the whole format. No tracking, no ads, no JavaScript.";
     let gem_blocks = gemtext::to_blocks(gem_body);
-    article_blocks(
+    article(
         &mut s,
-        antenna,
-        "Antenna — fresh posts from Geminispace",
-        "antenna",
-        "gemini://warmedal.se/~antenna/",
-        now - 90 * 60,
-        false,
-        false,
-        "A digest of recent gemlog entries, rendered from gemtext.",
-        gem_blocks,
+        SampleArticle::new(
+            antenna,
+            "Antenna — fresh posts from Geminispace",
+            "antenna",
+            "gemini://warmedal.se/~antenna/",
+            now - 90 * 60,
+            "A digest of recent gemlog entries, rendered from gemtext.",
+            gem_blocks,
+        ),
     );
 
     s
@@ -449,38 +457,54 @@ fn feed(
     id
 }
 
-#[allow(clippy::too_many_arguments)]
-fn article(
-    s: &mut Store,
+struct SampleArticle<'a> {
     feed_id: Id,
-    title: &str,
-    author: &str,
-    url: &str,
+    title: &'a str,
+    author: &'a str,
+    url: &'a str,
     published: i64,
+    summary: &'a str,
+    blocks: Vec<ContentBlock>,
     read: bool,
     starred: bool,
-    summary: &str,
-    blocks: Vec<ContentBlock>,
-) {
-    article_blocks(
-        s, feed_id, title, author, url, published, read, starred, summary, blocks,
-    );
 }
 
-#[allow(clippy::too_many_arguments)]
-fn article_blocks(
-    s: &mut Store,
-    feed_id: Id,
-    title: &str,
-    author: &str,
-    url: &str,
-    published: i64,
-    read: bool,
-    starred: bool,
-    summary: &str,
-    blocks: Vec<ContentBlock>,
-) {
-    let lower = title.to_lowercase();
+impl<'a> SampleArticle<'a> {
+    fn new(
+        feed_id: Id,
+        title: &'a str,
+        author: &'a str,
+        url: &'a str,
+        published: i64,
+        summary: &'a str,
+        blocks: Vec<ContentBlock>,
+    ) -> Self {
+        Self {
+            feed_id,
+            title,
+            author,
+            url,
+            published,
+            summary,
+            blocks,
+            read: false,
+            starred: false,
+        }
+    }
+
+    fn read(mut self) -> Self {
+        self.read = true;
+        self
+    }
+
+    fn starred(mut self) -> Self {
+        self.starred = true;
+        self
+    }
+}
+
+fn article(s: &mut Store, fixture: SampleArticle<'_>) {
+    let lower = fixture.title.to_lowercase();
     let tags = [
         lower.contains("rust").then_some("rust"),
         (lower.contains("design") || lower.contains("crdt")).then_some("design"),
@@ -493,15 +517,15 @@ fn article_blocks(
     .collect();
     s.insert_article_dedup(Article {
         id: Uuid::new_v4(),
-        feed_id,
-        title: title.into(),
-        author: author.into(),
-        url: url.into(),
-        published,
-        summary: summary.into(),
-        blocks,
-        read,
-        starred,
+        feed_id: fixture.feed_id,
+        title: fixture.title.into(),
+        author: fixture.author.into(),
+        url: fixture.url.into(),
+        published: fixture.published,
+        summary: fixture.summary.into(),
+        blocks: fixture.blocks,
+        read: fixture.read,
+        starred: fixture.starred,
         tags,
     });
 }
@@ -511,15 +535,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sample_store_is_populated() {
+    fn sample_store_covers_every_demo_surface() {
         let s = store();
         assert_eq!(s.folders.len(), 3);
-        assert!(s.feeds.len() >= 6);
-        assert!(s.articles.len() >= 12);
-        // Has at least one unread, one starred, one gemini feed.
-        assert!(s.total_unread() > 0);
-        assert!(s.total_starred() > 0);
+        assert_eq!(s.feeds.len(), 7);
+        assert_eq!(s.articles.len(), 16);
         assert!(s.feeds.iter().any(|f| f.kind == FeedKind::Gemini));
+
         // The gemini article has gemtext-derived blocks (incl. a link).
         let gem_feed = s.feeds.iter().find(|f| f.kind == FeedKind::Gemini).unwrap();
         let gem_art = s
@@ -528,5 +550,34 @@ mod tests {
             .find(|a| a.feed_id == gem_feed.id)
             .unwrap();
         assert!(gem_art.blocks.iter().any(|b| b.kind == BlockKind::Link));
+    }
+
+    #[test]
+    fn sample_article_states_and_inferred_tags_are_preserved() {
+        let s = store();
+        let article = |title: &str| {
+            s.articles
+                .iter()
+                .find(|article| article.title == title)
+                .unwrap()
+        };
+
+        let release = article("Announcing Rust 1.84.0");
+        assert!(!release.read);
+        assert!(release.starred);
+        assert_eq!(release.tags, ["rust"]);
+
+        let borrow_checker = article("A new era for the borrow checker");
+        assert!(borrow_checker.read);
+        assert!(!borrow_checker.starred);
+        assert!(borrow_checker.tags.is_empty());
+
+        let knot = article("Mathematicians prove a long-standing knot conjecture");
+        assert!(!knot.read);
+        assert!(knot.starred);
+        assert_eq!(knot.tags, ["science"]);
+
+        let collaboration = article("Designing for the CRDT era");
+        assert_eq!(collaboration.tags, ["design"]);
     }
 }

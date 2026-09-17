@@ -8,12 +8,13 @@
 //! exported `open` view action, so pointer, keyboard, assistive technology and
 //! agents all enter through the same brokered operation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 use ui::icons::Icon;
 
 use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
+    SearchPage, SearchProvider, SearchResult,
 };
 
 use crate::model::{Contact, ContactId, ContactStore, normalize_text};
@@ -29,68 +30,362 @@ pub const CONTACT_KIND: &str = "Contacts";
 /// is an `Arc` handle managed by the shared search implementation.
 #[derive(Clone)]
 pub struct ContactSearchProvider {
-    catalog: SearchCatalog,
-    contacts: BTreeMap<ContactId, Contact>,
-    /// Canonical resource id → deterministic display spelling. Keeping this
-    /// separately from contacts means a group resolves even when it was not
-    /// included in the bounded contextual palette page.
+    /// The catalogue and lazy labels are one published generation.  Keeping
+    /// them under the same lock prevents an activation from observing a new
+    /// search row before the corresponding exact label is available.
+    snapshot: Arc<Mutex<ContactSearchSnapshot>>,
+    #[cfg(test)]
+    before_publish: Arc<Mutex<Option<RefreshPublicationHook>>>,
+    #[cfg(test)]
+    full_refreshes: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg(test)]
+struct RefreshPublicationHook {
+    built: std::sync::mpsc::Sender<()>,
+    continue_after_build: std::sync::mpsc::Receiver<()>,
+}
+
+/// Only the public label needed to resolve a search hit's canonical `open`
+/// action is retained beside the index. Full contacts remain authoritative in
+/// `ContactsApp`/the CRDT and exact edit resources are materialised there.
+#[derive(Default)]
+struct ContactSearchLookup {
+    contacts: BTreeMap<ContactId, String>,
     groups: BTreeMap<String, String>,
+    /// Logical group identity -> observed display spellings and their counts.
+    /// This is compact metadata, not a second contact projection.
+    group_variants: BTreeMap<String, BTreeMap<String, usize>>,
+}
+
+struct ContactSearchSnapshot {
+    catalog: SearchCatalog,
+    lookup: ContactSearchLookup,
+}
+
+impl Default for ContactSearchSnapshot {
+    fn default() -> Self {
+        Self {
+            catalog: SearchCatalog::new(CONTACT_KIND),
+            lookup: ContactSearchLookup::default(),
+        }
+    }
 }
 
 impl ContactSearchProvider {
     /// Snapshot the current address book into a provider.
     pub fn new(store: &ContactStore) -> Self {
         let provider = Self {
-            catalog: SearchCatalog::new(CONTACT_KIND),
-            contacts: store
-                .contacts
-                .iter()
-                .cloned()
-                .map(|contact| (contact.id, contact))
-                .collect(),
-            groups: crate::actions::ordered_groups(&store.contacts)
-                .into_iter()
-                .map(|name| (crate::actions::group_resource_id(&name), name))
-                .collect(),
+            snapshot: Arc::new(Mutex::new(ContactSearchSnapshot::default())),
+            #[cfg(test)]
+            before_publish: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            full_refreshes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
-        // Browse pages use insertion order, so seed the catalogue in durable
-        // UUID order rather than incidental Automerge/map projection order.
-        for contact in provider.contacts.values() {
-            provider.index_contact(contact);
-        }
-        for group in provider.groups.values() {
-            provider.index_group(group);
+        if let Err(error) = provider.refresh(store) {
+            // A malformed collaborative projection must never bring down the
+            // app while it is opening. `ContactsApp::sync` retries this
+            // retained provider and surfaces the diagnostic as a toast.
+            tracing::error!(%error, "Contacts search index could not initialise");
         }
         provider
     }
 
-    fn index_contact(&self, contact: &Contact) {
-        let result = contact_result(contact);
-        let Some(address) = result.action_address() else {
-            return;
-        };
-        // NFC normalisation happens before the shared lowercasing/indexing
-        // layer, so a continuation cursor remains valid when callers switch
-        // between canonically equivalent Unicode spellings of the query.
-        let searchable = normalize_text(&searchable_fields(contact).join("\0"));
-        let _ = self.catalog.upsert(address.resource, searchable, result);
+    /// Atomically replace the complete retained index. On error the prior
+    /// generation and exact lookup remain intact, so Ctrl+K never advertises
+    /// a partial book; callers can surface the diagnostic to the user.
+    ///
+    /// # Errors
+    ///
+    /// Returns a catalogue error when the collaborative projection contains
+    /// malformed or duplicate canonical resource rows, leaving the last-good
+    /// snapshot published.
+    pub fn refresh(&self, store: &ContactStore) -> Result<(), ui::search::SearchCatalogError> {
+        let mut lookup = ContactSearchLookup::default();
+        let mut rows = Vec::with_capacity(store.contacts.len());
+        for contact in &store.contacts {
+            let result = contact_result(contact);
+            lookup.contacts.insert(contact.id, contact.display_name());
+            rows.push((
+                crate::actions::contact_resource_id(contact.id),
+                normalize_text(&searchable_fields(contact).join("\0")),
+                result,
+            ));
+        }
+        let mut ignored_affected_groups = BTreeSet::new();
+        for contact in &store.contacts {
+            update_group_variants(
+                &mut lookup.group_variants,
+                contact,
+                true,
+                &mut ignored_affected_groups,
+            );
+        }
+        for (key, variants) in &lookup.group_variants {
+            let Some(group) = variants.keys().next() else {
+                continue;
+            };
+            let resource = crate::actions::group_resource_id(key);
+            lookup.groups.insert(resource.clone(), group.clone());
+            rows.push((
+                resource,
+                normalize_text(&format!("group {group}")),
+                group_result(group),
+            ));
+        }
+        // Build every posting and gram before taking the public snapshot
+        // mutex. A 100k-contact refresh therefore leaves current searches and
+        // exact actions responsive until one short, atomic generation swap.
+        // A rejected replacement leaves the prior, last-good snapshot intact.
+        let catalog = SearchCatalog::new(CONTACT_KIND);
+        catalog.replace_all(rows)?;
+        #[cfg(test)]
+        let hook = self
+            .before_publish
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        #[cfg(test)]
+        if let Some(hook) = hook {
+            let _ = hook.built.send(());
+            let _ = hook.continue_after_build.recv();
+        }
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // `SearchCatalog::new` starts at generation zero. Rebase the completed
+        // replacement while holding the short publication boundary so a stale
+        // cursor never accidentally matches a different snapshot generation.
+        catalog.advance_after(snapshot.catalog.stats().generation)?;
+        snapshot.catalog = catalog;
+        snapshot.lookup = lookup;
+        #[cfg(test)]
+        self.full_refreshes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        drop(snapshot);
+        Ok(())
     }
 
-    fn index_group(&self, group: &str) {
-        let result = group_result(group);
-        let Some(address) = result.action_address() else {
-            return;
-        };
-        // Prefixing the name helps people discover the filter through generic
-        // queries such as "group work", while the normalised name keeps direct
-        // matching equivalent to the in-app group picker.
-        let searchable = normalize_text(&format!("group {group}"));
-        let _ = self.catalog.upsert(address.resource, searchable, result);
+    /// Update the retained catalogue for one locally-applied contact change.
+    /// The app only uses this when its in-memory CRDT projection was current
+    /// before dispatch; merges and bulk imports retain the full, atomic
+    /// [`Self::refresh`] path instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns a catalogue error if advancing the retained index would exceed
+    /// its generation space; callers then retain the prior searchable snapshot.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the atomic preflight, bounded catalogue mutation, and lookup publication must remain together so their fail-closed ordering is reviewable"
+    )]
+    pub(crate) fn apply_contact_change(
+        &self,
+        before: Option<&Contact>,
+        after: Option<&Contact>,
+    ) -> Result<(), ui::search::SearchCatalogError> {
+        let mut snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut affected_groups = BTreeSet::new();
+        if let Some(before) = before {
+            collect_group_keys(before, &mut affected_groups);
+        }
+        if let Some(after) = after {
+            collect_group_keys(after, &mut affected_groups);
+        }
+        let mut next_variants = affected_groups
+            .iter()
+            .filter_map(|key| {
+                snapshot
+                    .lookup
+                    .group_variants
+                    .get(key)
+                    .cloned()
+                    .map(|variants| (key.clone(), variants))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut ignored_groups = BTreeSet::new();
+        if let Some(before) = before {
+            update_group_variants(&mut next_variants, before, false, &mut ignored_groups);
+        }
+        if let Some(after) = after {
+            update_group_variants(&mut next_variants, after, true, &mut ignored_groups);
+        }
+
+        let contact_resource = after
+            .map(|contact| crate::actions::contact_resource_id(contact.id))
+            .or_else(|| before.map(|contact| crate::actions::contact_resource_id(contact.id)));
+        let mut group_updates = Vec::with_capacity(affected_groups.len());
+        for key in &affected_groups {
+            let resource = crate::actions::group_resource_id(key);
+            let group = next_variants
+                .get(key)
+                .and_then(|variants| variants.keys().next().cloned());
+            group_updates.push((key.clone(), resource, group));
+        }
+
+        let removing_contact = before.is_some() && after.is_none();
+        if removing_contact
+            && !snapshot
+                .catalog
+                .contains(contact_resource.as_deref().unwrap_or_default())
+        {
+            return Err(ui::search::SearchCatalogError::MissingResource);
+        }
+        if group_updates
+            .iter()
+            .any(|(_, resource, group)| group.is_none() && !snapshot.catalog.contains(resource))
+        {
+            return Err(ui::search::SearchCatalogError::MissingResource);
+        }
+        let inserts = usize::from(after.is_some_and(|_| {
+            contact_resource
+                .as_deref()
+                .is_some_and(|resource| !snapshot.catalog.contains(resource))
+        })) + group_updates
+            .iter()
+            .filter(|(_, resource, group)| group.is_some() && !snapshot.catalog.contains(resource))
+            .count();
+        snapshot.catalog.preflight_mutations(
+            usize::from(contact_resource.is_some()) + group_updates.len(),
+            inserts,
+        )?;
+
+        if let Some(after) = after {
+            snapshot.catalog.upsert(
+                crate::actions::contact_resource_id(after.id),
+                normalize_text(&searchable_fields(after).join("\0")),
+                contact_result(after),
+            )?;
+        } else if let Some(resource) = &contact_resource
+            && !snapshot.catalog.remove(resource)
+        {
+            return Err(ui::search::SearchCatalogError::MissingResource);
+        }
+        for (_, resource, group) in &group_updates {
+            if let Some(group) = group {
+                snapshot.catalog.upsert(
+                    resource.clone(),
+                    normalize_text(&format!("group {group}")),
+                    group_result(group),
+                )?;
+            } else if !snapshot.catalog.remove(resource) {
+                return Err(ui::search::SearchCatalogError::MissingResource);
+            }
+        }
+
+        if let Some(before) = before {
+            snapshot.lookup.contacts.remove(&before.id);
+        }
+        if let Some(after) = after {
+            snapshot
+                .lookup
+                .contacts
+                .insert(after.id, after.display_name());
+        }
+        for (key, resource, group) in group_updates {
+            if let Some(variants) = next_variants.remove(&key) {
+                snapshot.lookup.group_variants.insert(key, variants);
+            } else {
+                snapshot.lookup.group_variants.remove(&key);
+            }
+            if let Some(group) = group {
+                snapshot.lookup.groups.insert(resource, group);
+            } else {
+                snapshot.lookup.groups.remove(&resource);
+            }
+        }
+        drop(snapshot);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn pause_before_publish(
+        &self,
+        built: std::sync::mpsc::Sender<()>,
+        continue_after_build: std::sync::mpsc::Receiver<()>,
+    ) {
+        *self
+            .before_publish
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(RefreshPublicationHook {
+            built,
+            continue_after_build,
+        });
     }
 
     #[cfg(test)]
     fn stats(&self) -> ui::search::SearchCatalogStats {
-        self.catalog.stats()
+        self.snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .stats()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn full_refreshes(&self) -> usize {
+        self.full_refreshes
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn page_limits(work_budget: usize, result_limit: usize) -> (usize, usize) {
+        (
+            work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
+            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+        )
+    }
+}
+
+fn update_group_variants(
+    variants: &mut BTreeMap<String, BTreeMap<String, usize>>,
+    contact: &Contact,
+    add: bool,
+    affected: &mut BTreeSet<String>,
+) {
+    for entry in &contact.groups {
+        let name = entry.value.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let key = normalize_text(name);
+        affected.insert(key.clone());
+        if add {
+            *variants
+                .entry(key)
+                .or_default()
+                .entry(name.to_string())
+                .or_default() += 1;
+            continue;
+        }
+        let remove_key = {
+            let Some(spellings) = variants.get_mut(&key) else {
+                continue;
+            };
+            let Some(count) = spellings.get_mut(name) else {
+                continue;
+            };
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                spellings.remove(name);
+            }
+            spellings.is_empty()
+        };
+        if remove_key {
+            variants.remove(&key);
+        }
+    }
+}
+
+fn collect_group_keys(contact: &Contact, keys: &mut BTreeSet<String>) {
+    for entry in &contact.groups {
+        let name = entry.value.trim();
+        if !name.is_empty() {
+            keys.insert(normalize_text(name));
+        }
     }
 }
 
@@ -138,11 +433,22 @@ impl SearchProvider for ContactSearchProvider {
     }
 
     fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
+        Some(
+            self.snapshot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .catalog
+                .stats()
+                .generation,
+        )
     }
 
     fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
+        self.snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .cursor_is_current(cursor)
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
@@ -150,7 +456,14 @@ impl SearchProvider for ContactSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog.search_limited(&normalize_text(query), limit)
+        self.snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .search_limited(
+                &normalize_text(query),
+                limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+            )
     }
 
     fn search_page(
@@ -160,7 +473,11 @@ impl SearchProvider for ContactSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.catalog
+        let (work_budget, result_limit) = Self::page_limits(work_budget, result_limit);
+        self.snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
             .query_page(&normalize_text(query), cursor, work_budget, result_limit)
     }
 
@@ -168,15 +485,22 @@ impl SearchProvider for ContactSearchProvider {
         &self,
         address: &tilo_actions::ActionAddress,
     ) -> Option<tilo_actions::Resource> {
-        if let Some(raw_id) = address.resource.strip_prefix("contacts.contact:") {
+        let snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let resolved = if let Some(raw_id) = address.resource.strip_prefix("contacts.contact:") {
             let id = raw_id.parse::<ContactId>().ok()?;
-            let contact = self.contacts.get(&id)?;
-            return (address == &crate::actions::open_contact_address(id))
-                .then(|| crate::actions::contact_resource(contact));
-        }
-        let group = self.groups.get(&address.resource)?;
-        (address == &crate::actions::open_group_address(group))
-            .then(|| crate::actions::group_resource(group))
+            let label = snapshot.lookup.contacts.get(&id).cloned()?;
+            (address == &crate::actions::open_contact_address(id))
+                .then(|| crate::actions::contact_open_resource(id, &label))
+        } else {
+            let group = snapshot.lookup.groups.get(&address.resource).cloned()?;
+            (address == &crate::actions::open_group_address(&group))
+                .then(|| crate::actions::group_resource(&group))
+        };
+        drop(snapshot);
+        resolved
     }
 }
 
@@ -426,6 +750,37 @@ mod tests {
     }
 
     #[test]
+    fn paged_search_clamps_untrusted_work_and_result_limits() {
+        let contacts = (0..(DEFAULT_SEARCH_RESULT_LIMIT + 64) as u128)
+            .map(|index| Contact {
+                id: Uuid::from_u128(index + 1),
+                first: format!("Common bounded contact {index}"),
+                ..Contact::default()
+            })
+            .collect();
+        let provider = ContactSearchProvider::new(&ContactStore { contacts });
+        assert_eq!(
+            ContactSearchProvider::page_limits(usize::MAX, usize::MAX),
+            (DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT),
+            "both caller-provided limits are clamped before querying the retained catalogue"
+        );
+        let page = provider.search_page("common bounded", None, usize::MAX, usize::MAX);
+        assert!(
+            page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT,
+            "a caller cannot force unbounded candidate inspection"
+        );
+        assert!(
+            page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT,
+            "a caller cannot materialise an unbounded palette page"
+        );
+        assert!(
+            provider.search_limited("common bounded", usize::MAX).len()
+                <= DEFAULT_SEARCH_RESULT_LIMIT,
+            "the non-paged compatibility API uses the same result cap"
+        );
+    }
+
+    #[test]
     fn paged_unicode_query_continues_with_an_opaque_cursor() {
         let contacts = (0..3u128)
             .map(|index| Contact {
@@ -446,5 +801,231 @@ mod tests {
         assert_eq!(second.results.len(), 1);
         assert_ne!(second.results[0].action_id, first.results[0].action_id);
         assert_eq!(second.inspected, 1);
+    }
+
+    #[test]
+    fn failed_refresh_keeps_the_last_complete_catalogue_and_cursor() {
+        let store = store_with_samples();
+        let provider = ContactSearchProvider::new(&store);
+        let first = provider.search_page("", None, 1, 1);
+        let cursor = first.next.expect("the sample book has more than one row");
+        let before = provider.search("grace");
+
+        let duplicate = Contact {
+            id: store.contacts[0].id,
+            first: "Duplicate id must fail atomically".into(),
+            ..Contact::default()
+        };
+        let invalid = ContactStore {
+            contacts: vec![store.contacts[0].clone(), duplicate],
+        };
+        assert!(
+            provider.refresh(&invalid).is_err(),
+            "duplicate canonical resource ids reject the new generation"
+        );
+        assert_eq!(
+            provider.search("grace"),
+            before,
+            "last good results remain live"
+        );
+        assert!(
+            provider.action_directory_cursor_is_current(&cursor),
+            "a failed replacement leaves the prior generation/current cursor intact"
+        );
+    }
+
+    #[test]
+    fn successful_refresh_invalidates_the_predecessor_cursor() {
+        let mut store = store_with_samples();
+        let provider = ContactSearchProvider::new(&store);
+        let cursor = provider
+            .search_page("", None, 1, 1)
+            .next
+            .expect("the sample book has another browse result");
+        store.contacts[0].first = "Updated Ada".into();
+        provider
+            .refresh(&store)
+            .expect("valid complete replacement");
+        assert!(
+            !provider.action_directory_cursor_is_current(&cursor),
+            "a complete replacement must advance the retained generation"
+        );
+    }
+
+    #[test]
+    fn exhausted_incremental_delta_keeps_the_published_snapshot_intact() {
+        let store = store_with_samples();
+        let provider = ContactSearchProvider::new(&store);
+        let before = store.contacts[0].clone();
+        let address = crate::actions::open_contact_address(before.id);
+        let old_hits = provider.search(&before.display_name());
+        let old_resource = provider
+            .resolve_action_resource(&address)
+            .expect("the current contact resolves");
+        {
+            let snapshot = provider.snapshot.lock().expect("snapshot lock");
+            snapshot
+                .catalog
+                .advance_after(u64::MAX - 1)
+                .expect("the final generation is representable");
+        }
+        let mut after = before.clone();
+        after.first = "This update must not publish".into();
+
+        assert!(matches!(
+            provider.apply_contact_change(Some(&before), Some(&after)),
+            Err(ui::search::SearchCatalogError::GenerationExhausted)
+        ));
+        assert_eq!(provider.search(&before.display_name()), old_hits);
+        assert!(provider.search("this update must not publish").is_empty());
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("the prior exact resource remains available");
+        assert_eq!(resource.id, old_resource.id);
+        assert_eq!(resource.label, old_resource.label);
+    }
+
+    #[test]
+    fn search_and_exact_resolution_share_the_snapshot_publication_boundary() {
+        use std::sync::mpsc;
+
+        let store = store_with_samples();
+        let provider = ContactSearchProvider::new(&store);
+        let result = provider
+            .search("grace")
+            .into_iter()
+            .next()
+            .expect("sample contact is searchable");
+        let address = result
+            .action_address()
+            .expect("sample contact uses its canonical open address");
+
+        // Both operations lock the same snapshot that `refresh` holds while
+        // it replaces catalogue generation and exact labels. Neither may
+        // observe a halfway-published generation.
+        let publication = provider.snapshot.lock().expect("snapshot lock");
+        let (search_started_tx, search_started_rx) = mpsc::channel();
+        let (resolve_started_tx, resolve_started_rx) = mpsc::channel();
+        let (search_done_tx, search_done_rx) = mpsc::channel();
+        let (resolve_done_tx, resolve_done_rx) = mpsc::channel();
+        let search_provider = provider.clone();
+        let resolve_provider = provider.clone();
+        let search_worker = std::thread::spawn(move || {
+            search_started_tx.send(()).expect("test coordinator lives");
+            search_done_tx
+                .send(search_provider.search("grace"))
+                .expect("test coordinator lives");
+        });
+        let resolve_worker = std::thread::spawn(move || {
+            resolve_started_tx.send(()).expect("test coordinator lives");
+            resolve_done_tx
+                .send(resolve_provider.resolve_action_resource(&address).is_some())
+                .expect("test coordinator lives");
+        });
+
+        search_started_rx.recv().expect("search started");
+        resolve_started_rx.recv().expect("resolution started");
+
+        assert!(
+            matches!(search_done_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "a search cannot pass the publication boundary early"
+        );
+        assert!(
+            matches!(resolve_done_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+            "exact resolution cannot pair a new catalogue with old labels"
+        );
+        drop(publication);
+        assert_eq!(
+            search_done_rx
+                .recv()
+                .expect("search resumes after publication")[0]
+                .title,
+            "Grace Hopper"
+        );
+        assert!(
+            resolve_done_rx
+                .recv()
+                .expect("exact resolution resumes after publication")
+        );
+        search_worker.join().expect("search worker completes");
+        resolve_worker.join().expect("resolve worker completes");
+    }
+
+    #[test]
+    fn queries_stay_responsive_while_a_new_generation_builds_off_lock() {
+        use std::sync::mpsc;
+
+        let store = store_with_samples();
+        let provider = ContactSearchProvider::new(&store);
+        let grace = provider
+            .search("grace")
+            .into_iter()
+            .next()
+            .expect("current generation contains Grace");
+        let grace_address = grace
+            .action_address()
+            .expect("current generation has an exact open address");
+
+        let mut replacement = ContactStore::new();
+        for index in 0..4_097_u128 {
+            replacement.upsert(Contact {
+                id: Uuid::from_u128(index + 10_000),
+                first: format!("Replacement {index}"),
+                ..Contact::default()
+            });
+        }
+        let (built_tx, built_rx) = mpsc::channel();
+        let (continue_tx, continue_rx) = mpsc::channel();
+        provider.pause_before_publish(built_tx, continue_rx);
+        let refresh_provider = provider.clone();
+        let refresh = std::thread::spawn(move || refresh_provider.refresh(&replacement));
+
+        built_rx
+            .recv()
+            .expect("replacement postings were built before publication");
+        // The refresh worker is paused immediately before it acquires the
+        // snapshot mutex. Both requests must therefore complete against the
+        // still-current generation instead of waiting behind O(n) rebuild.
+        assert_eq!(provider.search("grace")[0].title, "Grace Hopper");
+        assert!(provider.resolve_action_resource(&grace_address).is_some());
+
+        continue_tx.send(()).expect("allow atomic publication");
+        refresh
+            .join()
+            .expect("refresh worker joins")
+            .expect("replacement index is valid");
+        assert!(provider.search("grace").is_empty());
+        assert_eq!(
+            provider.search("replacement 4096")[0].title,
+            "Replacement 4096"
+        );
+    }
+
+    #[test]
+    fn sensitive_search_terms_find_contacts_without_leaking_private_values() {
+        let mut contact = Contact::new();
+        contact.first = "Private person".into();
+        contact.emails.push(crate::model::Labeled::new(
+            "personal",
+            "very-private@example.test",
+        ));
+        contact.notes = "confidential medical note".into();
+        let provider = ContactSearchProvider::new(&ContactStore {
+            contacts: vec![contact],
+        });
+
+        for term in ["very-private@example.test", "confidential medical note"] {
+            let hit = provider
+                .search(term)
+                .into_iter()
+                .next()
+                .expect("private field is searchable");
+            assert!(!hit.title.contains(term));
+            assert!(
+                hit.subtitle
+                    .as_deref()
+                    .is_none_or(|subtitle| !subtitle.contains(term))
+            );
+        }
     }
 }
