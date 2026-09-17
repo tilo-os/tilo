@@ -2,8 +2,8 @@
 # Cap'n Proto and the pinned Rust/MSVC toolchain must be available on PATH.
 [CmdletBinding()]
 param(
-    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos')]
-    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos'),
+    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor')]
+    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor'),
     [ValidateSet('dev', 'release')]
     [string]$Profile = 'dev'
 )
@@ -81,6 +81,7 @@ foreach ($application in $applications) {
         'file-explorer' { 'Files' }
         'word-processor' { 'Word Processor' }
         'image-editor' { 'Image Editor' }
+        'hex-editor' { 'Hex Editor' }
         'pdf-viewer' { 'PDF Viewer' }
         'ebook' { 'Books' }
         default { (Get-Culture).TextInfo.ToTitleCase($application) }
