@@ -3661,6 +3661,22 @@ struct UtilityBarsGeometry {
     top: f64,
 }
 
+struct PageSheetInput<'a> {
+    header: &'a [BlockView],
+    footer: &'a [BlockView],
+    edit_region: Region,
+    index: usize,
+    scroll_y: f64,
+}
+
+struct PageContentInput<'a> {
+    laid: &'a [Laid],
+    cache: &'a HashMap<String, (u64, RichTextLayout)>,
+    multi_selection: bool,
+    spell_by_block: &'a HashMap<String, Vec<(usize, usize)>>,
+    note_numbers: &'a HashMap<String, usize>,
+}
+
 impl WordProcessorWidget {
     /// Toggle a layout-edit mode from a chip click.
     fn toggle_layout_mode(&mut self, mode: LayoutMode) {
@@ -7160,11 +7176,13 @@ impl WordProcessorWidget {
                 scene,
                 text_renderer,
                 fg,
-                &header,
-                &footer,
-                edit_region,
-                i,
-                sy,
+                PageSheetInput {
+                    header: &header,
+                    footer: &footer,
+                    edit_region,
+                    index: i,
+                    scroll_y: sy,
+                },
             );
         }
         self.header = header;
@@ -7185,18 +7203,20 @@ impl WordProcessorWidget {
     /// One page sheet (shadow + paper), its header/footer running bands (with
     /// the active edit-context band highlighted), and the default "Page N"
     /// indicator when there's no footer of its own.
-    #[allow(clippy::too_many_arguments)]
     fn draw_page_sheet(
         &mut self,
         scene: &mut Scene,
         text_renderer: &mut TextRenderer,
         fg: &FrameGeometry,
-        header: &[BlockView],
-        footer: &[BlockView],
-        edit_region: Region,
-        i: usize,
-        sy: f64,
+        input: PageSheetInput<'_>,
     ) {
+        let PageSheetInput {
+            header,
+            footer,
+            edit_region,
+            index: i,
+            scroll_y: sy,
+        } = input;
         let ptop = fg.page_top + num::f64_of_usize(i) * fg.page_pitch - sy;
         let sheet = Rect::new(fg.page_x, ptop, fg.page_x + fg.page_w, ptop + fg.letter_h);
         chrome::page::draw(
@@ -7340,18 +7360,20 @@ impl WordProcessorWidget {
     /// spell-check squiggles, footnote superscripts) and the caret for every
     /// laid item. Collects the footnote/comment/change-card bookkeeping that
     /// the passes after this one render.
-    #[allow(clippy::too_many_arguments)]
     fn draw_page_content(
         &mut self,
         scene: &mut Scene,
         fg: &FrameGeometry,
         text_renderer: &mut TextRenderer,
-        laid: &[Laid],
-        new_cache: &HashMap<String, (u64, RichTextLayout)>,
-        multi_sel: bool,
-        spell_by_block: &HashMap<String, Vec<(usize, usize)>>,
-        note_nums: &HashMap<String, usize>,
+        input: PageContentInput<'_>,
     ) -> Pass2Markers {
+        let PageContentInput {
+            laid,
+            cache: new_cache,
+            multi_selection: multi_sel,
+            spell_by_block,
+            note_numbers: note_nums,
+        } = input;
         let mut page_notes: HashMap<usize, Vec<usize>> = HashMap::new();
         let mut comment_markers: Vec<(String, f64, f64)> = Vec::new();
         let mut change_markers: Vec<(String, f64, f64)> = Vec::new();
@@ -9584,11 +9606,13 @@ impl Widget for WordProcessorWidget {
             scene,
             &fg,
             text_renderer,
-            &laid,
-            &new_cache,
-            multi_sel,
-            &spell_by_block,
-            &note_nums,
+            PageContentInput {
+                laid: &laid,
+                cache: &new_cache,
+                multi_selection: multi_sel,
+                spell_by_block: &spell_by_block,
+                note_numbers: &note_nums,
+            },
         );
         self.review.draw(
             scene,
