@@ -25,6 +25,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
+use vello::peniko::{BlendMode, Fill};
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -48,8 +49,8 @@ const LIST_W: f64 = 340.0;
 const ROW_H: f64 = 64.0;
 const SIDEBAR_ROW_H: f64 = 32.0;
 const SEARCH_H: f64 = 52.0;
-const BODY_FONT: f32 = 13.5;
-const BODY_LINE: f64 = 20.0;
+pub(crate) const BODY_FONT: f32 = 13.5;
+pub(crate) const BODY_LINE: f64 = 20.0;
 
 /// Below this allocated width (logical px) the primary sidebar (smart
 /// folders + folders + tags) stops sitting beside the list and detail and
@@ -74,6 +75,84 @@ const TOGGLE_PAD: f64 = 10.0;
 /// line when the toggle floats beside the search field.
 const SEARCH_TOP: f64 = 10.0;
 const SEARCH_ROW_H: f64 = SEARCH_H - 16.0;
+
+/// Type sizes the list row stacks: title over a monospace preview line.
+const ROW_TITLE_FONT: f32 = 14.5;
+const ROW_SUB_FONT: f32 = 12.0;
+/// Type size of the sidebar rows, the search field and the toolbar buttons.
+const CONTROL_FONT: f32 = 14.0;
+const BUTTON_FONT: f32 = 13.0;
+
+/// Vertical pitches of every text-bearing band, derived once per frame from
+/// the measured line boxes of the type sizes each band stacks. The `*_H`
+/// constants above are the 1× design; each band grows by exactly the extra
+/// height its lines gain at the current accessibility scale, so paint and the
+/// per-frame hit rects always agree. At 1× this is [`Metrics::ONE`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Metrics {
+    /// List row: title line + preview line.
+    row_h: f64,
+    /// Sidebar folder/tag row (one `CONTROL_FONT` line).
+    sidebar_row_h: f64,
+    /// Search field band (one `CONTROL_FONT` line) and the floating toggle
+    /// that sits level with it.
+    search_row_h: f64,
+    toggle: f64,
+    /// Growth of one `BUTTON_FONT` line — the "+ New" chip, toolbar buttons
+    /// and the list header row add this.
+    button_extra: f64,
+    /// Measured line boxes the row and detail painters stack.
+    title_line: f64,
+    sub_line: f64,
+    /// Detail title (24 px) and description (14 px) line boxes.
+    detail_title_line: f64,
+    detail_desc_line: f64,
+    /// Measured monospace line of the code card (`BODY_LINE` at 1×).
+    body_line: f64,
+    /// Growth of one 12 px pill label — the meta pills add this.
+    pill_extra: f64,
+}
+
+impl Metrics {
+    /// The 1× design metrics — also what the constructor seeds before the
+    /// first frame has measured anything.
+    const ONE: Self = Self {
+        row_h: ROW_H,
+        sidebar_row_h: SIDEBAR_ROW_H,
+        search_row_h: SEARCH_ROW_H,
+        toggle: TOGGLE_SIZE,
+        button_extra: 0.0,
+        title_line: ROW_TITLE_FONT as f64 * 1.25,
+        sub_line: ROW_SUB_FONT as f64 * 1.25,
+        detail_title_line: 24.0 * 1.25,
+        detail_desc_line: 14.0 * 1.25,
+        body_line: BODY_LINE,
+        pill_extra: 0.0,
+    };
+
+    /// Measure with the renderer that will paint this frame.
+    fn measure(tr: &mut TextRenderer) -> Self {
+        let control = draw::line_growth(tr, CONTROL_FONT);
+        Self {
+            row_h: ROW_H + draw::line_growth(tr, ROW_TITLE_FONT) + draw::line_growth(tr, ROW_SUB_FONT),
+            sidebar_row_h: SIDEBAR_ROW_H + control,
+            search_row_h: SEARCH_ROW_H + control,
+            toggle: TOGGLE_SIZE + control,
+            button_extra: draw::line_growth(tr, BUTTON_FONT),
+            title_line: draw::line_box(tr, ROW_TITLE_FONT),
+            sub_line: draw::mono_line_box(tr, ROW_SUB_FONT),
+            detail_title_line: draw::line_box(tr, 24.0),
+            detail_desc_line: draw::line_box(tr, 14.0),
+            body_line: BODY_LINE + draw::line_growth(tr, BODY_FONT),
+            pill_extra: draw::line_growth(tr, 12.0),
+        }
+    }
+
+    /// Height of the list's search band (`SEARCH_H` at 1×).
+    fn search_h(self) -> f64 {
+        self.search_row_h + (SEARCH_H - SEARCH_ROW_H)
+    }
+}
 
 /// What kind of toast is currently showing (auto-dismisses on next event
 /// tick after a short hold — for the headless shot it simply persists).
@@ -118,6 +197,9 @@ pub struct SnippetsApp {
     /// an overlay flap over the content behind a scrim on narrow ones.
     /// Defaults open when docked, closed (summon-on-demand) when overlay.
     sidebar: FlapState,
+    /// Text-derived pitches for this frame (rows, controls, header bands),
+    /// measured in `draw`; the 1× design values until the first frame.
+    m: Metrics,
     /// Single-pane master-detail push for the very-narrow case: animates
     /// the list↔detail slide. `reveal == 1` means the detail is shown.
     push: FlapState,
@@ -222,6 +304,7 @@ impl SnippetsApp {
             hit: Vec::new(),
             scroll: 0.0,
             sidebar: FlapState::open_when_docked(),
+            m: Metrics::ONE,
             push: FlapState::closed_by_default(),
             push_pane: PushPane::Master,
             settled_layout: false,
@@ -852,6 +935,9 @@ impl ui::widget::Widget for SnippetsApp {
         _presence: &PresenceCtx,
     ) {
         self.hit.clear();
+        // Every text-bearing band takes its pitch from this frame's measured
+        // line boxes; the hit rects recorded below read the same values.
+        self.m = Metrics::measure(tr);
         let c = &theme.tokens.colors;
         // Whole-window background.
         draw::fill_rect(scene, t, self.rect, c.surfaces.base);
@@ -888,8 +974,18 @@ impl ui::widget::Widget for SnippetsApp {
         // The hamburger toggle is shown whenever the sidebar isn't fully
         // docked-open, so a collapsed rail can be summoned and an overlay
         // rail dismissed. It records its own hit region.
-        if self.show_toggle() {
-            self.draw_toggle(scene, t, theme, band);
+        let presence = self.toggle_presence();
+        if presence > 0.001 {
+            // Fade with the docked rail's ease instead of popping at its end.
+            let fading = presence < 0.999;
+            if fading {
+                let clip = self.toggle_rect(band).inflate(2.0, 2.0);
+                scene.push_layer(Fill::NonZero, BlendMode::default(), presence as f32, t, &clip);
+            }
+            self.draw_toggle(scene, t, theme, band, presence);
+            if fading {
+                scene.pop_layer();
+            }
         }
 
         if let Some(toast) = &self.toast {
@@ -1152,34 +1248,48 @@ impl SnippetsApp {
     /// appears whenever the primary sidebar isn't fully docked-open (so it
     /// can be summoned / dismissed), or while the push stack shows the detail
     /// (so the user can go Back to the list).
-    fn show_toggle(&self) -> bool {
-        let sidebar_collapsed =
-            self.sidebar.reveal() < 0.999 || self.sidebar_layout() == SplitLayout::Overlay;
+    /// Eased visibility of the floating toggle in `0..=1`. As an overlay
+    /// rail's summoner, or as the Back chevron of a pushed detail pane, it is
+    /// simply present. Beside a docked rail it fades out as the rail eases
+    /// open and back in as it collapses — the same eased reveal the rail
+    /// itself follows — so it never pops on the last frame of the animation,
+    /// and the search field's leading inset can ease with it.
+    fn toggle_presence(&self) -> f64 {
         let push_in_detail = self.is_push_layout() && self.push.reveal() > 0.5;
-        sidebar_collapsed || push_in_detail
+        if push_in_detail || self.sidebar_layout() == SplitLayout::Overlay {
+            return 1.0;
+        }
+        (1.0 - self.sidebar.reveal()).clamp(0.0, 1.0)
     }
 
     /// The floating toggle's rect inside `band`: inset from the left edge and
     /// vertically centred on the list's search row, so it sits level with the
     /// field it floats beside.
-    fn toggle_rect(band: Rect) -> Rect {
+    fn toggle_rect(&self, band: Rect) -> Rect {
         let bx = band.x0 + TOGGLE_PAD;
-        let by = band.y0 + SEARCH_TOP + (SEARCH_ROW_H - TOGGLE_SIZE) / 2.0;
-        Rect::new(bx, by, bx + TOGGLE_SIZE, by + TOGGLE_SIZE)
+        let by = band.y0 + SEARCH_TOP + (self.m.search_row_h - self.m.toggle) / 2.0;
+        Rect::new(bx, by, bx + self.m.toggle, by + self.m.toggle)
     }
 
     /// Draw the top-left toggle button + glyph and record its hit region.
     /// In single-pane push showing the detail it's a Back chevron (returns to
     /// the list); otherwise it's a hamburger (open) / close-X (dismiss the
     /// overlay sidebar).
-    fn draw_toggle(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, band: Rect) {
+    fn draw_toggle(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        band: Rect,
+        presence: f64,
+    ) {
         let c = &theme.tokens.colors;
-        let btn = Self::toggle_rect(band);
+        let btn = self.toggle_rect(band);
         draw::fill_round(scene, t, btn, theme.radii_md(), c.surfaces.raised);
         draw::stroke_round(scene, t, btn, theme.radii_md(), 1.0, c.border_standard);
 
-        let cx = btn.x0 + TOGGLE_SIZE / 2.0;
-        let cy = btn.y0 + TOGGLE_SIZE / 2.0;
+        let cx = btn.center().x;
+        let cy = btn.center().y;
         let push_back = self.is_push_layout() && self.push.reveal() > 0.5;
         let overlay_open =
             self.sidebar_layout() == SplitLayout::Overlay && self.sidebar.reveal() > 0.5;
@@ -1203,7 +1313,9 @@ impl SnippetsApp {
                 1.8,
                 c.text_primary,
             );
-            self.record(btn, Action::PushBack);
+            if presence > 0.001 {
+                self.record(btn, Action::PushBack);
+            }
         } else if overlay_open {
             // Close "X" when the overlay sidebar is showing.
             let r = 6.0;
@@ -1223,7 +1335,9 @@ impl SnippetsApp {
                 1.8,
                 c.text_primary,
             );
-            self.record(btn, Action::ToggleSidebar);
+            if presence > 0.001 {
+                self.record(btn, Action::ToggleSidebar);
+            }
         } else {
             // Three-line hamburger to summon the sidebar.
             let half = 7.0;
@@ -1238,7 +1352,9 @@ impl SnippetsApp {
                     c.text_primary,
                 );
             }
-            self.record(btn, Action::ToggleSidebar);
+            if presence > 0.001 {
+                self.record(btn, Action::ToggleSidebar);
+            }
         }
     }
 
@@ -1620,7 +1736,7 @@ impl SnippetsApp {
         // folder list starts at the top; as an overlay flap, keep a small band
         // so the top-left close toggle floating over this corner has room.
         let mut y = if self.sidebar_layout() == SplitLayout::Overlay {
-            area.y0 + TOGGLE_SIZE + 14.0
+            area.y0 + self.m.toggle + 14.0
         } else {
             area.y0 + 14.0
         };
@@ -1646,7 +1762,7 @@ impl SnippetsApp {
                 0,
             );
             self.record(row, Action::Select(Selection::Smart(smart)));
-            y += SIDEBAR_ROW_H;
+            y += self.m.sidebar_row_h;
         }
 
         y += 10.0;
@@ -1671,7 +1787,7 @@ impl SnippetsApp {
                 1,
             );
             self.record(row, Action::Select(Selection::Folder(folder.clone())));
-            y += SIDEBAR_ROW_H;
+            y += self.m.sidebar_row_h;
         }
 
         y += 10.0;
@@ -1682,7 +1798,7 @@ impl SnippetsApp {
             let label = format!("#{tag}");
             let row = self.sidebar_row(scene, t, tr, theme, area, y, &label, Some(cnt), active, 1);
             self.record(row, Action::Select(Selection::Tag(tag.clone())));
-            y += SIDEBAR_ROW_H;
+            y += self.m.sidebar_row_h;
         }
     }
 
@@ -1702,7 +1818,7 @@ impl SnippetsApp {
     ) -> Rect {
         let c = &theme.tokens.colors;
         let pad = 10.0;
-        let row = Rect::new(area.x0 + 8.0, y, area.x1 - 8.0, y + SIDEBAR_ROW_H - 4.0);
+        let row = Rect::new(area.x0 + 8.0, y, area.x1 - 8.0, y + self.m.sidebar_row_h - 4.0);
         if active {
             draw::fill_round(scene, t, row, theme.radii_md(), c.accent[5]);
         } else if row.contains(self.last_mouse) {
@@ -1710,7 +1826,7 @@ impl SnippetsApp {
         }
         let fg = if active { c.text_primary } else { c.neutral[7] };
         let x = row.x0 + pad + f64::from(indent) * 12.0;
-        let ty = y + (SIDEBAR_ROW_H - 4.0 - 15.0) / 2.0;
+        let ty = y + (row.height() - draw::line_box(tr, CONTROL_FONT)) / 2.0;
         draw::text(scene, tr, t, label, x, ty, 14.0, fg, TextWeight::Medium);
         if let Some(shown) = count {
             let count_label = shown.to_string();
@@ -1748,17 +1864,16 @@ impl SnippetsApp {
         // this corner, the field starts past it instead of underneath it —
         // the same rect feeds the shared input's layout and the hit region,
         // so paint and pointer routing agree.
+        // The field's leading inset eases with the toggle's presence, so it
+        // slides beside the fading toggle instead of stepping 44 px on the
+        // last frame of the rail's animation.
         let pad = 12.0;
-        let lead = if self.show_toggle() {
-            Self::toggle_rect(area).x1 - area.x0 + pad
-        } else {
-            pad
-        };
+        let lead = pad + (self.toggle_rect(area).x1 - area.x0) * self.toggle_presence();
         let search_rect = Rect::new(
             area.x0 + lead,
             area.y0 + SEARCH_TOP,
             area.x1 - pad,
-            area.y0 + SEARCH_TOP + SEARCH_ROW_H,
+            area.y0 + SEARCH_TOP + self.m.search_row_h,
         );
         self.search_rect = search_rect;
         let focused = self.search_input.is_focused();
@@ -1805,7 +1920,7 @@ impl SnippetsApp {
         }
 
         // "+ New" header row with the result count.
-        let header_y = area.y0 + SEARCH_H + 4.0;
+        let header_y = area.y0 + self.m.search_h() + 4.0;
         let count_label = format!("{} snippets", self.visible.len());
         draw::text(
             scene,
@@ -1819,12 +1934,15 @@ impl SnippetsApp {
             TextWeight::Medium,
         );
         let new_label = "+ New";
-        let nw = f64::from(tr.measure(new_label, 13.0, None).0) + 20.0;
+        let (nw, nh) = tr.measure(new_label, BUTTON_FONT, None);
+        let nw = f64::from(nw) + 20.0;
+        // The chip is the 1× 22 px grown by its label line; the label centres
+        // on its measured box.
         let new_rect = Rect::new(
             area.x1 - pad - nw,
             header_y - 4.0,
             area.x1 - pad,
-            header_y + 18.0,
+            header_y + 18.0 + self.m.button_extra,
         );
         draw::fill_round(scene, t, new_rect, theme.radii_md(), c.accent[5]);
         draw::text(
@@ -1833,29 +1951,29 @@ impl SnippetsApp {
             t,
             new_label,
             new_rect.x0 + 10.0,
-            new_rect.y0 + 4.0,
-            13.0,
+            new_rect.y0 + (new_rect.height() - f64::from(nh)) / 2.0,
+            BUTTON_FONT,
             c.text_primary,
             TextWeight::Semibold,
         );
         self.record(new_rect, Action::NewSnippet);
 
         // Snippet rows (scrollable region).
-        let list_top = header_y + 26.0;
+        let list_top = header_y + 26.0 + self.m.button_extra;
         let mut y = list_top - self.scroll;
         let ids = self.visible.clone();
         for id in ids {
             let Some(s) = self.library.get(id).cloned() else {
                 continue;
             };
-            let row = Rect::new(area.x0 + 6.0, y, area.x1 - 6.0, y + ROW_H - 6.0);
+            let row = Rect::new(area.x0 + 6.0, y, area.x1 - 6.0, y + self.m.row_h - 6.0);
             // Cull rows scrolled out of view but still record the hit so
             // clicks resolve; skip drawing if fully off-pane.
             if row.y1 >= list_top - 4.0 && row.y0 <= area.y1 {
                 self.draw_list_row(scene, t, tr, theme, row, &s);
             }
             self.record(row, Action::OpenSnippet(id));
-            y += ROW_H;
+            y += self.m.row_h;
         }
 
         if self.visible.is_empty() {
@@ -1880,7 +1998,7 @@ impl SnippetsApp {
         let library_empty = self.library.snippets.is_empty();
         let y = Self::draw_empty_glyph_and_copy(scene, t, tr, theme, area, list_top, library_empty);
         if library_empty {
-            self.draw_empty_new_snippet_cta(scene, t, tr, theme, cx, y);
+            self.draw_empty_new_snippet_cta(scene, t, tr, theme, cx, y, area.width() - 24.0);
         } else {
             self.draw_empty_clear_search_cta(scene, t, tr, theme, cx, y);
         }
@@ -1920,14 +2038,15 @@ impl SnippetsApp {
             c.border_standard,
         );
         let glyph = "{ }";
-        let gw = f64::from(tr.measure(glyph, 22.0, None).0);
+        let (gw, gh) = tr.measure(glyph, 22.0, None);
+        let gw = f64::from(gw);
         draw::text(
             scene,
             tr,
             t,
             glyph,
             cx - gw / 2.0,
-            top + 15.0,
+            top + (tile - f64::from(gh)) / 2.0,
             22.0,
             c.accent[6],
             TextWeight::Bold,
@@ -1945,7 +2064,8 @@ impl SnippetsApp {
                 "Try a different search, or clear the filter.",
             )
         };
-        let hw = f64::from(tr.measure(headline, 17.0, None).0);
+        let (hw, hh) = tr.measure(headline, 17.0, None);
+        let hw = f64::from(hw);
         draw::text(
             scene,
             tr,
@@ -1957,10 +2077,12 @@ impl SnippetsApp {
             c.text_primary,
             TextWeight::Bold,
         );
-        y += 26.0;
+        // Stacked lines step on their measured boxes (26 / 19 px at 1×).
+        y += f64::from(hh) + 4.75;
         // Sub-copy, wrapped to the available width so it never clips.
         for line in wrap_center(sub, tr, 13.0, area.width() - 48.0) {
-            let lw = f64::from(tr.measure(&line, 13.0, None).0);
+            let (lw, lh) = tr.measure(&line, 13.0, None);
+            let lw = f64::from(lw);
             draw::text(
                 scene,
                 tr,
@@ -1972,7 +2094,7 @@ impl SnippetsApp {
                 c.text_dim,
                 TextWeight::Regular,
             );
-            y += 19.0;
+            y += f64::from(lh) + 2.75;
         }
         y + 12.0
     }
@@ -1987,12 +2109,16 @@ impl SnippetsApp {
         theme: &Theme,
         cx: f64,
         y: f64,
+        max_w: f64,
     ) {
         let c = &theme.tokens.colors;
         let label = "New snippet";
-        let lw = f64::from(tr.measure(label, 13.5, None).0);
+        let (lw, lh) = tr.measure(label, 13.5, None);
+        let lw = f64::from(lw);
         let bw = lw + 34.0;
-        let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 36.0);
+        // 36 px at 1×, grown by the label's measured line growth.
+        let bh = 36.0 + draw::line_growth(tr, 13.5);
+        let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + bh);
         let hovered = btn.contains(self.last_mouse);
         draw::fill_round(
             scene,
@@ -2007,7 +2133,7 @@ impl SnippetsApp {
             t,
             label,
             btn.x0 + 17.0,
-            btn.y0 + (36.0 - 14.0) / 2.0,
+            btn.y0 + (bh - f64::from(lh)) / 2.0,
             13.5,
             c.text_primary,
             TextWeight::Semibold,
@@ -2015,7 +2141,13 @@ impl SnippetsApp {
         self.record(btn, Action::NewSnippet);
         // A quiet hint at the search grammar.
         let hint_y = btn.y1 + 22.0;
-        let hint = "Tip: filter with  language:rust  or  tag:k8s";
+        // Elided to the list's width so it never runs off the pane.
+        let hint = tr.elide_to_width(
+            "Tip: filter with  language:rust  or  tag:k8s",
+            11.5,
+            max_w as f32,
+        );
+        let hint = hint.as_str();
         let hw = f64::from(tr.measure(hint, 11.5, None).0);
         draw::text(
             scene,
@@ -2043,9 +2175,11 @@ impl SnippetsApp {
     ) {
         let c = &theme.tokens.colors;
         let label = "Clear search";
-        let lw = f64::from(tr.measure(label, 13.0, None).0);
+        let (lw, lh) = tr.measure(label, 13.0, None);
+        let lw = f64::from(lw);
         let bw = lw + 30.0;
-        let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 34.0);
+        let bh = 34.0 + draw::line_growth(tr, 13.0);
+        let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + bh);
         let hovered = btn.contains(self.last_mouse);
         draw::fill_round(
             scene,
@@ -2065,7 +2199,7 @@ impl SnippetsApp {
             t,
             label,
             btn.x0 + 15.0,
-            btn.y0 + (34.0 - 14.0) / 2.0,
+            btn.y0 + (bh - f64::from(lh)) / 2.0,
             13.0,
             c.text_primary,
             TextWeight::Semibold,
@@ -2091,29 +2225,56 @@ impl SnippetsApp {
             draw::fill_round(scene, t, row, theme.radii_md(), c.lift(0.35));
         }
         let pad = 12.0;
-        // Language sigil badge.
+        // The row stacks the title line over the preview line (10 px top pad,
+        // 1.875 px between at 1×); every band below reads the measured boxes
+        // so the two lines and the badge never collide at any text scale.
+        let title_top = row.y0 + 10.0;
+        let sub_top = title_top + self.m.title_line + 1.875;
+        // Language sigil badge: sized from its measured label (30 × 20 px at
+        // 1×) and centred on the title line.
+        let sig = s.language.sigil();
+        let (sw, sh) = tr.measure(sig, 11.0, None);
+        let badge_h = f64::from(sh) + 6.25;
+        let badge_w = (f64::from(sw) + 12.0).max(30.0);
+        let badge_top = title_top + (self.m.title_line - badge_h) / 2.0 + 0.9;
         let badge = Rect::new(
             row.x0 + pad,
-            row.y0 + 12.0,
-            row.x0 + pad + 30.0,
-            row.y0 + 32.0,
+            badge_top,
+            row.x0 + pad + badge_w,
+            badge_top + badge_h,
         );
         draw::fill_round(scene, t, badge, 6.0, lang_tint(theme, s.language));
-        let sig = s.language.sigil();
-        let sw = f64::from(tr.measure(sig, 11.0, None).0);
         draw::text(
             scene,
             tr,
             t,
             sig,
-            badge.x0 + (badge.width() - sw) / 2.0,
-            badge.y0 + 3.0,
+            badge.x0 + (badge.width() - f64::from(sw)) / 2.0,
+            badge.y0 + (badge_h - f64::from(sh)) / 2.0,
             11.0,
             c.neutral[0],
             TextWeight::Bold,
         );
 
         let tx = badge.x1 + 10.0;
+
+        // Trailing usage / placeholder hint — measured first so the title is
+        // elided to the width that remains beside it instead of running
+        // underneath it when the row is narrow or the text is large.
+        let hint = if s.has_placeholders() {
+            format!("{} vars", s.placeholders().len())
+        } else if s.uses > 0 {
+            format!("{}×", s.uses)
+        } else {
+            String::new()
+        };
+        let (hw, hh) = tr.measure(&hint, 11.0, None);
+        let hint_reserve = if hint.is_empty() {
+            0.0
+        } else {
+            f64::from(hw) + 10.0
+        };
+
         // Title (+ star if favorite).
         let title = if s.favorite {
             format!("★ {}", s.title)
@@ -2125,50 +2286,50 @@ impl SnippetsApp {
         } else {
             c.text_primary
         };
+        let title_max_w = row.x1 - pad - hint_reserve - tx;
+        let title = tr.elide_to_width_weighted(
+            &title,
+            ROW_TITLE_FONT,
+            title_max_w as f32,
+            TextWeight::Semibold,
+        );
         draw::text(
             scene,
             tr,
             t,
             &title,
             tx,
-            row.y0 + 10.0,
-            14.5,
+            title_top,
+            ROW_TITLE_FONT,
             tcolor,
             TextWeight::Semibold,
         );
 
-        // Subtitle: first body line, dimmed and clipped.
+        // Subtitle: first body line, dimmed and elided to the row's width.
         let first_line = s.body.lines().next().unwrap_or("").trim();
-        let preview = clip(first_line, 42);
+        let preview = draw::mono_fit(tr, &clip(first_line, 120), ROW_SUB_FONT, row.x1 - pad - tx);
         draw::mono(
             scene,
             tr,
             t,
             &preview,
             tx,
-            row.y0 + 30.0,
-            12.0,
+            sub_top,
+            ROW_SUB_FONT,
             c.text_dim,
             TextWeight::Regular,
         );
 
-        // Trailing usage / placeholder hint.
-        let hint = if s.has_placeholders() {
-            format!("{} vars", s.placeholders().len())
-        } else if s.uses > 0 {
-            format!("{}×", s.uses)
-        } else {
-            String::new()
-        };
         if !hint.is_empty() {
-            let hw = f64::from(tr.measure(&hint, 11.0, None).0);
+            // Level with the title's measured line.
+            let hint_top = title_top + (self.m.title_line - f64::from(hh)) / 2.0;
             draw::text(
                 scene,
                 tr,
                 t,
                 &hint,
-                row.x1 - pad - hw,
-                row.y0 + 11.0,
+                row.x1 - pad - f64::from(hw),
+                hint_top,
                 11.0,
                 c.text_dim,
                 TextWeight::Medium,
@@ -2203,7 +2364,7 @@ impl SnippetsApp {
         let card = Rect::new(area.x0 + pad, y, area.x1 - pad, area.y1 - 20.0);
         draw::fill_round(scene, t, card, theme.radii_md(), c.neutral[0]);
         draw::stroke_round(scene, t, card, theme.radii_md(), 1.0, c.border_standard);
-        Self::draw_code(scene, t, tr, theme, card, &snippet);
+        Self::draw_code(scene, t, tr, theme, card, &snippet, self.m.body_line);
     }
 
     /// The empty-detail placeholder shown when nothing is selected.
@@ -2259,7 +2420,7 @@ impl SnippetsApp {
         // chevron floats over this corner, so indent the title past it.
         let back_shown = self.is_push_layout() && self.push.reveal() > 0.5;
         let title_x = if back_shown {
-            area.x0 + pad + TOGGLE_SIZE
+            area.x0 + pad + self.m.toggle
         } else {
             area.x0 + pad
         };
@@ -2274,7 +2435,8 @@ impl SnippetsApp {
             c.text_primary,
             TextWeight::Bold,
         );
-        y += 36.0;
+        // Stacked lines step by their measured boxes (36 / 26 px at 1×).
+        y += self.m.detail_title_line + 6.0;
 
         y = self.draw_detail_meta_row(scene, t, tr, theme, area, y, open, snippet);
 
@@ -2291,7 +2453,7 @@ impl SnippetsApp {
                 c.text_dim,
                 TextWeight::Regular,
             );
-            y += 26.0;
+            y += self.m.detail_desc_line + 8.5;
         }
         y
     }
@@ -2323,7 +2485,7 @@ impl SnippetsApp {
             snippet.language.label(),
             x,
             y,
-            22.0,
+            22.0 + self.m.pill_extra,
             12.0,
             c.neutral[0],
             lang_tint(theme, snippet.language),
@@ -2340,7 +2502,7 @@ impl SnippetsApp {
                 &snippet.folder,
                 x,
                 y,
-                22.0,
+                22.0 + self.m.pill_extra,
                 12.0,
                 c.text_dim,
                 c.neutral[2],
@@ -2356,7 +2518,7 @@ impl SnippetsApp {
                 &label,
                 x,
                 y,
-                22.0,
+                22.0 + self.m.pill_extra,
                 12.0,
                 c.accent[7],
                 c.accent[1],
@@ -2364,7 +2526,7 @@ impl SnippetsApp {
             self.record(tp, Action::Select(Selection::Tag(tag.clone())));
             x = tp.x1 + 8.0;
         }
-        y + 34.0
+        y + 34.0 + self.m.pill_extra
     }
 
     /// Copy / Expand / Favorite / Duplicate / Delete. Returns the y cursor
@@ -2386,75 +2548,51 @@ impl SnippetsApp {
     ) -> f64 {
         let pad = 28.0;
         let y = y + 4.0;
-        let mut bx = area.x0 + pad;
         let primary_label = if snippet.has_placeholders() {
             "Fill & Copy"
         } else {
             "Copy"
         };
-        bx = self.toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
-            bx,
-            y,
-            primary_label,
-            true,
-            Action::Copy(open),
-        );
-        if snippet.has_placeholders() {
-            bx = self.toolbar_button(
-                scene,
-                t,
-                tr,
-                theme,
-                bx,
-                y,
-                "Variables…",
-                false,
-                Action::Expand(open),
-            );
-        }
         let star_label = if snippet.favorite {
             "★ Starred"
         } else {
             "☆ Star"
         };
-        bx = self.toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
-            bx,
-            y,
-            star_label,
-            false,
-            Action::ToggleFavorite(open),
-        );
-        bx = self.toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
-            bx,
-            y,
-            "Duplicate",
-            false,
-            Action::Duplicate(open),
-        );
-        let _ = self.toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
-            bx,
-            y,
-            "Delete",
-            false,
-            Action::Delete(open),
-        );
-        y + 44.0
+        let mut buttons: Vec<(&str, bool, Action)> = vec![(primary_label, true, Action::Copy(open))];
+        if snippet.has_placeholders() {
+            buttons.push(("Variables…", false, Action::Expand(open)));
+        }
+        buttons.push((star_label, false, Action::ToggleFavorite(open)));
+        buttons.push(("Duplicate", false, Action::Duplicate(open)));
+        buttons.push(("Delete", false, Action::Delete(open)));
+
+        // Buttons flow left to right and wrap onto a new row when the next one
+        // would cross the pane's right inset — at 200 % a pane that seats five
+        // buttons at 1× seats two or three per row. Every action stays
+        // reachable; nothing is clipped off the edge. Rows step by the
+        // measured button height plus the 1× 8 px gap.
+        let btn_h = 32.0 + self.m.button_extra;
+        let row_step = btn_h + 8.0;
+        let x_start = area.x0 + pad;
+        let x_end = area.x1 - pad;
+        let mut bx = x_start;
+        let mut by = y;
+        for (label, primary, action) in buttons {
+            let w = Self::toolbar_button_w(tr, label);
+            if bx > x_start && bx + w > x_end {
+                bx = x_start;
+                by += row_step;
+            }
+            bx = self.toolbar_button(scene, t, tr, theme, bx, by, label, primary, action);
+        }
+        by + row_step + 4.0
+    }
+
+    /// Width a toolbar button paints at for `label` — the same measurement
+    /// [`Self::toolbar_button`] sizes its face from, so wrapping decisions
+    /// and paint agree.
+    fn toolbar_button_w(tr: &mut TextRenderer, label: &str) -> f64 {
+        f64::from(tr.measure(label, BUTTON_FONT, None).0) + 24.0
     }
 
     /// Draw a toolbar button, record its hit region against `action`, and
@@ -2472,13 +2610,12 @@ impl SnippetsApp {
         primary: bool,
         action: Action,
     ) -> f64 {
-        let tw = f64::from(tr.measure(label, 13.0, None).0);
-        let w = tw + 24.0;
-        let rect = Rect::new(x, y, x + w, y + 32.0);
+        let w = Self::toolbar_button_w(tr, label);
+        let rect = Rect::new(x, y, x + w, y + 32.0 + self.m.button_extra);
         let hovered = rect.contains(self.last_mouse);
         let face = ButtonFace::new(rect, label)
             .radius(theme.radii_md())
-            .text_size(13.0)
+            .text_size(BUTTON_FONT)
             .weight(TextWeight::Semibold)
             .hovered(hovered)
             .style(if primary {
@@ -2498,6 +2635,7 @@ impl SnippetsApp {
         theme: &Theme,
         card: Rect,
         s: &Snippet,
+        line_h: f64,
     ) {
         let c = &theme.tokens.colors;
         let pad = 16.0;
@@ -2515,7 +2653,6 @@ impl SnippetsApp {
         );
 
         let mut y = card.y0 + pad;
-        let line_h = BODY_LINE;
         let code_x = x0 + gutter_w;
         for (i, line) in s.body.lines().enumerate() {
             if y > card.y1 - line_h {

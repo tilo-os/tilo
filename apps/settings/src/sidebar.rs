@@ -32,37 +32,46 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
-use ui::widget::{Column, Container, Scrollable, Text, Widget};
+use ui::tokens::{Metrics, Spacing};
+use ui::widget::{Column, Container, DEFAULT_SHELL_SIDEBAR_WIDTH, Scrollable, Text, Widget};
 
 use crate::categories::{Category, Section};
 use crate::widgets::{El, caption, spacing};
 
-/// Width (logical px) of the docked sidebar. Sized so the widest row
+/// Width (logical px) of the docked sidebar — the shared `AppShell`'s own
+/// default, named here so the app and its geometry tests read the value the
+/// shell docks rather than a copy of it. Wide enough for the widest row
 /// ("Device Privacy & Security" with its glyph, plus the row's horizontal
-/// padding) fits without clipping, with margin to spare.
-pub const SIDEBAR_WIDTH: f64 = 264.0;
+/// padding) without clipping.
+pub const SIDEBAR_WIDTH: f64 = DEFAULT_SHELL_SIDEBAR_WIDTH;
 
-/// Height (logical px) of a single category row. Deliberately off the token
-/// scale: it seats a 32 px pill (the toolkit's fine-pointer minimum target)
-/// plus one `s1` inset above and below it.
-const ROW_HEIGHT: f32 = 40.0;
+/// Height (logical px) of a single category row at 1×: it seats the
+/// toolkit's minimum pointer target (the selection pill,
+/// `Metrics::min_pointer_target`) plus one `s1` inset above and below it. A
+/// row whose label measures taller than that — under a large-text
+/// preference — grows to fit (see [`SidebarRow::measure`]); at 1× every row
+/// is exactly this.
+const ROW_HEIGHT: f32 = Metrics::BASE.min_pointer_target + 2.0 * Spacing::BASE.s1;
 
-/// Fixed width (logical px) of the icon column. The glyph is centred within
-/// it so every label starts at the same x regardless of glyph advance.
-const ROW_ICON_COL: f64 = 20.0;
-
-/// Font size (logical px) of a category label — the theme's base type size.
-const ROW_TEXT_SIZE: f32 = 14.0;
+/// Fixed width (logical px) of the icon column — the standard `icon_md`
+/// glyph slot. The glyph is centred within it so every label starts at the
+/// same x regardless of glyph advance.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
+)]
+const ROW_ICON_COL: f64 = Metrics::BASE.icon_md as f64;
 
 /// Inset (logical px) at which the shared `AppShell` places the search field
-/// from the sidebar edge (its band padding, which `ui` does not export yet —
-/// see the review's open item for `F1`). The selection pill and the search
-/// field share that left edge, so every horizontal measure in this file
-/// derives from it; the geometry tests import this one constant rather than
-/// retyping the number.
-pub const SHELL_FIELD_INSET: f32 = 12.0;
+/// from the sidebar edge: its band padding is the `s3` step (a private
+/// constant in `ui`, not exported yet — see the review's open item for `F1`),
+/// so this names the same token instead of restating the number. The
+/// selection pill and the search field share that left edge, so every
+/// horizontal measure in this file derives from it; the geometry tests import
+/// this one constant rather than retyping it.
+pub const SHELL_FIELD_INSET: f32 = Spacing::BASE.s3;
 
 /// Horizontal margin of each row inside the sidebar column: the pill is inset
 /// `s2` from the row, so the row starts `SHELL_FIELD_INSET - s2` in and the
@@ -172,6 +181,12 @@ pub struct SidebarRow {
     is_hovered: bool,
     is_pressed: bool,
     is_focused: bool,
+    /// The label's type size as the theme resolves it (`scale.base`, already
+    /// text-scaled), captured in `build_layout` so `measure` and `draw` shape
+    /// the label identically. Handed to the renderer through
+    /// [`TextRenderer::renderer_input_style`] so the text scale is applied
+    /// exactly once.
+    label_size: f32,
 }
 
 impl SidebarRow {
@@ -192,7 +207,45 @@ impl SidebarRow {
             is_hovered: false,
             is_pressed: false,
             is_focused: false,
+            label_size: ui::tokens::TypeScale::default().base,
         }
+    }
+
+    /// The renderer-relative size the label is measured and drawn at.
+    fn renderer_label_size(&self, text_renderer: &TextRenderer) -> f32 {
+        text_renderer
+            .renderer_input_style(&TextStyle::new(self.label_size))
+            .size
+    }
+
+    /// The width the label may take in a row `row_w` wide: from its left edge
+    /// (past the pill inset, the content gutter, the icon column and its gap)
+    /// to the pill's inner gutter on the right. `measure` and `draw` shape the
+    /// label against this same width, so a label that wraps under large text
+    /// grows the row instead of running past the pill.
+    fn label_max_width(row_w: f64) -> f32 {
+        let sp = spacing();
+        let taken = 2.0 * f64::from(sp.s2) + 3.0 * f64::from(sp.s3) + ROW_ICON_COL;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a logical-pixel width comfortably representable by f32"
+        )]
+        let width = (row_w - taken).max(0.0) as f32;
+        width
+    }
+
+    /// The row height its label needs in a row `row_w` wide: the measured
+    /// line box (wrapped to the label's width if it must) with one `s1` of
+    /// breathing room inside the pill and the pill's own `s1` inset, top and
+    /// bottom — never below [`ROW_HEIGHT`], so 1× rows stay exactly that.
+    fn measured_height(&self, text_renderer: &mut TextRenderer, row_w: f64) -> f32 {
+        let size = self.renderer_label_size(text_renderer);
+        let (_, line_height) = text_renderer.measure(
+            self.category.label(),
+            size,
+            Some(Self::label_max_width(row_w)),
+        );
+        (line_height + 4.0 * spacing().s1).max(ROW_HEIGHT)
     }
 
     /// Publish the same local presentation request for pointer, keyboard and
@@ -209,10 +262,12 @@ impl Widget for SidebarRow {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Full width, fixed height — the row is a leaf that draws itself, so it
+        self.label_size = theme.tokens.typography.scale.base;
+        // Full width; the height comes from `measure` (the label's line box,
+        // never below ROW_HEIGHT) — the row is a leaf that draws itself, so it
         // needs no taffy children.
         #[allow(
             clippy::unwrap_used,
@@ -222,13 +277,43 @@ impl Widget for SidebarRow {
             .new_leaf(Style {
                 size: Size {
                     width: Dimension::percent(1.0),
+                    height: Dimension::auto(),
+                },
+                min_size: Size {
+                    width: Dimension::auto(),
                     height: Dimension::length(ROW_HEIGHT),
                 },
+                flex_shrink: 0.0,
                 ..Default::default()
             })
             .unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        // The row's width: the known dimension when the parent has resolved
+        // it, else the definite available width taffy hands the final layout
+        // pass, else (a bare measure with no parent at all) the docked
+        // sidebar's own. The label wraps at this width in `draw` too.
+        let available_w = match available.width {
+            taffy::AvailableSpace::Definite(w) => Some(w),
+            _ => None,
+        };
+        let row_w = known
+            .width
+            .or(available_w)
+            .map_or(SIDEBAR_WIDTH - 2.0 * f64::from(row_margin_x()), f64::from);
+        let height = self.measured_height(text_renderer, row_w);
+        taffy::Size {
+            width: known.width.unwrap_or(0.0),
+            height: known.height.unwrap_or(height),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -266,7 +351,11 @@ impl Widget for SidebarRow {
         // tree is composed before a theme is resolved. Reading a theme-retuned
         // `s2` here would detach the pill from the search field it aligns to.
         let label = self.category.label();
-        let (_, line_height) = text_renderer.measure(label, ROW_TEXT_SIZE, None);
+        let label_size = self.renderer_label_size(text_renderer);
+        // Shaped against the same width `measure` used, so a label that wraps
+        // under large text is centred as the two-line box the row grew for.
+        let label_max_w = Self::label_max_width(self.rect.width());
+        let (_, line_height) = text_renderer.measure(label, label_size, Some(label_max_w));
         let geo = RowGeometry::compute(self.rect, icon_size, f64::from(line_height), &spacing());
 
         let highlight = if self.active {
@@ -310,13 +399,15 @@ impl Widget for SidebarRow {
             ),
             fg,
         );
+        // The label wraps at the pill's inner gutter — the width the row was
+        // measured for — rather than being painted past the pill's edge.
         text_renderer.draw_text(
             scene,
             label,
-            ROW_TEXT_SIZE,
+            label_size,
             fg,
             transform * Affine::translate((geo.label_x, geo.text_y)),
-            None,
+            Some(label_max_w),
         );
     }
 

@@ -14,6 +14,7 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::renderer_type_size;
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::input::{InputBinding, KeyLegend, KeyboardBinding, KeyboardModifier};
 use crate::interaction::InteractionEnvironment;
@@ -124,6 +125,8 @@ impl Widget for ShortcutRecorder {
                 width: Dimension::length(230.0),
                 height: Dimension::length(crate::num::f32_of_f64(HEIGHT)),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -165,11 +168,11 @@ impl Widget for ShortcutRecorder {
         }
         if self.capturing {
             let label = "…";
-            let (w, h) = text.measure(label, theme.tokens.typography.scale.sm, None);
+            let (w, h) = text.measure(label, renderer_type_size(text, theme.tokens.typography.scale.sm), None);
             text.draw_text_weighted(
                 scene,
                 label,
-                theme.tokens.typography.scale.sm,
+                renderer_type_size(text, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
                 transform.pre_translate(
                     (
@@ -202,7 +205,7 @@ impl Widget for ShortcutRecorder {
                 text.draw_text_weighted(
                     scene,
                     "!",
-                    theme.tokens.typography.scale.sm,
+                    renderer_type_size(text, theme.tokens.typography.scale.sm),
                     theme.tokens.colors.semantic.danger,
                     transform.pre_translate((chord.x1 - 14.0, chord.y0 + 7.0).into()),
                     None,
@@ -221,11 +224,11 @@ impl Widget for ShortcutRecorder {
                     &RoundedRect::from_rect(reset, 6.0),
                 );
             }
-            let (w, h) = text.measure("↶", theme.tokens.typography.scale.base, None);
+            let (w, h) = text.measure("↶", renderer_type_size(text, theme.tokens.typography.scale.base), None);
             text.draw_text(
                 scene,
                 "↶",
-                theme.tokens.typography.scale.base,
+                renderer_type_size(text, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 transform.pre_translate(
                     (

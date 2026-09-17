@@ -35,7 +35,8 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::data_table::renderer_type_size;
+use crate::tokens::colors::{ACCENT_PRIMARY_IDX, ON_FILL_MIN_CONTRAST};
+use crate::widget::data_table::{renderer_type_size, text_band, type_line_height};
 use crate::widget::merge_strategy::{Alternative, ConflictKind};
 
 const PADDING: f64 = 16.0;
@@ -118,6 +119,77 @@ pub struct ConflictPicker {
     hover_keep: bool,
     on_pick: Option<PickCallback>,
     dirty: bool,
+    bands: PickerBands,
+    /// The theme's `sm` label size and the keep button's side padding,
+    /// recorded at `build_layout` for the renderer-aware layout hook.
+    label_size: f32,
+    keep_pad: f64,
+    /// Measured `(width, height)` of [`KEEP_LABEL`], resolved in layout so
+    /// the button hit-testing reads is the button paint draws; `(0, 0)` until
+    /// then, when the button keeps its pinned width.
+    keep_label: (f32, f32),
+}
+
+/// The picker's structural bands. The constants are the 1× defaults; the
+/// theme resolves taller bands at larger text scales so the card text stack
+/// no longer runs under its pick button and the `[Pick neither]` label stays
+/// inside its button. The keep-button width is measured from its label at
+/// paint time (the geometry helpers are theme-less for hit-testing).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PickerBands {
+    title_h: f64,
+    card_h: f64,
+    /// Band reserved for a pick button under the card text.
+    button_h: f64,
+    /// The pill inside that band.
+    pill_h: f64,
+    keep_w: f64,
+}
+
+/// Inset between a card's edge and its text stack.
+const CARD_PAD_X: f64 = 12.0;
+const CARD_PAD_Y: f64 = 10.0;
+/// The pick pill at the default text scale; `BUTTON_H` is its band.
+const PILL_H: f64 = 24.0;
+const KEEP_W: f64 = 240.0;
+const KEEP_LABEL: &str = "Pick neither (keep current)";
+/// Side padding of the keep button before a theme is seen: the `s3` step,
+/// unscaled. `build_layout` reads the live `spacing.s3`.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const; f32 -> f64 is exact"
+)]
+const DEFAULT_KEEP_SIDE_PAD: f64 = crate::tokens::Spacing::BASE.s3 as f64;
+
+impl PickerBands {
+    const DEFAULT: Self = Self {
+        title_h: TITLE_H,
+        card_h: CARD_H,
+        button_h: BUTTON_H,
+        pill_h: PILL_H,
+        keep_w: KEEP_W,
+    };
+
+    fn resolve(theme: &Theme, keep_w: f64) -> Self {
+        let tokens = &theme.tokens;
+        let md = type_line_height(tokens.typography.scale.base);
+        let sm = type_line_height(tokens.typography.scale.sm);
+        let lg = type_line_height(tokens.typography.scale.lg);
+        let tight = f64::from(tokens.spacing.s1);
+        let group = f64::from(tokens.spacing.s2);
+        let pill_h = text_band(PILL_H, sm, tight);
+        let button_h = text_band(BUTTON_H, pill_h, group);
+        // author / timestamp, then label / summary: two tight pairs one
+        // group gap apart, exactly as `draw_card` stacks them.
+        let stack = md + tight + sm + group + md + tight + sm;
+        Self {
+            title_h: text_band(TITLE_H, lg, tight),
+            card_h: text_band(CARD_H, stack + button_h, CARD_PAD_Y * 2.0 + group),
+            button_h,
+            pill_h,
+            keep_w,
+        }
+    }
 }
 
 impl ConflictPicker {
@@ -134,6 +206,10 @@ impl ConflictPicker {
             hover_keep: false,
             on_pick: None,
             dirty: true,
+            bands: PickerBands::DEFAULT,
+            label_size: crate::tokens::TypeScale::default().sm,
+            keep_pad: 2.0 * DEFAULT_KEEP_SIDE_PAD,
+            keep_label: (0.0, 0.0),
         }
     }
 
@@ -200,13 +276,14 @@ impl ConflictPicker {
         }
 
         let inner = self.inner_rect();
-        let middle_top = inner.y0 + TITLE_H + ROW_GAP;
-        let middle_bot = inner.y1 - BUTTON_H - ROW_GAP;
+        let middle_top = inner.y0 + self.bands.title_h + ROW_GAP;
+        let middle_bot = inner.y1 - self.bands.button_h - ROW_GAP;
         let middle_h = (middle_bot - middle_top).max(0.0);
 
-        // Cap to CARD_H; if the middle band is shorter, use what's there so
-        // the picker still renders cleanly inside small modals.
-        let card_h = CARD_H.min(middle_h.max(40.0));
+        // Cap to the card band (`CARD_H` at 1×, taller with the type); if the
+        // middle band is shorter, use what's there so the picker still
+        // renders cleanly inside small modals.
+        let card_h = self.bands.card_h.min(middle_h.max(40.0));
 
         let gap = ROW_GAP;
         let available_w = inner.width();
@@ -241,10 +318,10 @@ impl ConflictPicker {
     /// to the bottom of the inner rect, centred horizontally.
     pub fn keep_current_rect(&self) -> Rect {
         let inner = self.inner_rect();
-        let w = 240.0_f64.min(inner.width() - 2.0 * PADDING);
+        let w = self.bands.keep_w.min(inner.width() - 2.0 * PADDING);
         let cx = f64::midpoint(inner.x0, inner.x1);
         let y1 = inner.y1;
-        Rect::new(cx - w / 2.0, y1 - BUTTON_H, cx + w / 2.0, y1)
+        Rect::new(cx - w / 2.0, y1 - self.bands.button_h, cx + w / 2.0, y1)
     }
 
     fn inner_rect(&self) -> Rect {
@@ -258,7 +335,7 @@ impl ConflictPicker {
 
     fn title_rect(&self) -> Rect {
         let inner = self.inner_rect();
-        Rect::new(inner.x0, inner.y0, inner.x1, inner.y0 + TITLE_H)
+        Rect::new(inner.x0, inner.y0, inner.x1, inner.y0 + self.bands.title_h)
     }
 
     /// Per-alternative pick-button rect at card index `i`. The merged
@@ -268,11 +345,13 @@ impl ConflictPicker {
         let cards = self.card_rects();
         let card = cards.get(i)?;
         let inset = 8.0;
+        let band = self.bands.button_h;
+        let pill = self.bands.pill_h;
         Some(Rect::new(
             card.x0 + inset,
-            card.y1 - BUTTON_H + (BUTTON_H - 24.0) / 2.0,
+            card.y1 - band + (band - pill) / 2.0,
             card.x1 - inset,
-            card.y1 - (BUTTON_H - 24.0) / 2.0,
+            card.y1 - (band - pill) / 2.0,
         ))
     }
 
@@ -341,10 +420,10 @@ fn draw_card(
     );
 
     let inner = Rect::new(
-        card.x0 + 12.0,
-        card.y0 + 10.0,
-        card.x1 - 12.0,
-        card.y1 - 10.0,
+        card.x0 + CARD_PAD_X,
+        card.y0 + CARD_PAD_Y,
+        card.x1 - CARD_PAD_X,
+        card.y1 - CARD_PAD_Y,
     );
     let text_size_sm = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
     let text_size_md = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
@@ -397,20 +476,24 @@ fn draw_card(
 
     let pick_button = chrome.pick_button;
     let btn_shape = RoundedRect::from_rect(pick_button, f64::from(theme.tokens.radii.sm));
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        theme.tokens.colors.accent[5],
-        None,
-        &btn_shape,
-    );
+    // Fill and ink share one ground — the primary accent stop — so the label
+    // is resolved against the colour it is painted on (the `Button` primary
+    // convention: white ink stepped until it clears the fill).
+    let fill = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX];
+    scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &btn_shape);
     let btn_text_size = text_size_sm;
     let (bw, bh) = text_renderer.measure(content.button_label, btn_text_size, None);
     text_renderer.draw_text(
         scene,
         content.button_label,
         btn_text_size,
-        theme.tokens.colors.text_primary,
+        // `Button`'s tone convention: white is the *candidate* ink, which the
+        // theme resolves against the fill (it walks to dark ink on a bright
+        // fill), so the literal is the request, not the colour painted.
+        theme
+            .tokens
+            .colors
+            .ink_on(fill, vello::peniko::Color::WHITE, ON_FILL_MIN_CONTRAST),
         translated(
             transform,
             pick_button.x0 + (pick_button.width() - f64::from(bw)) / 2.0,
@@ -426,9 +509,12 @@ impl Widget for ConflictPicker {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.bands = PickerBands::resolve(theme, self.bands.keep_w);
+        self.label_size = theme.tokens.typography.scale.sm;
+        self.keep_pad = 2.0 * f64::from(theme.tokens.spacing.s3);
         // Sized by the host: expands to fill whatever rect the parent
         // assigns — typical use is a centered modal, e.g. 720×360.
         let node = taffy.leaf_node(Style {
@@ -440,6 +526,22 @@ impl Widget for ConflictPicker {
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    /// The keep button's label is measured here, during layout, so the
+    /// width `keep_current_rect` hit-tests is the width paint draws. The
+    /// button holds its label plus a sibling step each side, floored at the
+    /// pinned width so the 1× label keeps 240 px.
+    fn adjust_layout_with_measure(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        let size = renderer_type_size(text, self.label_size);
+        self.keep_label = text.measure(KEEP_LABEL, size, None);
+        self.bands.keep_w = text_band(KEEP_W, f64::from(self.keep_label.0), self.keep_pad);
+        self.adjust_layout_style(taffy, node)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -730,12 +832,18 @@ impl ConflictPicker {
             None,
             &keep_shape,
         );
-        let keep_label = "Pick neither (keep current)";
         let keep_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let (kw, kh) = text_renderer.measure(keep_label, keep_size, None);
+        // Centre on the measurement the button was sized from (see
+        // `adjust_layout_with_measure`); a host that laid out without the
+        // renderer-aware hook measures here instead.
+        let (kw, kh) = if self.keep_label.0 > 0.0 {
+            self.keep_label
+        } else {
+            text_renderer.measure(KEEP_LABEL, keep_size, None)
+        };
         text_renderer.draw_text(
             scene,
-            keep_label,
+            KEEP_LABEL,
             keep_size,
             theme.tokens.colors.text_primary,
             translated(
@@ -769,11 +877,18 @@ fn draw_merged_overlay(
     let bl = "Use merged";
     let bsize = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
     let (bw, bh) = text_renderer.measure(bl, bsize, None);
+    let colors = &theme.tokens.colors;
     text_renderer.draw_text(
         scene,
         bl,
         bsize,
-        theme.tokens.colors.text_primary,
+        // Same tone convention as the pick buttons and `Button`: white is the
+        // candidate ink, resolved by the theme against the fill it sits on.
+        colors.ink_on(
+            colors.semantic.success,
+            vello::peniko::Color::WHITE,
+            ON_FILL_MIN_CONTRAST,
+        ),
         translated(
             transform,
             pick_btn.x0 + (pick_btn.width() - f64::from(bw)) / 2.0,

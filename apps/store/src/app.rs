@@ -294,7 +294,7 @@ fn detail_section(
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(7.0)
+        .with_gap(theme.tokens.spacing.s2)
         .push(Box::new(
             Text::new(title)
                 .with_scaled_size(18.0)
@@ -804,7 +804,7 @@ pub struct StoreApp {
     catalog_page: usize,
     /// Transient floating status chip. The catalog counts / action
     /// status surface here — revealed on a real change or while the
-    /// pointer hovers the bottom-right band, then faded — in place of a
+    /// pointer hovers the bottom-left band, then faded — in place of a
     /// permanent full-width footer strip, so the card list reclaims the
     /// height. See [`draw_status_bubble`](Self::draw_status_bubble).
     status_bubble: ui::StatusBubble,
@@ -1449,7 +1449,7 @@ impl StoreApp {
             // Detail content mixes an intrinsic artwork row, paragraph and
             // actions. A real gap prevents the paragraph's baseline from
             // colliding with the first action at larger text metrics.
-            .with_gap(12.0);
+            .with_gap(theme.tokens.spacing.s3);
         let action = item.action_kind(self.flatpak_available);
         let primary_key = format!("{}{}", ACTION_CLICK_KEY_PREFIX, item.id);
         let mut primary = ui::widget::Button::new(&primary_key, action.label(), Some(&primary_key));
@@ -1599,7 +1599,7 @@ impl StoreApp {
                                             Column::new()
                                                 .with_no_padding()
                                                 .with_intrinsic_height()
-                                                .with_gap(10.0)
+                                                .with_gap(theme.tokens.spacing.s3)
                                                 .push(summary)
                                                 .push(Box::new(
                                                     Text::new(&item.description)
@@ -1617,7 +1617,7 @@ impl StoreApp {
                                         Column::new()
                                             .with_no_padding()
                                             .with_intrinsic_height()
-                                            .with_gap(8.0)
+                                            .with_gap(theme.tokens.spacing.s2)
                                             .push(actions)
                                             .push(Box::new(
                                                 Text::new(match item.trust {
@@ -1672,7 +1672,7 @@ impl StoreApp {
             let mut block = Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_gap(5.0)
+                .with_gap(theme.tokens.spacing.s1)
                 .push(Box::new(
                     Text::new(title)
                         .with_scaled_size(14.0)
@@ -1769,7 +1769,7 @@ impl StoreApp {
             let gallery_section = Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_gap(12.0)
+                .with_gap(theme.tokens.spacing.s3)
                 .push(Box::new(
                     Text::new("Preview gallery")
                         .with_scaled_size(18.0)
@@ -1807,7 +1807,7 @@ impl StoreApp {
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .with_gap(8.0)
+                    .with_gap(theme.tokens.spacing.s2)
                     .push(report_button)
                     .push(moderation_button),
             )
@@ -1826,7 +1826,7 @@ impl StoreApp {
         let report_actions = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(8.0)
+            .with_gap(theme.tokens.spacing.s2)
             .push(Box::new(
                 Text::new("Help keep the catalogue safe")
                     .with_scaled_size(16.0)
@@ -1981,7 +1981,7 @@ impl StoreApp {
                 let report_card = Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .with_gap(8.0)
+                    .with_gap(theme.tokens.spacing.s2)
                     .push(Box::new(Text::new(&report.app_id).with_scaled_size(16.0)))
                     .push(Box::new(
                         Text::new(&report.status)
@@ -2062,7 +2062,7 @@ impl StoreApp {
                         Column::new()
                             .with_no_padding()
                             .with_intrinsic_height()
-                            .with_gap(6.0)
+                            .with_gap(theme.tokens.spacing.s1)
                             .push(Box::new(Text::new(&remote.title).with_scaled_size(16.0)))
                             .push(Box::new(
                                 Text::new(&remote.url)
@@ -2093,7 +2093,7 @@ impl StoreApp {
                                     Column::new()
                                         .with_no_padding()
                                         .with_intrinsic_height()
-                                        .with_gap(5.0)
+                                        .with_gap(theme.tokens.spacing.s1)
                                         .push(Box::new(
                                             Text::new(&remote.title).with_scaled_size(16.0),
                                         ))
@@ -2144,7 +2144,7 @@ impl StoreApp {
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .with_gap(8.0)
+                    .with_gap(theme.tokens.spacing.s2)
                     .push(add)
                     .push(refresh),
             )
@@ -2154,7 +2154,7 @@ impl StoreApp {
         let form = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(10.0)
+            .with_gap(theme.tokens.spacing.s3)
             .push(Box::new(
                 Text::new("Add a remote")
                     .with_scaled_size(18.0)
@@ -2270,8 +2270,8 @@ impl StoreApp {
                 .with_no_padding()
                 .with_intrinsic_height()
                 .with_horizontal_padding(0.0, 0.0)
-                .with_vertical_padding(12.0)
-                .with_gap(10.0)
+                .with_vertical_padding(theme.tokens.spacing.s3)
+                .with_gap(theme.tokens.spacing.s2)
                 .push(Box::new(
                     Text::new("Apps")
                         .with_scaled_size(28.0)
@@ -2302,7 +2302,7 @@ impl StoreApp {
                         Column::new()
                             .with_no_padding()
                             .with_intrinsic_height()
-                            .with_gap(4.0)
+                            .with_gap(theme.tokens.spacing.s1)
                             .push(Box::new(
                                 Text::new(operation_error_summary())
                                     .with_scaled_size(13.0)
@@ -2374,7 +2374,7 @@ impl StoreApp {
                     Column::new()
                         .with_no_padding()
                         .with_intrinsic_height()
-                        .with_gap(4.0)
+                        .with_gap(theme.tokens.spacing.s1)
                         .push(Box::new(
                             Text::new(operation_error_summary())
                                 .with_scaled_size(13.0)
@@ -2642,7 +2642,7 @@ impl StoreApp {
                 column = column.push(Box::new(
                     CardGrid::content_sized(ready_cards)
                         .with_min_card_width(f64::from(CATALOGUE_CONTENT_MAX_WIDTH))
-                        .with_gap(8.0),
+                        .with_gap(f64::from(theme.tokens.spacing.s2)),
                 ));
             }
             if group_by_availability && !discover_cards.is_empty() {
@@ -2668,7 +2668,7 @@ impl StoreApp {
                 column = column.push(Box::new(
                     CardGrid::content_sized(remaining_cards)
                         .with_min_card_width(f64::from(CATALOGUE_CONTENT_MAX_WIDTH))
-                        .with_gap(8.0),
+                        .with_gap(f64::from(theme.tokens.spacing.s2)),
                 ));
             }
         } else {
@@ -2796,9 +2796,9 @@ impl StoreApp {
         }
         // A quiet landing zone keeps the transient status pill from sitting
         // over the last app's action when the catalogue is scrolled to end.
-        column = column.push(Box::new(
-            Container::new().with_no_padding().with_height(72.0),
-        ));
+        // Sized from the pill band itself, so the reservation follows the
+        // text scale instead of restating one height.
+        column = column.push(Box::new(Spacer::fixed(Self::status_bubble_band(theme))));
         Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
@@ -2834,10 +2834,74 @@ impl StoreApp {
         self.status_bubble.poke(std::time::Instant::now());
     }
 
+    /// The pill's type: the theme's small step, handed to the renderer once
+    /// (the theme size already carries the text scale; the renderer would
+    /// otherwise apply it again).
+    fn status_bubble_text_size(theme: &Theme, tr: &TextRenderer) -> f32 {
+        tr.renderer_input_style(&ui::text_render::TextStyle::new(
+            theme.tokens.typography.scale.sm,
+        ))
+        .size
+    }
+
+    /// Height of the band the catalogue reserves under its last row for the
+    /// floating pill: a pill sized for the theme's small type *at the current
+    /// text scale* (its label line plus [`ui::status_bubble::pill_size`]'s
+    /// padding, never under that helper's 30 px floor) with one `s4` margin
+    /// above and below. The shared `pill_size` today pads from the
+    /// renderer-relative size, so the pill it paints stays 30 px at every
+    /// scale while its glyphs grow (recorded for the toolkit); this band
+    /// reserves the height that pill *should* have, so the reservation is
+    /// right the day the helper is, and merely generous until then. Public
+    /// so the geometry test asserts the reservation, not a retyped number.
+    pub fn status_bubble_band(theme: &Theme) -> f32 {
+        let pill_h = (theme.tokens.typography.scale.sm + 16.0).max(30.0);
+        pill_h + 2.0 * theme.tokens.spacing.s4
+    }
+
+    /// Left edge of the catalogue column inside the window: the centred
+    /// 1120 px canvas on a roomy desktop, else the root container's inset.
+    /// The same decision [`Self::centered_content`] makes, so the pill sits
+    /// on the cards' own edge instead of the window's.
+    fn catalogue_left_inset(&self, theme: &Theme) -> f64 {
+        if self.roomy_desktop() {
+            (self.rect.width() - f64::from(CATALOGUE_CONTENT_MAX_WIDTH)) / 2.0
+        } else {
+            f64::from(theme.padding_standard)
+        }
+    }
+
+    /// Where the status pill floats for a pill of `(w, h)`: the window's
+    /// bottom-**left**, on the catalogue's leading edge, one `s4` above the
+    /// bottom. Every card puts its actions at its trailing edge, so the
+    /// leading corner is the one place a floating pill — and the hover band
+    /// that reveals it — can never land on an Install or Open button. Public
+    /// so the geometry test checks the pill against the real card buttons.
+    pub fn status_bubble_rect(&self, theme: &Theme, tr: &mut TextRenderer) -> Rect {
+        let label = self.footer_label();
+        let text_size = Self::status_bubble_text_size(theme, tr);
+        self.status_bubble_rect_for(theme, tr, &label, text_size)
+    }
+
+    /// [`Self::status_bubble_rect`] for a label and type size the caller has
+    /// already resolved, so the draw path measures each once per frame.
+    fn status_bubble_rect_for(
+        &self,
+        theme: &Theme,
+        tr: &mut TextRenderer,
+        label: &str,
+        text_size: f32,
+    ) -> Rect {
+        let (w, h) = ui::status_bubble::pill_size(label, tr, text_size, 0.0);
+        let margin = f64::from(theme.tokens.spacing.s4);
+        let x0 = self.rect.x0 + self.catalogue_left_inset(theme);
+        Rect::new(x0, self.rect.y1 - margin - h, x0 + w, self.rect.y1 - margin)
+    }
+
     /// Draw the transient floating status bubble at the window's
-    /// bottom-right — the reclaimed home of the old footer strip. It
+    /// bottom-left — the reclaimed home of the old footer strip. It
     /// surfaces on a real change (catalog refresh, filter, an action
-    /// result) or while the pointer hovers the bottom-right band, then
+    /// result) or while the pointer hovers the bottom-left band, then
     /// fades. Colours come from the theme.
     fn draw_status_bubble(
         &mut self,
@@ -2864,16 +2928,16 @@ impl StoreApp {
         if label.is_empty() {
             return;
         }
-        let text_size = 12.0f32;
-        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
-        let margin = 14.0;
-        let rect = Rect::new(
-            self.rect.x1 - margin - w,
-            self.rect.y1 - margin - h,
-            self.rect.x1 - margin,
-            self.rect.y1 - margin,
+        let text_size = Self::status_bubble_text_size(theme, tr);
+        let rect = self.status_bubble_rect_for(theme, tr, &label, text_size);
+        // The reveal band: the pill plus a section step above and a hit
+        // target's worth beside it, out to the window's own corner.
+        let zone = Rect::new(
+            self.rect.x0,
+            rect.y0 - f64::from(theme.tokens.spacing.s6),
+            rect.x1 + f64::from(theme.tokens.metrics.min_pointer_target),
+            self.rect.y1,
         );
-        let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
         let over = self.shots_status || zone.contains(self.last_cursor);
         self.status_bubble.set_hover(over, now);
         let alpha = if self.reduce_motion {
@@ -2893,7 +2957,10 @@ impl StoreApp {
             vello::peniko::BlendMode::default(),
             alpha,
             transform,
-            &rect.inflate(12.0, 14.0),
+            &rect.inflate(
+                f64::from(theme.tokens.spacing.s3),
+                f64::from(theme.tokens.spacing.s4),
+            ),
         );
         ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
         scene.pop_layer();

@@ -1,3 +1,4 @@
+use crate::text_metrics::{centered_text_top, renderer_type_size};
 use crate::presence::PresenceCtx;
 use crate::record::{RecordCheckout, RecordId, RecordStore};
 use crate::text_render::TextRenderer;
@@ -1852,11 +1853,14 @@ fn draw_opening_card(
     // the *dark* end of a dark theme's ramp, and on that theme's own dark
     // card the name would land at ~1.05:1 contrast — invisible on screen.
     let on_card = theme.on_card().ink;
-    let size = theme.tokens.typography.scale.xl;
+    // The offset stays in theme space (it is geometry that follows the text
+    // scale); only the size handed to the renderer is divided back out.
+    let resolved = theme.tokens.typography.scale.xl;
+    let size = renderer_type_size(tr, resolved);
     let cx = rect.center().x;
     // Above centre, so name + indicator reads as one centred pair rather
     // than the name alone with the indicator hanging below.
-    let y = rect.center().y - f64::from(size);
+    let y = rect.center().y - f64::from(resolved);
     if !name.is_empty() {
         let (tw, _) = tr.measure(name, size, None);
         tr.draw_text(
@@ -1900,10 +1904,10 @@ fn draw_card_text(
     let on_card_dim = theme
         .on_surface_at(card, crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST)
         .ink_dim;
-    let text_size = theme.tokens.typography.scale.xl;
-    let (tw, _) = tr.measure(title, text_size, None);
+    let text_size = renderer_type_size(tr, theme.tokens.typography.scale.xl);
+    let (tw, th) = tr.measure(title, text_size, None);
     let x = rect.center().x - f64::from(tw) / 2.0;
-    let y = rect.center().y - f64::from(text_size) / 2.0;
+    let y = centered_text_top(rect.y0, rect.height(), f64::from(th));
     tr.draw_text(
         scene,
         title,
@@ -1915,7 +1919,7 @@ fn draw_card_text(
     if detail.is_empty() {
         return;
     }
-    let sm = theme.tokens.typography.scale.sm;
+    let sm = renderer_type_size(tr, theme.tokens.typography.scale.sm);
     let (sw, _) = tr.measure(detail, sm, None);
     let sx = rect.center().x - f64::from(sw) / 2.0;
     tr.draw_text(
@@ -1923,7 +1927,7 @@ fn draw_card_text(
         detail,
         sm,
         on_card_dim,
-        translated(transform, sx, y + f64::from(text_size) + 8.0),
+        translated(transform, sx, y + f64::from(th) + 8.0),
         None,
     );
 }

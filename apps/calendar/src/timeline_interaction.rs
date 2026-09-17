@@ -21,9 +21,8 @@ use crate::date;
 use crate::draw_util::{elide_to_width, fill_rect, fill_round, stroke_line, stroke_round};
 use crate::model::{Id, Palette};
 use crate::timeline_viewport::{
-    TIMELINE_BLOCK_PAD, TIMELINE_DAY_TEXT, TIMELINE_HEAD_PAD, TIMELINE_STRIP_TEXT,
-    TIMELINE_SUBTITLE_TEXT, TIMELINE_TITLE_TEXT, TIMELINE_WEEKDAY_TEXT, TimelineGeom,
-    TimelineViewport,
+    TIMELINE_DAY_TEXT, TIMELINE_HOUR_TEXT, TIMELINE_STRIP_TEXT, TIMELINE_SUBTITLE_TEXT,
+    TIMELINE_TITLE_TEXT, TIMELINE_WEEKDAY_TEXT, TimelineGeom, TimelineViewport,
 };
 
 pub(super) const TIMELINE_SNAP_MIN: i64 = 15;
@@ -483,7 +482,7 @@ impl TimelineInteraction {
         // Weekday label, then the day number directly beneath it: both rows
         // come from the measured lines the header height was solved from.
         let weekday_h = f64::from(text.measure("Mon", TIMELINE_WEEKDAY_TEXT, None).1);
-        let weekday_y = area.y0 + TIMELINE_HEAD_PAD;
+        let weekday_y = area.y0 + f64::from(theme.tokens.spacing.s2);
         let day_y = weekday_y + weekday_h;
         let strip_text_h = f64::from(text.measure("Ag", TIMELINE_STRIP_TEXT, None).1);
         for (index, day) in model.days.iter().enumerate() {
@@ -585,7 +584,7 @@ impl TimelineInteraction {
                 text.draw_text(
                     scene,
                     &format!("{hour:02}:00"),
-                    10.0,
+                    TIMELINE_HOUR_TEXT,
                     colors.text_dim,
                     transform * Affine::translate((area.x0 + 12.0, y + 2.0)),
                     None,
@@ -677,15 +676,16 @@ impl TimelineInteraction {
                 // only appears when both lines fit inside the block's padding.
                 let title_h = f64::from(text.measure(&title, TIMELINE_TITLE_TEXT, None).1);
                 let subtitle_h = f64::from(text.measure("Ag", TIMELINE_SUBTITLE_TEXT, None).1);
+                let block_pad = f64::from(theme.tokens.spacing.s1);
                 text.draw_text(
                     scene,
                     &title,
                     TIMELINE_TITLE_TEXT,
                     colors.neutral[9],
-                    transform * Affine::translate((block.x0 + 10.0, block.y0 + TIMELINE_BLOCK_PAD)),
+                    transform * Affine::translate((block.x0 + 10.0, block.y0 + block_pad)),
                     None,
                 );
-                if block.height() > 2.0 * TIMELINE_BLOCK_PAD + title_h + subtitle_h {
+                if block.height() > 2.0 * block_pad + title_h + subtitle_h {
                     let subtitle = format!(
                         "{}–{} {}",
                         fmt_event_min(event.start_min),
@@ -700,10 +700,7 @@ impl TimelineInteraction {
                         TIMELINE_SUBTITLE_TEXT,
                         colors.text_dim,
                         transform
-                            * Affine::translate((
-                                block.x0 + 10.0,
-                                block.y0 + TIMELINE_BLOCK_PAD + title_h,
-                            )),
+                            * Affine::translate((block.x0 + 10.0, block.y0 + block_pad + title_h)),
                         None,
                     );
                 }
@@ -786,21 +783,22 @@ impl TimelineInteraction {
         let title = elide_to_width(text, title, TIMELINE_TITLE_TEXT, block.width() - 16.0);
         let title_h = f64::from(text.measure(&title, TIMELINE_TITLE_TEXT, None).1);
         let subtitle_h = f64::from(text.measure("Ag", TIMELINE_SUBTITLE_TEXT, None).1);
+        let block_pad = f64::from(theme.tokens.spacing.s1);
         text.draw_text(
             scene,
             &title,
             TIMELINE_TITLE_TEXT,
             colors.neutral[9],
-            transform * Affine::translate((block.x0 + 8.0, block.y0 + TIMELINE_BLOCK_PAD)),
+            transform * Affine::translate((block.x0 + 8.0, block.y0 + block_pad)),
             None,
         );
-        if block.height() > TIMELINE_BLOCK_PAD + title_h + subtitle_h {
+        if block.height() > block_pad + title_h + subtitle_h {
             text.draw_text(
                 scene,
                 &format!("{} – {}", fmt_min(start_min), fmt_min(end_min)),
                 TIMELINE_SUBTITLE_TEXT,
                 colors.text_dim,
-                transform * Affine::translate((block.x0 + 8.0, block.y0 + TIMELINE_BLOCK_PAD + title_h)),
+                transform * Affine::translate((block.x0 + 8.0, block.y0 + block_pad + title_h)),
                 None,
             );
         }
@@ -810,13 +808,13 @@ impl TimelineInteraction {
     /// Geometry at the viewport's text scale, so paint, hit-testing and drag
     /// mapping all read one description of the header / strip / body bands.
     fn geometry(&self, area: Rect) -> TimelineGeom {
-        TimelineViewport::geometry_for(area, self.viewport.text_scale())
+        TimelineViewport::geometry_for(area, self.viewport.text_scale(), self.viewport.spacing())
     }
 
     /// Forward the theme's text scale so header, strip and block heights grow
     /// with the type they carry. Called from the app's layout pass.
-    pub fn set_text_scale(&mut self, text_scale: f32) {
-        self.viewport.set_text_scale(text_scale);
+    pub fn set_layout_tokens(&mut self, text_scale: f32, spacing: &ui::tokens::spacing::Spacing) {
+        self.viewport.set_layout_tokens(text_scale, spacing);
     }
 
     fn column_width(area: Rect, days_len: usize, geom: TimelineGeom) -> f64 {

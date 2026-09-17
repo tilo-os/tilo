@@ -218,6 +218,19 @@ pub struct TypstApp {
     compact_view: CompactPane,
     /// Whether the compact overflow menu is open.
     menu_open: bool,
+    /// Where the `⋯` overflow kebab was painted this frame (`ZERO` when every
+    /// action fit as a pill); the overflow menu anchors to it.
+    kebab_rect: Rect,
+    /// Toolbar band height for this frame: `TOOLBAR_H` grown by the pill
+    /// label's measured line growth. Measured in `draw`; `layout_in` reads it.
+    toolbar_h: f64,
+    /// Pill height for this frame (`self.pill_h` grown the same way).
+    pill_h: f64,
+    /// Measured line box of `PILL_FONT` — what every pill centres its label on.
+    pill_line: f64,
+    /// The renderer's accessibility text scale; width breakpoints designed at
+    /// 1× are compared against `width / text_k`.
+    text_k: f64,
     /// Screenshot-only: on the next layout pass, drop the caret at the end of
     /// the source and scroll it into view. Never set by the live event loop.
     demo_scroll_caret_end: bool,
@@ -349,6 +362,11 @@ impl TypstApp {
             compact: false,
             compact_view: CompactPane::Editor,
             menu_open: false,
+            kebab_rect: Rect::ZERO,
+            toolbar_h: TOOLBAR_H,
+            pill_h: PILL_H,
+            pill_line: f64::from(PILL_FONT) * 1.25,
+            text_k: 1.0,
             demo_scroll_caret_end: false,
             demo_editor_select: false,
             demo_preview_zoom: false,
@@ -929,7 +947,10 @@ impl TypstApp {
     fn layout_in(&mut self, rect: Rect) {
         self.rect = rect;
         let r = self.rect;
-        self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
+        // The band is the 1× `TOOLBAR_H` grown by the pill label's measured
+        // line growth (cached by `draw`, which re-runs this layout when the
+        // measurement changes), so the pills keep seating their text at 200 %.
+        self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + self.toolbar_h);
         let content_top = self.toolbar_rect.y1;
         // No permanent status strip: the content spans to the window bottom and
         // the status floats as two transient bubbles (see `draw_status_bubbles`).
@@ -938,10 +959,9 @@ impl TypstApp {
 
         // Derive the layout mode from the *current* width every pass, so a
         // resize across the threshold reflows without any cached-on-launch mode.
-        self.compact = content_w < COMPACT_W;
-        if !self.compact {
-            self.menu_open = false;
-        }
+        // The breakpoint was designed at 1×: a window holds as much 2× text as
+        // a half-width 1× window, so compare in 1× space.
+        self.compact = content_w / self.text_k.max(f64::from(f32::EPSILON)) < COMPACT_W;
 
         if self.compact {
             self.divider_rect = Rect::ZERO;
@@ -1066,9 +1086,10 @@ impl TypstApp {
             scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
         }
         let fg = if active { Color::WHITE } else { c.text_primary };
-        let (tw, _) = tr.measure_weighted(label, PILL_FONT, None, TextWeight::Medium);
+        // Centre on the measured line box, never `size × 1.25`.
+        let (tw, th) = tr.measure_weighted(label, PILL_FONT, None, TextWeight::Medium);
         let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
-        let ty = rect.y0 + (rect.height() - f64::from(PILL_FONT) * 1.25) / 2.0;
+        let ty = rect.y0 + (rect.height() - f64::from(th)) / 2.0;
         tr.draw_text_weighted(
             scene,
             label,
@@ -1101,7 +1122,7 @@ impl TypstApp {
             &Rect::new(tb.x0, tb.y1 - 1.0, tb.x1, tb.y1),
         );
 
-        let y = tb.y0 + (tb.height() - PILL_H) / 2.0;
+        let y = tb.y0 + (tb.height() - self.pill_h) / 2.0;
         if self.compact {
             self.draw_toolbar_compact(scene, t, tr, theme, y);
         } else {
@@ -1118,39 +1139,19 @@ impl TypstApp {
         y: f64,
     ) {
         let tb = self.toolbar_rect;
+        // Width breakpoints were designed at 1×; judge them in 1× space so a
+        // 200 % bar folds exactly like a half-width 1× bar would.
+        let w1x = tb.width() / self.text_k.max(f64::from(f32::EPSILON));
         // Show the "n/m" index only when there's plenty of room.
-        let with_index = tb.width() >= 1000.0;
-        let mut x = self.draw_doc_switcher(scene, t, tr, theme, tb.x0 + 12.0, y, 220.0, with_index);
+        let with_index = w1x >= 1000.0;
+        let switcher_cap = 220.0 * self.text_k;
+        let mut x =
+            self.draw_doc_switcher(scene, t, tr, theme, tb.x0 + 12.0, y, switcher_cap, with_index);
         x += 10.0;
 
-        // --- action group ---
-        // "Export PDF" only earns its full label when the toolbar is roomy;
-        // on a tighter bar it folds into the overflow menu instead.
-        let with_export = tb.width() >= 1120.0;
-        let mut actions: Vec<(&str, TbAction)> = vec![
-            ("Compile", TbAction::Compile),
-            ("Save", TbAction::Save),
-            ("Open", TbAction::Open),
-        ];
-        if with_export {
-            actions.push(("Export PDF", TbAction::ExportPdf));
-        }
-        for (lbl, act) in actions {
-            let pill_w = Self::pill_width(tr, lbl);
-            self.paint_pill(
-                scene,
-                t,
-                tr,
-                theme,
-                Rect::new(x, y, x + pill_w, y + PILL_H),
-                lbl,
-                act,
-                false,
-            );
-            x += pill_w + 8.0;
-        }
-
         // --- right group: zoom + problems (placed from the right edge) ---
+        // Painted first so the action group knows exactly how much width is
+        // left for its pills.
         let mut rx = tb.x1 - 12.0;
         rx = self.draw_problems_pill(scene, t, tr, theme, rx, y, true);
         rx -= 8.0;
@@ -1158,7 +1159,7 @@ impl TypstApp {
         // zoom cluster: [ − ] [ 100% ] [ + ] [ Fit ]  (right to left)
         for (lbl, act) in [("Fit", TbAction::Fit), ("+", TbAction::ZoomIn)] {
             let pill_w = Self::pill_width(tr, lbl);
-            let pill_rect = Rect::new(rx - pill_w, y, rx, y + PILL_H);
+            let pill_rect = Rect::new(rx - pill_w, y, rx, y + self.pill_h);
             self.paint_pill(scene, t, tr, theme, pill_rect, lbl, act, false);
             rx -= pill_w + 6.0;
         }
@@ -1167,23 +1168,74 @@ impl TypstApp {
         let zlabel = format!("{:.0}%", self.preview.zoom() * 100.0);
         let (zw, _) = tr.measure_weighted(&zlabel, PILL_FONT, None, TextWeight::Medium);
         let zchip_w = f64::from(zw) + 16.0;
-        let zr = Rect::new(rx - zchip_w, y, rx, y + PILL_H);
+        let zr = Rect::new(rx - zchip_w, y, rx, y + self.pill_h);
         tr.draw_text_weighted(
             scene,
             &zlabel,
             PILL_FONT,
             c.text_dim,
-            t * Affine::translate((
-                zr.x0 + 8.0,
-                y + (PILL_H - f64::from(PILL_FONT) * 1.25) / 2.0,
-            )),
+            t * Affine::translate((zr.x0 + 8.0, y + (self.pill_h - self.pill_line) / 2.0)),
             None,
             TextWeight::Medium,
         );
         rx -= zchip_w + 6.0;
         let zow = Self::pill_width(tr, "−");
-        let zor = Rect::new(rx - zow, y, rx, y + PILL_H);
+        let zor = Rect::new(rx - zow, y, rx, y + self.pill_h);
         self.paint_pill(scene, t, tr, theme, zor, "−", TbAction::ZoomOut, false);
+        let right_edge = zor.x0 - 12.0;
+
+        // --- action group ---
+        // Every action is measured at this frame's text scale and placed left
+        // to right; the first one that would run into the zoom cluster — and
+        // every one after it — folds into the overflow menu behind a `⋯`
+        // kebab, which is only painted when something folded. "Export PDF"
+        // therefore never disappears: it is either a pill or a menu row.
+        let actions: [(&str, TbAction); 4] = [
+            ("Compile", TbAction::Compile),
+            ("Save", TbAction::Save),
+            ("Open", TbAction::Open),
+            ("Export PDF", TbAction::ExportPdf),
+        ];
+        let kebab_w = Self::pill_width(tr, "⋯");
+        let widths: Vec<f64> = actions
+            .iter()
+            .map(|(lbl, _)| Self::pill_width(tr, lbl))
+            .collect();
+        // How many leading actions fit as pills, leaving room for the kebab
+        // whenever at least one action folds.
+        let mut shown = actions.len();
+        while shown > 0 {
+            let pills_w: f64 = widths.iter().take(shown).map(|w| w + 8.0).sum();
+            let kebab = if shown < actions.len() { kebab_w + 8.0 } else { 0.0 };
+            if x + pills_w + kebab - 8.0 <= right_edge {
+                break;
+            }
+            shown -= 1;
+        }
+        for ((lbl, act), pill_w) in actions.iter().zip(&widths).take(shown) {
+            self.paint_pill(
+                scene,
+                t,
+                tr,
+                theme,
+                Rect::new(x, y, x + pill_w, y + self.pill_h),
+                lbl,
+                *act,
+                false,
+            );
+            x += pill_w + 8.0;
+        }
+        if shown < actions.len() {
+            let kr = Rect::new(x, y, x + kebab_w, y + self.pill_h);
+            self.kebab_rect = kr;
+            self.paint_pill(scene, t, tr, theme, kr, "⋯", TbAction::ToggleMenu, self.menu_open);
+        } else {
+            // Every action fits as a pill: there is no kebab, so an open menu
+            // (from a narrower bar) closes rather than lingering unseen and
+            // swallowing the next click.
+            self.kebab_rect = Rect::ZERO;
+            self.menu_open = false;
+        }
     }
 
     fn draw_toolbar_compact(
@@ -1199,7 +1251,8 @@ impl TypstApp {
         // when there's actually something to show (an empty badge is noise).
         let mut rx = tb.x1 - 12.0;
         let kebab_w = 30.0;
-        let kr = Rect::new(rx - kebab_w, y, rx, y + PILL_H);
+        let kr = Rect::new(rx - kebab_w, y, rx, y + self.pill_h);
+        self.kebab_rect = kr;
         self.paint_pill(
             scene,
             t,
@@ -1251,7 +1304,7 @@ impl TypstApp {
                 t,
                 tr,
                 theme,
-                Rect::new(x, y, x + prev_w, y + PILL_H),
+                Rect::new(x, y, x + prev_w, y + self.pill_h),
                 "‹",
                 TbAction::PrevDoc,
                 false,
@@ -1272,7 +1325,7 @@ impl TypstApp {
         let label = elide_to_width(tr, &base, max_chip - 24.0);
         let (lw, _) = tr.measure_weighted(&label, PILL_FONT, None, TextWeight::Semibold);
         let chip_w = (f64::from(lw) + 24.0).min(max_chip);
-        let chip = Rect::new(x, y, x + chip_w, y + PILL_H);
+        let chip = Rect::new(x, y, x + chip_w, y + self.pill_h);
         scene.fill(
             Fill::NonZero,
             t,
@@ -1285,7 +1338,7 @@ impl TypstApp {
             &label,
             PILL_FONT,
             c.text_primary,
-            t * Affine::translate((x + 12.0, y + (PILL_H - f64::from(PILL_FONT) * 1.25) / 2.0)),
+            t * Affine::translate((x + 12.0, y + (self.pill_h - self.pill_line) / 2.0)),
             None,
             TextWeight::Semibold,
         );
@@ -1298,7 +1351,7 @@ impl TypstApp {
                 t,
                 tr,
                 theme,
-                Rect::new(x, y, x + next_w, y + PILL_H),
+                Rect::new(x, y, x + next_w, y + self.pill_h),
                 "›",
                 TbAction::NextDoc,
                 false,
@@ -1328,7 +1381,7 @@ impl TypstApp {
         let pw = f64::from(pw) + 22.0;
         let total = ew + pw;
         let x0 = (tb.x0 + tb.width() * 0.5 - total * 0.5).round();
-        let outer = Rect::new(x0, y, x0 + total, y + PILL_H);
+        let outer = Rect::new(x0, y, x0 + total, y + self.pill_h);
         scene.fill(
             Fill::NonZero,
             t,
@@ -1346,7 +1399,7 @@ impl TypstApp {
 
         let edit_active = matches!(self.compact_view, CompactPane::Editor);
         // Edit segment.
-        let er = Rect::new(x0, y, x0 + ew, y + PILL_H);
+        let er = Rect::new(x0, y, x0 + ew, y + self.pill_h);
         self.paint_segment(
             scene,
             t,
@@ -1358,7 +1411,7 @@ impl TypstApp {
             edit_active,
         );
         // Preview segment.
-        let pr = Rect::new(x0 + ew, y, x0 + ew + pw, y + PILL_H);
+        let pr = Rect::new(x0 + ew, y, x0 + ew + pw, y + self.pill_h);
         self.paint_segment(
             scene,
             t,
@@ -1403,7 +1456,7 @@ impl TypstApp {
             "●".to_string()
         };
         let w = Self::pill_width(tr, &label);
-        let r = Rect::new(rx - w, y, rx, y + PILL_H);
+        let r = Rect::new(rx - w, y, rx, y + self.pill_h);
         self.paint_pill(
             scene,
             t,
@@ -1437,9 +1490,10 @@ impl TypstApp {
             scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
         }
         let fg = if active { Color::WHITE } else { c.text_primary };
-        let (tw, _) = tr.measure_weighted(label, PILL_FONT, None, TextWeight::Medium);
+        // Centre on the measured line box, never `size × 1.25`.
+        let (tw, th) = tr.measure_weighted(label, PILL_FONT, None, TextWeight::Medium);
         let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
-        let ty = rect.y0 + (rect.height() - f64::from(PILL_FONT) * 1.25) / 2.0;
+        let ty = rect.y0 + (rect.height() - f64::from(th)) / 2.0;
         tr.draw_text_weighted(
             scene,
             label,
@@ -1472,7 +1526,9 @@ impl TypstApp {
             ("Fit width", TbAction::Fit),
             (problems_label, TbAction::ToggleProblems),
         ];
-        let row_h = 32.0;
+        // Rows are the 1× 32 px grown by the label line's growth; each label
+        // centres on its measured line box.
+        let row_h = 32.0 + (self.pill_h - PILL_H);
         let pad = 6.0;
         let mut panel_w: f64 = 150.0;
         for (lbl, _) in &items {
@@ -1480,7 +1536,15 @@ impl TypstApp {
             panel_w = panel_w.max(f64::from(lw) + 28.0);
         }
         let h = items.len() as f64 * row_h + pad * 2.0;
-        let x1 = self.toolbar_rect.x1 - 10.0;
+        // Right-aligned under the kebab that opened it (compact: the bar's
+        // trailing pill; wide: wherever the folded action group ended), kept
+        // inside the window.
+        let anchor_x1 = if self.kebab_rect.width() > 0.0 {
+            self.kebab_rect.x1
+        } else {
+            self.toolbar_rect.x1 - 10.0
+        };
+        let x1 = anchor_x1.min(self.rect.x1 - 8.0).max(self.rect.x0 + 8.0 + panel_w);
         let x0 = (x1 - panel_w).max(self.rect.x0 + 8.0);
         let y0 = self.toolbar_rect.y1 + 4.0;
         let panel = Rect::new(x0, y0, x1, y0 + h);
@@ -1525,10 +1589,7 @@ impl TypstApp {
                 lbl,
                 PILL_FONT,
                 c.text_primary,
-                t * Affine::translate((
-                    row.x0 + 10.0,
-                    y + (row_h - f64::from(PILL_FONT) * 1.25) / 2.0,
-                )),
+                t * Affine::translate((row.x0 + 10.0, y + (row_h - self.pill_line) / 2.0)),
                 None,
             );
             self.menu_hits.push((act, row));
@@ -1970,6 +2031,24 @@ impl Widget for TypstApp {
         // doesn't).
         self.pump_worker();
 
+        // Toolbar metrics from this frame's measured pill line: the band and
+        // the pills grow by exactly the line's growth over its 1× box, and the
+        // width breakpoint is judged at the renderer's text scale. When the
+        // measurement changes (first frame at 200 %, a live scale change) the
+        // pane split is recomputed now, so this very frame paints coherently.
+        let (_, pill_line) = tr.measure_weighted("0", PILL_FONT, None, TextWeight::Medium);
+        let pill_line = f64::from(pill_line);
+        let text_k = f64::from(tr.text_scale()).max(f64::from(f32::EPSILON));
+        let growth = (pill_line - pill_line / text_k).max(0.0);
+        let toolbar_h = TOOLBAR_H + growth;
+        if (toolbar_h - self.toolbar_h).abs() > 0.01 || (text_k - self.text_k).abs() > 1e-6 {
+            self.toolbar_h = toolbar_h;
+            self.pill_h = PILL_H + growth;
+            self.pill_line = pill_line;
+            self.text_k = text_k;
+            self.layout_in(self.rect);
+        }
+
         let c = &theme.tokens.colors;
         scene.fill(Fill::NonZero, t, c.surfaces.base, None, &self.rect);
 
@@ -1996,7 +2075,7 @@ impl Widget for TypstApp {
         self.draw_status_bubbles(scene, t, tr, theme);
 
         // The overflow menu floats above everything else.
-        if self.compact && self.menu_open {
+        if self.menu_open {
             self.draw_menu(scene, t, tr, theme);
         }
 
@@ -2428,7 +2507,7 @@ impl TypstApp {
     ) {
         let p = self.mouse;
         // The compact overflow menu grabs clicks before anything else.
-        if self.compact && self.menu_open {
+        if self.menu_open {
             if let Some(a) = self.hit_menu(p) {
                 self.do_action(a, doc);
                 *handled = true;

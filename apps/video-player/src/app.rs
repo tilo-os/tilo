@@ -65,15 +65,31 @@ fn line_h(size: f32, text_scale: f64) -> f64 {
         clippy::cast_possible_truncation,
         reason = "text scale is clamped to 0.5..=4.0 by Theme"
     )]
-    let scaled = size * text_scale as f32;
-    f64::from(ui::text_render::TextStyle::new(scaled).line_height_px())
+    let scale = text_scale as f32;
+    ui::text_metrics::line_height_px(size, scale)
 }
 
-/// A floating capsule's width at `text_scale`: the authored 1× width with only
-/// its label part scaled, so a 2× label still fits without the whole capsule
-/// doubling and starving the media title on a narrow surface.
-fn capsule_w(authored_1x: f64, text_scale: f64) -> f64 {
-    BUTTON_PAD_X + (authored_1x - BUTTON_PAD_X) * text_scale
+/// A floating capsule's width: the shared `Button`'s side padding around the
+/// label's **measured** width when the renderer has measured it (`draw`
+/// caches the two labels per text scale — see `StripLabels`), else the
+/// authored 1× width with only its label part scaled, which is what the
+/// first frame at a new scale uses before any measurement exists.
+fn capsule_w(authored_1x: f64, text_scale: f64, measured_label_w: Option<f64>) -> f64 {
+    match measured_label_w {
+        Some(label_w) => (BUTTON_PAD_X + label_w).max(BUTTON_PAD_X),
+        None => BUTTON_PAD_X + (authored_1x - BUTTON_PAD_X) * text_scale,
+    }
+}
+
+/// The two floating capsule labels measured with the frame's renderer, keyed
+/// by the text scale they were measured at. `apply_layout` has a theme but no
+/// renderer, so `draw` measures and caches these and re-places the strip when
+/// the cache changes; the next `apply_layout` then agrees with paint.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct StripLabels {
+    text_scale: f64,
+    library_w: f64,
+    open_w: f64,
 }
 /// One gutter for everything in the library panel — title, subtitle, tabs, row
 /// text on the left; Close/Clear and each row's Play on the right.
@@ -109,9 +125,71 @@ impl TopStrip {
     }
 }
 
-/// The library panel's fixed chrome, derived once from the panel rect so the
-/// hit rects set in `apply_layout` and the faces painted in
-/// `paint_library_panel` cannot drift apart.
+/// Library panel type sizes. Renderer-relative like every legacy
+/// `measure`/`draw_text` size (the renderer applies the text scale), used by
+/// both the geometry (to size boxes from the measured line) and the paint.
+const PANEL_TITLE_SIZE: f32 = 18.0;
+const PANEL_SUBTITLE_SIZE: f32 = 12.0;
+const PANEL_HEADER_BUTTON_SIZE: f32 = 12.0;
+const PANEL_TAB_SIZE: f32 = 13.0;
+const PANEL_ROW_TITLE_SIZE: f32 = 14.0;
+const PANEL_ROW_SUBTITLE_SIZE: f32 = 12.0;
+const PANEL_ROW_CONTROL_SIZE: f32 = 11.0;
+/// Authored 1× panel chrome. Each height is a floor: it holds until the
+/// measured label line (plus its padding) needs more, so nothing moves at 1×
+/// and 200% text stops painting through the next line (title over subtitle,
+/// subtitle over tabs, "Remove" over "Play", 1× row pitch under 2× glyphs).
+const PANEL_WIDTH: f64 = 360.0;
+const PANEL_HEADER_TOP: f64 = 10.0;
+const PANEL_HEADER_BUTTON_H: f64 = 28.0;
+const PANEL_CLOSE_W: f64 = 56.0;
+const PANEL_CLEAR_W: f64 = 50.0;
+const PANEL_BUTTON_GAP: f64 = 6.0;
+const PANEL_SECTION_GAP: f64 = 12.0;
+const PANEL_TAB_H: f64 = 30.0;
+const PANEL_QUEUE_TAB_W: f64 = 86.0;
+const PANEL_RECENT_TAB_W: f64 = 92.0;
+const PANEL_ROW_H: f64 = 58.0;
+const PANEL_ROW_GAP: f64 = 4.0;
+const PANEL_ROW_PAD_Y: f64 = 8.0;
+const PANEL_ROW_TITLE_BOX_H: f64 = 21.0;
+const PANEL_CONTROL_H: f64 = 44.0;
+const PANEL_PLAY_W: f64 = 48.0;
+const PANEL_REMOVE_W: f64 = 50.0;
+/// Vertical room either side of a label inside a panel button / tab.
+const PANEL_LABEL_PAD_Y: f64 = 4.0;
+/// The panel subtitle — measured for its wrapped height in the panel gutter.
+const PANEL_SUBTITLE: &str = "Local to this device · paths never shared";
+/// The floating strip's scrim opacity over the media (the authored 90/255).
+/// The scrim itself is the theme's over-media `surfaces.scrim` — the same
+/// token the shared transport bar uses — so both edges of the window agree.
+const STRIP_SCRIM_ALPHA: f32 = 90.0 / 255.0;
+/// Horizontal room a compact panel control keeps around its measured label
+/// (6 px a side) before its authored width has to grow.
+const PANEL_LABEL_PAD_X: f64 = 12.0;
+
+/// The library panel's labels measured with the frame's renderer at one text
+/// scale and panel width. `apply_layout` has a theme but no renderer, so
+/// `paint_library_panel` measures these, caches them and re-places the panel
+/// when they change; until the first paint at a scale the authored widths,
+/// scaled by the text factor, stand in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PanelLabels {
+    text_scale: f64,
+    panel_w: f64,
+    close_w: f64,
+    clear_w: f64,
+    queue_w: f64,
+    recent_w: f64,
+    remove_w: f64,
+    play_w: f64,
+    /// The subtitle's wrapped height inside the panel gutter.
+    subtitle_h: f64,
+}
+
+/// The library panel's chrome, derived once from the panel rect (and the
+/// text scale / measured labels) so the hit rects set in `apply_layout` and
+/// the faces painted in `paint_library_panel` cannot drift apart.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LibraryPanelGeometry {
     title: Rect,
@@ -121,30 +199,94 @@ struct LibraryPanelGeometry {
     queue_tab: Rect,
     recent_tab: Rect,
     rows_top: f64,
+    /// One row's surface height (authored 58) — the pitch adds `PANEL_ROW_GAP`.
+    row_h: f64,
+    /// The row title's box under `PANEL_ROW_PAD_Y`; the subtitle box follows it.
+    row_title_box_h: f64,
+    /// The Play / Remove capsules, centred in the row.
+    control_h: f64,
+    play_w: f64,
+    remove_w: f64,
 }
 
 impl LibraryPanelGeometry {
-    fn for_panel(panel: Rect) -> Self {
+    fn for_panel(panel: Rect, text_scale: f64, labels: Option<PanelLabels>) -> Self {
+        let labels = labels.filter(|l| {
+            (l.text_scale - text_scale).abs() < f64::EPSILON
+                && (l.panel_w - panel.width()).abs() < 0.5
+        });
+        // Authored width, grown to hold a measured label with `pad` around it;
+        // before any measurement the authored width scales with the text.
+        let grown = |authored: f64, measured: Option<f64>, pad: f64| match measured {
+            Some(label_w) => authored.max(label_w + pad),
+            None => authored * text_scale,
+        };
         let left = panel.x0 + PANEL_GUTTER;
         let right = panel.x1 - PANEL_GUTTER;
-        let header_y = panel.y0 + 10.0;
-        let close = Rect::new(right - 56.0, header_y, right, header_y + 28.0);
-        let clear = Rect::new(
-            close.x0 - 6.0 - 50.0,
-            header_y,
-            close.x0 - 6.0,
-            header_y + 28.0,
+        let header_y = panel.y0 + PANEL_HEADER_TOP;
+        let header_button_h = PANEL_HEADER_BUTTON_H
+            .max(line_h(PANEL_HEADER_BUTTON_SIZE, text_scale) + PANEL_LABEL_PAD_Y * 2.0);
+        let title_h = PANEL_HEADER_BUTTON_H.max(line_h(PANEL_TITLE_SIZE, text_scale));
+        let header_h = header_button_h.max(title_h);
+        let close_w = grown(PANEL_CLOSE_W, labels.map(|l| l.close_w), PANEL_LABEL_PAD_X);
+        let clear_w = grown(PANEL_CLEAR_W, labels.map(|l| l.clear_w), PANEL_LABEL_PAD_X);
+        let button_y0 = header_y + (header_h - header_button_h) / 2.0;
+        let close = Rect::new(
+            right - close_w,
+            button_y0,
+            right,
+            button_y0 + header_button_h,
         );
+        let clear = Rect::new(
+            close.x0 - PANEL_BUTTON_GAP - clear_w,
+            button_y0,
+            close.x0 - PANEL_BUTTON_GAP,
+            button_y0 + header_button_h,
+        );
+        // 1×: 38..54 — the measured single line plus 1 px; a wrapped 200%
+        // subtitle pushes the tabs down instead of painting through them.
+        let subtitle_line =
+            labels.map_or_else(|| line_h(PANEL_SUBTITLE_SIZE, text_scale), |l| l.subtitle_h);
+        let subtitle_y0 = header_y + header_h;
+        let subtitle = Rect::new(left, subtitle_y0, right, subtitle_y0 + subtitle_line + 1.0);
+        let tab_h = PANEL_TAB_H.max(line_h(PANEL_TAB_SIZE, text_scale) + PANEL_LABEL_PAD_Y * 2.0);
+        let tabs_y0 = subtitle.y1 + PANEL_SECTION_GAP;
+        let queue_w = grown(PANEL_QUEUE_TAB_W, labels.map(|l| l.queue_w), BUTTON_PAD_X);
+        let recent_w = grown(PANEL_RECENT_TAB_W, labels.map(|l| l.recent_w), BUTTON_PAD_X);
+        let queue_tab = Rect::new(left, tabs_y0, left + queue_w, tabs_y0 + tab_h);
+        let recent_tab = Rect::new(
+            queue_tab.x1 + PANEL_BUTTON_GAP,
+            tabs_y0,
+            queue_tab.x1 + PANEL_BUTTON_GAP + recent_w,
+            tabs_y0 + tab_h,
+        );
+        // Rows: 8 px, the title box (21 at 1×), the subtitle line, 8 px.
+        let row_title_box_h =
+            PANEL_ROW_TITLE_BOX_H.max(line_h(PANEL_ROW_TITLE_SIZE, text_scale) + 3.5);
+        let row_h = PANEL_ROW_H.max(
+            PANEL_ROW_PAD_Y * 2.0 + row_title_box_h + line_h(PANEL_ROW_SUBTITLE_SIZE, text_scale),
+        );
+        let control_h =
+            PANEL_CONTROL_H.max(line_h(PANEL_ROW_CONTROL_SIZE, text_scale) + PANEL_ROW_PAD_Y * 2.0);
         Self {
             // The title ends before the header's leftmost button slot (Clear,
             // shown on the Recent tab) so it can never run under either button.
-            title: Rect::new(left, header_y, clear.x0 - 8.0, header_y + 28.0),
-            subtitle: Rect::new(left, panel.y0 + 38.0, right, panel.y0 + 54.0),
+            title: Rect::new(left, header_y, clear.x0 - 8.0, header_y + header_h),
+            subtitle,
             close,
             clear,
-            queue_tab: Rect::new(left, panel.y0 + 66.0, left + 86.0, panel.y0 + 96.0),
-            recent_tab: Rect::new(left + 92.0, panel.y0 + 66.0, left + 184.0, panel.y0 + 96.0),
-            rows_top: panel.y0 + 108.0,
+            queue_tab,
+            recent_tab,
+            rows_top: recent_tab.y1 + PANEL_SECTION_GAP,
+            row_h,
+            row_title_box_h,
+            control_h,
+            play_w: grown(PANEL_PLAY_W, labels.map(|l| l.play_w), PANEL_LABEL_PAD_X),
+            remove_w: grown(
+                PANEL_REMOVE_W,
+                labels.map(|l| l.remove_w),
+                PANEL_LABEL_PAD_X,
+            ),
         }
     }
 }
@@ -373,6 +515,11 @@ pub struct PlayerApp {
     /// while the overlay is shown.
     open_button_rect: Rect,
     library_button_rect: Rect,
+    /// Measured "Library" / "Open" label widths at the current text scale
+    /// (see `StripLabels`); `None` until the first paint at that scale.
+    strip_labels: Option<StripLabels>,
+    /// Measured library-panel labels (see `PanelLabels`); same lifecycle.
+    panel_labels: Option<PanelLabels>,
     library_panel_rect: Rect,
     library_queue_tab_rect: Rect,
     library_recent_tab_rect: Rect,
@@ -658,6 +805,8 @@ impl PlayerApp {
             rect: Rect::ZERO,
             open_button_rect: Rect::ZERO,
             library_button_rect: Rect::ZERO,
+            strip_labels: None,
+            panel_labels: None,
             library_panel_rect: Rect::ZERO,
             library_queue_tab_rect: Rect::ZERO,
             library_recent_tab_rect: Rect::ZERO,
@@ -1704,6 +1853,113 @@ impl PlayerApp {
         TopStrip::at(self.rect.y0, self.text_scale)
     }
 
+    /// Place the Library and Open capsules on the strip's centre line. The
+    /// **only** writer of `library_button_rect` / `open_button_rect`: called
+    /// from `apply_layout`, and again from `draw` when a fresh label
+    /// measurement changes the capsule widths, so hit-testing, focus, the
+    /// accessibility export and paint always read the same rects.
+    fn place_top_strip(&mut self) {
+        let strip = self.top_strip();
+        let labels = self
+            .strip_labels
+            .filter(|labels| (labels.text_scale - self.text_scale).abs() < f64::EPSILON);
+        let by0 = strip.center_y - strip.button_h / 2.0;
+        let by1 = strip.center_y + strip.button_h / 2.0;
+        let bx1 = self.rect.x1 - OVERLAY_MARGIN;
+        let open_w = capsule_w(OPEN_BTN_W, self.text_scale, labels.map(|l| l.open_w));
+        let bx0 = (bx1 - open_w).max(self.rect.x0);
+        self.open_button_rect = Rect::new(bx0, by0, bx1, by1);
+        let lx0 = self.rect.x0 + OVERLAY_MARGIN;
+        // Never let the Library rect invert on a surface too narrow for both
+        // capsules: it is published to hit-testing, focus and accessibility.
+        let library_w = capsule_w(LIBRARY_BTN_W, self.text_scale, labels.map(|l| l.library_w));
+        let lx1 = (lx0 + library_w).min(bx0 - OVERLAY_MARGIN).max(lx0);
+        self.library_button_rect = Rect::new(lx0, by0, lx1, by1);
+    }
+
+    /// Measure the two capsule labels with the frame's renderer (the one
+    /// `Button::paint` will draw them with) and, if that differs from what
+    /// `apply_layout` placed with, re-place the strip before painting.
+    fn refresh_strip_labels(&mut self, text_renderer: &mut TextRenderer) {
+        let measured = StripLabels {
+            text_scale: self.text_scale,
+            library_w: f64::from(text_renderer.measure("Library", BUTTON_LABEL_SIZE, None).0),
+            open_w: f64::from(text_renderer.measure("Open", BUTTON_LABEL_SIZE, None).0),
+        };
+        if self.strip_labels != Some(measured) {
+            self.strip_labels = Some(measured);
+            self.place_top_strip();
+        }
+    }
+
+    /// Place the library panel and its header controls. The **only** writer
+    /// of the panel rects: `apply_layout` calls it, and `paint_library_panel`
+    /// calls it again when a fresh label measurement changes the geometry.
+    /// The panel's authored 360 px scales with the text so 200% rows keep
+    /// their two-line shape; below 640 px it takes the whole surface.
+    fn place_library_panel(&mut self) -> LibraryPanelGeometry {
+        let panel_width = if self.rect.width() < 640.0 {
+            self.rect.width()
+        } else {
+            (PANEL_WIDTH * self.text_scale).min(self.rect.width())
+        };
+        self.library_panel_rect = Rect::new(
+            self.rect.x1 - panel_width,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y1,
+        );
+        let panel = LibraryPanelGeometry::for_panel(
+            self.library_panel_rect,
+            self.text_scale,
+            self.panel_labels,
+        );
+        self.library_close_rect = panel.close;
+        self.library_clear_rect = panel.clear;
+        self.library_queue_tab_rect = panel.queue_tab;
+        self.library_recent_tab_rect = panel.recent_tab;
+        panel
+    }
+
+    /// Measure the panel's labels with the frame's renderer and, if that
+    /// differs from what `apply_layout` placed with, re-place the panel
+    /// before painting so hit rects and faces agree this frame.
+    fn refresh_panel_labels(&mut self, text_renderer: &mut TextRenderer) -> LibraryPanelGeometry {
+        let panel = self.library_panel_rect;
+        let gutter_w = (panel.width() - 2.0 * PANEL_GUTTER).max(0.0) as f32;
+        let width = |tr: &mut TextRenderer, label: &str, size: f32| {
+            f64::from(tr.measure(label, size, None).0)
+        };
+        let measured = PanelLabels {
+            text_scale: self.text_scale,
+            panel_w: panel.width(),
+            close_w: width(text_renderer, "Close", PANEL_HEADER_BUTTON_SIZE),
+            clear_w: width(text_renderer, "Clear", PANEL_HEADER_BUTTON_SIZE),
+            queue_w: width(text_renderer, "Queue", PANEL_TAB_SIZE),
+            recent_w: width(text_renderer, "Recent", PANEL_TAB_SIZE),
+            remove_w: width(text_renderer, "Remove", PANEL_ROW_CONTROL_SIZE),
+            play_w: width(text_renderer, "Play", PANEL_ROW_CONTROL_SIZE).max(width(
+                text_renderer,
+                "Replay",
+                PANEL_ROW_CONTROL_SIZE,
+            )),
+            subtitle_h: f64::from(
+                text_renderer
+                    .measure_weighted(
+                        PANEL_SUBTITLE,
+                        PANEL_SUBTITLE_SIZE,
+                        Some(gutter_w),
+                        TextWeight::Regular,
+                    )
+                    .1,
+            ),
+        };
+        // `place_library_panel` is the one geometry writer; re-running it with
+        // unchanged labels writes the same rects, so no second derivation.
+        self.panel_labels = Some(measured);
+        self.place_library_panel()
+    }
+
     /// Paint the floating top overlay: the media title (left) over a soft scrim
     /// and the Open pill (right). Drawn on top of the video, only when
     /// [`Self::overlay_visible`]. There is no persistent chrome bar — the video
@@ -1741,19 +1997,22 @@ impl PlayerApp {
             self.rect.x1,
             self.rect.y0 + strip.scrim_h,
         );
+        // Over-media scrim from the theme's `surfaces.scrim` token (the shared
+        // transport bar's scrim, so both window edges agree) with ink chosen
+        // against it — it used to be a literal black with a literal
+        // near-white title.
+        let scrim_color = theme.tokens.colors.surfaces.scrim;
+        let on_scrim = theme.on_surface(scrim_color);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            vello::peniko::Color::from_rgba8(0, 0, 0, 90),
+            scrim_color.multiply_alpha(STRIP_SCRIM_ALPHA),
             None,
             &scrim,
         );
         // Title (left), centred on the strip's one centre line — the line the
         // Library and Open buttons are centred on — using the line height the
-        // renderer reports for this size rather than the font size. The scrim
-        // is always dark (over-media chrome), so the label is a fixed
-        // near-white in every theme — `text_primary` would flip to near-black
-        // on light and vanish against the dark scrim.
+        // renderer reports for this size rather than the font size.
         let display_title = if self.player.has_media() {
             self.title.as_str()
         } else {
@@ -1770,10 +2029,14 @@ impl PlayerApp {
             scene,
             &display_title,
             TITLE_SIZE,
-            vello::peniko::Color::from_rgb8(245, 246, 250),
+            on_scrim.ink,
             transform * Affine::translate((title_x, ty)),
             None,
         );
+        // Library is the shared Button's neutral face: its own raised fill
+        // carries `text_primary`, so it reads on the dark scrim in every
+        // theme (the ghost face drew `text_primary` straight onto the scrim —
+        // near-black on black in light themes).
         if self.library_button_rect.width() > 0.0 {
             Button::paint(
                 scene,
@@ -1781,7 +2044,7 @@ impl PlayerApp {
                 text_renderer,
                 theme,
                 &ButtonFace::new(self.library_button_rect, "Library")
-                    .ghost()
+                    .radius(self.library_button_rect.height() / 2.0)
                     .text_size(BUTTON_LABEL_SIZE)
                     .focused(self.library_focused)
                     .hovered(self.library_button_rect.contains(self.last_cursor)),
@@ -1863,10 +2126,12 @@ impl PlayerApp {
         if !self.library_visible || self.library_panel_rect.width() <= 0.0 {
             return;
         }
+        // Same description `apply_layout` used for the hit rects, refreshed
+        // with this frame's label measurements (which re-places the hit rects
+        // too, so both stay one geometry).
+        let geometry = self.refresh_panel_labels(text_renderer);
         let colors = &theme.tokens.colors;
         let panel = self.library_panel_rect;
-        // Same description `apply_layout` used for the hit rects.
-        let geometry = LibraryPanelGeometry::for_panel(panel);
         fill_rect(scene, transform, panel, colors.surfaces.raised);
         fill_rect(
             scene,
@@ -1880,7 +2145,7 @@ impl PlayerApp {
             transform,
             geometry.title,
             "Library",
-            18.0,
+            PANEL_TITLE_SIZE,
             colors.text_primary,
             TextWeight::Semibold,
         );
@@ -1889,8 +2154,8 @@ impl PlayerApp {
             text_renderer,
             transform,
             geometry.subtitle,
-            "Local to this device · paths never shared",
-            12.0,
+            PANEL_SUBTITLE,
+            PANEL_SUBTITLE_SIZE,
             colors.text_dim,
             TextWeight::Regular,
         );
@@ -1901,7 +2166,7 @@ impl PlayerApp {
             theme,
             &ButtonFace::new(self.library_close_rect, "Close")
                 .ghost()
-                .text_size(12.0)
+                .text_size(PANEL_HEADER_BUTTON_SIZE)
                 .hovered(self.library_close_rect.contains(self.last_cursor)),
         );
         if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
@@ -1912,7 +2177,7 @@ impl PlayerApp {
                 theme,
                 &ButtonFace::new(self.library_clear_rect, "Clear")
                     .ghost()
-                    .text_size(12.0)
+                    .text_size(PANEL_HEADER_BUTTON_SIZE)
                     .focused(self.library_focus_id.as_deref() == Some("library-clear"))
                     .hovered(self.library_clear_rect.contains(self.last_cursor)),
             );
@@ -1922,7 +2187,9 @@ impl PlayerApp {
             ("Queue", self.library_queue_tab_rect, queue_active),
             ("Recent", self.library_recent_tab_rect, !queue_active),
         ] {
-            let mut face = ButtonFace::new(rect, label).ghost().text_size(13.0);
+            let mut face = ButtonFace::new(rect, label)
+                .ghost()
+                .text_size(PANEL_TAB_SIZE);
             if active {
                 face = face.primary();
             }
@@ -1940,7 +2207,7 @@ impl PlayerApp {
             LibraryTab::Recent => self.recent.iter().cloned().collect(),
         };
         let mut y = geometry.rows_top;
-        let row_h = 62.0;
+        let row_h = geometry.row_h + PANEL_ROW_GAP;
         if entries.is_empty() {
             panel_text(
                 scene,
@@ -1978,21 +2245,25 @@ impl PlayerApp {
                 panel.x0 + PANEL_ROW_INSET,
                 y,
                 panel.x1 - PANEL_ROW_INSET,
-                y + row_h - 4.0,
+                y + geometry.row_h,
             );
             let content_x0 = rect.x0 + PANEL_ROW_INSET;
             let controls_x1 = rect.x1 - PANEL_ROW_INSET;
+            // Play / Remove centred in the row (7 px in at 1×), widths grown
+            // to the measured labels when those need more than the authored.
+            let control_y0 = rect.y0 + (geometry.row_h - geometry.control_h) / 2.0;
+            let control_y1 = control_y0 + geometry.control_h;
             let play = Rect::new(
-                controls_x1 - 48.0,
-                rect.y0 + 7.0,
+                controls_x1 - geometry.play_w,
+                control_y0,
                 controls_x1,
-                rect.y0 + 51.0,
+                control_y1,
             );
             let remove = (self.library_tab == LibraryTab::Queue).then_some(Rect::new(
-                play.x0 - 6.0 - 50.0,
-                rect.y0 + 7.0,
-                play.x0 - 6.0,
-                rect.y0 + 51.0,
+                play.x0 - PANEL_BUTTON_GAP - geometry.remove_w,
+                control_y0,
+                play.x0 - PANEL_BUTTON_GAP,
+                control_y1,
             ));
             if rect.contains(self.last_cursor) {
                 fill_rect(scene, transform, rect, colors.neutral[2]);
@@ -2004,17 +2275,25 @@ impl PlayerApp {
             // a just-fitting title run into the Remove/Play faces.
             let label = text_renderer.elide_to_width_weighted(
                 &entry.title,
-                14.0,
+                PANEL_ROW_TITLE_SIZE,
                 (text_x1 - content_x0).max(0.0) as f32,
                 TextWeight::Medium,
+            );
+            // Title box under the row's top padding, subtitle box beneath it
+            // to the bottom padding — the same boxes `row_h` was sized from.
+            let title_box = Rect::new(
+                content_x0,
+                rect.y0 + PANEL_ROW_PAD_Y,
+                text_x1,
+                rect.y0 + PANEL_ROW_PAD_Y + geometry.row_title_box_h,
             );
             panel_text(
                 scene,
                 text_renderer,
                 transform,
-                Rect::new(content_x0, rect.y0 + 8.0, text_x1, rect.y0 + 29.0),
+                title_box,
                 &label,
-                14.0,
+                PANEL_ROW_TITLE_SIZE,
                 if active {
                     colors.accent[6]
                 } else {
@@ -2026,13 +2305,13 @@ impl PlayerApp {
                 scene,
                 text_renderer,
                 transform,
-                Rect::new(content_x0, rect.y0 + 29.0, text_x1, rect.y1 - 4.0),
+                Rect::new(content_x0, title_box.y1, text_x1, rect.y1 - PANEL_ROW_GAP),
                 if active {
                     "Playing on this device"
                 } else {
                     "Local video"
                 },
-                12.0,
+                PANEL_ROW_SUBTITLE_SIZE,
                 colors.text_dim,
                 TextWeight::Regular,
             );
@@ -2044,7 +2323,7 @@ impl PlayerApp {
                     theme,
                     &ButtonFace::new(remove, "Remove")
                         .ghost()
-                        .text_size(11.0)
+                        .text_size(PANEL_ROW_CONTROL_SIZE)
                         .focused(
                             self.library_focus_id.as_deref()
                                 == Some(format!("library-remove-{}", entry.id).as_str()),
@@ -2066,7 +2345,7 @@ impl PlayerApp {
                     },
                 )
                 .primary()
-                .text_size(11.0)
+                .text_size(PANEL_ROW_CONTROL_SIZE)
                 .focused(self.library_focus_id.as_deref() == Some(entry.id.as_str()))
                 .hovered(play.contains(self.last_cursor)),
             );
@@ -2327,38 +2606,8 @@ impl Widget for PlayerApp {
         self.player.apply_layout(taffy, player_node, new_origin);
         // Floating top strip — Library (left), title, Open pill (right) — all
         // centred on one line and contained by one scrim (see `TopStrip`).
-        // Only the label part of each capsule grows with the text scale
-        // (`capsule_w`), so a 2× label fits without the media title in between
-        // being starved on a narrow surface.
-        let strip = self.top_strip();
-        let by0 = strip.center_y - strip.button_h / 2.0;
-        let by1 = strip.center_y + strip.button_h / 2.0;
-        let bx1 = self.rect.x1 - OVERLAY_MARGIN;
-        let bx0 = (bx1 - capsule_w(OPEN_BTN_W, self.text_scale)).max(self.rect.x0);
-        self.open_button_rect = Rect::new(bx0, by0, bx1, by1);
-        let lx0 = self.rect.x0 + OVERLAY_MARGIN;
-        // Never let the Library rect invert on a surface too narrow for both
-        // capsules: it is published to hit-testing, focus and accessibility.
-        let lx1 = (lx0 + capsule_w(LIBRARY_BTN_W, self.text_scale))
-            .min(bx0 - OVERLAY_MARGIN)
-            .max(lx0);
-        self.library_button_rect = Rect::new(lx0, by0, lx1, by1);
-        let panel_width = if self.rect.width() < 640.0 {
-            self.rect.width()
-        } else {
-            360.0_f64.min(self.rect.width())
-        };
-        self.library_panel_rect = Rect::new(
-            self.rect.x1 - panel_width,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1,
-        );
-        let panel = LibraryPanelGeometry::for_panel(self.library_panel_rect);
-        self.library_close_rect = panel.close;
-        self.library_clear_rect = panel.clear;
-        self.library_queue_tab_rect = panel.queue_tab;
-        self.library_recent_tab_rect = panel.recent_tab;
+        self.place_top_strip();
+        self.place_library_panel();
     }
 
     fn draw(
@@ -2373,6 +2622,7 @@ impl Widget for PlayerApp {
             .draw(scene, transform, text_renderer, theme, presence);
         self.paint_media_status_copy(scene, transform, text_renderer, theme);
         if self.overlay_visible() {
+            self.refresh_strip_labels(text_renderer);
             self.paint_overlay(scene, transform, text_renderer, theme);
         }
         self.paint_library_panel(scene, transform, text_renderer, theme);
@@ -3189,6 +3439,125 @@ mod tests {
         app.apply_layout(&taffy, child, Point::ORIGIN);
     }
 
+    /// 2026-09-17 review: the capsules scaled their authored label part by
+    /// the theme factor. Once the frame's renderer has measured the labels
+    /// (the paint pass does this), both capsules are the shared Button's
+    /// padding around the **measured** label, re-placed on the same centre
+    /// line with the same margins — one geometry for hit-testing and paint.
+    #[test]
+    fn capsules_take_their_measured_label_widths_once_painted() {
+        for scale in [1.0_f32, 2.0] {
+            let mut app = PlayerApp::for_shot(None, Some("playing"));
+            lay_out(&mut app, (1200.0, 800.0), scale);
+            let estimated = (app.library_button_rect, app.open_button_rect);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            app.refresh_strip_labels(&mut tr);
+            let library_w = f64::from(tr.measure("Library", BUTTON_LABEL_SIZE, None).0);
+            let open_w = f64::from(tr.measure("Open", BUTTON_LABEL_SIZE, None).0);
+            let (library, open) = (app.library_button_rect, app.open_button_rect);
+            assert!(
+                (open.width() - (BUTTON_PAD_X + open_w)).abs() < 0.01
+                    && (library.width() - (BUTTON_PAD_X + library_w)).abs() < 0.01,
+                "{scale}×: capsules are padding around the measured labels: {library:?} {open:?}"
+            );
+            let strip = app.top_strip();
+            assert!(
+                (open.center().y - strip.center_y).abs() < 0.01
+                    && (library.center().y - strip.center_y).abs() < 0.01
+                    && (app.rect.x1 - open.x1 - OVERLAY_MARGIN).abs() < 0.01
+                    && (library.x0 - app.rect.x0 - OVERLAY_MARGIN).abs() < 0.01,
+                "{scale}×: re-placed capsules keep the centre line and margins"
+            );
+            // A second measurement at the same scale changes nothing.
+            app.refresh_strip_labels(&mut tr);
+            assert_eq!(
+                (app.library_button_rect, app.open_button_rect),
+                (library, open)
+            );
+            let _ = estimated;
+        }
+    }
+
+    /// 2026-09-17 review: at 200% the library panel painted its title over
+    /// the subtitle, the subtitle over the tabs and "Remove" over "Play",
+    /// with 1× row pitch under 2× glyphs. The geometry keeps the authored 1×
+    /// chrome and grows each part from the measured line at larger text.
+    #[test]
+    fn library_panel_geometry_stacks_measured_lines_at_2x() {
+        let panel = Rect::new(840.0, 0.0, 1200.0, 800.0);
+        let one = LibraryPanelGeometry::for_panel(panel, 1.0, None);
+        assert_eq!(one.close.height(), PANEL_HEADER_BUTTON_H);
+        assert_eq!(one.subtitle.y0, 38.0);
+        assert_eq!(one.queue_tab.y0, 66.0);
+        assert_eq!(one.queue_tab.height(), PANEL_TAB_H);
+        assert_eq!(one.rows_top, 108.0);
+        assert_eq!(one.row_h, PANEL_ROW_H);
+        assert_eq!(one.control_h, PANEL_CONTROL_H);
+        assert_eq!((one.play_w, one.remove_w), (PANEL_PLAY_W, PANEL_REMOVE_W));
+
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let width = |tr: &mut TextRenderer, label: &str, size: f32| {
+            f64::from(tr.measure(label, size, None).0)
+        };
+        let labels = PanelLabels {
+            text_scale: 2.0,
+            panel_w: panel.width(),
+            close_w: width(&mut tr, "Close", PANEL_HEADER_BUTTON_SIZE),
+            clear_w: width(&mut tr, "Clear", PANEL_HEADER_BUTTON_SIZE),
+            queue_w: width(&mut tr, "Queue", PANEL_TAB_SIZE),
+            recent_w: width(&mut tr, "Recent", PANEL_TAB_SIZE),
+            remove_w: width(&mut tr, "Remove", PANEL_ROW_CONTROL_SIZE),
+            play_w: width(&mut tr, "Replay", PANEL_ROW_CONTROL_SIZE),
+            subtitle_h: f64::from(
+                tr.measure_weighted(
+                    PANEL_SUBTITLE,
+                    PANEL_SUBTITLE_SIZE,
+                    Some((panel.width() - 2.0 * PANEL_GUTTER) as f32),
+                    TextWeight::Regular,
+                )
+                .1,
+            ),
+        };
+        let two = LibraryPanelGeometry::for_panel(panel, 2.0, Some(labels));
+        let title_line = f64::from(tr.measure("Library", PANEL_TITLE_SIZE, None).1);
+        assert!(
+            two.title.height() >= title_line,
+            "2× header holds the title line"
+        );
+        assert!(
+            two.subtitle.y0 >= two.title.y1 && two.subtitle.height() >= labels.subtitle_h,
+            "2× subtitle starts under the header and holds its wrapped lines: {two:?}"
+        );
+        assert!(
+            two.queue_tab.y0 >= two.subtitle.y1,
+            "2× tabs start under the subtitle"
+        );
+        assert!(
+            two.rows_top >= two.recent_tab.y1,
+            "2× rows start under the tabs"
+        );
+        let row_lines = f64::from(tr.measure("Ag", PANEL_ROW_TITLE_SIZE, None).1)
+            + f64::from(tr.measure("Ag", PANEL_ROW_SUBTITLE_SIZE, None).1);
+        assert!(
+            two.row_h >= row_lines + 2.0 * PANEL_ROW_PAD_Y,
+            "2× rows hold two measured lines: {}",
+            two.row_h
+        );
+        assert!(
+            two.play_w >= labels.play_w + PANEL_LABEL_PAD_X
+                && two.remove_w >= labels.remove_w + PANEL_LABEL_PAD_X
+                && two.close.width() >= labels.close_w + PANEL_LABEL_PAD_X,
+            "2× controls hold their measured labels: {two:?}"
+        );
+        assert!(
+            two.control_h <= two.row_h
+                && two.control_h >= f64::from(tr.measure("Play", PANEL_ROW_CONTROL_SIZE, None).1),
+            "2× controls fit the row and hold their label"
+        );
+    }
+
     /// 2026-09-16 alignment review: the title was centred on its font size in
     /// a 44 px scrim while the buttons were `OVERLAY_MARGIN + OPEN_BTN_H`
     /// deep — two centre lines, and the buttons overhung the scrim by 2 px. At
@@ -3247,7 +3616,7 @@ mod tests {
     #[test]
     fn library_panel_chrome_shares_one_gutter() {
         let panel = Rect::new(840.0, 0.0, 1200.0, 800.0);
-        let g = LibraryPanelGeometry::for_panel(panel);
+        let g = LibraryPanelGeometry::for_panel(panel, 1.0, None);
         let left = panel.x0 + PANEL_GUTTER;
         let right = panel.x1 - PANEL_GUTTER;
         assert_eq!(g.title.x0, left);

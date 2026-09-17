@@ -10,29 +10,80 @@ use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
+use crate::text_metrics::{centered_text_top, renderer_type_size};
 use crate::platform::{DialogActionOrder, PlatformConventions};
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::{Metrics, Spacing, TypeScale};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::button::{Button, ButtonFace, ButtonStyle};
+use crate::widget::modal_frame::MODAL_SCRIM_ALPHA;
 
 pub const MAX_DIALOG_WIDTH: f64 = 480.0;
 pub const MAX_DIALOG_HEIGHT: f64 = 320.0;
-/// Fits `typography.scale.lg` (16px) plus `spacing.s4` (16px) padding.
-const TITLE_BAR_HEIGHT: f64 = 48.0;
-/// Fits a 40px button (matching `Button`) plus an 8px top/bottom inset.
-const FOOTER_HEIGHT: f64 = 56.0;
 /// Wide enough for short labels without truncating; matches
 /// `permission_prompt`'s button width.
 const ACTION_BUTTON_WIDTH: f64 = 110.0;
-/// Matches `Button::build_layout`'s fixed height.
-const ACTION_BUTTON_HEIGHT: f64 = 40.0;
+
+/// The dialog's chrome geometry, resolved from the theme once per layout pass
+/// (and cached, because `recompute_layout` also runs from builder methods
+/// that carry no theme). Each is a token expression, not a number: the title
+/// bar is the heading's token size (`scale.lg`) plus `spacing.s4` above and
+/// below — 48 at 1×, and taller at a large text setting so the bar is sized
+/// for the heading it hosts; the footer is the shared `Button` height
+/// (`metrics.bar_height`) plus an `spacing.s2` inset above and below (56 at
+/// 1×), with the buttons `s4` in from the trailing edge and `s2` apart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DialogChrome {
+    title_bar: f64,
+    footer: f64,
+    button: f64,
+    /// Inset of the button group from the card's trailing edge (`s4`).
+    footer_inset_x: f64,
+    /// Gap between the two footer buttons (`s2`).
+    button_gap: f64,
+}
+
+impl DialogChrome {
+    fn from_theme(theme: &Theme) -> Self {
+        let t = &theme.tokens;
+        Self::from_parts(
+            t.typography.scale.lg,
+            t.spacing.s4,
+            t.metrics.bar_height,
+            t.spacing.s2,
+        )
+    }
+
+    fn from_parts(heading: f32, title_pad: f32, button: f32, footer_pad: f32) -> Self {
+        Self {
+            title_bar: f64::from(heading) + 2.0 * f64::from(title_pad),
+            footer: f64::from(button) + 2.0 * f64::from(footer_pad),
+            button: f64::from(button),
+            footer_inset_x: f64::from(title_pad),
+            button_gap: f64::from(footer_pad),
+        }
+    }
+}
+
+impl Default for DialogChrome {
+    /// The unscaled reference values, for a dialog laid out before it has
+    /// seen a theme (builder methods, immediate-mode hosts).
+    fn default() -> Self {
+        Self::from_parts(
+            TypeScale::default().lg,
+            Spacing::BASE.s4,
+            Metrics::BASE.bar_height,
+            Spacing::BASE.s2,
+        )
+    }
+}
 
 /// One footer-bar action button; boxed `FnMut` so the dialog can invoke it
 /// from `handle_event` without taking ownership.
@@ -76,6 +127,10 @@ pub struct ModalDialog<C: Widget> {
     /// Tracked here so `MouseInput` (which carries no position) can map
     /// to a button rect — same trick `permission_prompt` uses.
     last_cursor: Point,
+    /// Whether `last_cursor` is current: cleared by `CursorLeft` (no
+    /// `CursorMoved` follows one) and on open, so a footer button's hover
+    /// face never outlives the pointer that caused it.
+    pointer_inside: bool,
     /// Isolated taffy tree for the inner content, rebuilt by
     /// [`Self::place_content`] and kept alive (rather than dropped at the
     /// end of layout) so `handle_event` can forward events into the content
@@ -84,6 +139,14 @@ pub struct ModalDialog<C: Widget> {
     content_taffy: Option<TaffyTree<()>>,
     content_node: Option<NodeId>,
     platform: PlatformConventions,
+    /// Chrome heights from the latest theme this dialog was laid out with.
+    chrome: DialogChrome,
+    /// The theme from the latest layout build. The content is laid out in
+    /// its own taffy tree from `apply_layout`, which carries no theme, so it
+    /// must measure with the theme the host actually uses rather than a
+    /// default one — otherwise a light or large-text dialog lays its body
+    /// out at dark-mode 1× metrics and paints it at the real ones.
+    layout_theme: Theme,
 }
 
 impl<C: Widget> ModalDialog<C> {
@@ -104,17 +167,41 @@ impl<C: Widget> ModalDialog<C> {
             primary_rect: Rect::ZERO,
             secondary_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
+            pointer_inside: false,
             content_taffy: None,
             content_node: None,
             platform: PlatformConventions::default(),
+            chrome: DialogChrome::default(),
+            layout_theme: Theme::dark(),
         }
+    }
+
+    /// Adopt `theme`'s chrome geometry, re-centring the box when it moved.
+    /// Returns whether anything changed, so a caller with a renderer can
+    /// re-place the content under the new title bar.
+    fn refresh_chrome(&mut self, theme: &Theme) -> bool {
+        let chrome = DialogChrome::from_theme(theme);
+        if chrome == self.chrome {
+            return false;
+        }
+        self.chrome = chrome;
+        self.recompute_layout();
+        true
+    }
+
+    /// Retain `theme` for the content layout that `apply_layout` runs
+    /// without one, then [`Self::refresh_chrome`]. Layout passes only —
+    /// paint refreshes the chrome and leaves the (allocating) clone alone.
+    fn adopt_theme(&mut self, theme: &Theme) {
+        self.layout_theme = theme.clone();
+        self.refresh_chrome(theme);
     }
 
     /// When closed, `draw` and `handle_event` are no-ops — the host can keep
     /// the widget in the tree at no cost while it's off-screen.
     #[must_use]
     pub fn open(mut self, open: bool) -> Self {
-        self.open = open;
+        self.set_open(open);
         self
     }
 
@@ -122,6 +209,9 @@ impl<C: Widget> ModalDialog<C> {
     /// dialog [traps focus](Widget::traps_focus).
     pub fn set_open(&mut self, open: bool) {
         self.open = open;
+        // A closed dialog receives no moves, so whatever position it last
+        // saw is stale by the time it reopens.
+        self.pointer_inside = false;
     }
 
     /// The callback fires on a left-click inside `primary_rect`.
@@ -199,6 +289,7 @@ impl<C: Widget> ModalDialog<C> {
     /// content normally; only the full-viewport wrapper is supplied directly.
     pub fn layout_in(&mut self, viewport: Rect, theme: &Theme, text_renderer: &mut TextRenderer) {
         self.viewport = viewport;
+        self.adopt_theme(theme);
         self.recompute_layout();
         self.place_content(theme, text_renderer);
     }
@@ -226,13 +317,14 @@ impl<C: Widget> ModalDialog<C> {
 
         // Keep the group right-aligned while following the host platform's
         // semantic primary/secondary order.
-        let footer_top = self.rect.y1 - FOOTER_HEIGHT;
-        let button_y0 = footer_top + (FOOTER_HEIGHT - ACTION_BUTTON_HEIGHT) / 2.0;
-        let button_y1 = button_y0 + ACTION_BUTTON_HEIGHT;
-        let right_edge = self.rect.x1 - 16.0; // `spacing.s4` right inset
+        let chrome = self.chrome;
+        let footer_top = self.rect.y1 - chrome.footer;
+        let button_y0 = footer_top + (chrome.footer - chrome.button) / 2.0;
+        let button_y1 = button_y0 + chrome.button;
+        let right_edge = self.rect.x1 - chrome.footer_inset_x;
         let primary_x1 = right_edge;
         let primary_x0 = primary_x1 - ACTION_BUTTON_WIDTH;
-        let secondary_x1 = primary_x0 - 8.0; // `spacing.s2` gap
+        let secondary_x1 = primary_x0 - chrome.button_gap;
         let secondary_x0 = secondary_x1 - ACTION_BUTTON_WIDTH;
         let right = Rect::new(primary_x0, button_y0, primary_x1, button_y1);
         let left = Rect::new(secondary_x0, button_y0, secondary_x1, button_y1);
@@ -257,11 +349,12 @@ impl<C: Widget> ModalDialog<C> {
             return;
         }
         let pad = f64::from(theme.tokens.spacing.s4);
+        let chrome = self.chrome;
         let inner = Rect::new(
             self.rect.x0 + pad,
-            self.rect.y0 + TITLE_BAR_HEIGHT,
+            self.rect.y0 + chrome.title_bar,
             (self.rect.x1 - pad).max(self.rect.x0 + pad),
-            (self.rect.y1 - FOOTER_HEIGHT).max(self.rect.y0 + TITLE_BAR_HEIGHT),
+            (self.rect.y1 - chrome.footer).max(self.rect.y0 + chrome.title_bar),
         );
         if inner.width() <= 0.0 || inner.height() <= 0.0 {
             return;
@@ -354,62 +447,6 @@ impl<C: Widget> ModalDialog<C> {
     clippy::arithmetic_side_effects,
     reason = "the `transform * Affine::translate(..)` call below composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
 )]
-fn draw_action_button(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    label: &str,
-    is_primary: bool,
-    destructive: bool,
-) {
-    let radius = f64::from(theme.tokens.radii.sm);
-    let shape = RoundedRect::from_rect(rect, radius);
-    let bg = if is_primary {
-        if destructive {
-            theme.tokens.colors.semantic.danger
-        } else {
-            theme.tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-        }
-    } else {
-        theme.tokens.colors.surfaces.raised
-    };
-    scene.fill(Fill::NonZero, transform, bg, None, &shape);
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        theme.tokens.colors.border_standard,
-        None,
-        &shape,
-    );
-    let text_color = if is_primary {
-        // The fill is a theme token, so whether white survives it is a question
-        // about the palette in force, not a constant.
-        theme.tokens.colors.ink_on_any(
-            &[bg],
-            Color::WHITE,
-            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
-        )
-    } else {
-        theme.tokens.colors.text_primary
-    };
-    let text_size = theme.tokens.typography.scale.sm;
-    // Centre on the measured line in both axes — the width was already
-    // measured; the height was the font size, which sat the label low.
-    let (text_w, text_h) = text_renderer.measure(label, text_size, None);
-    let text_x = rect.center().x - (f64::from(text_w) / 2.0);
-    let text_y = rect.y0 + (rect.height() - f64::from(text_h)) / 2.0;
-    text_renderer.draw_text(
-        scene,
-        label,
-        text_size,
-        text_color,
-        transform * Affine::translate((text_x, text_y)),
-        None,
-    );
-}
-
 impl<C: Widget + 'static> ModalDialog<C> {
     /// Route an event when an immediate-mode host embeds this dialog outside
     /// its retained widget tree. This is the event-side counterpart to
@@ -466,6 +503,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.adopt_theme(theme);
         // The body is registered as a child node so its focusable widgets
         // join the host's keyboard focus order (and the focus trap), even
         // though `place_content` re-lays it out separately for drawing.
@@ -496,7 +534,8 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         );
         self.recompute_layout();
         let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
+        tr.set_text_scale(self.layout_theme.text_scale);
+        let theme = self.layout_theme.clone();
         self.place_content(&theme, &mut tr);
     }
 
@@ -515,9 +554,17 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         if !self.open {
             return;
         }
+        // A theme swap between layout and paint (appearance reconcile, a
+        // detached host that never laid out) must not paint the chrome at
+        // stale heights — nor the body under a title bar that just grew.
+        if self.refresh_chrome(theme) {
+            self.place_content(theme, text_renderer);
+        }
 
-        let backdrop = Color::BLACK.with_alpha_factor(0.7);
-        scene.fill(Fill::NonZero, transform, backdrop, None, &self.viewport);
+        // The one modal scrim: the same painter and strength `ModalFrame`
+        // uses, so a retained dialog and an immediate-mode sheet darken the
+        // desktop identically instead of one flat literal-black veil.
+        crate::chrome::fill_scrim(scene, transform, self.viewport, MODAL_SCRIM_ALPHA, theme);
 
         let radius = f64::from(theme.tokens.radii.md);
         let box_shape = RoundedRect::from_rect(self.rect, radius);
@@ -536,9 +583,11 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             &box_shape,
         );
 
-        let title_size = theme.tokens.typography.scale.lg;
+        let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.lg);
         let title_x = self.rect.x0 + f64::from(theme.tokens.spacing.s4);
-        let title_y = self.rect.y0 + (TITLE_BAR_HEIGHT - f64::from(title_size)) / 2.0;
+        // Centre the title on its measured line box, not the font size.
+        let (_, title_h) = text_renderer.measure(&self.title, title_size, None);
+        let title_y = centered_text_top(self.rect.y0, self.chrome.title_bar, f64::from(title_h));
         text_renderer.draw_text(
             scene,
             &self.title,
@@ -552,30 +601,38 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             .draw(scene, transform, text_renderer, theme, presence);
 
         // Skipped when no action is wired (e.g. an info-only dialog with
-        // just the Escape-to-dismiss affordance).
+        // just the Escape-to-dismiss affordance). A dialog button *is* a
+        // `Button`: the shared face brings the hover state, the disabled
+        // and focus treatment and the contrast-checked ink that a local
+        // painter had to re-derive (HIG §8: never hand-roll a control).
+        // `ButtonFace::text_size` is renderer-relative, so hand it the
+        // theme's control-label size with the renderer's own multiplier
+        // taken back out — it then carries `ui_scale` and a custom type
+        // scale like every other `Button` label, and is painted once.
+        let label_size = text_renderer
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+            .size;
+        let hovered = |rect: Rect| self.pointer_inside && rect.contains(self.last_cursor);
         if let Some(action) = &self.primary_action {
-            draw_action_button(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                self.primary_rect,
-                &action.label,
-                true,
-                self.destructive,
-            );
+            let style = if self.destructive {
+                ButtonStyle::Danger
+            } else {
+                ButtonStyle::Primary
+            };
+            let face = ButtonFace::new(self.primary_rect, &action.label)
+                .style(style)
+                .text_size(label_size)
+                .weight(TextWeight::Medium)
+                .hovered(hovered(self.primary_rect));
+            Button::paint(scene, transform, text_renderer, theme, &face);
         }
         if let Some(action) = &self.secondary_action {
-            draw_action_button(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                self.secondary_rect,
-                &action.label,
-                false,
-                false,
-            );
+            let face = ButtonFace::new(self.secondary_rect, &action.label)
+                .style(ButtonStyle::Neutral)
+                .text_size(label_size)
+                .weight(TextWeight::Medium)
+                .hovered(hovered(self.secondary_rect));
+            Button::paint(scene, transform, text_renderer, theme, &face);
         }
     }
 
@@ -600,9 +657,15 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.pointer_inside = true;
                 // A TextInput only takes a click while hovered, and this
                 // CursorMoved is what arms it.
                 self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
+            }
+            // No `CursorMoved` follows the pointer out of the window, so the
+            // footer buttons' hover has to be dropped here.
+            WindowEvent::CursorLeft { .. } => {
+                self.pointer_inside = false;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1263,6 +1326,128 @@ mod tests {
             draw_data(false),
             draw_data(true),
             "a destructive primary must paint a different colour than the accent primary",
+        );
+    }
+
+    /// The title bar is the heading line plus `s4` above and below (48 at
+    /// 1×) and grows with the text scale instead of clipping a large
+    /// heading; the footer is the shared `Button` height plus `s2` (56 at
+    /// 1×) and follows `ui_scale` like every other bar.
+    #[test]
+    fn chrome_heights_follow_the_theme() {
+        let base = DialogChrome::default();
+        assert_eq!(base, DialogChrome::from_theme(&Theme::dark()));
+        assert!((base.title_bar - 48.0).abs() < 1e-6, "{base:?}");
+        assert!((base.footer - 56.0).abs() < 1e-6, "{base:?}");
+        assert!((base.button - 40.0).abs() < 1e-6, "{base:?}");
+
+        let large = DialogChrome::from_theme(&Theme::dark().with_text_scale(2.0));
+        assert!(
+            large.title_bar >= base.title_bar + f64::from(TypeScale::default().lg) - 1e-6,
+            "a 2× heading gets a taller bar: {large:?}"
+        );
+        assert!(
+            (large.footer - base.footer).abs() < 1e-6,
+            "text scale does not move the footer: {large:?}"
+        );
+
+        let ui = DialogChrome::from_theme(&Theme::dark().with_ui_scale(2.0));
+        assert!((ui.footer - 112.0).abs() < 1e-6, "{ui:?}");
+        assert!((ui.button - 80.0).abs() < 1e-6, "{ui:?}");
+    }
+
+    /// The body is placed under the title bar the theme resolves, with the
+    /// theme the host laid out with — not a default dark 1× one — so a 200 %
+    /// heading never paints over the content.
+    #[test]
+    fn content_starts_below_the_title_bar_at_a_large_text_scale() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let content = CountingContent::default();
+        let mut d = ModalDialog::new("Title", content).open(true);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = d.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+        d.apply_layout(&taffy, node, Point::ZERO);
+        let chrome = DialogChrome::from_theme(&theme);
+        assert_eq!(d.chrome, chrome, "the dialog adopted the layout theme");
+        let content_top = d.content().get_rect().y0;
+        assert!(
+            (content_top - (d.rect.y0 + chrome.title_bar)).abs() < 0.5,
+            "content top {content_top} vs title bar bottom {}",
+            d.rect.y0 + chrome.title_bar,
+        );
+        assert!(
+            d.primary_rect == Rect::ZERO || d.primary_rect.height() == chrome.button,
+            "footer buttons are one Button tall"
+        );
+    }
+
+    /// A dialog button is a `Button`: the pointer resting on it repaints
+    /// the face (HIG §7 — hover must be visible), and the pointer leaving
+    /// the window takes the face back to rest.
+    #[test]
+    fn primary_action_paints_hover_when_the_pointer_rests_on_it() {
+        fn draw_data(hover: bool, then_leave: bool) -> Vec<u32> {
+            let mut d = ModalDialog::new("Save?", TestContent)
+                .open(true)
+                .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
+                .primary_action("Save", || {});
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let theme = Theme::dark();
+            let node = d.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(800.0),
+                        height: taffy::AvailableSpace::Definite(600.0),
+                    },
+                )
+                .unwrap();
+            d.apply_layout(&taffy, node, Point::ZERO);
+            if hover {
+                let centre = d.primary_rect.center();
+                dispatch(&mut d, &cursor_at(centre));
+            }
+            if then_leave {
+                dispatch(
+                    &mut d,
+                    &WindowEvent::CursorLeft {
+                        device_id: synth_device(),
+                    },
+                );
+            }
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            d.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            scene.encoding().draw_data.clone()
+        }
+        let rest = draw_data(false, false);
+        assert_ne!(
+            draw_data(true, false),
+            rest,
+            "the hovered primary action paints the same as one at rest",
+        );
+        assert_eq!(
+            draw_data(true, true),
+            rest,
+            "the pointer left the window but the button still paints hovered",
         );
     }
 

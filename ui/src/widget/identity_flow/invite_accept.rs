@@ -4,13 +4,21 @@
 //! On accept, builds a `ChannelEvent::AttestationIssued` signed by the embedded
 //! delegation key the inviting owner pre-signed, and emits it via the supplied
 //! callback.
+//!
+//! The link field is the shared [`TextInput`], embedded: the sheet places
+//! it, the screen forwards it every event it does not claim (Enter
+//! re-parses, PageUp/PageDown scroll), and it hangs off the screen's
+//! layout node as a child of its own so focus traversal, the accessibility
+//! tree and the headless driver reach it by name. Every edit that lands in
+//! the field re-parses the link, whether typed, pasted, committed by an
+//! IME or set through an accessibility action.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use collab_types::{ChannelEvent, Ed25519PublicKey};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -22,13 +30,14 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::sheet::{
-    Align, BodyScroll, FORM_SHEET_WIDTH, Field, Resolved, Role, Rows, SheetSpec, line_height,
-    paint_field, paint_text, paragraph_height, resolve, with_layout_renderer,
+    Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, edited, line_height,
+    paint_text, paragraph_height, place_field, resolve, with_layout_renderer,
 };
 use crate::widget::identity_flow::{
     IdentityFlowError, InviteEnvelope, ScreenOutcome, build_attestation_from_invite,
 };
 use crate::widget::modal_frame::ModalAction;
+use crate::widget::text_input::TextInput;
 
 const TITLE: &str = "Accept channel invite";
 const LINK_LABEL: &str = "Invite link";
@@ -36,6 +45,8 @@ const LINK_PLACEHOLDER: &str = "Paste a qos://invite/... URL";
 const EMPTY_HINT: &str = "Paste an invite link to see who sent it and what it grants.";
 const DECLINE_LABEL: &str = "Decline";
 const ACCEPT_LABEL: &str = "Accept invite";
+/// `test_id` of the invite-link field.
+pub const URL_INPUT_ID: &str = "identity_invite_url";
 
 /// Action-row indices, in authoring order.
 const ACTION_DECLINE: usize = 0;
@@ -57,10 +68,16 @@ struct Plan {
 
 pub struct InviteAcceptScreen {
     rect: Rect,
-    url: String,
+    /// The invite-link field: the shared text input, embedded. Read it
+    /// with [`Self::url`], seed it with [`Self::set_url`].
+    url: TextInput,
+    /// The field's own layout node, minted by `build_layout`.
+    url_node: Option<NodeId>,
+    /// The link as last parsed, so an edit is a change of text and a caret
+    /// move is not (see [`edited`]).
+    last_url: String,
     parsed: Option<InviteEnvelope>,
     parse_error: Option<String>,
-    url_focus: bool,
     url_rect: Rect,
     accept_rect: Rect,
     decline_rect: Rect,
@@ -85,12 +102,20 @@ impl Default for InviteAcceptScreen {
 
 impl InviteAcceptScreen {
     pub fn new() -> Self {
+        // The screen exists to receive a link, so its one field starts
+        // focused: the first paste lands without a click.
+        let mut url = TextInput::local()
+            .with_id(URL_INPUT_ID)
+            .with_placeholder(LINK_PLACEHOLDER)
+            .with_accessible_name(LINK_LABEL);
+        url.set_focus(true);
         Self {
             rect: Rect::ZERO,
-            url: String::new(),
+            url,
+            url_node: None,
+            last_url: String::new(),
             parsed: None,
             parse_error: None,
-            url_focus: true,
             url_rect: Rect::ZERO,
             accept_rect: Rect::ZERO,
             decline_rect: Rect::ZERO,
@@ -106,12 +131,14 @@ impl InviteAcceptScreen {
     }
 
     pub fn set_url(&mut self, url: impl Into<String>) {
-        self.url = url.into();
+        let url = url.into();
+        self.url.set_text(&url);
+        self.url.set_cursor_pos(url.len());
         self.parse();
     }
 
     pub fn url(&self) -> &str {
-        &self.url
+        self.url.value()
     }
 
     pub fn parsed(&self) -> Option<&InviteEnvelope> {
@@ -131,14 +158,16 @@ impl InviteAcceptScreen {
     }
 
     pub fn parse(&mut self) {
+        self.last_url.clear();
+        self.last_url.push_str(self.url.value());
         self.last_accepted_event = None;
         self.accept_error = None;
-        if self.url.is_empty() {
+        if self.url.value().is_empty() {
             self.parsed = None;
             self.parse_error = None;
             return;
         }
-        match InviteEnvelope::from_url(self.url.trim()) {
+        match InviteEnvelope::from_url(self.url.value().trim()) {
             Ok(env) => match env.verify_signature() {
                 Ok(()) => {
                     self.parsed = Some(env);
@@ -179,7 +208,8 @@ impl InviteAcceptScreen {
 
     pub fn decline(&mut self) {
         self.parsed = None;
-        self.url.clear();
+        self.url.set_text("");
+        self.last_url.clear();
         self.parse_error = None;
         self.last_accepted_event = None;
     }
@@ -193,15 +223,33 @@ impl InviteAcceptScreen {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) -> ScreenOutcome {
-        match event {
+        let field_node = self.url_node.unwrap_or(node_id);
+        let mut forward = |url: &mut TextInput, handled: &mut bool| {
+            url.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                field_node,
+                taffy,
+            );
+        };
+        // Set after the match, once `forward` has released `focus_target`:
+        // a click in the field tells the host the field's node holds focus
+        // even when the field already believed it did (it starts focused).
+        let mut claim_focus = false;
+        let outcome = match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = p;
@@ -212,6 +260,7 @@ impl InviteAcceptScreen {
                     self.decline_hovered = d;
                     *handled = true;
                 }
+                forward(&mut self.url, handled);
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseInput {
@@ -220,11 +269,12 @@ impl InviteAcceptScreen {
                 ..
             } => {
                 if self.url_rect.contains(self.last_cursor) {
-                    self.url_focus = true;
+                    self.url.set_focus(true);
+                    forward(&mut self.url, handled);
+                    claim_focus = true;
                     *handled = true;
-                    return ScreenOutcome::Stay;
                 }
-                if self.decline_rect.contains(self.last_cursor) {
+                else if self.decline_rect.contains(self.last_cursor) {
                     self.decline();
                     *handled = true;
                     return ScreenOutcome::Back;
@@ -232,7 +282,7 @@ impl InviteAcceptScreen {
                 // Accept needs the invitee pubkey, which only the shell has — it
                 // calls `accept()` directly, and the container catches Advance and
                 // consults `last_accepted_event` for the result.
-                if self.accept_rect.contains(self.last_cursor) && self.parsed.is_some() {
+                else if self.accept_rect.contains(self.last_cursor) && self.parsed.is_some() {
                     *handled = true;
                     return ScreenOutcome::Advance;
                 }
@@ -243,7 +293,6 @@ impl InviteAcceptScreen {
                     KeyEvent {
                         logical_key,
                         state: ElementState::Pressed,
-                        text,
                         ..
                     },
                 ..
@@ -252,34 +301,12 @@ impl InviteAcceptScreen {
                     *handled = true;
                     return ScreenOutcome::Stay;
                 }
-                if !self.url_focus {
+                if matches!(logical_key, Key::Named(NamedKey::Enter)) {
+                    *handled = true;
+                    self.parse();
                     return ScreenOutcome::Stay;
                 }
-                match logical_key {
-                    Key::Named(NamedKey::Backspace) => {
-                        if !self.url.is_empty() {
-                            self.url.pop();
-                            *handled = true;
-                            self.parse();
-                        }
-                    }
-                    Key::Named(NamedKey::Enter) => {
-                        *handled = true;
-                        self.parse();
-                    }
-                    _ => {
-                        if let Some(t) = text {
-                            for c in t.chars() {
-                                if c.is_control() {
-                                    continue;
-                                }
-                                self.url.push(c);
-                                *handled = true;
-                            }
-                            self.parse();
-                        }
-                    }
-                }
+                forward(&mut self.url, handled);
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -288,7 +315,25 @@ impl InviteAcceptScreen {
                 }
                 ScreenOutcome::Stay
             }
-            _ => ScreenOutcome::Stay,
+            // Key releases, IME preedit/commit, modifiers: the field's.
+            _ => {
+                forward(&mut self.url, handled);
+                ScreenOutcome::Stay
+            }
+        };
+        if claim_focus {
+            *focus_target = Some(field_node);
+        }
+        self.reparse_if_edited();
+        outcome
+    }
+
+    /// Re-parse after any edit that landed in the field — typed, pasted,
+    /// IME-committed or set by an accessibility action. A caret or
+    /// selection move alone is not an edit and leaves the parse alone.
+    fn reparse_if_edited(&mut self) {
+        if edited(&mut self.url, &mut self.last_url) {
+            self.parse();
         }
     }
 
@@ -317,6 +362,10 @@ impl InviteAcceptScreen {
         self.scroll = scroll;
         let body = resolved.sheet.body();
         self.body_height = body.height();
+        // An accessibility `SetValue` lands outside the event path; the
+        // layout pass that follows it is where the link gets re-read.
+        self.reparse_if_edited();
+        place_field(&mut self.url, resolved.plan.url, text_renderer, theme);
         self.url_rect = BodyScroll::visible(body, resolved.plan.url);
         self.decline_rect = resolved.sheet.action(ACTION_DECLINE);
         self.accept_rect = resolved.sheet.action(ACTION_ACCEPT);
@@ -425,15 +474,27 @@ impl Widget for InviteAcceptScreen {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = Some(theme.clone());
-        // The screen owns the viewport, so the sheet centres on the window
-        // rather than inside a fixed box at the origin.
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+        // The field is a child node of its own — placed by the sheet, not
+        // by taffy (`Display::None`), but present in the tree so the host's
+        // focus order and the accessibility tree line up with `children()`.
+        let field = taffy.leaf_node(Style {
+            display: Display::None,
             ..Default::default()
         });
+        node_map.insert(field, std::ptr::from_mut::<dyn Widget>(&mut self.url));
+        self.url_node = Some(field);
+        // The screen owns the viewport, so the sheet centres on the window
+        // rather than inside a fixed box at the origin.
+        let node = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            },
+            &[field],
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -459,7 +520,7 @@ impl Widget for InviteAcceptScreen {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         let resolved = self.resolve(theme, text_renderer);
         let actions = self.actions();
@@ -484,20 +545,8 @@ impl Widget for InviteAcceptScreen {
             Align::Start,
             false,
         );
-        paint_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &Field {
-                rect: plan.url,
-                text: &self.url,
-                placeholder: LINK_PLACEHOLDER,
-                focused: self.url_focus,
-                editor: None,
-                multiline: false,
-            },
-        );
+        self.url
+            .draw(scene, transform, text_renderer, theme, presence);
         if let Some((banner, expires)) = self.banner_text() {
             if let Some(rect) = plan.banner {
                 paint_text(
@@ -575,6 +624,24 @@ impl Widget for InviteAcceptScreen {
 
     fn test_id(&self) -> Option<&str> {
         Some("identity_flow_invite_accept")
+    }
+
+    /// The field is the screen's one child, in the order `build_layout`
+    /// minted its node.
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.url]
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.url]
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.url)
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Widget::ime_purpose(&self.url)
     }
 
     fn get_rect(&self) -> Rect {
@@ -670,6 +737,45 @@ mod tests {
         s.set_url(&bad);
         assert!(s.parsed().is_none());
         assert!(s.parse_error().is_some());
+    }
+
+    /// An edit that lands in the shared field through any door — here the
+    /// accessibility `SetValue` an agent or screen reader uses — re-parses
+    /// the link on the next layout pass, exactly as typing did.
+    #[test]
+    fn an_edit_through_the_shared_field_reparses_the_link() {
+        let url = fixture_url(SystemTime::now());
+        let mut s = InviteAcceptScreen::new();
+        assert!(s.parsed().is_none());
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_action(
+            &mut s.url,
+            &crate::a11y::Action::SetValue(url.clone()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(s.url(), url, "the value landed in the shared field");
+        assert!(s.parsed().is_none(), "not yet re-read: no layout pass has run");
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = HashMap::new();
+        let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1280.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+            )
+            .expect("layout");
+        s.apply_layout(&taffy, node, Point::ORIGIN);
+        assert!(s.parsed().is_some(), "the layout pass re-parsed the edited link");
+        let ids: Vec<&str> = s.children().iter().filter_map(|c| c.test_id()).collect();
+        assert_eq!(ids, vec![URL_INPUT_ID]);
+        assert!(
+            node_map.contains_key(&s.url_node.expect("field node")),
+            "the field is registered for the host's focus and semantics"
+        );
     }
 
     /// Empty, invalid and valid links each get a designed row under the

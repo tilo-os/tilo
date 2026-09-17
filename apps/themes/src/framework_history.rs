@@ -102,7 +102,7 @@ impl HistoryPreview for LibraryPreview {
             let row = Rect::new(self.bounds.x0 + 12., y + 12., self.bounds.x1 - 12., y + 70.);
             crate::widgets::ThemeRow::from_spec(s, true).draw_snapshot(scene, t, tr, theme, row);
             self.specimen.set_spec(s);
-            let height = f64::from(self.specimen.narrow_intrinsic_height());
+            let height = f64::from(self.specimen.narrow_intrinsic_height(theme.text_scale));
             self.specimen.draw_snapshot(
                 scene,
                 t,

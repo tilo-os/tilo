@@ -29,7 +29,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::data_table::renderer_type_size;
+use crate::text_metrics::renderer_type_size;
 
 const PAD: f64 = 14.0;
 const ICON_D: f64 = 18.0;

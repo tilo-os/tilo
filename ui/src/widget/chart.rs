@@ -28,7 +28,9 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::data_table::{centered_text_top, renderer_type_size};
+use crate::widget::data_table::{
+    centered_text_top, renderer_type_size, text_band, type_line_height,
+};
 
 /// Alpha (0–255) of the translucent area fill under a series line. Matches
 /// the concept's `bg-<color>/18` area treatment.
@@ -243,11 +245,19 @@ impl Chart {
         axis_hi: &str,
         axis_lo: &str,
     ) {
-        if rect.width() <= 0.0 || rect.height() <= HEADER_H {
+        let tokens = &theme.tokens;
+        // The header band holds the title's line plus the smallest step, so
+        // at 2× the title no longer clips and the legend clears the top axis
+        // label; `HEADER_H` at the default text scale.
+        let header_h = text_band(
+            HEADER_H,
+            type_line_height(tokens.typography.scale.sm),
+            f64::from(tokens.spacing.s1),
+        );
+        if rect.width() <= 0.0 || rect.height() <= header_h {
             return;
         }
-        let tokens = &theme.tokens;
-        let plot = Rect::new(rect.x0, rect.y0 + HEADER_H, rect.x1, rect.y1);
+        let plot = Rect::new(rect.x0, rect.y0 + header_h, rect.x1, rect.y1);
         let ceil = max.max(1e-3);
 
         // Title, legend labels and legend dots share the header band's centre
@@ -263,7 +273,7 @@ impl Chart {
                 translated(
                     transform,
                     rect.x0,
-                    centered_text_top(rect.y0, HEADER_H, title_h),
+                    centered_text_top(rect.y0, header_h, title_h),
                 ),
                 None,
             );
@@ -285,11 +295,11 @@ impl Chart {
                 &s.legend,
                 legend_size,
                 tokens.colors.text_dim,
-                translated(transform, lx, centered_text_top(rect.y0, HEADER_H, th)),
+                translated(transform, lx, centered_text_top(rect.y0, header_h, th)),
                 None,
             );
             lx -= dot_gap;
-            let dot = Circle::new(Point::new(lx, rect.y0 + HEADER_H / 2.0), 3.0);
+            let dot = Circle::new(Point::new(lx, rect.y0 + header_h / 2.0), 3.0);
             scene.fill(Fill::NonZero, transform, s.color, None, &dot);
             lx -= entry_gap;
         }

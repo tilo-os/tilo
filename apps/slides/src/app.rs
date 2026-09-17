@@ -36,11 +36,13 @@ use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     ColorPicker, DEFAULT_BREAKPOINT, FlapState, NumberInput, PageSidebar, PageSidebarEvent,
-    SplitLayout, TextInput, Widget,
+    Scrollable, SplitLayout, TextInput, Widget,
 };
 
 use crate::actions;
 use crate::assets::ImageStore;
+use crate::strings::{tr, tr_args};
+use ui::i18n::ArgValue;
 use crate::chrome;
 use crate::doc::SlidesDoc;
 use crate::help_overlay::HelpOverlay;
@@ -64,10 +66,10 @@ const A11Y_SLIDE_WINDOW: usize = 64;
 const A11Y_ELEMENT_WINDOW: usize = 128;
 
 fn image_open_request() -> PickRequest {
-    PickRequest::open("Insert image", "Insert")
+    PickRequest::open(&tr("slides-pick-image-title"), &tr("slides-pick-image-accept"))
         .thread_name("slides-portal-open")
         .filter(
-            FileFilter::new("Images")
+            FileFilter::new(&tr("slides-pick-images-filter"))
                 .glob("*.png")
                 .glob("*.jpg")
                 .glob("*.jpeg")
@@ -80,7 +82,7 @@ fn image_open_request() -> PickRequest {
 }
 
 fn presentation_filter() -> FileFilter {
-    FileFilter::new("Presentations (.odp, .pptx)")
+    FileFilter::new(&tr("slides-pick-presentations-filter"))
         .glob("*.odp")
         .glob("*.pptx")
 }
@@ -217,7 +219,7 @@ impl DocPortalChannel {
 
 fn open_document_request() -> DocPortalChannel {
     DocPortalChannel {
-        rx: PickRequest::open("Open presentation", "Open")
+        rx: PickRequest::open(&tr("slides-open-title"), &tr("slides-open-accept"))
             .thread_name("slides-portal-open-doc")
             .filter(presentation_filter())
             .all_files()
@@ -228,7 +230,7 @@ fn open_document_request() -> DocPortalChannel {
 
 fn save_document_request(suggested_name: &str) -> DocPortalChannel {
     DocPortalChannel {
-        rx: PickRequest::save("Save presentation", "Save", suggested_name)
+        rx: PickRequest::save(&tr("slides-save-title"), &tr("slides-save-accept"), suggested_name)
             .thread_name("slides-portal-save-doc")
             .filter(presentation_filter())
             .send(),
@@ -278,6 +280,9 @@ const FONT_HEADING: f32 = 16.0;
 const FONT_TITLE: f32 = 17.0;
 const RAIL_W: f64 = 212.0;
 const INSPECTOR_W: f64 = 296.0;
+/// Inset of the inspector's content column from the panel edges (top, sides
+/// and, below the last section, the bottom of its scrollable content).
+const INSPECTOR_PAD: f64 = 16.0;
 /// Half-size of a selection handle's *grab* zone (hit-test radius).
 const HANDLE: f64 = 9.0;
 /// How far outside the selected element's content box the resize handles sit,
@@ -671,6 +676,9 @@ struct Chrome {
     /// permanent left column.
     rail: Rect,
     inspector: Rect,
+    /// Unscrolled height of the inspector's content (sections + notes) from
+    /// the panel top, so `draw` can size the panel's scroll model.
+    inspector_content_h: f64,
     slide_dest: Rect,
     scale: f64,
     /// Thumbnail slot rects `(index, rect)` for this frame, read back from the
@@ -848,6 +856,17 @@ pub struct SlidesApp {
     /// Measured chrome text metrics `compute_chrome` lays out from (see
     /// [`ChromeMetrics`]); refreshed at the top of every draw.
     chrome_metrics: ChromeMetrics,
+    /// Scroll model + overlay bar for the inspector column. The panel's
+    /// sections are laid out imperatively (buttons + labels), so the shared
+    /// [`Scrollable`] is driven by hand: `compute_chrome` shifts every
+    /// inspector item by its offset, `draw` syncs its viewport / content size
+    /// and paints its bar, and the wheel over the panel scrolls it. Without
+    /// this a 2× inspector in a short window simply ran past the viewport.
+    inspector_scroll: Scrollable,
+    /// Tooltip for the control under the pointer, refreshed on every pointer
+    /// move. Cached because [`Widget::tooltip`] hands out a borrow and the
+    /// text is a fluent lookup, not a `'static` literal.
+    tooltip_text: Option<String>,
     /// An in-flight host image-open request. `Some(rx)` means the XDG portal's
     /// file chooser is open on a worker thread; the chosen path arrives over
     /// this channel and is drained each frame in [`SlidesApp::drain_portal`].
@@ -995,6 +1014,8 @@ impl SlidesApp {
             overview: OverviewGrid::new(),
             toolbar_tools: ToolbarTools::default(),
             chrome_metrics: ChromeMetrics::fallback(),
+            inspector_scroll: Scrollable::new_vertical().always_visible(),
+            tooltip_text: None,
             portal_rx: None,
             doc_portal_rx: None,
             document_worker,
@@ -1161,7 +1182,7 @@ impl SlidesApp {
             // This is the same concise failure toast `drain_doc_portal` shows
             // after a decoder rejects a user-selected presentation.
             "open_error" => {
-                self.io_toast = Some(("Could not open the presentation".into(), ToastKind::Error));
+                self.io_toast = Some((tr("slides-toast-open-failed"), ToastKind::Error));
             }
             // Right-click context menus (opened on the first drawn frame once
             // the layout rect is known — see `draw`).
@@ -1445,11 +1466,7 @@ impl SlidesApp {
             }
             if deck != self.deck {
                 if !actions::deck_within_aggregate_limits(&deck) {
-                    self.io_toast = Some((
-                        "Shared presentation exceeds safe limits; update was not materialized"
-                            .into(),
-                        ToastKind::Error,
-                    ));
+                    self.io_toast = Some((tr("slides-toast-shared-limit"), ToastKind::Error));
                     return;
                 }
                 self.deck = deck;
@@ -1554,6 +1571,14 @@ impl SlidesApp {
     }
 
     // --- rail scroll geometry ----------------------------------------------
+
+    /// The inspector column's painted rect this frame (the same geometry
+    /// `compute_chrome` uses), for pointer tests that need only the panel.
+    fn inspector_rect(&self) -> Rect {
+        let r = self.rect;
+        let toolbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + self.chrome_metrics.toolbar_h());
+        self.compute_panels(r, toolbar).inspector
+    }
 
     /// The rail's painted rect, resolved from the current width + flap reveal.
     /// Mirrors the computation in [`Self::compute_chrome`] so the scroll
@@ -1696,23 +1721,23 @@ impl SlidesApp {
     fn chrome_label_set(&self) -> Vec<(String, f32, TextWeight)> {
         let control = |s: &str| (s.to_owned(), FONT_CONTROL, TextWeight::Semibold);
         let mut set: Vec<(String, f32, TextWeight)> = vec![
-            control("Present"),
-            control("Close"),
-            control("Add"),
-            control("Dup"),
-            control("Del"),
-            control("Bring front"),
-            control("Send back"),
-            control("Duplicate"),
-            control("Delete"),
-            control("Custom colour…"),
+            control(&tr("slides-present")),
+            control(&tr("slides-close")),
+            control(&tr("slides-add")),
+            control(&tr("slides-dup")),
+            control(&tr("slides-del")),
+            control(&tr("slides-bring-front")),
+            control(&tr("slides-send-back")),
+            control(&tr("slides-duplicate")),
+            control(&tr("slides-delete")),
+            control(&tr("slides-custom-colour")),
             control("B"),
             control("I"),
             // The TYPE row reserves its NumberInput for a three-digit value.
             control("999 pt"),
         ];
-        set.extend(crate::toolbar_tools::bar_labels().into_iter().map(control));
-        set.extend(crate::toolbar_tools::menu_labels().into_iter().map(control));
+        set.extend(crate::toolbar_tools::bar_labels().iter().map(|s| control(s)));
+        set.extend(crate::toolbar_tools::menu_labels().iter().map(|s| control(s)));
         set.extend(TextAlign::ALL.iter().map(|a| control(a.glyph())));
         set.extend(Layout::ALL.iter().map(|l| control(l.label())));
         set.extend(Background::ALL.iter().map(|b| control(b.label())));
@@ -1724,7 +1749,7 @@ impl SlidesApp {
         if let Some(el) = self.selected_element()
             && el.fill.starts_with('#')
         {
-            set.push(control(&format!("Custom  ·  {}", el.fill)));
+            set.push(control(&custom_colour_hex(&el.fill)));
         }
         set
     }
@@ -1813,17 +1838,77 @@ impl SlidesApp {
         let thumbs = self.page_sidebar.thumb_rects();
 
         // Inspector ---------------------------------------------------------
+        let insp_first_button = buttons.len();
+        let insp_first_label = labels.len();
         let insp_rects = self.build_inspector(panels.inspector, &mut buttons, &mut labels);
-        let notes_box = insp_rects.notes;
-        let font_input_rect = insp_rects.font_input;
-        let fill_picker_rect = self.fill_picker_popover_rect(panels.inspector, r, panels.body_top);
+        let mut notes_box = insp_rects.notes;
+        let mut font_input_rect = insp_rects.font_input;
+        // The panel scrolls once its sections outgrow it (large text in a
+        // short window). Everything it owns is shifted by the offset the
+        // shared scroll model holds — clamped here against this frame's
+        // content so a shrunken panel never shows a stale gap — and whatever
+        // then lies outside the viewport is dropped, so the painter, the
+        // pointer and the accessibility tree all see the same controls.
+        let inspector = panels.inspector;
+        let content_bottom = buttons
+            .get(insp_first_button..)
+            .unwrap_or_default()
+            .iter()
+            .map(|b| b.rect.y1)
+            .chain(
+                labels
+                    .get(insp_first_label..)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|l| l.pos.y + m.lh_caption),
+            )
+            .chain(notes_box.map(|nb| nb.y1))
+            .fold(inspector.y0, f64::max);
+        let inspector_content_h = content_bottom - inspector.y0 + INSPECTOR_PAD;
+        let max_offset = (inspector_content_h - inspector.height()).max(0.0);
+        let offset = f64::from(self.inspector_scroll.offset_y()).clamp(0.0, max_offset);
+        if offset > 0.0 {
+            let shift = vello::kurbo::Vec2::new(0.0, -offset);
+            for b in buttons.get_mut(insp_first_button..).unwrap_or_default() {
+                b.rect = b.rect + shift;
+            }
+            for l in labels.get_mut(insp_first_label..).unwrap_or_default() {
+                l.pos += shift;
+            }
+            notes_box = notes_box.map(|nb| nb + shift);
+            font_input_rect = font_input_rect.map(|fi| fi + shift);
+        }
+        // Cull by centre: what remains has its centre inside the viewport, so
+        // `in_inspector` (a centre test) keeps classifying it as panel content
+        // and nothing scrolled off the top is ever painted over the toolbar.
+        let inside = |y: f64| y >= inspector.y0 && y <= inspector.y1;
+        let kept: Vec<UiButton> = buttons
+            .drain(insp_first_button..)
+            .filter(|b| inside(b.rect.center().y))
+            .collect();
+        buttons.extend(kept);
+        let kept: Vec<Label> = labels
+            .drain(insp_first_label..)
+            .filter(|l| inside(l.pos.y + m.lh_caption / 2.0))
+            .collect();
+        labels.extend(kept);
+        // The embedded font-size field follows the same rule: once its TYPE
+        // row scrolls out it is not a hit target this frame (otherwise a
+        // field shifted into the toolbar band would still swallow the press
+        // meant for a toolbar control above it). The notes box is last in
+        // the content, so it can only ever lie below the viewport — where it
+        // meets no pointer — and keeps its (shifted, clipped) rect so the
+        // sections above it can still be checked against it.
+        font_input_rect = font_input_rect.filter(|fi| inside(fi.center().y));
+        let fill_picker_rect = self.fill_picker_popover_rect(inspector, r, panels.body_top);
 
         Chrome {
             toolbar,
             title_rect,
             title_pos,
             rail: panels.rail,
-            inspector: panels.inspector,
+            inspector,
+            inspector_content_h,
             slide_dest,
             scale: s,
             thumbs,
@@ -1961,7 +2046,7 @@ impl SlidesApp {
         buttons: &mut Vec<UiButton>,
     ) -> Rect {
         let m = &self.chrome_metrics;
-        let present_w = m.pill_w("Present", true);
+        let present_w = m.pill_w(&tr("slides-present"), true);
         let present_rect = Rect::new(
             toolbar.x1 - m.s4 - present_w,
             by,
@@ -1986,7 +2071,7 @@ impl SlidesApp {
             rect: present_rect,
             kind: ButtonKind::IconText {
                 icon: Icon::Monitor,
-                label: "Present".into(),
+                label: tr("slides-present"),
                 accent: true,
             },
             hit: Hit::Present,
@@ -2091,11 +2176,13 @@ impl SlidesApp {
         if title_max >= 1.0 {
             labels.push(Label {
                 pos: Point::new(title_x, block_top + m.lh_title + TITLE_LINE_GAP),
-                text: format!(
-                    "Slide {} of {}  ·  {}",
-                    self.cur_slide + 1,
-                    self.deck.slides.len(),
-                    self.deck.palette.label()
+                text: tr_args(
+                    "slides-rail-subtitle",
+                    &[
+                        ("current", ArgValue::from(self.cur_slide + 1)),
+                        ("total", ArgValue::from(self.deck.slides.len())),
+                        ("palette", ArgValue::from(self.deck.palette.label())),
+                    ],
                 ),
                 font: FONT_SUBTITLE,
                 color: LabelColor::Dim,
@@ -2127,7 +2214,7 @@ impl SlidesApp {
                 rail.x0 + pad,
                 header.y0 + (header.height() - m.lh_caption) / 2.0,
             ),
-            text: "SLIDES".into(),
+            text: tr("slides-slides"),
             font: FONT_CAPTION,
             color: LabelColor::Dim,
             weight: TextWeight::Semibold,
@@ -2138,7 +2225,7 @@ impl SlidesApp {
         // the flap header. This keeps the narrow panel dismissible without a
         // hunt back to the global toolbar (and gives AT a named button).
         if self.rail_layout() == SplitLayout::Overlay && self.rail_flap.reveal() > 0.001 {
-            let close_w = m.label_w("Close", FONT_CONTROL, TextWeight::Semibold) + 2.0 * m.s3;
+            let close_w = m.label_w(&tr("slides-close"), FONT_CONTROL, TextWeight::Semibold) + 2.0 * m.s3;
             let close_h = m.control_h();
             let close_y = header.y0 + (header.height() - close_h) / 2.0;
             let close = Rect::new(
@@ -2150,7 +2237,7 @@ impl SlidesApp {
             buttons.push(UiButton {
                 rect: close,
                 kind: ButtonKind::Text {
-                    label: "Close".into(),
+                    label: tr("slides-close"),
                     active: false,
                     danger: false,
                 },
@@ -2173,9 +2260,9 @@ impl SlidesApp {
                 hit,
             }
         };
-        buttons.push(mk(0.0, "Add", false, Hit::NewSlide));
-        buttons.push(mk(1.0, "Dup", false, Hit::DuplicateSlide));
-        buttons.push(mk(2.0, "Del", true, Hit::DeleteSlide));
+        buttons.push(mk(0.0, &tr("slides-add"), false, Hit::NewSlide));
+        buttons.push(mk(1.0, &tr("slides-dup"), false, Hit::DuplicateSlide));
+        buttons.push(mk(2.0, &tr("slides-del"), true, Hit::DeleteSlide));
         rail_viewport
     }
 
@@ -2185,16 +2272,23 @@ impl SlidesApp {
         if !self.fill_picker_open {
             return None;
         }
+        // The shared picker spans its sliders across the rect it is given,
+        // so the reserve's width grows with the text scale; its height does
+        // not (the picker's vertical layout is fixed). Its hex / rgb readouts
+        // still overrun the rect at 2× — a `ColorPicker` defect, recorded for
+        // its owner in the A7 round-two review.
+        let scale = self.chrome_metrics.scale;
+        let (w, h) = (FILL_PICKER_W * scale, FILL_PICKER_H);
         // Leave ~64px of slack on the right: the picker's hex field extends
         // past its preview swatch, so a flush-right anchor would clip it.
         let x = (inspector.x0 + 12.0)
-            .min(r.x1 - FILL_PICKER_W - 64.0)
+            .min(r.x1 - w - 64.0 * scale)
             .max(r.x0 + 8.0);
         // Sit below the top property controls, above the notes box.
         let y = (inspector.y0 + 300.0)
-            .min(r.y1 - FILL_PICKER_H - 8.0)
+            .min(r.y1 - h - 8.0)
             .max(body_top + 8.0);
-        Some(Rect::new(x, y, x + FILL_PICKER_W, y + FILL_PICKER_H))
+        Some(Rect::new(x, y, x + w, y + h))
     }
 
     /// Lay out the inspector contents; returns the speaker-notes box rect.
@@ -2204,7 +2298,7 @@ impl SlidesApp {
         buttons: &mut Vec<UiButton>,
         labels: &mut Vec<Label>,
     ) -> InspectorRects {
-        let pad = 16.0;
+        let pad = INSPECTOR_PAD;
         let x0 = inspector.x0 + pad;
         let x1 = inspector.x1 - pad;
         let inner_w = x1 - x0;
@@ -2276,7 +2370,7 @@ impl SlidesApp {
         // Rhythm: rows inside a section are `s2` apart; sections are `s4`
         // apart. Fill swatches (theme presets) plus a Custom… button that
         // opens the embeddable colour picker for an arbitrary fill.
-        Self::push_inspector_header(m, labels, x0, &mut y, "FILL");
+        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-fill"));
         y = self.swatch_grid(buttons, x0, inner_w, y, &FILL_ROLES, &el.fill, true);
         y += m.s2;
         let custom = Rect::new(x0, y, x1, y + m.control_h());
@@ -2285,9 +2379,9 @@ impl SlidesApp {
             kind: ButtonKind::Text {
                 // Show the active colour role / hex on the button.
                 label: if el.fill.starts_with('#') {
-                    format!("Custom  ·  {}", el.fill)
+                    custom_colour_hex(&el.fill)
                 } else {
-                    "Custom colour…".into()
+                    tr("slides-custom-colour")
                 },
                 active: el.fill.starts_with('#'),
                 danger: false,
@@ -2297,7 +2391,7 @@ impl SlidesApp {
         y += m.control_h() + m.s4;
 
         // Stroke swatches.
-        Self::push_inspector_header(m, labels, x0, &mut y, "STROKE");
+        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-stroke"));
         y = self.swatch_grid(buttons, x0, inner_w, y, &STROKE_ROLES, &el.stroke, false);
         y += m.s4;
 
@@ -2328,7 +2422,7 @@ impl SlidesApp {
         labels: &mut Vec<Label>,
     ) -> f64 {
         let mut y = y;
-        Self::push_inspector_header(m, labels, x0, &mut y, "ARRANGE");
+        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-arrange"));
         let bh = m.control_h();
         let half = (inner_w - m.s2) / 2.0;
         let front = Rect::new(x0, y, x0 + half, y + bh);
@@ -2336,7 +2430,7 @@ impl SlidesApp {
         buttons.push(UiButton {
             rect: front,
             kind: ButtonKind::Text {
-                label: "Bring front".into(),
+                label: tr("slides-bring-front"),
                 active: false,
                 danger: false,
             },
@@ -2345,7 +2439,7 @@ impl SlidesApp {
         buttons.push(UiButton {
             rect: back,
             kind: ButtonKind::Text {
-                label: "Send back".into(),
+                label: tr("slides-send-back"),
                 active: false,
                 danger: false,
             },
@@ -2357,7 +2451,7 @@ impl SlidesApp {
         buttons.push(UiButton {
             rect: dup,
             kind: ButtonKind::Text {
-                label: "Duplicate".into(),
+                label: tr("slides-duplicate"),
                 active: false,
                 danger: false,
             },
@@ -2366,7 +2460,7 @@ impl SlidesApp {
         buttons.push(UiButton {
             rect: del,
             kind: ButtonKind::Text {
-                label: "Delete".into(),
+                label: tr("slides-delete"),
                 active: false,
                 danger: true,
             },
@@ -2395,7 +2489,7 @@ impl SlidesApp {
         labels: &mut Vec<Label>,
     ) -> (f64, Option<Rect>) {
         let mut y = y;
-        Self::push_inspector_header(m, labels, x0, &mut y, "TYPE");
+        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-type"));
         let bh = m.control_h();
         // The font size is a click-to-type NumberInput (with ± steppers)
         // — the widget draws itself, so we only reserve its rect here: two
@@ -2440,7 +2534,7 @@ impl SlidesApp {
             hit: Hit::ToggleItalic,
         });
         y = toggles_y + bh + m.s4;
-        Self::push_inspector_header(m, labels, x0, &mut y, "ALIGN");
+        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-align"));
         // A proper segmented control: left · center · right · justify,
         // the current alignment highlighted. Replaces the old single
         // button that only cycled through the options blind. When the widest
@@ -2500,7 +2594,7 @@ impl SlidesApp {
         let mut y = y;
         labels.push(Label {
             pos: Point::new(x0, y),
-            text: format!("SLIDE {}", self.cur_slide + 1),
+            text: tr_args("slides-slide-n", &[("n", ArgValue::from(self.cur_slide + 1))]),
             font: FONT_HEADING,
             color: LabelColor::Primary,
             weight: TextWeight::Bold,
@@ -2508,7 +2602,7 @@ impl SlidesApp {
         });
         y += m.heading_adv();
 
-        Self::push_inspector_header(m, labels, x0, &mut y, "LAYOUT");
+        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-layout"));
         let cur_layout = self.slide().map_or(Layout::TitleContent, |s| s.layout);
         y = self.wrap_pills(
             buttons,
@@ -2521,7 +2615,7 @@ impl SlidesApp {
         );
         y += m.s4;
 
-        Self::push_inspector_header(m, labels, x0, &mut y, "BACKGROUND");
+        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-background"));
         let cur_bg = self.slide().map_or(Background::Surface, |s| s.background);
         y = self.wrap_pills(
             buttons,
@@ -2534,7 +2628,7 @@ impl SlidesApp {
         );
         y += m.s4;
 
-        Self::push_inspector_header(m, labels, x0, &mut y, "DECK THEME");
+        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-deck-theme"));
         y = self.wrap_palette_pills(buttons, x0, x1, y);
         y += m.s4;
 
@@ -2569,11 +2663,10 @@ impl SlidesApp {
         labels.push(Label {
             pos: Point::new(x0, notes_top),
             text: if self.editing_notes {
-                "SPEAKER NOTES  (editing — Esc)"
+                tr("slides-speaker-notes-editing")
             } else {
-                "SPEAKER NOTES"
-            }
-            .to_string(),
+                tr("slides-speaker-notes")
+            },
             font: FONT_CAPTION,
             color: LabelColor::Dim,
             weight: TextWeight::Semibold,
@@ -3047,25 +3140,20 @@ impl SlidesApp {
                     DocOutcome::Open(path) => {
                         let power_point = is_pptx(&path);
                         if !self.queue_document_open(path) {
-                            self.io_toast = Some((
-                                "Could not start presentation import".into(),
-                                ToastKind::Error,
-                            ));
+                            self.io_toast =
+                                Some((tr("slides-toast-import-failed"), ToastKind::Error));
                             self.finish_resource_file(
                                 false,
                                 Some("presentation import could not be started".into()),
                             );
                         } else if power_point {
-                            self.io_toast =
-                                Some(("Opening PowerPoint presentation…".into(), ToastKind::Info));
+                            self.io_toast = Some((tr("slides-toast-opening-pptx"), ToastKind::Info));
                         }
                     }
                     DocOutcome::Save(path) => {
                         if !self.queue_document_save(path) {
-                            self.io_toast = Some((
-                                "Could not start presentation export".into(),
-                                ToastKind::Error,
-                            ));
+                            self.io_toast =
+                                Some((tr("slides-toast-export-failed"), ToastKind::Error));
                             self.finish_resource_file(
                                 false,
                                 Some("presentation export could not be started".into()),
@@ -3075,8 +3163,7 @@ impl SlidesApp {
                     DocOutcome::Cancelled => self.finish_resource_file(false, None),
                     DocOutcome::Failed(reason) => {
                         eprintln!("slides: file chooser failed: {reason}");
-                        self.io_toast =
-                            Some(("Could not open the file chooser".into(), ToastKind::Error));
+                        self.io_toast = Some((tr("slides-toast-chooser-failed"), ToastKind::Error));
                         self.finish_resource_file(false, Some(reason));
                     }
                 }
@@ -3167,10 +3254,7 @@ impl SlidesApp {
             return false;
         }
         if !actions::deck_within_aggregate_limits(&self.deck) {
-            self.io_toast = Some((
-                "Presentation exceeds the safe export limit".into(),
-                ToastKind::Error,
-            ));
+            self.io_toast = Some((tr("slides-toast-export-limit"), ToastKind::Error));
             return false;
         }
         let Some(generation) = self.next_document_generation() else {
@@ -3282,14 +3366,11 @@ impl SlidesApp {
         match result {
             Ok(deck) => {
                 self.apply_loaded_deck(doc, deck);
-                self.io_toast = Some(("Presentation opened".into(), ToastKind::Success));
+                self.io_toast = Some((tr("slides-toast-opened"), ToastKind::Success));
                 self.finish_resource_file(true, None);
             }
             Err(error) => {
-                self.io_toast = Some((
-                    "Could not process the presentation".into(),
-                    ToastKind::Error,
-                ));
+                self.io_toast = Some((tr("slides-toast-process-failed"), ToastKind::Error));
                 self.finish_resource_file(false, Some(error));
             }
         }
@@ -3382,7 +3463,7 @@ impl SlidesApp {
                     PortalOutcome::Failed(reason) => {
                         eprintln!("slides: image chooser failed: {reason}");
                         self.io_toast =
-                            Some(("Could not open the image chooser".into(), ToastKind::Error));
+                            Some((tr("slides-toast-image-chooser-failed"), ToastKind::Error));
                     }
                 }
             }
@@ -3398,10 +3479,7 @@ impl SlidesApp {
     /// decode so the picture is ready by the time it paints.
     fn insert_image_from_path(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
         let Some(src) = crate::assets::import_asset_file(path) else {
-            self.io_toast = Some((
-                "Could not import image (it may be too large or invalid)".into(),
-                ToastKind::Error,
-            ));
+            self.io_toast = Some((tr("slides-toast-image-import-failed"), ToastKind::Error));
             return;
         };
         // Start decoding now (off the UI thread) so the first paint already has
@@ -4455,9 +4533,9 @@ impl SlidesApp {
         // the style the label is painted in.
         let m = &self.chrome_metrics;
         let icon_sz = TOOLBAR_ICON;
-        let label = "Drop to delete";
+        let label = crate::strings::tr("slides-drop-to-delete");
         let font = 12.5;
-        let (lw, lh) = tr.measure_weighted(label, font, None, TextWeight::Medium);
+        let (lw, lh) = tr.measure_weighted(&label, font, None, TextWeight::Medium);
         let total = icon_sz + m.s2 + f64::from(lw);
         let cx = zone.x0 + (zone.width() - total) / 2.0;
         let cy = zone.y0 + zone.height() / 2.0;
@@ -4471,7 +4549,7 @@ impl SlidesApp {
         );
         tr.draw_text_weighted(
             scene,
-            label,
+            &label,
             font,
             danger,
             t * Affine::translate((cx + icon_sz + m.s2, cy - f64::from(lh) / 2.0)),
@@ -4513,6 +4591,10 @@ impl SlidesApp {
                 div,
             );
         }
+        // The content is clipped to the panel: a scrolled panel's first and
+        // last rows are cut at its edges instead of bleeding into the toolbar
+        // or under the window edge.
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &chrome.inspector);
         for b in &chrome.buttons {
             if Self::in_inspector(chrome, b.rect.center()) {
                 self.draw_button(scene, t, tr, theme, pal, b);
@@ -4529,6 +4611,10 @@ impl SlidesApp {
                 self.draw_label(scene, t, tr, theme, pal, l);
             }
         }
+        scene.pop_layer();
+        if chrome.inspector.width() > 1.0 {
+            self.inspector_scroll.draw_bar_overlay(scene, t, theme);
+        }
     }
 
     /// Position the inspector's embedded `ui` widgets (font-size field, fill
@@ -4542,6 +4628,11 @@ impl SlidesApp {
                 self.font_input.set_value(fs);
             }
             self.font_input.apply_layout_external(rect);
+        } else {
+            // No slot this frame (nothing selected, or the TYPE row scrolled
+            // out of the panel): park the field so its last rect cannot keep
+            // catching presses meant for whatever is painted there now.
+            self.font_input.apply_layout_external(Rect::ZERO);
         }
         if let Some(rect) = chrome.fill_picker_rect {
             self.fill_picker.apply_layout_external(rect);
@@ -4562,7 +4653,11 @@ impl SlidesApp {
     ) {
         self.position_inspector_widgets(chrome);
         if chrome.font_input_rect.is_some() {
+            // Clipped like the rest of the panel content: the field scrolls
+            // with its TYPE row rather than floating over the toolbar.
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &chrome.inspector);
             self.font_input.draw(scene, t, tr, theme, presence);
+            scene.pop_layer();
         }
         if let Some(rect) = chrome.fill_picker_rect {
             // Seed the picker with the element's current fill on the first frame
@@ -4597,7 +4692,7 @@ impl SlidesApp {
             );
             tr.draw_text_weighted(
                 scene,
-                "FILL COLOUR",
+                &crate::strings::tr("slides-fill-colour"),
                 11.0,
                 c.text_dim,
                 t * Affine::translate((rect.x0, panel.y0 + 8.0)),
@@ -5343,7 +5438,7 @@ impl SlidesApp {
             if self.notes_input.value().is_empty() {
                 tr.draw_text_weighted(
                     scene,
-                    "Click to add speaker notes…",
+                    &crate::strings::tr("slides-notes-placeholder"),
                     12.5,
                     c.text_dim,
                     t * Affine::translate((nb.x0 + 10.0, nb.y0 + 9.0)),
@@ -5354,8 +5449,9 @@ impl SlidesApp {
             self.notes_input
                 .draw(scene, t, tr, theme, &PresenceCtx::empty());
         } else {
+            let placeholder = crate::strings::tr("slides-notes-placeholder");
             let (display, col) = if notes.is_empty() {
-                ("Click to add speaker notes…", c.text_dim)
+                (placeholder.as_str(), c.text_dim)
             } else {
                 (notes, c.text_primary)
             };
@@ -5596,81 +5692,81 @@ impl SlidesApp {
         use ui::a11y::{AccessState, Role};
         let selected = self.selected_element();
         match hit {
-            Hit::NewSlide => (Role::Button, "New slide".into(), AccessState::new()),
-            Hit::DuplicateSlide => (Role::Button, "Duplicate slide".into(), AccessState::new()),
+            Hit::NewSlide => (Role::Button, tr("slides-a11y-new-slide"), AccessState::new()),
+            Hit::DuplicateSlide => (Role::Button, tr("slides-a11y-duplicate-slide"), AccessState::new()),
             Hit::DeleteSlide => (
                 Role::Button,
-                "Delete slide".into(),
+                tr("slides-a11y-delete-slide"),
                 AccessState::new().disabled(self.deck.slides.len() <= 1),
             ),
             Hit::Present => (
                 Role::Button,
-                "Start presentation".into(),
+                tr("slides-a11y-start-presentation"),
                 AccessState::new(),
             ),
             Hit::Overview => (
                 Role::ToggleButton,
-                "Slide overview".into(),
+                tr("slides-a11y-slide-overview"),
                 AccessState::new().checked(self.mode == Mode::Overview),
             ),
             Hit::OpenSlide(index) | Hit::SelectSlide(index) => (
                 Role::Button,
-                format!("Open slide {}", index + 1),
+                tr_args("slides-a11y-open-slide", &[("n", ArgValue::from(*index + 1))]),
                 AccessState::new().selected(*index == self.cur_slide),
             ),
             Hit::CyclePalette => (
                 Role::Button,
-                format!("Change deck theme, currently {}", self.deck.palette.label()),
+                tr_args("slides-a11y-change-theme", &[("name", ArgValue::from(self.deck.palette.label()))]),
                 AccessState::new(),
             ),
             Hit::Insert(kind) => (
                 Role::Button,
-                format!("Insert {}", kind.label().to_lowercase()),
+                tr_args("slides-a11y-insert", &[("kind", ArgValue::from(kind.label().to_lowercase()))]),
                 AccessState::new(),
             ),
             Hit::SetFill(role) => (
                 Role::RadioButton,
-                format!("Fill {role}"),
+                tr_args("slides-a11y-fill", &[("role", ArgValue::from(role.as_str()))]),
                 AccessState::new().checked(selected.is_some_and(|element| element.fill == *role)),
             ),
             Hit::SetStroke(role) => (
                 Role::RadioButton,
-                format!("Stroke {role}"),
+                tr_args("slides-a11y-stroke", &[("role", ArgValue::from(role.as_str()))]),
                 AccessState::new().checked(selected.is_some_and(|element| element.stroke == *role)),
             ),
             Hit::OpenFillPicker => (
                 Role::Button,
-                "Choose custom fill colour".into(),
+                tr("slides-a11y-custom-fill"),
                 AccessState::new(),
             ),
             Hit::ToggleBold => (
                 Role::ToggleButton,
-                "Bold".into(),
+                tr("slides-a11y-bold"),
                 AccessState::new().checked(selected.is_some_and(|element| element.bold)),
             ),
             Hit::ToggleItalic => (
                 Role::ToggleButton,
-                "Italic".into(),
+                tr("slides-a11y-italic"),
                 AccessState::new().checked(selected.is_some_and(|element| element.italic)),
             ),
             Hit::SetAlign(align) => (
                 Role::RadioButton,
-                format!("Align {}", align.as_str()),
+                tr_args("slides-a11y-align", &[("align", ArgValue::from(align.as_str()))]),
                 AccessState::new().checked(selected.is_some_and(|element| element.align == *align)),
             ),
-            Hit::BringFront => (Role::Button, "Bring to front".into(), AccessState::new()),
-            Hit::SendBack => (Role::Button, "Send to back".into(), AccessState::new()),
-            Hit::DuplicateElement => (Role::Button, "Duplicate element".into(), AccessState::new()),
-            Hit::DeleteElement => (Role::Button, "Delete element".into(), AccessState::new()),
+            Hit::BringFront => (Role::Button, tr("slides-a11y-bring-front"), AccessState::new()),
+            Hit::SendBack => (Role::Button, tr("slides-a11y-send-back"), AccessState::new()),
+            Hit::DuplicateElement => (Role::Button, tr("slides-a11y-duplicate-element"), AccessState::new()),
+            Hit::DeleteElement => (Role::Button, tr("slides-a11y-delete-element"), AccessState::new()),
             Hit::SetLayout(layout) => (
                 Role::RadioButton,
-                format!("Layout {}", layout.label()),
+                tr_args("slides-a11y-layout", &[("name", ArgValue::from(layout.label()))]),
                 AccessState::new()
                     .checked(self.slide().is_some_and(|slide| slide.layout == *layout)),
             ),
             Hit::SetBackground(background) => (
                 Role::RadioButton,
-                format!("Background {}", background.label()),
+                tr_args("slides-a11y-background", &[("name", ArgValue::from(background.label()))]),
                 AccessState::new().checked(
                     self.slide()
                         .is_some_and(|slide| slide.background == *background),
@@ -5678,33 +5774,33 @@ impl SlidesApp {
             ),
             Hit::SetPalette(palette) => (
                 Role::RadioButton,
-                format!("Deck theme {}", palette.label()),
+                tr_args("slides-a11y-deck-theme", &[("name", ArgValue::from(palette.label()))]),
                 AccessState::new().checked(self.deck.palette == *palette),
             ),
             Hit::EditNotes => (
                 Role::Button,
-                "Edit speaker notes".into(),
+                tr("slides-a11y-edit-notes"),
                 AccessState::new(),
             ),
             Hit::ToggleRail => (
                 Role::ToggleButton,
-                "Slides panel".into(),
+                tr("slides-a11y-slides-panel"),
                 AccessState::new().checked(self.rail_open()),
             ),
             Hit::ToggleInspector => (
                 Role::ToggleButton,
-                "Properties panel".into(),
+                tr("slides-a11y-properties-panel"),
                 AccessState::new().checked(self.inspector_open()),
             ),
             Hit::ToggleToolbarMenu => (
                 Role::Button,
-                "More insert tools".into(),
+                tr("slides-a11y-more-tools"),
                 AccessState::new().expanded(self.toolbar_tools.is_open()),
             ),
         }
     }
 
-    fn tooltip_at(&self, point: Point) -> Option<&'static str> {
+    fn tooltip_at(&self, point: Point) -> Option<String> {
         let chrome = self.compute_chrome();
         chrome
             .buttons
@@ -5712,11 +5808,11 @@ impl SlidesApp {
             .chain(chrome.toolbar_tools.menu_buttons.iter())
             .find(|button| button.rect.contains(point))
             .and_then(|button| match button.hit {
-                Hit::ToggleRail => Some("Show or hide slides"),
-                Hit::ToggleInspector => Some("Show or hide properties"),
-                Hit::Overview => Some("Slide overview"),
-                Hit::CyclePalette => Some("Change deck theme"),
-                Hit::ToggleToolbarMenu => Some("More insert tools"),
+                Hit::ToggleRail => Some(tr("slides-tip-toggle-slides")),
+                Hit::ToggleInspector => Some(tr("slides-tip-toggle-properties")),
+                Hit::Overview => Some(tr("slides-tip-overview")),
+                Hit::CyclePalette => Some(tr("slides-tip-theme")),
+                Hit::ToggleToolbarMenu => Some(tr("slides-tip-more-tools")),
                 _ => None,
             })
     }
@@ -6059,6 +6155,14 @@ impl Widget for SlidesApp {
         match self.mode {
             Mode::Edit => {
                 let chrome = self.compute_chrome();
+                // Hand the inspector's scroll model this frame's viewport and
+                // content extent; it clamps the stored offset and paints its
+                // bar from the same numbers `compute_chrome` shifted by.
+                self.inspector_scroll.set_viewport_rect(chrome.inspector);
+                self.inspector_scroll.set_content_size(
+                    chrome.inspector.width() as f32,
+                    chrome.inspector_content_h as f32,
+                );
                 self.draw_editor(scene, transform, text_renderer, theme, &chrome);
                 self.draw_inspector_widgets(
                     scene,
@@ -6656,7 +6760,7 @@ impl Widget for SlidesApp {
     }
 
     fn tooltip(&self) -> Option<&str> {
-        self.tooltip_at(self.last_mouse)
+        self.tooltip_text.as_deref()
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
@@ -6734,6 +6838,7 @@ impl SlidesApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
+                self.tooltip_text = self.tooltip_at(p);
                 if self.page_sidebar.is_pending_drag() || self.page_sidebar.menu_open() {
                     // Feed the shared rail's reorder controller / menu hover; the
                     // gap + hover track the cursor. (The rail's list geometry is
@@ -7364,12 +7469,12 @@ impl SlidesApp {
     /// Build + open the context menu at `p`, mapping each row to the action it
     /// performs. `None` rows are separators. Clamps the 220px-wide menu so it
     /// stays fully on-screen.
-    fn open_menu_at(&mut self, p: Point, rows: &[Option<(&str, Hit)>]) {
+    fn open_menu_at(&mut self, p: Point, rows: &[Option<(String, Hit)>]) {
         let mut menu = ContextMenu::new();
         let mut hits: Vec<Option<Hit>> = Vec::new();
         for row in rows {
             if let Some((label, hit)) = row {
-                menu.push(MenuItem::action((*label).to_string(), || {}));
+                menu.push(MenuItem::action(label.clone(), || {}));
                 hits.push(Some(hit.clone()));
             } else {
                 menu.push(MenuItem::separator());
@@ -7389,11 +7494,11 @@ impl SlidesApp {
         self.open_menu_at(
             p,
             &[
-                Some(("Bring to front", Hit::BringFront)),
-                Some(("Send to back", Hit::SendBack)),
+                Some((tr("slides-a11y-bring-front"), Hit::BringFront)),
+                Some((tr("slides-a11y-send-back"), Hit::SendBack)),
                 None,
-                Some(("Duplicate", Hit::DuplicateElement)),
-                Some(("Delete", Hit::DeleteElement)),
+                Some((tr("slides-duplicate"), Hit::DuplicateElement)),
+                Some((tr("slides-delete"), Hit::DeleteElement)),
             ],
         );
     }
@@ -7782,6 +7887,15 @@ impl SlidesApp {
                     self.sync_page_rail();
                     if self.page_sidebar.on_wheel(-dy) {
                         self.rail_scroll = self.page_sidebar.scroll();
+                        *handled = true;
+                    }
+                } else if self.inspector_open() && self.inspector_rect().contains(self.last_mouse) {
+                    // The inspector's scroll model clamps to the content
+                    // extent the last frame handed it; a wheel at either end
+                    // changes nothing and is left for whoever is below.
+                    let before = self.inspector_scroll.offset_y();
+                    self.inspector_scroll.scroll_by(0.0, -dy as f32);
+                    if self.inspector_scroll.offset_y().to_bits() != before.to_bits() {
                         *handled = true;
                     }
                 }
@@ -8298,6 +8412,15 @@ impl SlidesApp {
     }
 }
 
+/// The inspector's "Custom · #rrggbb" fill button face.
+fn custom_colour_hex(hex: &str) -> String {
+    tr_args("slides-custom-colour-hex", &[("hex", ArgValue::from(hex))])
+}
+
+#[cfg(test)]
+#[path = "app/r2_inspector_scroll.rs"]
+mod r2_inspector_scroll;
+
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
@@ -8703,7 +8826,7 @@ mod tests {
     /// Build an app at a fixed allocated width and run one frame's flap sync
     /// (the real per-frame path) so `compute_chrome` resolves the rail layout
     /// and eased reveal exactly as it would live.
-    fn app_sized(w: f64) -> SlidesApp {
+    pub(super) fn app_sized(w: f64) -> SlidesApp {
         let mut s = Slide::new(Layout::TitleContent);
         s.add(Element::text("hello", 96.0, 90.0, 1088.0, 100.0, 54.0));
         let mut a = app_with(s);
@@ -8714,7 +8837,7 @@ mod tests {
 
     /// An app whose chrome metrics were resolved against a renderer at
     /// `text_scale`, exactly as the first draw of a frame does.
-    fn measured_app(w: f64, text_scale: f32) -> (SlidesApp, TextRenderer) {
+    pub(super) fn measured_app(w: f64, text_scale: f32) -> (SlidesApp, TextRenderer) {
         let mut app = app_sized(w);
         let theme = Theme::dark().with_text_scale(text_scale);
         let mut tr = TextRenderer::new();

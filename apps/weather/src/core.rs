@@ -34,6 +34,9 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::Metrics;
+use ui::tokens::spacing::Spacing;
+use ui::tokens::typography::TypeScale;
 use ui::widget::{
     Autocomplete, AutocompleteOutcome, DragController, ListMetrics, PressOutcome, ScrollMetrics,
     Scrollbar, Suggestion, Widget,
@@ -55,31 +58,79 @@ use crate::wxcode::Sky;
 const PAD: f64 = 28.0;
 const RP: f64 = 20.0; // overview inner padding
 const CHIP_H: f64 = 62.0; // authored 1× saved-place chip height (see `ChipMetrics`)
-const CHIP_GAP: f64 = 8.0;
-/// Base text sizes inside a saved-place chip: city name, country/condition
-/// line and the trailing temperature.
+/// Base text size of a saved-place chip's city name (15pt sits between the
+/// type scale's `base` and `lg`); its condition line reads `sm`, the trailing
+/// temperature `x2l`, and the gap between chips is the theme's `s2`.
 const CHIP_NAME_TEXT: f32 = 15.0;
-const CHIP_SUB_TEXT: f32 = 12.0;
-const CHIP_TEMP_TEXT: f32 = 24.0;
 /// Authored 1× condition glyph size inside a chip.
 const CHIP_ICON: f64 = 40.0;
 /// Authored 1× height of the detail header (city, region, date/time, refresh)
 /// measured from its top to the body's first section.
 const DETAIL_HEADER_H: f64 = 74.0;
-/// Vertical padding above and below a chip's text block (the spacing scale's
-/// `s3`; literal because the row grid is solved before a theme is in hand).
-const CHIP_TEXT_PAD: f64 = 12.0;
+/// Text sizes the detail header stacks: the city name and its region line.
+const DETAIL_TITLE_TEXT: f32 = 26.0;
+const DETAIL_SUBTITLE_TEXT: f32 = 13.0;
 
 /// Height of one line of `size`-pt text at `text_scale` — the same value
 /// `TextRenderer::measure` reports for a single line, so the row grid, the hit
-/// rects, the reorder metrics and the painter agree at every scale.
+/// rects, the reorder metrics and the painter agree at every scale. The
+/// crate's one copy of the line-height formula.
 fn line_h(size: f32, text_scale: f32) -> f64 {
-    let scale = if text_scale.is_finite() {
-        text_scale.clamp(0.5, 4.0)
-    } else {
-        1.0
-    };
-    f64::from(ui::text_render::TextStyle::new(size * scale).line_height_px())
+    ui::text_metrics::line_height_px(size, text_scale)
+}
+
+/// How much taller one line of `size`-pt text is at `text_scale` than at 1×;
+/// zero at or below 1×, so nothing ever shrinks under its authored design.
+fn line_growth(size: f32, text_scale: f32) -> f64 {
+    ui::text_metrics::line_growth(size, text_scale)
+}
+
+/// The authored (or token) 1× minimum, or the measured line plus its theme
+/// pad rounded up to a whole pixel once scaled type needs more. Reserve
+/// (layout) and paint read the same tokens, so a row is never a fraction
+/// short of the text plus the gap the painter leaves.
+fn at_least_whole(minimum: f64, measured: f64) -> f64 {
+    ui::text_metrics::at_least_whole(minimum, measured)
+}
+
+/// Base (unscaled) text sizes handed to the legacy renderer, read from the
+/// default type scale so the app states no sizes of its own; the renderer
+/// applies the accessibility scale. Sizes off the scale are named beside the
+/// surfaces that use them (or in the body's design table).
+fn text_xs() -> f32 {
+    TypeScale::default().xs
+}
+fn text_sm() -> f32 {
+    TypeScale::default().sm
+}
+fn text_base() -> f32 {
+    TypeScale::default().base
+}
+fn text_x2l() -> f32 {
+    TypeScale::default().x2l
+}
+
+/// Height of the detail header (city, region, date/time, refresh) from its
+/// top to the body's first section: the authored 74px at 1× (the name and
+/// region lines with their `s1` gap plus an `s4` below sit inside it), or
+/// that measured stack rounded up once scaled type needs more.
+fn detail_header_h(spacing: &Spacing, text_scale: f32) -> f64 {
+    at_least_whole(
+        DETAIL_HEADER_H,
+        line_h(DETAIL_TITLE_TEXT, text_scale)
+            + f64::from(spacing.s1)
+            + line_h(DETAIL_SUBTITLE_TEXT, text_scale)
+            + f64::from(spacing.s4),
+    )
+}
+
+/// An authored 1× height grown by exactly the extra room its text lines need
+/// at `text_scale`, snapped up to a whole pixel. The authored value already
+/// holds its 1× lines plus the padding the design gave them, so at 1× this is
+/// the design exactly (the 74px header stays 74, not `32.5 + 4 + 16.25 + 24 =
+/// 76.75`) and at 2× the row grows by the lines' growth alone.
+fn authored_h(authored: f64, sizes: &[f32], text_scale: f32) -> f64 {
+    ui::text_metrics::authored_h(authored, sizes, text_scale)
 }
 
 /// Saved-place row geometry for the current text scale: the authored 62px
@@ -87,6 +138,8 @@ fn line_h(size: f32, text_scale: f32) -> f64 {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ChipMetrics {
     chip_h: f64,
+    /// Gap between consecutive chips — the theme's `s2`.
+    gap: f64,
     name_h: f64,
     sub_h: f64,
     temp_h: f64,
@@ -95,14 +148,17 @@ struct ChipMetrics {
 }
 
 impl ChipMetrics {
-    fn new(text_scale: f32) -> Self {
+    fn new(spacing: &Spacing, text_scale: f32) -> Self {
         let name_h = line_h(CHIP_NAME_TEXT, text_scale);
-        let sub_h = line_h(CHIP_SUB_TEXT, text_scale);
-        let temp_h = line_h(CHIP_TEMP_TEXT, text_scale);
-        // 33.75 + 24 < 62 at 1×, so the authored chip wins there; 91.5 at 2×.
-        let chip_h = (name_h + sub_h + 2.0 * CHIP_TEXT_PAD).max(CHIP_H);
+        let sub_h = line_h(text_sm(), text_scale);
+        let temp_h = line_h(text_x2l(), text_scale);
+        // The authored 62px row at 1× (33.75 + 24 sits inside it), or the two
+        // lines plus the `s3` the painter leaves above and below them,
+        // rounded up — always a whole pixel (92 at 2×).
+        let chip_h = at_least_whole(CHIP_H, name_h + sub_h + 2.0 * f64::from(spacing.s3));
         Self {
             chip_h,
+            gap: f64::from(spacing.s2),
             name_h,
             sub_h,
             temp_h,
@@ -111,22 +167,14 @@ impl ChipMetrics {
     }
 
     fn pitch(self) -> f64 {
-        self.chip_h + CHIP_GAP
+        self.chip_h + self.gap
     }
 }
-const HERO_H: f64 = 168.0;
-const TILE_H: f64 = 78.0;
+/// Minimum width of one metric tile before the row wraps.
 const TILE_MIN_W: f64 = 118.0;
-/// Height of the hourly-strip card (header + the fixed-height column band +
-/// the horizontal scrollbar gutter).
-const HOURLY_CARD_H: f64 = 190.0;
 /// Minimum width of one hour column; below this the strip scrolls horizontally
 /// rather than squeezing all 24 hours into the card width.
 const HOUR_COL_MIN_W: f64 = 58.0;
-/// Height of one air-quality pollutant tile.
-const AQ_TILE_H: f64 = 66.0;
-const DAY_ROW_H: f64 = 42.0;
-const SECTION_GAP: f64 = 12.0;
 /// Extra top padding reserved in the detail header for the shell's Back
 /// affordance (chip + label) when the detail is pushed on a narrow layout.
 const BACK_RESERVE: f64 = 30.0;
@@ -184,6 +232,11 @@ pub struct Core {
     /// saved-place rows, their hit rects, the reorder metrics and the scroll
     /// extent all size from the same measured lines.
     text_scale: f32,
+    /// The theme's spacing and density metrics, cached from the app's layout
+    /// pass so the renderer-less row grid reads the same tokens the painters
+    /// do.
+    spacing: Spacing,
+    metrics: Metrics,
 
     // --- overview: saved-place direct manipulation ---
     /// Press classifier: distinguishes a click from a vertical reorder-drag
@@ -265,6 +318,8 @@ impl Core {
             units,
             last_mouse: Point::ZERO,
             text_scale: 1.0,
+            spacing: Spacing::default(),
+            metrics: Metrics::BASE,
             press: None,
             menu: None,
             reorder: DragController::vertical(),
@@ -1284,7 +1339,7 @@ impl Core {
         // than only on release. A faint accent caret sits at the top of the
         // reflowed gap (the live target slot) to mark where the chip will drop.
         if let Some(gap) = self.reorder.insertion() {
-            let gy = slot_y(gap) - CHIP_GAP / 2.0;
+            let gy = slot_y(gap) - chip_m.gap / 2.0;
             scene.fill(
                 Fill::NonZero,
                 t,
@@ -1331,18 +1386,27 @@ impl Core {
     /// toolkit's [`DragController`]. `over_list_top` is the scroll-adjusted
     /// leading edge of the first chip, set during `draw_overview`.
     fn list_metrics(&self) -> ListMetrics {
+        let m = self.chip_metrics();
         ListMetrics::uniform(
             self.over_list_top,
-            self.chip_metrics().chip_h,
-            CHIP_GAP,
+            m.chip_h,
+            m.gap,
             self.model.locations.len(),
         )
+    }
+
+    /// Cache the theme's spacing and density metrics from the app's layout
+    /// pass, so the row grid solved without a renderer reads the same tokens
+    /// the painters do.
+    pub fn set_layout_tokens(&mut self, theme: &Theme) {
+        self.spacing = theme.tokens.spacing;
+        self.metrics = theme.tokens.metrics;
     }
 
     /// Saved-place row geometry at the captured text scale — one description
     /// for the row grid, the hit rects, the reorder model and the painter.
     fn chip_metrics(&self) -> ChipMetrics {
-        ChipMetrics::new(self.text_scale)
+        ChipMetrics::new(&self.spacing, self.text_scale)
     }
 
     /// The rounded current temperature a saved-place chip shows, or `None`
@@ -1424,7 +1488,7 @@ impl Core {
         // before it rather than running underneath it.
         let temp_label = self.chip_temperature(loc, units);
         let (temp_text, temp_size, temp_weight) = match &temp_label {
-            Some(label) => (label.as_str(), CHIP_TEMP_TEXT, TextWeight::Bold),
+            Some(label) => (label.as_str(), text_x2l(), TextWeight::Bold),
             None => ("—", 18.0, TextWeight::Regular),
         };
         let (temp_w, temp_h) = tr.measure_weighted(temp_text, temp_size, None, temp_weight);
@@ -1446,14 +1510,14 @@ impl Core {
             TextWeight::Semibold,
             c.text_primary,
         );
-        let sub = tr.elide_to_width(&sub, CHIP_SUB_TEXT, text_max as f32);
+        let sub = tr.elide_to_width(&sub, text_sm(), text_max as f32);
         text_left(
             scene,
             tr,
             &sub,
             text_x,
             name_y + m.name_h,
-            CHIP_SUB_TEXT,
+            text_sm(),
             TextWeight::Regular,
             c.text_dim,
         );
@@ -2055,8 +2119,7 @@ impl Core {
             return;
         };
         let snap_opt = self.model.selected_snapshot().cloned();
-        let body_top =
-            self.draw_detail_header(rect, scene, t, tr, theme, &loc, snap_opt.as_ref());
+        let body_top = self.draw_detail_header(rect, scene, t, tr, theme, &loc, snap_opt.as_ref());
 
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
@@ -2085,7 +2148,13 @@ impl Core {
         };
 
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
-        let layout = DetailBodyLayout::measure(mw, &snap);
+        let layout = DetailBodyLayout::measure(
+            mw,
+            &snap,
+            &theme.tokens.spacing,
+            &theme.tokens.metrics,
+            tr.text_scale(),
+        );
         let view_h = (rect.y1 - PAD) - body_top;
         self.max_scroll = (layout.body_h - view_h).max(0.0);
         self.scroll = self.scroll.clamp(0.0, self.max_scroll);
@@ -2093,9 +2162,9 @@ impl Core {
         let clip = Rect::new(rect.x0, body_top - 8.0, rect.x1, rect.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
         let mut y = body_top - self.scroll;
-        y = self.draw_detail_hero(rect, scene, t, tr, theme, y, &snap);
+        y = self.draw_detail_hero(rect, scene, t, tr, theme, y, &snap, &layout);
         y = self.draw_detail_tiles(rect, scene, t, tr, theme, y, &snap, &layout);
-        y = self.draw_detail_hourly(rect, scene, t, tr, theme, y, &snap);
+        y = self.draw_detail_hourly(rect, scene, t, tr, theme, y, &snap, &layout);
         y = self.draw_detail_days(rect, scene, t, tr, theme, y, &snap, &layout);
         self.draw_detail_air_quality_section(rect, scene, t, tr, theme, y, &layout);
         scene.pop_layer();
@@ -2229,8 +2298,11 @@ impl Core {
         // under it, and the header's height (returned as the body top) grows
         // with the lines rather than staying the authored 74px.
         let rb = 34.0;
-        let name_h = f64::from(tr.measure_weighted("Ag", 26.0, None, TextWeight::Bold).1);
-        let sub_h = f64::from(tr.measure("Ag", 13.0, None).1);
+        let name_h = f64::from(
+            tr.measure_weighted("Ag", DETAIL_TITLE_TEXT, None, TextWeight::Bold)
+                .1,
+        );
+        let sub_h = f64::from(tr.measure("Ag", DETAIL_SUBTITLE_TEXT, None).1);
         let date_h = f64::from(tr.measure_weighted("Ag", 14.0, None, TextWeight::Medium).1);
         let (date_str, time_str) = snap.map_or((String::new(), String::new()), |snap| {
             (
@@ -2267,7 +2339,9 @@ impl Core {
             TextWeight::Regular,
             c.text_dim,
         );
-        let header_h = (name_h + f64::from(sp.s1) + sub_h + f64::from(sp.s6)).max(DETAIL_HEADER_H);
+        // The authored 74px at 1× (not the 76.75 that stacking the measured
+        // lines plus token gaps gives), grown by the two lines' extra height.
+        let header_h = detail_header_h(sp, tr.text_scale());
 
         // Refresh button (top-right) — re-fetches this city's forecast.
         let refresh = Rect::new(right - rb, hy - 2.0, right, hy - 2.0 + rb);
@@ -2324,6 +2398,7 @@ impl Core {
         theme: &Theme,
         y: f64,
         snap: &WeatherSnapshot,
+        layout: &DetailBodyLayout,
     ) -> f64 {
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
@@ -2331,7 +2406,7 @@ impl Core {
         let units = self.units;
         let cur = &snap.current;
 
-        let hero = Rect::new(mx, y, mx + mw, y + HERO_H);
+        let hero = Rect::new(mx, y, mx + mw, y + layout.hero_h);
         card(scene, t, hero, theme);
         let sky = Sky::from_code(cur.weather_code);
         icon::draw_icon(
@@ -2353,13 +2428,14 @@ impl Core {
         tr.draw_text_weighted(
             scene,
             &temp_str,
-            72.0,
+            layout.text.hero_temp,
             c.text_primary,
             t * Affine::translate((temp_x, hero.y0 + 30.0)),
             None,
             TextWeight::Bold,
         );
-        let (tnw, _) = tr.measure_weighted(&temp_str, 72.0, None, TextWeight::Bold);
+        let (tnw, _) =
+            tr.measure_weighted(&temp_str, layout.text.hero_temp, None, TextWeight::Bold);
         text_left(
             scene,
             tr,
@@ -2376,8 +2452,8 @@ impl Core {
             tr,
             cond,
             temp_x + 2.0,
-            hero.y0 + 114.0,
-            19.0,
+            hero.y0 + layout.hero_cond_dy,
+            layout.text.hero_cond,
             TextWeight::Semibold,
             c.text_primary,
         );
@@ -2387,8 +2463,8 @@ impl Core {
             tr,
             &format!("Feels like {feels}{}", units.temp_suffix()),
             temp_x + 2.0,
-            hero.y0 + 140.0,
-            13.0,
+            hero.y0 + layout.hero_feels_dy,
+            layout.text.hero_feels,
             TextWeight::Regular,
             c.text_dim,
         );
@@ -2397,7 +2473,7 @@ impl Core {
             Self::draw_hero_sun(scene, t, tr, theme, hero, mw, cur, today);
         }
 
-        y + HERO_H + SECTION_GAP
+        y + layout.hero_h + layout.gap
     }
 
     /// The sunrise/sunset arc on a wide pane, or the compact Sunrise/Sunset
@@ -2429,7 +2505,7 @@ impl Core {
                     hero.x1 - 226.0,
                     hero.y0 + 22.0,
                     hero.x1 - 22.0,
-                    hero.y0 + HERO_H - 22.0,
+                    hero.y1 - 22.0,
                 ),
                 &cur.time,
                 &sr,
@@ -2443,7 +2519,7 @@ impl Core {
                 tr,
                 "Sunrise",
                 sx,
-                hero.y0 + HERO_H - 60.0,
+                hero.y1 - 60.0,
                 10.0,
                 TextWeight::Semibold,
                 c.text_dim,
@@ -2453,7 +2529,7 @@ impl Core {
                 tr,
                 &sr,
                 sx,
-                hero.y0 + HERO_H - 46.0,
+                hero.y1 - 46.0,
                 14.0,
                 TextWeight::Medium,
                 c.text_primary,
@@ -2463,7 +2539,7 @@ impl Core {
                 tr,
                 "Sunset",
                 sx,
-                hero.y0 + HERO_H - 26.0,
+                hero.y1 - 26.0,
                 10.0,
                 TextWeight::Semibold,
                 c.text_dim,
@@ -2473,7 +2549,7 @@ impl Core {
                 tr,
                 &ss,
                 sx,
-                hero.y0 + HERO_H - 12.0,
+                hero.y1 - 12.0,
                 14.0,
                 TextWeight::Medium,
                 c.text_primary,
@@ -2548,8 +2624,8 @@ impl Core {
             let row_count = if row < full_rows { cols } else { rem };
             let tw = (mw - (row_count as f64 - 1.0) * gap) / row_count as f64;
             let tx = mx + col as f64 * (tw + gap);
-            let ty = y + row as f64 * (TILE_H + gap);
-            let tile = Rect::new(tx, ty, tx + tw, ty + TILE_H);
+            let ty = y + row as f64 * (layout.tile_h + gap);
+            let tile = Rect::new(tx, ty, tx + tw, ty + layout.tile_h);
             card(scene, t, tile, theme);
             text_left(
                 scene,
@@ -2557,7 +2633,7 @@ impl Core {
                 label,
                 tile.x0 + 12.0,
                 tile.y0 + 12.0,
-                10.0,
+                layout.text.tile_label,
                 TextWeight::Semibold,
                 c.text_dim,
             );
@@ -2566,8 +2642,8 @@ impl Core {
                 tr,
                 value,
                 tile.x0 + 12.0,
-                tile.y0 + 30.0,
-                25.0,
+                tile.y0 + layout.tile_value_dy,
+                layout.text.tile_value,
                 TextWeight::Bold,
                 c.text_primary,
             );
@@ -2576,14 +2652,14 @@ impl Core {
                 tr,
                 sub,
                 tile.x0 + 12.0,
-                tile.y0 + TILE_H - 22.0,
-                11.0,
+                tile.y1 - layout.tile_sub_inset,
+                layout.text.tile_unit,
                 TextWeight::Regular,
                 c.text_dim,
             );
         }
 
-        y + layout.tiles_block_h + SECTION_GAP
+        y + layout.tiles_block_h + layout.gap
     }
 
     /// The 24-hour scrollable strip card. Returns the y cursor for the
@@ -2598,6 +2674,7 @@ impl Core {
         theme: &Theme,
         y: f64,
         snap: &WeatherSnapshot,
+        layout: &DetailBodyLayout,
     ) -> f64 {
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
@@ -2605,7 +2682,7 @@ impl Core {
         let units = self.units;
         let accent = self.accent(theme);
 
-        let hcard = Rect::new(mx, y, mx + mw, y + HOURLY_CARD_H);
+        let hcard = Rect::new(mx, y, mx + mw, y + layout.hourly_h);
         card(scene, t, hcard, theme);
         text_left(
             scene,
@@ -2648,7 +2725,7 @@ impl Core {
         // columns are wider than the band rather than squeezing them.
         let band = Rect::new(
             hcard.x0 + 14.0,
-            hcard.y0 + 32.0,
+            hcard.y0 + layout.hourly_band_top,
             hcard.x1 - 14.0,
             hcard.y1 - 20.0,
         );
@@ -2675,7 +2752,7 @@ impl Core {
 
         self.draw_hourly_scrollbar(scene, t, theme, hcard, band, content_w);
 
-        y + HOURLY_CARD_H + SECTION_GAP
+        y + layout.hourly_h + layout.gap
     }
 
     /// The shared horizontal scrollbar for the hourly strip, shown only
@@ -2764,13 +2841,26 @@ impl Core {
         }
 
         let geo = DayRowGeometry::new(dcard);
-        let rows_top = dcard.y0 + 40.0;
+        let rows_top = dcard.y0 + layout.days_header_h;
         for (i, d) in snap.daily.iter().enumerate() {
-            let ry = rows_top + i as f64 * DAY_ROW_H;
-            Self::draw_day_row(scene, t, tr, theme, &geo, i, d, ry, snap, units, wmin, wmax);
+            let ry = rows_top + i as f64 * layout.day_row_h;
+            Self::draw_day_row(
+                scene,
+                t,
+                tr,
+                theme,
+                &geo,
+                i,
+                d,
+                Rect::new(geo.inner_l, ry, geo.inner_r, ry + layout.day_row_h),
+                snap,
+                units,
+                wmin,
+                wmax,
+            );
         }
 
-        y + layout.days_block_h + SECTION_GAP
+        y + layout.days_block_h + layout.gap
     }
 
     /// One row of the 7-day forecast: day label, condition icon (+ label
@@ -2788,13 +2878,17 @@ impl Core {
         geo: &DayRowGeometry,
         i: usize,
         d: &DayForecast,
-        ry: f64,
+        row: Rect,
         snap: &WeatherSnapshot,
         units: Units,
         wmin: f64,
         wmax: f64,
     ) {
-        let cy = ry + DAY_ROW_H / 2.0;
+        // The row rect comes from the shared body layout, so its height is
+        // the authored 42px grown by the scaled label line; everything in
+        // the row centres on that rect, not on a fixed constant.
+        let ry = row.y0;
+        let cy = row.center().y;
         Self::draw_day_row_label(scene, t, tr, theme, geo, i, d, ry, cy);
         if geo.show_extras {
             Self::draw_day_row_extras(scene, t, tr, theme, geo, d, snap, units, cy);
@@ -3031,16 +3125,7 @@ impl Core {
             TextWeight::Semibold,
             c.text_primary,
         );
-        self.draw_air_quality(
-            scene,
-            t,
-            tr,
-            theme,
-            acard,
-            aq.as_ref(),
-            layout.aq_cols,
-            layout.gap,
-        );
+        self.draw_air_quality(scene, t, tr, theme, acard, aq.as_ref(), layout);
     }
 
     /// The status line + the body's vertical scroll indicator.
@@ -3240,13 +3325,12 @@ impl Core {
         theme: &Theme,
         area: Rect,
         aq: Option<&AirQuality>,
-        cols: usize,
-        gap: f64,
+        layout: &DetailBodyLayout,
     ) {
         let c = &theme.tokens.colors;
         let ix = area.x0 + 16.0;
         let iw = area.width() - 32.0;
-        let hero_top = area.y0 + 40.0;
+        let hero_top = area.y0 + layout.aq_header_h;
 
         let Some(aq) = aq.filter(|a| a.has_any()) else {
             let msg = if self.is_fetching() {
@@ -3269,9 +3353,9 @@ impl Core {
 
         // AQI hero: a severity-tinted chip with the big index number, the band
         // word, and a caption naming the scale.
-        let hero = Rect::new(ix, hero_top, area.x1 - 16.0, hero_top + 64.0);
+        let hero = Rect::new(ix, hero_top, area.x1 - 16.0, hero_top + layout.aq_hero_h);
         Self::draw_aqi_hero(scene, t, tr, theme, hero, aq);
-        Self::draw_aq_tiles(scene, t, tr, theme, ix, iw, hero, aq, cols, gap);
+        Self::draw_aq_tiles(scene, t, tr, theme, ix, iw, hero, aq, layout);
     }
 
     /// The AQI hero: a severity-tinted chip with the big index number, the
@@ -3370,10 +3454,10 @@ impl Core {
         iw: f64,
         hero: Rect,
         aq: &AirQuality,
-        cols: usize,
-        gap: f64,
+        layout: &DetailBodyLayout,
     ) {
         let c = &theme.tokens.colors;
+        let (cols, gap) = (layout.aq_cols, layout.gap);
         let tiles: [(&str, Option<f64>); 4] = [
             ("PM2.5", aq.pm2_5),
             ("PM10", aq.pm10),
@@ -3387,8 +3471,8 @@ impl Core {
             let col = i % cols;
             let row = i / cols;
             let tx = ix + col as f64 * (tw + gap);
-            let ty = tiles_top + row as f64 * (AQ_TILE_H + gap);
-            let tile = Rect::new(tx, ty, tx + tw, ty + AQ_TILE_H);
+            let ty = tiles_top + row as f64 * (layout.aq_tile_h + gap);
+            let tile = Rect::new(tx, ty, tx + tw, ty + layout.aq_tile_h);
             card(scene, t, tile, theme);
             text_left(
                 scene,
@@ -3396,7 +3480,7 @@ impl Core {
                 label,
                 tile.x0 + 12.0,
                 tile.y0 + 10.0,
-                10.0,
+                layout.text.aq_tile_label,
                 TextWeight::Semibold,
                 c.text_dim,
             );
@@ -3407,8 +3491,8 @@ impl Core {
                         tr,
                         &format!("{}", v.round() as i64),
                         tile.x0 + 12.0,
-                        tile.y0 + 26.0,
-                        22.0,
+                        tile.y0 + layout.aq_tile_value_dy,
+                        layout.text.aq_tile_value,
                         TextWeight::Bold,
                         c.text_primary,
                     );
@@ -3417,8 +3501,8 @@ impl Core {
                         tr,
                         "µg/m³",
                         tile.x0 + 12.0,
-                        tile.y1 - 18.0,
-                        10.0,
+                        tile.y1 - layout.aq_tile_sub_inset,
+                        layout.text.aq_tile_label,
                         TextWeight::Regular,
                         c.text_dim,
                     );
@@ -3552,13 +3636,14 @@ impl Core {
             return;
         };
         let start = Point::new(200.0, 232.0);
-        let target = Point::new(200.0, start.y + 2.4 * (CHIP_H + CHIP_GAP));
+        let chip_m = self.chip_metrics();
+        let target = Point::new(200.0, start.y + 2.4 * chip_m.pitch());
         // Grab the chip at its vertical centre so the ghost sits on the cursor.
         self.reorder.begin(id, from, CHIP_H / 2.0, start);
         self.last_mouse = target;
         // A rough metrics is enough to clear the drag-start threshold; the draw
         // pass re-pins the insertion index against the real list geometry.
-        let m = ListMetrics::uniform(0.0, CHIP_H, CHIP_GAP, self.model.locations.len());
+        let m = ListMetrics::uniform(0.0, chip_m.chip_h, chip_m.gap, self.model.locations.len());
         self.reorder.pointer_moved(target, &m);
         // Keep the classifier in the reorder state so the delete drop-zone and
         // list-bottom inset match a real in-flight drag.
@@ -3709,50 +3794,243 @@ impl Core {
 // Free drawing helpers
 // =====================================================================
 
-/// Precomputed section heights for [`Core::draw_detail`]'s scrollable body,
+/// Precomputed section geometry for [`Core::draw_detail`]'s scrollable body,
 /// measured once per frame so every section (and the scroll geometry) agree
 /// on where it starts.
+///
+/// Every card, tile and row is its authored 1× height grown by exactly the
+/// extra height the text lines inside it need at the renderer's text scale
+/// (see [`authored_h`]), and the inner text offsets shift by the growth of
+/// the lines above them, so at 1× the design is reproduced exactly and at 2×
+/// no line runs into its neighbour or out of its card.
 struct DetailBodyLayout {
+    /// Gap between sections and between tiles — the theme's `s3`.
     gap: f64,
+    /// Base text sizes the section painters set their lines in.
+    text: BodyText,
+    /// Hero card: height, and the tops of the condition and "feels like"
+    /// lines beneath the big temperature.
+    hero_h: f64,
+    hero_cond_dy: f64,
+    hero_feels_dy: f64,
+    /// Metric tiles: height, the value line's top, and the inset of the unit
+    /// line from the tile bottom.
     tile_cols: usize,
+    tile_h: f64,
+    tile_value_dy: f64,
+    tile_sub_inset: f64,
     tiles_block_h: f64,
+    /// Hourly strip card: height and the chart band's top inset.
+    hourly_h: f64,
+    hourly_band_top: f64,
+    /// Daily card: title row height, one day row, and the whole card.
+    days_header_h: f64,
+    day_row_h: f64,
     days_block_h: f64,
+    /// Air-quality card: title row, AQI hero, pollutant tiles and the whole card.
     aq_cols: usize,
+    aq_header_h: f64,
+    aq_hero_h: f64,
+    aq_tile_h: f64,
+    aq_tile_value_dy: f64,
+    aq_tile_sub_inset: f64,
     aq_block_h: f64,
     body_h: f64,
 }
 
+/// Base text sizes of the lines the body painters set, carried on the layout
+/// so a painter and the reservation that holds its line read one source.
+#[derive(Clone, Copy, Debug)]
+struct BodyText {
+    hero_temp: f32,
+    hero_cond: f32,
+    hero_feels: f32,
+    tile_label: f32,
+    tile_value: f32,
+    tile_unit: f32,
+    aq_tile_label: f32,
+    aq_tile_value: f32,
+}
+
+/// The authored 1× design of the detail body: card heights, the inner offsets
+/// of their stacked lines, and the base sizes of the lines that sit off the
+/// type scale. One table, grown by [`DetailBodyLayout::measure`] and read by
+/// the section painters through the layout, so every number the body is drawn
+/// from lives here once. Values a theme token names — the card title rows
+/// (`metrics.bar_height`), section and tile gaps (`s3`), the hourly band inset
+/// (`s8`), the AQI hero (`s16`), `xs`/`sm`/`base` text — are read from the
+/// theme in `measure`, not restated here.
+struct BodyDesign {
+    hero_h: f64,
+    hero_temp_text: f32,
+    hero_cond_text: f32,
+    hero_feels_text: f32,
+    /// Tops of the condition and "feels like" lines under the temperature.
+    hero_cond_dy: f64,
+    hero_feels_dy: f64,
+    tile_h: f64,
+    tile_value_text: f32,
+    tile_unit_text: f32,
+    /// Top of the value line; inset of the unit line from the tile bottom.
+    tile_value_dy: f64,
+    tile_unit_inset: f64,
+    hourly_h: f64,
+    hourly_label_text: f32,
+    day_row_h: f64,
+    day_label_text: f32,
+    aq_band_text: f32,
+    aq_tile_h: f64,
+    aq_tile_value_text: f32,
+    aq_tile_value_dy: f64,
+    aq_tile_unit_inset: f64,
+    /// Bottom pad of the air-quality card, under its tiles.
+    aq_bottom_pad: f64,
+}
+
+const BODY: BodyDesign = BodyDesign {
+    hero_h: 168.0,
+    hero_temp_text: 72.0,
+    hero_cond_text: 19.0,
+    hero_feels_text: 13.0,
+    hero_cond_dy: 114.0,
+    hero_feels_dy: 140.0,
+    tile_h: 78.0,
+    tile_value_text: 25.0,
+    tile_unit_text: 11.0,
+    tile_value_dy: 30.0,
+    tile_unit_inset: 22.0,
+    hourly_h: 190.0,
+    hourly_label_text: 11.0,
+    day_row_h: 42.0,
+    day_label_text: 13.0,
+    aq_band_text: 19.0,
+    aq_tile_h: 66.0,
+    aq_tile_value_text: 22.0,
+    aq_tile_value_dy: 26.0,
+    aq_tile_unit_inset: 18.0,
+    aq_bottom_pad: 14.0,
+};
+
 impl DetailBodyLayout {
-    fn measure(mw: f64, snap: &WeatherSnapshot) -> Self {
-        let gap = 12.0;
+    /// Solve the body for `text_scale` with the theme's `spacing` and
+    /// `metrics`: token-sized rows (card titles, day rows) are the token, or
+    /// the measured line plus the same token pad the painter leaves, rounded
+    /// up; design-table cards grow by exactly their lines' extra height, and
+    /// their inner offsets shift by the growth of the lines above them.
+    fn measure(
+        mw: f64,
+        snap: &WeatherSnapshot,
+        spacing: &Spacing,
+        metrics: &Metrics,
+        text_scale: f32,
+    ) -> Self {
+        let g = |size: f32| line_growth(size, text_scale);
+        let (s2, s3) = (f64::from(spacing.s2), f64::from(spacing.s3));
+        let gap = s3;
+        let d = &BODY;
+        let text = BodyText {
+            hero_temp: d.hero_temp_text,
+            hero_cond: d.hero_cond_text,
+            hero_feels: d.hero_feels_text,
+            tile_label: text_xs(),
+            tile_value: d.tile_value_text,
+            tile_unit: d.tile_unit_text,
+            aq_tile_label: text_xs(),
+            aq_tile_value: d.aq_tile_value_text,
+        };
+
+        // Hero: the temperature line, then the condition and "feels like"
+        // lines beneath it; each starts where the design put it plus the
+        // growth of the lines above.
+        let hero_h = authored_h(
+            d.hero_h,
+            &[text.hero_temp, text.hero_cond, text.hero_feels],
+            text_scale,
+        );
+        let hero_cond_dy = d.hero_cond_dy + g(text.hero_temp);
+        let hero_feels_dy = d.hero_feels_dy + g(text.hero_temp) + g(text.hero_cond);
+
+        // Metric tiles: label, value, unit stacked top to bottom.
         let n_tiles = 5usize;
         let tile_cols = balanced_tile_columns(mw, n_tiles);
         let tile_rows = n_tiles.div_ceil(tile_cols);
-        let tiles_block_h = tile_rows as f64 * TILE_H + (tile_rows as f64 - 1.0) * gap;
+        let tile_h = authored_h(
+            d.tile_h,
+            &[text.tile_label, text.tile_value, text.tile_unit],
+            text_scale,
+        );
+        let tile_value_dy = d.tile_value_dy + g(text.tile_label);
+        let tile_sub_inset = d.tile_unit_inset + g(text.tile_unit);
+        let tiles_block_h = tile_rows as f64 * tile_h + (tile_rows as f64 - 1.0) * gap;
+
+        // Hourly strip: the card title (`base`) above a band, an `s8` down,
+        // whose chart paints a temperature row and an hour-label row.
+        let hourly_h = authored_h(
+            d.hourly_h,
+            &[text_base(), d.hourly_label_text, d.hourly_label_text],
+            text_scale,
+        );
+        let hourly_band_top = f64::from(spacing.s8) + g(text_base());
+
+        // A card's title row is the theme's bar height, or the title line
+        // plus its `s3` above and `s2` below, rounded up.
+        let card_header_h = at_least_whole(
+            f64::from(metrics.bar_height),
+            line_h(text_base(), text_scale) + s3 + s2,
+        );
+
+        // Daily rows under the card title: the authored 42px, or the day
+        // label plus an `s3` above and below.
         let n_days = snap.daily.len().max(1);
-        let days_block_h = 40.0 + n_days as f64 * DAY_ROW_H + 12.0;
-        // Air-quality block: header + AQI hero + a row (or two) of pollutant
-        // tiles. Reserved whether or not a reading is available yet, so the
-        // scroll geometry stays stable while it loads.
+        let day_row_h =
+            at_least_whole(d.day_row_h, line_h(d.day_label_text, text_scale) + 2.0 * s3);
+        let days_block_h = card_header_h + n_days as f64 * day_row_h + s3;
+
+        // Air-quality block: header + AQI hero (an `s16` band holding the band
+        // word and its caption) + a row (or two) of pollutant tiles. Reserved
+        // whether or not a reading is available yet, so the scroll geometry
+        // stays stable while it loads.
         let aq_cols = if mw >= 560.0 { 4 } else { 2 };
         let aq_rows = 4usize.div_ceil(aq_cols);
-        let aq_tiles_h = aq_rows as f64 * AQ_TILE_H + (aq_rows as f64 - 1.0) * gap;
-        let aq_block_h = 40.0 + 64.0 + 12.0 + aq_tiles_h + 14.0;
-        let body_h = HERO_H
-            + SECTION_GAP
-            + tiles_block_h
-            + SECTION_GAP
-            + HOURLY_CARD_H
-            + SECTION_GAP
-            + days_block_h
-            + SECTION_GAP
-            + aq_block_h;
+        let aq_hero_h = authored_h(
+            f64::from(spacing.s16),
+            &[d.aq_band_text, text_sm()],
+            text_scale,
+        );
+        let aq_tile_h = authored_h(
+            d.aq_tile_h,
+            &[text.aq_tile_label, text.aq_tile_value, text.aq_tile_label],
+            text_scale,
+        );
+        let aq_tile_value_dy = d.aq_tile_value_dy + g(text.aq_tile_label);
+        let aq_tile_sub_inset = d.aq_tile_unit_inset + g(text.aq_tile_label);
+        let aq_tiles_h = aq_rows as f64 * aq_tile_h + (aq_rows as f64 - 1.0) * gap;
+        let aq_block_h = card_header_h + aq_hero_h + s3 + aq_tiles_h + d.aq_bottom_pad;
+
+        let body_h =
+            hero_h + gap + tiles_block_h + gap + hourly_h + gap + days_block_h + gap + aq_block_h;
         Self {
             gap,
+            text,
+            hero_h,
+            hero_cond_dy,
+            hero_feels_dy,
             tile_cols,
+            tile_h,
+            tile_value_dy,
+            tile_sub_inset,
             tiles_block_h,
+            hourly_h,
+            hourly_band_top,
+            days_header_h: card_header_h,
+            day_row_h,
             days_block_h,
             aq_cols,
+            aq_header_h: card_header_h,
+            aq_hero_h,
+            aq_tile_h,
+            aq_tile_value_dy,
+            aq_tile_sub_inset,
             aq_block_h,
             body_h,
         }
@@ -4053,22 +4331,114 @@ mod layout_tests {
 
 #[cfg(test)]
 mod chip_metrics_tests {
-    use super::{CHIP_GAP, CHIP_H, CHIP_ICON, ChipMetrics};
+    use super::{
+        BODY, CHIP_H, CHIP_ICON, ChipMetrics, DETAIL_HEADER_H, DETAIL_SUBTITLE_TEXT,
+        DETAIL_TITLE_TEXT, DetailBodyLayout, detail_header_h, line_h, text_base,
+    };
+    use ui::tokens::Metrics;
+    use ui::tokens::spacing::Spacing;
 
     #[test]
     fn one_x_rows_keep_the_authored_chip() {
-        let m = ChipMetrics::new(1.0);
+        let sp = Spacing::default();
+        let m = ChipMetrics::new(&sp, 1.0);
         assert_eq!(m.chip_h, CHIP_H);
         assert_eq!(m.icon, CHIP_ICON);
-        assert_eq!(m.pitch(), CHIP_H + CHIP_GAP);
+        assert_eq!(m.pitch(), CHIP_H + f64::from(sp.s2));
+    }
+
+    #[test]
+    fn scaled_rows_land_on_whole_pixels() {
+        let sp = Spacing::default();
+        let m = ChipMetrics::new(&sp, 2.0);
+        assert_eq!(m.chip_h.fract(), 0.0);
+        // Both scaled lines plus the `s3` the painter leaves above and below.
+        assert_eq!(
+            m.chip_h,
+            (m.name_h + m.sub_h + 2.0 * f64::from(sp.s3)).ceil()
+        );
+    }
+
+    /// The detail header is the authored 74px at 1× — not the 76.75 that
+    /// stacking measured lines plus token gaps produced — and a whole pixel
+    /// that holds both scaled lines and their gaps at 2×.
+    #[test]
+    fn detail_header_is_authored_at_one_x() {
+        let sp = Spacing::default();
+        assert_eq!(detail_header_h(&sp, 1.0), DETAIL_HEADER_H);
+        let two = detail_header_h(&sp, 2.0);
+        assert_eq!(two.fract(), 0.0);
+        assert!(
+            two >= line_h(DETAIL_TITLE_TEXT, 2.0)
+                + f64::from(sp.s1)
+                + line_h(DETAIL_SUBTITLE_TEXT, 2.0)
+                + f64::from(sp.s4)
+        );
+    }
+
+    /// The scrollable body reproduces every authored section height at 1×
+    /// and, at 2×, grows each card on whole pixels with the inner stacks
+    /// still inside their cards; token-sized rows hold their line plus the
+    /// same theme pad the painter leaves.
+    #[test]
+    fn detail_body_layout_is_authored_at_one_x_and_grows_whole() {
+        let model = crate::sample::sample_model();
+        let snap = model
+            .selected_snapshot()
+            .cloned()
+            .expect("the sample model selects a place with a forecast");
+        let (sp, mx) = (Spacing::default(), Metrics::BASE);
+        let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
+        let one = DetailBodyLayout::measure(800.0, &snap, &sp, &mx, 1.0);
+        assert_eq!(one.hero_h, BODY.hero_h);
+        assert_eq!(one.tile_h, BODY.tile_h);
+        assert_eq!(one.hourly_h, BODY.hourly_h);
+        assert_eq!(one.day_row_h, BODY.day_row_h);
+        assert_eq!(one.days_header_h, f64::from(mx.bar_height));
+        assert_eq!(one.aq_header_h, f64::from(mx.bar_height));
+        assert_eq!(one.aq_hero_h, f64::from(sp.s16));
+        assert_eq!(one.aq_tile_h, BODY.aq_tile_h);
+        assert_eq!(one.hero_cond_dy, BODY.hero_cond_dy);
+        assert_eq!(one.hero_feels_dy, BODY.hero_feels_dy);
+        assert_eq!(one.tile_value_dy, BODY.tile_value_dy);
+        assert_eq!(one.hourly_band_top, f64::from(sp.s8));
+        assert_eq!(one.gap, s3);
+
+        let two = DetailBodyLayout::measure(800.0, &snap, &sp, &mx, 2.0);
+        assert!(two.days_header_h >= line_h(text_base(), 2.0) + s3 + s2);
+        assert!(two.day_row_h >= line_h(BODY.day_label_text, 2.0) + 2.0 * s3);
+        for value in [
+            two.hero_h,
+            two.tile_h,
+            two.hourly_h,
+            two.day_row_h,
+            two.days_header_h,
+            two.aq_header_h,
+            two.aq_hero_h,
+            two.aq_tile_h,
+        ] {
+            assert_eq!(value.fract(), 0.0, "{value} is not a whole pixel");
+        }
+        assert!(two.hero_h > one.hero_h && two.tile_h > one.tile_h);
+        assert!(two.hourly_h > one.hourly_h && two.day_row_h > one.day_row_h);
+        assert!(two.aq_tile_h > one.aq_tile_h && two.aq_hero_h > one.aq_hero_h);
+        assert!(two.body_h > one.body_h);
+        // The stacked hero lines keep their authored relation and the last
+        // one still ends inside the card.
+        assert!(two.hero_cond_dy > one.hero_cond_dy);
+        assert!(two.hero_feels_dy > two.hero_cond_dy);
+        assert!(two.hero_feels_dy + line_h(BODY.hero_feels_text, 2.0) <= two.hero_h);
+        assert!(two.hourly_band_top > one.hourly_band_top);
+        assert!(two.tile_value_dy > one.tile_value_dy);
     }
 
     #[test]
     fn scaled_rows_hold_the_name_and_condition_lines() {
-        let m = ChipMetrics::new(2.0);
+        let sp = Spacing::default();
+        let m = ChipMetrics::new(&sp, 2.0);
         // Both text lines plus the row padding must fit, and the glyph must
         // not outgrow the text block it sits beside.
-        assert!(m.chip_h >= m.name_h + m.sub_h + 24.0);
+        assert!(m.chip_h >= m.name_h + m.sub_h + 2.0 * f64::from(sp.s3));
         assert!(m.chip_h > CHIP_H);
         assert!(m.icon >= CHIP_ICON && m.icon <= m.chip_h);
         assert!(m.temp_h <= m.chip_h);

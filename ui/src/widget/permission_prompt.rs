@@ -19,6 +19,7 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::{centered_text_top, renderer_type_size};
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -311,7 +312,7 @@ fn draw_button(
         theme.tokens.colors.text_primary
     };
 
-    let text_size = theme.tokens.typography.scale.sm;
+    let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
     // Centre on the measured line in both axes, not on the font size.
     let (text_w, text_h) = text_renderer.measure(label, text_size, None);
     let text_x = rect.center().x - (f64::from(text_w) / 2.0);
@@ -407,10 +408,17 @@ impl Widget for PermissionPrompt {
         );
 
         let label_x = icon_x + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
-        let app_id_size = theme.tokens.typography.scale.sm;
-        let cap_size = theme.tokens.typography.scale.base;
-        let label_y = self.rect.y0
-            + (PROMPT_HEIGHT - (f64::from(app_id_size) + f64::from(cap_size) + 4.0)) / 2.0;
+        let app_id_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+        let cap_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
+        // Centre the two-line block on its measured line boxes, not on the
+        // font sizes, so both lines sit where the band says they are.
+        let (_, app_id_h) = text_renderer.measure(&self.app_id, app_id_size, None);
+        let (_, cap_h) = text_renderer.measure(&self.capability_label, cap_size, None);
+        let label_y = centered_text_top(
+            self.rect.y0,
+            PROMPT_HEIGHT,
+            f64::from(app_id_h) + 4.0 + f64::from(cap_h),
+        );
         text_renderer.draw_text(
             scene,
             &self.app_id,
@@ -424,7 +432,7 @@ impl Widget for PermissionPrompt {
             &self.capability_label,
             cap_size,
             theme.tokens.colors.text_primary,
-            transform.pre_translate(Vec2::new(label_x, label_y + f64::from(app_id_size) + 4.0)),
+            transform.pre_translate(Vec2::new(label_x, label_y + f64::from(app_id_h) + 4.0)),
             None,
         );
 

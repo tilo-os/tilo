@@ -10,6 +10,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::text_metrics::renderer_type_size;
 use crate::widget::TaffyTreeExt;
 use automerge::{AutoCommit, ObjId};
 use openh264::formats::YUVSource;
@@ -232,6 +233,10 @@ pub struct VideoPlayer {
     volume_track_rect: Rect,
     mute_button_rect: Rect,
     fullscreen_button_rect: Rect,
+    /// Painted rect of the elapsed/duration label, `Rect::ZERO` when the bar
+    /// had no room for even the position. Not a pointer target; recorded so
+    /// the no-overlap contract can include the one non-control in the bar.
+    time_label_rect: Rect,
     /// `None` means hidden.
     controls_visible_until: Option<Instant>,
     scrubbing: bool,
@@ -347,6 +352,7 @@ impl VideoPlayer {
             volume_track_rect: Rect::ZERO,
             mute_button_rect: Rect::ZERO,
             fullscreen_button_rect: Rect::ZERO,
+            time_label_rect: Rect::ZERO,
             controls_visible_until: None,
             scrubbing: false,
             last_cursor: Point::ZERO,
@@ -1078,8 +1084,14 @@ impl VideoPlayer {
             format_ms(self.position_ms),
             format_ms(self.duration_ms)
         );
-        let time_size = theme.tokens.typography.scale.sm;
+        let time_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let (tw, th) = text_renderer.measure(&time_text, time_size, None);
+        // The cluster reserves room for the label's *shortest* useful form
+        // (the position alone): controls outrank the full "m:ss / m:ss",
+        // which yields to them, so folding a setting icon into the gear to
+        // protect a label that is then not painted would hide a reachable
+        // control for nothing.
+        let (position_w, _) = text_renderer.measure(&format_ms(self.position_ms), time_size, None);
 
         let mut layout = ControlsLayout {
             bar,
@@ -1094,7 +1106,7 @@ impl VideoPlayer {
         };
         self.play_button_rect = layout.hit_rect(play_btn);
         self.draw_play_glyph(scene, transform, play_btn, layout.ink);
-        self.paint_settings_cluster(scene, transform, theme, &mut layout, tw);
+        self.paint_settings_cluster(scene, transform, theme, &mut layout, position_w);
 
         let time = TimeLabel {
             text: &time_text,
@@ -1305,19 +1317,44 @@ impl VideoPlayer {
 
         let vol_x0 = self.paint_volume_slider(scene, transform, theme, layout);
 
-        let time_x1 = vol_x0 - pad;
-        let time_x0 = (time_x1 - f64::from(time.width)).max(play_btn.x1 + pad);
-        text_renderer.draw_text(
-            scene,
-            time.text,
-            time.size,
-            ink_dim,
-            translated(transform, time_x0, mid_y - f64::from(time.height) * 0.5),
-            None,
-        );
-
         let track_x0 = play_btn.x1 + pad;
-        let track_x1 = time_x0 - pad;
+        let time_x1 = vol_x0 - pad;
+        // The label yields before the scrubber does. Its right edge is fixed
+        // by the volume control; when the full "m:ss / m:ss" would push the
+        // track under `MIN_SCRUB_WIDTH` — a narrow bar, a long duration,
+        // large type — it degrades to the position alone, and then to
+        // nothing, rather than painting over the track or the controls
+        // beside it (the old `max(play_btn.x1 + pad)` clamp moved the
+        // label's left edge but let its right end run under the volume).
+        let room = time_x1 - (track_x0 + MIN_SCRUB_WIDTH + pad);
+        let shown = if f64::from(time.width) <= room {
+            Some((time.text.to_string(), time.width))
+        } else {
+            let position = format_ms(self.position_ms);
+            let (pw, _) = text_renderer.measure(&position, time.size, None);
+            (f64::from(pw) <= room).then_some((position, pw))
+        };
+        let track_x1 = match shown {
+            Some((text, width)) => {
+                let time_x0 = time_x1 - f64::from(width);
+                let top = mid_y - f64::from(time.height) * 0.5;
+                self.time_label_rect =
+                    Rect::new(time_x0, top, time_x1, top + f64::from(time.height));
+                text_renderer.draw_text(
+                    scene,
+                    &text,
+                    time.size,
+                    ink_dim,
+                    translated(transform, time_x0, top),
+                    None,
+                );
+                time_x0 - pad
+            }
+            None => {
+                self.time_label_rect = Rect::ZERO;
+                time_x1
+            }
+        };
         self.paint_scrub_track(scene, transform, theme, layout, track_x0, track_x1);
     }
 
@@ -1587,7 +1624,7 @@ impl VideoPlayer {
 
         let mut y = y0 + pad * 0.5;
         if let Some(t) = &panel.title {
-            let title_size = theme.tokens.typography.scale.sm;
+            let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
             let (_, th) = text_renderer.measure(t, title_size, None);
             text_renderer.draw_text(
                 scene,
@@ -1674,7 +1711,7 @@ impl VideoPlayer {
         s.icon.draw(scene, transform, icon_r, colors.text_primary);
         // Control label and value are both `scale.sm` (HIG §9.6), centred on
         // the row from their measured line box.
-        let label_size = theme.tokens.typography.scale.sm;
+        let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let (_, lh) = text_renderer.measure(&s.name, label_size, None);
         let label_top = y + (row_h - f64::from(lh)) * 0.5;
         text_renderer.draw_text(
@@ -1776,7 +1813,7 @@ impl VideoPlayer {
         } else {
             colors.text_primary
         };
-        let label_size = theme.tokens.typography.scale.sm;
+        let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let (_, lh) = text_renderer.measure(&label, label_size, None);
         let label_top = y + (row_h - f64::from(lh)) * 0.5;
         text_renderer.draw_text(
@@ -2040,10 +2077,14 @@ impl Widget for VideoPlayer {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // Fill whatever the host gives us — the same `percent(1.0)` leaf as
+        // `ImageViewer`. `auto` only fills when a flex parent stretches the
+        // node; as the root of a tree (a gallery cell, a harness) it
+        // resolved to 0×0 and the placeholder glyph landed on the origin.
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::auto(),
-                height: Dimension::auto(),
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
             flex_grow: 1.0,
             flex_shrink: 1.0,
@@ -3670,6 +3711,78 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Paint once with the renderer at `scale` (the a11y text-scale
+    /// convention the `Host` palette source uses), so the label is measured
+    /// and drawn larger than the theme's type size says.
+    fn draw_at_text_scale(vp: &mut VideoPlayer, scale: f32) {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(scale);
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    /// The time label is the one thing in the bar that is not a pointer
+    /// target, and it used to be the one thing allowed to overlap them: its
+    /// left edge was clamped to the play button while its right end ran
+    /// under the volume control. Now it yields — position only, then
+    /// nothing — so at every width and text scale the scrubber keeps its
+    /// floor and no control is painted over.
+    #[test]
+    fn time_label_yields_to_the_scrubber_rather_than_overlapping_controls() {
+        for (width, scale) in [(300.0, 1.0), (300.0, 2.0), (960.0, 2.0), (420.0, 1.0)] {
+            let mut vp = VideoPlayer::new();
+            vp.rect = Rect::new(0.0, 0.0, width, 200.0);
+            vp.show_controls();
+            vp.duration_ms = 2 * 60 * 60 * 1000;
+            vp.position_ms = 60 * 60 * 1000 + 8000;
+            draw_at_text_scale(&mut vp, scale);
+            assert!(
+                vp.scrub_track_rect.width() >= MIN_SCRUB_WIDTH - 1e-6,
+                "at {width}px / {scale}x the scrubber ({:?}) lost its floor",
+                vp.scrub_track_rect
+            );
+            let label = vp.time_label_rect;
+            for (name, r) in bar_targets(&vp) {
+                let overlap = label.intersect(r);
+                assert!(
+                    overlap.is_zero_area(),
+                    "at {width}px / {scale}x the time label {label:?} paints over {name} {r:?}"
+                );
+            }
+        }
+    }
+
+    /// The degrade is a last resort: on a bar with room the full
+    /// "m:ss / m:ss" is painted, exactly as wide as it measures.
+    #[test]
+    fn a_wide_bar_paints_the_full_time_label() {
+        let mut vp = VideoPlayer::new();
+        vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+        vp.show_controls();
+        vp.duration_ms = 120_000;
+        vp.position_ms = 8_000;
+        draw_once(&mut vp);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let full = format!(
+            "{} / {}",
+            format_ms(vp.position_ms),
+            format_ms(vp.duration_ms)
+        );
+        let (tw, _) = tr.measure(&full, theme.tokens.typography.scale.sm, None);
+        assert!(
+            (vp.time_label_rect.width() - f64::from(tw)).abs() < 1e-6,
+            "label rect {:?} is not the measured full label ({tw})",
+            vp.time_label_rect
+        );
+        assert!(
+            (vp.time_label_rect.center().y - vp.controls_bar_rect().center().y).abs() < 1e-6,
+            "the label left the bar's centre line"
+        );
     }
 
     #[test]

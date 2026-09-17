@@ -20,6 +20,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::renderer_type_size;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -320,6 +321,8 @@ impl Widget for DatePicker {
                 width: Dimension::length(px(width)),
                 height: Dimension::length(px(height)),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -535,7 +538,7 @@ impl DatePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let text_size = tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         let text_color = tokens.colors.text_primary;
 
         let (y, m) = self.month_view;
@@ -592,7 +595,7 @@ impl DatePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let text_size = tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         let dim_color = tokens.colors.text_dim;
 
         let cell_w = self.rect.width() / grid_f64(GRID_COLS);
@@ -622,7 +625,7 @@ impl DatePicker {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let text_size = tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         let text_color = tokens.colors.text_primary;
         let dim_color = tokens.colors.text_dim;
 

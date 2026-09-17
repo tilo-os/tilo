@@ -40,9 +40,21 @@ use ui::{AppKind, AppWidget, IconDescriptor};
 
 /// At or above this allocated width (logical px) the sidebar docks beside the
 /// content; below it the shell switches to the narrow list-vs-content screens.
-/// Sized so a typical settings window is docked while a narrow / split-screen
-/// placement gets the phone layout.
-pub const NAV_BREAKPOINT: f64 = 720.0;
+/// The toolkit's `compact_breakpoint` (HIG §9.6): a typical settings window is
+/// docked while a narrow / split-screen placement gets the phone layout. At a
+/// large-text preference the live breakpoint is this times the text scale
+/// (see [`SettingsApp::build_shell`]).
+pub const NAV_BREAKPOINT: f64 = ui::widget::DEFAULT_SHELL_BREAKPOINT;
+
+/// Horizontal gutter (logical px) of the page column inside the content
+/// area — the `s6` step.
+const PAGE_GUTTER: f32 = ui::tokens::Spacing::BASE.s6;
+
+/// Horizontal inset (logical px) of a pane from the content area's edge: the
+/// filling container's standard padding (`s3`, the theme's
+/// `padding_standard` default) plus [`PAGE_GUTTER`]. A pane's first-frame
+/// width hint is the content area less this on each side.
+const PAGE_INSET: f32 = ui::tokens::Spacing::BASE.s3 + PAGE_GUTTER;
 
 /// Readable measure (logical px) the External Accounts cards are centred
 /// within on large monitors; see [`SettingsApp::readable_content_measure`].
@@ -108,6 +120,10 @@ pub struct SettingsApp {
     /// persisted across rebuilds so its collapse/overlay state survives a
     /// category switch. Its nav + content are swapped on selection.
     shell: Option<AppShell>,
+    /// The text scale the shell was built for. A large-text preference widens
+    /// the docked sidebar and its breakpoint with the type (the same policy
+    /// the Store applies to its card grid), so a change rebuilds the shell.
+    shell_text_scale: f32,
 }
 
 impl Default for SettingsApp {
@@ -144,6 +160,7 @@ impl SettingsApp {
             account_probe: None,
             rect: vello::kurbo::Rect::ZERO,
             shell: None,
+            shell_text_scale: 1.0,
         }
     }
 
@@ -246,8 +263,42 @@ impl SettingsApp {
             Some(s) => s.is_narrow(),
             None => self
                 .width_hint
-                .is_some_and(|w| f64::from(w) < NAV_BREAKPOINT),
+                .is_some_and(|w| f64::from(w) < self.scaled_breakpoint()),
         }
+    }
+
+    /// The width a pane can expect on the coming frame: the shell's content
+    /// area once laid out, else the window hint less the docked sidebar —
+    /// either way less the page inset on both sides, so the value is the
+    /// pane's own width, not the content area's. A pane that composes
+    /// differently at phone width (the Region formats card) reads this for
+    /// its first frame and its own rect thereafter.
+    fn content_width_hint(&self) -> Option<f32> {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a logical-pixel width comfortably representable by f32"
+        )]
+        let content_area = self
+            .shell
+            .as_ref()
+            .map(ui::AppShell::content_area_rect)
+            .filter(|rect| rect.width() > 0.0)
+            .map(|rect| rect.width() as f32)
+            .or_else(|| {
+                self.width_hint.map(|w| {
+                    if self.is_narrow() {
+                        w
+                    } else {
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            reason = "the docked sidebar width is a small logical-pixel value"
+                        )]
+                        let sidebar = self.scaled_sidebar_width() as f32;
+                        (w - sidebar).max(0.0)
+                    }
+                })
+            });
+        content_area.map(|w| (w - 2.0 * PAGE_INSET).max(0.0))
     }
 
     /// Whether the sidebar / list is currently shown (always when wide, or the
@@ -306,12 +357,15 @@ impl SettingsApp {
     /// the Settings list).
     fn build_content(&self) -> Box<dyn Widget> {
         let body = self.build_pane_body();
+        // The page gutter (`s6`) inside the filling container's standard
+        // inset is what `PAGE_INSET` names; heading and body sit a card step
+        // apart, one `s4` below the page's top.
         let inner = Column::new()
             .with_no_padding()
-            .with_horizontal_padding(24.0, 24.0)
-            .with_vertical_padding(20.0)
+            .with_horizontal_padding(PAGE_GUTTER, PAGE_GUTTER)
+            .with_vertical_padding(crate::widgets::CARD_GAP)
             .with_intrinsic_height()
-            .with_gap(16.0)
+            .with_gap(ui::tokens::Spacing::BASE.s4)
             .push(crate::widgets::page_heading(
                 self.selected.label(),
                 self.selected.subtitle(),
@@ -401,7 +455,7 @@ impl SettingsApp {
                 )
             }
             Category::AgentModels => panes::agent_models::build(),
-            Category::RegionFormats => panes::region::build(),
+            Category::RegionFormats => panes::region::build_for_width(self.content_width_hint()),
             Category::Permissions => panes::permissions::build(),
             Category::Updates => Box::new(
                 panes::updates::UpdatesPane::new()
@@ -411,8 +465,32 @@ impl SettingsApp {
         }
     }
 
+    /// The factor the shell's own metrics grow by under a large-text
+    /// preference: the text scale, never below 1×. Large text needs the room
+    /// a narrow window does — the sidebar's labels grow with the type, so
+    /// its docked width and the breakpoint at which it docks grow with them
+    /// rather than clipping 28 px labels into a 264 px column. At 1× both are
+    /// exactly the shared shell's defaults. App-side until `AppShell`
+    /// resolves the scaled `Metrics` from the theme itself (HIG §9.6 names
+    /// that as the shells' next step); a scale change rebuilds the shell, so
+    /// its narrow-screen memory resets on that one event.
+    fn shell_scale(&self) -> f64 {
+        f64::from(self.shell_text_scale.max(1.0))
+    }
+
+    /// The width at or above which the sidebar docks, at the current scale.
+    fn scaled_breakpoint(&self) -> f64 {
+        NAV_BREAKPOINT * self.shell_scale()
+    }
+
+    /// The docked sidebar's width at the current scale.
+    fn scaled_sidebar_width(&self) -> f64 {
+        sidebar::SIDEBAR_WIDTH * self.shell_scale()
+    }
+
     /// Create the persistent [`AppShell`] with the current nav + content +
-    /// search and the seeded shot state.
+    /// search and the seeded shot state, for `shell_text_scale` (see
+    /// [`Self::shell_scale`]).
     fn build_shell(&self) -> AppShell {
         let nav = sidebar::build(self.selected, &self.search_query, &self.sidebar_selection);
         let content = self.build_content();
@@ -423,8 +501,8 @@ impl SettingsApp {
         let narrow_screen = self.narrow_shot_screen.unwrap_or(NarrowScreen::Content);
         let mut shell = AppShell::new(nav, content)
             .with_search(self.build_search_field())
-            .with_breakpoint(NAV_BREAKPOINT)
-            .with_sidebar_width(sidebar::SIDEBAR_WIDTH)
+            .with_breakpoint(self.scaled_breakpoint())
+            .with_sidebar_width(self.scaled_sidebar_width())
             .with_narrow_screen(narrow_screen);
         if let Some(w) = self.width_hint {
             shell = shell.with_width_hint(f64::from(w));
@@ -708,8 +786,12 @@ impl Widget for SettingsApp {
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         // Create the shell once and reuse it so its collapse/overlay state
-        // survives category switches (which rebuild the tree).
-        if self.shell.is_none() {
+        // survives category switches (which rebuild the tree). A text-scale
+        // change is the one thing that re-sizes the shell itself, so it is the
+        // one thing that builds it anew.
+        if self.shell.is_none() || self.shell_text_scale.to_bits() != theme.text_scale.to_bits()
+        {
+            self.shell_text_scale = theme.text_scale;
             self.shell = Some(self.build_shell());
         }
         #[allow(

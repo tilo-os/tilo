@@ -30,6 +30,17 @@ pub struct CustomThemeSpec {
 }
 
 impl CustomThemeSpec {
+    /// The `spacing_px` band a theme is actually built at. [`Self::validate`]
+    /// admits the schema-v1 contract (`2.0..=64.0`) so a settings file
+    /// written by an older build still opens, but the whole spacing scale is
+    /// proportional to `spacing_px` (`s3`), so 2 px would put `s1` under a
+    /// pixel and 64 px would put `s6` at 128; [`Theme::from_custom_spec`]
+    /// clamps to this band instead. Same range as the Themes app's spacing
+    /// control.
+    pub const SPACING_PX_MIN: f32 = 6.0;
+    /// See [`Self::SPACING_PX_MIN`].
+    pub const SPACING_PX_MAX: f32 = 22.0;
+
     /// # Errors
     ///
     /// Returns a static message describing which field is out of range —
@@ -306,8 +317,15 @@ impl Theme {
         theme.tokens.radii.md = spec.radius_px;
         theme.tokens.radii.lg = radii.lg * radius_ratio;
         theme.tokens.radii.xl = radii.xl * radius_ratio;
+        // The schema admits 2..=64 px; the scale is built inside the usable
+        // band (see `CustomThemeSpec::SPACING_PX_MIN`) rather than rejecting
+        // the file and silently dropping the user's theme.
+        let spacing_px = spec.spacing_px.clamp(
+            CustomThemeSpec::SPACING_PX_MIN,
+            CustomThemeSpec::SPACING_PX_MAX,
+        );
         theme.tokens.spacing =
-            crate::tokens::Spacing::BASE.scaled(spec.spacing_px / crate::tokens::Spacing::BASE.s3);
+            crate::tokens::Spacing::BASE.scaled(spacing_px / crate::tokens::Spacing::BASE.s3);
         theme.tokens.typography.sans_family.clone_from(&spec.font);
         // Rebuild through the central funnel after shape/type edits so every
         // legacy shortcut and the terminal palette matches the token tree.
@@ -805,6 +823,30 @@ impl Theme {
         self.text_scale = text_scale;
         self.ui_scale = ui_scale;
         self
+    }
+
+    /// [`crate::tokens::Metrics::text_growth`] of this theme's
+    /// [`Theme::text_scale`]: how much a text-sized extent grows, never
+    /// below 1.
+    #[must_use]
+    pub fn text_growth(&self) -> f32 {
+        crate::tokens::Metrics::text_growth(self.text_scale)
+    }
+
+    /// The one factor the responsive shells multiply an authored,
+    /// text-sized breakpoint or pane width by: `ui_scale × text_growth()`.
+    ///
+    /// An app authors its shell inputs at 1× (`with_breakpoint(760.0)`,
+    /// `with_sidebar_width(260.0)`) and the shell resolves them against the
+    /// theme in `build_layout`, so at 200 % text a 760 px breakpoint pushes
+    /// at 1520 px — the window that has the room a 760 px window has at 1× —
+    /// without the app multiplying anything. `1.0` on a stock theme, so 1×
+    /// geometry is untouched. A width sized by icons rather than text (a
+    /// rail) follows [`Theme::ui_scale`] alone; the shells expose an
+    /// `icon_*` builder for it.
+    #[must_use]
+    pub fn responsive_scale(&self) -> f64 {
+        f64::from(self.ui_scale) * f64::from(self.text_growth())
     }
 
     /// UI scale first so it grows the whole system, then text scale layers
@@ -1438,6 +1480,53 @@ mod tests {
             "the window card's xl corner is the stock 24, not 8 × 2.4 = 19.2"
         );
         assert_eq!(theme.tokens.radii.full, stock.tokens.radii.full);
+    }
+
+    /// The schema still admits 2..=64 px (a file written by an older build
+    /// opens), but the scale is built inside the usable band: 2 px would put
+    /// `s1` under a pixel and 64 px `s6` at 128.
+    #[test]
+    fn custom_theme_spacing_is_built_inside_the_usable_band() {
+        let too_dense = quiet_ocean(8.0, 2.0);
+        let too_loose = quiet_ocean(8.0, 64.0);
+        assert!(too_dense.validate().is_ok(), "the schema contract is unchanged");
+        assert!(too_loose.validate().is_ok());
+        let dense = Theme::from_custom_spec(&too_dense).unwrap();
+        let loose = Theme::from_custom_spec(&too_loose).unwrap();
+        assert_eq!(dense.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MIN);
+        assert_eq!(dense.tokens.spacing.s1, CustomThemeSpec::SPACING_PX_MIN / 3.0);
+        assert_eq!(loose.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MAX);
+        assert_eq!(loose.padding_standard, CustomThemeSpec::SPACING_PX_MAX);
+        let inside = Theme::from_custom_spec(&quiet_ocean(8.0, 17.0)).unwrap();
+        assert_eq!(inside.tokens.spacing.s3, 17.0, "a value inside the band is untouched");
+        assert!(
+            Theme::from_custom_spec(&quiet_ocean(8.0, 1.0)).is_none(),
+            "below the schema minimum is still rejected, not clamped"
+        );
+    }
+
+    /// HIG §9.6: the one factor the responsive shells apply to an authored,
+    /// text-sized breakpoint or width — `ui_scale × text_scale.max(1.0)`.
+    #[test]
+    fn responsive_scale_is_ui_scale_times_text_growth_and_never_shrinks() {
+        assert_eq!(Theme::dark().responsive_scale(), 1.0);
+        assert_eq!(Theme::dark().text_growth(), 1.0);
+        assert_eq!(Theme::dark().with_text_scale(2.0).responsive_scale(), 2.0);
+        assert_eq!(
+            Theme::dark().with_text_scale(0.75).responsive_scale(),
+            1.0,
+            "smaller text never shrinks a pane below its authored geometry"
+        );
+        assert_eq!(Theme::dark().with_ui_scale(1.5).responsive_scale(), 1.5);
+        assert!(
+            (Theme::dark().with_ui_scale(1.5).with_text_scale(2.0).responsive_scale() - 3.0).abs()
+                < 1e-9,
+            "ui and text growth compose"
+        );
+        assert!(
+            (Theme::dark().with_ui_scale(0.5).responsive_scale() - 0.5).abs() < 1e-9,
+            "ui_scale is a density knob and does go below 1"
+        );
     }
 
     /// `radius_px` is the `md` step; the others follow 1:2:3:6.

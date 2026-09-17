@@ -7,6 +7,7 @@
 //! state with [`ColorPicker::from_state`], or be observed with `on_change`
 //! for an app-owned durable mutation.
 
+use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -747,6 +748,8 @@ impl Widget for ColorPicker {
                 width: Dimension::length(Self::px(PICKER_WIDTH)),
                 height: Dimension::length(Self::px(PICKER_HEIGHT)),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -785,7 +788,7 @@ impl Widget for ColorPicker {
         self.hex_input
             .draw(scene, transform, text_renderer, theme, presence);
 
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let rgb_label = self.rgb_string();
         let label_x = self.preview_rect.x0;
         let row_gap = f64::from(theme.tokens.spacing.s2);

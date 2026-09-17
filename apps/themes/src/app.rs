@@ -26,9 +26,11 @@ use qos_actions::EncodedAction;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
+use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::{Metrics, Spacing};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{Button, FlapState, SplitLayout, ToggleGroup, Widget};
 use vello::Scene;
@@ -45,25 +47,29 @@ use crate::model::{FONTS, ThemeSpec, TokenId, default_catalog, demo_catalog};
 use crate::preview::PreviewPane;
 use crate::store;
 
-/// Height of the top bar (logical px). Public so geometry tests assert the
-/// relationship "content starts one gutter below the bar" rather than
-/// retyping the number.
-pub const TOPBAR_H: f32 = 56.0;
+/// Height of the top bar (logical px) at 1×: one `bar_height` control with an
+/// `s2` inset above and below it. The bar grows when its actions wrap onto a
+/// second line under large text; the live height is measured in
+/// `apply_topbar_layout`. Public so geometry tests assert the relationship
+/// "content starts one gutter below the bar" rather than retyping the number.
+pub const TOPBAR_H: f32 = Metrics::BASE.bar_height + 2.0 * Spacing::BASE.s2;
+/// Height of every top-bar control — the shared `Button` default
+/// (`bar_height`), so the bar's actions, the gallery toggle and the
+/// customizer's controls are one height across the app.
+const TOPBAR_CONTROL_H: f32 = Metrics::BASE.bar_height;
 const GALLERY_W: f32 = 272.0;
 const CUSTOMIZER_W: f32 = 344.0;
 /// Inset (logical px) of the collapsed layout's content from the window edge
-/// and from the top bar — the toolkit's `s4` step.
-pub const NARROW_CONTENT_GUTTER: f32 = 16.0;
+/// and from the top bar — the toolkit's `s4` step, which the top bar also
+/// uses for its own horizontal inset so the toggle and the content share an
+/// edge.
+pub const NARROW_CONTENT_GUTTER: f32 = Spacing::BASE.s4;
 /// Allocated-width breakpoint (logical px). At or above this the gallery is a
 /// docked sidebar beside the preview + customizer; below it the gallery
 /// becomes an overlay flap. Chosen so the gallery, a usable preview, and the
 /// customizer stop fitting side by side (`GALLERY_W + CUSTOMIZER_W` plus a
 /// readable preview column).
 const BREAKPOINT: f64 = 840.0;
-
-/// The hamburger / close toggle that summons or dismisses the overlay gallery.
-/// Lives at the left of the top bar; only shown when the gallery is collapsed.
-const TOGGLE_SIZE: f64 = 34.0;
 
 /// Panic-free node construction for [`Widget::build_layout`].
 /// `TaffyTree::new_with_children` is typed `-> TaffyResult<NodeId>` for API
@@ -121,12 +127,29 @@ pub struct ThemesApp {
     build_width: f64,
     /// Wall-clock of the last reveal tick (frame-rate-independent easing).
     last_tick: Instant,
-    /// On-screen rect of the hamburger toggle (overlay mode only), for hit
-    /// testing.
-    toggle_rect: Rect,
+    /// The control that summons / dismisses the overlay gallery: a shared
+    /// icon-only [`Button`] in the top bar's leading slot (overlay mode only),
+    /// so pointer, keyboard and assistive activation all route through the
+    /// toolkit's control rather than a hand-painted rect. Always the button
+    /// for the *current* state — the hamburger while the gallery is hidden,
+    /// the close glyph once it is shown; `gallery_toggle_hidden` holds the
+    /// other and the two swap when the flap crosses half-open (`Button` has
+    /// no `set_icon`, so the glyph changes by swapping widgets and rebuilding
+    /// the tree once).
+    gallery_toggle: Button,
+    gallery_toggle_hidden: Button,
+    /// Whether `gallery_toggle` currently shows the close glyph.
+    toggle_shows_close: bool,
+    /// Set by either toggle's click handler, consumed in `sync`.
+    gallery_toggle_request: Rc<Cell<bool>>,
+    topbar_toggle_node: Option<NodeId>,
+    /// The top bar's laid-out rect. Its actions may wrap onto a second line
+    /// under large text, so the bar's live height is measured here rather
+    /// than read from [`TOPBAR_H`].
+    topbar_rect: Rect,
     /// On-screen rect of the gallery flap while it overlays the content.
     gallery_overlay_rect: Rect,
-    /// Last known cursor position, for hit-testing the toggle + scrim.
+    /// Last known cursor position, for hit-testing the scrim.
     last_cursor: Point,
 
     bound_key: Option<(String, TokenId)>,
@@ -190,6 +213,23 @@ impl ThemesApp {
         let top_commands = Rc::new(RefCell::new(Vec::new()));
         let narrow_view_request = Rc::new(Cell::new(None));
         let preview_request = narrow_view_request.clone();
+        // The overlay gallery's toggle is the shared icon-only Button, sized
+        // to the bar control height, with its spoken name carried by the
+        // tooltip (an icon-only Button announces its tooltip). It is a
+        // layout participant of the top bar, never painted over. One button
+        // per state — hamburger to show, close glyph to hide — both posting
+        // the same request; the app swaps them as the flap opens and closes.
+        let gallery_toggle_request = Rc::new(Cell::new(false));
+        let gallery_toggle_button = |icon: Icon, name: &str| {
+            let toggle_request = gallery_toggle_request.clone();
+            Button::new("themes.gallery_toggle", "", None)
+                .with_icon(icon)
+                .with_size(TOPBAR_CONTROL_H, TOPBAR_CONTROL_H)
+                .tooltip(name)
+                .on_click(move || toggle_request.set(true))
+        };
+        let gallery_toggle = gallery_toggle_button(Icon::Menu, "Show themes");
+        let gallery_toggle_hidden = gallery_toggle_button(Icon::X, "Hide themes");
         let narrow_tabs = ToggleGroup::new(
             vec![Segment::new("Customize"), Segment::new("Full preview")],
             0,
@@ -209,13 +249,13 @@ impl ThemesApp {
             topbar_buttons: vec![
                 Button::new("themes.new", "New", None)
                     .on_action(crate::actions::new_default_binding())
-                    .fit_content(34.0),
+                    .fit_content(TOPBAR_CONTROL_H),
                 Button::new("themes.export", "Export JSON", None)
                     .on_action(crate::actions::export_selected_binding())
-                    .fit_content(34.0),
+                    .fit_content(TOPBAR_CONTROL_H),
                 Button::new("themes.apply", "Apply theme", None)
                     .on_action(crate::actions::apply_selected_binding())
-                    .fit_content(34.0)
+                    .fit_content(TOPBAR_CONTROL_H)
                     .primary(),
             ],
             top_commands,
@@ -239,7 +279,12 @@ impl ThemesApp {
             // the docked layout without a structure round-trip.
             build_width: BREAKPOINT,
             last_tick: Instant::now(),
-            toggle_rect: Rect::ZERO,
+            gallery_toggle,
+            gallery_toggle_hidden,
+            toggle_shows_close: false,
+            gallery_toggle_request,
+            topbar_toggle_node: None,
+            topbar_rect: Rect::ZERO,
             gallery_overlay_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             bound_key: None,
@@ -339,74 +384,31 @@ impl ThemesApp {
         SplitLayout::from_width(self.build_width, BREAKPOINT) == SplitLayout::Overlay
     }
 
-    /// Draw the hamburger / close toggle at the left of the top bar and record
-    /// its rect for hit testing. Shows a hamburger when the gallery is hidden
-    /// and a close "X" once it's revealed.
-    fn draw_toggle(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        _tr: &mut TextRenderer,
-        theme: &Theme,
-        tb: Rect,
-    ) {
-        let s = TOGGLE_SIZE;
-        let bx = tb.x0 + 16.0;
-        let by = tb.center().y - s / 2.0;
-        let btn = Rect::new(bx, by, bx + s, by + s);
-        self.toggle_rect = btn;
-
-        draw::fill_rrect(
-            scene,
-            t,
-            btn,
-            f64::from(theme.tokens.radii.md),
-            theme.bg_app,
-        );
-        draw::stroke_rrect(
-            scene,
-            t,
-            btn,
-            f64::from(theme.tokens.radii.md),
-            theme.border_standard,
-            1.0,
-        );
-
-        let cx = btn.center().x;
-        let cy = btn.center().y;
-        let open = self.gallery_flap.reveal() > 0.5;
-        if open {
-            // Close "X".
-            let r = 6.0;
-            draw::line(
-                scene,
-                t,
-                Point::new(cx - r, cy - r),
-                Point::new(cx + r, cy + r),
-                theme.text_primary,
-                1.8,
-            );
-            draw::line(
-                scene,
-                t,
-                Point::new(cx - r, cy + r),
-                Point::new(cx + r, cy - r),
-                theme.text_primary,
-                1.8,
-            );
+    /// The top bar's on-screen band: its measured rect once laid out, else
+    /// the 1× constant for a frame drawn before any layout.
+    fn topbar_band(&self) -> Rect {
+        if self.topbar_rect.height() > 0.0 {
+            self.topbar_rect
         } else {
-            // Three-line hamburger.
-            let w = 7.0;
-            for dy in [-5.0, 0.0, 5.0] {
-                draw::line(
-                    scene,
-                    t,
-                    Point::new(cx - w, cy + dy),
-                    Point::new(cx + w, cy + dy),
-                    theme.text_primary,
-                    1.8,
-                );
-            }
+            Rect::new(
+                self.rect.x0,
+                self.rect.y0,
+                self.rect.x1,
+                self.rect.y0 + f64::from(TOPBAR_H),
+            )
+        }
+    }
+
+    /// Show the toggle for the flap's state: the hamburger while the gallery
+    /// is hidden, the close glyph once it is more than half revealed. The two
+    /// buttons swap places and the tree is rebuilt once, so the glyph and
+    /// the spoken name ("Show themes" / "Hide themes") change together.
+    fn reconcile_gallery_toggle(&mut self) {
+        let open = self.gallery_flap.reveal() > 0.5;
+        if open != self.toggle_shows_close {
+            std::mem::swap(&mut self.gallery_toggle, &mut self.gallery_toggle_hidden);
+            self.toggle_shows_close = open;
+            self.structure_dirty = true;
         }
     }
 
@@ -784,17 +786,32 @@ impl ThemesApp {
         for b in &mut self.topbar_buttons {
             b.sync(state, path);
         }
+        self.gallery_toggle.sync(state, path);
+        // The toggle summons / dismisses the overlay gallery. Only meaningful
+        // while the gallery is collapsible; a docked gallery has no toggle.
+        if self.gallery_toggle_request.take() && self.show_toggle() {
+            self.gallery_flap.toggle(SplitLayout::Overlay);
+        }
+        self.reconcile_gallery_toggle();
     }
 
-    /// Lay out the top bar's right-aligned action button row (part of
-    /// [`Widget::build_layout`]). Records `topbar_actions_node` /
-    /// `topbar_node` and returns the top bar's node.
+    /// Lay out the top bar (part of [`Widget::build_layout`]): the gallery
+    /// toggle in the leading slot (overlay mode only), a flexible spacer, and
+    /// the right-aligned action buttons. Records `topbar_toggle_node`,
+    /// `topbar_actions_node` and `topbar_node` and returns the top bar's node.
+    ///
+    /// The bar is [`TOPBAR_H`] tall at 1× and wraps rather than overflows:
+    /// when the actions no longer fit beside the toggle (large text on a
+    /// phone-width window) they drop to a second right-aligned line, and the
+    /// actions themselves wrap once even a line of their own is too narrow,
+    /// so no button is ever painted over the toggle or clipped at the edge.
     fn build_topbar_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let sp = &theme.tokens.spacing;
         let btn_nodes: Vec<NodeId> = self
             .topbar_buttons
             .iter_mut()
@@ -805,38 +822,75 @@ impl ThemesApp {
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Row,
+                flex_wrap: taffy::FlexWrap::Wrap,
+                justify_content: Some(taffy::JustifyContent::FlexEnd),
                 align_items: Some(taffy::AlignItems::Center),
                 gap: Size {
-                    width: length(8.0_f32),
-                    height: length(0.0_f32),
+                    width: length(sp.s2),
+                    height: length(sp.s2),
                 },
-                flex_shrink: 0.0,
+                min_size: Size {
+                    width: length(0.0_f32),
+                    height: Dimension::auto(),
+                },
+                flex_shrink: 1.0,
                 ..Default::default()
             },
             &btn_nodes,
         );
         self.topbar_actions_node = Some(actions);
+
+        let mut children = Vec::with_capacity(3);
+        self.topbar_toggle_node = None;
+        if self.show_toggle() {
+            let toggle = self.gallery_toggle.build_layout(taffy, theme, node_map);
+            self.topbar_toggle_node = Some(toggle);
+            children.push(toggle);
+        }
+        // Pushes the actions to the trailing edge; basis 0 so it never forces
+        // a wrap by itself.
+        children.push(parent_node(
+            taffy,
+            Style {
+                flex_grow: 1.0,
+                flex_basis: length(0.0_f32),
+                ..Default::default()
+            },
+            &[],
+        ));
+        children.push(actions);
+
         let topbar = parent_node(
             taffy,
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Row,
+                flex_wrap: taffy::FlexWrap::Wrap,
                 justify_content: Some(taffy::JustifyContent::FlexEnd),
                 align_items: Some(taffy::AlignItems::Center),
+                align_content: Some(taffy::AlignContent::Center),
+                gap: Size {
+                    width: length(0.0_f32),
+                    height: length(sp.s2),
+                },
                 padding: taffy::Rect {
-                    left: length(18.0_f32),
-                    right: length(18.0_f32),
-                    top: length(0.0_f32),
-                    bottom: length(0.0_f32),
+                    left: length(sp.s4),
+                    right: length(sp.s4),
+                    top: length(sp.s2),
+                    bottom: length(sp.s2),
                 },
                 size: Size {
                     width: Dimension::percent(1.0),
+                    height: Dimension::auto(),
+                },
+                min_size: Size {
+                    width: Dimension::auto(),
                     height: Dimension::length(TOPBAR_H),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
             },
-            &[actions],
+            &children,
         );
         self.topbar_node = Some(topbar);
         topbar
@@ -911,7 +965,9 @@ impl ThemesApp {
                 Style {
                     size: Size {
                         width: Dimension::percent(1.0),
-                        height: Dimension::length(self.preview.narrow_intrinsic_height()),
+                        height: Dimension::length(
+                            self.preview.narrow_intrinsic_height(theme.text_scale),
+                        ),
                     },
                     flex_grow: 0.0,
                     flex_shrink: 0.0,
@@ -941,7 +997,7 @@ impl ThemesApp {
             Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(self.customizer.intrinsic_height()),
+                    height: Dimension::length(self.customizer.intrinsic_height(theme.text_scale)),
                 },
                 flex_grow: 0.0,
                 flex_shrink: 0.0,
@@ -1081,7 +1137,8 @@ impl ThemesApp {
         layout
     }
 
-    /// Place the top bar's action buttons (part of [`Widget::apply_layout`]).
+    /// Place the top bar's toggle and action buttons and record the bar's
+    /// measured rect (part of [`Widget::apply_layout`]).
     fn apply_topbar_layout(&mut self, taffy: &TaffyTree<()>, origin: Point) {
         let Some(tb) = self.topbar_node else { return };
         let Some(actions) = self.topbar_actions_node else {
@@ -1092,6 +1149,15 @@ impl ThemesApp {
             origin.x + f64::from(tbl.location.x),
             origin.y + f64::from(tbl.location.y),
         );
+        self.topbar_rect = Rect::new(
+            tb_o.x,
+            tb_o.y,
+            tb_o.x + f64::from(tbl.size.width),
+            tb_o.y + f64::from(tbl.size.height),
+        );
+        if let Some(n) = self.topbar_toggle_node {
+            self.gallery_toggle.apply_layout(taffy, n, tb_o);
+        }
         let Ok(al) = taffy.layout(actions) else {
             return;
         };
@@ -1198,7 +1264,7 @@ impl ThemesApp {
         let slide = self.gallery_flap.slide();
         let gw = f64::from(GALLERY_W);
         let x0 = self.rect.x0 - gw * (1.0 - slide);
-        let y0 = self.rect.y0 + f64::from(TOPBAR_H);
+        let y0 = self.topbar_band().y1;
         self.gallery_overlay_rect = Rect::new(x0, y0, x0 + gw, self.rect.y1);
         if let Some(n) = self.gallery_node {
             self.gallery.apply_layout(
@@ -1211,9 +1277,10 @@ impl ThemesApp {
 
     /// Overlay-only global shortcuts checked before any child widget sees
     /// the event (part of [`Widget::handle_event`]): the wheel scrolls the
-    /// collapsed stack, Esc dismisses the open flap, and the hamburger
-    /// toggle / scrim tap summons or dismisses it. Returns `true` if the
-    /// event was consumed (the caller should stop dispatching).
+    /// collapsed stack, Esc dismisses the open flap, and a scrim tap
+    /// dismisses it. (The hamburger is a real [`Button`] in the top bar and
+    /// takes its own click.) Returns `true` if the event was consumed (the
+    /// caller should stop dispatching).
     fn handle_overlay_shortcuts(
         &mut self,
         event: &WindowEvent,
@@ -1251,25 +1318,22 @@ impl ThemesApp {
             return true;
         }
 
-        // The hamburger toggle (overlay only) summons / dismisses the gallery.
+        // Tapping the scrim (content, outside the flap) dismisses an open
+        // gallery. The toggle Button is outside the flap too; its click is
+        // its own, so a press on it is left for the button to handle.
         if overlay
+            && gallery_open
             && let WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } = event
+            && !self.gallery_overlay_rect.contains(self.last_cursor)
+            && !self.gallery_toggle.get_rect().contains(self.last_cursor)
         {
-            if self.toggle_rect.contains(self.last_cursor) {
-                self.gallery_flap.toggle(SplitLayout::Overlay);
-                *handled = true;
-                return true;
-            }
-            // Tapping the scrim (content, outside the flap) dismisses it.
-            if gallery_open && !self.gallery_overlay_rect.contains(self.last_cursor) {
-                self.gallery_flap.close();
-                *handled = true;
-                return true;
-            }
+            self.gallery_flap.close();
+            *handled = true;
+            return true;
         }
         false
     }
@@ -1291,6 +1355,19 @@ impl ThemesApp {
         focus_target: &mut Option<NodeId>,
         taffy: &TaffyTree<()>,
     ) {
+        if let Some(n) = self.topbar_toggle_node {
+            self.gallery_toggle.handle_event(
+                event,
+                scale,
+                &m,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
         for (b, c) in self.topbar_buttons.iter_mut().zip(
             self.topbar_actions_node
                 .and_then(|n| taffy.children(n).ok())
@@ -1693,7 +1770,7 @@ impl Widget for ThemesApp {
             if reveal > 0.001 {
                 let scrim_rect = Rect::new(
                     self.rect.x0,
-                    self.rect.y0 + f64::from(TOPBAR_H),
+                    self.topbar_band().y1,
                     self.rect.x1,
                     self.rect.y1,
                 );
@@ -1708,13 +1785,8 @@ impl Widget for ThemesApp {
             }
         }
 
-        // Top bar over the panes.
-        let tb = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y0 + f64::from(TOPBAR_H),
-        );
+        // Top bar over the panes, at its measured height.
+        let tb = self.topbar_band();
         draw::fill_rect(scene, t, tb, theme.bg_primary);
         draw::line(
             scene,
@@ -1725,10 +1797,11 @@ impl Widget for ThemesApp {
             1.0,
         );
 
-        // Hamburger / close toggle (overlay only) sits at the far left. The OS
-        // owns the window title/app-name/logo, so the app draws no wordmark.
-        if self.show_toggle() {
-            self.draw_toggle(scene, t, tr, theme, tb);
+        // The gallery toggle (overlay only) is a laid-out Button in the bar's
+        // leading slot. The OS owns the window title/app-name/logo, so the
+        // app draws no wordmark.
+        if self.topbar_toggle_node.is_some() {
+            self.gallery_toggle.draw(scene, t, tr, theme, p);
         }
 
         for b in &mut self.topbar_buttons {
@@ -1896,11 +1969,11 @@ impl Widget for ThemesApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = self
-            .topbar_buttons
-            .iter()
-            .map(|b| b as &dyn Widget)
-            .collect();
+        let mut children: Vec<&dyn Widget> = Vec::new();
+        if self.topbar_toggle_node.is_some() {
+            children.push(&self.gallery_toggle);
+        }
+        children.extend(self.topbar_buttons.iter().map(|b| b as &dyn Widget));
         if self.layout_class() == SplitLayout::Overlay {
             if self.gallery_flap.is_open(SplitLayout::Overlay) {
                 children.push(&self.gallery);
@@ -1923,11 +1996,15 @@ impl Widget for ThemesApp {
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let overlay = self.layout_class() == SplitLayout::Overlay;
-        let mut children: Vec<&mut dyn Widget> = self
-            .topbar_buttons
-            .iter_mut()
-            .map(|b| b as &mut dyn Widget)
-            .collect();
+        let mut children: Vec<&mut dyn Widget> = Vec::new();
+        if self.topbar_toggle_node.is_some() {
+            children.push(&mut self.gallery_toggle);
+        }
+        children.extend(
+            self.topbar_buttons
+                .iter_mut()
+                .map(|b| b as &mut dyn Widget),
+        );
         if overlay {
             if self.gallery_flap.is_open(SplitLayout::Overlay) {
                 children.push(&mut self.gallery);

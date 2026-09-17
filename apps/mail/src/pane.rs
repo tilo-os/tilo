@@ -85,19 +85,38 @@ fn list_zero_state(
 /// vertical centre). `chip_here` is whether the chip overlays this pane's
 /// header. Pure so the "title lines up with, and is spaced from, the collapse
 /// button" invariant is unit-testable.
-fn list_header_layout(rect: Rect, chip_here: bool, gap: f64) -> (f64, f64, f64) {
-    // The chip is a CHIP_SIZE square inset CHIP_INSET from the pane's top-left
-    // (mirrored from `ui`'s NavShell), so its centre line is:
-    let header_cy = rect.y0 + CHIP_INSET + CHIP_SIZE / 2.0;
+fn list_header_layout(
+    rect: Rect,
+    chip: Rect,
+    chip_here: bool,
+    gap: f64,
+    title_h: f64,
+) -> (f64, f64, f64) {
+    // `chip` is the shell's collapse chip as laid out (or the 1x mirror,
+    // `mirrored_chip`, when the shell shows none); its centre line is:
+    let header_cy = chip.center().y;
     let title_x = if chip_here {
-        rect.x0 + CHIP_INSET + CHIP_SIZE + gap
+        chip.x1 + gap
     } else {
         rect.x0 + 20.0
     };
-    // Text is positioned by the top of its line box (`size * 1.25`), so drop the
-    // title top by half its own box to centre the glyphs on `header_cy`.
-    let title_y = header_cy - 18.0 * 1.25 / 2.0;
+    // Text is positioned by the top of its line box, so drop the title top by
+    // half its *measured* box (`title_h`) to centre the glyphs on `header_cy`
+    // at every text scale.
+    let title_y = header_cy - title_h / 2.0;
     (title_x, title_y, header_cy)
+}
+
+/// The 1x mirror of the shell's collapse chip: a `CHIP_SIZE` square inset
+/// `CHIP_INSET` from the pane's top-left. Used only while the shell has not
+/// published its real chip (see `State::shell_chip`).
+fn mirrored_chip(rect: Rect) -> Rect {
+    Rect::new(
+        rect.x0 + CHIP_INSET,
+        rect.y0 + CHIP_INSET,
+        rect.x0 + CHIP_INSET + CHIP_SIZE,
+        rect.y0 + CHIP_INSET + CHIP_SIZE,
+    )
 }
 
 /// The per-account settings gear rect on the right edge of an account row.
@@ -248,7 +267,27 @@ struct ListRowMetrics {
     avatar_cy: f64,
     /// Centre line of the star / paperclip glyphs: the snippet line.
     icon_cy: f64,
+    /// Radius of the sender avatar. The shared `Avatar::draw_at` sizes the
+    /// initials at 0.4× the disc through the renderer, which applies the text
+    /// scale, so the disc follows the same scale to keep them inside.
+    avatar_r: f64,
+    /// Height of the header's search box and refresh button: the search
+    /// text's measured line box plus a pad each side, never shorter than the
+    /// 1× control.
+    ctl_h: f64,
+    /// Height of the list header band the rows start under: the controls
+    /// plus their inset above and below, never shorter than the 1× header.
+    header_h: f64,
 }
+
+/// 1× radius of the list-row sender avatar.
+const LIST_AVATAR_R: f64 = 17.0;
+/// 1× height of the header's search box and refresh button.
+const HEADER_CTL_H: f64 = 32.0;
+/// Inset of the header controls from the pane's top edge (`s3`).
+const HEADER_CTL_INSET: f64 = 12.0;
+/// Renderer-relative size of the search box's text and placeholder.
+const SEARCH_TEXT: f32 = 13.0;
 
 impl ListRowMetrics {
     /// The 1× row before anything has been measured (and for the geometry
@@ -257,19 +296,27 @@ impl ListRowMetrics {
         Self::from_line_boxes(16.875, 15.625, 14.375, 4.0, 12.0)
     }
 
-    /// Measure the three text lines with their paint styles.
+    /// Measure the three text lines with their paint styles, and the
+    /// header control / avatar sizes for the current text scale.
     fn measure(tr: &mut TextRenderer, theme: &Theme) -> Self {
         let sp = &theme.tokens.spacing;
         let (_, name_h) = tr.measure_weighted("Ag", 13.5, None, TextWeight::Bold);
         let (_, subj_h) = tr.measure_weighted("Ag", 12.5, None, TextWeight::Semibold);
         let (_, snippet_h) = tr.measure("Ag", 11.5, None);
-        Self::from_line_boxes(
+        let (_, search_h) = tr.measure("Ag", SEARCH_TEXT, None);
+        let pad = f64::from(sp.s3);
+        let mut m = Self::from_line_boxes(
             f64::from(name_h),
             f64::from(subj_h),
             f64::from(snippet_h),
             f64::from(sp.s1),
-            f64::from(sp.s3),
-        )
+            pad,
+        );
+        m.avatar_r = LIST_AVATAR_R * f64::from(theme.text_scale).max(1.0);
+        m.row_h = m.row_h.max((2.0 * m.avatar_r + 2.0 * pad).ceil());
+        m.ctl_h = (f64::from(search_h) + 2.0 * f64::from(sp.s2)).max(HEADER_CTL_H);
+        m.header_h = (2.0 * HEADER_CTL_INSET + m.ctl_h).max(HEADER_H);
+        m
     }
 
     /// Stack sender, subject and snippet with the small related gap between
@@ -291,7 +338,21 @@ impl ListRowMetrics {
             snippet_h,
             avatar_cy: (name_y + subj_y + subj_h) / 2.0,
             icon_cy: snippet_y + snippet_h / 2.0,
+            avatar_r: LIST_AVATAR_R,
+            ctl_h: HEADER_CTL_H,
+            header_h: HEADER_H,
         }
+    }
+
+    /// Centre x of the sender avatar in a row starting at `row_x0`.
+    fn avatar_cx(&self, row_x0: f64) -> f64 {
+        row_x0 + 25.0 + self.avatar_r
+    }
+
+    /// Left edge of the sender / subject / snippet column: one `s3` past the
+    /// disc, so all three lines start together whatever the disc's radius.
+    fn text_x(&self, row_x0: f64, s3: f64) -> f64 {
+        self.avatar_cx(row_x0) + self.avatar_r + s3
     }
 
     /// The star's hit rect for a row: a 24px target centred on the painted
@@ -362,7 +423,13 @@ pub struct Pane {
 impl Pane {
     pub fn new(role: Role, shared: Shared) -> Self {
         let search_input = if role == Role::List {
-            let mut i = TextInput::local();
+            // The placeholder belongs to the shared field so the hint and the
+            // typed query share one font, gutter and centre line (the header
+            // used to paint its own "Search" over the box at a fixed offset).
+            // The shared field resolves the catalogue key itself, so the key
+            // is handed over rather than a resolved string (which it would
+            // translate a second time).
+            let mut i = TextInput::local().with_placeholder("mail-search-placeholder");
             i.set_plain_chrome(true);
             Some(i)
         } else {
@@ -401,17 +468,33 @@ impl Pane {
         self.list_metrics.unwrap_or_else(ListRowMetrics::fallback)
     }
 
+    /// The shell's collapse chip in app coordinates, or the 1x mirror at
+    /// this pane's top-left while the shell shows none.
+    fn shell_chip(&self, rect: Rect) -> Rect {
+        self.shared
+            .borrow()
+            .shell_chip
+            .unwrap_or_else(|| mirrored_chip(rect))
+    }
+
+    /// Leading room the shell's chip needs in this pane's header: past the
+    /// chip's right edge by the same breath the 1x constant carried.
+    fn chip_clearance(&self) -> f64 {
+        let chip = self.shell_chip(self.rect);
+        (chip.x1 - self.rect.x0) + (CHIP_CLEARANCE - CHIP_INSET - CHIP_SIZE)
+    }
+
     fn header_left_inset(&self) -> f64 {
         let st = self.shared.borrow();
         match self.role {
-            Role::Sidebar => CHIP_CLEARANCE,
+            Role::Sidebar => self.chip_clearance(),
             // The list is the leftmost content pane (so the shell's collapse /
             // hamburger toggle sits over its header) whenever the layout is
             // narrow OR the docked sidebar is collapsed. Reserve room so the
             // folder title never renders under the toggle chip.
             Role::List => {
                 if st.narrow || !st.sidebar_open {
-                    CHIP_CLEARANCE
+                    self.chip_clearance()
                 } else {
                     20.0
                 }
@@ -429,11 +512,14 @@ impl Pane {
     /// The manual sync / refresh button in the list header (right edge).
     fn refresh_box_rect(&self) -> Rect {
         let r = self.rect;
+        // A square the height of the header controls (measured, so it grows
+        // with the search box at a larger text scale).
+        let h = self.list_metrics().ctl_h;
         Rect::new(
-            r.x1 - 16.0 - 32.0,
-            r.y0 + 12.0,
+            r.x1 - 16.0 - h,
+            r.y0 + HEADER_CTL_INSET,
             r.x1 - 16.0,
-            r.y0 + 12.0 + 32.0,
+            r.y0 + HEADER_CTL_INSET + h,
         )
     }
 
@@ -445,7 +531,13 @@ impl Pane {
         // leaving room for the folder title on its left.
         let sw = (r.width() * 0.46).clamp(140.0, 230.0);
         let x0 = (x1 - sw).max(r.x0 + self.header_left_inset() + 70.0);
-        Rect::new(x0, r.y0 + 12.0, x1, r.y0 + 12.0 + 32.0)
+        let h = self.list_metrics().ctl_h;
+        Rect::new(
+            x0,
+            r.y0 + HEADER_CTL_INSET,
+            x1,
+            r.y0 + HEADER_CTL_INSET + h,
+        )
     }
 
     fn rebuild_hits(&mut self) {
@@ -474,7 +566,7 @@ impl Pane {
         // band to clear anymore), so it aligns with the list column's first
         // row.
         let pad = 12.0;
-        let mut y = sb.y0 + CHIP_INSET + CHIP_SIZE + 8.0;
+        let mut y = self.shell_chip(sb).y1 + 8.0;
         hits.push((
             Rect::new(sb.x0 + pad, y, sb.x1 - pad, y + 40.0),
             Hit::Compose,
@@ -521,18 +613,22 @@ impl Pane {
         search_rect: &mut Option<Rect>,
     ) {
         let r = self.rect;
+        let m = self.list_metrics();
         hits.push((self.refresh_box_rect(), Hit::Refresh));
         let sr = self.search_box_rect();
-        *search_rect = Some(Rect::new(sr.x0 + 30.0, sr.y0, sr.x1 - 26.0, sr.y1));
+        // The input sits between the search glyph and the clear glyph, both
+        // of which are squares the box's own height so they stay centred on
+        // it at every scale.
+        let glyph_w = sr.height();
+        *search_rect = Some(Rect::new(sr.x0 + glyph_w, sr.y0, sr.x1 - glyph_w, sr.y1));
         hits.push((sr, Hit::SearchFocus));
         if !st.search.is_empty() {
             hits.push((
-                Rect::new(sr.x1 - 26.0, sr.y0, sr.x1, sr.y1),
+                Rect::new(sr.x1 - glyph_w, sr.y0, sr.x1, sr.y1),
                 Hit::SearchClear,
             ));
         }
-        let m = self.list_metrics();
-        let mut ly = r.y0 + HEADER_H;
+        let mut ly = r.y0 + m.header_h;
         for (id, _len) in st.list_rows() {
             if ly >= r.y1 {
                 break;
@@ -911,10 +1007,11 @@ impl Pane {
         // then the leftmost pane); matches `header_left_inset`'s List branch.
         let chip_here = st.narrow || !st.sidebar_open;
         let gap = f64::from(theme.tokens.spacing.s3);
-        let (title_x, title_y, header_cy) = list_header_layout(r, chip_here, gap);
-        let title_budget = sr.x0 - title_x - 12.0;
         let title_full = st.folder.title();
-        let (twd, _) = tr.measure_weighted(title_full, 18.0, None, TextWeight::Bold);
+        let (twd, th) = tr.measure_weighted(title_full, 18.0, None, TextWeight::Bold);
+        let (title_x, title_y, header_cy) =
+            list_header_layout(r, self.shell_chip(r), chip_here, gap, f64::from(th));
+        let title_budget = sr.x0 - title_x - 12.0;
         let title = crate::draw::elide(tr, title_full, 18.0, TextWeight::Bold, title_budget);
         tr.draw_text_weighted(
             scene,
@@ -930,10 +1027,12 @@ impl Pane {
         let count = st.mailbox.count(st.folder);
         let count_x = title_x + f64::from(twd) + 10.0;
         if f64::from(twd) <= title_budget && count_x + 26.0 < sr.x0 {
-            let count_y = header_cy - 12.0 * 1.25 / 2.0;
+            let count_label = format!("{count}");
+            let (_, ch) = tr.measure(&count_label, 12.0, None);
+            let count_y = header_cy - f64::from(ch) / 2.0;
             tr.draw_text(
                 scene,
-                &format!("{count}"),
+                &count_label,
                 12.0,
                 c.text_dim,
                 t * Affine::translate((count_x, count_y)),
@@ -953,27 +1052,36 @@ impl Pane {
                 c.border_standard
             },
         );
+        // The search and clear glyphs each own a square the box's height, so
+        // they stay centred on the box (and on the input between them) at any
+        // text scale; the glyph itself is the small icon token, text-scaled.
+        let scale = f64::from(theme.text_scale).max(1.0);
+        let icon = f64::from(theme.tokens.metrics.icon_sm) * scale;
+        let glyph_w = sr.height();
+        let cy = sr.center().y;
         Icon::Search.draw(
             scene,
             t,
-            Rect::new(sr.x0 + 8.0, sr.y0 + 8.0, sr.x0 + 24.0, sr.y0 + 24.0),
+            Rect::new(
+                sr.x0 + (glyph_w - icon) / 2.0,
+                cy - icon / 2.0,
+                sr.x0 + (glyph_w + icon) / 2.0,
+                cy + icon / 2.0,
+            ),
             c.text_dim,
         );
-        if st.search.is_empty() && !st.search_focused {
-            tr.draw_text(
-                scene,
-                "Search",
-                13.0,
-                c.text_dim,
-                t * Affine::translate((sr.x0 + 30.0, sr.y0 + 9.0)),
-                None,
-            );
-        }
+        // The placeholder is the shared field's own (`with_placeholder`), so it
+        // shares the typed text's font, gutter and centre line.
         if !st.search.is_empty() {
             Icon::X.draw(
                 scene,
                 t,
-                Rect::new(sr.x1 - 24.0, sr.y0 + 8.0, sr.x1 - 8.0, sr.y0 + 24.0),
+                Rect::new(
+                    sr.x1 - (glyph_w + icon) / 2.0,
+                    cy - icon / 2.0,
+                    sr.x1 - (glyph_w - icon) / 2.0,
+                    cy + icon / 2.0,
+                ),
                 c.text_dim,
             );
         }
@@ -993,7 +1101,12 @@ impl Pane {
             },
         );
         stroke_round(scene, t, rb, 9.0, 1.0, c.border_standard);
-        Icon::Refresh.draw(scene, t, rb.inset(-9.0), c.neutral[7]);
+        Icon::Refresh.draw(
+            scene,
+            t,
+            rb.inset(-(rb.height() - icon) / 2.0),
+            c.neutral[7],
+        );
     }
 
     fn draw_list(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -1016,7 +1129,7 @@ impl Pane {
                 t,
                 tr,
                 theme,
-                Rect::new(r.x0, r.y0 + HEADER_H, r.x1, r.y1),
+                Rect::new(r.x0, r.y0 + self.list_metrics().header_h, r.x1, r.y1),
                 Some(icon),
                 title,
                 Some(message),
@@ -1203,19 +1316,24 @@ impl Pane {
                 &Circle::new(Point::new(row.x0 + 14.0, row.center().y), 4.0),
             );
         }
+        // The disc's radius is the row's measured `avatar_r` (text-scaled, so
+        // the initials stay inside it); the text column starts one `s3` past
+        // the disc instead of at a fixed 70 px — the same `text_x` the
+        // subject and snippet lines use.
+        let avatar_cx = m.avatar_cx(row.x0);
         draw_avatar(
             scene,
             tr,
             t,
             theme,
             &self.shared.borrow().images,
-            Point::new(row.x0 + 42.0, row.y0 + m.avatar_cy),
-            17.0,
+            Point::new(avatar_cx, row.y0 + m.avatar_cy),
+            m.avatar_r,
             &msg.from,
             0,
         );
 
-        let text_x = row.x0 + 70.0;
+        let text_x = m.text_x(row.x0, f64::from(theme.tokens.spacing.s3));
         let right = row.x1 - 14.0;
         let name_weight = if unread {
             TextWeight::Bold
@@ -1275,7 +1393,8 @@ impl Pane {
         m: ListRowMetrics,
     ) {
         let c = &theme.tokens.colors;
-        let text_x = row.x0 + 70.0;
+        // Same column as the sender line: one `s3` past the measured disc.
+        let text_x = m.text_x(row.x0, f64::from(theme.tokens.spacing.s3));
         let right = row.x1 - 14.0;
 
         let subj_y = row.y0 + m.subj_y;
@@ -1966,11 +2085,14 @@ impl Pane {
         let (tow, toh) = tr.measure(&to_line, 11.0, None);
         let (_, name_h) = tr.measure_weighted("Ag", 13.5, None, TextWeight::Semibold);
         let (_, email_h) = tr.measure("Ag", 11.5, None);
+        // The disc follows the text scale so the shared avatar's initials
+        // (0.4× the disc, through the renderer) stay inside it.
+        let avatar_r = LIST_AVATAR_R * f64::from(theme.text_scale).max(1.0);
         let layout = card_header_layout(&CardHeaderMetrics {
             x: cx,
             y: cy,
             width,
-            avatar_r: 17.0,
+            avatar_r,
             name_h: f64::from(name_h),
             email_h: f64::from(email_h),
             date_w: f64::from(dw),
@@ -1985,7 +2107,7 @@ impl Pane {
             theme,
             &st.images,
             layout.avatar_c,
-            17.0,
+            avatar_r,
             &msg.from,
             0,
         );
@@ -3052,6 +3174,23 @@ mod tests {
     }
 
     #[test]
+    fn list_header_and_avatar_keep_their_one_x_sizes_before_the_first_paint() {
+        // The pre-paint rules are the authored 1× header band, control
+        // height and avatar radius, so nothing moves at 1×.
+        let m = ListRowMetrics::fallback();
+        assert_eq!(m.header_h, HEADER_H);
+        assert_eq!(m.ctl_h, HEADER_CTL_H);
+        assert_eq!(m.avatar_r, LIST_AVATAR_R);
+        // A scaled control pushes the rows down instead of under the search
+        // box: the header is the controls plus their inset above and below.
+        let mut big = m;
+        big.ctl_h = 49.0;
+        big.header_h = (2.0 * HEADER_CTL_INSET + big.ctl_h).max(HEADER_H);
+        assert_eq!(big.header_h, 73.0);
+        assert!(big.header_h > HEADER_H);
+    }
+
+    #[test]
     fn list_row_bands_stack_without_overlap_and_the_star_hit_covers_its_glyph() {
         let m = ListRowMetrics::fallback();
         // 1× keeps the authored row height (rounded up to a whole pixel).
@@ -3121,11 +3260,20 @@ mod tests {
         // chip beside it and sit a consistent gap past it — not a few px off.
         let rect = Rect::new(0.0, 0.0, 420.0, 900.0);
         let gap = 12.0;
-        let (title_x, title_y, header_cy) = list_header_layout(rect, true, gap);
+        // The 1× line box of the 18 px bold title; the layout centres whatever
+        // box it is handed, so a 200% box (45) lands on the same centre.
+        let title_h = 22.5;
+        let (title_x, title_y, header_cy) =
+            list_header_layout(rect, mirrored_chip(rect), true, gap, title_h);
         let chip_cy = rect.y0 + CHIP_INSET + CHIP_SIZE / 2.0;
         let chip_right = rect.x0 + CHIP_INSET + CHIP_SIZE;
-        // Vertically centred on the chip's centre line (glyph box is size*1.25).
-        let title_center = title_y + 18.0 * 1.25 / 2.0;
+        // Vertically centred on the chip's centre line from the measured box.
+        let title_center = title_y + title_h / 2.0;
+        let (_, big_y, _) = list_header_layout(rect, mirrored_chip(rect), true, gap, 45.0);
+        assert!(
+            (big_y + 22.5 - chip_cy).abs() < 0.001,
+            "a scaled title box still centres on the chip"
+        );
         assert!(
             (title_center - chip_cy).abs() < 0.001,
             "title centre {title_center} != chip centre {chip_cy}"
@@ -3144,7 +3292,14 @@ mod tests {
             "title does not crowd the collapse button"
         );
         // With no chip over the header, the title returns to the plain inset.
-        let (nx, _, _) = list_header_layout(rect, false, gap);
+        let (nx, _, _) = list_header_layout(rect, mirrored_chip(rect), false, gap, title_h);
+        // The shell's real chip at 2x is larger than the 1x mirror; the title
+        // follows it, centred on its centre line and spaced past its edge.
+        let big_chip = Rect::new(12.0, 12.0, 12.0 + 53.5, 12.0 + 53.5);
+        let (bx, by, bcy) = list_header_layout(rect, big_chip, true, gap, 45.0);
+        assert!((bcy - big_chip.center().y).abs() < 1e-9, "centre line follows the real chip");
+        assert!((bx - (big_chip.x1 + gap)).abs() < 1e-9, "title clears the real chip");
+        assert!((by + 22.5 - bcy).abs() < 1e-9);
         assert_eq!(nx, rect.x0 + 20.0);
     }
 

@@ -9,13 +9,21 @@
 //!
 //! The challenge re-seeds when the user clicks "Pick different blanks" —
 //! lets them retry without losing earlier progress.
+//!
+//! Each blank is the shared [`TextInput`], embedded in its grid cell: the
+//! sheet places it, the screen forwards it the events it does not claim
+//! (Enter checks, PageUp/PageDown scroll), and every blank hangs off the
+//! screen's layout node as a child of its own — in reading order, so the
+//! host's Tab walks the grid by ascending word position and a screen
+//! reader hears "Word 12" rather than "text input".
 
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -25,11 +33,12 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::sheet::{
-    Align, BodyScroll, Field, GRID_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, WordGrid,
-    paint_field, paint_text, paragraph_height, resolve, with_layout_renderer,
+    Align, BodyScroll, GRID_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, WordGrid, edited,
+    paint_text, paragraph_height, place_field, resolve, with_layout_renderer,
 };
-use crate::widget::identity_flow::{LineEditState, RecoveryChallenge, ScreenOutcome};
+use crate::widget::identity_flow::{RecoveryChallenge, ScreenOutcome};
 use crate::widget::modal_frame::ModalAction;
+use crate::widget::text_input::TextInput;
 
 const TITLE: &str = "Confirm your recovery words";
 const EXPLANATION: &str =
@@ -44,6 +53,29 @@ const ACTION_FINISH: usize = 1;
 
 /// The mnemonic is 24 words; the grid never shows more.
 const WORD_COUNT: usize = 24;
+
+/// `test_id`s of the three blanks, in challenge-slot (storage) order.
+pub const BLANK_INPUT_IDS: [&str; 3] = [
+    "identity_recovery_blank_0",
+    "identity_recovery_blank_1",
+    "identity_recovery_blank_2",
+];
+
+/// One field per slot: named by the position it asks for, so a screen
+/// reader says "Word 12" rather than "text input", and addressable by its
+/// slot's `test_id`.
+fn blank_inputs(challenge: Option<&RecoveryChallenge>) -> [TextInput; 3] {
+    std::array::from_fn(|slot| {
+        let id = BLANK_INPUT_IDS
+            .get(slot)
+            .copied()
+            .unwrap_or("identity_recovery_blank");
+        let name = challenge
+            .and_then(|c| c.positions.get(slot))
+            .map_or_else(|| "Recovery word".to_string(), |pos| format!("Word {pos}"));
+        TextInput::local().with_id(id).with_accessible_name(name)
+    })
+}
 
 /// Every rect the screen paints and hit-tests, from one pass over the rows.
 #[derive(Clone, Debug, Default)]
@@ -61,10 +93,14 @@ pub struct RecoveryVerifyScreen {
     rect: Rect,
     mnemonic: String,
     challenge: Option<RecoveryChallenge>,
-    /// One `LineEditState` per slot so the user gets the full
-    /// keyboard-shortcut kit (Ctrl+arrows, Shift selection, Ctrl+A/C/X/V).
-    editors: [LineEditState; 3],
-    focused_slot: Option<usize>,
+    /// One shared text input per slot, in storage order, so the user gets
+    /// the whole editing kit — IME, clipboard, selection, accessibility.
+    editors: [TextInput; 3],
+    /// Each slot's own layout node, minted by `build_layout`.
+    slot_nodes: [Option<NodeId>; 3],
+    /// Each blank's text as last seen, so an edit is a change of text and
+    /// a caret move is not (see [`edited`]).
+    last_answers: [String; 3],
     /// Whether the last submit produced a mismatch — drives the inline
     /// error message.
     last_attempt_failed: bool,
@@ -91,12 +127,9 @@ impl RecoveryVerifyScreen {
             rect: Rect::ZERO,
             mnemonic: String::new(),
             challenge: None,
-            editors: [
-                LineEditState::new(),
-                LineEditState::new(),
-                LineEditState::new(),
-            ],
-            focused_slot: None,
+            editors: blank_inputs(None),
+            slot_nodes: [None; 3],
+            last_answers: [const { String::new() }; 3],
             last_attempt_failed: false,
             slot_rects: [Rect::ZERO; 3],
             continue_rect: Rect::ZERO,
@@ -112,12 +145,7 @@ impl RecoveryVerifyScreen {
     pub fn seed_mnemonic(&mut self, mnemonic: String) {
         self.mnemonic = mnemonic;
         self.challenge = RecoveryChallenge::from_mnemonic(&self.mnemonic).ok();
-        self.editors = [
-            LineEditState::new(),
-            LineEditState::new(),
-            LineEditState::new(),
-        ];
-        self.last_attempt_failed = false;
+        self.reset_blanks();
     }
 
     pub fn challenge(&self) -> Option<&RecoveryChallenge> {
@@ -127,34 +155,43 @@ impl RecoveryVerifyScreen {
     /// Pick a fresh 3-word challenge.
     pub fn reseed(&mut self) {
         self.challenge = RecoveryChallenge::from_mnemonic(&self.mnemonic).ok();
-        self.editors = [
-            LineEditState::new(),
-            LineEditState::new(),
-            LineEditState::new(),
-        ];
-        self.last_attempt_failed = false;
+        self.reset_blanks();
     }
 
     /// Inject a deterministic challenge, for reproducible test ordering.
     pub fn seed_challenge(&mut self, positions: [usize; 3]) {
         self.challenge = RecoveryChallenge::at_positions(&self.mnemonic, positions).ok();
-        self.editors = [
-            LineEditState::new(),
-            LineEditState::new(),
-            LineEditState::new(),
-        ];
+        self.reset_blanks();
+    }
+
+    /// Fresh, empty blanks named for the current challenge's positions.
+    /// Keyboard focus stays on the slot that held it, so "Pick different
+    /// blanks" leaves the user typing into the same blank — the widgets
+    /// are replaced in place, so the host's focused node still names it.
+    fn reset_blanks(&mut self) {
+        let focused = self.focused_slot();
+        self.editors = blank_inputs(self.challenge.as_ref());
+        if let Some(editor) = focused.and_then(|slot| self.editors.get_mut(slot)) {
+            editor.set_focus(true);
+        }
+        self.last_answers = [const { String::new() }; 3];
         self.last_attempt_failed = false;
     }
 
     pub fn set_answer(&mut self, slot: usize, value: impl Into<String>) {
-        if let Some(editor) = self.editors.get_mut(slot) {
-            *editor = LineEditState::with_text(value);
+        if let (Some(editor), Some(last)) =
+            (self.editors.get_mut(slot), self.last_answers.get_mut(slot))
+        {
+            let value = value.into();
+            editor.set_text(&value);
+            editor.set_cursor_pos(value.len());
+            *last = value;
             self.last_attempt_failed = false;
         }
     }
 
     pub fn answer(&self, slot: usize) -> Option<&str> {
-        self.editors.get(slot).map(|e| e.text.as_str())
+        self.editors.get(slot).map(TextInput::value)
     }
 
     pub fn last_attempt_failed(&self) -> bool {
@@ -166,11 +203,93 @@ impl RecoveryVerifyScreen {
         match &self.challenge {
             None => false,
             Some(c) => {
-                let r0 = self.editors[0].text.as_str();
-                let r1 = self.editors[1].text.as_str();
-                let r2 = self.editors[2].text.as_str();
-                c.check(&[r0, r1, r2])
+                let [r0, r1, r2] = &self.editors;
+                c.check(&[r0.value(), r1.value(), r2.value()])
             }
+        }
+    }
+
+    /// The slot whose field holds keyboard focus, if any.
+    fn focused_slot(&self) -> Option<usize> {
+        self.editors.iter().position(Widget::is_focused)
+    }
+
+    /// Slots by ascending word position — the order the eye reads the
+    /// grid, the order `children()` exposes them in, and so the order the
+    /// host's Tab walks them.
+    fn visual_order(&self) -> [usize; 3] {
+        let mut order = [0, 1, 2];
+        if let Some(c) = &self.challenge {
+            order.sort_by_key(|&slot| c.positions.get(slot).copied().unwrap_or(usize::MAX));
+        }
+        order
+    }
+
+    /// Move focus to `slot`: its field takes it, the others drop it, and
+    /// the host learns which node now holds it.
+    fn focus_slot(&mut self, slot: usize, focus_target: &mut Option<NodeId>) {
+        for (i, editor) in self.editors.iter_mut().enumerate() {
+            editor.set_focus(i == slot);
+        }
+        if let Some(node) = self.slot_nodes.get(slot).copied().flatten() {
+            *focus_target = Some(node);
+        }
+    }
+
+    /// Hand `event` to every blank, each answering for its own node. Each
+    /// field gates itself — keys and IME act only on the focused one, a
+    /// press only on the hovered one — while a release, a right-click or a
+    /// pointer move reaches the field it belongs to even after focus has
+    /// moved on, so a drag ends and a menu opens where the pointer is.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the Widget::handle_event parameter list to the embedded fields"
+    )]
+    fn forward_all(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        for slot in 0..self.editors.len() {
+            let node = self
+                .slot_nodes
+                .get(slot)
+                .copied()
+                .flatten()
+                .unwrap_or(node_id);
+            if let Some(editor) = self.editors.get_mut(slot) {
+                editor.handle_event(
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node,
+                    taffy,
+                );
+            }
+        }
+    }
+
+    /// An edit in any blank — typed, pasted, IME-committed or set through
+    /// an accessibility action — clears the mismatch line, as retyping did.
+    /// A caret or selection move alone does not.
+    fn note_edits(&mut self) {
+        let mut changed = false;
+        for (editor, last) in self.editors.iter_mut().zip(self.last_answers.iter_mut()) {
+            changed |= edited(editor, last);
+        }
+        if changed {
+            self.last_attempt_failed = false;
         }
     }
 
@@ -184,101 +303,138 @@ impl RecoveryVerifyScreen {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AutoCommit,
+        path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) -> ScreenOutcome {
-        match event {
+        // What the screen claims for itself; `None` hands the event to the
+        // fields. A press on a blank is both: the screen focuses it, the
+        // field places its caret, the screen restates the focus.
+        let (claimed, pressed_slot) = match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-                ScreenOutcome::Stay
+                (None, None)
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                for (i, r) in self.slot_rects.iter().enumerate() {
-                    if r.contains(self.last_cursor) {
-                        self.focused_slot = Some(i);
-                        *handled = true;
-                        return ScreenOutcome::Stay;
-                    }
-                }
-                if self.reseed_rect.contains(self.last_cursor) {
-                    self.reseed();
-                    *handled = true;
-                    return ScreenOutcome::Stay;
-                }
-                if self.continue_rect.contains(self.last_cursor) {
-                    *handled = true;
-                    if self.is_correct() {
-                        return ScreenOutcome::Advance;
-                    }
-                    self.last_attempt_failed = true;
-                }
-                ScreenOutcome::Stay
-            }
+            } => self.left_press(handled, focus_target),
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
                         logical_key,
                         state: ElementState::Pressed,
-                        text,
                         ..
                     },
                 ..
-            } => {
-                if self.scroll.key(logical_key, self.body_height) {
-                    *handled = true;
-                    return ScreenOutcome::Stay;
-                }
-                let Some(slot) = self.focused_slot else {
-                    return ScreenOutcome::Stay;
-                };
-                // Tab + Enter are screen-level shortcuts; everything else
-                // delegates to the slot's LineEditState for Ctrl+arrows,
-                // Shift selection, Ctrl+A/C/X/V, Home/End.
-                match logical_key {
-                    Key::Named(NamedKey::Tab) => {
-                        // Visual (ascending position), not storage, order.
-                        if let Some(c) = &self.challenge {
-                            self.focused_slot = Some(next_slot_in_visual_order(
-                                slot,
-                                &c.positions,
-                                modifiers.state().shift_key(),
-                            ));
-                        }
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Enter) => {
-                        *handled = true;
-                        if self.is_correct() {
-                            return ScreenOutcome::Advance;
-                        }
-                        self.last_attempt_failed = true;
-                    }
-                    _ => {
-                        if let Some(editor) = self.editors.get_mut(slot)
-                            && editor.apply_key(logical_key, modifiers, text.as_deref())
-                        {
-                            self.last_attempt_failed = false;
-                            *handled = true;
-                        }
-                    }
-                }
-                ScreenOutcome::Stay
-            }
+            } => (
+                self.key_press(logical_key, *modifiers, handled, focus_target),
+                None,
+            ),
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.scroll.wheel(delta) {
                     *handled = true;
                 }
-                ScreenOutcome::Stay
+                (Some(ScreenOutcome::Stay), None)
             }
-            _ => ScreenOutcome::Stay,
+            _ => (None, None),
+        };
+        let outcome = if let Some(outcome) = claimed {
+            outcome
+        } else {
+            self.forward_all(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if let Some(slot) = pressed_slot {
+                self.focus_slot(slot, focus_target);
+                *handled = true;
+            }
+            ScreenOutcome::Stay
+        };
+        self.note_edits();
+        outcome
+    }
+
+    /// A left press: on a blank (focus it and report it, so the press then
+    /// reaches the fields for caret placement), on an action, or on nothing.
+    fn left_press(
+        &mut self,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+    ) -> (Option<ScreenOutcome>, Option<usize>) {
+        if let Some(slot) = self
+            .slot_rects
+            .iter()
+            .position(|r| r.contains(self.last_cursor))
+        {
+            self.focus_slot(slot, focus_target);
+            return (None, Some(slot));
+        }
+        if self.reseed_rect.contains(self.last_cursor) {
+            self.reseed();
+            *handled = true;
+            return (Some(ScreenOutcome::Stay), None);
+        }
+        if self.continue_rect.contains(self.last_cursor) {
+            *handled = true;
+            if self.is_correct() {
+                return (Some(ScreenOutcome::Advance), None);
+            }
+            self.last_attempt_failed = true;
+        }
+        (Some(ScreenOutcome::Stay), None)
+    }
+
+    /// A key press the screen owns: PageUp/PageDown scroll the body; Enter
+    /// checks; Tab, when a host without focus traversal lets it through,
+    /// walks the blanks in reading order (a host with traversal never
+    /// delivers it — `children()` gives it the same order). `None` for
+    /// every other key, which is the focused blank's.
+    fn key_press(
+        &mut self,
+        logical_key: &Key,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+    ) -> Option<ScreenOutcome> {
+        if self.scroll.key(logical_key, self.body_height) {
+            *handled = true;
+            return Some(ScreenOutcome::Stay);
+        }
+        match logical_key {
+            Key::Named(NamedKey::Tab) => {
+                if let (Some(slot), Some(c)) = (self.focused_slot(), self.challenge.as_ref()) {
+                    let next = next_slot_in_visual_order(
+                        slot,
+                        &c.positions,
+                        modifiers.state().shift_key(),
+                    );
+                    self.focus_slot(next, focus_target);
+                    *handled = true;
+                }
+                Some(ScreenOutcome::Stay)
+            }
+            Key::Named(NamedKey::Enter) => {
+                *handled = true;
+                if self.is_correct() {
+                    return Some(ScreenOutcome::Advance);
+                }
+                self.last_attempt_failed = true;
+                Some(ScreenOutcome::Stay)
+            }
+            _ => None,
         }
     }
 
@@ -307,6 +463,14 @@ impl RecoveryVerifyScreen {
         self.scroll = scroll;
         let body = resolved.sheet.body();
         self.body_height = body.height();
+        // An accessibility `SetValue` lands outside the event path; the
+        // layout pass that follows it is where the edit is noticed.
+        self.note_edits();
+        // Each blank takes its whole grid cell (the body clip trims its
+        // paint); its pointer target is the part inside the visible body.
+        for (editor, rect) in self.editors.iter_mut().zip(resolved.plan.slots.iter()) {
+            place_field(editor, *rect, text_renderer, theme);
+        }
         for (slot, rect) in self.slot_rects.iter_mut().zip(resolved.plan.slots.iter()) {
             *slot = BodyScroll::visible(body, *rect);
         }
@@ -377,18 +541,27 @@ impl RecoveryVerifyScreen {
 
     /// The grid: every cell numbered, twenty-one words read-only and the
     /// three challenged ones as editable fields in the same cells.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one grid painter receives the shared paint context plus the plan it paints"
+    )]
     fn draw_word_grid(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         plan: &Plan,
         control_h: f64,
     ) {
         let grid = WordGrid::new(plan.grid, control_h, text_renderer, theme);
         let positions = self.challenge.as_ref().map_or([0, 0, 0], |c| c.positions);
-        let words: Vec<&str> = self.mnemonic.split_whitespace().collect();
+        let words: Vec<String> = self
+            .mnemonic
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
         for i in 0..WORD_COUNT {
             let (ordinal, cell) = grid.cell(i, theme);
             let pos1 = i.saturating_add(1);
@@ -405,8 +578,7 @@ impl RecoveryVerifyScreen {
             );
             match positions.iter().position(|&p| p == pos1) {
                 Some(slot) => {
-                    let rect = plan.slots.get(slot).copied().unwrap_or(cell);
-                    self.draw_blank_slot(scene, transform, text_renderer, theme, slot, rect);
+                    self.draw_blank_slot(scene, transform, text_renderer, theme, presence, slot);
                 }
                 None => paint_text(
                     scene,
@@ -414,7 +586,7 @@ impl RecoveryVerifyScreen {
                     text_renderer,
                     theme,
                     cell,
-                    words.get(i).copied().unwrap_or(""),
+                    words.get(i).map_or("", String::as_str),
                     Role::Value,
                     Align::Start,
                     false,
@@ -423,58 +595,52 @@ impl RecoveryVerifyScreen {
         }
     }
 
-    /// The editable blank at `slot`, painted into its full grid cell `rect`
-    /// (the hit target is the visible part of it): a field with the shared
-    /// look, plus a verdict edge — accent once it matches, danger after a
-    /// failed attempt while it still holds a wrong word.
-    fn draw_blank_slot(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        slot: usize,
-        rect: Rect,
-    ) {
-        let Some(editor) = self.editors.get(slot) else {
-            return;
-        };
-        let focused = self.focused_slot == Some(slot);
-        paint_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &Field {
-                rect,
-                text: &editor.text,
-                placeholder: "",
-                focused,
-                editor: Some(editor),
-                multiline: false,
-            },
-        );
-        let answer = editor.text.as_str();
+    /// The verdict edge a blank wears when it is not being edited: accent
+    /// once it matches, danger after a failed attempt while it still holds
+    /// a wrong word, nothing otherwise.
+    fn verdict(&self, slot: usize, theme: &Theme) -> Option<Color> {
+        let editor = self.editors.get(slot)?;
+        if editor.is_focused() {
+            return None;
+        }
+        let answer = editor.value();
         let matches = self
             .challenge
             .as_ref()
             .is_some_and(|c| answer.trim().eq_ignore_ascii_case(&c.expected_word(slot)));
-        let verdict = if focused {
-            None
-        } else if matches {
+        if matches {
             Some(theme.accent_primary)
         } else if self.last_attempt_failed && !answer.is_empty() {
             Some(theme.tokens.colors.semantic.danger)
         } else {
             None
+        }
+    }
+
+    /// The editable blank at `slot`: the shared field, seated in its grid
+    /// cell by `resolve` (the hit target is the visible part of it), plus
+    /// its verdict edge.
+    fn draw_blank_slot(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        slot: usize,
+    ) {
+        let verdict = self.verdict(slot, theme);
+        let Some(editor) = self.editors.get_mut(slot) else {
+            return;
         };
+        editor.draw(scene, transform, text_renderer, theme, presence);
         if let Some(edge) = verdict {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
                 edge,
                 None,
-                &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+                &RoundedRect::from_rect(editor.get_rect(), f64::from(theme.tokens.radii.md)),
             );
         }
     }
@@ -536,15 +702,37 @@ impl Widget for RecoveryVerifyScreen {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = Some(theme.clone());
+        // One child node per blank, in reading order, so the host's Tab
+        // walks the grid the way the eye does; placed by the sheet, not by
+        // taffy (`Display::None`), but present so focus and accessibility
+        // walks line up with `children()`.
+        let order = self.visual_order();
+        let mut leaves = Vec::with_capacity(order.len());
+        for slot in order {
+            let leaf = taffy.leaf_node(Style {
+                display: Display::None,
+                ..Default::default()
+            });
+            if let Some(editor) = self.editors.get_mut(slot) {
+                node_map.insert(leaf, std::ptr::from_mut::<dyn Widget>(editor));
+            }
+            if let Some(node) = self.slot_nodes.get_mut(slot) {
+                *node = Some(leaf);
+            }
+            leaves.push(leaf);
+        }
         // The screen owns the viewport, so the sheet centres on the window
         // rather than inside a fixed box at the origin.
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
+        let node = taffy.parent_node(
+            Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
             },
-            ..Default::default()
-        });
+            &leaves,
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -570,7 +758,7 @@ impl Widget for RecoveryVerifyScreen {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         let resolved = self.resolve(theme, text_renderer);
         let actions = self.actions();
@@ -596,7 +784,15 @@ impl Widget for RecoveryVerifyScreen {
             Align::Start,
             true,
         );
-        self.draw_word_grid(scene, transform, text_renderer, theme, plan, control_h);
+        self.draw_word_grid(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            plan,
+            control_h,
+        );
         if let Some(rect) = plan.error {
             paint_text(
                 scene,
@@ -634,6 +830,35 @@ impl Widget for RecoveryVerifyScreen {
 
     fn test_id(&self) -> Option<&str> {
         Some("identity_flow_recovery_verify")
+    }
+
+    /// The blanks, in reading order — the order `build_layout` minted
+    /// their nodes in, which every focus and accessibility walk zips against.
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.visual_order()
+            .iter()
+            .filter_map(|&slot| self.editors.get(slot).map(|e| e as &dyn Widget))
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let order = self.visual_order();
+        let mut slots: Vec<Option<&mut TextInput>> = self.editors.iter_mut().map(Some).collect();
+        order
+            .iter()
+            .filter_map(|&slot| slots.get_mut(slot).and_then(Option::take))
+            .map(|e| e as &mut (dyn Widget + '_))
+            .collect()
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        let editor = self.editors.get(self.focused_slot()?)?;
+        Widget::ime_cursor_rect(editor)
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        let editor = self.editors.get(self.focused_slot()?)?;
+        Widget::ime_purpose(editor)
     }
 
     fn get_rect(&self) -> Rect {
@@ -730,11 +955,17 @@ mod tests {
         s.set_answer(0, "stale");
         s.set_answer(1, "stale");
         s.set_answer(2, "stale");
+        s.focus_slot(1, &mut None);
         s.reseed();
         for i in 0..3 {
             assert!(s.answer(i).unwrap().is_empty());
         }
         assert!(s.challenge().is_some());
+        assert_eq!(
+            s.focused_slot(),
+            Some(1),
+            "picking different blanks keeps the keyboard in the same slot"
+        );
     }
 
     #[test]
@@ -752,6 +983,44 @@ mod tests {
         // Editing any slot clears the flag.
         s.set_answer(0, "");
         assert!(!s.last_attempt_failed());
+    }
+
+    /// Tab reaches the blanks through the host's focus order, which is the
+    /// `children()` order and the node order: ascending word position, not
+    /// storage order. Each blank is named for the word it asks for.
+    #[test]
+    fn children_and_nodes_walk_the_blanks_in_reading_order() {
+        let mut s = RecoveryVerifyScreen::new();
+        s.seed_mnemonic(fixture_mnemonic());
+        s.seed_challenge([13, 12, 23]);
+        let ids: Vec<&str> = s.children().iter().filter_map(|c| c.test_id()).collect();
+        assert_eq!(
+            ids,
+            vec![BLANK_INPUT_IDS[1], BLANK_INPUT_IDS[0], BLANK_INPUT_IDS[2]],
+            "children walk positions 12, 13, 23"
+        );
+        let names: Vec<String> = s
+            .children()
+            .iter()
+            .filter_map(|c| c.accessibility()?.name)
+            .collect();
+        assert_eq!(names, vec!["Word 12", "Word 13", "Word 23"]);
+
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = HashMap::new();
+        let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let leaves = taffy.children(node).unwrap();
+        assert_eq!(leaves.len(), 3, "one node per blank");
+        assert_eq!(leaves[0], s.slot_nodes[1].unwrap(), "first Tab stop is word 12");
+        assert_eq!(leaves[1], s.slot_nodes[0].unwrap());
+        assert_eq!(leaves[2], s.slot_nodes[2].unwrap());
+        for leaf in &leaves {
+            assert!(node_map.contains_key(leaf), "every blank is registered for the host");
+        }
+        assert!(
+            s.children().iter().all(|c| c.is_focusable()),
+            "every blank is a Tab stop"
+        );
     }
 
     /// The blanks sit in the cells the share screen shows the same words

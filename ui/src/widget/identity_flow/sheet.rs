@@ -15,10 +15,16 @@
 //! protocol state, so they paint through the shared *faces*
 //! ([`Checkbox::paint`], [`ToggleGroup::paint`], and `Button::paint` via
 //! the modal action row) rather than hosting retained widgets — the same
-//! door [`ModalFrame`] itself uses. Geometry is resolved in `apply_layout`
-//! (against [`with_layout_renderer`], since that pass has no renderer of
-//! its own) and again in `draw`, from one [`resolve`] over the same rows,
-//! so the rects an event hits are never a paint behind the state.
+//! door [`ModalFrame`] itself uses. The one exception is text entry: a
+//! field is the shared [`TextInput`], embedded the way `ModalPrompt` embeds
+//! it — placed by [`place_field`] / [`place_code_cell`] from the row plan,
+//! drawn and fed events by the screen — so IME, clipboard, selection,
+//! accessibility and `test_id`s come from the one widget that carries
+//! them rather than from a painted box. Geometry is resolved in
+//! `apply_layout` (against [`with_layout_renderer`], since that pass has
+//! no renderer of its own) and again in `draw`, from one [`resolve`] over
+//! the same rows, so the rects an event hits are never a paint behind the
+//! state.
 //!
 //! Rows that outrun the card — a large text scale, a small window — scroll
 //! inside the body ([`BodyScroll`]) and paint under a clip, so nothing
@@ -32,7 +38,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::MouseScrollDelta;
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::checkbox::{Checkbox, CheckboxFace};
@@ -41,9 +47,8 @@ use crate::widget::modal_frame::{
     ModalLayout, ModalSpec,
 };
 use crate::widget::qr::QrWidget;
+use crate::widget::text_input::TextInput;
 use crate::widget::toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup};
-
-use super::LineEditState;
 
 /// Widest a ceremony card with a form in it is drawn — HIG §9.6's "560 for a
 /// sheet with a form in it".
@@ -129,8 +134,8 @@ impl BodyScroll {
         self.scroll_by(-dy)
     }
 
-    /// PageUp / PageDown move a body height's worth of rows, so a keyboard
-    /// user reaches a row the wheel would.
+    /// `PageUp` / `PageDown` move a body height's worth of rows, so a
+    /// keyboard user reaches a row the wheel would.
     pub(super) fn key(&mut self, key: &Key, body_height: f64) -> bool {
         match key {
             Key::Named(NamedKey::PageDown) => self.scroll_by(body_height),
@@ -213,16 +218,17 @@ pub(super) enum Role {
 
 impl Role {
     /// Renderer-relative size. Theme type tokens already carry the text
-    /// scale the renderer applies again, so it is divided back out once —
-    /// exactly what [`ModalFrame`] does for its title and action labels.
-    pub(super) fn size(self, theme: &Theme) -> f32 {
+    /// scale the renderer applies again, so it is divided back out once by
+    /// the renderer's own scale — exactly what [`ModalFrame`] does for its
+    /// title and action labels.
+    pub(super) fn size(self, theme: &Theme, text_renderer: &TextRenderer) -> f32 {
         let scale = &theme.tokens.typography.scale;
         let token = match self {
             Role::Body | Role::Value => scale.base,
             Role::Label | Role::Caption | Role::Error => scale.sm,
             Role::Code => scale.x2l,
         };
-        token / theme.text_scale
+        renderer_type_size(text_renderer, token)
     }
 
     pub(super) fn weight(self) -> TextWeight {
@@ -390,7 +396,7 @@ impl Sheet {
             .iter()
             .map(Rect::height)
             .find(|h| *h > 0.0)
-            .unwrap_or(MODAL_CLOSE_SIZE * f64::from(theme.text_scale))
+            .unwrap_or_else(|| MODAL_CLOSE_SIZE * f64::from(theme.text_scale))
     }
 
     /// Scrim, card, title. Paint before the body.
@@ -423,7 +429,7 @@ impl Sheet {
 /// Height one line of `role` occupies, measured with the style it is drawn
 /// in — never a literal, so a text-scale theme grows the row with the text.
 pub(super) fn line_height(text_renderer: &mut TextRenderer, theme: &Theme, role: Role) -> f64 {
-    let (_, h) = text_renderer.measure_weighted("Ag", role.size(theme), None, role.weight());
+    let (_, h) = text_renderer.measure_weighted("Ag", role.size(theme, text_renderer), None, role.weight());
     f64::from(h)
 }
 
@@ -437,7 +443,7 @@ pub(super) fn measure(
 ) -> (f64, f64) {
     let (w, h) = text_renderer.measure_weighted(
         text,
-        role.size(theme),
+        role.size(theme, text_renderer),
         max_width.map(narrow),
         role.weight(),
     );
@@ -518,7 +524,7 @@ pub(super) fn paint_text_in(
     text_renderer.draw_text_weighted(
         scene,
         text,
-        role.size(theme),
+        role.size(theme, text_renderer),
         color,
         transform.pre_translate(Vec2::new(x, y)),
         max_width.map(narrow),
@@ -526,175 +532,68 @@ pub(super) fn paint_text_in(
     );
 }
 
-/// A hand-hit-tested text field painted with the shared `TextInput` look:
-/// raised fill (active fill while focused), `radii.md`, a one-pixel edge
-/// that becomes the two-pixel focus edge, text inset by the theme's
-/// standard padding.
-pub(super) struct Field<'a> {
-    pub rect: Rect,
-    pub text: &'a str,
-    pub placeholder: &'a str,
-    pub focused: bool,
-    /// Caret and selection, when the field is editable and focused.
-    pub editor: Option<&'a LineEditState>,
-    /// A multi-line field starts its text at the top and wraps; a single
-    /// line centres it.
-    pub multiline: bool,
-}
-
-/// Where a single-line field's text starts: inset by the standard padding,
-/// its line box centred on the field. Pure so the inset can be pinned.
-pub(super) fn field_text_origin(rect: Rect, line_h: f64, theme: &Theme) -> (f64, f64) {
-    let inset = f64::from(theme.padding_standard);
-    (rect.x0 + inset, rect.y0 + (rect.height() - line_h) / 2.0)
-}
-
-pub(super) fn paint_field(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
+/// Seat an embedded [`TextInput`] in the row the plan gave it. The field
+/// keeps the shared widget's own chrome (raised fill, `radii.md`, the
+/// focus edge, the standard text inset); the sheet only decides where it
+/// goes and that its text is the sheet's `Value` role, so a field and the
+/// word beside it in a grid are one size.
+pub(super) fn place_field(
+    input: &mut TextInput,
+    rect: Rect,
+    text_renderer: &TextRenderer,
     theme: &Theme,
-    field: &Field<'_>,
 ) {
-    let colors = &theme.tokens.colors;
-    let shape = RoundedRect::from_rect(field.rect, f64::from(theme.tokens.radii.md));
-    let fill = if field.focused {
-        theme.bg_active
-    } else {
-        colors.surfaces.raised
-    };
-    scene.fill(Fill::NonZero, transform, fill, None, &shape);
-    let (edge, edge_w) = if field.focused {
-        (colors.border_focus, 2.0)
-    } else {
-        (colors.border_standard, 1.0)
-    };
-    scene.stroke(&Stroke::new(edge_w), transform, edge, None, &shape);
+    // The shared input hands its size to the renderer, which scales it: give
+    // it the renderer-relative `Value` size, not the theme token.
+    input.set_font_size(Role::Value.size(theme, text_renderer));
+    input.apply_layout_external(rect);
+}
 
-    let inset_x = f64::from(theme.padding_standard);
-    let inset_y = f64::from(theme.tokens.spacing.s2);
-    let inner = Rect::new(
-        field.rect.x0 + inset_x,
-        field.rect.y0 + inset_y,
-        field.rect.x1 - inset_x,
-        field.rect.y1 - inset_y,
-    );
-    if inner.width() <= 0.0 || inner.height() <= 0.0 {
-        return;
+/// Whether `input`'s text differs from `last` — a real edit, through any
+/// door (typed, pasted, IME-committed, an accessibility `SetValue`) — and,
+/// if so, records the new text in `last`. A caret or selection change
+/// alone (a click, an accessibility `SetSelection`) is not an edit, even
+/// though the widget marks itself dirty for it, so screens key their side
+/// effects — re-parsing a link, clearing a mismatch line, moving on to the
+/// next code cell — off the text and never off the flag. The flag is
+/// drained here so it never accumulates unread.
+pub(super) fn edited(input: &mut TextInput, last: &mut String) -> bool {
+    let _ = input.take_dirty();
+    if input.value() == last.as_str() {
+        return false;
     }
-    let showing_placeholder = field.text.is_empty();
-    let shown = if showing_placeholder {
-        field.placeholder
-    } else {
-        field.text
-    };
-    let ink = if showing_placeholder {
-        Role::Caption.color(theme)
-    } else {
-        Role::Value.color(theme)
-    };
-    let line_h = line_height(text_renderer, theme, Role::Value);
-    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
-    if field.multiline {
-        // Wrapped to the inner width and anchored at the top: a textarea
-        // reads from its first line, it does not centre a paragraph.
-        let (_, h) = measure(
-            text_renderer,
-            theme,
-            Role::Value,
-            shown,
-            Some(inner.width()),
-        );
-        let text_rect = Rect::new(inner.x0, inner.y0, inner.x1, inner.y0 + h.max(line_h));
-        paint_text_in(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            text_rect,
-            shown,
-            Role::Value,
-            ink,
-            Align::Start,
-            true,
-        );
-    } else {
-        let (text_x, text_y) = field_text_origin(field.rect, line_h, theme);
-        let line = Rect::new(text_x, text_y, inner.x1, text_y + line_h);
-        if let Some(editor) = field.editor.filter(|_| field.focused && !showing_placeholder) {
-            paint_selection(scene, transform, text_renderer, theme, editor, line);
-        }
-        paint_text_in(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            line,
-            shown,
-            Role::Value,
-            ink,
-            Align::Start,
-            false,
-        );
-        if let Some(editor) = field.editor.filter(|_| field.focused) {
-            paint_caret(scene, transform, text_renderer, theme, editor, line);
-        }
-    }
-    scene.pop_layer();
+    last.clear();
+    last.push_str(input.value());
+    true
 }
 
-/// The selection wash behind a single line, measured with the line's style.
-fn paint_selection(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    editor: &LineEditState,
-    line: Rect,
-) {
-    let Some((lo, hi)) = editor.selection_range() else {
-        return;
-    };
-    // `.get` rather than slicing: the offsets are caret-driven and land on
-    // char boundaries, but a stale one degrades to no highlight rather than
-    // a panic.
-    let pre = editor.text.get(..lo).unwrap_or("");
-    let mid = editor.text.get(lo..hi).unwrap_or("");
-    let (pre_w, _) = measure(text_renderer, theme, Role::Value, pre, None);
-    let (mid_w, _) = measure(text_renderer, theme, Role::Value, mid, None);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        theme.accent_primary.with_alpha_factor(SELECTION_ALPHA),
-        None,
-        &Rect::new(line.x0 + pre_w, line.y0, line.x0 + pre_w + mid_w, line.y1),
-    );
+/// Side of one pairing-code cell: the `s12` square, grown to hold a `Code`
+/// line with an `s2` breath above and below it. At a large text scale the
+/// glyph used to fill the whole square; spacing tokens do not follow the
+/// text scale, so the cell has to be measured against the glyph it holds.
+pub(super) fn code_cell_side(text_renderer: &mut TextRenderer, theme: &Theme) -> f64 {
+    let sp = &theme.tokens.spacing;
+    let glyph = line_height(text_renderer, theme, Role::Code);
+    f64::from(sp.s12).max(glyph + 2.0 * f64::from(sp.s2))
 }
 
-/// Same wash the shared `TextInput` paints under its selection.
-const SELECTION_ALPHA: f32 = 0.35;
-
-/// The caret, `Theme::caret_width` wide and one line tall, after the text
-/// before the cursor.
-fn paint_caret(
-    scene: &mut Scene,
-    transform: Affine,
+/// Seat a one-digit [`TextInput`] inside its code `cell`: plain chrome (the
+/// cell frame is painted by [`paint_cell`], focused or not), the `Code`
+/// role, and a rect just wide enough for the widest digit plus the caret,
+/// centred on the cell — the shared widget starts its text on its left
+/// edge, so centring the widget is what centres the digit.
+pub(super) fn place_code_cell(
+    input: &mut TextInput,
+    cell: Rect,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
-    editor: &LineEditState,
-    line: Rect,
 ) {
-    let cursor = editor.cursor.min(editor.text.len());
-    let prefix = editor.text.get(..cursor).unwrap_or("");
-    let (prefix_w, _) = measure(text_renderer, theme, Role::Value, prefix, None);
-    let x = line.x0 + prefix_w;
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        theme.accent_primary,
-        None,
-        &Rect::new(x, line.y0, x + theme.caret_width, line.y1),
-    );
+    input.set_plain_chrome(true);
+    input.set_font_size(Role::Code.size(theme, text_renderer));
+    let (glyph_w, _) = measure(text_renderer, theme, Role::Code, "0", None);
+    let w = (glyph_w + theme.caret_width).min(cell.width());
+    let x0 = cell.x0 + (cell.width() - w) / 2.0;
+    input.apply_layout_external(Rect::new(x0, cell.y0, x0 + w, cell.y1));
 }
 
 /// The box of a checkbox row: an `s6` square (the retained checkbox's own
@@ -784,7 +683,7 @@ pub(super) fn paint_segments(
     let face = SegmentedFace::new(segments, labels, selected)
         .style(SegmentedStyle::Solid)
         .radius(f64::from(theme.tokens.radii.md))
-        .text_size(Role::Label.size(theme))
+        .text_size(Role::Label.size(theme, text_renderer))
         .weight(TextWeight::Medium)
         .hovered(hovered);
     ToggleGroup::paint(scene, transform, text_renderer, theme, &face);
@@ -823,7 +722,10 @@ pub(super) fn wrap_chars(
 }
 
 /// A bare field box with no text — the frame a code digit or a QR
-/// placeholder sits in, so it matches [`paint_field`] exactly.
+/// placeholder sits in. It restates the shared `TextInput`'s field chrome
+/// (raised fill, active fill and the two-pixel focus edge while focused,
+/// `radii.md`) so a code cell reads as the same control as the fields
+/// around it while the digit inside is a plain-chrome [`TextInput`].
 pub(super) fn paint_cell(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect, focused: bool) {
     let colors = &theme.tokens.colors;
     let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
@@ -988,6 +890,7 @@ fn narrow(px: f64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::Widget;
     use crate::widget::modal_frame::MODAL_MAX_WIDTH;
 
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -1232,19 +1135,52 @@ mod tests {
         assert!(segment_rects(row, 0).is_empty());
     }
 
+    /// An embedded field takes exactly the row the plan gave it and speaks
+    /// the sheet's `Value` role, so it lines up with the grid words beside
+    /// it; a code cell's digit widget is centred on its cell and never
+    /// wider than it.
     #[test]
-    fn field_text_sits_on_the_standard_inset_and_centres_its_line() {
+    fn embedded_fields_take_their_row_and_code_cells_centre_their_digit() {
         let theme = Theme::dark();
-        let rect = Rect::new(0.0, 100.0, 300.0, 134.0);
-        let (x, y) = field_text_origin(rect, 18.0, &theme);
-        assert_eq!(x, f64::from(theme.padding_standard));
-        assert_eq!(y, 100.0 + (34.0 - 18.0) / 2.0);
+        let mut tr = TextRenderer::new();
+        let mut input = TextInput::local();
+        let row = Rect::new(100.0, 200.0, 620.0, 234.0);
+        place_field(&mut input, row, &tr, &theme);
+        assert_eq!(Widget::get_rect(&input), row);
+        assert!(!input.is_plain(), "a field keeps the shared widget's chrome");
+
+        let mut digit = TextInput::local();
+        let side = code_cell_side(&mut tr, &theme);
+        assert!((side - f64::from(theme.tokens.spacing.s12)).abs() < 1e-9, "at 1× the cell is s12");
+        let cell = Rect::new(100.0, 300.0, 100.0 + side, 300.0 + side);
+        place_code_cell(&mut digit, cell, &mut tr, &theme);
+        let r = Widget::get_rect(&digit);
+        assert!(digit.is_plain(), "the cell frame is painted by paint_cell");
+        assert!((r.center().x - cell.center().x).abs() < 1e-9, "digit centred on its cell");
+        assert!(r.x0 > cell.x0 && r.x1 < cell.x1, "digit widget stays inside the cell");
+        assert_eq!((r.y0, r.y1), (cell.y0, cell.y1));
+    }
+
+    /// At 2× text the `Code` line outgrows an `s12` square, so the cell
+    /// grows with the glyph instead of the glyph filling the frame.
+    #[test]
+    fn code_cell_grows_with_the_text_scale() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let side = code_cell_side(&mut tr, &theme);
+        let glyph = line_height(&mut tr, &theme, Role::Code);
+        assert!(side > f64::from(theme.tokens.spacing.s12));
+        assert!(side >= glyph + 2.0 * f64::from(theme.tokens.spacing.s2));
     }
 
     #[test]
     fn roles_divide_the_text_scale_back_out_for_the_renderer() {
         let base = Theme::dark();
+        let base_tr = TextRenderer::new();
         let scaled = Theme::dark().with_text_scale(2.0);
+        let mut scaled_tr = TextRenderer::new();
+        scaled_tr.set_text_scale(2.0);
         for role in [
             Role::Body,
             Role::Label,
@@ -1254,12 +1190,12 @@ mod tests {
             Role::Code,
         ] {
             assert!(
-                (role.size(&base) - role.size(&scaled)).abs() < 0.01,
+                (role.size(&base, &base_tr) - role.size(&scaled, &scaled_tr)).abs() < 0.01,
                 "{role:?}: the renderer applies the scale; the role must not apply it twice"
             );
         }
-        assert!(Role::Code.size(&base) > Role::Value.size(&base));
-        assert!(Role::Value.size(&base) > Role::Caption.size(&base));
+        assert!(Role::Code.size(&base, &base_tr) > Role::Value.size(&base, &base_tr));
+        assert!(Role::Value.size(&base, &base_tr) > Role::Caption.size(&base, &base_tr));
     }
 
     #[test]

@@ -227,8 +227,10 @@ struct Tint {
     alpha: f32,
 }
 
-/// Width of the modal's left sidebar in CSS px.
-pub const SIDEBAR_WIDTH: f64 = 256.0;
+/// Width of the modal's left sidebar in CSS px: the docked navigation
+/// sidebar width (HIG §9.6, `Metrics::sidebar_width`), unscaled like the
+/// rest of this lens's geometry.
+pub const SIDEBAR_WIDTH: f64 = ui::tokens::Metrics::BASE.sidebar_width as f64;
 
 const SIDEBAR_IDENTITY_TOP: f64 = 24.0;
 const NAV_ROW_HEIGHT: f64 = 40.0;
@@ -436,15 +438,27 @@ impl WorkspaceSettings {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
-        // Sidebar surface reads distinct from the right pane, separated
-        // by a hairline rather than a heavy border.
-        let bg = colors.neutral[1].with_alpha_factor(0.40);
-        scene.fill(Fill::NonZero, transform, bg, None, &sidebar);
+        // Sidebar surface reads distinct from the right pane — a quiet lift
+        // measured against the ground (HIG §9.2/§9.3), never a ramp slot —
+        // separated by a derived hairline rather than a declared border.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.lift(0.35),
+            None,
+            &sidebar,
+        );
         let border_x = sidebar.x1 - 0.5;
         let border = Rect::new(border_x, sidebar.y0, border_x + 1.0, sidebar.y1);
-        scene.fill(Fill::NonZero, transform, colors.neutral[3], None, &border);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            ui::chrome::shell::panel_border(theme),
+            None,
+            &border,
+        );
 
-        // Identity card.
+        // Identity card, at the Control radius (16 is off the radius scale).
         let identity_size = 56.0_f64;
         let identity_rect = Rect::new(
             sidebar.x0 + 24.0,
@@ -452,7 +466,10 @@ impl WorkspaceSettings {
             sidebar.x0 + 24.0 + identity_size,
             sidebar.y0 + SIDEBAR_IDENTITY_TOP + identity_size,
         );
-        let identity_card = RoundedRect::from_rect(identity_rect, 16.0);
+        let identity_card = RoundedRect::from_rect(
+            identity_rect,
+            ui::chrome::ChromeRole::Control.radius(theme, identity_size),
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -472,27 +489,44 @@ impl WorkspaceSettings {
 
         for (tab, row) in self.nav_rows(modal_rect) {
             let active = self.active_tab == tab;
-            let row_rr = RoundedRect::from_rect(row, 12.0);
+            // Selection is a lift (HIG §9.3), never an accent fill; the row
+            // is a Control and takes the Control radius.
+            let row_rr = RoundedRect::from_rect(
+                row,
+                ui::chrome::ChromeRole::Control.radius(theme, row.height()),
+            );
+            let tier =
+                ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(active));
             if active {
-                scene.fill(Fill::NonZero, transform, colors.accent[5], None, &row_rr);
+                scene.fill(Fill::NonZero, transform, tier.fill, None, &row_rr);
+                if let Some(border) = tier.border {
+                    scene.stroke(&Stroke::new(1.0), transform, border, None, &row_rr);
+                }
             }
             let label_color = if active {
                 colors.text_primary
             } else {
                 colors.text_dim
             };
+            // Centred on the measured line, not at a fixed offset (HIG §7a).
+            let label_size = tokens.typography.scale.base;
+            let (_, label_h) = text_renderer.measure(tab.label(), label_size, None);
             text_renderer.draw_text(
                 scene,
                 tab.label(),
-                tokens.typography.scale.base,
+                label_size,
                 label_color,
-                at(transform, row.x0 + 12.0, row.y0 + 10.0),
+                at(
+                    transform,
+                    row.x0 + 12.0,
+                    row.center().y - f64::from(label_h) / 2.0,
+                ),
                 None,
             );
         }
 
         // Footer "Close Settings" row pinned to the bottom of the sidebar.
-        let footer_h = 40.0_f64;
+        let footer_h = f64::from(tokens.metrics.bar_height);
         let footer_y = sidebar.y1 - footer_h - 16.0;
         let footer = Rect::new(
             sidebar.x0 + 16.0,
@@ -500,7 +534,10 @@ impl WorkspaceSettings {
             sidebar.x1 - 16.0,
             footer_y + footer_h,
         );
-        let footer_rr = RoundedRect::from_rect(footer, 12.0);
+        let footer_rr = RoundedRect::from_rect(
+            footer,
+            ui::chrome::ChromeRole::Control.radius(theme, footer_h),
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -508,12 +545,15 @@ impl WorkspaceSettings {
             None,
             &footer_rr,
         );
-        let glyph_size = 16.0;
+        // The standard glyph on the row inset, centred on the row; the label
+        // centred on its measured line beside it.
+        let inset = f64::from(tokens.spacing.s3);
+        let glyph_size = f64::from(tokens.metrics.icon_md);
         let glyph_rect = Rect::new(
-            footer.x0 + 12.0,
-            footer.y0 + 12.0,
-            footer.x0 + 12.0 + glyph_size,
-            footer.y0 + 12.0 + glyph_size,
+            footer.x0 + inset,
+            footer.center().y - glyph_size / 2.0,
+            footer.x0 + inset + glyph_size,
+            footer.center().y + glyph_size / 2.0,
         );
         draw_icon(
             scene,
@@ -523,12 +563,18 @@ impl WorkspaceSettings {
             colors.text_dim,
             LUCIDE_DEFAULT_STROKE_PX,
         );
+        let close_size = tokens.typography.scale.sm;
+        let (_, close_h) = text_renderer.measure("Close Settings", close_size, None);
         text_renderer.draw_text(
             scene,
             "Close Settings",
-            tokens.typography.scale.sm,
+            close_size,
             colors.text_dim,
-            at(transform, footer.x0 + 36.0, footer.y0 + 12.0),
+            at(
+                transform,
+                glyph_rect.x1 + inset,
+                footer.center().y - f64::from(close_h) / 2.0,
+            ),
             None,
         );
     }
@@ -558,11 +604,26 @@ const PANE_INTRO_GAP: f64 = 12.0;
 /// Two lines of text plus breathing room.
 const ROW_HEIGHT: f64 = 56.0;
 const ROW_GAP: f64 = 8.0;
-const SECTION_HEADER_HEIGHT: f64 = 26.0;
-const CONTROL_HEIGHT: f64 = 30.0;
-const COMPOSER_HEIGHT: f64 = 78.0;
+/// A section header band inside a pane: the Bar-control step (HIG §9.6).
+const SECTION_HEADER_HEIGHT: f64 = ui::tokens::Metrics::BASE.bar_control_height as f64;
+/// A composer control — picker, expiry segment, submit — is never smaller
+/// than the minimum pointer target (HIG §9.6).
+const CONTROL_HEIGHT: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
+/// Caption band above a control ("Until", "Who"): one `xs` line plus air.
+const COMPOSER_CAPTION_BAND: f64 = 18.0;
+/// The composer card: a caption band over one control row, inside `s3`
+/// padding — derived from the pieces rather than restated as a total.
+const COMPOSER_HEIGHT: f64 = ui::tokens::Spacing::BASE.s3 as f64
+    + ui::tokens::Spacing::BASE.s6 as f64
+    + CONTROL_HEIGHT
+    + ui::tokens::Spacing::BASE.s3 as f64;
+/// A narrow pane stacks the composer on two rows: one more control, its
+/// caption band, and an `s1` seam between the rows.
+const COMPOSER_COMPACT_EXTRA: f64 =
+    CONTROL_HEIGHT + COMPOSER_CAPTION_BAND + ui::tokens::Spacing::BASE.s1 as f64;
 const REVOKE_WIDTH: f64 = 80.0;
-const REVOKE_HEIGHT: f64 = 26.0;
+/// Row buttons (revoke, role, review) are full pointer targets (HIG §9.6).
+const REVOKE_HEIGHT: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
 const AGENT_REVIEW_WIDTH: f64 = 112.0;
 const AGENT_ONBOARDING_HEIGHT: f64 = 34.0;
 const SUBMIT_WIDTH: f64 = 92.0;
@@ -2591,15 +2652,18 @@ pub fn default_app_rows(
                     ),
                 )
             } else {
+                // Full pointer targets, centred on the row rather than at an
+                // authored offset that only matched the old 30 px control.
                 let control_w = 190.0;
+                let controls_y = y0 + (row_h - CONTROL_HEIGHT) / 2.0;
                 (
                     Rect::new(
                         x1 - control_w * 2.0 - 12.0,
-                        y0 + 26.0,
+                        controls_y,
                         x1 - control_w - 12.0,
-                        y0 + 56.0,
+                        controls_y + CONTROL_HEIGHT,
                     ),
-                    Rect::new(x1 - control_w, y0 + 26.0, x1, y0 + 56.0),
+                    Rect::new(x1 - control_w, controls_y, x1, controls_y + CONTROL_HEIGHT),
                 )
             };
             (row_rect.y1 <= pane.y1 - 10.0).then_some(DefaultAppRow {
@@ -2998,7 +3062,7 @@ pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPa
 
 fn permission_composer_card(pane_rect: Rect) -> Rect {
     let composer_height = if compact_pane(pane_rect) {
-        COMPOSER_HEIGHT + 44.0
+        COMPOSER_HEIGHT + COMPOSER_COMPACT_EXTRA
     } else {
         COMPOSER_HEIGHT
     };
@@ -3420,7 +3484,7 @@ fn draw_permission_composer(
     );
 
     let caption_y = if compact_pane(pane_rect) {
-        layout.expiry_rects[0].y0 - 18.0
+        layout.expiry_rects[0].y0 - COMPOSER_CAPTION_BAND
     } else {
         card.y0 + 12.0
     };
@@ -3664,11 +3728,16 @@ mod tab_tests {
     }
 
     #[test]
-    fn sidebar_rect_is_256_px_wide() {
+    fn sidebar_rect_is_the_token_sidebar_width() {
         let ws = ws_settings_default();
         let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
         let sidebar = ws.sidebar_rect(modal);
         assert_eq!(sidebar.width(), SIDEBAR_WIDTH);
+        assert_eq!(
+            SIDEBAR_WIDTH,
+            f64::from(ui::tokens::Metrics::BASE.sidebar_width),
+            "the lens sidebar is the docked-sidebar width (HIG §9.6), not a bespoke 256"
+        );
         assert_eq!(sidebar.height(), modal.height());
         assert_eq!(sidebar.x0, modal.x0);
     }

@@ -14,8 +14,9 @@ use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::Spacing;
 use ui::widget::{ContextMenu, MenuItem, TextInput, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -26,9 +27,27 @@ use crate::draw;
 use crate::model::ThemeSpec;
 use crate::widgets::ThemeRow;
 
-const HEADER_H: f64 = 34.0;
-const PAD: f32 = 14.0;
-const GAP: f32 = 8.0;
+/// Height (logical px) of the header band above the first row at 1×: the
+/// theme count sits one `s3` below the top with the rows starting under it.
+/// Under large text the band grows with the count's line box (see
+/// [`header_band`]); at 1× it is exactly this.
+const HEADER_H: f32 = 34.0;
+/// Inset of the list from the sidebar's edges — the `s4` step, the same
+/// gutter the collapsed content and the top bar's toggle use, so the rows
+/// and the toggle above them share a left edge.
+const PAD: f32 = Spacing::BASE.s4;
+/// Gap between rows — the `s2` step.
+const GAP: f32 = Spacing::BASE.s2;
+
+/// The header band for `theme`: the count's line box (its `sm` type is
+/// already text-scaled; a nominal 1.2 line height) one `s3` below the top
+/// and one `s1` above the first row, never below [`HEADER_H`].
+fn header_band(theme: &Theme) -> f32 {
+    let sp = &theme.tokens.spacing;
+    let line = theme.tokens.typography.scale.sm * 1.2;
+    (sp.s3 + line + sp.s1).max(HEADER_H)
+}
+
 const NAME_CONFLICT_HINT: &str = "Name changed. Enter: apply draft. Escape: use current name.";
 
 /// Panic-free node construction for [`Widget::build_layout`].
@@ -321,7 +340,7 @@ impl Widget for Gallery {
                 padding: taffy::Rect {
                     left: length(PAD),
                     right: length(PAD),
-                    top: length(HEADER_H as f32),
+                    top: length(header_band(theme)),
                     bottom: length(PAD),
                 },
                 size: Size {
@@ -382,9 +401,22 @@ impl Widget for Gallery {
                 t * Affine::translate((self.rect.x0 + f64::from(PAD), self.rect.y0 + 3.)),
                 Some((self.rect.width() - 2. * f64::from(PAD)) as f32));
         } else {
-            draw::text_w(tr, scene, t, &format!("{} themes", self.count), 12.,
-                theme.text_dim, self.rect.x0 + f64::from(PAD), self.rect.y0 + 12.,
-                TextWeight::Semibold);
+            // The count is the theme's small type, handed to the renderer once
+            // (the theme size already carries the text scale).
+            let count_size = tr
+                .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+                .size;
+            draw::text_w(
+                tr,
+                scene,
+                t,
+                &format!("{} themes", self.count),
+                count_size,
+                theme.text_dim,
+                self.rect.x0 + f64::from(PAD),
+                self.rect.y0 + f64::from(theme.tokens.spacing.s3),
+                TextWeight::Semibold,
+            );
         }
         for r in &mut self.rows {
             r.draw(scene, t, tr, theme, p);
