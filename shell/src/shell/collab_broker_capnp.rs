@@ -1724,9 +1724,19 @@ impl RealtimeFabricAppBridge {
     /// Rejects stale offers, disabled policy, unavailable capture sources, or
     /// any mismatch between the imported session and this local target.
     pub fn resolve_consent(&self, session: &str, approved: bool) -> Result<(), String> {
-        if !crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
-            .permits(crate::shell::continuity_policy::ContinuityCapability::RealtimeSessions)
-        {
+        self.resolve_consent_with_policy(session, approved, || {
+            crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+                .permits(crate::shell::continuity_policy::ContinuityCapability::RealtimeSessions)
+        })
+    }
+
+    fn resolve_consent_with_policy(
+        &self,
+        session: &str,
+        approved: bool,
+        policy_enabled: impl Fn() -> bool,
+    ) -> Result<(), String> {
+        if !policy_enabled() {
             return Err("realtime session continuity is disabled".into());
         }
         let (id, app, source, target, peer, required, capture) = {
@@ -1871,8 +1881,7 @@ impl RealtimeFabricAppBridge {
             });
         let current_required = realtime.required_capture_kinds(id);
         let still_reserved = realtime.consent_capabilities_issued.contains(session);
-        let policy_enabled = crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
-            .permits(crate::shell::continuity_policy::ContinuityCapability::RealtimeSessions);
+        let policy_enabled = policy_enabled();
         if !live_binding
             || !live_session
             || current_required.as_ref() != Some(&required)
@@ -9633,8 +9642,9 @@ mod tests {
             });
         let worker_bridge = RealtimeFabricAppBridge::from_state(Arc::clone(&state));
         let worker_session = session.clone();
-        let worker =
-            std::thread::spawn(move || worker_bridge.resolve_consent(&worker_session, true));
+        let worker = std::thread::spawn(move || {
+            worker_bridge.resolve_consent_with_policy(&worker_session, true, || true)
+        });
         minted_rx
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("consent worker reached post-mint checkpoint");
@@ -9649,7 +9659,7 @@ mod tests {
         );
         assert!(
             RealtimeFabricAppBridge::from_state(Arc::clone(&state))
-                .resolve_consent(&session, true)
+                .resolve_consent_with_policy(&session, true, || true)
                 .is_err(),
             "a concurrent duplicate may not mint another batch"
         );
