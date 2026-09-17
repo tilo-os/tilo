@@ -110,3 +110,10 @@ Review verdict `Needs fixes` identified four lifecycle gaps. The corrective impl
    - A prior invocation in session `27785` used the obsolete executable basename `Browser Engine` and exited immediately with `FileNotFoundError`; the actual bundle executable is `qos-chromium-host`, used by session `29886` above.
 
 No GUI was launched in this fix round. Parent-owned live GUI acceptance remains pending.
+
+### Fix-round commit and candidate
+
+- Source/report commit: `f9381e938` (`Fix download lifetime review races`), containing only the seven Task 6 source/test paths and this report.
+- Final protocol-only rebuild after strengthening the delayed-close assertions: `target/chromium-tools/bin/cmake --build target/chromium-build --target qos-protocol-test --parallel 2 && target/chromium/qos-protocol-test`, chunk `4b640a`, exit 0; `protocol tests passed`.
+- Required optimized rebuild because Rust production changed: `cargo build -p browser --profile thin-app`, session `91932`, exit 0 in 1m59s.
+- Candidate: `target/thin-app/browser`, 27,732,800 bytes, SHA-256 `790104675607f212cef373258121941f0b4b331f20527f3c2ee15fdc548f67a0`.
