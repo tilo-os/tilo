@@ -1075,11 +1075,14 @@ struct RealtimeBinding {
     source: crate::shell::personal_continuity::DeviceId,
     owner_peer: u64,
     authorization: Option<crate::shell::realtime_session::CaptureAuthorizationId>,
+    target_peer: Option<u64>,
+    capture_leases: Vec<crate::portal::capture_broker::CaptureLeaseGrant>,
 }
 
 #[derive(Default)]
 struct RealtimeBridge {
     broker: crate::shell::realtime_session::RealtimeSessionBroker,
+    capture: Arc<Mutex<crate::portal::CaptureBroker>>,
     sessions: HashMap<String, RealtimeBinding>,
     subscribers: HashMap<u64, mpsc::UnboundedSender<Vec<u8>>>,
 }
@@ -1107,6 +1110,97 @@ impl RealtimeBridge {
                 .is_some_and(|subscriber| subscriber.send(bytes).is_err())
         {
             self.subscribers.remove(&peer);
+        }
+    }
+
+    fn required_capture_kinds(
+        &self,
+        id: crate::shell::realtime_session::RealtimeSessionId,
+    ) -> Option<Vec<crate::portal::CaptureKind>> {
+        let media = self.broker.session(id)?.intent.media;
+        let mut kinds = Vec::with_capacity(4);
+        if media.microphone() {
+            kinds.push(crate::portal::CaptureKind::Microphone);
+        }
+        if media.camera() {
+            kinds.push(crate::portal::CaptureKind::Camera);
+        }
+        if media.screen_share() {
+            kinds.push(crate::portal::CaptureKind::Screen);
+        }
+        if media.share_audio() {
+            kinds.push(crate::portal::CaptureKind::SystemAudio);
+        }
+        Some(kinds)
+    }
+}
+
+fn acquire_realtime_capture_leases(
+    capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
+    app: &crate::shell::realtime_session::VerifiedAppRegistration,
+    session: &str,
+    target: &crate::shell::personal_continuity::DeviceId,
+    opaque_authorizations: &[String],
+    required: &[crate::portal::CaptureKind],
+    now: std::time::Instant,
+) -> Result<
+    Vec<crate::portal::capture_broker::CaptureLeaseGrant>,
+    crate::portal::capture_broker::CaptureBrokerError,
+> {
+    let binding =
+        crate::portal::CaptureSessionBinding::from_verified(app, session, target.as_str())?;
+    let authorizations = opaque_authorizations
+        .iter()
+        .map(|authorization| crate::portal::CaptureAuthorizationId::from_opaque(authorization))
+        .collect::<Result<Vec<_>, _>>()?;
+    capture
+        .lock()
+        .map_err(|_| crate::portal::capture_broker::CaptureBrokerError::Unavailable)?
+        .acquire_required(&authorizations, &binding, required, now)
+}
+
+fn realtime_capture_leases_ready(
+    capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
+    app: &crate::shell::realtime_session::VerifiedAppRegistration,
+    session: &str,
+    target: &crate::shell::personal_continuity::DeviceId,
+    leases: &[crate::portal::capture_broker::CaptureLeaseGrant],
+    now: std::time::Instant,
+) -> Result<(), crate::portal::capture_broker::CaptureBrokerError> {
+    let binding =
+        crate::portal::CaptureSessionBinding::from_verified(app, session, target.as_str())?;
+    let mut capture = capture
+        .lock()
+        .map_err(|_| crate::portal::capture_broker::CaptureBrokerError::Unavailable)?;
+    capture.reap_expired(now);
+    for grant in leases {
+        capture.resolve(grant.lease_id, &binding, now)?;
+    }
+    drop(capture);
+    Ok(())
+}
+
+fn release_realtime_capture_session(
+    capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
+    app: &crate::shell::realtime_session::VerifiedAppRegistration,
+    session: &str,
+    target: &crate::shell::personal_continuity::DeviceId,
+) {
+    if let Ok(binding) =
+        crate::portal::CaptureSessionBinding::from_verified(app, session, target.as_str())
+        && let Ok(mut capture) = capture.lock()
+    {
+        capture.session_ended(&binding);
+    }
+}
+
+fn release_realtime_capture_leases(
+    capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
+    leases: &[crate::portal::capture_broker::CaptureLeaseGrant],
+) {
+    if let Ok(mut capture) = capture.lock() {
+        for grant in leases {
+            capture.release(grant.lease_id);
         }
     }
 }
@@ -1175,11 +1269,12 @@ impl CapnpBrokerState {
         else {
             return false;
         };
-        if channel.context[index]
-            .tx
-            .send(ContextEnvelope::SnapshotRequested)
-            .is_ok()
-        {
+        if channel.context.get(index).is_some_and(|subscriber| {
+            subscriber
+                .tx
+                .send(ContextEnvelope::SnapshotRequested)
+                .is_ok()
+        }) {
             true
         } else {
             channel.context.remove(index);
@@ -1324,6 +1419,70 @@ impl CapnpBrokerState {
     /// envelopes through the capnp path.
     pub fn broker_channels(&self) -> Arc<Mutex<BrokerChannels>> {
         Arc::clone(&self.broker_channels)
+    }
+
+    /// Shared target-local capture broker used by the portal consent path and
+    /// realtime IPC. Local handles and lease IDs never leave the shell.
+    #[allow(
+        dead_code,
+        reason = "the portal host consumes this narrow handle when presenting target-local capture consent"
+    )]
+    pub(crate) fn realtime_capture_broker(
+        &self,
+    ) -> Option<Arc<Mutex<crate::portal::CaptureBroker>>> {
+        self.realtime
+            .lock()
+            .ok()
+            .map(|realtime| Arc::clone(&realtime.capture))
+    }
+
+    /// Mint one target-local consent capability after trusted shell UI has
+    /// selected a concrete local source. The session/app/workspace/target and
+    /// requested kind are all re-derived from broker state before minting.
+    #[allow(
+        dead_code,
+        reason = "called by the target capture-consent host once that host is attached to the collaboration service lifecycle"
+    )]
+    pub(crate) fn authorize_realtime_capture(
+        &self,
+        app: &crate::shell::realtime_session::VerifiedAppRegistration,
+        session: &str,
+        target: &crate::shell::personal_continuity::DeviceId,
+        source_id: &str,
+        kind: crate::portal::CaptureKind,
+        now: std::time::Instant,
+    ) -> Result<String, String> {
+        let realtime = self
+            .realtime
+            .lock()
+            .map_err(|_| "realtime broker is unavailable".to_string())?;
+        let binding = realtime
+            .sessions
+            .get(session)
+            .ok_or_else(|| "unknown realtime session".to_string())?;
+        let view = realtime
+            .broker
+            .session(binding.id)
+            .ok_or_else(|| "unknown realtime session".to_string())?;
+        if &binding.app != app || view.target.as_ref() != Some(target) {
+            return Err("realtime capture binding mismatch".into());
+        }
+        let required = realtime
+            .required_capture_kinds(binding.id)
+            .ok_or_else(|| "unknown realtime session".to_string())?;
+        if !required.contains(&kind) {
+            return Err("capture kind is not active for this realtime session".into());
+        }
+        let capture_binding =
+            crate::portal::CaptureSessionBinding::from_verified(app, session, target.as_str())
+                .map_err(|error| error.to_string())?;
+        realtime
+            .capture
+            .lock()
+            .map_err(|_| "target capture broker is unavailable".to_string())?
+            .authorize(&capture_binding, source_id, kind, now)
+            .map(crate::portal::CaptureAuthorizationId::to_opaque)
+            .map_err(|error| error.to_string())
     }
 
     fn new(
@@ -2878,6 +3037,10 @@ impl CapnpBrokerState {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "connection teardown intentionally keeps every peer-owned resource in one auditable path"
+    )]
     fn remove_connection(&self, peer_id: u64) {
         if let Ok(mut surfaces) = self.surfaces.lock()
             && surfaces.remove(&peer_id).is_some()
@@ -2899,6 +3062,64 @@ impl CapnpBrokerState {
         }
         if let Ok(mut realtime) = self.realtime.lock() {
             realtime.subscribers.remove(&peer_id);
+            let target_sessions = realtime
+                .sessions
+                .iter()
+                .filter_map(|(token, binding)| {
+                    (binding.target_peer == Some(peer_id)).then(|| {
+                        realtime.broker.session(binding.id).and_then(|view| {
+                            view.target.map(|target| {
+                                (
+                                    token.clone(),
+                                    binding.id,
+                                    binding.app.clone(),
+                                    binding.source.clone(),
+                                    binding.owner_peer,
+                                    target,
+                                    view.source_live,
+                                )
+                            })
+                        })
+                    })?
+                })
+                .collect::<Vec<_>>();
+            for (token, id, app, source, owner_peer, target, source_live) in target_sessions {
+                release_realtime_capture_session(&realtime.capture, &app, &token, &target);
+                if source_live {
+                    if realtime
+                        .broker
+                        .target_failed(&app, id, &source, &target, std::time::Instant::now())
+                        .is_ok()
+                    {
+                        realtime.notify(
+                            owner_peer,
+                            &ui::realtime_continuity::RealtimeEvent::RolledBack {
+                                session: token.clone(),
+                            },
+                        );
+                    }
+                    if let Some(binding) = realtime.sessions.get_mut(&token) {
+                        binding.authorization = None;
+                        binding.target_peer = None;
+                        binding.capture_leases.clear();
+                    }
+                } else {
+                    let _ = realtime.broker.apply_media_action(
+                        &app,
+                        id,
+                        &target,
+                        crate::shell::realtime_session::RealtimeMediaAction::Leave,
+                        std::time::Instant::now(),
+                    );
+                    realtime.notify(
+                        owner_peer,
+                        &ui::realtime_continuity::RealtimeEvent::Ended {
+                            session: token.clone(),
+                        },
+                    );
+                    realtime.sessions.remove(&token);
+                }
+            }
             let owned = realtime
                 .sessions
                 .iter()
@@ -2912,6 +3133,9 @@ impl CapnpBrokerState {
                 })
                 .collect::<Vec<_>>();
             for (token, id, app, source) in owned {
+                if let Some(target) = realtime.broker.session(id).and_then(|view| view.target) {
+                    release_realtime_capture_session(&realtime.capture, &app, &token, &target);
+                }
                 let _ = realtime.broker.apply_media_action(
                     &app,
                     id,
@@ -3640,6 +3864,8 @@ impl channel_handle::Server for CapnpChannelHandle {
                         source: local,
                         owner_peer: self.peer_id,
                         authorization: None,
+                        target_peer: None,
+                        capture_leases: Vec::new(),
                     },
                 );
                 ui::realtime_continuity::RealtimeReply::Registered { session: token }
@@ -3666,7 +3892,10 @@ impl channel_handle::Server for CapnpChannelHandle {
                 }
                 ui::realtime_continuity::RealtimeReply::Proposed
             }
-            ui::realtime_continuity::RealtimeCommand::Accept { session } => {
+            ui::realtime_continuity::RealtimeCommand::Accept {
+                session,
+                capture_authorizations,
+            } => {
                 let Some(binding) = bridge.sessions.get(&session) else {
                     return Promise::err(capnp::Error::failed("unknown realtime session".into()));
                 };
@@ -3675,23 +3904,49 @@ impl channel_handle::Server for CapnpChannelHandle {
                         "realtime session binding mismatch".into(),
                     ));
                 }
+                if binding.authorization.is_some() || binding.target_peer.is_some() {
+                    return Promise::err(capnp::Error::failed(
+                        "realtime target already accepted".into(),
+                    ));
+                }
                 let (id, source) = (binding.id, binding.source.clone());
+                let Some(required) = bridge.required_capture_kinds(id) else {
+                    return Promise::err(capnp::Error::failed("unknown realtime session".into()));
+                };
+                let leases = match acquire_realtime_capture_leases(
+                    &bridge.capture,
+                    &app,
+                    &session,
+                    &local,
+                    &capture_authorizations,
+                    &required,
+                    now,
+                ) {
+                    Ok(leases) => leases,
+                    Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+                };
                 let authorization = match bridge
                     .broker
                     .authorize_target_capture(&app, id, &source, &local, now)
                 {
                     Ok(authorization) => authorization,
-                    Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+                    Err(error) => {
+                        release_realtime_capture_leases(&bridge.capture, &leases);
+                        return Promise::err(capnp::Error::failed(error.to_string()));
+                    }
                 };
                 if let Err(error) =
                     bridge
                         .broker
                         .accept_target(&app, id, &source, &local, authorization, now)
                 {
+                    release_realtime_capture_leases(&bridge.capture, &leases);
                     return Promise::err(capnp::Error::failed(error.to_string()));
                 }
                 if let Some(binding) = bridge.sessions.get_mut(&session) {
                     binding.authorization = Some(authorization);
+                    binding.target_peer = Some(self.peer_id);
+                    binding.capture_leases = leases;
                 }
                 ui::realtime_continuity::RealtimeReply::Accepted
             }
@@ -3709,15 +3964,67 @@ impl channel_handle::Server for CapnpChannelHandle {
                         "fresh target capture authorization is required".into(),
                     ));
                 };
-                let (id, owner_peer, source) =
-                    (binding.id, binding.owner_peer, binding.source.clone());
+                if binding.target_peer != Some(self.peer_id) {
+                    return Promise::err(capnp::Error::failed(
+                        "realtime target binding mismatch".into(),
+                    ));
+                }
+                let (id, owner_peer, source, leases) = (
+                    binding.id,
+                    binding.owner_peer,
+                    binding.source.clone(),
+                    binding.capture_leases.clone(),
+                );
+                if let Err(error) = realtime_capture_leases_ready(
+                    &bridge.capture,
+                    &app,
+                    &session,
+                    &local,
+                    &leases,
+                    now,
+                ) {
+                    let _ = bridge.broker.target_failed(&app, id, &source, &local, now);
+                    if let Some(binding) = bridge.sessions.get_mut(&session) {
+                        binding.authorization = None;
+                        binding.target_peer = None;
+                        binding.capture_leases.clear();
+                    }
+                    release_realtime_capture_session(&bridge.capture, &app, &session, &local);
+                    bridge.notify(
+                        owner_peer,
+                        &ui::realtime_continuity::RealtimeEvent::RolledBack {
+                            session: session.clone(),
+                        },
+                    );
+                    return Promise::err(capnp::Error::failed(error.to_string()));
+                }
                 let directive =
                     match bridge
                         .broker
                         .media_ready(&app, id, &source, &local, authorization, now)
                     {
                         Ok(directive) => directive,
-                        Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+                        Err(error) => {
+                            let _ = bridge.broker.target_failed(&app, id, &source, &local, now);
+                            if let Some(binding) = bridge.sessions.get_mut(&session) {
+                                binding.authorization = None;
+                                binding.target_peer = None;
+                                binding.capture_leases.clear();
+                            }
+                            release_realtime_capture_session(
+                                &bridge.capture,
+                                &app,
+                                &session,
+                                &local,
+                            );
+                            bridge.notify(
+                                owner_peer,
+                                &ui::realtime_continuity::RealtimeEvent::RolledBack {
+                                    session: session.clone(),
+                                },
+                            );
+                            return Promise::err(capnp::Error::failed(error.to_string()));
+                        }
                     };
                 if directive.stop_source {
                     bridge.notify(
@@ -3738,6 +4045,11 @@ impl channel_handle::Server for CapnpChannelHandle {
                         "realtime session binding mismatch".into(),
                     ));
                 }
+                if binding.target_peer != Some(self.peer_id) {
+                    return Promise::err(capnp::Error::failed(
+                        "realtime target binding mismatch".into(),
+                    ));
+                }
                 let (id, owner_peer, source) =
                     (binding.id, binding.owner_peer, binding.source.clone());
                 if let Err(error) = bridge.broker.target_failed(&app, id, &source, &local, now) {
@@ -3745,7 +4057,10 @@ impl channel_handle::Server for CapnpChannelHandle {
                 }
                 if let Some(binding) = bridge.sessions.get_mut(&session) {
                     binding.authorization = None;
+                    binding.target_peer = None;
+                    binding.capture_leases.clear();
                 }
+                release_realtime_capture_session(&bridge.capture, &app, &session, &local);
                 bridge.notify(
                     owner_peer,
                     &ui::realtime_continuity::RealtimeEvent::RolledBack {
@@ -7206,6 +7521,192 @@ mod tests {
     use collab_types::{CapOverride, Ed25519PublicKey, Role, Subject, sign_op};
     use ed25519_dalek::Signer as _;
     use ed25519_dalek::SigningKey;
+
+    fn capture_test_app(
+        workspace: &str,
+    ) -> crate::shell::realtime_session::VerifiedAppRegistration {
+        crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
+            "dev.qos.chat",
+            workspace,
+        )
+        .expect("verified test app")
+    }
+
+    fn capture_test_broker() -> Arc<Mutex<crate::portal::CaptureBroker>> {
+        let mut capture = crate::portal::CaptureBroker::new();
+        capture
+            .register_source(
+                "mic",
+                "Microphone",
+                crate::portal::CaptureKind::Microphone,
+                crate::portal::LocalCaptureHandle::PipeWireNode(7),
+            )
+            .expect("register mic");
+        capture
+            .register_source(
+                "camera",
+                "Camera",
+                crate::portal::CaptureKind::Camera,
+                crate::portal::LocalCaptureHandle::PipeWireNode(8),
+            )
+            .expect("register camera");
+        Arc::new(Mutex::new(capture))
+    }
+
+    #[test]
+    fn realtime_capture_ipc_requires_exact_complete_one_shot_authorizations() {
+        let now = std::time::Instant::now();
+        let app = capture_test_app("work");
+        let wrong_app = capture_test_app("personal");
+        let session = "0123456789abcdef0123456789abcdef";
+        let target =
+            crate::shell::personal_continuity::DeviceId::new("target-local").expect("target");
+        let wrong_target =
+            crate::shell::personal_continuity::DeviceId::new("target-other").expect("wrong target");
+        let capture = capture_test_broker();
+        let binding =
+            crate::portal::CaptureSessionBinding::from_verified(&app, session, target.as_str())
+                .expect("capture binding");
+        let wrong_binding = crate::portal::CaptureSessionBinding::from_verified(
+            &wrong_app,
+            session,
+            target.as_str(),
+        )
+        .expect("wrong binding");
+        let (microphone, camera) = {
+            let mut broker = capture.lock().expect("capture broker");
+            (
+                broker
+                    .authorize(&binding, "mic", crate::portal::CaptureKind::Microphone, now)
+                    .expect("microphone authorization")
+                    .to_opaque(),
+                broker
+                    .authorize(&binding, "camera", crate::portal::CaptureKind::Camera, now)
+                    .expect("camera authorization")
+                    .to_opaque(),
+            )
+        };
+        let required = [
+            crate::portal::CaptureKind::Microphone,
+            crate::portal::CaptureKind::Camera,
+        ];
+
+        assert!(
+            acquire_realtime_capture_leases(
+                &capture,
+                &wrong_app,
+                session,
+                &target,
+                &[microphone.clone(), camera.clone()],
+                &required,
+                now,
+            )
+            .is_err()
+        );
+        assert!(
+            capture
+                .lock()
+                .expect("capture broker")
+                .take_privacy_events()
+                .is_empty()
+        );
+        assert_eq!(wrong_binding.workspace_id(), "personal");
+        assert!(
+            acquire_realtime_capture_leases(
+                &capture,
+                &app,
+                session,
+                &wrong_target,
+                &[microphone.clone(), camera.clone()],
+                &required,
+                now,
+            )
+            .is_err()
+        );
+
+        let leases = acquire_realtime_capture_leases(
+            &capture,
+            &app,
+            session,
+            &target,
+            &[microphone.clone(), camera.clone()],
+            &required,
+            now,
+        )
+        .expect("exact authorization set");
+        realtime_capture_leases_ready(&capture, &app, session, &target, &leases, now)
+            .expect("leases ready");
+        assert!(
+            acquire_realtime_capture_leases(
+                &capture,
+                &app,
+                session,
+                &target,
+                &[microphone, camera],
+                &required,
+                now,
+            )
+            .is_err()
+        );
+
+        release_realtime_capture_session(&capture, &app, session, &target);
+        assert!(
+            realtime_capture_leases_ready(&capture, &app, session, &target, &leases, now).is_err()
+        );
+    }
+
+    #[test]
+    fn realtime_capture_ipc_rejects_expiry_and_lock_teardown_before_cutover() {
+        let now = std::time::Instant::now();
+        let app = capture_test_app("work");
+        let session = "fedcba9876543210fedcba9876543210";
+        let target =
+            crate::shell::personal_continuity::DeviceId::new("target-local").expect("target");
+        let capture = capture_test_broker();
+        let binding =
+            crate::portal::CaptureSessionBinding::from_verified(&app, session, target.as_str())
+                .expect("capture binding");
+        let expired = capture
+            .lock()
+            .expect("capture broker")
+            .authorize(&binding, "mic", crate::portal::CaptureKind::Microphone, now)
+            .expect("authorization")
+            .to_opaque();
+        assert!(
+            acquire_realtime_capture_leases(
+                &capture,
+                &app,
+                session,
+                &target,
+                &[expired],
+                &[crate::portal::CaptureKind::Microphone],
+                now + crate::portal::capture_broker::CAPTURE_AUTHORIZATION_TTL
+                    + std::time::Duration::from_millis(1),
+            )
+            .is_err()
+        );
+
+        let fresh = capture
+            .lock()
+            .expect("capture broker")
+            .authorize(&binding, "mic", crate::portal::CaptureKind::Microphone, now)
+            .expect("fresh authorization")
+            .to_opaque();
+        let leases = acquire_realtime_capture_leases(
+            &capture,
+            &app,
+            session,
+            &target,
+            &[fresh],
+            &[crate::portal::CaptureKind::Microphone],
+            now,
+        )
+        .expect("fresh lease");
+        capture.lock().expect("capture broker").screen_locked();
+        assert!(
+            realtime_capture_leases_ready(&capture, &app, session, &target, &leases, now).is_err()
+        );
+    }
 
     #[test]
     fn late_join_snapshot_request_selects_exactly_one_existing_holder() {
