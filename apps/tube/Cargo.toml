@@ -38,6 +38,7 @@ anyhow.workspace = true
 # worker and excluded from the shots path.
 # rustls-tls because the distrobox image has no openssl/native-tls.
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
+bounded-command = { path = "../../crates/system/bounded-command" }
 
 # Live YouTube backend (off by default): rustypipe handles InnerTube requests
 # and botguard tokens without ffmpeg or yt-dlp.
