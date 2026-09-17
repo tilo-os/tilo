@@ -8,15 +8,16 @@ containerfile="$repo/os/Containerfile"
 # shellcheck source=lib/containerfile.sh
 . "$here/lib/containerfile.sh"
 
-# Captured from the 183 effective rootfs copy mappings. The Windows provider
-# adds one explicit /out/usr/ -> /usr/ mapping to the prior 182-entry image;
-# its architecture-selected contents are checked by windows_provider.py.
+# Public trust now stages the selected keys, independent tracked references,
+# and two validation tools under /run before installing validated bytes.
+# test_public_trust_install.py proves default keys and development provenance;
+# the contract below covers these explicit staging inputs plus existing payload.
 # Sorting intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=f5713700a99efdde06911625ca95ad55f0243fec667c7fe5883c902dcb4e510d
+expected_contract=76242075a1a66be838810fa0add5d4a49a965ab2a1528ecafd3dfaa128095b0d
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -40,9 +41,11 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
   END { print n+0 }
 ')"
 # The existing image used 123; provider selection adds ARG, COPY and its
-# native dynamic-linker validation RUN. Keep the bound exact and reviewed.
-[ "$instructions" -le 126 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 126)" >&2
+# native dynamic-linker validation RUN. Public trust adds three ARGs, two
+# additional COPYs and a validation RUN before initramfs generation.
+# Keep the current 133-instruction bound exact and reviewed.
+[ "$instructions" -le 133 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 133)" >&2
   exit 1
 }
 
