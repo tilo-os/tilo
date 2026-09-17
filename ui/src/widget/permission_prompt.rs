@@ -312,9 +312,10 @@ fn draw_button(
     };
 
     let text_size = theme.tokens.typography.scale.sm;
-    let (text_w, _) = text_renderer.measure(label, text_size, None);
+    // Centre on the measured line in both axes, not on the font size.
+    let (text_w, text_h) = text_renderer.measure(label, text_size, None);
     let text_x = rect.center().x - (f64::from(text_w) / 2.0);
-    let text_y = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
+    let text_y = rect.y0 + (rect.height() - f64::from(text_h)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,
