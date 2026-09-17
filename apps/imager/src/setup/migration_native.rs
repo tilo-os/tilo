@@ -201,7 +201,7 @@ fn entry_fidelity(entry: &Entry, reason: &str) -> bool {
                 .iter()
                 .any(|r| r == "unsupported-dos-flags"))
 }
-fn times(entry: &Entry) -> io::Result<CopyTimes> {
+pub(super) fn times(entry: &Entry) -> io::Result<CopyTimes> {
     let value = entry
         .copy_times
         .ok_or_else(|| changed("exact native timestamps unavailable"))?;
@@ -456,6 +456,7 @@ fn revalidate<T: Transport>(
 ) -> io::Result<()> {
     use super::migration_native_journal::open_file;
     let mut destination = open_file(parent, name)?;
+    let before = cap_primitives::fs::Metadata::from_file(&destination)?;
     let expected_times = times(&receipt.source)?;
     let meta = destination.metadata()?;
     if durability::identity(&destination)? != receipt.destination
@@ -484,26 +485,32 @@ fn revalidate<T: Transport>(
     {
         return Err(changed("receipted destination bytes changed"));
     }
-    parent.validate_destination()?;
-    let by_name = metadata_nofollow(&parent.file, Path::new(name))?;
-    if !super::nofollow::same_directory_identity(
-        &by_name,
-        &cap_primitives::fs::Metadata::from_file(&destination)?,
-    ) {
-        return Err(changed("receipted destination name changed"));
-    }
+    let validate = || {
+        parent.validate_destination()?;
+        if !migration::same_snapshot(
+            &before,
+            &cap_primitives::fs::Metadata::from_file(&destination)?,
+        ) || !migration::same_snapshot(
+            &before,
+            &metadata_nofollow(&parent.file, Path::new(name))?,
+        ) {
+            return Err(changed("receipted destination changed during verification"));
+        }
+        Ok(())
+    };
+    validate()?;
     source.attest(receipt.bytes, digest, cancel)?;
     check_cancel(cancel)?;
-    migration::preserve_time_values(
-        &destination,
-        expected_times.accessed,
-        expected_times.modified,
-    )?;
+    validate()?;
+    destination.set_times(std::fs::FileTimes::new().set_accessed(expected_times.accessed))?;
+    if destination.metadata()?.modified()? != expected_times.modified {
+        return Err(changed("receipted destination timestamp changed"));
+    }
     durability::sync_file(&destination)
 }
 fn enter_directory<T: Transport>(
     session: &mut Session<T>,
-    journal: &mut NativeJournal,
+    journal: &mut NativeJournal<'_>,
     parent: &Arc<PinnedDirectory>,
     entry: &Entry,
     name: &OsStr,
@@ -516,6 +523,7 @@ fn enter_directory<T: Transport>(
         if super::migration_native_journal::directory_identity(&child)? != receipt.destination {
             return Err(changed("native destination directory changed"));
         }
+        journal.validate_completed(entry, &child)?;
         child
     } else {
         let child = parent.create_child(name)?;
@@ -527,7 +535,7 @@ fn enter_directory<T: Transport>(
 }
 fn finish_directories<T: Transport>(
     session: &mut Session<T>,
-    journal: &mut NativeJournal,
+    journal: &mut NativeJournal<'_>,
     plan: &Plan,
     directories: &BTreeMap<NativePath, Arc<PinnedDirectory>>,
     cancel: &AtomicBool,
@@ -539,11 +547,22 @@ fn finish_directories<T: Transport>(
             let values = times(&item.entry)?;
             super::migration_journal::persistence_result(
                 (|| {
-                    migration::preserve_directory_times_values(
-                        directory,
-                        values.accessed,
-                        values.modified,
-                    )?;
+                    if journal.validate_completed(&item.entry, directory)? {
+                        let writable = durability::readable_directory(&directory.file)?;
+                        writable
+                            .set_times(std::fs::FileTimes::new().set_accessed(values.accessed))?;
+                        if writable.metadata()?.modified()? != values.modified {
+                            return Err(changed(
+                                "completed destination directory timestamp changed",
+                            ));
+                        }
+                    } else {
+                        migration::preserve_directory_times_values(
+                            directory,
+                            values.accessed,
+                            values.modified,
+                        )?;
+                    }
                     durability::sync_directory(&directory.file)
                 })(),
                 super::migration_journal::PersistenceBoundary::OutputPublicationUncertain,
@@ -587,7 +606,7 @@ fn scope_issues(plan: &Plan, report: &mut CopyReport) -> Vec<NativePath> {
 }
 fn enter_root<T: Transport>(
     session: &mut Session<T>,
-    journal: &mut NativeJournal,
+    journal: &mut NativeJournal<'_>,
     plan: &Plan,
     cancel: &AtomicBool,
 ) -> io::Result<Arc<PinnedDirectory>> {
@@ -618,9 +637,9 @@ fn run<T: Transport>(
     let mut session = Session::selected(transport, cancel)?;
     let plan = session.plan.clone();
     let mut journal = if let Some(destination) = destination {
-        NativeJournal::create(&plan, destination, journal_path)?
+        NativeJournal::create(&plan, destination, journal_path, cancel)?
     } else {
-        NativeJournal::open(&plan, journal_path, || session.metadata(cancel))?
+        NativeJournal::open(&plan, journal_path, cancel, || session.metadata(cancel))?
     };
     let mut report = CopyReport::default();
     let result: io::Result<()> = (|| {
@@ -838,6 +857,7 @@ mod tests {
     struct State {
         reads: Vec<(u64, u32)>,
         fault: Option<&'static str>,
+        during_finish: Option<Box<dyn FnOnce()>>,
     }
     struct Script {
         state: Rc<RefCell<State>>,
@@ -973,6 +993,9 @@ mod tests {
                 self.hashes.insert("unknown".into(), "b".repeat(64));
             }
             if self.passes > 0 {
+                if let Some(action) = self.state.borrow_mut().during_finish.take() {
+                    action();
+                }
                 match self.state.borrow().fault {
                     Some("finish-loss") => {
                         return Err(changed("scripted native postflight disconnect"));
@@ -1372,6 +1395,25 @@ mod tests {
         );
     }
 
+    fn scoped_fixture(root: &Path, name: &str) -> Option<PathBuf> {
+        [format!("copy-scoped-{name}.img"), format!("{name}.img")]
+            .into_iter()
+            .map(|filename| root.join(filename))
+            .find(|candidate| candidate.is_file())
+    }
+
+    #[test]
+    fn scoped_fixture_prefers_generated_sibling_image_over_original() {
+        let temp = tempfile::tempdir().unwrap();
+        let original = temp.path().join("times.img");
+        let scoped = temp.path().join("copy-scoped-times.img");
+        std::fs::write(&original, b"original").unwrap();
+        std::fs::write(&scoped, b"scoped sibling").unwrap();
+        assert_eq!(scoped_fixture(temp.path(), "times"), Some(scoped.clone()));
+        std::fs::remove_file(scoped).unwrap();
+        assert_eq!(scoped_fixture(temp.path(), "times"), Some(original));
+    }
+
     #[cfg(unix)]
     fn image_transport(name: &str) -> io::Result<ImageTransport> {
         let mut transport = ImageTransport {
@@ -1396,11 +1438,10 @@ mod tests {
             active: None,
             reads: Rc::new(RefCell::new(Vec::new())),
         };
-        if let Some(root) = std::env::var_os("QOS_NTFS_COPY_SCOPED_FIXTURES") {
-            let candidate = PathBuf::from(root).join(format!("{name}.img"));
-            if candidate.exists() {
-                transport.image = candidate;
-            }
+        if let Some(root) = std::env::var_os("QOS_NTFS_COPY_SCOPED_FIXTURES")
+            && let Some(candidate) = scoped_fixture(Path::new(&root), name)
+        {
+            transport.image = candidate;
         }
         transport.original = transport.operation(&["--copy-manifest".into()])?;
         transport.identity = serde_json::from_value(transport.original["identity"].clone())?;
@@ -1621,6 +1662,142 @@ mod tests {
         assert_eq!(
             std::fs::read(dest.join("large.bin")).unwrap(),
             b"user conflict"
+        );
+    }
+
+    #[test]
+    fn resume_rejects_file_edits_during_native_postflight_without_changing_mtime() {
+        for replace_name in [false, true] {
+            let (_temp, dest, journal) = fixture();
+            let state = Rc::new(RefCell::new(State::default()));
+            let cancel = Arc::new(AtomicBool::new(false));
+            assert!(
+                run(
+                    script(state.clone(), cancel.clone()),
+                    Some(&dest),
+                    &journal,
+                    &cancel,
+                    |_| {}
+                )
+                .unwrap()
+                .complete()
+            );
+            let target = dest.join("large.bin");
+            let changed_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(345);
+            let edited = target.clone();
+            state.borrow_mut().during_finish = Some(Box::new(move || {
+                if replace_name {
+                    std::fs::rename(&edited, edited.with_extension("retained")).unwrap();
+                }
+                std::fs::write(&edited, b"user edit during native Finish").unwrap();
+                std::fs::File::options()
+                    .write(true)
+                    .open(&edited)
+                    .unwrap()
+                    .set_times(std::fs::FileTimes::new().set_modified(changed_time))
+                    .unwrap();
+            }));
+            let report = run(
+                script(state, cancel.clone()),
+                None,
+                &journal,
+                &cancel,
+                |_| {},
+            )
+            .unwrap();
+            assert!(
+                !report.verified_files.contains(&PathBuf::from("large.bin")),
+                "edited output certified: {report:?}"
+            );
+            assert!(!report.failed.is_empty());
+            assert_eq!(
+                std::fs::metadata(&target).unwrap().modified().unwrap(),
+                changed_time
+            );
+            assert_eq!(
+                std::fs::read(&target).unwrap(),
+                b"user edit during native Finish"
+            );
+        }
+    }
+
+    #[test]
+    fn resume_preserves_changed_completed_directory_and_root_timestamps() {
+        use std::io::Write;
+        for relative in ["nested/empty-dir", ""] {
+            let (_temp, dest, journal) = fixture();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let fresh = || script(Rc::new(RefCell::new(State::default())), cancel.clone());
+            assert!(
+                run(fresh(), Some(&dest), &journal, &cancel, |_| {})
+                    .unwrap()
+                    .complete()
+            );
+            let changed_time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(345);
+            let directory = dest.join(relative);
+            std::fs::File::open(&directory)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(changed_time))
+                .unwrap();
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&journal)
+                .unwrap()
+                .write_all(b"torn")
+                .unwrap();
+            let before = std::fs::read(&journal).unwrap();
+            assert!(
+                run(fresh(), None, &journal, &cancel, |_| {}).is_err(),
+                "changed directory accepted: {relative}"
+            );
+            assert_eq!(
+                std::fs::metadata(directory).unwrap().modified().unwrap(),
+                changed_time
+            );
+            assert_eq!(std::fs::read(&journal).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn resume_completes_previously_incomplete_directories() {
+        let (_temp, dest, journal) = fixture();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let state = Rc::new(RefCell::new(State {
+            fault: Some("read-cancel"),
+            ..State::default()
+        }));
+        assert!(
+            run(
+                script(state, cancel.clone()),
+                Some(&dest),
+                &journal,
+                &cancel,
+                |_| {}
+            )
+            .unwrap()
+            .cancelled
+        );
+        cancel.store(false, Ordering::Relaxed);
+        let report = run(
+            script(Rc::new(RefCell::new(State::default())), cancel.clone()),
+            None,
+            &journal,
+            &cancel,
+            |_| {},
+        )
+        .unwrap();
+        assert!(report.complete(), "{report:?}");
+        let expected = std::time::UNIX_EPOCH + std::time::Duration::new(1, 234_567_800);
+        assert_eq!(
+            std::fs::metadata(&dest).unwrap().modified().unwrap(),
+            expected
+        );
+        assert_eq!(
+            std::fs::metadata(dest.join("nested/empty-dir"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            expected
         );
     }
 

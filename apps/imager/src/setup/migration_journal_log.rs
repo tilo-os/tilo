@@ -245,6 +245,24 @@ impl Log {
     pub(super) fn validate(&self) -> io::Result<()> {
         validate(&self.parent, &self.name, &self.file, &self.identity)
     }
+    pub(super) fn repair(
+        &mut self,
+        end: u64,
+        validate_destination: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
+        let Self {
+            file,
+            parent,
+            name,
+            identity,
+            ..
+        } = self;
+        let validation_file = file.try_clone()?;
+        repair(file, end, || {
+            validate_destination()?;
+            validate(parent, name, &validation_file, identity)
+        })
+    }
     pub(super) fn append<T: Serialize>(&mut self, record: &T) -> io::Result<()> {
         use super::migration_journal::{PersistenceBoundary, persistence_result};
         if self.failed {
