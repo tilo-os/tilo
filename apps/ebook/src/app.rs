@@ -709,6 +709,20 @@ impl BooksApp {
     ) -> Option<tilo_actions::Resource> {
         ui::search::SearchProvider::resolve_action_resource(&self.search_provider, address)
     }
+
+    pub(crate) fn current_book_resource_context(&self) -> Option<crate::actions::BookResourceCtx> {
+        let book = self.open_book()?;
+        let block = self.page_top_block;
+        Some(crate::actions::BookResourceCtx {
+            book_id: book.id.clone(),
+            chapter: self.chapter,
+            bookmark_block: block,
+            bookmark: self.bookmark_plan(block),
+            selection_highlight: self
+                .sel
+                .and_then(|selection| self.resolve_highlight_plan(selection, HiColor::Yellow)),
+        })
+    }
 }
 
 #[allow(
@@ -4610,16 +4624,27 @@ impl Widget for BooksApp {
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        let offset = match cursor {
+            [] => 0,
+            [offset] => usize::from(*offset),
+            _ => return None,
+        };
+        let roots = ["ebook.library", "ebook.settings"];
+        if offset > roots.len() {
+            return None;
+        }
+        let take = max_results.min(roots.len().saturating_sub(offset));
+        let resources = roots[offset..offset + take]
+            .iter()
+            .filter_map(|id| <Self as tilo_actions::ResourceProvider>::resource(self, doc, id))
+            .collect();
+        let next_offset = offset.saturating_add(take);
         Some(ui::widget::ActionDirectoryResourcePage {
-            resources: (cursor.is_empty() && max_results > 0)
-                .then(|| {
-                    <Self as tilo_actions::ResourceProvider>::resource(self, doc, "ebook.library")
-                })
-                .flatten()
-                .into_iter()
-                .collect(),
-            next_cursor: Vec::new(),
-            exhausted: true,
+            resources,
+            next_cursor: (next_offset < roots.len())
+                .then(|| vec![next_offset as u8])
+                .unwrap_or_default(),
+            exhausted: next_offset >= roots.len(),
         })
     }
 
