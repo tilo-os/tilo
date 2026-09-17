@@ -130,6 +130,11 @@ impl ContextMenu {
         self.scroll_offset = 0.0;
         self.open = true;
         self.position = Some(position);
+        // Geometry is usable before the first paint at the reference
+        // metrics; `draw` measures the labels and grows the rows and width
+        // from there, never below these.
+        self.measured_width = MENU_WIDTH;
+        self.row_height = ROW_HEIGHT;
         self.layout_at_position();
     }
 
@@ -170,18 +175,30 @@ impl ContextMenu {
                 height = height.max(f64::from(h));
             }
         }
-        self.measured_width = width + 20.0;
-        self.row_height = (height + 12.0).max(ROW_HEIGHT);
+        // The label's inset on both sides, and `s3` of air around the line.
+        self.measured_width = width + 2.0 * label_inset(theme);
+        self.row_height = (height + f64::from(theme.tokens.spacing.s3)).max(ROW_HEIGHT);
         self.layout_at_position();
         self.ensure_hover_visible();
     }
 
+    /// Height of one row. Action rows take the measured height once a paint
+    /// has measured the labels (`ROW_HEIGHT` until then, and never less), in
+    /// both the anchored and the point-placed mode — a point-placed menu at
+    /// a large text setting otherwise paints two-line-tall glyphs into
+    /// 28 px rows.
     fn row_height(&self, item: &MenuItem) -> f64 {
-        if self.bounds.is_some() && matches!(item, MenuItem::Action { .. }) {
-            self.row_height
-        } else {
-            item_height(item)
+        match item {
+            MenuItem::Action { .. } => self.row_height,
+            MenuItem::Separator => SEPARATOR_HEIGHT,
         }
+    }
+
+    /// Width of a point-placed (`open_at`) menu: the fixed reference width,
+    /// grown to fit the measured labels so nothing is clipped at a large
+    /// text setting. Anchored menus hug their labels instead.
+    fn legacy_width(&self) -> f64 {
+        self.measured_width.max(MENU_WIDTH)
     }
 
     fn content_height(&self) -> f64 {
@@ -292,16 +309,10 @@ impl ContextMenu {
         let Some([px, py]) = self.position else {
             return;
         };
-        let height = PADDING * 2.0
-            + self
-                .items
-                .iter()
-                .map(item_height)
-                .sum::<f64>()
-                .max(ROW_HEIGHT);
+        let height = PADDING * 2.0 + self.content_height().max(ROW_HEIGHT);
         let x0 = f64::from(px);
         let y0 = f64::from(py);
-        self.rect = Rect::new(x0, y0, x0 + MENU_WIDTH, y0 + height);
+        self.rect = Rect::new(x0, y0, x0 + self.legacy_width(), y0 + height);
     }
 
     /// Safe to call when already closed.
@@ -412,12 +423,16 @@ const ROW_HEIGHT: f64 = 28.0;
 const SEPARATOR_HEIGHT: f64 = 9.0;
 const MENU_WIDTH: f64 = 220.0;
 const PADDING: f64 = 6.0;
+/// Air between the armed row's fill edge and the first glyph. The fill is
+/// inset `spacing.s1` from the card ([`label_inset`] adds this to it), so the
+/// label keeps this gap inside its highlight at every `ui_scale` instead of
+/// drifting into the fill's edge as the token inset grows.
+const LABEL_GAP: f64 = 6.0;
 
-fn item_height(item: &MenuItem) -> f64 {
-    match item {
-        MenuItem::Action { .. } => ROW_HEIGHT,
-        MenuItem::Separator => SEPARATOR_HEIGHT,
-    }
+/// Distance from the card's edge to a label's first glyph: the highlight
+/// inset (`spacing.s1`) plus [`LABEL_GAP`] — 10 px at 1×.
+fn label_inset(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.s1) + LABEL_GAP
 }
 
 impl Widget for ContextMenu {
@@ -430,26 +445,19 @@ impl Widget for ContextMenu {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let height: f64 = if self.open {
-            PADDING * 2.0
-                + self
-                    .items
-                    .iter()
-                    .map(item_height)
-                    .sum::<f64>()
-                    .max(ROW_HEIGHT)
+            PADDING * 2.0 + self.content_height().max(ROW_HEIGHT)
         } else {
             0.0
         };
-        // Both are small logical-pixel menu dimensions: MENU_WIDTH is a
-        // compile-time constant and `height` is a row-count multiple of
-        // ROW_HEIGHT, so neither comes close to f32's range.
+        // Both are small logical-pixel menu dimensions — a label width and
+        // a row-count multiple of the row height — nowhere near f32's range.
         #[allow(
             clippy::cast_possible_truncation,
             reason = "bounded logical-pixel menu dimensions; f32 precision is sufficient"
         )]
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(MENU_WIDTH as f32),
+                width: Dimension::length(self.legacy_width() as f32),
                 height: Dimension::length(height as f32),
             },
             ..Default::default()
@@ -494,9 +502,10 @@ impl Widget for ContextMenu {
             return;
         }
 
-        if self.bounds.is_some() {
-            self.layout_within(text_renderer, theme);
-        }
+        // Measure in both modes: an anchored menu hugs its labels, a
+        // point-placed one keeps its origin and reference width but grows
+        // its rows (and, past the reference width, its width) to the text.
+        self.layout_within(text_renderer, theme);
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         // The near-black overlay tier, so the menu reads as an opaque
         // raised sheet, never bleeding the content beneath.
@@ -515,8 +524,15 @@ impl Widget for ContextMenu {
             &shape,
         );
 
-        let text_size = theme.tokens.typography.scale.sm;
-        let style = text_renderer.renderer_input_style(&TextStyle::new(text_size));
+        // One style for measuring (`layout_within`) and painting, in both
+        // modes: the point-placed path used to paint the theme's already
+        // text-scaled size through the renderer's own multiplier, so its
+        // glyphs came out at 4× on a 200 % setting while its rows were
+        // measured at 2×.
+        let style =
+            text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
+        let label_x = self.rect.x0 + label_inset(theme);
+        let separator_inset = f64::from(theme.tokens.spacing.s2);
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -566,33 +582,22 @@ impl Widget for ContextMenu {
                     };
                     let (_, label_height) = text_renderer.measure_style(label, None, &style);
                     let label_y = y + (row_height - f64::from(label_height)) / 2.0;
-                    if self.bounds.is_some() {
-                        text_renderer.draw_style(
-                            scene,
-                            label,
-                            ink,
-                            transform.pre_translate(Vec2::new(self.rect.x0 + 10.0, label_y)),
-                            None,
-                            &style,
-                        );
-                    } else {
-                        text_renderer.draw_text(
-                            scene,
-                            label,
-                            text_size,
-                            ink,
-                            transform.pre_translate(Vec2::new(self.rect.x0 + 10.0, label_y)),
-                            None,
-                        );
-                    }
+                    text_renderer.draw_style(
+                        scene,
+                        label,
+                        ink,
+                        transform.pre_translate(Vec2::new(label_x, label_y)),
+                        None,
+                        &style,
+                    );
                     y += row_height;
                 }
                 MenuItem::Separator => {
                     let sep_y = y + SEPARATOR_HEIGHT / 2.0;
                     let line = Rect::new(
-                        self.rect.x0 + 8.0,
+                        self.rect.x0 + separator_inset,
                         sep_y - 0.5,
-                        self.rect.x1 - 8.0,
+                        self.rect.x1 - separator_inset,
                         sep_y + 0.5,
                     );
                     scene.fill(
@@ -1018,6 +1023,87 @@ mod tests {
         );
         let closed = ContextMenu::new();
         assert!(Widget::modal_capture(&closed).is_none());
+    }
+
+    /// At 1× a point-placed menu paints exactly where `open_at` put it, at
+    /// the reference width and row height: measuring the labels changes
+    /// nothing a reference-scale menu already had.
+    #[test]
+    fn legacy_open_at_geometry_is_unchanged_at_1x_after_paint() {
+        let (mut m, _f) = open_menu();
+        let before = m.get_rect();
+        let mut scene = Scene::new();
+        m.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+        assert_eq!(m.get_rect(), before);
+        assert_eq!(m.row_height, ROW_HEIGHT);
+    }
+
+    /// A point-placed (`open_at`) menu keeps its origin and never shrinks
+    /// below the reference width, but its rows follow the text. At a 200 %
+    /// text setting the labels used to be painted at 4× — the theme's
+    /// already-scaled size sent through the renderer's own multiplier —
+    /// into fixed 28 px rows (file-explorer `context-menu` at
+    /// `--text-scale 2`); now every glyph line lands inside its own row.
+    #[test]
+    fn legacy_open_at_rows_grow_with_the_text_scale_and_glyphs_stay_in_their_rows() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let mut m = ContextMenu::new();
+        m.push(MenuItem::action("Neuer Ordner", || {}));
+        m.push(MenuItem::separator());
+        m.push(MenuItem::action("Verborgene Dateien anzeigen", || {}));
+        m.push(MenuItem::action("Nach Name sortieren", || {}));
+        m.open_at([100.0, 100.0]);
+        let before = m.get_rect();
+        let mut scene = Scene::new();
+        m.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let after = m.get_rect();
+        assert_eq!((after.x0, after.y0), (before.x0, before.y0), "origin kept");
+        assert!(
+            after.width() >= MENU_WIDTH,
+            "never narrower than the reference"
+        );
+        assert!(
+            m.row_height > ROW_HEIGHT,
+            "rows grew to the text: {}",
+            m.row_height
+        );
+
+        let rows: Vec<Rect> = [0, 2, 3].iter().filter_map(|&i| m.item_rect(i)).collect();
+        assert_eq!(rows.len(), 3, "every action row is painted");
+        let runs = &scene.encoding().resources.glyph_runs;
+        assert!(!runs.is_empty(), "labels were painted");
+        // Measure the painted size with an unscaled renderer: `font_size`
+        // is the final glyph size, and it must be the theme's 2× — not 4×.
+        let mut probe = TextRenderer::new();
+        for run in runs {
+            assert!(
+                (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.01,
+                "glyphs painted at {} px; the theme's scaled size is {}",
+                run.font_size,
+                theme.tokens.typography.scale.sm,
+            );
+            let top = f64::from(run.transform.translation[1]);
+            let (_, h) = probe.measure("Ag", run.font_size, None);
+            assert!(
+                rows.iter()
+                    .any(|r| top >= r.y0 - 0.01 && top + f64::from(h) <= r.y1 + 0.01),
+                "a glyph line at y={top} (h={h}) escapes every row: {rows:?}",
+            );
+        }
     }
 }
 
