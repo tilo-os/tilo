@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import struct
 import subprocess
 import tempfile
 
@@ -50,6 +51,20 @@ def bootloader_selection(root, original, signed, certificate, metadata, machine)
     receipt = verify(companion)
     verify(source / 'missing.efi.signed', success=False)
     verify(unsigned, success=False)
+    # A bounded certificate table is not necessarily an actual signature.
+    # Exercise real sbverify on empty and unrecognized WIN_CERTIFICATE records.
+    for revision, kind in ((0, 0), (0x0200, 2)):
+        fake_bytes = bytearray(unsigned.read_bytes())
+        pe = struct.unpack_from('<I', fake_bytes, 0x3C)[0]
+        security = pe + 24 + 112 + 8 * 4
+        assert struct.unpack_from('<II', fake_bytes, security) == (0, 0)
+        fake_bytes.extend(b'\0' * (-len(fake_bytes) % 8))
+        offset = len(fake_bytes)
+        fake_bytes.extend(struct.pack('<IHH', 8, revision, kind))
+        struct.pack_into('<II', fake_bytes, security, offset, 8)
+        fake = root / f'empty-certificate-{revision}-{kind}.efi'
+        fake.write_bytes(fake_bytes)
+        verify(fake, success=False)
     verify(companion, arch={'x86_64': 'aarch64', 'aarch64': 'x86_64'}[architecture], success=False)
     tampered = root / 'tampered-loader.efi'
     payload = bytearray(signed.read_bytes())
@@ -84,7 +99,7 @@ def bootloader_selection(root, original, signed, certificate, metadata, machine)
                                         '/usr/bin/bootctl', str(original)).decode().splitlines(),
                       'loader_verification': receipt,
                       'esp_paths': [str(path.relative_to(target / 'boot')) for path in destinations],
-                      'rejected': ['missing companion', 'unsigned loader', 'wrong architecture',
+                      'rejected': ['missing companion', 'unsigned loader', 'empty certificate table', 'wrong architecture',
                                    'tampered loader', 'wrong signing key']}))
 
 
