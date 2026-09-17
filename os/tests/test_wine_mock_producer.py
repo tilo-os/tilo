@@ -76,7 +76,8 @@ class Boundaries(unittest.TestCase):
         self.lock = {'version': '1.1.0', 'config': {
             'target_arch': 'i686', 'bootstrap_image_ready': True},
             'bootstrap': {'image_digest': 'sha256:' + 'b' * 64},
-            'buildroot': {'rpms': [{'name': 'gcc', 'arch': 'i686'}]}}
+            'buildroot': {'rpms': [{'name': name, 'arch': 'i686'}
+                                  for name in ('gcc', 'gcc-c++', 'rpm-build')]}}
         producer.write_json(self.root / 'resolution/buildroot_lock.json', self.lock)
         (self.root / 'dependency.rpm').write_bytes(b'retained dependency')
         self.tools = {'runtime_image': IMAGE, 'host_rpms': ['b', 'a'], 'tools': {}}
@@ -141,6 +142,41 @@ class Boundaries(unittest.TestCase):
     def test_wrong_lock_architecture_rejected(self):
         with self.assertRaises(ValueError):
             producer.validate_lock(self.lock, 'x86_64')
+
+    def test_lock_requires_native_provenance_compilers(self):
+        for name in ('gcc', 'gcc-c++', 'rpm-build'):
+            for replacement in (None, 'x86_64', 'noarch'):
+                lock = json.loads(json.dumps(self.lock))
+                lock['buildroot']['rpms'] = [package for package in lock['buildroot']['rpms']
+                                            if package['name'] != name]
+                if replacement:
+                    lock['buildroot']['rpms'].append({'name': name, 'arch': replacement})
+                with self.subTest(name=name, replacement=replacement):
+                    with self.assertRaisesRegex(ValueError, 'native provenance tools'):
+                        producer.validate_lock(lock, 'i686')
+
+    def test_retained_config_adds_tools_without_changing_vendor_config(self):
+        source = self.root / 'vendor-config'
+        source.mkdir()
+        selected = source / 'fedora-44-i386.cfg'
+        original = "config_opts['more_buildreqs']['wine'] = ['existing-dependency']\n"
+        selected.write_text(original)
+        (source / 'site-defaults.cfg').write_text('# preserved defaults\n')
+        destination = self.root / 'retained-config'
+        producer.prepare_mock_config(source, destination, 'fedora-44-i386')
+        options = {'more_buildreqs': {'other-package': ['unrelated']}}
+        exec((destination / selected.name).read_text(), {'config_opts': options})
+        self.assertEqual(options['more_buildreqs']['wine'],
+                         ['existing-dependency', 'gcc', 'gcc-c++', 'rpm-build'])
+        self.assertEqual(options['more_buildreqs']['other-package'], ['unrelated'])
+        self.assertEqual(selected.read_text(), original)
+        self.assertEqual((destination / 'site-defaults.cfg').read_bytes(),
+                         (source / 'site-defaults.cfg').read_bytes())
+
+    def test_config_selection_cannot_escape_retained_directory(self):
+        for name in ('../fedora', '/tmp/fedora', r'..\fedora'):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'configuration name'):
+                producer.prepare_mock_config(self.root, self.root / 'unused', name)
 
     def test_network_interface_rejected(self):
         interfaces = self.root / 'interfaces'
