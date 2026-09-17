@@ -1,0 +1,96 @@
+name: Development / native WPE candidates
+
+# Resolves development build dependencies without promoting production pins.
+# These candidates have no production signature and cannot pass the release gate.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/codex/')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            runner: runner
+          - arch: aarch64
+            platform: linux/arm64
+            runner: runner-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Validate native candidate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          [[ "$GITHUB_REF" == refs/heads/codex/* ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ && "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          . os/base-snapshot.env
+          [[ "$BASE_REF" =~ ^code\.podesta\.ai/qos/fedora-bootc@sha256:[0-9a-f]{64}$ ]]
+          echo "BASE_REF=$BASE_REF" >> "$GITHUB_ENV"
+          echo "WPE_CANDIDATE=code.podesta.ai/qos/tilo-wpe-buildroot:candidate-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${{ matrix.arch }}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: code.podesta.ai
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Resolve native Fedora dependency closure
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: os/Containerfile.wpe-buildroot
+          platforms: ${{ matrix.platform }}
+          push: false
+          load: true
+          provenance: false
+          no-cache: true
+          build-args: |
+            BASE_REF=${{ env.BASE_REF }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            ai.tilo.wpe.base=${{ env.BASE_REF }}
+            ai.tilo.wpe.purpose=development-candidate
+          tags: ${{ env.WPE_CANDIDATE }}
+      - name: Audit the frozen candidate before publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p receipt
+          test "$(docker run --rm --network=none --read-only --cap-drop=ALL --entrypoint cat "$WPE_CANDIDATE" /usr/lib/tilo/wpe-buildroot-arch)" = '${{ matrix.arch }}'
+          docker run --rm --network=none --read-only --cap-drop=ALL --entrypoint cat "$WPE_CANDIDATE" /usr/lib/tilo/wpe-buildroot-packages.txt > receipt/packages.txt
+          docker run --rm --network=none --read-only --cap-drop=ALL --entrypoint bash "$WPE_CANDIDATE" -euo pipefail -c \
+            'test -s /usr/lib/tilo/wpe-buildroot-packages.txt; test -z "$(find /etc/yum.repos.d -type f -print -quit)"; rpm -qa --qf "%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n" | LC_ALL=C sort' > receipt/actual-packages.txt
+          cmp receipt/packages.txt receipt/actual-packages.txt
+      - name: Publish unique candidate and record immutable identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker push "$WPE_CANDIDATE"
+          docker image inspect "$WPE_CANDIDATE" > receipt/inspection.json
+          reference=$(python3 -c 'import json,re; image=json.load(open("receipt/inspection.json"))[0]; refs=[r for r in image["RepoDigests"] if re.fullmatch(r"code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}",r)]; assert len(refs)==1, refs; print(refs[0])')
+          docker pull --platform '${{ matrix.platform }}' "$reference"
+          test "$(docker image inspect --format '{{.Id}}' "$reference")" = "$(docker image inspect --format '{{.Id}}' "$WPE_CANDIDATE")"
+          docker image inspect "$reference" > receipt/inspection.json
+          python3 os/dev/wpe-candidate-receipt.py \
+            --architecture '${{ matrix.arch }}' --revision "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" \
+            --base "$BASE_REF" --tag "$WPE_CANDIDATE" --reference "$reference" \
+            --inspection receipt/inspection.json --packages receipt/packages.txt \
+            --recipe os/Containerfile.wpe-buildroot > receipt/candidate.json
+          cat receipt/candidate.json
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: wpe-development-candidate-${{ matrix.arch }}
+          path: receipt/
+      - name: Revoke local registry login
+        if: always()
+        run: docker logout code.podesta.ai || true
