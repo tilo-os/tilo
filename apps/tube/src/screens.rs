@@ -25,6 +25,9 @@ use crate::contrast::SelectedStyle;
 
 const CARD_W: f32 = 300.0;
 const THUMB_H: f32 = 169.0;
+/// Inner padding of a grid card (thumbnail and meta inset from the hover
+/// surface). Section headings share it so heading and card content align.
+const CARD_PAD: f32 = 6.0;
 
 // --- watch page responsive geometry (logical px) ---
 /// Outer padding around the watch content.
@@ -222,6 +225,10 @@ fn menu_button(theme: &Theme, bus: &ActionBus) -> Flex {
 fn section_header(theme: &Theme, kind: Icon, title: &str, subtitle: &str) -> Flex {
     Flex::row()
         .fill_w()
+        // Cards inset their content by `CARD_PAD` inside the grid; the heading
+        // row insets the same so its icon and trailing label sit on the card
+        // content's left and right edges instead of 6 px outside them.
+        .pad_xy(CARD_PAD, 0.0)
         .gap(10.0)
         .align(Align::Center)
         .push(icon(kind, 22.0, theme.accent_primary))
@@ -268,7 +275,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
         .id(&format!("video_card_{}", v.id))
         .fill_w()
         .gap(9.0)
-        .pad(6.0)
+        .pad(CARD_PAD)
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
             radius: f64::from(theme.tokens.radii.lg),
@@ -299,7 +306,7 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
     Flex::row()
         .fill_w()
         .gap(10.0)
-        .pad(6.0)
+        .pad(CARD_PAD)
         .align(Align::Start)
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
@@ -392,7 +399,7 @@ fn skeleton_card(theme: &Theme) -> Flex {
     Flex::col()
         .fill_w()
         .gap(9.0)
-        .pad(6.0)
+        .pad(CARD_PAD)
         .push(skeleton_block(
             theme,
             Len::Fill,
@@ -807,7 +814,7 @@ pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Im
                     .w(Len::Px(96.0))
                     .gap(6.0)
                     .align(Align::Center)
-                    .pad(6.0)
+                    .pad(CARD_PAD)
                     .hover_surface(Surface {
                         fill: Some(hover_fill(theme)),
                         radius: f64::from(theme.tokens.radii.lg),
@@ -953,7 +960,7 @@ fn playlist_card(theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Fl
     Flex::col()
         .fill_w()
         .gap(9.0)
-        .pad(6.0)
+        .pad(CARD_PAD)
         .id(&format!("playlist_card_{}", p.id))
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),

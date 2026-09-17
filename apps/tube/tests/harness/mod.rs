@@ -16,6 +16,11 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    dead_code,
+    reason = "this module is compiled into every integration-test binary and each one uses a \
+              different subset of the harness"
+)]
 
 use std::collections::HashMap;
 
@@ -52,11 +57,22 @@ pub struct Harness<W: Widget> {
 impl<W: Widget> Harness<W> {
     /// Build a harness at the given logical viewport and run the first frame.
     pub fn new(app: W, viewport: (f32, f32)) -> Self {
+        Self::with_text_scale(app, viewport, 1.0)
+    }
+
+    /// Same frame as [`Self::new`], with the accessibility text scale applied
+    /// the way the live host and `ui::headless::FrameHarness` apply it: baked
+    /// into the theme's type tokens *and* set on the renderer, so measurement
+    /// and paint see the same glyph sizes.
+    pub fn with_text_scale(app: W, viewport: (f32, f32), text_scale: f32) -> Self {
+        let theme = Theme::dark().with_text_scale(text_scale);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(theme.text_scale);
         let mut h = Harness {
             app,
             state: ui::State::new(),
-            theme: Theme::dark(),
-            text: TextRenderer::new(),
+            theme,
+            text,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
             child: NodeId::new(0),
@@ -67,6 +83,47 @@ impl<W: Widget> Harness<W> {
         };
         h.frame();
         h
+    }
+
+    /// The renderer scale the frame measured and will paint with.
+    pub fn text_scale(&self) -> f32 {
+        self.text.text_scale()
+    }
+
+    /// Measure `s` with the frame's own renderer, exactly as a `Text` child
+    /// would, so a test can compare a laid-out rect against the metric that
+    /// produced it.
+    pub fn measure_text(&mut self, s: &str, size: f32, max_w: Option<f32>) -> (f32, f32) {
+        self.text.measure(s, size, max_w)
+    }
+
+    /// Every laid-out rect under the widget with `id`, depth-first, paired with
+    /// its depth below that widget (the widget itself is depth 0). Lets a test
+    /// prove composition geometry — "each text line ends before the next
+    /// starts" — on the real measured tree rather than on a helper's estimate.
+    pub fn subtree_rects(&self, id: &str) -> Vec<(usize, Option<String>, Rect)> {
+        fn find<'a>(w: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+            if w.test_id() == Some(id) {
+                return Some(w);
+            }
+            for c in w.children() {
+                if let Some(f) = find(c, id) {
+                    return Some(f);
+                }
+            }
+            None
+        }
+        fn walk(w: &dyn Widget, depth: usize, out: &mut Vec<(usize, Option<String>, Rect)>) {
+            out.push((depth, w.test_id().map(str::to_owned), w.get_rect()));
+            for c in w.children() {
+                walk(c, depth + 1, out);
+            }
+        }
+        let mut out = Vec::new();
+        if let Some(w) = find(&self.app, id) {
+            walk(w, 0, &mut out);
+        }
+        out
     }
 
     /// Run one full layout frame (sync + build + compute + apply). Called after
