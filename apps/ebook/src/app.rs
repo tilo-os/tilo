@@ -4643,16 +4643,19 @@ impl Widget for BooksApp {
             return None;
         }
         let take = max_results.min(roots.len().saturating_sub(offset));
-        let resources = roots[offset..offset + take]
+        let next_offset = offset.saturating_add(take);
+        let resources = roots
+            .get(offset..next_offset)?
             .iter()
             .filter_map(|id| <Self as tilo_actions::ResourceProvider>::resource(self, doc, id))
             .collect();
-        let next_offset = offset.saturating_add(take);
         Some(ui::widget::ActionDirectoryResourcePage {
             resources,
-            next_cursor: (next_offset < roots.len())
-                .then(|| vec![next_offset as u8])
-                .unwrap_or_default(),
+            next_cursor: if next_offset < roots.len() {
+                vec![next_offset as u8]
+            } else {
+                Vec::new()
+            },
             exhausted: next_offset >= roots.len(),
         })
     }
@@ -4923,25 +4926,24 @@ impl Widget for BooksApp {
                 return;
             };
             let registry = Arc::new(registry);
-            match SearchWorker::spawn(
+            if let Ok(worker) = SearchWorker::spawn(
                 Arc::clone(&self.library),
                 Arc::clone(&self.all_annotations),
                 registry,
                 fingerprint,
                 generation,
             ) {
-                Ok(worker) => self.search_worker = Some(worker),
-                Err(_) => {
-                    // A worker construction failure withdraws the directory;
-                    // publishing stale canonical resources would be worse.
-                    self.search_provider = crate::search_provider::BookSearchProvider::new_shared(
-                        Arc::clone(&self.library),
-                        Arc::clone(&self.all_annotations),
-                        Arc::new(Vec::new()),
-                        0,
-                    );
-                    self.action_search_epoch.fetch_add(1, Ordering::AcqRel);
-                }
+                self.search_worker = Some(worker);
+            } else {
+                // A worker construction failure withdraws the directory;
+                // publishing stale canonical resources would be worse.
+                self.search_provider = crate::search_provider::BookSearchProvider::new_shared(
+                    Arc::clone(&self.library),
+                    Arc::clone(&self.all_annotations),
+                    Arc::new(Vec::new()),
+                    0,
+                );
+                self.action_search_epoch.fetch_add(1, Ordering::AcqRel);
             }
         }
     }
