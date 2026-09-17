@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,10 @@ def main():
     native = platform.machine()
     if os.getuid() != 0 or native not in ('x86_64', 'aarch64'):
         raise SystemExit('requires native disposable root CI container')
+    # The fixture installs pinned Cosign here; verify the importer's sanitized
+    # environment discovers that actual executable, not only the caller PATH.
+    if shutil.which('cosign', path=importer.TOOL_PATH) != '/usr/local/bin/cosign':
+        raise ValueError('importer cannot discover the configured pinned Cosign executable')
     with tls_registry() as authority, tempfile.TemporaryDirectory(prefix='tilo-retention-fixture-', dir='/var/lib') as temporary:
         root = Path(temporary)
         auth = root / 'auth.json'
