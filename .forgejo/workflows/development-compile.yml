@@ -1,0 +1,107 @@
+name: Development / full provisional OS compilation
+
+on:
+  workflow_dispatch:
+    inputs:
+      wpe_candidate:
+        description: 'Reviewed native x86-64 tilo-wpe-buildroot@sha256 candidate'
+        required: true
+        type: string
+      generation:
+        description: 'Explicit positive test generation; no release generation is allocated'
+        required: true
+        type: string
+
+concurrency:
+  group: development-compile-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  full-source:
+    if: startsWith(github.ref, 'refs/heads/codex/')
+    # An explicit capacity experiment: full browser compilation has not yet
+    # been measured. The driver samples space and stops at an 8 GiB reserve.
+    runs-on: runner-disk-100g
+    timeout-minutes: 600
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          persist-credentials: false
+      - name: Validate manual inputs and native execution
+        env:
+          WPE_CANDIDATE: ${{ inputs.wpe_candidate }}
+          TEST_GENERATION: ${{ inputs.generation }}
+        run: |
+          set -euo pipefail
+          bash os/dev/assert-native-arch.sh x86_64
+          python3 os/tests/test_development_compile.py
+          python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("compile", "os/dev/compile-development-os.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_inputs(os.environ["WPE_CANDIDATE"], os.environ["TEST_GENERATION"], os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"])'
+          bash os/dev/install-cached-cosign.sh
+      - name: Authenticate input pulls
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: code.sandbox.example
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Build every OS component with isolated ephemeral test trust
+        env:
+          WPE_CANDIDATE: ${{ inputs.wpe_candidate }}
+          TEST_GENERATION: ${{ inputs.generation }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="tilo-provisional-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          context=$(mktemp -d)
+          evidence="$RUNNER_TEMP/provisional-evidence"
+          mkdir "$evidence"
+          cleanup() {
+            # Export an explicit public allowlist, never the private workspace.
+            for file in inputs.json tools.json workspace.json result.json installed-rpms.tsv capacity.json memory-initial.json memory-final.json; do
+              docker cp "$name:/evidence/$file" "$evidence/$file" >/dev/null 2>&1 || true
+            done
+            mkdir -p "$evidence/public-trust"
+            for file in cosign.pub tpm2-pcr-signing.public.pem efi-signing.crt registry-owner.pub manifest.json; do
+              docker cp "$name:/evidence/public-trust/$file" "$evidence/public-trust/$file" >/dev/null 2>&1 || true
+            done
+            docker rm --force "$name" >/dev/null 2>&1 || true
+            docker volume rm "$name-work" "$name-storage" >/dev/null 2>&1 || true
+            docker image rm "$name:tools" >/dev/null 2>&1 || true
+            rm -rf -- "$context"
+          }
+          trap cleanup EXIT
+          cp "$(command -v cosign)" "$context/cosign"
+          cp os/Containerfile.development-compile "$context/Containerfile"
+          docker build --file "$context/Containerfile" --tag "$name:tools" \
+            --build-arg BUILDER_REF=code.sandbox.example/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9 "$context"
+          docker volume create "$name-work"
+          docker volume create "$name-storage"
+          # These volumes and privileges exist only in the disposable Kata CI
+          # guest. No physical disk, TPM, host directory or Docker socket is mounted.
+          docker create --name "$name" --privileged \
+            --mount "type=volume,src=$name-work,dst=/work" \
+            --mount "type=volume,src=$name-storage,dst=/var/lib/containers" \
+            --env REGISTRY_AUTH_FILE=/registry-auth.json \
+            "$name:tools" --wpe "$WPE_CANDIDATE" --generation "$TEST_GENERATION" \
+              --revision "$GITHUB_SHA" --branch "$GITHUB_REF"
+          docker cp . "$name:/work/repo"
+          python3 - "${DOCKER_CONFIG:-$HOME/.docker}/config.json" "$context/registry-auth.json" <<'PY'
+          import json, os, sys
+          registry = 'code.sandbox.example'
+          credentials = json.load(open(sys.argv[1]))['auths'][registry]
+          descriptor = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(descriptor, 'w') as stream:
+              json.dump({'auths': {registry: credentials}}, stream)
+          PY
+          docker cp "$context/registry-auth.json" "$name:/registry-auth.json"
+          docker start --attach "$name"
+          # Docker attach does not establish the container's exit status.
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$name")" = 0
+      - name: Retain public compilation evidence
+        if: always()
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: provisional-os-compilation-${{ github.sha }}
+          path: ${{ runner.temp }}/provisional-evidence/
+          if-no-files-found: warn
+          retention-days: 14

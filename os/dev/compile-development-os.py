@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""Compile the full x86-64 development OS in a disposable CI guest.
+
+The resulting local container has a provisional composefs seal. It is never
+published, exported or installed; only public trust and build receipts leave
+the guest. Private identities belong to this run and cannot sign future updates.
+"""
+import argparse
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import signal
+import shutil
+import subprocess
+import time
+
+REPO = Path(__file__).resolve().parents[2]
+PRIVATE = Path('/var/lib/tilo-provisional-compile')
+EVIDENCE = Path('/evidence')
+BUILDER = 'code.sandbox.example/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9'
+PIN_FILES = {'BASE_REF': 'base-snapshot.env', 'RPMS_REF': 'rpms-snapshot.env',
+             'KERNEL_RPMS_REF': 'kernel-snapshot.env'}
+GIB = 1024**3
+INITIAL_FREE = 80 * GIB
+ABORT_FREE = 8 * GIB
+
+
+def validate_inputs(wpe, generation, revision, branch):
+    if not re.fullmatch(r'code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}', wpe):
+        raise ValueError('an immutable reviewed WPE candidate reference is required')
+    if not re.fullmatch(r'[1-9][0-9]{0,11}', generation):
+        raise ValueError('generation must be an explicit positive decimal integer')
+    if not re.fullmatch(r'[0-9a-f]{40}', revision):
+        raise ValueError('full committed source revision required')
+    if not branch.startswith('refs/heads/codex/'):
+        raise ValueError('provisional full compilation is restricted to codex branches')
+
+
+def run(*command, env=None, capture=True):
+    result = subprocess.run(command, cwd=REPO, env=env, check=True,
+                            stdout=subprocess.PIPE if capture else None,
+                            stderr=subprocess.PIPE if capture else None)
+    return result.stdout.decode().strip() if capture else ''
+
+
+def write_receipt(name, value):
+    (EVIDENCE / name).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
+
+
+def capacity_decision(free, *, starting):
+    threshold = INITIAL_FREE if starting else ABORT_FREE
+    return free >= threshold
+
+
+def memory_budget():
+    result = {'scope': 'container-visible cgroup and guest meminfo'}
+    for name in ('memory.max', 'memory.peak', 'memory.events', 'cpu.max', 'cpuset.cpus.effective'):
+        path = Path('/sys/fs/cgroup') / name
+        result[name] = path.read_text()[:1024].strip() if path.is_file() else 'unavailable'
+    path = Path('/proc/meminfo')
+    result['guest_memory'] = [line for line in path.read_text().splitlines()
+                              if line.startswith(('MemTotal:', 'MemAvailable:', 'SwapTotal:'))]
+    return result
+
+
+def compile_with_capacity_watchdog(env):
+    """Measure the capacity experiment and stop our build before guest ENOSPC."""
+    initial = shutil.disk_usage('/var/lib/containers').free
+    started = time.monotonic()
+    receipt = {'capacity_experiment': True, 'sufficiency_previously_proven': False,
+               'initial_free_bytes': initial, 'minimum_free_bytes': initial,
+               'abort_free_bytes': ABORT_FREE, 'samples': 0, 'status': 'running'}
+    child = subprocess.Popen(['bash', 'os/dev/build-image.sh'], cwd=REPO, env=env,
+                             start_new_session=True)
+    try:
+        while True:
+            free = min(shutil.disk_usage(path).free for path in ('/work', '/var/lib/containers'))
+            receipt.update(last_sample_unix=time.time(), elapsed_seconds=time.monotonic() - started,
+                           last_free_bytes=free,
+                           minimum_free_bytes=min(receipt['minimum_free_bytes'], free),
+                           samples=receipt['samples'] + 1)
+            write_receipt('capacity.json', receipt)
+            if not capacity_decision(free, starting=False):
+                receipt['status'] = 'aborted-before-guest-storage-exhaustion'
+                raise ValueError('capacity experiment reached the 8 GiB free-space reserve')
+            try:
+                code = child.wait(timeout=5)
+                receipt['status'] = 'build-succeeded' if code == 0 else 'build-failed'
+                if code:
+                    raise subprocess.CalledProcessError(code, child.args)
+                return
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        if child.poll() is None:
+            # This is only the process group launched by this driver. The outer
+            # workflow subsequently removes its own disposable container/volumes.
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                child.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    child.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    # Exiting this container's PID 1 lets the outer workflow
+                    # remove any remaining build processes with the container.
+                    receipt['termination_timeout'] = True
+        write_receipt('capacity.json', receipt)
+        write_receipt('memory-final.json', memory_budget())
+
+
+def inspect_compilation(image_name, revision, generation, target, manifest_digest, certificate_digest):
+    spec = importlib.util.spec_from_file_location('compile_rootfs', REPO / 'os/dev/sign-development-rootfs.py')
+    signing = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(signing)
+    raw = run('podman', '--remote=false', 'image', 'inspect', image_name)
+    image = json.loads(raw)[0]
+    signing.identity(raw, image['Id'], 'x86_64', revision)
+    with signing.mounted(image['Id']) as root:
+        profile = signing.source.mounted_identity(root, target, manifest_digest, 'x86_64')
+        embedded_generation = signing.hardware.trusted_path(root, Path('usr/lib/tilo/generation'), regular=True)
+        if embedded_generation.read_text().strip() != generation:
+            raise ValueError('compiled image generation differs from explicit input')
+        original = signing.hardware.trusted_path(root,
+            Path('usr/lib/systemd/boot/efi/systemd-bootx64.efi'), regular=True)
+        signed = signing.hardware.trusted_path(root,
+            Path('usr/lib/systemd/boot/efi/systemd-bootx64.efi.signed'), regular=True)
+        loader = signing.loader.verify(original, signed, PRIVATE / 'public/efi-signing.crt',
+                                        certificate_digest, 'x86_64')
+        # Query the mounted RPM database using the trusted tools image. Do not
+        # run the compiled OS entrypoint or any image-supplied inspection code.
+        packages = run('rpm', '--root', str(root), '-qa', '--qf',
+                       '%{NAME}\t%{EPOCHNUM}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n')
+        if not packages:
+            raise ValueError('compiled OS RPM inventory is empty')
+        (EVIDENCE / 'installed-rpms.tsv').write_text('\n'.join(sorted(packages.splitlines())) + '\n')
+    return {'image_id': image['Id'], 'hardware_profile': profile, 'loader': loader}
+
+
+def pinned_inputs():
+    result = {}
+    for variable, filename in PIN_FILES.items():
+        lines = (REPO / 'os' / filename).read_text().splitlines()
+        values = [line.split('=', 1)[1] for line in lines if line.startswith(variable + '=')]
+        if len(values) != 1 or not re.fullmatch(r'code\.podesta\.ai/qos/[a-z0-9-]+@sha256:[0-9a-f]{64}', values[0]):
+            raise ValueError(f'{filename} must contain one immutable {variable}')
+        result[variable] = values[0]
+    return result
+
+
+def build_environment(wpe, generation, revision, manifest, signer):
+    # No inherited TILO_BUILD_ARGS, prebuilt payload, skip-build or remote engine
+    # settings can change this from a complete, local, source build.
+    allowed = ('PATH', 'HOME', 'CARGO_HOME', 'RUSTUP_HOME', 'REGISTRY_AUTH_FILE')
+    env = {name: os.environ[name] for name in allowed if name in os.environ}
+    env.update(LANG='C.UTF-8', TILO_DISTROBOX='',
+               TILO_IMAGE='localhost/tilo-development:compile-' + revision[:12],
+               TILO_OUTPUT='/work/output', TMPDIR='/work/tmp',
+               TILO_INSTALLER_SCRATCH=str(PRIVATE),
+               TILO_PUBLIC_TRUST_MODE='development',
+               TILO_PUBLIC_TRUST_BUNDLE=str(PRIVATE / 'public'),
+               TILO_PUBLIC_TRUST_MANIFEST_SHA256=manifest,
+               TILO_PCR_PREDICTION_SIGNER=signer,
+               TILO_TARGET_IMGREF='code.sandbox.example/qos/tilo-development:provisional-' + revision[:12] + '-x86_64',
+               TILO_GENERATION=generation, TILO_SEAL_GENERATION='1',
+               TILO_WITH_BROWSER='1', TILO_WPE_BOOTSTRAP='0',
+               TILO_WPE_BUILD_JOBS='2', WPE_BUILDROOT_REF=wpe,
+               TILO_SKIP_BUILD='0', TILO_HARDWARE_PROFILE='generic',
+               TILO_BUILD_ARGS='--build-arg TILO_PREBUILT_APPS=0 --build-arg TILO_PREBUILT_DESKTOP=0 --build-arg TILO_CARGO_BUILD_JOBS=2')
+    return env
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ('wpe', 'generation', 'revision', 'branch'):
+        parser.add_argument('--' + name, required=True)
+    args = parser.parse_args()
+    validate_inputs(args.wpe, args.generation, args.revision, args.branch)
+    if os.getuid() != 0 or platform.machine() != 'x86_64':
+        raise ValueError('already-root native x86-64 Linux guest required')
+    if run('git', 'rev-parse', 'HEAD') != args.revision or run('git', 'status', '--porcelain', '--untracked-files=all'):
+        raise ValueError('checkout must be clean and match the requested revision')
+    os.umask(0o077)
+    PRIVATE.mkdir(mode=0o700)
+    EVIDENCE.mkdir(mode=0o755)
+    Path('/work/tmp').mkdir()
+    pins = pinned_inputs()
+    write_receipt('inputs.json', {'purpose': 'provisional-full-source-compilation',
+        'installable': False, 'revision': args.revision, 'architecture': 'x86_64',
+        'generation': args.generation, 'wpe_candidate': args.wpe, 'builder': BUILDER,
+        'pins': pins, 'browser': True, 'prebuilt_apps': False, 'prebuilt_desktop': False})
+    # Full source builds need real guest backing storage, not a small tmpfs.
+    free = shutil.disk_usage('/var/lib/containers').free
+    if not capacity_decision(free, starting=True):
+        raise ValueError('capacity experiment requires 80 GiB free after tooling setup')
+    write_receipt('memory-initial.json', memory_budget())
+    info = json.loads(run('podman', '--remote=false', 'info', '--format', 'json'))
+    if info['store']['graphDriverName'] != 'overlay':
+        raise ValueError('private guest volume must support native Podman overlay storage')
+    write_receipt('tools.json', {name: run(*command) for name, command in {
+        'podman': ('podman', '--version'), 'cargo': ('cargo', '--version'),
+        'rustc': ('rustc', '--version'), 'cosign': ('cosign', 'version'),
+        'openssl': ('openssl', 'version')}.items()})
+    metadata = json.loads(run('cargo', 'metadata', '--locked', '--no-deps', '--format-version', '1'))
+    write_receipt('workspace.json', {'packages': sorted(package['name'] for package in metadata['packages'])})
+    run('bash', 'os/tests/app_store.sh', capture=False)
+    signer = json.loads(run('python3', 'os/dev/setup-development-signer.py', str(PRIVATE / 'signer')))
+    identity_env = os.environ.copy()
+    identity_env['COSIGN_PASSWORD'] = ''
+    run('cosign', 'generate-key-pair', '--output-key-prefix', str(PRIVATE / 'cosign'), env=identity_env)
+    run('openssl', 'genpkey', '-algorithm', 'ED25519', '-out', str(PRIVATE / 'owner.key'))
+    der = subprocess.run(['openssl', 'pkey', '-in', str(PRIVATE / 'owner.key'), '-pubout', '-outform', 'DER'],
+                         check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+    if len(der) != 44 or der[:12] != bytes.fromhex('302a300506032b6570032100'):
+        raise ValueError('unexpected Ed25519 public key encoding')
+    (PRIVATE / 'owner.pub').write_text(der[12:].hex() + '\n')
+    trust = json.loads(run('python3', 'os/dev/development-trust.py', 'create',
+        '--cosign-public', str(PRIVATE / 'cosign.pub'), '--pcr-public', signer['pcr_public'],
+        '--efi-certificate', signer['efi_certificate'], '--registry-owner', str(PRIVATE / 'owner.pub'),
+        '--output', str(PRIVATE / 'public')))
+    shutil.copytree(PRIVATE / 'public', EVIDENCE / 'public-trust')
+    env = build_environment(args.wpe, args.generation, args.revision, trust['manifest_sha256'], signer['signer'])
+    compile_with_capacity_watchdog(env)
+    inspection = inspect_compilation(env['TILO_IMAGE'], args.revision, args.generation,
+        env['TILO_TARGET_IMGREF'], trust['manifest_sha256'], trust['identities']['efi-signing.crt'])
+    write_receipt('result.json', {'status': 'provisional-compilation-complete',
+        'installable': False, 'published': False, 'disk_created': False,
+        'reason': 'provisional composefs seal; ephemeral trust; disk/VM acceptance not performed',
+        **inspection, 'revision': args.revision, 'generation': args.generation,
+        'public_manifest_sha256': trust['manifest_sha256'],
+        'containerfile_sha256': hashlib.sha256((REPO / 'os/Containerfile').read_bytes()).hexdigest()})
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+        # Captured key-generation output is intentionally never reproduced.
+        raise SystemExit(f'provisional full compilation failed: {type(error).__name__}: {error}') from None
