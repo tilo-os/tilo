@@ -735,10 +735,12 @@ pub(super) fn paint_cell(scene: &mut Scene, transform: Affine, theme: &Theme, re
         colors.surfaces.raised
     };
     scene.fill(Fill::NonZero, transform, fill, None, &shape);
+    // Rest edge derived from the face painted (HIG §9.5), so a cell reads
+    // as a field on the dark preset where `border_standard` vanished.
     let (edge, edge_w) = if focused {
         (colors.border_focus, 2.0)
     } else {
-        (colors.border_standard, 1.0)
+        (crate::surface::edge_on(fill), 1.0)
     };
     scene.stroke(&Stroke::new(edge_w), transform, edge, None, &shape);
 }

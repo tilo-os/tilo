@@ -233,19 +233,20 @@ impl ConflictBanner {
         hovered: bool,
     ) {
         let (label, measured) = label;
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+        // A Neutral button face (HIG §9.5): raised at rest, the theme's
+        // hover fill when hovered, edge derived from the face — not a white
+        // veneer that is invisible on a light palette.
         let body = if hovered {
-            theme.tokens.colors.surface_white_20
+            theme.bg_hover
         } else {
-            theme.tokens.colors.surface_white_10
+            theme.tokens.colors.surfaces.raised
         };
-        scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
-        scene.stroke(
-            &Stroke::new(1.0),
+        crate::surface::card(
+            scene,
             transform,
-            theme.tokens.colors.border_white_20,
-            None,
-            &shape,
+            rect,
+            f64::from(theme.tokens.radii.sm),
+            body,
         );
         let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         // Centre on the measurement the chip was sized from; a host that

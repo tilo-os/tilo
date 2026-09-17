@@ -743,25 +743,26 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         }
 
         let body = crate::surface::soft_outline(self.rect);
+        let material = theme.tokens.colors.surfaces.raised;
         scene.fill(
             Fill::NonZero,
             visual,
-            theme
-                .tokens
-                .colors
-                .surfaces
-                .raised
-                .with_alpha_factor(material_alpha as f32),
+            material.with_alpha_factor(material_alpha as f32),
             None,
             &body,
         );
+        // Object role (HIG §9.1): a floating window is a silhouette over the
+        // desktop, so its rim is `Colors::window_edge()` — the hairline the
+        // shell paints around every window card — fading with the material.
+        // The declared `border_standard` sat within rounding distance of
+        // `raised` on the dark preset and read as no edge at all.
         scene.stroke(
             &Stroke::new(1.0),
             visual,
             theme
                 .tokens
                 .colors
-                .border_standard
+                .window_edge()
                 .with_alpha_factor(material_alpha as f32),
             None,
             &body,
