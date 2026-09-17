@@ -209,7 +209,6 @@ pub struct DeviceMeshPane {
     management_device: Option<String>,
     next_peer_health: usize,
     remove_armed: std::collections::HashSet<String>,
-    pending_role: Option<DeviceRole>,
     apply_child: Option<bounded_command::AsyncCommand>,
     apply_queued: bool,
     pairing_child: Option<bounded_command::AsyncCommand>,
