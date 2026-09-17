@@ -2,9 +2,16 @@
 # Native CI tooling only. Target dependencies are frozen separately by Mock.
 ARG BASE_REF
 FROM ${BASE_REF}
+# Import the base's Fedora trust anchor in a separate RPM transaction before
+# DNF opens the database for dependency resolution. CI reported SQLite's
+# "attempt to write a readonly database" while DNF imported this key later.
+# Keep package signature checks enabled and fail on database corruption.
 RUN test "$(uname -m)" = x86_64 \
- && dnf5 install -y mock mock-core-configs dnf5-plugins rpm-build gcc gcc-c++ \
+ && rpmkeys --import /etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary \
+ && rpmdb --verifydb \
+ && dnf5 install -y --setopt=gpgcheck=True mock mock-core-configs dnf5-plugins rpm-build gcc gcc-c++ \
       sudo util-linux createrepo_c podman python3 tar xz cpio findutils \
+ && rpmdb --verifydb \
  && dnf5 clean all \
  && useradd --uid 1000 --create-home --groups mock tilo-build \
  && printf '%s\n' 'tilo-build ALL=(root) NOPASSWD: /usr/bin/python3 /tilo/wine-mock-producer.py *' > /etc/sudoers.d/tilo-wine \
