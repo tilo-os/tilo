@@ -368,6 +368,51 @@ mod tests {
     }
 
     #[test]
+    fn every_cross_crate_settings_writer_has_reviewed_leaves() {
+        // These are the non-core writers of settings.json. Core Settings
+        // structs have their own schema-derived coverage test in
+        // apps/settings/src/prefs.rs. Keeping the other writer shapes here
+        // makes a new cross-crate leaf fail until its ownership is reviewed.
+        let document = serde_json::json!({
+            "display_outputs": {"outputs": {}},
+            "display_transaction": {
+                "id": 1,
+                "state": "requested",
+                "previous": {},
+                "candidate": {},
+                "deadline_unix_ms": null,
+                "message": null
+            },
+            "shortcuts": {"bindings": {}},
+            "desktop_controls": {"vim_mode": false},
+            "quick_settings": {"controls": ["wifi"]},
+            "text_assistance": {"check_spelling": true, "auto_correct": true},
+            "continuity": {
+                "enabled": false,
+                "clipboard": false,
+                "notifications": false,
+                "wifi_settings": false,
+                "media": false,
+                "display_input": false,
+                "file_transfer": false,
+                "realtime_sessions": false,
+                "typed_gamepad": false,
+                "app_continuations": false,
+                "audit": []
+            },
+            "agent_providers": {"config": {}},
+            "collaboration": {"status_sharing": "automatic", "manual_status": null},
+            "history": {"seen_frontiers": {}},
+            "ebook_local_library": {"books": {}, "watched_folders": [], "shortcuts": {}},
+            "video_player": {"autoplay": true, "loop_enabled": false, "recent_history": []}
+        });
+        assert_eq!(
+            unclassified_leaves(document.as_object().unwrap()),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn registry_names_all_ownership_boundaries() {
         assert!(
             POLICIES
