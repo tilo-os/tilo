@@ -11,6 +11,10 @@ pub use interaction::{
     ACTIVE_INTERACTION_EXPIRY, InteractionCardPlacement, TERMINAL_INTERACTION_DWELL,
 };
 pub use key::{PathSegment, PointerSpace, PresenceKey, SelectionRange};
+/// Shared with the other widgets that frame a label in fixed-pixel insets
+/// (the capture studio's docked recorder), so one rule decides how much
+/// larger than the default a label paints.
+pub(crate) use render::label_magnification;
 pub use render::{
     PeerCursor, PillPlacement, PillRequest, contrast_ink, draw_peer_cursors, draw_peer_presence,
     draw_remote_cursors, draw_remote_presence, layout_peer_pills,
