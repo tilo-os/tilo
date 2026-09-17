@@ -1251,12 +1251,18 @@ impl Widget for ImageEditorApp {
     ) {
         let c = &theme.tokens.colors;
         s.fill(Fill::NonZero, a, c.surfaces.base, None, &self.rect);
-        tr.draw_text_weighted(
-            s,
+        let title = tr.elide_to_width_weighted(
             &self.project.name,
             20.0,
+            (self.rect.width() - 36.0).max(0.0) as f32,
+            TextWeight::Semibold,
+        );
+        tr.draw_text_weighted(
+            s,
+            &title,
+            20.0,
             c.text_primary,
-            a.pre_translate((18.0 + self.rect.x0, 26.0 * self.text_scale + self.rect.y0).into()),
+            a.pre_translate((18.0 + self.rect.x0, 8.0 * self.text_scale + self.rect.y0).into()),
             None,
             TextWeight::Semibold,
         );
