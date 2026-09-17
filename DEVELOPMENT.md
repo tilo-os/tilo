@@ -176,6 +176,10 @@ cargo test --locked -p pdf-viewer --all-targets -- --test-threads=1
 The library override is for development binaries outside the installation directory;
 installed apps discover their adjacent DLL automatically. Requiring PDFium during
 tests prevents a missing renderer from leaving backend tests unverified.
+PDF Viewer captures wait for the production worker's visible pages and thumbnails;
+unfinished rendering fails after 15 seconds. The explicit `loading` scenario keeps
+its intentional placeholder. `cargo test --locked -p pdf-viewer --test capture`
+exercises this worker path separately from the synchronous library tests.
 
 For smaller local development artifacts, set `CARGO_PROFILE_DEV_DEBUG=0` and
 `CARGO_PROFILE_TEST_DEBUG=0` in the PowerShell environment before building. Do not
