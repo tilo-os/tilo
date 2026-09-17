@@ -1126,13 +1126,15 @@ fn validate_absolute_directory(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn open_directory(path: &Path, _writable: bool) -> io::Result<File> {
+fn open_directory(path: &Path, writable: bool) -> io::Result<File> {
+    #[cfg(not(windows))]
+    let _ = writable;
     let mut options = OpenOptions::new();
     options.read(true);
     // Windows directory handles require BACKUP_SEMANTICS, and
     // FlushFileBuffers requires a handle opened for writing.
     #[cfg(windows)]
-    options.write(_writable).custom_flags(0x0200_0000);
+    options.write(writable).custom_flags(0x0200_0000);
     options.open(path)
 }
 

@@ -4,14 +4,20 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use collab_types::{
-    Ed25519PublicKey, FilePermission, FileRecordId, MAX_SHARE_CONTROL_FRAME_BYTES,
-    NamedGrantMetadataV1, SHARE_CONTROL_VERSION, ShareControlOperationV1, ShareControlRequestV1,
+    Ed25519PublicKey, FilePermission, FileRecordId, NamedGrantMetadataV1, ShareControlOperationV1,
+};
+#[cfg(unix)]
+use collab_types::{
+    MAX_SHARE_CONTROL_FRAME_BYTES, SHARE_CONTROL_VERSION, ShareControlRequestV1,
     ShareControlResponseV1, ShareControlResultV1,
 };
+#[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
-use crate::i18n::{arg, t, t_args};
+use crate::i18n::t;
+#[cfg(unix)]
+use crate::i18n::{arg, t_args};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ShareActionResult {
@@ -193,6 +199,7 @@ fn now_ms() -> u64 {
         .map_or(0, |duration| duration.as_millis() as u64)
 }
 
+#[cfg(unix)]
 fn transact(
     socket: &Path,
     operation: ShareControlOperationV1,
@@ -294,7 +301,9 @@ fn transact(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::io::{Read, Write};
+    #[cfg(unix)]
     use std::os::unix::net::UnixListener;
 
     use super::*;
@@ -361,6 +370,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn named_share_sends_the_human_root_and_no_display_name() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("share.sock");
@@ -427,6 +437,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn one_time_link_explicitly_requests_exactly_one_redemption() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("share.sock");
@@ -473,4 +484,12 @@ mod tests {
         );
         server.join().unwrap();
     }
+}
+
+#[cfg(not(unix))]
+fn transact(
+    _socket: &Path,
+    _operation: ShareControlOperationV1,
+) -> Result<ShareActionResult, String> {
+    Err(t("files-share-not-available"))
 }

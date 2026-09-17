@@ -7,7 +7,7 @@
 //! handling is centralised in [`unique_destination`] so copy/move never
 //! silently clobber an existing file.
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
@@ -20,6 +20,10 @@ fn leaf_name(name: &str) -> Result<&str, String> {
     let name = name.trim();
     if name.is_empty() {
         return Err(crate::i18n::t("files-name-empty"));
+    }
+    #[cfg(windows)]
+    if name.contains(':') || name.ends_with('.') {
+        return Err(crate::i18n::t("files-name-invalid"));
     }
     let path = Path::new(name);
     if name.contains('/')
@@ -53,6 +57,11 @@ fn ensure_destination_is_outside_source(src: &Path, dest_dir: &Path) -> Result<(
 /// The XDG "home trash" files directory (`~/.local/share/Trash/files`), where
 /// trashed files are kept. `None` when there is no data dir.
 pub fn trash_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        None
+    }
+    #[cfg(not(windows))]
     dirs::data_dir().map(|d| d.join("Trash").join("files"))
 }
 
@@ -86,7 +95,7 @@ pub fn empty_trash() -> Result<usize, String> {
 /// Whether trash `item` backs the in-trash file named `files_name` (the name
 /// shown in `Trash/files`). The item's `.trashinfo` file is
 /// `Trash/info/<files_name>.trashinfo`, so match on that.
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn trash_item_backs(item: &trash::TrashItem, files_name: &OsStr) -> bool {
     Path::new(&item.id)
         .file_name()
@@ -97,7 +106,7 @@ fn trash_item_backs(item: &trash::TrashItem, files_name: &OsStr) -> bool {
 
 /// The trash items backing the given in-trash file paths (matched by their
 /// `.trashinfo` file name, which is robust to on-trash name deduplication).
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn trash_items_for(entries: &[PathBuf]) -> Result<Vec<trash::TrashItem>, String> {
     let wanted: Vec<_> = entries
         .iter()
@@ -118,7 +127,7 @@ fn trash_items_for(entries: &[PathBuf]) -> Result<Vec<trash::TrashItem>, String>
 /// Returns an error if the platform trash is unavailable, or listing or
 /// restoring the matched items fails (e.g. the original location no longer
 /// exists).
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 pub fn restore_entries(entries: &[PathBuf]) -> Result<usize, String> {
     let items = trash_items_for(entries)?;
     let n = items.len();
@@ -133,7 +142,7 @@ pub fn restore_entries(entries: &[PathBuf]) -> Result<usize, String> {
 ///
 /// Returns an error if the platform trash is unavailable, or listing or
 /// purging the matched items fails.
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(unix, not(target_os = "macos")))]
 pub fn purge_entries(entries: &[PathBuf]) -> Result<usize, String> {
     let items = trash_items_for(entries)?;
     let n = items.len();
@@ -336,13 +345,13 @@ pub fn empty_trash() -> Result<usize, String> {
 }
 /// # Errors
 /// This host has no qualified trash-restore provider.
-#[cfg(target_os = "macos")]
+#[cfg(any(windows, target_os = "macos"))]
 pub fn restore_entries(_entries: &[PathBuf]) -> Result<usize, String> {
     Err("Trash restore is unavailable on this host".into())
 }
 /// # Errors
 /// This host has no qualified trash-item purge provider.
-#[cfg(target_os = "macos")]
+#[cfg(any(windows, target_os = "macos"))]
 pub fn purge_entries(_entries: &[PathBuf]) -> Result<usize, String> {
     Err("Trash purge is unavailable on this host".into())
 }
@@ -351,6 +360,51 @@ pub fn purge_entries(_entries: &[PathBuf]) -> Result<usize, String> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_mutations_reject_stream_names_and_do_not_present_an_xdg_trash() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("document.txt");
+        fs::write(&source, b"keep this file").unwrap();
+        for name in ["document.txt:hidden", "document.txt."] {
+            assert!(rename(&source, name).is_err());
+            assert!(new_folder(directory.path(), name).is_err());
+        }
+        assert_eq!(fs::read(&source).unwrap(), b"keep this file");
+        assert!(trash_dir().is_none());
+        assert!(restore_entries(std::slice::from_ref(&source)).is_err());
+        assert!(purge_entries(std::slice::from_ref(&source)).is_err());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn copying_a_junction_never_reads_or_copies_the_outside_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        let outside = directory.path().join("outside");
+        let source = directory.path().join("source");
+        let destination = directory.path().join("destination");
+        for path in [&outside, &source, &destination] {
+            fs::create_dir(path).unwrap();
+        }
+        fs::write(outside.join("private.txt"), b"outside data").unwrap();
+        let junction = source.join("link");
+        let result = std::process::Command::new("cmd.exe")
+            .args(["/c", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&outside)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        assert!(copy_into(&source, &destination).is_err());
+        assert!(!destination.join("source/link/private.txt").exists());
+        assert_eq!(
+            fs::read(outside.join("private.txt")).unwrap(),
+            b"outside data"
+        );
+        fs::remove_dir(&junction).unwrap();
+    }
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
