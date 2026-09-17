@@ -917,9 +917,10 @@ mod tests {
         let _ = lay_out_card_mut(&mut c);
 
         let surface = c.children()[0];
-        let column = surface.children()[0];
+        let section = surface.children()[0];
+        let column = section.children()[0];
         let title = column.children()[0].get_rect();
-        let body = column.children()[1].get_rect();
+        let body = column.children()[2].get_rect();
         assert_eq!(body.y0 - title.y1, f64::from(CARD_TITLE_GAP));
     }
 
