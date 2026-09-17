@@ -92,10 +92,17 @@ provenance only; this does not enroll a certificate or sign a UKI.
 TILO_PUBLIC_TRUST_MODE=development \
 TILO_PUBLIC_TRUST_BUNDLE="$PUBLIC_BUNDLE" \
 TILO_PUBLIC_TRUST_MANIFEST_SHA256="$EXPECTED_PUBLIC_BUNDLE_SHA256" \
+TILO_PCR_PREDICTION_SIGNER="$ROOTFUL_DEVELOPMENT_SIGNER" \
 TILO_IMAGE=localhost/tilo-development:trust-test \
 TILO_TARGET_IMGREF=registry.vm.test:5443/tilo-development/os:trust-test \
   bash os/dev/build-image.sh
 ```
+
+Run this command as root using the local rootful Podman store. Provision
+`ROOTFUL_DEVELOPMENT_SIGNER` with the helper described below, and include its
+public certificate and PCR key in the selected bundle. The rootfs loader is
+signed before the sealing stages; the final UKIs still require the separate
+sealing/signing integration.
 
 All normal pinned build inputs are still required. Development mode rejects
 skip-build and production aliases, and returns after container creation,
@@ -195,11 +202,14 @@ export TILO_EFI_SIGNING_CERT_SHA256
 bash os/dev/sign-target-prediction.sh "$TILO_IMAGE" "$TILO_PCR_PREDICTION_SIGNER"
 ```
 
-`build-image.sh` and `build-custom-installer.sh` invoke that interface only when
+The production disk path in `build-image.sh` and the path in
+`build-custom-installer.sh` invoke final UKI/PCR signing when
 `TILO_REQUIRE_PCR_PREDICTION=1` or `TILO_ALLOW_LOCAL_PCR_SIGNING=1`. The latter
 is an invocation opt-in, **not** a key-injection mechanism or a firmware-trust
 override. Do not set it on the current production-key image expecting a new
-test key to work.
+test key to work. Development mode signs the rootfs loader unconditionally and
+stops after provisional container creation, before either of these final
+UKI/PCR signing flags can trigger disk preparation.
 
 ### Provisioning the rootful development signer
 
