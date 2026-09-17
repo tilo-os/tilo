@@ -1375,6 +1375,18 @@ impl HighlightPlan {
     }
 }
 
+/// Ephemeral reader state needed to author actions for the currently open
+/// book. It deliberately stays out of the compact search snapshot: only an
+/// exact lookup of that one book receives these presentation actions.
+#[derive(Debug, Clone)]
+pub struct BookResourceCtx {
+    pub book_id: String,
+    pub chapter: usize,
+    pub bookmark_block: usize,
+    pub bookmark: BookmarkPlan,
+    pub selection_highlight: Option<HighlightPlan>,
+}
+
 // Same infallibility as `encode` above: `ActionSpec::immediate` can only fail
 // on JSON serialization, which `EbookAction`'s primitive fields never trigger.
 #[allow(
@@ -1383,6 +1395,74 @@ impl HighlightPlan {
 )]
 fn encode_spec(id: &str, label: &str, action: &EbookAction) -> ActionSpec {
     ActionSpec::immediate(id, label, EBOOK_ACTION_TYPE, action).expect("encode ebook action")
+}
+
+/// Add the controls that are meaningful only for the reader's active book to
+/// an already resolved canonical book resource. This preserves the bounded
+/// directory while retaining the exact same action set as the on-page reader.
+pub(crate) fn current_book_actions(mut resource: Resource, ctx: &BookResourceCtx) -> Resource {
+    resource = resource.with_action(encode_spec(
+        "toggle-bookmark",
+        "Toggle bookmark",
+        &ctx.bookmark.clone().into_action(),
+    ));
+    if let Some(plan) = &ctx.selection_highlight {
+        resource = resource.with_action(encode_spec(
+            "highlight-selection",
+            "Highlight selection",
+            &plan.clone().into_action(),
+        ));
+    }
+    let book_id = ctx.book_id.clone();
+    let chapter = ctx.chapter;
+    let block = ctx.bookmark_block;
+    resource = resource.with_action(ActionSpec::prompted(
+        "add-note",
+        "Add note",
+        "Note",
+        "your note…",
+        ExecutionLocus::ClientLocal,
+        move |text| {
+            encode(
+                &NoteDraft {
+                    book_id: book_id.clone(),
+                    id: Uuid::new_v4(),
+                    anchor: AnnotationAnchor {
+                        chapter,
+                        block,
+                        start: 0,
+                        end: 0,
+                        excerpt: String::new(),
+                    },
+                    color: HiColor::Yellow,
+                    text: text.to_string(),
+                }
+                .into_action(),
+            )
+        },
+    ));
+    for (id, label, value) in [
+        (
+            "previous-page",
+            "Previous page",
+            EbookOperation::PreviousPage,
+        ),
+        ("next-page", "Next page", EbookOperation::NextPage),
+        (
+            "contents",
+            "Toggle table of contents",
+            EbookOperation::ToggleContents,
+        ),
+        ("notes", "Toggle notes", EbookOperation::ToggleNotes),
+        (
+            "settings",
+            "Open reading settings",
+            EbookOperation::OpenSettings,
+        ),
+    ] {
+        resource = resource.with_action(operation(id, label, OperationKind::View, value));
+    }
+    resource
 }
 
 fn settings_resource(doc: &AutoCommit) -> Resource {
@@ -1564,7 +1644,9 @@ fn library_preference_actions(mut library: Resource, doc: &AutoCommit) -> Resour
 pub fn provide_resources(_books: &[crate::model::Book], doc: &AutoCommit) -> Vec<Resource> {
     let library = Resource::new("ebook.library", "ebook.library", "Books library")
         .with_action(open_book_operation());
-    vec![library_preference_actions(library, doc)]
+    let mut settings = settings_resource(doc);
+    settings.children.clear();
+    vec![library_preference_actions(library, doc), settings]
 }
 
 impl ResourceProvider for crate::app::BooksApp {
@@ -1572,7 +1654,10 @@ impl ResourceProvider for crate::app::BooksApp {
         // Directory discovery is intentionally root-only. Children are exact,
         // lazy resources resolved through the retained provider; exporting a
         // whole EPUB/annotation tree here would make opening Ctrl+K O(library).
-        self.resource(doc, "ebook.library").into_iter().collect()
+        ["ebook.library", "ebook.settings"]
+            .into_iter()
+            .filter_map(|id| self.resource(doc, id))
+            .collect()
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
@@ -1601,7 +1686,13 @@ impl ResourceProvider for crate::app::BooksApp {
         .any(|prefix| id.starts_with(prefix))
         {
             let address = tilo_actions::ActionAddress::new(id, "open");
-            return self.resolve_search_resource(&address);
+            let resource = self.resolve_search_resource(&address)?;
+            if let Some(ctx) = self.current_book_resource_context()
+                && id == format!("ebook.book:{}", ctx.book_id)
+            {
+                return Some(current_book_actions(resource, &ctx));
+            }
+            return Some(resource);
         }
 
         if id.strip_prefix("ebook.font:").is_some() {
@@ -1704,15 +1795,17 @@ mod tests {
         (app, doc, book_id, group)
     }
 
-    /// Discovery exports one bounded root; exact resources are resolved from
+    /// Discovery exports bounded roots; exact resources are resolved from
     /// the immutable search snapshot and never materialise siblings.
     #[test]
     fn ctrl_k_publishes_root_only_and_exact_resources() {
         let (app, doc, book_id, _group) = open_with_annotations();
         let roots = Widget::resources(&app, &doc);
-        assert_eq!(roots.len(), 1);
+        assert_eq!(roots.len(), 2);
         assert_eq!(roots[0].id.as_str(), "ebook.library");
         assert!(roots[0].children.is_empty());
+        assert_eq!(roots[1].id.as_str(), "ebook.settings");
+        assert!(roots[1].children.is_empty());
         let books: Vec<crate::model::Book> = app
             .library()
             .iter()
@@ -1734,13 +1827,37 @@ mod tests {
                 .iter()
                 .any(|action| action.id == "remove-from-library")
         );
+        let current = Widget::resource(&app, &doc, &format!("ebook.book:{book_id}"))
+            .expect("current exact book");
+        for id in [
+            "toggle-bookmark",
+            "add-note",
+            "previous-page",
+            "next-page",
+            "contents",
+            "notes",
+            "settings",
+        ] {
+            assert!(
+                current.actions.iter().any(|action| action.id == id),
+                "missing current-book action {id}"
+            );
+        }
+        let settings = Widget::resource(&app, &doc, "ebook.settings").expect("settings");
+        assert!(settings.children.is_empty());
+        for font in BooksDoc::read_fonts(&doc) {
+            assert!(Widget::resource(&app, &doc, &format!("ebook.font:{}", font.id)).is_some());
+        }
+        for scheme in BooksDoc::read_schemes(&doc) {
+            assert!(Widget::resource(&app, &doc, &format!("ebook.scheme:{}", scheme.id)).is_some());
+        }
     }
 
     #[test]
     fn library_open_action_is_canonical_even_without_loaded_books() {
         let doc = AutoCommit::new();
         let resources = provide_resources(&[], &doc);
-        assert_eq!(resources.len(), 1);
+        assert_eq!(resources.len(), 2);
         let address = tilo_actions::ActionAddress::new("ebook.library", "open-book");
         let encoded = tilo_actions::door::encode(&resources, &address, None)
             .expect("library action resolves through the canonical tree");
