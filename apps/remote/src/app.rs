@@ -776,9 +776,11 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            cancel,
-            "Cancel",
-            false,
+            &ButtonSpec {
+                rect: cancel,
+                label: "Cancel",
+                primary: false,
+            },
         );
         if is_delete {
             Button::paint(
@@ -798,9 +800,11 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                confirm,
-                primary,
-                true,
+                &ButtonSpec {
+                    rect: confirm,
+                    label: primary,
+                    primary: true,
+                },
             );
         }
         self.push_hit(cancel, Action::CancelPending);
@@ -1828,16 +1832,11 @@ impl RemoteApp {
 
     /// Route one event into the focused field's input and write the result
     /// back. Returns whether the input consumed it.
-    #[allow(clippy::too_many_arguments)]
     fn route_to_focused_field(
         &mut self,
         event: &WindowEvent,
-        scale: f64,
-        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
-        path: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &EventRouteCtx<'_>,
     ) -> bool {
         let Some(f) = self.focus else { return false };
         let before = self.inputs.get(f).value().to_string();
@@ -1846,14 +1845,14 @@ impl RemoteApp {
         let (mut handled, mut focus_target) = (false, None);
         input.handle_event(
             event,
-            scale,
-            &modifiers,
+            ctx.scale_factor,
+            &ctx.modifiers,
             state,
-            path,
+            ctx.path,
             &mut handled,
             &mut focus_target,
-            node_id,
-            taffy,
+            ctx.node_id,
+            ctx.taffy,
         );
         if self.inputs.get(f).value() != before {
             self.commit_field(f);
@@ -1886,39 +1885,37 @@ impl Default for RemoteApp {
 // the offline screenshot and first launch are immediately meaningful.
 // ===========================================================================
 
-/// Build one seed [`Connection`]. Broken out of [`seed_connections`] purely to
-/// keep that function's line count down — the field list is identical to
-/// [`Connection`] itself, just positional.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one positional field per Connection column; a builder struct would \
-              just move the same ten values into named fields for a private \
-              seed-data helper used only here"
-)]
-fn seeded_connection(
-    name: &str,
-    host: &str,
+/// Readable fixture input for a seeded connection. Named fields keep adjacent
+/// strings, enums, and booleans from being silently transposed as the sample
+/// roster evolves.
+struct ConnectionSeed<'a> {
+    name: &'a str,
+    host: &'a str,
     port: u16,
-    user: &str,
+    user: &'a str,
     kind: ConnectionKind,
     auth: AuthMethod,
-    last: &str,
+    last_used: &'a str,
     presence: Presence,
-    group: &str,
-    fav: bool,
-) -> Connection {
-    Connection {
-        id: Uuid::new_v4(),
-        name: name.into(),
-        host: host.into(),
-        port,
-        user: user.into(),
-        kind,
-        auth,
-        last_used: last.into(),
-        presence,
-        group: group.into(),
-        favorite: fav,
+    group: &'a str,
+    favorite: bool,
+}
+
+impl ConnectionSeed<'_> {
+    fn build(self) -> Connection {
+        Connection {
+            id: Uuid::new_v4(),
+            name: self.name.into(),
+            host: self.host.into(),
+            port: self.port,
+            user: self.user.into(),
+            kind: self.kind,
+            auth: self.auth,
+            last_used: self.last_used.into(),
+            presence: self.presence,
+            group: self.group.into(),
+            favorite: self.favorite,
+        }
     }
 }
 
@@ -1933,54 +1930,58 @@ fn seed_connections() -> Vec<Connection> {
 fn seed_connections_lab_and_office() -> Vec<Connection> {
     let studio_node = iroh::SecretKey::from_bytes(&[17; 32]).public().to_string();
     vec![
-        seeded_connection(
-            "Build Box",
-            "build.lab.internal",
-            22,
-            "admin",
-            ConnectionKind::Ssh,
-            AuthMethod::PublicKey,
-            "12m ago",
-            Presence::Online,
-            "lab",
-            true,
-        ),
-        seeded_connection(
-            "Studio Node",
-            &studio_node,
-            0,
-            "",
-            ConnectionKind::Tilo,
-            AuthMethod::DeviceIdentity,
-            "just now",
-            Presence::Online,
-            "Tilo",
-            true,
-        ),
-        seeded_connection(
-            "Office NAS",
-            "10.0.0.20",
-            5900,
-            "media",
-            ConnectionKind::Vnc,
-            AuthMethod::Password,
-            "2h ago",
-            Presence::Online,
-            "home",
-            false,
-        ),
-        seeded_connection(
-            "Win Workstation",
-            "10.0.0.31",
-            3389,
-            "ada",
-            ConnectionKind::Rdp,
-            AuthMethod::Password,
-            "yesterday",
-            Presence::Offline,
-            "work",
-            false,
-        ),
+        ConnectionSeed {
+            name: "Build Box",
+            host: "build.lab.internal",
+            port: 22,
+            user: "admin",
+            kind: ConnectionKind::Ssh,
+            auth: AuthMethod::PublicKey,
+            last_used: "12m ago",
+            presence: Presence::Online,
+            group: "lab",
+            favorite: true,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Studio Node",
+            host: &studio_node,
+            port: 0,
+            user: "",
+            kind: ConnectionKind::Tilo,
+            auth: AuthMethod::DeviceIdentity,
+            last_used: "just now",
+            presence: Presence::Online,
+            group: "Tilo",
+            favorite: true,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Office NAS",
+            host: "10.0.0.20",
+            port: 5900,
+            user: "media",
+            kind: ConnectionKind::Vnc,
+            auth: AuthMethod::Password,
+            last_used: "2h ago",
+            presence: Presence::Online,
+            group: "home",
+            favorite: false,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Win Workstation",
+            host: "10.0.0.31",
+            port: 3389,
+            user: "ada",
+            kind: ConnectionKind::Rdp,
+            auth: AuthMethod::Password,
+            last_used: "yesterday",
+            presence: Presence::Offline,
+            group: "work",
+            favorite: false,
+        }
+        .build(),
     ]
 }
 
@@ -1989,54 +1990,58 @@ fn seed_connections_lab_and_office() -> Vec<Connection> {
 fn seed_connections_remote_and_backup() -> Vec<Connection> {
     let workshop_laptop = iroh::SecretKey::from_bytes(&[29; 32]).public().to_string();
     vec![
-        seeded_connection(
-            "Edge Gateway",
-            "edge.example.com",
-            2222,
-            "root",
-            ConnectionKind::Ssh,
-            AuthMethod::PublicKey,
-            "3d ago",
-            Presence::Online,
-            "prod",
-            false,
-        ),
-        seeded_connection(
-            "Pi Cluster Head",
-            "192.168.4.2",
-            22,
-            "pi",
-            ConnectionKind::Ssh,
-            AuthMethod::Password,
-            "1w ago",
-            Presence::Offline,
-            "lab",
-            false,
-        ),
-        seeded_connection(
-            "Workshop Laptop",
-            &workshop_laptop,
-            0,
-            "",
-            ConnectionKind::Tilo,
-            AuthMethod::DeviceIdentity,
-            "5h ago",
-            Presence::Online,
-            "Tilo",
-            false,
-        ),
-        seeded_connection(
-            "Backup Vault",
-            "vault.example.com",
-            5901,
-            "ops",
-            ConnectionKind::Vnc,
-            AuthMethod::Password,
-            "Never",
-            Presence::Unknown,
-            "prod",
-            false,
-        ),
+        ConnectionSeed {
+            name: "Edge Gateway",
+            host: "edge.example.com",
+            port: 2222,
+            user: "root",
+            kind: ConnectionKind::Ssh,
+            auth: AuthMethod::PublicKey,
+            last_used: "3d ago",
+            presence: Presence::Online,
+            group: "prod",
+            favorite: false,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Pi Cluster Head",
+            host: "192.168.4.2",
+            port: 22,
+            user: "pi",
+            kind: ConnectionKind::Ssh,
+            auth: AuthMethod::Password,
+            last_used: "1w ago",
+            presence: Presence::Offline,
+            group: "lab",
+            favorite: false,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Workshop Laptop",
+            host: &workshop_laptop,
+            port: 0,
+            user: "",
+            kind: ConnectionKind::Tilo,
+            auth: AuthMethod::DeviceIdentity,
+            last_used: "5h ago",
+            presence: Presence::Online,
+            group: "Tilo",
+            favorite: false,
+        }
+        .build(),
+        ConnectionSeed {
+            name: "Backup Vault",
+            host: "vault.example.com",
+            port: 5901,
+            user: "ops",
+            kind: ConnectionKind::Vnc,
+            auth: AuthMethod::Password,
+            last_used: "Never",
+            presence: Presence::Unknown,
+            group: "prod",
+            favorite: false,
+        }
+        .build(),
     ]
 }
 
@@ -2078,6 +2083,88 @@ struct EventRouteCtx<'a> {
     path: &'a ObjId,
     node_id: NodeId,
     taffy: &'a TaffyTree<()>,
+}
+
+/// Shared resources passed through custom-painted screen layers.
+struct PaintContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+/// Paint resources plus the invariant card geometry used by every form row.
+struct FormPaintContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+    presence: &'a PresenceCtx,
+    card_x: f64,
+    card_width: f64,
+}
+
+struct ButtonSpec<'a> {
+    rect: Rect,
+    label: &'a str,
+    primary: bool,
+}
+
+struct RailButtonSpec<'a> {
+    rail: Rect,
+    index: usize,
+    glyph: &'a str,
+    active: bool,
+}
+
+struct ToolSpec<'a> {
+    right_x: f64,
+    bar: Rect,
+    label: &'a str,
+}
+
+struct SegmentSpec<'a> {
+    rect: Rect,
+    label: &'a str,
+    active: bool,
+}
+
+#[derive(Clone, Copy)]
+struct SessionSpec {
+    content: Rect,
+    id: ConnectionId,
+    immersive: bool,
+}
+
+struct StatusSessionSpec<'a> {
+    content: Rect,
+    connection: &'a Connection,
+    title: &'a str,
+    body: &'a [String],
+    tone: StatusTone,
+    show_edit: bool,
+}
+
+struct StatusIdentitySpec<'a> {
+    card: Rect,
+    accent: Color,
+    connection: &'a Connection,
+}
+
+struct StatusBodySpec<'a> {
+    card: Rect,
+    accent: Color,
+    title: &'a str,
+    body: &'a [String],
+    y: f64,
+}
+
+struct StatusActionsSpec<'a> {
+    card: Rect,
+    tone: StatusTone,
+    connection: &'a Connection,
+    y: f64,
+    show_edit: bool,
 }
 
 // ===========================================================================
@@ -2707,23 +2794,25 @@ impl Widget for RemoteApp {
             Screen::List => {
                 self.draw_list(scene, transform, text_renderer, theme, presence, content);
             }
-            Screen::Form { editing } => self.draw_form(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                content,
-                editing,
-            ),
+            Screen::Form { editing } => {
+                let mut paint = PaintContext {
+                    scene,
+                    transform,
+                    text: text_renderer,
+                    theme,
+                };
+                self.draw_form(&mut paint, presence, content, editing);
+            }
             Screen::Session { id } => self.draw_session(
                 scene,
                 transform,
                 text_renderer,
                 theme,
-                content,
-                id,
-                immersive,
+                SessionSpec {
+                    content,
+                    id,
+                    immersive,
+                },
             ),
         }
 
@@ -2872,15 +2961,7 @@ impl Widget for RemoteApp {
                 state: ElementState::Released,
                 ..
             } if self.focus.is_some() => {
-                self.route_to_focused_field(
-                    event,
-                    ctx.scale_factor,
-                    ctx.modifiers,
-                    state,
-                    ctx.path,
-                    ctx.node_id,
-                    ctx.taffy,
-                );
+                self.route_to_focused_field(event, state, &ctx);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -3612,15 +3693,7 @@ impl RemoteApp {
         // A focused field tracks the pointer so a drag extends its
         // selection past the edge of the box.
         if self.focus.is_some() {
-            self.route_to_focused_field(
-                event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                state,
-                ctx.path,
-                ctx.node_id,
-                ctx.taffy,
-            );
+            self.route_to_focused_field(event, state, ctx);
         }
     }
 
@@ -3706,15 +3779,7 @@ impl RemoteApp {
             // here selects — rather than the click only meaning "focus".
             if let Action::FocusField(f) = action {
                 self.focus_field(f);
-                self.route_to_focused_field(
-                    event,
-                    ctx.scale_factor,
-                    ctx.modifiers,
-                    state,
-                    ctx.path,
-                    ctx.node_id,
-                    ctx.taffy,
-                );
+                self.route_to_focused_field(event, state, ctx);
             } else {
                 self.apply(action, state);
             }
@@ -3739,15 +3804,7 @@ impl RemoteApp {
     ) {
         self.handle_key(logical_key, text, ctx.modifiers.state(), state, handled);
         if !*handled && self.focus.is_some() {
-            *handled = self.route_to_focused_field(
-                event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                state,
-                ctx.path,
-                ctx.node_id,
-                ctx.taffy,
-            );
+            *handled = self.route_to_focused_field(event, state, ctx);
         }
     }
 
@@ -4057,11 +4114,12 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            rail,
-            0,
-            "≡",
-            "Connections",
-            on_list,
+            &RailButtonSpec {
+                rail,
+                index: 0,
+                glyph: "≡",
+                active: on_list,
+            },
         );
         self.push_hit(home_btn, Action::GoList);
 
@@ -4070,11 +4128,12 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            rail,
-            1,
-            "+",
-            "Add",
-            false,
+            &RailButtonSpec {
+                rail,
+                index: 1,
+                glyph: "+",
+                active: false,
+            },
         );
         self.push_hit(new_btn, Action::NewConnection);
     }
@@ -4148,24 +4207,19 @@ impl RemoteApp {
         self.push_hit(btn, Action::ToggleRail);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_rail_button(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        rail: Rect,
-        index: usize,
-        glyph: &str,
-        _label: &str,
-        active: bool,
+        spec: &RailButtonSpec<'_>,
     ) -> Rect {
         let tokens = &theme.tokens;
-        let top = rail.y0 + 72.0 + index as f64 * 56.0;
-        let btn = Rect::new(rail.x0 + 12.0, top, rail.x1 - 12.0, top + 40.0);
+        let top = spec.rail.y0 + 72.0 + spec.index as f64 * 56.0;
+        let btn = Rect::new(spec.rail.x0 + 12.0, top, spec.rail.x1 - 12.0, top + 40.0);
         let hovered = btn.contains(self.pointer);
-        let bg = if active {
+        let bg = if spec.active {
             tokens.colors.accent[5].at_alpha(0.20)
         } else if hovered {
             tokens.colors.lift(0.72)
@@ -4181,15 +4235,15 @@ impl RemoteApp {
                 &RoundedRect::from_rect(btn, 8.0),
             );
         }
-        let color = if active {
+        let color = if spec.active {
             tokens.colors.accent[6]
         } else {
             tokens.colors.text_dim
         };
-        let (gw, _) = text_renderer.measure(glyph, 22.0, None);
+        let (gw, _) = text_renderer.measure(spec.glyph, 22.0, None);
         text_renderer.draw_text(
             scene,
-            glyph,
+            spec.glyph,
             22.0,
             color,
             transform * Affine::translate((btn.center().x - f64::from(gw) / 2.0, btn.y0 + 6.0)),
@@ -4266,13 +4320,15 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            add,
-            if compact_header {
-                "+ New"
-            } else {
-                "+ New connection"
+            &ButtonSpec {
+                rect: add,
+                label: if compact_header {
+                    "+ New"
+                } else {
+                    "+ New connection"
+                },
+                primary: true,
             },
-            true,
         );
         self.push_hit(add, Action::NewConnection);
 
@@ -4284,10 +4340,12 @@ impl RemoteApp {
             header.y1 + 40.0,
         );
         self.draw_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintContext {
+                scene,
+                transform,
+                text: text_renderer,
+                theme,
+            },
             presence,
             search,
             Field::Search,
@@ -4443,9 +4501,11 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            btn,
-            "+ New connection",
-            true,
+            &ButtonSpec {
+                rect: btn,
+                label: "+ New connection",
+                primary: true,
+            },
         );
         self.push_hit(btn, Action::NewConnection);
     }
@@ -4626,9 +4686,11 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                connect,
-                "Connect",
-                true,
+                &ButtonSpec {
+                    rect: connect,
+                    label: "Connect",
+                    primary: true,
+                },
             );
             self.push_hit(connect, Action::RequestConnect(c.id));
         } else {
@@ -4636,7 +4698,17 @@ impl RemoteApp {
         }
 
         let edit = Rect::new(connect.x0 - 86.0, connect.y0, connect.x0 - 10.0, connect.y1);
-        self.draw_button(scene, transform, text_renderer, theme, edit, "Edit", false);
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonSpec {
+                rect: edit,
+                label: "Edit",
+                primary: false,
+            },
+        );
         self.push_hit(edit, Action::EditConnection(c.id));
 
         // last_used, right-aligned just left of the Edit button.
@@ -4736,23 +4808,20 @@ impl RemoteApp {
 
     /// Generic button using the shared immediate-mode face while this canvas
     /// retains ownership of pointer routing.
-    #[allow(clippy::too_many_arguments)]
     fn draw_button(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        rect: Rect,
-        label: &str,
-        primary: bool,
+        spec: &ButtonSpec<'_>,
     ) {
-        let hovered = rect.contains(self.pointer);
-        let face = ButtonFace::new(rect, label)
+        let hovered = spec.rect.contains(self.pointer);
+        let face = ButtonFace::new(spec.rect, spec.label)
             .hovered(hovered)
             .text_size(13.0)
             .weight(TextWeight::Semibold);
-        let face = if primary { face.primary() } else { face };
+        let face = if spec.primary { face.primary() } else { face };
         Button::paint(scene, transform, text_renderer, theme, &face);
     }
 
@@ -4766,17 +4835,17 @@ impl RemoteApp {
     /// Draw a text field: the app paints the box and the focus ring, the
     /// shared [`TextInput`] paints the text, placeholder, selection and caret
     /// inside it — and owns every editing behaviour that goes with them.
-    #[allow(clippy::too_many_arguments)]
     fn draw_field(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         presence: &PresenceCtx,
         rect: Rect,
         field: Field,
     ) {
+        let scene = &mut *paint.scene;
+        let text_renderer = &mut *paint.text;
+        let transform = paint.transform;
+        let theme = paint.theme;
         let tokens = &theme.tokens;
         let focused = self.focus == Some(field);
         let rr = RoundedRect::from_rect(rect, 8.0);
@@ -4809,28 +4878,19 @@ impl RemoteApp {
     /// Draw the add/edit form. Split into one helper per card section — each
     /// threads the running layout cursor `y` through and hands back where the
     /// next section starts, exactly as the inline version did.
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "matches ui's draw dispatch shape (scene/transform/text_renderer/theme) \
-                  plus this screen's own presence/content/editing state"
-    )]
     fn draw_form(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         presence: &PresenceCtx,
         content: Rect,
         editing: Option<ConnectionId>,
     ) {
         let pad = 24.0;
         Self::draw_form_header(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
             content,
             pad,
             editing,
@@ -4841,59 +4901,23 @@ impl RemoteApp {
         let card_x = content.x0 + (content.width() - card_w) / 2.0;
         let y = content.y0 + HEADER_H + 8.0;
 
-        let y =
-            self.draw_form_kind_selector(scene, transform, text_renderer, theme, card_x, card_w, y);
-        let y = self.draw_form_legacy_transport_notice(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            card_x,
-            card_w,
-            y,
-        );
-        let y =
-            self.draw_form_tilo_picker(scene, transform, text_renderer, theme, card_x, card_w, y);
-        let y = self.draw_form_name_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+        let mut form = FormPaintContext {
+            scene: paint.scene,
+            transform: paint.transform,
+            text: paint.text,
+            theme: paint.theme,
             presence,
             card_x,
-            card_w,
-            y,
-        );
-        let y = self.draw_form_host_port_row(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            card_x,
-            card_w,
-            y,
-        );
-        let y = self.draw_form_user_auth_row(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            card_x,
-            card_w,
-            y,
-        );
-        self.draw_form_footer(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            card_x,
-            card_w,
-            y,
-            editing,
-        );
+            card_width: card_w,
+        };
+
+        let y = self.draw_form_kind_selector(&mut form, y);
+        let y = self.draw_form_legacy_transport_notice(&mut form, y);
+        let y = self.draw_form_tilo_picker(&mut form, y);
+        let y = self.draw_form_name_field(&mut form, y);
+        let y = self.draw_form_host_port_row(&mut form, y);
+        let y = self.draw_form_user_auth_row(&mut form, y);
+        self.draw_form_footer(&mut form, y, editing);
     }
 
     /// `draw_form`'s title, centered above the card.
@@ -4923,23 +4947,13 @@ impl RemoteApp {
     }
 
     /// `draw_form`'s protocol kind selector (segmented control).
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width) and running layout cursor `y` through the shaped \
-                  protocol-kind row"
-    )]
-    fn draw_form_kind_selector(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_kind_selector(&mut self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let mut y = Self::draw_form_label(
             scene,
             transform,
@@ -4964,11 +4978,11 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                seg,
-                k.tag(),
-                active,
-                i == 0,
-                i.saturating_add(1) == kinds.len(),
+                &SegmentSpec {
+                    rect: seg,
+                    label: k.tag(),
+                    active,
+                },
             );
             self.push_hit(seg, Action::SetKind(k));
         }
@@ -4979,23 +4993,16 @@ impl RemoteApp {
     /// Legacy RDP profiles are deliberately editable rather than discarded.
     /// Make their migration path explicit: the selector offers only real
     /// backends, so choosing SSH, VNC, or Tilo replaces the unavailable kind.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "this small drawing section receives the same scene/render context and geometry cursor as the adjacent form sections"
-    )]
-    fn draw_form_legacy_transport_notice(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_legacy_transport_notice(&self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
         if self.draft.kind != ConnectionKind::Rdp {
             return y;
         }
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let tokens = &theme.tokens;
         let note = Rect::new(card_x, y, card_x + card_w, y + 54.0);
         scene.fill(
@@ -5034,22 +5041,13 @@ impl RemoteApp {
 
     /// `draw_form`'s Tilo device picker — a no-op (returns `y` unchanged) for
     /// any other protocol kind.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width) and running layout cursor `y` through the \
-                  discovered-devices list"
-    )]
-    fn draw_form_tilo_picker(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_tilo_picker(&mut self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let tokens = &theme.tokens;
         let mut y = y;
         if self.draft.kind == ConnectionKind::Tilo {
@@ -5125,31 +5123,24 @@ impl RemoteApp {
     }
 
     /// `draw_form`'s Name field.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width) and running layout cursor `y` through the Name field"
-    )]
-    fn draw_form_name_field(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_name_field(&mut self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let mut y =
             Self::draw_form_label(scene, transform, text_renderer, theme, card_x, y, "Name");
         let name = Rect::new(card_x, y, card_x + card_w, y + 40.0);
         self.draw_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
+            &mut PaintContext {
+                scene: &mut *ctx.scene,
+                transform: ctx.transform,
+                text: &mut *ctx.text,
+                theme: ctx.theme,
+            },
+            ctx.presence,
             name,
             Field::Name,
         );
@@ -5159,22 +5150,13 @@ impl RemoteApp {
     }
 
     /// `draw_form`'s Host + Port row (Port hidden for Tilo).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width) and running layout cursor `y` through the Host/Port row"
-    )]
-    fn draw_form_host_port_row(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_host_port_row(&mut self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let host_label = if self.draft.kind == ConnectionKind::Tilo {
             "Device node"
         } else {
@@ -5193,11 +5175,13 @@ impl RemoteApp {
         let host_w = if tilo { card_w } else { card_w - 130.0 };
         let host = Rect::new(card_x, y, card_x + host_w, y + 40.0);
         self.draw_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
+            &mut PaintContext {
+                scene: &mut *ctx.scene,
+                transform: ctx.transform,
+                text: &mut *ctx.text,
+                theme: ctx.theme,
+            },
+            ctx.presence,
             host,
             Field::Host,
         );
@@ -5205,11 +5189,13 @@ impl RemoteApp {
         if !tilo {
             let port = Rect::new(card_x + host_w + 12.0, y, card_x + card_w, y + 40.0);
             self.draw_field(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
+                &mut PaintContext {
+                    scene: &mut *ctx.scene,
+                    transform: ctx.transform,
+                    text: &mut *ctx.text,
+                    theme: ctx.theme,
+                },
+                ctx.presence,
                 port,
                 Field::Port,
             );
@@ -5222,23 +5208,16 @@ impl RemoteApp {
     /// `draw_form`'s User + Group row for non-Tilo kinds, or the implicit-auth
     /// info card for Tilo.
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width) and running layout cursor `y` through the User/Group \
-                  row and auth method selector"
+        reason = "the non-Tilo field row and its authentication selector form one conditional layout section"
     )]
-    fn draw_form_user_auth_row(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_user_auth_row(&mut self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let tokens = &theme.tokens;
         let tilo = self.draft.kind == ConnectionKind::Tilo;
         let mut y = y;
@@ -5281,15 +5260,19 @@ impl RemoteApp {
                 y,
                 if has_user { "User" } else { "Group" },
             );
+            let _ = scene;
+            let _ = text_renderer;
             if has_user {
                 let half = (card_w - 12.0) / 2.0;
                 let user = Rect::new(card_x, y, card_x + half, y + 40.0);
                 self.draw_field(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    presence,
+                    &mut PaintContext {
+                        scene: &mut *ctx.scene,
+                        transform: ctx.transform,
+                        text: &mut *ctx.text,
+                        theme: ctx.theme,
+                    },
+                    ctx.presence,
                     user,
                     Field::User,
                 );
@@ -5301,11 +5284,13 @@ impl RemoteApp {
                 Rect::new(card_x, y, card_x + card_w, y + 40.0)
             };
             self.draw_field(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
+                &mut PaintContext {
+                    scene: &mut *ctx.scene,
+                    transform: ctx.transform,
+                    text: &mut *ctx.text,
+                    theme: ctx.theme,
+                },
+                ctx.presence,
                 group,
                 Field::Group,
             );
@@ -5313,6 +5298,8 @@ impl RemoteApp {
             y += 56.0;
 
             // -- Auth method selector --
+            let scene = &mut *ctx.scene;
+            let text_renderer = &mut *ctx.text;
             y = Self::draw_form_label(
                 scene,
                 transform,
@@ -5337,11 +5324,11 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    seg,
-                    a.label(),
-                    active,
-                    i == 0,
-                    i.saturating_add(1) == auth_methods.len(),
+                    &SegmentSpec {
+                        rect: seg,
+                        label: a.label(),
+                        active,
+                    },
                 );
                 self.push_hit(seg, Action::SetAuth(a));
             }
@@ -5352,23 +5339,18 @@ impl RemoteApp {
 
     /// `draw_form`'s tail: validation messages, Save + Cancel, and (edit mode
     /// only) the Delete button.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width), the settled layout cursor `y`, and the editing id \
-                  through the closing validation/action row"
-    )]
     fn draw_form_footer(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card_x: f64,
-        card_w: f64,
+        ctx: &mut FormPaintContext<'_>,
         y: f64,
         editing: Option<ConnectionId>,
     ) {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let tokens = &theme.tokens;
 
         // -- Validation messages --
@@ -5400,7 +5382,17 @@ impl RemoteApp {
 
         // -- Save + Cancel --
         let save = Rect::new(card_x + card_w - 120.0, y, card_x + card_w, y + 40.0);
-        self.draw_button(scene, transform, text_renderer, theme, save, "Save", true);
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonSpec {
+                rect: save,
+                label: "Save",
+                primary: true,
+            },
+        );
         self.push_hit(save, Action::SaveForm);
         let cancel = Rect::new(save.x0 - 110.0, y, save.x0 - 12.0, y + 40.0);
         self.draw_button(
@@ -5408,9 +5400,11 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            cancel,
-            "Cancel",
-            false,
+            &ButtonSpec {
+                rect: cancel,
+                label: "Cancel",
+                primary: false,
+            },
         );
         self.push_hit(cancel, Action::Back);
 
@@ -5477,19 +5471,17 @@ impl RemoteApp {
     }
 
     /// Draw one segment of a segmented control.
-    #[allow(clippy::too_many_arguments)]
     fn draw_segment(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        rect: Rect,
-        label: &str,
-        active: bool,
-        _first: bool,
-        _last: bool,
+        spec: &SegmentSpec<'_>,
     ) {
+        let rect = spec.rect;
+        let label = spec.label;
+        let active = spec.active;
         let tokens = &theme.tokens;
         let hovered = rect.contains(self.pointer);
         let rr = RoundedRect::from_rect(rect.inset(-0.0), 8.0);
@@ -5530,7 +5522,6 @@ impl RemoteApp {
 
     /// Draw the session surface for a connection.
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "the live-state match deliberately composes all session status surfaces beside the shared toolbar and canvas geometry"
     )]
@@ -5540,10 +5531,11 @@ impl RemoteApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        content: Rect,
-        id: ConnectionId,
-        immersive: bool,
+        spec: SessionSpec,
     ) {
+        let content = spec.content;
+        let id = spec.id;
+        let immersive = spec.immersive;
         let tokens = &theme.tokens;
         let Some(c) = self.workspace.get(id).cloned() else {
             // Connection vanished — bounce home.
@@ -5567,15 +5559,17 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                content,
-                &c,
-                "Not connected",
-                &[
-                    "This transport is unavailable in this build.".to_string(),
-                    "Your saved connection is unchanged.".to_string(),
-                ],
-                StatusTone::Neutral,
-                false,
+                &StatusSessionSpec {
+                    content,
+                    connection: &c,
+                    title: "Not connected",
+                    body: &[
+                        "This transport is unavailable in this build.".to_string(),
+                        "Your saved connection is unchanged.".to_string(),
+                    ],
+                    tone: StatusTone::Neutral,
+                    show_edit: false,
+                },
             );
             return;
         };
@@ -5599,12 +5593,14 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    content,
-                    &c,
-                    title,
-                    &[detail.to_string()],
-                    StatusTone::Pending,
-                    false,
+                    &StatusSessionSpec {
+                        content,
+                        connection: &c,
+                        title,
+                        body: &[detail.to_string()],
+                        tone: StatusTone::Pending,
+                        show_edit: false,
+                    },
                 );
             }
             SessionStatus::Failed(err) => {
@@ -5613,15 +5609,17 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    content,
-                    &c,
-                    "Connection failed",
-                    &[
-                        err,
-                        "This is the real error — nothing is simulated.".to_string(),
-                    ],
-                    StatusTone::Error,
-                    false,
+                    &StatusSessionSpec {
+                        content,
+                        connection: &c,
+                        title: "Connection failed",
+                        body: &[
+                            err,
+                            "This is the real error — nothing is simulated.".to_string(),
+                        ],
+                        tone: StatusTone::Error,
+                        show_edit: false,
+                    },
                 );
             }
             SessionStatus::Unavailable(detail) => {
@@ -5639,12 +5637,14 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    content,
-                    &c,
-                    "Connection not available",
-                    &[detail, recovery.to_string()],
-                    StatusTone::Neutral,
-                    true,
+                    &StatusSessionSpec {
+                        content,
+                        connection: &c,
+                        title: "Connection not available",
+                        body: &[detail, recovery.to_string()],
+                        tone: StatusTone::Neutral,
+                        show_edit: true,
+                    },
                 );
             }
             SessionStatus::Closed => {
@@ -5653,12 +5653,14 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    content,
-                    &c,
-                    "Session ended",
-                    &["The remote closed the session.".to_string()],
-                    StatusTone::Neutral,
-                    false,
+                    &StatusSessionSpec {
+                        content,
+                        connection: &c,
+                        title: "Session ended",
+                        body: &["The remote closed the session.".to_string()],
+                        tone: StatusTone::Neutral,
+                        show_edit: false,
+                    },
                 );
             }
             SessionStatus::Connected => {
@@ -5692,57 +5694,57 @@ impl RemoteApp {
     /// identity, a status pill, an explanation, and real actions. The state
     /// has a visible form (the emblem ring + pill colour), not just a label.
     /// Never draws a fabricated terminal or desktop.
-    #[allow(clippy::too_many_arguments)]
     fn draw_status_session(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        content: Rect,
-        c: &Connection,
-        title: &str,
-        body: &[String],
-        tone: StatusTone,
-        show_edit: bool,
+        spec: &StatusSessionSpec<'_>,
     ) {
         let tokens = &theme.tokens;
-        let accent = match tone {
+        let accent = match spec.tone {
             StatusTone::Neutral => tokens.colors.neutral[4],
             StatusTone::Pending => tokens.colors.semantic.warning,
             StatusTone::Error => tokens.colors.semantic.danger,
         };
-        let card = Self::draw_status_session_card(scene, transform, theme, content, body);
+        let card = Self::draw_status_session_card(scene, transform, theme, spec.content, spec.body);
         let y = Self::draw_status_session_identity(
             scene,
             transform,
             text_renderer,
             theme,
-            card,
-            accent,
-            c,
+            &StatusIdentitySpec {
+                card,
+                accent,
+                connection: spec.connection,
+            },
         );
         let y = Self::draw_status_session_pill_and_body(
             scene,
             transform,
             text_renderer,
             theme,
-            card,
-            accent,
-            title,
-            body,
-            y,
+            &StatusBodySpec {
+                card,
+                accent,
+                title: spec.title,
+                body: spec.body,
+                y,
+            },
         );
         self.draw_status_session_actions(
             scene,
             transform,
             text_renderer,
             theme,
-            card,
-            tone,
-            c,
-            y,
-            show_edit,
+            &StatusActionsSpec {
+                card,
+                tone: spec.tone,
+                connection: spec.connection,
+                y,
+                show_edit: spec.show_edit,
+            },
         );
     }
 
@@ -5792,20 +5794,16 @@ impl RemoteApp {
 
     /// `draw_status_session`'s state emblem, machine name, and address line.
     /// Returns the `y` the status pill should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_status_session section threading the card geometry \
-                  and tone accent through the emblem + identity lines"
-    )]
     fn draw_status_session_identity(
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        card: Rect,
-        accent: Color,
-        c: &Connection,
+        spec: &StatusIdentitySpec<'_>,
     ) -> f64 {
+        let card = spec.card;
+        let accent = spec.accent;
+        let c = spec.connection;
         let tokens = &theme.tokens;
         let mid = card.center().x;
         let mut y = card.y0 + 34.0;
@@ -5871,26 +5869,20 @@ impl RemoteApp {
 
     /// `draw_status_session`'s status pill and explanation body. Returns the
     /// `y` the action row should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_status_session section threading the card geometry, \
-                  tone accent, and running layout cursor `y` through the pill \
-                  and body lines"
-    )]
     fn draw_status_session_pill_and_body(
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        card: Rect,
-        accent: Color,
-        title: &str,
-        body: &[String],
-        y: f64,
+        spec: &StatusBodySpec<'_>,
     ) -> f64 {
+        let card = spec.card;
+        let accent = spec.accent;
+        let title = spec.title;
+        let body = spec.body;
         let tokens = &theme.tokens;
         let mid = card.center().x;
-        let mut y = y;
+        let mut y = spec.y;
 
         // Status pill — the state as a labelled, tone-coloured form.
         let (pw, _) = text_renderer.measure_weighted(title, 13.0, None, TextWeight::Semibold);
@@ -5940,23 +5932,19 @@ impl RemoteApp {
 
     /// `draw_status_session`'s action row: a primary "Back to list", plus
     /// "Retry" where the tone is an actual failure.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_status_session section threading the card geometry, \
-                  tone, and settled layout cursor `y` through the action row"
-    )]
     fn draw_status_session_actions(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        card: Rect,
-        tone: StatusTone,
-        c: &Connection,
-        y: f64,
-        show_edit: bool,
+        spec: &StatusActionsSpec<'_>,
     ) {
+        let card = spec.card;
+        let tone = spec.tone;
+        let c = spec.connection;
+        let y = spec.y;
+        let show_edit = spec.show_edit;
         let mid = card.center().x;
         // Retry only makes sense after a real failure. An unavailable saved
         // profile gets a direct edit recovery instead; it must never look as
@@ -5993,9 +5981,11 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                retry,
-                "Retry",
-                false,
+                &ButtonSpec {
+                    rect: retry,
+                    label: "Retry",
+                    primary: false,
+                },
             );
             self.push_hit(retry, Action::RequestConnect(c.id));
             bx += retry_w + gap;
@@ -6007,9 +5997,11 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                recover,
-                label,
-                false,
+                &ButtonSpec {
+                    rect: recover,
+                    label,
+                    primary: false,
+                },
             );
             self.push_hit(recover, action);
             bx += retry_w + gap;
@@ -6021,9 +6013,11 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                edit,
-                "Edit profile",
-                false,
+                &ButtonSpec {
+                    rect: edit,
+                    label: "Edit profile",
+                    primary: false,
+                },
             );
             self.push_hit(edit, Action::EditConnection(c.id));
             bx += retry_w + gap;
@@ -6034,9 +6028,11 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            back,
-            "Back to list",
-            true,
+            &ButtonSpec {
+                rect: back,
+                label: "Back to list",
+                primary: true,
+            },
         );
         self.push_hit(back, Action::Disconnect);
     }
@@ -6173,7 +6169,21 @@ impl RemoteApp {
             None,
         );
 
-        // Right-aligned tool buttons. Only the relevant ones per kind.
+        self.draw_session_toolbar_controls(scene, transform, text_renderer, theme, bar, c);
+    }
+
+    /// Right-aligned session actions; framebuffer-only controls stay absent
+    /// from terminal sessions rather than presenting inert affordances.
+    fn draw_session_toolbar_controls(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        bar: Rect,
+        c: &Connection,
+    ) {
+        let tokens = &theme.tokens;
         let mut x = bar.x1 - 12.0;
         let disconnect = Rect::new(x - 110.0, bar.center().y - 16.0, x, bar.center().y + 16.0);
         self.draw_button(
@@ -6181,9 +6191,11 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            disconnect,
-            "Disconnect",
-            false,
+            &ButtonSpec {
+                rect: disconnect,
+                label: "Disconnect",
+                primary: false,
+            },
         );
         // Override the outlined style with a danger tint for disconnect.
         scene.stroke(
@@ -6201,7 +6213,17 @@ impl RemoteApp {
         // channel; a clickable no-op would lie about a security-sensitive
         // capability.
         if c.kind.streams_framebuffer() {
-            let fs = self.draw_tool(scene, transform, text_renderer, theme, x, bar, "Fullscreen");
+            let fs = self.draw_tool(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ToolSpec {
+                    right_x: x,
+                    bar,
+                    label: "Fullscreen",
+                },
+            );
             self.push_hit(fs, Action::ToggleFullscreen);
             x = fs.x0 - 8.0;
 
@@ -6210,31 +6232,38 @@ impl RemoteApp {
             } else {
                 "Scale: 1:1"
             };
-            let sc = self.draw_tool(scene, transform, text_renderer, theme, x, bar, scale_label);
+            let sc = self.draw_tool(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ToolSpec {
+                    right_x: x,
+                    bar,
+                    label: scale_label,
+                },
+            );
             self.push_hit(sc, Action::ToggleScale);
         }
     }
 
     /// Draw a compact toolbar tool button ending at `right_x`; returns its rect.
-    #[allow(clippy::too_many_arguments)]
     fn draw_tool(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        right_x: f64,
-        bar: Rect,
-        label: &str,
+        spec: &ToolSpec<'_>,
     ) -> Rect {
         let tokens = &theme.tokens;
-        let (tw, _) = text_renderer.measure(label, 12.5, None);
+        let (tw, _) = text_renderer.measure(spec.label, 12.5, None);
         let w = f64::from(tw) + 24.0;
         let rect = Rect::new(
-            right_x - w,
-            bar.center().y - 16.0,
-            right_x,
-            bar.center().y + 16.0,
+            spec.right_x - w,
+            spec.bar.center().y - 16.0,
+            spec.right_x,
+            spec.bar.center().y + 16.0,
         );
         let hovered = rect.contains(self.pointer);
         let rr = RoundedRect::from_rect(rect, 8.0);
@@ -6253,7 +6282,7 @@ impl RemoteApp {
         );
         text_renderer.draw_text(
             scene,
-            label,
+            spec.label,
             12.5,
             tokens.colors.text_primary,
             transform * Affine::translate((rect.x0 + 12.0, rect.center().y - 8.0)),
@@ -6558,6 +6587,101 @@ mod tests {
             )
             .unwrap();
         app.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn seeded_connections_have_unique_identity_and_valid_transport_fields() {
+        let connections = seed_connections();
+        assert_eq!(connections.len(), 8, "the preview roster stays intentional");
+
+        let mut names = std::collections::HashSet::new();
+        for connection in &connections {
+            assert!(
+                names.insert(connection.name.as_str()),
+                "duplicate seed name"
+            );
+            assert!(!connection.name.is_empty());
+            assert!(!connection.host.is_empty());
+            assert!(!connection.group.is_empty());
+            if connection.kind == ConnectionKind::Tilo {
+                assert_eq!(connection.port, 0);
+                assert_eq!(connection.auth, AuthMethod::DeviceIdentity);
+            } else {
+                assert_ne!(connection.port, 0, "network transports need a port");
+            }
+        }
+    }
+
+    #[test]
+    fn protocol_segments_share_one_gapless_form_card_row() {
+        let mut app = RemoteApp::new();
+        lay_out(&mut app, 1280.0, 800.0);
+        app.apply(Action::NewConnection, &mut doc());
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        Widget::draw(
+            &mut app,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+
+        let segments: Vec<Rect> = app
+            .hits
+            .iter()
+            .filter_map(|hit| matches!(hit.action, Action::SetKind(_)).then_some(hit.rect))
+            .collect();
+        assert_eq!(segments.len(), ConnectionKind::available_to_create().len());
+        let width = segments[0].width();
+        for pair in segments.windows(2) {
+            assert_eq!(pair[0].x1, pair[1].x0, "protocol segments meet exactly");
+            assert!(
+                (pair[1].width() - width).abs() < 0.001,
+                "the card row divides evenly"
+            );
+            assert_eq!(pair[0].y0, pair[1].y0);
+            assert_eq!(pair[0].y1, pair[1].y1);
+        }
+    }
+
+    #[test]
+    fn failed_status_surface_exposes_retry_and_exit_actions() {
+        let mut app = RemoteApp::new_demo();
+        lay_out(&mut app, 1280.0, 800.0);
+        app.dev_preview_session(
+            ConnectionKind::Ssh,
+            SessionStatus::Failed("Connection refused".into()),
+        );
+        let id = app.session_for.expect("preview connection");
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        Widget::draw(
+            &mut app,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| hit.action == Action::RequestConnect(id)),
+            "a genuine failure offers retry"
+        );
+        assert!(
+            app.hits.iter().any(|hit| hit.action == Action::Disconnect),
+            "every status card offers a route back to the list"
+        );
+        assert!(
+            !app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, Action::EditConnection(_))),
+            "ordinary transport failures do not masquerade as profile errors"
+        );
     }
 
     #[test]
