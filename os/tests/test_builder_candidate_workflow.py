@@ -92,6 +92,9 @@ class BuilderCandidates(unittest.TestCase):
         self.assertEqual(CHECK.count('image: ${{ needs.builder.outputs.image }}'), 2)
         self.assertIn('  select:\n    needs: builder', CHECK)
         self.assertIn('  affected:\n    needs: [builder, select]', CHECK)
+        builder_job = CHECK.split('  builder:\n', 1)[1].split('  select:\n', 1)[0]
+        self.assertIn('DOCKER_BUILDKIT: "1"', builder_job)
+        self.assertIn('run: bash os/tests/named_public_trust_context.sh docker', builder_job)
 
 
 if __name__ == '__main__':
