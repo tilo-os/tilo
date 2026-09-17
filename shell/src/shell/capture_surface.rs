@@ -50,7 +50,7 @@ pub(crate) enum CaptureSurfaceKind {
     },
 }
 
-pub(super) struct CaptureMirrorLayer {
+struct CaptureMirrorLayer {
     image: Image,
     source: Rect,
     target: Rect,
@@ -64,19 +64,19 @@ pub(super) struct CaptureMirrorImage {
     /// Independently movable source regions. Keeping them separate lets a
     /// Grid/Stack `PiP` pack itself during the flight without crossfading or
     /// teleporting high-contrast pixels.
-    pub(super) handoff_layers: Vec<CaptureMirrorLayer>,
+    handoff_layers: Vec<CaptureMirrorLayer>,
     /// Pinned stills use their receipt-scale preview as a calm launch proxy,
     /// then resolve into the exact artifact as the surface becomes readable.
     /// Multi-source live `PiP` uses spatial layer motion instead.
-    pub(super) crossfade_handoff: bool,
+    crossfade_handoff: bool,
     /// Original pixel aspect for tall frozen documents. `Some` switches the
     /// image from whole-artifact preview into a width-fitted scroll viewport
     /// as the handoff lands.
-    pub(super) document_aspect: Option<f64>,
-    pub(super) document_scroll_y: f64,
+    document_aspect: Option<f64>,
+    document_scroll_y: f64,
     handoff_started_at: Instant,
     handoff_progress_override: Option<f64>,
-    pub(super) rect: Rect,
+    rect: Rect,
 }
 
 impl CaptureMirrorImage {
@@ -135,7 +135,7 @@ impl CaptureMirrorImage {
         }
     }
 
-    pub(super) fn handoff_mix(&self) -> f64 {
+    fn handoff_mix(&self) -> f64 {
         const HANDOFF_DURATION: Duration = Duration::from_millis(360);
         let raw = self.handoff_progress_override.unwrap_or_else(|| {
             (self.handoff_started_at.elapsed().as_secs_f64() / HANDOFF_DURATION.as_secs_f64())
@@ -144,7 +144,7 @@ impl CaptureMirrorImage {
         raw * raw * (3.0 - 2.0 * raw)
     }
 
-    pub(super) fn painted_image_rect(&mut self, mix: f64) -> Rect {
+    fn painted_image_rect(&mut self, mix: f64) -> Rect {
         let Some(aspect) = self.document_aspect else {
             return self.rect;
         };
@@ -160,6 +160,19 @@ impl CaptureMirrorImage {
             self.rect.x1,
             self.rect.y0 - self.document_scroll_y + height,
         )
+    }
+
+    fn scroll_document_by(&mut self, movement: f64) -> bool {
+        let Some(aspect) = self.document_aspect else {
+            return false;
+        };
+        let document_height = self.rect.width() / aspect.max(0.05);
+        let max_scroll = (document_height - self.rect.height()).max(0.0);
+        if max_scroll <= 0.0 {
+            return false;
+        }
+        self.document_scroll_y = (self.document_scroll_y + movement).clamp(0.0, max_scroll);
+        true
     }
 
     fn draw_document_scrollbar(
@@ -304,9 +317,9 @@ impl Widget for CaptureMirrorImage {
         _: NodeId,
         _: &TaffyTree<()>,
     ) {
-        let Some(aspect) = self.document_aspect else {
+        if self.document_aspect.is_none() {
             return;
-        };
+        }
         let WindowEvent::MouseWheel { delta, .. } = event else {
             return;
         };
@@ -314,10 +327,7 @@ impl Widget for CaptureMirrorImage {
             MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 54.0,
             MouseScrollDelta::PixelDelta(position) => -position.y / scale_factor.max(0.1),
         };
-        let document_height = self.rect.width() / aspect.max(0.05);
-        let max_scroll = (document_height - self.rect.height()).max(0.0);
-        if max_scroll > 0.0 {
-            self.document_scroll_y = (self.document_scroll_y + movement).clamp(0.0, max_scroll);
+        if self.scroll_document_by(movement) {
             *handled = true;
         }
     }
@@ -346,4 +356,66 @@ fn lerp_normalized_rect(from: Rect, to: Rect, progress: f64) -> Rect {
 )]
 fn f64_to_f32_lossy(value: f64) -> f32 {
     value as f32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pixel(alpha: u8) -> Arc<[u8]> {
+        Arc::from(vec![20_u8, 30, 40, alpha])
+    }
+
+    #[test]
+    fn tall_pinned_document_unfolds_to_full_width_and_scrolls() {
+        let image = Image::from_rgba(pixel(255), 1, 1).with_fit(ImageFit::Fill);
+        let preview = Image::from_rgba(pixel(255), 1, 1).with_fit(ImageFit::Fill);
+        let mut mirror = CaptureMirrorImage::new_crossfade(image, preview, Some(524.0 / 3_021.0));
+        mirror.rect = Rect::new(0.0, 0.0, 340.0, 300.0);
+        mirror.set_handoff_progress(1_000);
+
+        let painted = mirror.painted_image_rect(mirror.handoff_mix());
+        assert_eq!(painted.width(), 340.0);
+        assert!(painted.height() > 1_900.0, "full pixels fit the card width");
+        assert!(mirror.crossfade_handoff);
+        assert!(mirror.scroll_document_by(54.0));
+        assert_eq!(mirror.document_scroll_y, 54.0);
+    }
+
+    #[test]
+    fn rearranged_pip_holds_spatial_pixels_then_yields_to_live_layout() {
+        let source = Rect::new(0.0, 0.0, 0.4, 0.5);
+        let target = Rect::new(0.0, 0.0, 0.5, 1.0);
+        let mut mirror = CaptureMirrorImage::new(
+            Image::from_rgba(pixel(0), 1, 1),
+            vec![CaptureMirrorHandoffLayer {
+                rgba: pixel(0),
+                width: 1,
+                height: 1,
+                source,
+                target,
+            }],
+        );
+
+        mirror.set_handoff_progress(0);
+        assert_eq!(mirror.handoff_mix(), 0.0);
+        mirror.set_handoff_progress(400);
+        assert!((mirror.handoff_mix() - 0.352).abs() < 0.000_001);
+        mirror.set_handoff_progress(600);
+        assert!((mirror.handoff_mix() - 0.648).abs() < 0.000_001);
+        mirror.set_handoff_progress(1_000);
+        assert_eq!(mirror.handoff_mix(), 1.0);
+        assert_eq!(lerp_normalized_rect(source, target, 0.0), source);
+        assert_eq!(lerp_normalized_rect(source, target, 1.0), target);
+    }
+
+    #[test]
+    fn live_frame_refresh_preserves_retained_layout() {
+        let mut mirror = CaptureMirrorImage::new(Image::from_rgba(pixel(255), 1, 1), Vec::new());
+        mirror.rect = Rect::new(20.0, 30.0, 220.0, 130.0);
+
+        mirror.set_image(Image::from_rgba(pixel(128), 1, 1));
+
+        assert_eq!(mirror.rect, Rect::new(20.0, 30.0, 220.0, 130.0));
+    }
 }
