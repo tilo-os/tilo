@@ -32,6 +32,16 @@ class IdentityTests(unittest.TestCase):
     def test_immutable_source_and_mutable_update_tag_share_repository(self):
         source.inputs(self.reference, self.repository + ':test', 'aarch64', self.revision)
 
+    def test_retained_registry_target_matches_native_source_architecture(self):
+        repository = 'code.podesta.ai/qos/tilo-development'
+        for architecture in ('aarch64', 'x86_64'):
+            source.inputs(repository + '@' + self.digest, repository + ':development-' + architecture,
+                          architecture, self.revision)
+        for tag in ('development-x86_64', 'latest', 'development-aarch64-other'):
+            with self.subTest(tag=tag), self.assertRaises(ValueError):
+                source.inputs(repository + '@' + self.digest, repository + ':' + tag,
+                              'aarch64', self.revision)
+
     def test_reject_wrong_repository_mutable_source_and_production(self):
         for ref in (self.repository + ':test', self.reference.replace('5000', '5001'),
                     'code.podesta.ai/qos/tilo@' + self.digest):
