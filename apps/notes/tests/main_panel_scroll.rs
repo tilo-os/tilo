@@ -21,7 +21,6 @@ use std::fmt::Write as _;
 use notes::NotesApp;
 use taffy::prelude::*;
 use tempfile::TempDir;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
@@ -51,7 +50,7 @@ fn settle(
     h: u16,
 ) -> Result<(TaffyTree<()>, NodeId), String> {
     let theme = Theme::dark();
-    let mut text_renderer = TextRenderer::new();
+    let mut text_renderer = crate::component_support::renderer();
     app.sync(&mut state.doc, &state.root);
     let mut result: Option<(TaffyTree<()>, NodeId)> = None;
     for _ in 0..5 {
@@ -128,7 +127,12 @@ fn mouse_wheel_scrolls_and_clamps_to_content() {
     let tmp = TempDir::new().unwrap();
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
     let id = app.selected_for_test().unwrap();
-    app.main_panel_mut().load_page(id, "Long page", tall_body());
+    let body = tall_body();
+    notes::storage::write_page_body(tmp.path(), id, &body).unwrap();
+    app.main_panel_mut().load_page(id, "Long page", body);
+    // Complete the normal legacy origin bind before measuring wheel behavior.
+    // Otherwise its delayed first bind replaces the panel midway through this test.
+    app.bypass_seed_grace_for_test();
 
     let mut state = ui::State::new();
     // Wide (stays inline) but short so the content overflows.

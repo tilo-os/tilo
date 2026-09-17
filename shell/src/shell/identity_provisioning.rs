@@ -207,6 +207,12 @@ impl PairingBrokerServer {
                 let active = Arc::clone(&active_connections);
                 std::thread::spawn(move || {
                     let _guard = ActiveConnectionGuard(active);
+                    // Accepted sockets inherit O_NONBLOCK on Darwin. The TLS
+                    // worker is synchronous and retains its existing deadlines.
+                    if let Err(error) = tcp.set_nonblocking(false) {
+                        tracing::warn!(%error, "cannot configure blocking pairing connection");
+                        return;
+                    }
                     let _ = tcp.set_read_timeout(Some(Duration::from_secs(2)));
                     let _ = tcp.set_write_timeout(Some(Duration::from_secs(2)));
                     let Ok(connection) = rustls::ServerConnection::new(tls) else {
@@ -447,8 +453,11 @@ fn serve_pairing_request(
             let Some(mac) = mac.into_bytes() else {
                 return PairingBrokerResponse::Denied;
             };
-            authority.publish_host_round2(&n, value, mac);
-            PairingBrokerResponse::Ok
+            if authority.publish_host_round2(&n, value, mac) {
+                PairingBrokerResponse::Ok
+            } else {
+                PairingBrokerResponse::Denied
+            }
         }
         PairingBrokerRequest::TakeHostRound2(n) if matches!(purpose, BrokerPurpose::Pairing(allowed) if n == *allowed) => {
             PairingBrokerResponse::HostRound2(

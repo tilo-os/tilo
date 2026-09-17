@@ -1872,8 +1872,8 @@ mod overview_add_workspace {
     }
 
     /// Clicking the add-workspace rect must append + activate a workspace (the
-    /// wheel-disc plus slot's contract) and keep the overview open, unlike a
-    /// workspace-card click, so the new card animates in.
+    /// wheel-disc plus slot's contract) and release the overview's input grab
+    /// so the user can immediately navigate the new workspace.
     #[test]
     fn overview_add_workspace_click_appends_workspace() {
         let mut h = build_settled_overview();
@@ -1943,9 +1943,8 @@ mod overview_add_workspace {
              the wheel-disc plus slot's create-and-switch semantics"
         );
         assert!(
-            st.overlays.overview,
-            "overview must stay open after a create click so the new \
-             workspace card animates in on the next frame"
+            !st.overlays.overview,
+            "creating a workspace must dismiss overview so navigation reaches the new workspace"
         );
         let active_id = st.tree().active;
         assert!(

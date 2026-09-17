@@ -57,4 +57,4 @@ pub mod toolbar;
 pub mod views;
 
 pub use command::{CommandSink, FileCommand};
-pub use files_app::FileExplorerWidget;
+pub use files_app::{FileExplorerWidget, StartupInputs};

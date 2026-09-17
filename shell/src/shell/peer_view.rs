@@ -548,7 +548,7 @@ impl Widget for PeerView {
                     self.set_keyboard_focused(self.pointer_inside);
                 }
                 if (self.pointer_inside || self.keyboard_focused)
-                    && let Some(button) = crate::compositor::client_input::evdev_button(*button)
+                    && let Some(button) = crate::shell::input_policy::evdev_button(*button)
                 {
                     self.record_pointer_button(button, pressed);
                     *handled = true;
@@ -558,7 +558,7 @@ impl Widget for PeerView {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } if self.keyboard_focused => {
-                if let Some(keycode) = crate::compositor::client_input::evdev_keycode(event) {
+                if let Some(keycode) = crate::shell::input_policy::evdev_keycode(event) {
                     self.record_key(
                         keycode,
                         matches!(event.state, winit::event::ElementState::Pressed),

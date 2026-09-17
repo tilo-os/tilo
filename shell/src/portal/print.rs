@@ -28,20 +28,32 @@
               lint fires on macro-generated code a per-function #[allow] cannot reach"
 )]
 
+#[cfg(target_os = "linux")]
+use crate::shell::state::Capability;
+#[cfg(target_os = "linux")]
+use crate::shell::state::GRANT_ONCE;
+#[cfg(target_os = "linux")]
+use zbus::interface;
+#[cfg(target_os = "linux")]
+use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
+use zbus::object_server::SignalContext;
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+
 use std::collections::HashMap;
+#[cfg(any(test, target_os = "linux"))]
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rand_core::{OsRng, RngCore};
-use zbus::interface;
-use zbus::names::OwnedUniqueName;
-use zbus::object_server::SignalContext;
-use zbus::zvariant::{ObjectPath, OwnedValue, Value};
+#[cfg(any(test, target_os = "linux"))]
+use zbus::zvariant::{OwnedValue, Value};
 
-use crate::shell::state::{Capability, GRANT_ONCE};
-
-use super::{CapabilityKind, PortalCaller, PortalContext, auth::authenticate_call, flow, lockdown};
+use super::PortalCaller;
+#[cfg(target_os = "linux")]
+use super::{CapabilityKind, PortalContext, auth::authenticate_call, flow, lockdown};
 
 /// Hard ceiling on the bytes we will read off the app's descriptor.
 ///
@@ -119,6 +131,7 @@ impl PrintSpoolerHandle {
 
     /// The real thing: `lp` against the local CUPS.
     #[must_use]
+    #[cfg(target_os = "linux")]
     pub fn cups() -> Self {
         Self {
             inner: Arc::new(LpSpooler),
@@ -149,8 +162,10 @@ impl PrintSpoolerHandle {
 }
 
 /// Production spooler: reads destinations with `lpstat`, submits with `lp`, always as **argv** — no shell in this path to interpolate into.
+#[cfg(target_os = "linux")]
 pub struct LpSpooler;
 
+#[cfg(target_os = "linux")]
 impl PrintSpooler for LpSpooler {
     fn destinations(&self) -> Vec<String> {
         // `lpstat -a` prints one line per destination, name first.
@@ -228,6 +243,7 @@ impl PrintSpooler for LpSpooler {
 }
 
 /// `lpstat -d` → the system default destination, if there is one.
+#[cfg(target_os = "linux")]
 fn lpstat_default() -> Option<String> {
     let out = std::process::Command::new("lpstat")
         .arg("-d")
@@ -308,37 +324,48 @@ impl PrintSpooler for RecordingSpooler {
 /// What a `PreparePrint` token redeems to. Note what is *not* here: the
 /// app's settings/page-setup dicts, echoed back to the app and dropped rather than retained.
 #[derive(Clone, Debug)]
-struct PreparedJob {
+pub struct PreparedJob {
     /// The app the token was minted for — worthless to anybody else, which is what makes it so.
-    caller: PortalCaller,
+    pub caller: PortalCaller,
     /// Destination the user's configuration resolved to.
-    destination: String,
-    copies: u32,
-    issued: Instant,
+    pub destination: String,
+    pub copies: u32,
+    pub issued: Instant,
 }
 
-/// D-Bus interface impl, one instance per [`super::serve`] call, held by the zbus `ObjectServer` for the connection's lifetime, same as the token table.
-pub struct PrintBackend {
-    ctx: PortalContext,
-    /// Live `PreparePrint` tokens, in-memory on purpose — meaningful only inside the session that issued it.
+/// Caller-bound preparation state, shared by the production portal and its policy tests.
+#[derive(Default)]
+pub struct PreparedPrintJobs {
     prepared: Arc<Mutex<HashMap<u32, PreparedJob>>>,
 }
 
+#[cfg(target_os = "linux")]
+pub struct PrintBackend {
+    ctx: PortalContext,
+    jobs: PreparedPrintJobs,
+}
+
+#[cfg(target_os = "linux")]
 impl PrintBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self {
             ctx,
-            prepared: Arc::new(Mutex::new(HashMap::new())),
+            jobs: PreparedPrintJobs::default(),
         }
     }
+    pub fn outstanding_tokens(&self) -> usize {
+        self.jobs.outstanding_tokens()
+    }
+}
 
+impl PreparedPrintJobs {
     /// Mint a token for `job` and return it, from `OsRng` — never a counter,
     /// hash, or clock. The portal spec types it as a `u`, so 32 bits is the
     /// whole budget; [`Self::redeem_token`] also requires the redeemer to be
     /// the app it was minted for, and single use plus a TTL keep the guessing window small.
     ///
     /// Zero is never issued: the portal's `options` dict uses a missing key and zero interchangeably for "no token".
-    fn mint_token(&self, job: PreparedJob) -> u32 {
+    pub fn mint_token(&self, job: PreparedJob) -> u32 {
         let Ok(mut table) = self.prepared.lock() else {
             return 0;
         };
@@ -367,7 +394,7 @@ impl PrintBackend {
     /// - **Caller-bound, without collateral**: a token presented by the
     ///   wrong app is refused *and left in place* — removing it would let a
     ///   co-resident app destroy another's prepared job by guessing at it.
-    fn redeem_token(&self, token: u32, caller: &PortalCaller) -> Option<PreparedJob> {
+    pub fn redeem_token(&self, token: u32, caller: &PortalCaller) -> Option<PreparedJob> {
         let mut table = self.prepared.lock().ok()?;
         table.retain(|_, j| j.issued.elapsed() < TOKEN_TTL);
         let job = table.get(&token)?;
@@ -395,6 +422,7 @@ fn random_token() -> u32 {
 
 // D-Bus surface
 
+#[cfg(target_os = "linux")]
 #[interface(name = "org.freedesktop.impl.portal.Print")]
 impl PrintBackend {
     /// `PreparePrint` — the print dialog, minus the dialog.
@@ -458,7 +486,7 @@ impl PrintBackend {
         };
         let copies = clamp_copies(opt_copies(&settings));
 
-        let token = self.mint_token(PreparedJob {
+        let token = self.jobs.mint_token(PreparedJob {
             caller,
             destination: destination.clone(),
             copies,
@@ -518,7 +546,7 @@ impl PrintBackend {
         let prepared = match opt_u32(&options, "token") {
             None | Some(0) => None,
             Some(token) => {
-                if let Some(job) = self.redeem_token(token, &caller) {
+                if let Some(job) = self.jobs.redeem_token(token, &caller) {
                     Some(job)
                 } else {
                     tracing::warn!(
@@ -585,6 +613,7 @@ impl PrintBackend {
 /// # Errors
 ///
 /// Returns an error if the descriptor is not a regular file, exceeds the size limit, or cannot be read.
+#[cfg(any(test, target_os = "linux"))]
 pub(super) fn spool_from_fd(fd: zbus::zvariant::OwnedFd) -> Result<Vec<u8>, String> {
     let std_fd: std::os::fd::OwnedFd = fd.into();
     let mut file = std::fs::File::from(std_fd);
@@ -698,6 +727,7 @@ pub fn clamp_copies(requested: Option<u32>) -> u32 {
 }
 
 /// `PreparePrint` results: the settings and page setup the user's side agreed to, plus the token that ties a later `Print` to them.
+#[cfg(any(test, target_os = "linux"))]
 fn prepare_results(
     destination: &str,
     copies: u32,
@@ -729,17 +759,20 @@ fn prepare_results(
     results
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn opt_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
     let v = options.get(key)?.try_clone().ok()?;
     u32::try_from(v).ok()
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
     let v = options.get(key)?.try_clone().ok()?;
     String::try_from(v).ok()
 }
 
 /// Copy count out of a `GtkPrintSettings`-shaped dict; GTK stores every setting as a string (`n-copies` arrives as `"3"`), but a real `u` is accepted too.
+#[cfg(any(test, target_os = "linux"))]
 fn opt_copies(settings: &HashMap<String, OwnedValue>) -> Option<u32> {
     if let Some(n) = opt_u32(settings, "n-copies") {
         return Some(n);
@@ -750,10 +783,14 @@ fn opt_copies(settings: &HashMap<String, OwnedValue>) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use crate::portal::{CallerMap, GrantStoreHandle, PromptQueueHandle, PromptResolver};
-    use crate::shell::state::{Workspace, WorkspaceId};
+    #[cfg(target_os = "linux")]
+    use crate::shell::state::Workspace;
+    use crate::shell::state::WorkspaceId;
     use std::io::Write;
 
+    #[cfg(target_os = "linux")]
     fn ctx_with(
         spooler: PrintSpoolerHandle,
         resolver: PromptResolver,
@@ -769,6 +806,7 @@ mod tests {
         (ctx, ws_id)
     }
 
+    #[cfg(target_os = "linux")]
     fn rt() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -925,14 +963,8 @@ mod tests {
 
     #[test]
     fn tokens_are_non_zero_and_do_not_repeat() {
-        let (ctx, ws) = ctx_with(
-            PrintSpoolerHandle::new(Arc::new(RecordingSpooler::with_destinations(vec![
-                "Office".to_string(),
-            ]))),
-            PromptResolver::AutoAllow,
-            "org.example.print",
-        );
-        let backend = PrintBackend::new(ctx);
+        let ws = WorkspaceId(90);
+        let backend = PreparedPrintJobs::default();
         let caller = PortalCaller::new(ws, "org.example.print");
         let mut seen = std::collections::HashSet::new();
         // MAX_OUTSTANDING_TOKENS mints fit without eviction, so every value has to be distinct *and* live at the same time.
@@ -946,12 +978,8 @@ mod tests {
 
     #[test]
     fn token_table_is_bounded() {
-        let (ctx, ws) = ctx_with(
-            PrintSpoolerHandle::null(),
-            PromptResolver::AutoAllow,
-            "org.example.print",
-        );
-        let backend = PrintBackend::new(ctx);
+        let ws = WorkspaceId(90);
+        let backend = PreparedPrintJobs::default();
         let caller = PortalCaller::new(ws, "org.example.print");
         for _ in 0..(MAX_OUTSTANDING_TOKENS * 4) {
             backend.mint_token(prepared_for(&caller));
@@ -965,12 +993,8 @@ mod tests {
 
     #[test]
     fn a_foreign_token_is_refused_without_consuming_it() {
-        let (ctx, ws) = ctx_with(
-            PrintSpoolerHandle::null(),
-            PromptResolver::AutoAllow,
-            "org.example.a",
-        );
-        let backend = PrintBackend::new(ctx);
+        let ws = WorkspaceId(90);
+        let backend = PreparedPrintJobs::default();
         let app_a = PortalCaller::new(ws, "org.example.a");
         let app_b = PortalCaller::new(ws, "org.example.b");
         let token = backend.mint_token(prepared_for(&app_a));
@@ -992,12 +1016,8 @@ mod tests {
 
     #[test]
     fn a_token_redeems_exactly_once() {
-        let (ctx, ws) = ctx_with(
-            PrintSpoolerHandle::null(),
-            PromptResolver::AutoAllow,
-            "org.example.a",
-        );
-        let backend = PrintBackend::new(ctx);
+        let ws = WorkspaceId(90);
+        let backend = PreparedPrintJobs::default();
         let caller = PortalCaller::new(ws, "org.example.a");
         let token = backend.mint_token(prepared_for(&caller));
         assert!(backend.redeem_token(token, &caller).is_some());
@@ -1077,6 +1097,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn lp_spooler_refuses_an_unsafe_destination_before_spawning() {
         // Reaching `lp` at all with this would be the bug; the guard is the last check before the string becomes argv.
         let err = LpSpooler
@@ -1107,6 +1128,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn ctx_default_spooler_is_replaceable() {
         // The backend reads the spooler off the context, so a test that
         // injects one must actually see it — guards against a future refactor hard-wiring `LpSpooler` inside the backend.

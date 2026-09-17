@@ -2740,8 +2740,12 @@ fn osc_52_writes_clipboard_from_base64() {
     // decoded nothing fails here rather than passing quietly.
     let (mut w, _) = build_test_widget();
     let mut doc = AutoCommit::new();
-    // base64("tilo-osc52") = cW9zLW9zYzUy
-    w.feed(&mut doc, &automerge::ROOT, b"\x1b]52;c;cW9zLW9zYzUy\x07");
+    // base64("tilo-osc52") = dGlsby1vc2M1Mg==
+    w.feed(
+        &mut doc,
+        &automerge::ROOT,
+        b"\x1b]52;c;dGlsby1vc2M1Mg==\x07",
+    );
     assert_eq!(
         ui::text_selection::clipboard_paste().as_deref(),
         Some("tilo-osc52"),
@@ -3466,4 +3470,26 @@ fn terminal_palette_tracks_the_theme_not_a_hardcoded_green_on_black() {
         rgb(p.ansi[6]),
         "blue and cyan stay distinct"
     );
+}
+
+#[test]
+fn hosted_terminal_requires_ush_before_construction() {
+    let result = crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices { ush: None });
+    assert!(matches!(
+        result,
+        Err(crate::HostedTerminalError::RequiredServiceMissing("ush"))
+    ));
+}
+
+#[test]
+fn hosted_terminal_service_failure_never_falls_back_to_a_login_shell() {
+    use std::os::unix::net::UnixStream;
+    let (client, server) = UnixStream::pair().unwrap();
+    drop(server);
+    let result =
+        crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices { ush: Some(client) });
+    assert!(matches!(
+        result,
+        Err(crate::HostedTerminalError::ServiceFailed(_))
+    ));
 }

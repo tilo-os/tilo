@@ -275,3 +275,6 @@ mod tests {
         unsafe { env::remove_var("TILO_SVC_COLLAB_FD") };
     }
 }
+
+#[cfg(unix)]
+pub mod fd_transport;

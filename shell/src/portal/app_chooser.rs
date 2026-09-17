@@ -1,21 +1,33 @@
 //! `org.freedesktop.impl.portal.AppChooser` backend.
 
+#[cfg(target_os = "linux")]
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
-use zbus::zvariant::{ObjectPath, OwnedValue};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+#[cfg(target_os = "linux")]
+use zbus::zvariant::OwnedValue;
 
+#[cfg(target_os = "linux")]
 use super::desktop_services::{ApplicationChoiceRequest, PortalResult};
+#[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+#[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call, lockdown};
 
+#[cfg(target_os = "linux")]
 pub struct AppChooserBackend {
     ctx: PortalContext,
     pending: Arc<Mutex<HashMap<String, ApplicationChoiceRequest>>>,
     lifecycle: PortalLifecycle,
 }
+#[cfg(target_os = "linux")]
 impl AppChooserBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self::with_lifecycle(ctx, PortalLifecycle::new())
@@ -29,6 +41,7 @@ impl AppChooserBackend {
         }
     }
 }
+#[cfg(target_os = "linux")]
 fn str_opt(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
     options
         .get(key)?
@@ -50,6 +63,7 @@ fn valid_choices(choices: Vec<String>) -> Vec<String> {
         .collect()
 }
 #[interface(name = "org.freedesktop.impl.portal.AppChooser")]
+#[cfg(target_os = "linux")]
 impl AppChooserBackend {
     async fn choose_application(
         &self,
