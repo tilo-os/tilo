@@ -226,6 +226,7 @@ pub enum PowerOperation {
     SetProfile { profile: String },
     SetAutoSuspend { enabled: bool },
     SetBlankTimeout { label: String },
+    SetLockTimeout { label: String },
     SetSuspendTimeout { profile: String, label: String },
     SetLidAction { action: String },
     SetPowerKeyAction { action: String },
@@ -3252,16 +3253,15 @@ fn power_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
         (
             "lock-after",
             "Set automatic lock delay",
-            panes::power::LOCK_KEY,
-            &[
+            vec![
                 "1 minute",
                 "5 minutes",
                 "10 minutes",
                 "15 minutes",
                 "30 minutes",
                 "Never",
-            ][..],
-            "5 minutes",
+            ],
+            "lock",
         ),
         (
             "saver-suspend",
@@ -3292,6 +3292,7 @@ fn power_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
                 let operation = match profile {
                     "active" => PowerOperation::SetProfile { profile: choice },
                     "blank" => PowerOperation::SetBlankTimeout { label: choice },
+                    "lock" => PowerOperation::SetLockTimeout { label: choice },
                     profile => PowerOperation::SetSuspendTimeout {
                         profile: profile.into(),
                         label: choice,
