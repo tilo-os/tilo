@@ -13,6 +13,28 @@ WebKit as a fallback.
 
 ## Reuse and timing
 
+Run `development-wpe-stage.yml` only when a matching completed artifact is not
+available. Select the native architecture and reviewed immutable WPE buildroot;
+the tools builder must also support that architecture. This producer uses six
+jobs on the native `qos-package` class, with an explicit 23 GiB container limit.
+It restores and checksum-verifies only the three WPE source archives, saving
+them before compilation so a later failure does not require another download.
+The archives are shared across architectures; compiled stages are architecture
+specific. Completed layers also use the existing development registry cache.
+
+The producer records measured phase durations, memory and available space. Its
+30 GiB admission floor, 8 GiB stop reserve and 155-minute duration guard are
+experiment bounds, not proof that WebKit fits or a predicted build duration.
+Only bounded compiler diagnostics and public receipts are retained. Native
+transport run 7030 proved cold registry restoration, payload-only projection
+and skipping the original build stage on ARM and x86-64 using synthetic ELF
+payloads; it did not compile or exercise WebKit.
+
+After a successful real producer run, supply the public `wpe-stage.json` contents
+as `wpe_stage_receipt` to `development-compile.yml`. Keep its matching buildroot
+as `wpe_candidate`. A normal application change can reuse the completed stage;
+the consumer validates the current dependency hashes before accepting it.
+
 The full build requires the existing S3 compiler cache to start successfully.
 Credentials enter through secret mounts, never build arguments or image layers.
 Run 7000 verified a remote hit after restarting the cache server with an empty
