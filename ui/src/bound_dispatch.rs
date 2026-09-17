@@ -1933,6 +1933,62 @@ impl CallbackBinding {
     ) -> Result<R, BoundDispatchError> {
         self.with_record_frame(outer, true, callback)
     }
+    /// Restore only through the already owned record frame. Unlike ordinary
+    /// mutation entry this never activates or flushes an unfinished action.
+    #[allow(dead_code, reason = "consumed by the following History host task")]
+    pub(crate) fn restore_prepared(
+        &self,
+        outer: &mut AutoCommit,
+        admitted: &crate::state::owned_restore::ConfirmedRestore<'_>,
+        prepared: &crate::history_mode::restore::PreparedContentRestore,
+    ) -> Result<
+        crate::state::owned_restore::OwnedActionReceipt,
+        crate::state::owned_restore::OwnedRestoreError,
+    > {
+        use crate::state::owned_restore::{OwnedContentAction, OwnedRestoreError, same_frontier};
+        self.with_record_frame(outer, false, |doc, _| {
+            // with_record_frame checked the explicit Doc witness, owner and
+            // lifetime, and retains their synchronous exclusive admission.
+            let handle = ACTIVE
+                .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
+                .ok_or(OwnedRestoreError::ActiveAction)?;
+            let mut owned = handle.borrow_mut();
+            let frame = owned.as_mut().ok_or(OwnedRestoreError::ActiveAction)?;
+            if frame.mutation.is_some() || !frame.operations.is_empty() {
+                return Err(OwnedRestoreError::ActiveAction);
+            }
+            if doc.pending_ops() != 0 {
+                return Err(OwnedRestoreError::PendingEdits);
+            }
+            if frame
+                .state
+                .pending
+                .as_ref()
+                .is_some_and(|pending| !same_frontier(&pending.before, &doc.base_heads()))
+            {
+                return Err(OwnedRestoreError::UnfinishedActionBoundary);
+            }
+            let next_generation = frame
+                .state
+                .generation
+                .and_then(|generation| generation.checked_add(1))
+                .ok_or(OwnedRestoreError::GenerationExhausted)?;
+            let receipt = OwnedContentAction::begin_clean(
+                doc,
+                &mut frame.history,
+                prepared.current_heads(),
+                admitted,
+                Some(self.instance_id),
+            )?
+            .apply_restore(prepared)?;
+            if receipt.changed {
+                frame.state.generation = Some(next_generation);
+                frame.reset_operation_baseline(self, receipt.after.clone());
+            }
+            Ok(receipt)
+        })
+        .map_err(OwnedRestoreError::Bound)?
+    }
     pub(crate) fn with_record_frame<R>(
         &self,
         outer: &mut AutoCommit,
@@ -2223,3 +2279,7 @@ pub(crate) fn enter_traversal<const BOUND: bool>(
         Ok(None)
     }
 }
+
+#[cfg(test)]
+#[path = "bound_dispatch/owned_restore_tests.rs"]
+mod owned_restore_tests;
