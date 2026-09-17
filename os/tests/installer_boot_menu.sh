@@ -112,7 +112,8 @@ fake="$work/efibootmgr"
 cat > "$fake" <<'EOF'
 #!/usr/bin/env bash
 if [ "$#" -eq 0 ]; then
-  printf 'BootCurrent: 0002\nBootNext: 0003\nBootOrder: 0002,0000,0003\n'
+  printf 'BootCurrent: 0002\nBootNext: %s\nBootOrder: %s\n' \
+    "${TILO_FAKE_BOOT_NEXT:-0003}" "${TILO_FAKE_BOOT_ORDER:-0002,0000,0003}"
 else
   printf '%s\n' "$*" >> "$TILO_FAKE_EFIBOOT_LOG"
 fi
@@ -122,6 +123,39 @@ state="$work/firmware.state"
 export TILO_FAKE_EFIBOOT_LOG="$work/efiboot.log"
 TILO_BOOT_MENU_EFIVARS="$work/efivars" TILO_BOOT_MENU_EFIBOOTMGR="$fake" \
   "$menu" firmware-snapshot "$state"
+
+# A successful efibootmgr listing is insufficient when efivarfs data cannot
+# supply every referenced entry. A failed snapshot must not replace state.
+mkdir -p "$work/no-entries" "$work/missing-ordered"
+cp "$work/original-entry" "$work/missing-ordered/Boot0000-$guid"
+cp "$work/original-entry" "$work/missing-ordered/Boot0002-$guid"
+for directory in no-entries missing-ordered; do
+  printf 'previous snapshot\n' > "$work/incomplete.state"
+  if TILO_BOOT_MENU_EFIVARS="$work/$directory" TILO_BOOT_MENU_EFIBOOTMGR="$fake" \
+      "$menu" firmware-snapshot "$work/incomplete.state" > "$work/snapshot-failure" 2>&1; then
+    bad "$directory snapshot accepted missing referenced firmware bytes"
+  elif grep -Fqx 'previous snapshot' "$work/incomplete.state" \
+      && grep -Fq 'referenced by BootOrder or BootNext' "$work/snapshot-failure"; then
+    ok "$directory snapshot rejects incomplete evidence before replacing state"
+  else
+    bad "$directory failure changed state or lacked a useful diagnostic"
+  fi
+done
+if TILO_FAKE_BOOT_NEXT=000c TILO_BOOT_MENU_EFIVARS="$work/efivars" TILO_BOOT_MENU_EFIBOOTMGR="$fake" \
+    "$menu" firmware-snapshot "$work/next-missing.state" > "$work/snapshot-failure" 2>&1; then
+  bad "BootNext-only missing entry was accepted"
+elif grep -Fq 'missing readable Boot000C bytes' "$work/snapshot-failure"; then
+  ok "BootNext requires its own captured entry even outside BootOrder"
+else
+  bad "missing BootNext entry did not report the normalized ID"
+fi
+if TILO_FAKE_BOOT_NEXT=000a TILO_FAKE_BOOT_ORDER=000a,0002 \
+    TILO_BOOT_MENU_EFIVARS="$work/efivars" TILO_BOOT_MENU_EFIBOOTMGR="$fake" \
+    "$menu" firmware-snapshot "$work/lowercase.state"; then
+  ok "case-normalized firmware IDs match the captured variable name"
+else
+  bad "lowercase efibootmgr IDs failed to match uppercase variable names"
+fi
 # The new Tilo entry is not an alteration of any pre-existing foreign entry.
 cp "$work/original-entry" "$work/efivars/Boot000B-$guid"
 TILO_BOOT_MENU_EFIVARS="$work/efivars" TILO_BOOT_MENU_EFIBOOTMGR="$fake" \
@@ -181,6 +215,23 @@ elif cmp -s "$state" "$work/original-state" \
   ok "post-restore verification detects changed entries and retains evidence"
 else
   bad "post-restore failure did not retain evidence"
+fi
+
+# Execute the actual caller function in a conditional context (which disables
+# implicit errexit propagation) without executing any installer disk code.
+sed -n '/^  restore_firmware_boot_state() {/,/^  }/p' "$installer" > "$work/caller-function"
+if (
+  source "$work/caller-function"
+  BOOT_MENU=false
+  FIRMWARE_STATE="$work/caller-evidence"
+  FIRMWARE_RESTORED=0
+  cp "$state" "$FIRMWARE_STATE"
+  if restore_firmware_boot_state; then exit 1; fi
+  [ "$FIRMWARE_RESTORED" -eq 0 ] && cmp -s "$state" "$FIRMWARE_STATE"
+); then
+  ok "caller retains evidence and failure status even when errexit is suppressed"
+else
+  bad "caller removed evidence or reported restored state after helper failure"
 fi
 
 if grep -Fq 'firmware-snapshot "$FIRMWARE_STATE"' "$installer" \

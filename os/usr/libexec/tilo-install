@@ -675,7 +675,9 @@ if [ "$ALONGSIDE" -eq 1 ]; then
   FIRMWARE_RESTORED=0
   restore_firmware_boot_state() {
     [ "$FIRMWARE_RESTORED" -eq 0 ] || return 0
-    "$BOOT_MENU" firmware-restore "$FIRMWARE_STATE"
+    # Preserve evidence even if this function is invoked from a conditional
+    # cleanup context where Bash suppresses errexit inside the whole function.
+    "$BOOT_MENU" firmware-restore "$FIRMWARE_STATE" || return $?
     rm -f -- "$FIRMWARE_STATE"
     FIRMWARE_RESTORED=1
   }
