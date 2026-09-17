@@ -61,10 +61,10 @@ pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 
 Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
-ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides and Weather
-have been built and run on Windows. Other apps are still being ported; a
-workspace-wide build currently includes Linux
-services and is not a Windows application build command.
+ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
+Scratchpad have been built and run on Windows. Other apps are still being ported; a
+workspace-wide build currently includes Linux services and is not a Windows
+application build command.
 
 From PowerShell at the workspace root:
 
@@ -108,6 +108,17 @@ vault creators publish one complete key without overwriting the winner.
 
 ```powershell
 cargo test --locked -p private-fs -p tilo-user-identity -p accounts --lib
+```
+
+Apps that need persistent content-addressed blobs without mounting a filesystem
+can depend on `fs` with `default-features = false`, as Scratchpad does. This uses
+the same content store, durable protection tags and legacy-store migration as
+the OS. The default `filesystem` feature adds the namespace, FUSE projection,
+service protocols and their integration tests.
+
+```powershell
+cargo test --locked -p fs --no-default-features --lib
+cargo test --locked -p scratchpad --all-targets
 ```
 
 For smaller local development artifacts, set `CARGO_PROFILE_DEV_DEBUG=0` and
