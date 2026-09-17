@@ -3446,6 +3446,25 @@ fn install_device_fabric_bridge(
                         session_id,
                     )?;
                 }
+                DeviceFabricUiAction::RequestPhoneTethering { phone } => {
+                    let _ = crate::shell::personal_tethering_runtime::request_phone_tethering(
+                        &fabric_net,
+                        &phone,
+                    )?;
+                }
+                DeviceFabricUiAction::AuthorizePhoneTethering {
+                    request_id,
+                    approved,
+                } => {
+                    crate::shell::personal_tethering_runtime::authorize_phone_tethering(
+                        request_id, approved,
+                    )?;
+                }
+                DeviceFabricUiAction::DisconnectPhoneTethering { request_id } => {
+                    crate::shell::personal_tethering_runtime::disconnect_phone_tethering(
+                        request_id,
+                    )?;
+                }
                 DeviceFabricUiAction::Place { device, edge } => {
                     crate::shell::device_fabric_runtime::place_device(&fabric_net, &device, edge)?;
                 }
