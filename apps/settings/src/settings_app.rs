@@ -561,6 +561,20 @@ impl SettingsApp {
                             return Err("unsupported screen blank timeout".into());
                         }
                     }
+                    crate::actions::PowerOperation::SetLockTimeout { label } => {
+                        if ![
+                            "1 minute",
+                            "5 minutes",
+                            "10 minutes",
+                            "15 minutes",
+                            "30 minutes",
+                            "Never",
+                        ]
+                        .contains(&label.as_str())
+                        {
+                            return Err("unsupported automatic lock timeout".into());
+                        }
+                    }
                     crate::actions::PowerOperation::SetSuspendTimeout { profile, label } => {
                         if ![
                             "5 minutes",
