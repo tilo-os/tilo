@@ -11698,7 +11698,7 @@ mod command_path_tests {
 
         std::fs::write(
             &path,
-            serde_json::to_vec(&projection(&root, "Ada Renamed", &[(95, "Phone", Some(1))]))
+            serde_json::to_vec(&projection(&root, "Ada Renamed", &[(95, "Phone", Some(2))]))
                 .unwrap(),
         )
         .unwrap();
