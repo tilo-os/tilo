@@ -670,9 +670,13 @@ impl NetworkPane {
     /// Wi-Fi card: header carries the toggle; body is status + scanned-network
     /// rows + a Refresh action.
     fn wifi_card(&self) -> El {
-        let wifi_toggle: El = Box::new(
-            Toggle::new("settings.network.wifi", WIFI_ENABLED_KEY).with_id("network.wifi"),
-        );
+        let wifi_toggle =
+            Toggle::new("settings.network.wifi", WIFI_ENABLED_KEY).with_id("network.wifi");
+        let wifi_toggle = match crate::actions::network_bool_binding("wifi") {
+            Some(binding) => wifi_toggle.on_action(binding),
+            None => wifi_toggle.with_enabled(false),
+        };
+        let wifi_toggle: El = Box::new(wifi_toggle);
 
         let mut wifi_rows: Vec<El> = Vec::new();
         wifi_rows.push(value_row("Status", &self.connection_status_text()));
@@ -1663,9 +1667,26 @@ impl NetworkPane {
             && let automerge::ScalarValue::Boolean(b) = s.as_ref()
             && *b != self.last_wifi_enabled
         {
-            self.last_wifi_enabled = *b;
-            if let Err(e) = self.dispatcher.set_wifi(*b) {
-                warn!(target: "tilo::settings", op = "set_wifi", error = %e, "network pane dispatch failed");
+            let enabled = *b;
+            self.last_wifi_enabled = enabled;
+            match self.dispatcher.set_wifi(enabled) {
+                Ok(()) => self.finish_local_operation(
+                    crate::actions::NetworkOperation::SetWifiEnabled { enabled },
+                    Ok(if enabled {
+                        "Wi-Fi enabled.".into()
+                    } else {
+                        "Wi-Fi disabled.".into()
+                    }),
+                ),
+                Err(e) => {
+                    self.last_wifi_enabled = !enabled;
+                    let _ = state.put(root, WIFI_ENABLED_KEY, !enabled);
+                    self.finish_local_operation(
+                        crate::actions::NetworkOperation::SetWifiEnabled { enabled },
+                        Err(format!("Could not change Wi-Fi power: {e}")),
+                    );
+                    warn!(target: "tilo::settings", op = "set_wifi", error = %e, "network pane dispatch failed");
+                }
             }
         }
 
