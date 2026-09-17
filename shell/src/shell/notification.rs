@@ -271,6 +271,8 @@ const EDGE_INSET: f64 = 24.0;
 const CARD_PADDING_X: f64 = 14.0;
 const DOT_RADIUS: f64 = 5.0;
 const DOT_GAP: f64 = 12.0;
+/// Selector height (HIG §9.6) for the Do-Not-Disturb status pill.
+const SELECTOR_HEIGHT: f64 = 28.0;
 
 /// Max notifications in the active stack; older entries drop from the
 /// front (same FIFO as `ui::widget::toast::ToastStack`).
@@ -436,6 +438,9 @@ impl NotificationStack {
             &shape,
         );
         let label = lock_suppressed_label(count);
+        // Centre on the measured line, not the font size (HIG §7a).
+        let max_width = f64_to_f32_lossy(width - CARD_PADDING_X * 2.0);
+        let (_, label_h) = ctx.text_renderer.measure(&label, title_size, Some(max_width));
         ctx.text_renderer.draw_text(
             ctx.scene,
             &label,
@@ -444,11 +449,11 @@ impl NotificationStack {
             ctx.transform.pre_translate(
                 (
                     card_rect.x0 + CARD_PADDING_X,
-                    card_rect.y0 + (TOAST_HEIGHT - f64::from(title_size)) / 2.0,
+                    card_rect.y0 + (TOAST_HEIGHT - f64::from(label_h)) / 2.0,
                 )
                     .into(),
             ),
-            Some(f64_to_f32_lossy(width - CARD_PADDING_X * 2.0)),
+            Some(max_width),
         );
         card_rect
     }
@@ -465,7 +470,9 @@ impl NotificationStack {
         history_count: usize,
     ) -> Rect {
         let body_size = ctx.theme.tokens.typography.scale.xs;
-        let pill_h = 30.0;
+        // A status pill is a Selector-height surface (HIG §9.6: 28), not
+        // an off-grid 30.
+        let pill_h = SELECTOR_HEIGHT;
         let pill_rect = Rect::new(x0, y, x0 + width, y + pill_h);
         let shape = RoundedRect::from_rect(pill_rect, radius);
         ctx.scene.fill(
@@ -501,17 +508,18 @@ impl NotificationStack {
             "Do Not Disturb".to_string()
         };
         let text_x = pill_rect.x0 + CARD_PADDING_X + DOT_RADIUS * 2.0 + DOT_GAP;
+        let max_width = f64_to_f32_lossy(width - (text_x - pill_rect.x0) - CARD_PADDING_X);
+        // Centre on the measured line, not the font size (HIG §7a).
+        let (_, label_h) = ctx.text_renderer.measure(&label, body_size, Some(max_width));
         ctx.text_renderer.draw_text(
             ctx.scene,
             &label,
             body_size,
             ctx.theme.tokens.colors.text_dim,
             ctx.transform.pre_translate(
-                (text_x, pill_rect.y0 + (pill_h - f64::from(body_size)) / 2.0).into(),
+                (text_x, pill_rect.y0 + (pill_h - f64::from(label_h)) / 2.0).into(),
             ),
-            Some(f64_to_f32_lossy(
-                width - (text_x - pill_rect.x0) - CARD_PADDING_X,
-            )),
+            Some(max_width),
         );
         pill_rect
     }
