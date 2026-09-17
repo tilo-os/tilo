@@ -288,6 +288,12 @@ impl SearchTextIndex {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchTextPage {
+        // Treat budgets as caller-requested ceilings, not authority to make a
+        // single UI-thread page arbitrarily large. Untrusted control-socket
+        // and collaboration callers can continue with `next_after`; they may
+        // never turn one request into a full-corpus materialisation.
+        let work_budget = work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT);
+        let result_limit = result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
         if work_budget == 0 || result_limit == 0 {
             return SearchTextPage::default();
         }
@@ -799,6 +805,12 @@ impl SearchCatalog {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
+        // Providers and remote callers may request a smaller page, but no
+        // caller can enlarge one retained-index turn beyond the interactive
+        // latency/materialisation ceilings. Complete discovery remains
+        // available through the returned cursor.
+        let work_budget = work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT);
+        let result_limit = result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
         if work_budget == 0 || result_limit == 0 {
             return SearchPage {
                 results: Vec::new(),
@@ -1566,6 +1578,19 @@ mod tests {
     }
 
     #[test]
+    fn shared_text_index_clamps_hostile_page_budgets() {
+        let index = SearchTextIndex::new((0..1_000).map(|i| format!("common item {i}")));
+        let page = index.matching_page("common", None, usize::MAX, usize::MAX);
+
+        assert_eq!(page.inspected, DEFAULT_SEARCH_CANDIDATE_LIMIT);
+        assert_eq!(page.ids.len(), DEFAULT_SEARCH_RESULT_LIMIT);
+        assert!(
+            page.next_after.is_some(),
+            "the bounded page remains continuable"
+        );
+    }
+
+    #[test]
     fn shared_text_index_pages_a_broad_hundred_thousand_row_posting() {
         let index = SearchTextIndex::new(
             std::iter::once("common common item 0".to_owned())
@@ -1773,6 +1798,24 @@ mod tests {
         assert!(pages <= 1_001usize.div_ceil(31));
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].title, "Target");
+    }
+
+    #[test]
+    fn catalogue_clamps_hostile_page_budgets_without_truncating_discovery() {
+        let catalog = SearchCatalog::new("Documents");
+        for index in 0..1_000 {
+            let id = format!("document:{index:04}");
+            assert!(
+                catalog
+                    .upsert(&id, "common", catalog_hit(&id, format!("Document {index}")))
+                    .is_ok()
+            );
+        }
+
+        let page = catalog.query_page("common", None, usize::MAX, usize::MAX);
+        assert_eq!(page.inspected, DEFAULT_SEARCH_CANDIDATE_LIMIT);
+        assert_eq!(page.results.len(), DEFAULT_SEARCH_RESULT_LIMIT);
+        assert!(page.next.is_some(), "the bounded page remains continuable");
     }
 
     #[test]
