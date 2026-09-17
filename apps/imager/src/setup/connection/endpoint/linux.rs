@@ -549,6 +549,12 @@ pub(super) fn check_metadata(file: &File, directory: bool) -> Result<bool, Endpo
     Ok(!directory && meta.mode() & 0o111 != 0)
 }
 
+// Generation-bearing kernel file handle, scoped by the retained endpoint's
+// independently attested volume and live mount session. No inode-only fallback.
+pub(super) fn object_generation(file: &File) -> Result<Vec<u8>, EndpointError> {
+    persistent_root(file, false)
+}
+
 #[cfg(test)]
 mod clone_tests {
     use super::*;
