@@ -20,7 +20,9 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 use zeroize::Zeroizing;
 
-use crate::widgets::{El, caption, card, card_with_action, rows, setting_row, status_pill};
+use crate::widgets::{
+    El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill, setting_row,
+};
 
 const ADD_KEY: &str = "settings.users.add";
 const SAVE_KEY: &str = "settings.users.form.save";
@@ -442,19 +444,19 @@ impl UsersPane {
                     Row::new()
                         .push(Box::new(Text::new(&user.full_name).with_size(13.0)))
                         .push(Box::new(Spacer::new()))
-                        .push(status_pill(
+                        .push(semantic_status_pill(
                             role,
                             if user.admin {
-                                Theme::dark().status_success
+                                StatusTone::Success
                             } else {
-                                Theme::dark().text_dim
+                                StatusTone::Neutral
                             },
                         )),
                 ))
                 .push(Box::new(
                     Text::new(&format!("{} · UID {}{}", user.username, user.uid, you))
                         .with_size(11.0)
-                        .with_color(Theme::dark().text_dim),
+                        .dimmed(),
                 ))
                 .push(Box::new(actions)),
         )
@@ -477,12 +479,12 @@ impl UsersPane {
         let mut top = Row::new()
             .push(Box::new(Text::new(name).with_size(13.0)))
             .push(Box::new(Spacer::new()))
-            .push(status_pill(
+            .push(semantic_status_pill(
                 if id.active { "Active" } else { "Available" },
                 if id.active {
-                    Theme::dark().status_success
+                    StatusTone::Success
                 } else {
-                    Theme::dark().text_dim
+                    StatusTone::Neutral
                 },
             ));
         if !id.active {
@@ -516,7 +518,7 @@ impl UsersPane {
                         id.id, key, id.threshold, id.total_shares, protection
                     ))
                     .with_size(11.0)
-                    .with_color(Theme::dark().text_dim),
+                    .dimmed(),
                 )),
         )
     }
