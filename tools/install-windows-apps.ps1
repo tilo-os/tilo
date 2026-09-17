@@ -2,8 +2,8 @@
 # Cap'n Proto and the pinned Rust/MSVC toolchain must be available on PATH.
 [CmdletBinding()]
 param(
-    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor')]
-    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor'),
+    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor', 'code-editor')]
+    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor', 'code-editor'),
     [ValidateSet('dev', 'release')]
     [string]$Profile = 'dev'
 )
@@ -67,8 +67,17 @@ New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $menuDirectory -Force | Out-Null
 $fontDirectory = Join-Path $installDirectory 'fonts'
 New-Item -ItemType Directory -Path $fontDirectory -Force | Out-Null
-Get-ChildItem -LiteralPath (Join-Path $repository 'ui/assets/fonts') | ForEach-Object {
-    Copy-Item -LiteralPath $_.FullName -Destination $fontDirectory -Recurse -Force
+$fontSource = Join-Path $repository 'ui/assets/fonts'
+Get-ChildItem -LiteralPath $fontSource -Recurse -File | ForEach-Object {
+    $fontTarget = Join-Path $fontDirectory ([IO.Path]::GetRelativePath($fontSource, $_.FullName))
+    # Live apps memory-map these shared files. Avoid overwriting unchanged
+    # fonts when installing a different app, including on repeated installs.
+    if ((Test-Path -LiteralPath $fontTarget -PathType Leaf) -and
+        (Get-FileHash -LiteralPath $_.FullName).Hash -eq (Get-FileHash -LiteralPath $fontTarget).Hash) {
+        return
+    }
+    New-Item -ItemType Directory -Path (Split-Path -Parent $fontTarget) -Force | Out-Null
+    Copy-Item -LiteralPath $_.FullName -Destination $fontTarget -Force
 }
 $shortcutShell = New-Object -ComObject WScript.Shell
 if ('pdf-viewer' -in $applications -or 'file-explorer' -in $applications) {
@@ -82,6 +91,7 @@ foreach ($application in $applications) {
         'word-processor' { 'Word Processor' }
         'image-editor' { 'Image Editor' }
         'hex-editor' { 'Hex Editor' }
+        'code-editor' { 'Code Editor' }
         'pdf-viewer' { 'PDF Viewer' }
         'ebook' { 'Books' }
         default { (Get-Culture).TextInfo.ToTitleCase($application) }
