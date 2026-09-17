@@ -50,6 +50,7 @@ src/widget/command_palette.rs white_or_black 0
 src/widget/conflict_banner.rs theme_blind_white 3
 src/widget/conflict_picker.rs literal_color 1
 src/widget/conflict_picker.rs theme_blind_white 3
+src/widget/conflict_picker.rs white_or_black 2
 src/widget/context_menu.rs theme_blind_white 0
 src/widget/data_table.rs theme_blind_white 1
 src/widget/empty_state.rs white_or_black 1

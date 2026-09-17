@@ -415,10 +415,16 @@ const AGENT_GLYPH_W: f64 = 14.0;
 /// `with_ui_scale` (which doubles the type but leaves `text_scale` at 1)
 /// and a theme with a larger base — and the renderer factor covers the
 /// host-palette convention that scales the renderer instead.
-pub(crate) fn label_magnification(theme: &Theme, text_renderer: &TextRenderer) -> f64 {
+pub(crate) fn label_magnification(theme: &Theme, _text_renderer: &TextRenderer) -> f64 {
+    // The theme's resolved type step already carries the text (and UI)
+    // scale, and every label here is drawn at `renderer_type_size`, so the
+    // glyphs land at exactly that resolved size whether or not the renderer
+    // is scaled to match. The magnification is therefore the type step's
+    // ratio alone; multiplying by the renderer's scale as well doubled the
+    // pads at 2x (X1).
     let default_sm = crate::tokens::typography::TypeScale::default().sm;
     let type_ratio = theme.tokens.typography.scale.sm / default_sm;
-    (f64::from(type_ratio) * f64::from(text_renderer.text_scale())).max(0.5)
+    f64::from(type_ratio).max(0.5)
 }
 
 /// Peer name type size: `scale.sm`, not `scale.xs` — xs measured ~34x15px
@@ -2367,8 +2373,17 @@ mod tests {
         let (cw, _) = chip_size(&theme, &mut tr, "Alice");
         assert!((cw - (f64::from(ctw) + CHIP_PAD_X * 2.0)).abs() < 1e-6);
 
+        // A matched 2x host: the theme's type steps carry the scale and the
+        // renderer is set to the same scale, so the label is measured at the
+        // renderer-relative size the painter uses (X1) and paints at 2x.
+        let theme = Theme::dark().with_text_scale(2.0);
         tr.set_text_scale(2.0);
-        let (tw2, _) = tr.measure("Alice", pill_label_size(&theme), None);
+        let (tw2, _) = tr.measure(
+            "Alice",
+            renderer_type_size(&tr, pill_label_size(&theme)),
+            None,
+        );
+        assert!(tw2 > tw * 1.5, "the 2x label ({tw2}) must be about twice the 1x label ({tw})");
         let (pw2, _) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
         assert!(
             (pw2 - (f64::from(tw2) + PILL_PAD_X * 4.0)).abs() < 1e-6,
@@ -2376,7 +2391,11 @@ mod tests {
         );
         let (aw2, _) = peer_pill_size_for(&mut tr, &theme, "Alice", true);
         assert!((aw2 - pw2 - AGENT_GLYPH_W * 2.0).abs() < 1e-6);
-        let (ctw2, _) = tr.measure("Alice", theme.tokens.typography.scale.xs, None);
+        let (ctw2, _) = tr.measure(
+            "Alice",
+            renderer_type_size(&tr, theme.tokens.typography.scale.xs),
+            None,
+        );
         let (cw2, _) = chip_size(&theme, &mut tr, "Alice");
         assert!((cw2 - (f64::from(ctw2) + CHIP_PAD_X * 4.0)).abs() < 1e-6);
     }
