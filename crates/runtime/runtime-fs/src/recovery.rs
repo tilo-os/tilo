@@ -694,6 +694,9 @@ pub(super) fn ensure_recovery(step: &mut Step, kind: RecoveryKind) -> RecoveryId
         note: None,
     });
     record.kind = kind;
+    if kind == RecoveryKind::NeedsRevalidation {
+        record.acknowledged = false;
+    }
     RecoveryId(record.id)
 }
 fn fold(states: impl Iterator<Item = ItemState>) -> OperationState {
