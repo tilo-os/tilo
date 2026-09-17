@@ -20,8 +20,9 @@ use winit::keyboard::{Key, NamedKey};
 use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::text_render::TextWeight;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{Button, ButtonFace, ButtonStyle, Widget};
 
 use crate::actions::{self, DiffmergeAction, HunkChoice, MergeResourceCtx};
 use crate::doc::MergeDoc;
@@ -30,7 +31,7 @@ use crate::model::{MergeHunk, MergeModel, Resolution};
 
 const ROW_H: f64 = 19.0;
 const HEADER_H: f64 = 30.0;
-const ACTION_H: f64 = 26.0;
+const ACTION_H: f64 = 42.0;
 const FONT_SIZE: f32 = 12.5;
 const PAD_X: f64 = 8.0;
 const GAP: f64 = 6.0;
@@ -577,27 +578,24 @@ impl MergeView {
         block_h: f64,
         hi: usize,
         h: &MergeHunk,
+        pointer: Point,
         action_hits: &mut Vec<ActionHit>,
         compact: bool,
     ) {
         let c = &theme.tokens.colors;
         let ay = y + block_h + 2.0;
-        // Chip hues track the theme so a palette / high-contrast swap
-        // keeps the resolution controls coherent: ours = success (green),
-        // theirs = info (blue), both = the neutral dim tone — mirroring
-        // the status label's own `ColorClass` mapping.
-        let chips: &[(&str, HunkChoice, Color)] = if h.resolution.is_conflict() {
+        let chips: &[(&str, HunkChoice)] = if h.resolution.is_conflict() {
             &[
-                ("Take ours", HunkChoice::Ours, c.semantic.success),
-                ("Take theirs", HunkChoice::Theirs, c.semantic.info),
-                ("Take both", HunkChoice::Both, c.text_dim),
+                ("Take ours", HunkChoice::Ours),
+                ("Take theirs", HunkChoice::Theirs),
+                ("Take both", HunkChoice::Both),
             ]
         } else {
             // Auto-resolved — still allow flipping.
             &[
-                ("Ours", HunkChoice::Ours, c.semantic.success),
-                ("Theirs", HunkChoice::Theirs, c.semantic.info),
-                ("Both", HunkChoice::Both, c.text_dim),
+                ("Ours", HunkChoice::Ours),
+                ("Theirs", HunkChoice::Theirs),
+                ("Both", HunkChoice::Both),
             ]
         };
         // Status label on the left. On a phone, keep this semantically distinct
@@ -636,7 +634,7 @@ impl MergeView {
         } else {
             r.x0 + 2.0 * col_w + PAD_X
         };
-        for (label, choice, col) in chips {
+        for (label, choice) in chips {
             let label = if compact {
                 match choice {
                     HunkChoice::Ours => "Use ours",
@@ -648,34 +646,24 @@ impl MergeView {
             };
             let w = label.len() as f64 * if compact { 6.8 } else { 7.2 }
                 + if compact { 14.0 } else { 16.0 };
-            let chip = Rect::new(cx, ay, cx + w, ay + ACTION_H - 6.0);
+            let chip = Rect::new(cx, ay, cx + w, ay + 36.0);
             let selected = chip_is_selected(h.resolution, *choice);
-            let bg = if selected {
-                with_alpha(*col, 220)
+            let style = if selected {
+                ButtonStyle::Primary
             } else {
-                with_alpha(*col, 50)
+                ButtonStyle::Neutral
             };
-            let rr = RoundedRect::from_rect(chip, 5.0);
-            scene.fill(Fill::NonZero, transform, bg, None, &rr);
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                with_alpha(*col, 160),
-                None,
-                &rr,
-            );
-            let text_col = if selected {
-                Color::from_rgb8(10, 14, 22)
-            } else {
-                *col
-            };
-            tr.draw_text(
+            Button::paint(
                 scene,
-                label,
-                11.5,
-                text_col,
-                transform * Affine::translate((cx + if compact { 7.0 } else { 8.0 }, ay + 4.0)),
-                None,
+                transform,
+                tr,
+                theme,
+                &ButtonFace::new(chip, label)
+                    .style(style)
+                    .radius(5.0)
+                    .text_size(11.5)
+                    .weight(TextWeight::Regular)
+                    .hovered(chip.contains(pointer)),
             );
             action_hits.push(ActionHit {
                 rect: chip,
@@ -776,6 +764,7 @@ impl MergeView {
                     block_h,
                     hi,
                     h,
+                    self.cursor,
                     &mut self.action_hits,
                     compact_source.is_some(),
                 );

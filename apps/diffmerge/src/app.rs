@@ -542,8 +542,8 @@ impl DiffMergeApp {
         // Mode segmented control (shared pill-style segmented control). The OS
         // titlebar carries the app name, so no self-drawn wordmark here — the
         // mode control claims the reclaimed left slot.
-        let seg_y = r.y0 + 10.0;
-        let seg_h = 28.0;
+        let seg_y = r.y0 + 6.0;
+        let seg_h = 36.0;
         let mode_labels: [&str; 2] = if compact {
             ["Diff", "Merge"]
         } else {
@@ -554,8 +554,9 @@ impl DiffMergeApp {
         let mut mode_rects: Vec<Rect> = Vec::with_capacity(mode_labels.len());
         let mut x = r.x0 + if compact { 8.0 } else { 16.0 };
         for label in mode_labels {
-            let w = label.len() as f64 * if compact { 7.0 } else { 7.4 }
-                + if compact { 18.0 } else { 22.0 };
+            let w = (label.len() as f64 * if compact { 7.0 } else { 7.4 }
+                + if compact { 18.0 } else { 22.0 })
+            .max(36.0);
             mode_rects.push(Rect::new(x, seg_y, x + w, seg_y + seg_h));
             x += w + if compact { 4.0 } else { 6.0 };
         }
@@ -614,8 +615,9 @@ impl DiffMergeApp {
             ]
         };
         for (label, action) in actions {
-            let w = label.len() as f64 * if compact { 6.8 } else { 7.2 }
-                + if compact { 16.0 } else { 20.0 };
+            let w = (label.len() as f64 * if compact { 6.8 } else { 7.2 }
+                + if compact { 16.0 } else { 20.0 })
+            .max(36.0);
             let btn = Rect::new(rx - w, seg_y, rx, seg_y + seg_h);
             Button::paint(
                 scene,
@@ -1923,6 +1925,10 @@ mod tests {
         let mut rects: Vec<_> = app.tool_hits.iter().map(|hit| hit.rect).collect();
         rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
         assert!(rects.iter().all(|rect| rect.x0 >= 0.0 && rect.x1 <= 390.0));
+        assert!(
+            rects.iter().all(|rect| rect.height() >= 36.0),
+            "toolbar controls keep comfortable shared-widget targets"
+        );
         assert!(rects.windows(2).all(|pair| pair[0].x1 <= pair[1].x0));
     }
 
@@ -2264,6 +2270,10 @@ mod tests {
             .find(|(_, h, ch)| *h == hunk && *ch == crate::actions::HunkChoice::Theirs)
             .expect("a take-theirs chip is drawn for the conflict hunk");
         let center = rect.center();
+        assert!(
+            rect.height() >= 36.0,
+            "resolution actions must not render as tiny decorative tags"
+        );
 
         let before = crate::doc::MergeDoc::merged_text(&state.doc);
 

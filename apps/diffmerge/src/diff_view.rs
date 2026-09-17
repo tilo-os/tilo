@@ -17,10 +17,11 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::color_compat::ColorCompat;
+use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{SegmentedFace, ToggleGroup, Widget};
+use ui::widget::{EmptyState, SegmentedFace, ToggleGroup, Widget};
 
 use crate::highlight;
 use crate::model::{DiffModel, RowKind};
@@ -694,36 +695,18 @@ impl DiffView {
     ) {
         let c = &theme.tokens.colors;
         if self.model.rows.is_empty() {
-            // The only primary way to begin is the shared, keyboard-focusable
-            // Open files toolbar action above. Centre its guidance in the
-            // otherwise deliberately empty canvas so it reads as a starting
-            // state rather than a missing left column.
-            let title = "Start a comparison";
-            let detail = tr.elide_to_width(
-                "Open two local text files, or load the included sample to explore a real diff.",
-                13.0,
-                (r.width() - 48.0).max(0.0) as f32,
-            );
-            let (title_w, _) = tr.measure(title, 18.0, None);
-            let (detail_w, _) = tr.measure(&detail, 13.0, None);
-            let title_x = r.x0 + (r.width() - f64::from(title_w)).max(24.0) / 2.0;
-            let detail_x = r.x0 + (r.width() - f64::from(detail_w)).max(24.0) / 2.0;
-            let y = body_top + (r.y1 - body_top) * 0.34;
-            tr.draw_text(
+            let area = Rect::new(r.x0, body_top, r.x1 - MINIMAP_W, r.y1);
+            let _ = EmptyState::paint(
                 scene,
-                title,
-                18.0,
-                c.text_primary,
-                transform * Affine::translate((title_x, y)),
+                transform,
+                tr,
+                theme,
+                area,
+                Some(Icon::FileText),
+                "Start a comparison",
+                Some("Open two local text files, or load the included sample."),
                 None,
-            );
-            tr.draw_text(
-                scene,
-                &detail,
-                13.0,
-                c.text_dim,
-                transform * Affine::translate((detail_x, y + 30.0)),
-                None,
+                Point::ZERO,
             );
         } else if self.model.is_identical() {
             tr.draw_text(

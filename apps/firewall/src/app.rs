@@ -29,7 +29,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    SegmentedFace, SidebarDrawer, TextInput, Toggle, ToggleFace, ToggleGroup, Widget,
+    Button, ButtonFace, SegmentedFace, SidebarDrawer, TextInput, Toggle, ToggleFace, ToggleGroup,
+    Widget,
 };
 
 use crate::actions::FirewallAction;
@@ -52,7 +53,7 @@ const SUMMARY_H: f64 = 134.0;
 const SUMMARY_H_NARROW: f64 = 188.0;
 const FORM_H: f64 = 154.0;
 /// The add-rule form stacks its controls onto four lines when narrow.
-const FORM_H_NARROW: f64 = 226.0;
+const FORM_H_NARROW: f64 = 244.0;
 const RULE_ROW_H: f64 = 40.0;
 /// Two-line rule rows (target + action on top, proto · source beneath) when
 /// the table is too narrow for five abreast columns.
@@ -62,7 +63,7 @@ const SVC_ROW_H: f64 = 46.0;
 /// compact Services route without making the window scroll-dependent.
 const SVC_ROW_H_NARROW: f64 = 30.0;
 const CTRL_H: f64 = 34.0;
-const TOGGLE_SIZE: f64 = 34.0;
+const TOGGLE_SIZE: f64 = 44.0;
 
 /// Below this window width the zone rail overlays (a summoned drawer) instead
 /// of docking, the add-rule form stacks its controls, and the rules table
@@ -454,12 +455,12 @@ impl FirewallApp {
         let unavailable_area = Rect::new(r.x0, l.header.y1, r.x1, r.y1);
         let card_w = 520.0_f64.min((unavailable_area.width() - 48.0).max(160.0));
         let card_x = unavailable_area.x0 + (unavailable_area.width() - card_w) / 2.0;
-        let card_y = unavailable_area.y0 + (unavailable_area.height() - 220.0) / 2.0;
+        let card_y = unavailable_area.y0 + (unavailable_area.height() - 260.0) / 2.0;
         l.recover_btn = Rect::new(
             card_x + 24.0,
-            card_y + 172.0,
+            card_y + 204.0,
             card_x + 184.0,
-            card_y + 206.0,
+            card_y + 248.0,
         );
         let content = self.layout_rail(r, &mut l, by);
         self.layout_center(r, &mut l, content, narrow, services_visible);
@@ -480,13 +481,13 @@ impl FirewallApp {
         let by = r.y0 + HEADER_H / 2.0;
         let mut rx = r.x1 - PAD;
         let apply_w = if narrow { 76.0 } else { 92.0 };
-        l.apply_btn = Rect::new(rx - apply_w, by - 17.0, rx, by + 17.0);
+        l.apply_btn = Rect::new(rx - apply_w, by - 22.0, rx, by + 22.0);
         rx = l.apply_btn.x0 - 8.0;
         let panic_w = if narrow { 78.0 } else { 104.0 };
-        l.panic_btn = Rect::new(rx - panic_w, by - 17.0, rx, by + 17.0);
+        l.panic_btn = Rect::new(rx - panic_w, by - 22.0, rx, by + 22.0);
         rx = l.panic_btn.x0 - 8.0;
         let enable_w = if narrow { 80.0 } else { 92.0 };
-        l.enable_pill = Rect::new(rx - enable_w, by - 17.0, rx, by + 17.0);
+        l.enable_pill = Rect::new(rx - enable_w, by - 22.0, rx, by + 22.0);
         by
     }
 
@@ -529,10 +530,10 @@ impl FirewallApp {
         // Zone rows within the (possibly off-screen / sliding) rail rect.
         if l.rail.width() > 4.0 {
             let rows_top = l.rail.y0 + 44.0;
-            let row_h = 32.0;
+            let row_h = 44.0;
             for (i, kind) in ZoneKind::ALL.iter().enumerate() {
                 let y = rows_top + i as f64 * row_h;
-                let rect = Rect::new(l.rail.x0 + 8.0, y, l.rail.x1 - 8.0, y + row_h - 4.0);
+                let rect = Rect::new(l.rail.x0 + 8.0, y, l.rail.x1 - 8.0, y + row_h);
                 l.zone_rows.push((*kind, rect));
             }
         }
@@ -756,7 +757,10 @@ impl FirewallApp {
     /// dense two-line row, so no control is crushed or clipped.
     fn build_form_narrow(&self, l: &mut Layout, fx0: f64, fx1: f64) {
         // Line 1: kind segmented (Service|Port) on the left, action on the right.
-        let y1 = l.form.y0 + 40.0;
+        // Reserve two readable lines for the form title and persistent status
+        // before the first segmented controls. The taller narrow form is
+        // anchored to the same bottom edge, so controls below stay put.
+        let y1 = l.form.y0 + 58.0;
         let kind_w = 62.0;
         for i in 0..2 {
             let x = fx0 + f64::from(i) * kind_w;
@@ -2087,7 +2091,7 @@ impl FirewallApp {
     ) {
         let area = Rect::new(self.rect.x0, l.header.y1, self.rect.x1, self.rect.y1);
         let cw = 520.0_f64.min(area.width() - 48.0);
-        let ch = 220.0;
+        let ch = 260.0;
         let cx = area.x0 + (area.width() - cw) / 2.0;
         let cy = area.y0 + (area.height() - ch) / 2.0;
         let card = Rect::new(cx, cy, cx + cw, cy + ch);
@@ -2131,7 +2135,7 @@ impl FirewallApp {
             13.0,
             theme.text_dim,
             card.x0 + 24.0,
-            card.y0 + 106.0,
+            card.y0 + 110.0,
             cw - 48.0,
         );
         paint::label(
@@ -2142,21 +2146,15 @@ impl FirewallApp {
             12.0,
             theme.text_dim,
             card.x0 + 24.0,
-            card.y0 + 132.0,
+            card.y0 + 154.0,
             cw - 48.0,
         );
-        paint::fill_rrect(scene, t, l.recover_btn, 8.0, theme.accent_primary);
-        paint::label_v(
-            tr,
+        Button::paint(
             scene,
             t,
-            "Retry connection",
-            12.0,
-            theme.tokens.colors.on_surface(theme.accent_primary).ink,
-            l.recover_btn.x0 + 14.0,
-            l.recover_btn.y0,
-            l.recover_btn.height(),
-            l.recover_btn.width() - 28.0,
+            tr,
+            theme,
+            &ButtonFace::new(l.recover_btn, "Retry connection").primary(),
         );
     }
 
@@ -2330,20 +2328,12 @@ impl FirewallApp {
         );
 
         // Apply button.
-        paint::fill_rrect(scene, t, l.apply_btn, 16.0, theme.accent_primary);
-        let at = "Apply";
-        let w = paint::text_width(tr, at, 13.0);
-        paint::label_v(
-            tr,
+        Button::paint(
             scene,
             t,
-            at,
-            13.0,
-            Color::WHITE,
-            l.apply_btn.x0 + (l.apply_btn.width() - w) / 2.0,
-            l.apply_btn.y0,
-            l.apply_btn.height(),
-            w + 2.0,
+            tr,
+            theme,
+            &ButtonFace::new(l.apply_btn, "Apply").primary(),
         );
     }
 
@@ -2719,24 +2709,20 @@ impl FirewallApp {
                 return;
             }
         }
-        paint::label_v(
-            tr,
-            scene,
-            t,
-            "Rules",
-            15.0,
-            theme.text_primary,
-            if l.content_seg.is_empty() {
-                l.summary.x0
-            } else {
-                l.content_seg
-                    .last()
-                    .map_or(l.summary.x0, |rect| rect.x1 + 10.0)
-            },
-            y0,
-            first_seg.height(),
-            120.0,
-        );
+        if l.content_seg.is_empty() {
+            paint::label_v(
+                tr,
+                scene,
+                t,
+                "Rules",
+                15.0,
+                theme.text_primary,
+                l.summary.x0,
+                y0,
+                first_seg.height(),
+                120.0,
+            );
+        }
         let labels = [
             Filter::All.label(),
             Filter::Allow.label(),
@@ -3310,7 +3296,7 @@ impl FirewallApp {
                 theme.text_dim
             };
             let status_y = if l.narrow {
-                card.y0 + 26.0
+                card.y0 + 32.0
             } else {
                 card.y1 - 22.0
             };
@@ -3441,20 +3427,12 @@ impl FirewallApp {
         theme: &Theme,
         l: &Layout,
     ) {
-        paint::fill_rrect(scene, t, l.add_btn, 8.0, theme.accent_primary);
-        let at = "Add rule";
-        let w = paint::text_width(tr, at, 13.0);
-        paint::label_v(
-            tr,
+        Button::paint(
             scene,
             t,
-            at,
-            13.0,
-            Color::WHITE,
-            l.add_btn.x0 + (l.add_btn.width() - w) / 2.0,
-            l.add_btn.y0,
-            l.add_btn.height(),
-            w + 2.0,
+            tr,
+            theme,
+            &ButtonFace::new(l.add_btn, "Add rule").primary(),
         );
     }
 }
@@ -3590,6 +3568,16 @@ mod tests {
     fn relayout_produces_all_nine_zone_rows() {
         let a = app_with_rect();
         assert_eq!(a.layout.zone_rows.len(), 9);
+        assert!(
+            a.layout
+                .zone_rows
+                .iter()
+                .all(|(_, row)| row.height() >= 44.0)
+        );
+        assert!(a.layout.rail_toggle.height() >= 44.0);
+        assert!(a.layout.enable_pill.height() >= 44.0);
+        assert!(a.layout.panic_btn.height() >= 44.0);
+        assert!(a.layout.apply_btn.height() >= 44.0);
     }
 
     #[test]

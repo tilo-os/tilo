@@ -106,7 +106,7 @@ const HEADER_H: f64 = 96.0;
 /// The dedicated action band below the identity header: a target label plus
 /// the Mount / Unmount / Format / Benchmark / Eject buttons and a helper line.
 const ACTIONBAR_H: f64 = 94.0;
-const TAB_H: f64 = 40.0;
+const TAB_H: f64 = 44.0;
 
 /// Below this allocated width (logical px) the drive list stops fitting
 /// beside a readable detail pane, so it collapses from a docked column into
@@ -502,9 +502,9 @@ impl DisksApp {
         let v = self.rect;
         let refresh = Rect::new(
             v.x1 - PAD - 110.0,
-            (TOPBAR_H - 32.0) / 2.0,
+            (TOPBAR_H - 44.0) / 2.0,
             v.x1 - PAD,
-            f64::midpoint(TOPBAR_H, 32.0),
+            (TOPBAR_H + 44.0) / 2.0,
         );
 
         let (split, sidebar, scrim, hamburger, list_x0, detail_x0) = self.compute_split(v);
@@ -585,9 +585,9 @@ impl DisksApp {
                 };
                 let ham = Rect::new(
                     PAD,
-                    (TOPBAR_H - 30.0) / 2.0,
-                    PAD + 38.0,
-                    f64::midpoint(TOPBAR_H, 30.0),
+                    (TOPBAR_H - 44.0) / 2.0,
+                    PAD + 44.0,
+                    (TOPBAR_H + 44.0) / 2.0,
                 );
                 (split, sidebar, scrim, Some(ham), panel_x0 + PAD, v.x0 + PAD)
             }
@@ -627,8 +627,8 @@ impl DisksApp {
         let action_bar = Rect::new(dx0, header.y1 + 12.0, dx1, header.y1 + 12.0 + ACTIONBAR_H);
         let mut action_buttons = Vec::new();
         let drive_ref = self.drive();
-        let btn_h = 32.0;
-        let btn_y = action_bar.y0 + 34.0;
+        let btn_h = 44.0;
+        let btn_y = action_bar.y0 + 28.0;
         let mut bx = action_bar.x0 + 14.0;
         for a in ActionKind::bar() {
             let w = (a.label().len() as f64) * 8.0 + 30.0;
@@ -683,8 +683,8 @@ impl DisksApp {
             } else if self.tab == Tab::Partitions {
                 let mut ry = content.y0 + 24.0;
                 for i in 0..d.partitions.len() {
-                    part_rows.push((Rect::new(content.x0, ry - 6.0, content.x1, ry + 30.0), i));
-                    ry += 38.0;
+                    part_rows.push((Rect::new(content.x0, ry - 6.0, content.x1, ry + 38.0), i));
+                    ry += 46.0;
                 }
             }
         }
@@ -700,7 +700,7 @@ impl DisksApp {
             // windows. Keep a comfortable 12px edge gutter while allowing the
             // same confirmation workflow at every supported viewport width.
             let w = (v.width() - 24.0).clamp(1.0, 480.0);
-            let h = 258.0;
+            let h = 274.0;
             let cx = f64::midpoint(v.x0, v.x1);
             let cy = f64::midpoint(v.y0, v.y1);
             let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
@@ -708,11 +708,11 @@ impl DisksApp {
                 card.x0 + 22.0,
                 card.y0 + 128.0,
                 card.x1 - 22.0,
-                card.y0 + 128.0 + 36.0,
+                card.y0 + 128.0 + 44.0,
             );
-            let by = card.y1 - 18.0 - 36.0;
-            let confirm = Rect::new(card.x1 - 18.0 - 130.0, by, card.x1 - 18.0, by + 36.0);
-            let cancel = Rect::new(confirm.x0 - 12.0 - 110.0, by, confirm.x0 - 12.0, by + 36.0);
+            let by = card.y1 - 18.0 - 44.0;
+            let confirm = Rect::new(card.x1 - 18.0 - 130.0, by, card.x1 - 18.0, by + 44.0);
+            let cancel = Rect::new(confirm.x0 - 12.0 - 110.0, by, confirm.x0 - 12.0, by + 44.0);
             ModalLayout {
                 card,
                 input,
@@ -1279,53 +1279,19 @@ impl DisksApp {
         t: Affine,
         lay: &Layout,
     ) {
-        let c = &theme.tokens.colors;
         for (r, a, enabled) in &lay.action_buttons {
             let hov = *enabled && self.hover_action == Some(*a);
-            if !enabled {
-                // Disabled — clearly inert.
-                Self::fill_rr(scene, t, *r, 8.0, with_alpha(c.neutral[2], 120));
-                Self::stroke_rr(scene, t, *r, 8.0, with_alpha(c.border_standard, 120), 1.0);
-                Self::txt_center(
-                    scene,
-                    tr,
-                    a.label(),
-                    13.0,
-                    with_alpha(c.text_dim, 130),
-                    f64::midpoint(r.x0, r.x1),
-                    r.y0 + 9.0,
-                    TextWeight::Medium,
-                );
-                continue;
-            }
-            let (bg, fg, border) = if a.destructive() {
-                (
-                    if hov {
-                        c.semantic.danger
-                    } else {
-                        with_alpha(c.semantic.danger, 44)
-                    },
-                    if hov { Color::WHITE } else { c.semantic.danger },
-                    with_alpha(c.semantic.danger, 150),
-                )
+            let face = if a.destructive() {
+                ButtonFace::new(*r, a.label()).danger()
             } else {
-                (
-                    if hov { c.accent[4] } else { c.neutral[2] },
-                    c.text_primary,
-                    c.border_standard,
-                )
+                ButtonFace::new(*r, a.label())
             };
-            Self::fill_rr(scene, t, *r, 8.0, bg);
-            Self::stroke_rr(scene, t, *r, 8.0, border, 1.0);
-            Self::txt_center(
+            Button::paint(
                 scene,
+                t,
                 tr,
-                a.label(),
-                13.0,
-                fg,
-                f64::midpoint(r.x0, r.x1),
-                r.y0 + 9.0,
-                TextWeight::Medium,
+                theme,
+                &face.text_size(13.0).hovered(hov).disabled(!enabled),
             );
         }
     }
@@ -3243,7 +3209,7 @@ fn empty_state_rects(viewport: Rect, header: Rect) -> (Rect, Rect) {
     let cy = f64::midpoint(region.y0, region.y1);
     let card = Rect::new(cx - cw / 2.0, cy - ch / 2.0, cx + cw / 2.0, cy + ch / 2.0);
     let bw = 130.0;
-    let btn = Rect::new(cx - bw / 2.0, card.y1 - 46.0, cx + bw / 2.0, card.y1 - 14.0);
+    let btn = Rect::new(cx - bw / 2.0, card.y1 - 58.0, cx + bw / 2.0, card.y1 - 14.0);
     (card, btn)
 }
 
@@ -5221,6 +5187,34 @@ mod tests {
             h.app.pending.is_none(),
             "the same rect activates once the shared face is enabled"
         );
+    }
+
+    #[test]
+    fn primary_controls_meet_touch_target_floor() {
+        let h = Harness::new(640.0, 800.0);
+        let lay = h.lay();
+        assert!(lay.refresh.height() >= 44.0);
+        assert!(
+            lay.hamburger
+                .is_some_and(|rect| rect.width() >= 44.0 && rect.height() >= 44.0)
+        );
+        assert!(lay.tabs.iter().all(|(rect, _)| rect.height() >= 44.0));
+        assert!(
+            lay.action_buttons
+                .iter()
+                .all(|(rect, _, _)| rect.height() >= 44.0)
+        );
+
+        let mut modal = Harness::new(640.0, 800.0);
+        modal.app.pending = Some(Pending {
+            action: ActionKind::Format,
+            drive: 0,
+            part: Some(0),
+        });
+        let controls = modal.lay().modal.expect("format modal");
+        assert!(controls.input.height() >= 44.0);
+        assert!(controls.cancel.height() >= 44.0);
+        assert!(controls.confirm.height() >= 44.0);
     }
 
     #[test]

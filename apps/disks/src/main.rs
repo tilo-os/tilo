@@ -52,6 +52,14 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// A phone-width capture used to exercise the responsive overlay flap. Below
 /// the app's 900px breakpoint the drive list collapses to an overlay.
 const NARROW_SHOTS_VIEWPORT: (u32, u32) = (640, 800);
+const SHOT_SCENARIOS: &[&str] = &[
+    "narrow",
+    "smart",
+    "partitions",
+    "format-confirm",
+    "format-confirm-narrow",
+    "error",
+];
 
 fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     let out = args
@@ -70,7 +78,12 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     }
     // `--narrow` (or a sub-breakpoint `--viewport WxH`) renders the
     // collapsed layout with the drive-list flap revealed over its scrim.
-    let narrow = args.has("--narrow") || args.viewport.is_some_and(|(w, _)| f64::from(w) < 900.0);
+    let narrow = args.has("--narrow")
+        || matches!(
+            args.scenario.as_deref(),
+            Some("narrow" | "format-confirm-narrow")
+        )
+        || args.viewport.is_some_and(|(w, _)| f64::from(w) < 900.0);
     let viewport = args.viewport.unwrap_or(if narrow {
         NARROW_SHOTS_VIEWPORT
     } else {
@@ -78,13 +91,24 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     });
     // Optional preset so a capture can pin a specific drive / partition /
     // tab (used to verify the selection states offscreen).
-    let preset = Preset {
+    let mut preset = Preset {
         drive: args.value("--drive").and_then(|value| value.parse().ok()),
         part: args.value("--part").and_then(|value| value.parse().ok()),
         tab: args.value("--tab").map(str::to_owned),
         pending: args.value("--pending").map(str::to_owned),
         status: args.value("--status").map(str::to_owned),
     };
+    match args.scenario.as_deref() {
+        Some("smart") => preset.tab = Some("smart".into()),
+        Some("partitions") => preset.tab = Some("partitions".into()),
+        Some("format-confirm" | "format-confirm-narrow") => {
+            preset.pending = Some("format:0:2".into());
+        }
+        Some("error") => {
+            preset.status = Some("Benchmark failed — device became unavailable".into())
+        }
+        _ => {}
+    }
     render_shot_to_png(DisksApp::new(), viewport, narrow, &preset, out)
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
@@ -107,6 +131,7 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.tilo.disks", live_root)
             .shot_handler(shot_handler)
+            .scenarios(SHOT_SCENARIOS)
             .allowed_flags(&["--live", "--narrow"])
             .allowed_options(&["--drive", "--part", "--tab", "--pending", "--status"]),
     );
