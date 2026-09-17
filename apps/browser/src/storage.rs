@@ -2,9 +2,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 static ROOT: OnceLock<PathBuf> = OnceLock::new();
+static PRIVATE_ROOT: OnceLock<PathBuf> = OnceLock::new();
 pub const PRIVATE_ROOT_PREFIX: &str = "qos-browser-private-";
 pub const PRIVATE_ROOT_MARKER: &str = ".qos-private-root-v1";
 pub const PRIVATE_ROOT_MARKER_CONTENT: &str = "qos-browser-owned-private-root-v1\n";
+pub const PRIVATE_ROOT_LOCK: &str = ".qos-private-root.lock";
 const PRIVATE_ROOT_OWNER: &str = ".qos-private-owner-pid";
 const PRIVATE_ROOT_HELPER: &str = ".qos-private-helper-pid";
 pub fn configure(root: Option<&str>) -> Result<(), String> {
@@ -20,6 +22,9 @@ pub fn configure(root: Option<&str>) -> Result<(), String> {
                 return Err("Browser app root is already configured".into());
             }
         } else {
+            if is_owned_private_root(&root) {
+                let _ = PRIVATE_ROOT.set(root.clone());
+            }
             let _ = ROOT.set(root);
         }
     }
@@ -66,6 +71,9 @@ pub fn allocate_private_root() -> Result<PathBuf, String> {
                         &root.join(PRIVATE_ROOT_OWNER),
                         std::process::id().to_string().as_bytes(),
                     )
+                })
+                .and_then(|()| {
+                    write_private_root_file(&root.join(PRIVATE_ROOT_LOCK), b"private-root-lock\n")
                 });
                 if let Err(error) = initialized {
                     let _ = std::fs::remove_dir_all(&root);
@@ -104,6 +112,47 @@ fn write_private_root_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     }
     let mut file = options.open(path)?;
     std::io::Write::write_all(&mut file, bytes)
+}
+
+/// Serialize private cache writes against native-helper root cleanup.
+///
+/// Cleanup takes the same file lock exclusively before removing the root.
+/// Opening without `create` ensures a writer arriving after cleanup cannot
+/// recreate any part of the path.
+#[cfg(unix)]
+pub(crate) fn private_root_write_guard(
+    directory: &Path,
+) -> Result<Option<std::fs::File>, String> {
+    use std::os::fd::AsRawFd;
+    let Some(root) = ROOT.get() else {
+        return Ok(None);
+    };
+    if PRIVATE_ROOT.get() != Some(root) {
+        return Ok(None);
+    }
+    if !directory.starts_with(root) {
+        return Err("Private cache path escaped its owned root".into());
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join(PRIVATE_ROOT_LOCK))
+        .map_err(|_| "Private browser cache is closing".to_string())?;
+    // SAFETY: flock only observes the valid descriptor owned by `file`.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } != 0 {
+        return Err("Private browser cache lock is unavailable".into());
+    }
+    if !is_owned_private_root(root) {
+        return Err("Private browser cache is closing".into());
+    }
+    Ok(Some(file))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn private_root_write_guard(
+    _directory: &Path,
+) -> Result<Option<std::fs::File>, String> {
+    Ok(None)
 }
 
 #[cfg(unix)]

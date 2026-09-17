@@ -113,6 +113,7 @@ const PRIVATE_ROOT_PREFIX: &str = "qos-browser-private-";
 const PRIVATE_ROOT_MARKER: &str = ".qos-private-root-v1";
 const PRIVATE_ROOT_MARKER_CONTENT: &str = "qos-browser-owned-private-root-v1\n";
 const PRIVATE_ROOT_HELPER: &str = ".qos-private-helper-pid";
+const PRIVATE_ROOT_LOCK: &str = ".qos-private-root.lock";
 
 struct PrivateRootCleanup(Option<PathBuf>);
 impl PrivateRootCleanup {
@@ -143,6 +144,29 @@ fn owned_private_root(root: &Path) -> bool {
 }
 
 fn cleanup_private_root(root: &Path) {
+    #[cfg(unix)]
+    let _lock = {
+        use std::os::fd::AsRawFd;
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.join(PRIVATE_ROOT_LOCK))
+        {
+            Ok(file) => {
+                // SAFETY: flock only observes the valid descriptor owned by `file`.
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                    tracing::warn!(path = %root.display(), "Could not lock private browser root for cleanup");
+                    return;
+                }
+                Some(file)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                tracing::warn!(%error, path = %root.display(), "Could not open private browser root lock");
+                return;
+            }
+        }
+    };
     if owned_private_root(root)
         && let Err(error) = std::fs::remove_dir_all(root)
         && error.kind() != std::io::ErrorKind::NotFound
@@ -287,6 +311,12 @@ fn host_path() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("QOS_CHROMIUM_HOST") {
         return Ok(path.into());
     }
+    #[cfg(test)]
+    let executable = std::env::var_os("QOS_TEST_CHROMIUM_DISCOVERY_EXE")
+        .map(PathBuf::from)
+        .map_or_else(std::env::current_exe, Ok)
+        .map_err(|error| error.to_string())?;
+    #[cfg(not(test))]
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let binary_name = if cfg!(target_os = "macos") {
         "Browser Engine.app/Contents/MacOS/qos-chromium-host"
@@ -321,7 +351,13 @@ impl ChromiumEngine {
     }
 
     pub fn new_private(root: &Path) -> Result<Arc<Self>, String> {
-        Self::with_private_host(&host_path()?, root)
+        match host_path() {
+            Ok(host) => Self::with_private_host(&host, root),
+            Err(error) => {
+                cleanup_private_root(root);
+                Err(error)
+            }
+        }
     }
 
     /// Explicit profile with the packaged helper and approved extensions.

@@ -67,6 +67,7 @@ pub struct WebView {
     last_mouse: Point,
     /// Physical size last sent as a `Resize`, to avoid spamming the engine.
     last_sent_size: (u32, u32),
+    native_mounted: bool,
     /// Keyed by the frame buffer's allocation pointer + dimensions.
     cached_image: Option<PenikoImage>,
     cached_key: (usize, u32, u32),
@@ -83,6 +84,7 @@ impl WebView {
             focused: false,
             last_mouse: Point::ZERO,
             last_sent_size: (0, 0),
+            native_mounted: false,
             cached_image: None,
             cached_key: (0, 0, 0),
             test_id: "webview".to_string(),
@@ -146,6 +148,7 @@ impl WebView {
             return;
         }
         self.last_sent_size = (w, h);
+        crate::webview::profile::record_resize(w, h, self.scale_factor);
         self.engine.send(WebViewCommand::Resize {
             width: w,
             height: h,
@@ -217,10 +220,22 @@ impl Widget for WebView {
     }
 
     fn mount_native_views(&mut self, host: &crate::widget::NativeViewHost<'_>) {
-        let scale_factor = to_f32(host.scale_factor());
+        let first_mount = !self.native_mounted;
+        self.native_mounted = true;
+        let host_scale = to_f32(host.scale_factor());
+        // A freshly rebuilt Browser WebView is seeded from the device-scale
+        // draw that requested the rebuild. Some macOS startup windows still
+        // report 1 here until their first visible frame. Preserve the larger
+        // preseed only on that first mount; later mounts (including an actual
+        // ScaleFactorChanged event) take the host value in either direction.
+        let scale_factor = if first_mount {
+            self.scale_factor.max(host_scale)
+        } else {
+            host_scale
+        };
         if scale_factor.is_finite()
             && scale_factor > 0.0
-            && scale_factor.to_bits() != self.scale_factor.to_bits()
+            && (first_mount || scale_factor.to_bits() != self.scale_factor.to_bits())
         {
             self.scale_factor = scale_factor;
             self.last_sent_size = (0, 0);
@@ -614,6 +629,83 @@ mod tests {
         view.mount_native_views(&crate::widget::NativeViewHost::headless(
             crate::platform::PlatformConventions::default(),
             2.0,
+        ));
+        assert_eq!(
+            engine.commands().last(),
+            Some(&WebViewCommand::Resize {
+                width: 800,
+                height: 600,
+                scale_factor: 2.0,
+            })
+        );
+    }
+
+    #[test]
+    fn mounting_reissues_physical_size_when_retina_scale_was_preseeded() {
+        let engine = TestEngine::new();
+        let mut view = WebView::new(engine.clone()).with_scale_factor(2.0);
+        let mut taffy = TaffyTree::new();
+        let mut node_map = std::collections::HashMap::new();
+        let node = view.build_layout(&mut taffy, &Theme::default(), &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(300.0),
+                },
+            )
+            .unwrap();
+        view.apply_layout(&taffy, node, Point::ORIGIN);
+        let before_mount = engine.commands().len();
+        view.mount_native_views(&crate::widget::NativeViewHost::headless(
+            crate::platform::PlatformConventions::default(),
+            2.0,
+        ));
+        assert_eq!(
+            engine.commands().len(),
+            before_mount + 1,
+            "native mount must reissue a resize that startup could have missed"
+        );
+        assert_eq!(
+            engine.commands().last(),
+            Some(&WebViewCommand::Resize {
+                width: 800,
+                height: 600,
+                scale_factor: 2.0,
+            })
+        );
+        view.mount_native_views(&crate::widget::NativeViewHost::headless(
+            crate::platform::PlatformConventions::default(),
+            2.0,
+        ));
+        assert_eq!(
+            engine.commands().len(),
+            before_mount + 1,
+            "repeated mount of the same retained view must be idempotent"
+        );
+    }
+
+    #[test]
+    fn first_mount_does_not_downgrade_a_preseeded_retina_scale() {
+        let engine = TestEngine::new();
+        let mut view = WebView::new(engine.clone()).with_scale_factor(2.0);
+        let mut taffy = TaffyTree::new();
+        let mut node_map = std::collections::HashMap::new();
+        let node = view.build_layout(&mut taffy, &Theme::default(), &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(300.0),
+                },
+            )
+            .unwrap();
+        view.apply_layout(&taffy, node, Point::ORIGIN);
+        view.mount_native_views(&crate::widget::NativeViewHost::headless(
+            crate::platform::PlatformConventions::default(),
+            1.0,
         ));
         assert_eq!(
             engine.commands().last(),

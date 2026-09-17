@@ -471,6 +471,22 @@ fn certificate_date(base_micros: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct NativeRecordingEngine(std::sync::Arc<ui::webview::test_engine::TestEngine>);
+    impl ui::webview::WebViewEngine for NativeRecordingEngine {
+        fn supports_native_filtering(&self) -> bool {
+            true
+        }
+        fn send(&self, command: WebViewCommand) {
+            self.0.send(command);
+        }
+        fn frames(&self) -> ui::webview::FrameSlot {
+            self.0.frames()
+        }
+        fn drain_events(&self) -> Vec<WebViewEvent> {
+            self.0.drain_events()
+        }
+    }
     #[test]
     fn canonical_origin_rejects_nonweb_and_preserves_ports() {
         assert_eq!(
@@ -662,9 +678,17 @@ mod tests {
 
     #[test]
     fn private_tabs_share_runtime_exceptions_without_disk_persistence() {
-        let first_engine = ui::webview::test_engine::TestEngine::new();
+        let recorder = ui::webview::test_engine::TestEngine::new();
+        let engine: SharedEngine = std::sync::Arc::new(NativeRecordingEngine(recorder.clone()));
+        let normal = tempfile::tempdir().unwrap();
+        let normal_file = normal.path().join("site-exceptions.json");
+        let mut normal_exceptions = Exceptions::default();
+        normal_exceptions.set("https://normal.test", true);
+        normal_exceptions.save(&normal_file).unwrap();
+        let normal_before = std::fs::read(&normal_file).unwrap();
         let mut first = SiteControls::default();
         let mut second = SiteControls::default();
+        first.initialize(&engine, false);
         second.share_runtime_state(&first);
         first.committed = Some("https://private.test".into());
         first.action = Some((
@@ -689,6 +713,10 @@ mod tests {
                 .unwrap()
                 .contains("https://private.test/child")
         );
-        assert!(first_engine.commands().is_empty());
+        second.initialize(&engine, false);
+        assert!(recorder.commands().iter().any(|command| {
+            matches!(command, WebViewCommand::SetSiteExceptions(origins) if origins == &["https://private.test".to_string()])
+        }));
+        assert_eq!(std::fs::read(normal_file).unwrap(), normal_before);
     }
 }
