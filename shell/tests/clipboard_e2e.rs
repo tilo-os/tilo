@@ -515,7 +515,11 @@ impl Compositor {
         };
         let mut tabs = Vec::new();
         let mut groups = 0usize;
+        let mut active_tabs = Vec::new();
         walk_json(tree, &mut |value| {
+            if let (Some(group), Some(tab)) = (value.get("id"), value.get("active_tab")) {
+                active_tabs.push(format!("{group}:{tab}"));
+            }
             if let Some(foreign) = value.get("Foreign") {
                 tabs.push(foreign.to_string());
             }
@@ -536,13 +540,17 @@ impl Compositor {
         });
         format!(
             "window groups: {groups}\nall tabs: [{}]\nforeign tiles: [{}]\n\
-             active_strip: {}\nactive_group: {}",
+             active_strip: {}\nactive_group: {}\nactive tabs by group: [{}]\nstate: {}\nrecent compositor log:\n{}",
             all_tabs.join(", "),
             tabs.join(", "),
             tree.get("active_strip")
                 .map_or_else(|| "?".into(), std::string::ToString::to_string),
             tree.get("active_group")
                 .map_or_else(|| "?".into(), std::string::ToString::to_string),
+            active_tabs.join(", "),
+            resp.get("state")
+                .map_or_else(|| "?".into(), std::string::ToString::to_string),
+            self.recent_log(),
         )
     }
 

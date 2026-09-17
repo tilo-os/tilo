@@ -290,7 +290,9 @@ use crate::shell::overlay_host::OutputGeometry;
     reason = "independent compositor state flags describe unrelated display, input, and accessibility features"
 )]
 pub struct FrameBuilder {
-    host: ShellOverlayHost,
+    // Layout retains raw widget pointers into the host and its inline fields.
+    // Keep their addresses stable when the FrameBuilder itself is moved.
+    host: Box<ShellOverlayHost>,
     chrome: Chrome,
     /// The [`WorkspaceTree::room_epoch`] this builder has already reacted
     /// to; compared each frame by [`Self::pump_room_contents`].
@@ -506,7 +508,7 @@ impl FrameBuilder {
         presentation: FramePresentationInputs,
     ) -> Self {
         let mut builder = Self {
-            host,
+            host: Box::new(host),
             chrome,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
@@ -666,10 +668,10 @@ impl FrameBuilder {
 
         let mut order = Vec::new();
         if let Some(root) = self.host_node {
-            if let Some(trapped) = deepest_trap(root, &self.host, &self.taffy) {
+            if let Some(trapped) = deepest_trap(root, self.host.as_ref(), &self.taffy) {
                 return trapped;
             }
-            collect(root, &self.host, &self.taffy, &mut order);
+            collect(root, self.host.as_ref(), &self.taffy, &mut order);
         }
         order
     }
@@ -696,13 +698,31 @@ impl FrameBuilder {
         });
     }
 
+    fn initial_focus_target(&self, order: &[NodeId]) -> Option<NodeId> {
+        // Overflowing scroll regions are keyboard targets too, but an
+        // unnamed container must not take the initial focus from the setup
+        // form's first control. Keep it in the Tab order for keyboard scrolling.
+        order
+            .iter()
+            .copied()
+            .find(|id| {
+                self.node_map.get(id).is_some_and(|&widget| {
+                    // SAFETY: this map belongs to the current, live layout tree.
+                    unsafe { (*widget).accessibility() }.is_none_or(|node| {
+                        node.role != ui::a11y::Role::Group || node.name.is_some()
+                    })
+                })
+            })
+            .or_else(|| order.first().copied())
+    }
+
     fn focus_first(&mut self, focus: &mut Option<NodeId>) {
         // After a rebuild the old id belongs to the discarded Taffy tree and
         // must not be dereferenced against the new pointer map.
         if self.focus_tree_changed {
             *focus = None;
         }
-        let first = self.focusable_order().first().copied();
+        let first = self.initial_focus_target(&self.focusable_order());
         self.set_native_focus(focus, first);
         self.focus_tree_changed = false;
     }
@@ -711,7 +731,7 @@ impl FrameBuilder {
         *focus = None;
         let order = self.focusable_order();
         let target = self.native_focus_ordinal.map_or_else(
-            || order.first().copied(),
+            || self.initial_focus_target(&order),
             |ordinal| {
                 order
                     .get(ordinal)
@@ -1242,10 +1262,16 @@ impl FrameBuilder {
     fn native_damage_rect(&self, rect: Option<Rect>) -> Option<FineDamageRect> {
         let rect = rect?;
         let (width, height) = self.viewport;
-        let x0 = rect.x0.floor().clamp(0.0, width);
-        let y0 = rect.y0.floor().clamp(0.0, height);
-        let x1 = rect.x1.ceil().clamp(0.0, width);
-        let y1 = rect.y1.ceil().clamp(0.0, height);
+        // Vello evaluates clip layers in 16px tiles. Even outside a layer's
+        // exact shape, compositing that tile can round an existing channel by
+        // one unit. Retain complete clip tiles so a changed shadow cannot
+        // leave those neighbouring pixels from the previous frame behind.
+        // Matches TILE_WIDTH/TILE_HEIGHT in vello_encoding/src/config.rs.
+        const CLIP_TILE_EDGE: f64 = 16.0;
+        let x0 = ((rect.x0 / CLIP_TILE_EDGE).floor() * CLIP_TILE_EDGE).clamp(0.0, width);
+        let y0 = ((rect.y0 / CLIP_TILE_EDGE).floor() * CLIP_TILE_EDGE).clamp(0.0, height);
+        let x1 = ((rect.x1 / CLIP_TILE_EDGE).ceil() * CLIP_TILE_EDGE).clamp(0.0, width);
+        let y1 = ((rect.y1 / CLIP_TILE_EDGE).ceil() * CLIP_TILE_EDGE).clamp(0.0, height);
         if x1 <= x0 || y1 <= y0 {
             return None;
         }
@@ -2038,7 +2064,7 @@ impl FrameBuilder {
         focus: Option<NodeId>,
         scale: f64,
     ) -> ui::accesskit::TreeUpdate {
-        ui::accesskit_bridge::build_tree_update(&self.host, &self.node_map, focus, scale)
+        ui::accesskit_bridge::build_tree_update(self.host.as_ref(), &self.node_map, focus, scale)
     }
 
     /// Route an assistive-technology action back through the live compositor
@@ -2056,7 +2082,7 @@ impl FrameBuilder {
         use ui::a11y::Action;
         use ui::accesskit_bridge::{A11yTarget, resolve_node_id};
 
-        let Some(resolved) = resolve_node_id(&self.host, &self.node_map, target) else {
+        let Some(resolved) = resolve_node_id(self.host.as_ref(), &self.node_map, target) else {
             return false;
         };
         let (taffy_id, key_path, ordinal_path, semantic_target, synthetic) = match resolved {
@@ -2250,7 +2276,7 @@ impl FrameBuilder {
     pub fn widget_registry(&self) -> HashMap<String, vello::kurbo::Rect> {
         let mut out = HashMap::new();
         let mut sibling_counts: HashMap<String, usize> = HashMap::new();
-        walk_widget(&self.host, "", &mut sibling_counts, &mut out);
+        walk_widget(self.host.as_ref(), "", &mut sibling_counts, &mut out);
         self.register_chrome_rects(&mut out);
         out
     }
@@ -2396,6 +2422,72 @@ mod tests {
     use automerge::transaction::Transactable;
     use winit::event::{ElementState, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey};
+
+    #[test]
+    fn moving_frame_builder_preserves_live_layout_widget_addresses() {
+        // Construction already moves the builder out of its constructor;
+        // moving it into an allocation exercises another real ownership move.
+        let frame = Box::new(FrameBuilder::new((1280, 800)));
+        let host: &dyn Widget = frame.host.as_ref();
+        let mapped_host = frame.node_map[&frame.host_node.expect("host layout node")];
+        assert!(
+            std::ptr::addr_eq(mapped_host, std::ptr::from_ref(host)),
+            "layout's host pointer must still refer to the live host after a move"
+        );
+        // Palette and Capture Studio are inline host fields, not independent
+        // heap allocations. Their layout bindings must survive the move too.
+        for child in host.children() {
+            assert!(
+                frame
+                    .node_map
+                    .values()
+                    .any(|&mapped| { std::ptr::addr_eq(mapped, std::ptr::from_ref(child)) }),
+                "{} lost its live layout binding when the frame moved",
+                child.name()
+            );
+        }
+    }
+
+    #[test]
+    fn startup_keeps_unread_activity_passive() {
+        let mut frame =
+            crate::shell::test_support::PopulatedShellFixture::new((1600, 900), Theme::dark());
+        let _ = frame.paint_settled();
+        assert!(
+            frame.chrome().activity_glance.unread > 0,
+            "the restored fixture has unseen history to present in passive chrome"
+        );
+        assert!(!frame.chrome().overlays.room_activity);
+        assert!(
+            !crate::shell::input_policy::chrome_captures_input(&frame),
+            "restoring a workspace must leave the application interactive"
+        );
+    }
+
+    #[test]
+    fn native_damage_covers_clip_tiles_and_clamps_the_viewport() {
+        let frame = FrameBuilder::new((3839, 2159));
+        assert_eq!(
+            frame.native_damage_rect(Some(Rect::new(3203.5, 49.25, 3824.5, 300.2))),
+            Some(FineDamageRect {
+                x: 3200,
+                y: 48,
+                width: 639,
+                height: 256,
+            }),
+            "include the clip tile's neighbouring pixels, including x=3200"
+        );
+        assert_eq!(
+            frame.native_damage_rect(Some(Rect::new(-8.0, 2148.0, 17.0, 2180.0))),
+            Some(FineDamageRect {
+                x: 0,
+                y: 2144,
+                width: 32,
+                height: 15,
+            }),
+            "edge tiles must stop at a viewport that is not tile aligned"
+        );
+    }
 
     fn key_press(key: Key) -> WindowEvent {
         // SAFETY: winit keeps platform-private key metadata inaccessible to
