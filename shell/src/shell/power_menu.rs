@@ -6,7 +6,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 
-use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
@@ -209,12 +208,24 @@ impl PowerMenu {
         // task. Its bounds are the click-dismiss surface; the rest of the
         // desktop stays visually present so the power button and result read
         // as one continuous interaction.
+        // Panel role (HIG §9.1/§9.2): the flyout is the same material as
+        // every other Panel — `panel_ground` at the Panel radius, with the
+        // derived Panel border — rather than a ramp slot and a literal 24.
+        let panel_radius = ui::chrome::ChromeRole::Panel.radius(theme, panel.height());
+        let card = RoundedRect::from_rect(panel, panel_radius);
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.neutral[1],
+            ui::chrome::shell::panel_ground(theme),
             None,
-            &RoundedRect::from_rect(panel, 24.0),
+            &card,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            ui::chrome::shell::panel_border(theme),
+            None,
+            &card,
         );
         text_renderer.draw_text_weighted(
             scene,
@@ -225,20 +236,32 @@ impl PowerMenu {
             None,
             TextWeight::Semibold,
         );
+        let label_size = theme.tokens.typography.scale.sm;
         for (index, (_, label, detail, icon)) in ACTIONS.iter().enumerate() {
             let row = action_rect(viewport, index);
             let selected = self.selected == index;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if selected {
-                    colors.accent[5].with_alpha_factor(0.16)
-                } else {
-                    colors.neutral[2]
-                },
-                None,
-                &RoundedRect::from_rect(row, 14.0),
+            // Control role: the chosen row is a lift (HIG §9.3), never an
+            // accent wash; idle rows sit on a quiet lift so the list reads
+            // as rows rather than as bare text on the panel.
+            let shape = RoundedRect::from_rect(
+                row,
+                ui::chrome::ChromeRole::Control.radius(theme, row.height()),
             );
+            let tier = ui::chrome::selection_tier(
+                theme,
+                ui::chrome::SelectionState::active(selected),
+            );
+            let fill = if selected { tier.fill } else { colors.lift(0.35) };
+            scene.fill(Fill::NonZero, transform, fill, None, &shape);
+            if let Some(border) = tier.border {
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    border,
+                    None,
+                    &shape,
+                );
+            }
             ui::icons::draw_icon(
                 scene,
                 transform,
@@ -247,21 +270,32 @@ impl PowerMenu {
                 colors.text_primary,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
+            let label_y = row.y0 + 8.0;
+            let (_, label_h) =
+                text_renderer.measure_weighted(label, label_size, None, TextWeight::Semibold);
             text_renderer.draw_text_weighted(
                 scene,
                 label,
-                theme.tokens.typography.scale.sm,
+                label_size,
                 colors.text_primary,
-                at(transform, (row.x0 + 50.0, row.y0 + 8.0)),
+                at(transform, (row.x0 + 50.0, label_y)),
                 None,
                 TextWeight::Semibold,
             );
+            // The detail follows the measured label, so large text grows
+            // the stack downward instead of painting through it.
             text_renderer.draw_text(
                 scene,
                 detail,
                 theme.tokens.typography.scale.xs,
                 colors.text_dim,
-                at(transform, (row.x0 + 50.0, row.y0 + 28.0)),
+                at(
+                    transform,
+                    (
+                        row.x0 + 50.0,
+                        (row.y0 + 28.0).max(label_y + f64::from(label_h)),
+                    ),
+                ),
                 None,
             );
         }

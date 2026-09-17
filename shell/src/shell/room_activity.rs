@@ -58,7 +58,15 @@ const FULL_BLEED_UNDER: f64 = 720.0;
 const SHEET_INSET: f64 = 16.0;
 const HEADER_H: f64 = 76.0;
 const VIEW_ROW_H: f64 = 34.0;
-const CHIP_ROW_H: f64 = 30.0;
+/// A filter row is one pointer target tall (`MIN_TARGET`), with the 28 px
+/// Selector pill centred in it.
+const CHIP_ROW_H: f64 = 32.0;
+/// Selector height (HIG §9.6): every chip in this sheet — view tab, scope
+/// pill, period and author filter — is painted at this height.
+const SELECTOR_H: f64 = 28.0;
+/// Minimum pointer target (HIG §9.6). A chip's hit rect is at least this
+/// tall even where its painted pill is the 28 px Selector.
+const MIN_TARGET: f64 = 32.0;
 const EXPLORER_LEFT_W: f64 = 180.0;
 const EXPLORER_DETAIL_W: f64 = 240.0;
 
@@ -260,6 +268,14 @@ fn at(transform: Affine, dx: f64, dy: f64) -> Affine {
     clippy::cast_possible_truncation,
     reason = "finite viewport dimensions are well within f32's range"
 )]
+/// Theme typography tokens already carry the user's text scale, and the
+/// renderer scales every authored size again; this sheet is painted in a
+/// pass that does not reset the renderer, so divide once and the scale is
+/// applied exactly once (HIG §7a). Identity while the renderer is at 1×.
+fn type_size(tr: &TextRenderer, resolved: f32) -> f32 {
+    resolved / tr.text_scale()
+}
+
 fn text_width(width: f64) -> f32 {
     width.max(0.0) as f32
 }
@@ -2074,7 +2090,7 @@ impl RoomActivityPane {
             transform,
             tr,
             theme,
-            Rect::new(self.sheet.x0 + 12.0, y, self.sheet.x1 - 12.0, y + 30.0),
+            Rect::new(self.sheet.x0 + 12.0, y, self.sheet.x1 - 12.0, y + MIN_TARGET),
             &items,
             |pane| *pane == selected,
         );
@@ -2167,7 +2183,7 @@ impl RoomActivityPane {
         tr.draw_text_weighted(
             scene,
             "Browse by",
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_primary,
             at(transform, bounds.x0 + 12.0, bounds.y0 + 12.0),
             None,
@@ -2207,7 +2223,7 @@ impl RoomActivityPane {
         theme: &Theme,
         bounds: Rect,
     ) {
-        let size = theme.tokens.typography.scale.sm;
+        let size = type_size(tr, theme.tokens.typography.scale.sm);
         tr.draw_text_weighted(
             scene,
             "Provenance",
@@ -2226,7 +2242,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 &detail.title,
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 at(transform, bounds.x0 + 12.0, bounds.y0 + 40.0),
                 Some(width),
@@ -2262,7 +2278,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 "Select an outcome or a range of actions",
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 at(transform, bounds.x0 + 12.0, bounds.y0 + 44.0),
                 Some(width),
@@ -2294,13 +2310,13 @@ impl RoomActivityPane {
         indexed: &IndexedAgentRun,
     ) {
         let run = &indexed.run;
-        let size = theme.tokens.typography.scale.sm;
+        let size = type_size(tr, theme.tokens.typography.scale.sm);
         let x = bounds.x0 + 12.0;
         let mut y = bounds.y0 + 40.0;
         tr.draw_text_weighted(
             scene,
             "Agent task",
-            theme.tokens.typography.scale.base,
+            type_size(tr, theme.tokens.typography.scale.base),
             theme.tokens.colors.accent[4],
             at(transform, x, y),
             None,
@@ -2311,7 +2327,7 @@ impl RoomActivityPane {
         tr.draw_text(
             scene,
             instruction,
-            theme.tokens.typography.scale.base,
+            type_size(tr, theme.tokens.typography.scale.base),
             theme.tokens.colors.text_primary,
             at(transform, x, y),
             Some(width),
@@ -2458,7 +2474,7 @@ impl RoomActivityPane {
             }
             let label = self.detail_action_label(action);
             let button_width = f64::from(
-                (tr.measure(label, theme.tokens.typography.scale.sm, None).0 + 20.0).max(60.0),
+                (tr.measure(label, type_size(tr, theme.tokens.typography.scale.sm), None).0 + 20.0).max(60.0),
             );
             if x + button_width > bounds.x1 - 12.0 {
                 x = bounds.x0 + 12.0;
@@ -2492,7 +2508,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 label,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 if is_active {
                     theme.tokens.colors.accent[4]
                 } else {
@@ -2561,7 +2577,7 @@ impl RoomActivityPane {
         tr.draw_text_weighted(
             scene,
             "What changed",
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_primary,
             at(transform, card.x0 + 12.0, card.y0 + 10.0),
             None,
@@ -2584,7 +2600,7 @@ impl RoomActivityPane {
                 comparison.entries.len(),
                 comparison.patches.len()
             ),
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(transform, card.x0 + 12.0, card.y0 + 32.0),
             Some(width - 24.0),
@@ -2593,7 +2609,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 "No content differences in this selection",
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_dim,
                 at(transform, card.x0 + 12.0, card.y0 + 52.0),
                 Some(width - 24.0),
@@ -2604,7 +2620,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 &format!("• {label}"),
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
                 at(
                     transform,
@@ -2618,7 +2634,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 &format!("+{} more", labels.len().saturating_sub(visible)),
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_dim,
                 at(
                     transform,
@@ -2657,7 +2673,7 @@ impl RoomActivityPane {
         tr.draw_text_weighted(
             scene,
             "Preview unavailable",
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_primary,
             at(transform, card.x0 + 12.0, card.y0 + 10.0),
             None,
@@ -2666,7 +2682,7 @@ impl RoomActivityPane {
         tr.draw_text(
             scene,
             "This action has provenance, but no materialized before-and-after snapshot.",
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(transform, card.x0 + 12.0, card.y0 + 36.0),
             Some(text_width(card.width() - 24.0)),
@@ -2704,7 +2720,7 @@ impl RoomActivityPane {
         tr.draw_text(
             scene,
             label,
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             if self.lens == *lens {
                 theme.tokens.colors.text_primary
             } else {
@@ -2778,7 +2794,8 @@ impl RoomActivityPane {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let y = self.sheet.y0 + HEADER_H + 4.0;
+        // One pointer target tall, centred in the 34 px view band.
+        let y = self.sheet.y0 + HEADER_H + (VIEW_ROW_H - MIN_TARGET) / 2.0;
         let items: Vec<(ActivityView, String)> = ActivityView::ALL
             .iter()
             .map(|view| (*view, view.label().to_string()))
@@ -2789,7 +2806,7 @@ impl RoomActivityPane {
             transform,
             tr,
             theme,
-            Rect::new(self.sheet.x0 + 12.0, y, self.sheet.x1 - 12.0, y + 26.0),
+            Rect::new(self.sheet.x0 + 12.0, y, self.sheet.x1 - 12.0, y + MIN_TARGET),
             &items,
             |view| *view == selected,
         );
@@ -2817,7 +2834,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 "You're caught up",
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_dim,
                 at(transform, x0 + 4.0, y + 12.0),
                 Some(text_width(x1 - x0 - 8.0)),
@@ -2845,14 +2862,14 @@ impl RoomActivityPane {
                 } else {
                     "At a glance"
                 },
-                (theme.tokens.typography.scale.sm - 1.0).max(10.0),
+                (type_size(tr, theme.tokens.typography.scale.sm) - 1.0).max(10.0),
                 theme.tokens.colors.text_dim,
                 at(transform, card.x0 + 12.0, card.y0 + 7.0),
                 Some(text_width(card.width() - 24.0)),
             );
             let lines = tr.clamp_to_lines(
                 &narrative.text,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 text_width(card.width() - 24.0),
                 2,
             );
@@ -2860,7 +2877,7 @@ impl RoomActivityPane {
                 tr.draw_text(
                     scene,
                     text,
-                    theme.tokens.typography.scale.sm,
+                    type_size(tr, theme.tokens.typography.scale.sm),
                     theme.tokens.colors.text_primary,
                     at(
                         transform,
@@ -2888,7 +2905,7 @@ impl RoomActivityPane {
             // without opening the card.
             let title_lines = tr.clamp_to_lines(
                 &brief.title,
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 text_width(x1 - x0 - 24.0),
                 2,
             );
@@ -2963,7 +2980,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 "No replayable workspace checkpoints yet",
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 at(
                     transform,
@@ -3036,11 +3053,11 @@ impl RoomActivityPane {
                 None,
                 &shape,
             );
-            let (tw, th) = tr.measure(label, theme.tokens.typography.scale.sm, None);
+            let (tw, th) = tr.measure(label, type_size(tr, theme.tokens.typography.scale.sm), None);
             tr.draw_text(
                 scene,
                 label,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
                 at(
                     transform,
@@ -3058,7 +3075,7 @@ impl RoomActivityPane {
                 self.replay_frames.len(),
                 format_relative_time(frame.timestamp, self.now())
             ),
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(
                 transform,
@@ -3104,7 +3121,7 @@ impl RoomActivityPane {
         tr.draw_text_weighted(
             scene,
             &format!("{} · {}", frame.author.name, frame.summary),
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_primary,
             at(transform, info.x0 + 20.0, info.y0 + 4.0),
             Some(text_width(info.width() - 24.0)),
@@ -3148,7 +3165,7 @@ impl RoomActivityPane {
         tr.draw_text_weighted(
             scene,
             "WORKSPACE QUEUE",
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(transform, x0 + 4.0, y + 8.0),
             None,
@@ -3168,7 +3185,7 @@ impl RoomActivityPane {
             tr.draw_text_weighted(
                 scene,
                 "Create work without leaving the desktop",
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 at(transform, composer.x0 + 12.0, composer.y0 + 10.0),
                 None,
@@ -3194,7 +3211,7 @@ impl RoomActivityPane {
                 } else {
                     &self.task_draft
                 },
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 if self.task_draft.is_empty() {
                     theme.tokens.colors.text_dim
                 } else {
@@ -3238,13 +3255,13 @@ impl RoomActivityPane {
             };
             let executor = tr.elide_to_width(
                 &executor,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 text_width(composer.width() - 24.0),
             );
             tr.draw_text(
                 scene,
                 &executor,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
                 at(transform, composer.x0 + 12.0, composer.y0 + 107.0),
                 None,
@@ -3261,13 +3278,13 @@ impl RoomActivityPane {
             );
             let attached = tr.elide_to_width(
                 &attached,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 text_width(composer.width() - 24.0),
             );
             tr.draw_text(
                 scene,
                 &attached,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_dim,
                 at(transform, composer.x0 + 12.0, composer.y0 + 126.0),
                 None,
@@ -3303,7 +3320,7 @@ impl RoomActivityPane {
             tr.draw_text_weighted(
                 scene,
                 "No tasks yet",
-                theme.tokens.typography.scale.base,
+                type_size(tr, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 at(transform, x0 + 4.0, y + 16.0),
                 None,
@@ -3312,7 +3329,7 @@ impl RoomActivityPane {
             tr.draw_text(
                 scene,
                 "Create one manually, or attach the resource selected in Explore.",
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_dim,
                 at(transform, x0 + 4.0, y + 40.0),
                 Some(text_width(x1 - x0 - 8.0)),
@@ -3385,7 +3402,7 @@ impl RoomActivityPane {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let title_size = tokens.typography.scale.lg;
+        let title_size = type_size(tr, tokens.typography.scale.lg);
         let title = match self.view {
             ActivityView::CatchUp => "Since you looked",
             ActivityView::Tasks => "Task Center",
@@ -3400,7 +3417,9 @@ impl RoomActivityPane {
             at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 12.0),
             None,
         );
-        let sub_size = (tokens.typography.scale.sm - 1.0).max(10.0);
+        // Control sub-line scale (HIG §9.6). Shrinking `sm` by a pixel to
+        // buy room was hiding a fit problem rather than solving it.
+        let sub_size = type_size(tr, tokens.typography.scale.sm);
         let (change_count, contributor_count) = match self.view {
             ActivityView::CatchUp => (self.digest.total_changes, self.digest.people),
             ActivityView::Tasks => (
@@ -3434,21 +3453,37 @@ impl RoomActivityPane {
                     self.room_name.as_str()
                 }
             );
+            // Both lines are elided to one line each: the header band is a
+            // fixed 76 px, so a wrapped subtitle would run into the line
+            // below it. The second line follows the first's measured height.
+            let wrap_width = text_width(self.sheet.width() - 32.0);
+            let subtitle = tr.elide_to_width(&subtitle, sub_size, wrap_width);
+            let (_, subtitle_h) = tr.measure(&subtitle, sub_size, None);
+            let subtitle_y = self.sheet.y0 + 36.0;
             tr.draw_text(
                 scene,
                 &subtitle,
                 sub_size,
                 colors.text_dim,
-                at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 36.0),
-                Some(text_width(self.sheet.width() - 32.0)),
+                at(transform, self.sheet.x0 + 16.0, subtitle_y),
+                None,
+            );
+            let tagline = tr.elide_to_width(
+                "Native workspace tasks · model optional · every action auditable",
+                sub_size,
+                wrap_width,
             );
             tr.draw_text(
                 scene,
-                "Native workspace tasks · model optional · every action auditable",
+                &tagline,
                 sub_size,
                 colors.text_primary,
-                at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 55.0),
-                Some(text_width(self.sheet.width() - 32.0)),
+                at(
+                    transform,
+                    self.sheet.x0 + 16.0,
+                    (self.sheet.y0 + 55.0).max(subtitle_y + f64::from(subtitle_h)),
+                ),
+                None,
             );
             return;
         }
@@ -3511,28 +3546,53 @@ impl RoomActivityPane {
             }
         }
         let wrap_width = text_width(self.sheet.width() - 32.0);
+        let latest = self
+            .narrative
+            .as_ref()
+            .map(|narrative| narrative.text.clone())
+            .or_else(|| self.digest.headline())
+            .map(|headline| format!("Latest \u{00b7} {headline}"));
+        // The subtitle may wrap, but the header band is a fixed 76 px and
+        // "Latest" used to sit at an authored offset underneath it, so a
+        // two-line subtitle painted straight through the headline. Measure
+        // the wrapped subtitle; if the stack cannot fit above the view tabs,
+        // fall back to one elided line rather than overlapping.
+        let subtitle_y = self.sheet.y0 + 32.0;
+        let stack_bottom = self.sheet.y0 + HEADER_H;
+        let (_, latest_h) = latest
+            .as_deref()
+            .map_or((0.0, 0.0), |latest| tr.measure(latest, sub_size, None));
+        let (_, wrapped_h) = tr.measure(&subtitle, sub_size, Some(wrap_width));
+        let fits_wrapped =
+            subtitle_y + f64::from(wrapped_h) + f64::from(latest_h) <= stack_bottom;
+        let (subtitle, subtitle_h) = if fits_wrapped {
+            (subtitle, wrapped_h)
+        } else {
+            let one_line = tr.elide_to_width(&subtitle, sub_size, wrap_width);
+            let (_, h) = tr.measure(&one_line, sub_size, None);
+            (one_line, h)
+        };
         tr.draw_text(
             scene,
             &subtitle,
             sub_size,
             colors.text_dim,
-            at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 32.0),
-            Some(wrap_width),
+            at(transform, self.sheet.x0 + 16.0, subtitle_y),
+            fits_wrapped.then_some(wrap_width),
         );
-        if let Some(headline) = self
-            .narrative
-            .as_ref()
-            .map(|narrative| narrative.text.clone())
-            .or_else(|| self.digest.headline())
-        {
-            let latest = format!("Latest \u{00b7} {headline}");
+        if let Some(latest) = latest {
             let latest = tr.elide_to_width(&latest, sub_size, wrap_width);
             tr.draw_text(
                 scene,
                 &latest,
                 sub_size,
                 colors.text_primary,
-                at(transform, self.sheet.x0 + 16.0, self.sheet.y0 + 51.0),
+                at(
+                    transform,
+                    self.sheet.x0 + 16.0,
+                    // Never above the authored 51 px, never over the subtitle.
+                    (self.sheet.y0 + 51.0).max(subtitle_y + f64::from(subtitle_h)),
+                ),
                 None,
             );
         }
@@ -3551,8 +3611,9 @@ impl RoomActivityPane {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         self.scope_rects.clear();
-        let size = (tokens.typography.scale.sm - 1.0).max(10.0);
-        let h = 22.0_f64;
+        let size = type_size(tr, tokens.typography.scale.sm);
+        // Selector pill, hit-tested through a full pointer target.
+        let h = SELECTOR_H;
         let cy = self.sheet.y0 + 24.0;
         let label_sets = [
             ["This workspace", "All workspaces"],
@@ -3567,7 +3628,7 @@ impl RoomActivityPane {
             .map(|labels| {
                 let widths = labels
                     .iter()
-                    .map(|label| f64::from(tr.measure(label, size, None).0) + 16.0)
+                    .map(|label| (f64::from(tr.measure(label, size, None).0) + 16.0).max(MIN_TARGET))
                     .collect::<Vec<_>>();
                 let total = widths.iter().sum::<f64>() + 4.0;
                 (labels, widths, total)
@@ -3577,7 +3638,7 @@ impl RoomActivityPane {
                 let labels = &label_sets[2];
                 let widths = labels
                     .iter()
-                    .map(|label| f64::from(tr.measure(label, size, None).0) + 12.0)
+                    .map(|label| (f64::from(tr.measure(label, size, None).0) + 12.0).max(MIN_TARGET))
                     .collect::<Vec<_>>();
                 let total = widths.iter().sum::<f64>() + 4.0;
                 (labels, widths, total)
@@ -3587,7 +3648,10 @@ impl RoomActivityPane {
             let w = widths.get(i).copied().unwrap_or(0.0);
             let label = labels.get(i).copied().unwrap_or_else(|| sc.label());
             let rect = Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0);
-            self.scope_rects.push((*sc, rect));
+            self.scope_rects.push((
+                *sc,
+                Rect::new(x, cy - MIN_TARGET / 2.0, x + w, cy + MIN_TARGET / 2.0),
+            ));
             let active = self.scope == *sc;
             let shape = RoundedRect::from_rect(rect, h / 2.0);
             scene.fill(
@@ -4924,13 +4988,17 @@ impl RoomActivityPane {
         if let Some(expanded) = control.expanded {
             state = state.expanded(expanded);
         }
-        Some(
-            AccessNode::new(control.role)
-                .with_name(label)
-                .with_description(control.description)
-                .with_state(state)
-                .with_position(index.saturating_add(1), set_size),
-        )
+        let node = AccessNode::new(control.role)
+            .with_name(label)
+            .with_description(control.description)
+            .with_state(state)
+            .with_position(index.saturating_add(1), set_size);
+        // The same rect the pointer hits, so assistive technology, the
+        // control socket and the UX bench can all address this control.
+        Some(match self.rect_for_focus(focus) {
+            Some(rect) if rect.area() > 0.0 => node.with_bounds(rect),
+            _ => node,
+        })
     }
 
     /// Semantic mirror of this immediate-mode overlay. Shell overlays are not
@@ -4958,6 +5026,9 @@ impl RoomActivityPane {
                 }
             })
             .with_state(AccessState::new().modal(true));
+        if self.sheet.area() > 0.0 {
+            root = root.with_bounds(self.sheet);
+        }
         let order = self.focus_order();
         let set_size = order.len();
         root.children = order
@@ -5361,7 +5432,7 @@ fn draw_task_button(
         None,
         &RoundedRect::from_rect(rect, 6.0),
     );
-    let size = theme.tokens.typography.scale.sm;
+    let size = type_size(tr, theme.tokens.typography.scale.sm);
     let (width, height) = tr.measure(label, size, None);
     tr.draw_text_weighted(
         scene,
@@ -5414,7 +5485,7 @@ fn draw_task_card(
     tr.draw_text_weighted(
         scene,
         status,
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         if task.status.is_finished() {
             theme.tokens.colors.text_dim
         } else {
@@ -5425,11 +5496,11 @@ fn draw_task_card(
         ui::text_render::TextWeight::Medium,
     );
     let route = task.route.label();
-    let route_width = tr.measure(route, theme.tokens.typography.scale.sm, None).0;
+    let route_width = tr.measure(route, type_size(tr, theme.tokens.typography.scale.sm), None).0;
     tr.draw_text(
         scene,
         route,
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         theme.tokens.colors.text_dim,
         at(
             transform,
@@ -5440,13 +5511,13 @@ fn draw_task_card(
     );
     let title = tr.elide_to_width(
         &task.title,
-        theme.tokens.typography.scale.base,
+        type_size(tr, theme.tokens.typography.scale.base),
         text_width(rect.width() - 24.0),
     );
     tr.draw_text_weighted(
         scene,
         &title,
-        theme.tokens.typography.scale.base,
+        type_size(tr, theme.tokens.typography.scale.base),
         theme.tokens.colors.text_primary,
         at(transform, rect.x0 + 12.0, rect.y0 + 31.0),
         None,
@@ -5460,13 +5531,13 @@ fn draw_task_card(
         .unwrap_or_default();
     let byline = tr.elide_to_width(
         &format!("{assignee}{resource}"),
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         text_width(rect.width() - 24.0),
     );
     tr.draw_text(
         scene,
         &byline,
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         theme.tokens.colors.text_dim,
         at(transform, rect.x0 + 12.0, rect.y0 + 55.0),
         None,
@@ -5477,7 +5548,7 @@ fn draw_task_card(
             tr.draw_text(
                 scene,
                 notice,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.accent[4],
                 at(transform, rect.x0 + 12.0, audit_y),
                 Some(text_width(rect.width() - 24.0)),
@@ -5487,7 +5558,7 @@ fn draw_task_card(
         tr.draw_text_weighted(
             scene,
             "AUDIT TRAIL",
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(transform, rect.x0 + 12.0, audit_y),
             None,
@@ -5502,13 +5573,13 @@ fn draw_task_card(
             let line = task_audit_line(event, event_time, now);
             let line = tr.elide_to_width(
                 &line,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 text_width(rect.width() - 32.0),
             );
             tr.draw_text(
                 scene,
                 &line,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
                 at(transform, rect.x0 + 20.0, audit_y),
                 None,
@@ -5687,7 +5758,7 @@ fn draw_replay_layout(
         tr.draw_text(
             scene,
             "The workspace did not exist at this checkpoint",
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             at(transform, bounds.x0 + 16.0, bounds.y0 + 16.0),
             Some(text_width(bounds.width() - 32.0)),
@@ -5708,7 +5779,7 @@ fn draw_replay_layout(
         tr.draw_text_weighted(
             scene,
             &workspace.name,
-            theme.tokens.typography.scale.sm,
+            type_size(tr, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_primary,
             at(transform, row.x0 + 6.0, row.y0 + 5.0),
             Some(text_width(row.width() - 12.0)),
@@ -5754,7 +5825,7 @@ fn draw_replay_layout(
                 tr.draw_text(
                     scene,
                     title,
-                    theme.tokens.typography.scale.sm,
+                    type_size(tr, theme.tokens.typography.scale.sm),
                     theme.tokens.colors.text_primary,
                     at(transform, rect.x0 + 8.0, rect.y0 + 8.0),
                     Some(text_width(rect.width() - 16.0)),
@@ -5771,7 +5842,7 @@ fn draw_replay_layout(
                         let width = (f64::from(
                             tr.measure(
                                 &label,
-                                (theme.tokens.typography.scale.sm - 2.0).max(9.0),
+                                (type_size(tr, theme.tokens.typography.scale.sm) - 2.0).max(9.0),
                                 None,
                             )
                             .0,
@@ -5798,7 +5869,7 @@ fn draw_replay_layout(
                         tr.draw_text(
                             scene,
                             &label,
-                            (theme.tokens.typography.scale.sm - 2.0).max(9.0),
+                            (type_size(tr, theme.tokens.typography.scale.sm) - 2.0).max(9.0),
                             theme.tokens.colors.text_dim,
                             at(transform, tab_x + 6.0, tab_y + 4.0),
                             Some(text_width(width - 12.0)),
@@ -5809,7 +5880,7 @@ fn draw_replay_layout(
                         tr.draw_text(
                             scene,
                             &format!("+{}", group.tabs.len().saturating_sub(4)),
-                            (theme.tokens.typography.scale.sm - 2.0).max(9.0),
+                            (type_size(tr, theme.tokens.typography.scale.sm) - 2.0).max(9.0),
                             theme.tokens.colors.text_dim,
                             at(transform, tab_x + 2.0, tab_y + 4.0),
                             None,
@@ -5839,7 +5910,7 @@ fn draw_presence_trail(
     tr.draw_text(
         scene,
         "Presence trail",
-        (theme.tokens.typography.scale.sm - 1.0).max(10.0),
+        (type_size(tr, theme.tokens.typography.scale.sm) - 1.0).max(10.0),
         theme.tokens.colors.text_dim,
         at(transform, bounds.x0, bounds.y0 + 2.0),
         None,
@@ -5920,7 +5991,7 @@ fn draw_replay_pointers(
         tr.draw_text(
             scene,
             &pointer.name,
-            (theme.tokens.typography.scale.sm - 2.0).max(9.0),
+            (type_size(tr, theme.tokens.typography.scale.sm) - 2.0).max(9.0),
             color,
             at(transform, point.x + 14.0, point.y + 4.0),
             Some(text_width(100.0)),
@@ -5952,12 +6023,12 @@ fn draw_brief_card(
         &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
     );
     let width = text_width(rect.width() - 24.0);
-    let title_lines = tr.clamp_to_lines(&brief.title, theme.tokens.typography.scale.base, width, 2);
+    let title_lines = tr.clamp_to_lines(&brief.title, type_size(tr, theme.tokens.typography.scale.base), width, 2);
     for (index, title) in title_lines.iter().enumerate() {
         tr.draw_text_weighted(
             scene,
             title,
-            theme.tokens.typography.scale.base,
+            type_size(tr, theme.tokens.typography.scale.base),
             theme.tokens.colors.text_primary,
             at(
                 transform,
@@ -5974,11 +6045,11 @@ fn draw_brief_card(
         brief.detail,
         format_relative_time(brief.last_at, now)
     );
-    let byline = tr.elide_to_width(&byline, theme.tokens.typography.scale.sm, width);
+    let byline = tr.elide_to_width(&byline, type_size(tr, theme.tokens.typography.scale.sm), width);
     tr.draw_text(
         scene,
         &byline,
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         theme.tokens.colors.text_dim,
         at(transform, rect.x0 + 12.0, rect.y0 + 34.0 + title_extra),
         None,
@@ -5997,11 +6068,11 @@ fn draw_brief_card(
             format!("{} underlying actions", brief.changes)
         };
     }
-    let provenance = tr.elide_to_width(&provenance, theme.tokens.typography.scale.sm, width);
+    let provenance = tr.elide_to_width(&provenance, type_size(tr, theme.tokens.typography.scale.sm), width);
     tr.draw_text(
         scene,
         &provenance,
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         theme.tokens.colors.text_dim,
         at(transform, rect.x0 + 12.0, rect.y0 + 56.0 + title_extra),
         None,
@@ -6017,13 +6088,13 @@ fn draw_brief_card(
             );
             let action_line = tr.elide_to_width(
                 &action_line,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 text_width(rect.width() - 32.0),
             );
             tr.draw_text(
                 scene,
                 &action_line,
-                theme.tokens.typography.scale.sm,
+                type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
                 at(transform, rect.x0 + 20.0, action_y),
                 None,
@@ -6039,7 +6110,7 @@ fn draw_brief_card(
     tr.draw_text(
         scene,
         affordance,
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         if expanded {
             theme.tokens.colors.accent[4]
         } else {
@@ -6071,8 +6142,12 @@ fn draw_chip_row<T: Clone>(
 ) -> Vec<(T, Rect)> {
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
-    let size = (tokens.typography.scale.sm - 1.0).max(10.0);
-    let chip_h = (row.height() - 8.0).max(18.0);
+    // Control label scale (HIG §9.6); the previous `sm - 1` was an
+    // off-scale size invented to make more chips fit.
+    let size = type_size(tr, tokens.typography.scale.sm);
+    // Painted as a Selector pill; the returned hit rect is the whole row,
+    // so the pointer target is never smaller than the row it sits in.
+    let chip_h = row.height().min(SELECTOR_H);
     let cy = row.center().y;
     let mut out = Vec::with_capacity(items.len());
     let mut x = row.x0;
@@ -6080,12 +6155,14 @@ fn draw_chip_row<T: Clone>(
     for (value, label) in items {
         // Reserve room for a "+N" overflow marker so it never itself overflows.
         let (lw, lh) = tr.measure(label, size, None);
-        let w = f64::from(lw) + 16.0;
+        // A short label ("All") still gets a full pointer target.
+        let w = (f64::from(lw) + 16.0).max(MIN_TARGET);
         if x + w > row.x1 - 28.0 {
             dropped = dropped.saturating_add(1);
             continue;
         }
         let rect = Rect::new(x, cy - chip_h / 2.0, x + w, cy + chip_h / 2.0);
+        let hit = Rect::new(x, row.y0, x + w, row.y1);
         let active = is_active(value);
         let shape = RoundedRect::from_rect(rect, chip_h / 2.0);
         scene.fill(
@@ -6115,7 +6192,7 @@ fn draw_chip_row<T: Clone>(
             ),
             None,
         );
-        out.push((value.clone(), rect));
+        out.push((value.clone(), hit));
         x += w + 6.0;
     }
     if dropped > 0 {
@@ -6150,18 +6227,19 @@ fn draw_chip_row_paginated<T: Clone>(
 ) -> ChipPage<T> {
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
-    let size = (tokens.typography.scale.sm - 1.0).max(10.0);
-    let chip_h = (row.height() - 8.0).max(18.0);
+    let size = type_size(tr, tokens.typography.scale.sm);
+    let chip_h = row.height().min(SELECTOR_H);
     let cy = row.center().y;
     let mut out = Vec::with_capacity(items.len());
     let mut x = row.x0;
     for (value, label) in items {
         let (lw, lh) = tr.measure(label, size, None);
-        let w = f64::from(lw) + 16.0;
+        let w = (f64::from(lw) + 16.0).max(MIN_TARGET);
         if x + w > row.x1 - 58.0 {
             break;
         }
         let rect = Rect::new(x, cy - chip_h / 2.0, x + w, cy + chip_h / 2.0);
+        let hit = Rect::new(x, row.y0, x + w, row.y1);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -6189,7 +6267,7 @@ fn draw_chip_row_paginated<T: Clone>(
             ),
             None,
         );
-        out.push((value.clone(), rect));
+        out.push((value.clone(), hit));
         x += w + 6.0;
     }
     let shown = out.len();
@@ -6202,15 +6280,21 @@ fn draw_chip_row_paginated<T: Clone>(
             None,
             &RoundedRect::from_rect(rect, chip_h / 2.0),
         );
+        let more = "More…";
+        let (mw, mh) = tr.measure(more, size, None);
         tr.draw_text(
             scene,
-            "More…",
+            more,
             size,
             colors.text_primary,
-            at(transform, rect.x0 + 8.0, rect.y0 + 5.0),
+            at(
+                transform,
+                rect.x0 + (rect.width() - f64::from(mw)) / 2.0,
+                rect.y0 + (rect.height() - f64::from(mh)) / 2.0,
+            ),
             None,
         );
-        Some(rect)
+        Some(Rect::new(rect.x0, row.y0, rect.x1, row.y1))
     } else {
         None
     };
@@ -6244,7 +6328,7 @@ fn draw_more_row(
     tr.draw_text(
         scene,
         label,
-        theme.tokens.typography.scale.sm,
+        type_size(tr, theme.tokens.typography.scale.sm),
         theme.tokens.colors.text_primary,
         at(transform, rect.x0 + 8.0, rect.y0 + 6.0),
         Some(text_width(rect.width() - 16.0)),
@@ -8718,6 +8802,64 @@ mod tests {
         assert!(snapshot.children.iter().any(|node| {
             node.role == ui::a11y::Role::List && node.name.as_deref() == Some("History entries")
         }));
+    }
+
+    #[test]
+    fn chips_are_full_pointer_targets_that_publish_their_bounds() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        pane.set_view(ActivityView::Explore);
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        paint(&mut pane);
+        assert!(pane.shows_chip_rows(), "the tall sheet shows period and author rows");
+        let targets: Vec<Rect> = pane
+            .view_rects
+            .iter()
+            .map(|(_, rect)| *rect)
+            .chain(pane.scope_rects.iter().map(|(_, rect)| *rect))
+            .chain(pane.period_rects.iter().map(|(_, rect)| *rect))
+            .chain(pane.author_rects.iter().map(|(_, rect)| *rect))
+            .collect();
+        assert!(targets.len() >= 4 + 2 + 2, "view, scope, period and author chips are laid out");
+        for rect in &targets {
+            assert!(
+                rect.height() >= MIN_TARGET - f64::EPSILON && rect.width() >= MIN_TARGET - f64::EPSILON,
+                "every chip is at least one pointer target: {rect:?}"
+            );
+        }
+        for (i, a) in targets.iter().enumerate() {
+            for b in &targets[..i] {
+                let overlap = a.intersect(*b);
+                assert!(overlap.width() <= 0.0 || overlap.height() <= 0.0, "{a:?} overlaps {b:?}");
+            }
+        }
+        let snapshot = pane.accessibility_snapshot();
+        assert_eq!(snapshot.bounds.map(ui::AccessBounds::to_rect), Some(pane.rect()));
+        // The chip families laid out above, by the labels the tree speaks.
+        let chip_names: Vec<String> = ActivityView::ALL
+            .iter()
+            .map(|view| view.label().to_string())
+            .chain(RoomScope::ALL.iter().map(|scope| scope.label().to_string()))
+            .chain(Period::ALL.iter().map(|period| period.label().to_string()))
+            .collect();
+        // Only the chips are checked: the timeline list and controls the
+        // current view does not paint publish no rect, and rightly so.
+        let mut published = 0;
+        for node in snapshot.children.iter().take(pane.focus_order().len()) {
+            let Some(name) = node.name.as_deref() else {
+                continue;
+            };
+            if !chip_names.iter().any(|chip| chip == name) {
+                continue;
+            }
+            let rect = node
+                .bounds
+                .map(ui::AccessBounds::to_rect)
+                .unwrap_or_else(|| panic!("{name:?} publishes its hit rect"));
+            assert!(targets.contains(&rect), "{name:?} publishes the rect the pointer hits");
+            published += 1;
+        }
+        assert!(published >= 4 + 2 + 2, "every laid-out chip is in the tree with bounds");
     }
 
     #[test]

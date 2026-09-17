@@ -22,14 +22,15 @@
 //! the protocol stays honest, and the picture is the compositor's.
 
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect};
+use vello::peniko::Fill;
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
-/// Height of the chip that names what is being carried.
-const CHIP_H: f64 = 30.0;
+/// Height of the chip that names what is being carried — the Selector
+/// height from HIG §9.6, so it matches every other pill the shell paints.
+const CHIP_H: f64 = 28.0;
 /// Padding inside the chip, left and right of the label.
 const CHIP_PAD: f64 = 12.0;
 /// The chip sits below-right of the hotspot so the cursor stays legible.
@@ -65,21 +66,21 @@ fn draw_chip(
     theme: &Theme,
     text: &mut TextRenderer,
 ) {
-    let size = 13.0_f32;
-    let (tw, _) = text.measure(label, size, None);
+    // Control label scale (HIG §9.6), measured with the style it is drawn
+    // in so the label is centred on its real line box rather than on a
+    // `size * 1.3` guess.
+    let size = theme.tokens.typography.scale.sm;
+    let (tw, th) = text.measure(label, size, None);
     let w = f64::from(tw) + CHIP_PAD * 2.0;
     let x = cursor.x + CHIP_DX;
     let y = cursor.y + CHIP_DY;
-    let rect = RoundedRect::new(x, y, x + w, y + CHIP_H, 8.0);
-    // A shadow under the chip, so it reads as lifted off whatever window
-    // it happens to be over rather than as part of it.
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        Color::from_rgba8(0, 0, 0, 90),
-        None,
-        &RoundedRect::new(x + 1.0, y + 2.0, x + w + 1.0, y + CHIP_H + 3.0, 8.0),
-    );
+    let bounds = Rect::new(x, y, x + w, y + CHIP_H);
+    // Control role: a pressable-looking chip takes `radii.lg`, and a carried
+    // object is genuinely lifted, so its shadow comes from the elevation
+    // token rather than a literal black offset copy (HIG §9.3).
+    let radius = ui::chrome::ChromeRole::Control.radius(theme, CHIP_H);
+    let rect = RoundedRect::from_rect(bounds, radius);
+    ui::chrome::shell::panel_shadow(scene, Affine::IDENTITY, bounds, radius, theme, 1.0);
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
@@ -99,7 +100,7 @@ fn draw_chip(
         label,
         size,
         theme.text_primary,
-        Affine::translate((x + CHIP_PAD, y + (CHIP_H - f64::from(size) * 1.3) / 2.0)),
+        Affine::translate((x + CHIP_PAD, y + (CHIP_H - f64::from(th)) / 2.0)),
         None,
     );
 }

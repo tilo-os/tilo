@@ -437,7 +437,13 @@ fn draw_lock_widget(
         );
     }
 
-    let panel = RoundedRect::from_rect(layout.panel, 24.0 * layout.scale);
+    // Panel role (HIG §9.1): the credential card's corner is the Panel
+    // radius token (24) scaled with the rest of the lock chrome, and its
+    // edge is the derived Panel border rather than a declared colour.
+    let panel = RoundedRect::from_rect(
+        layout.panel,
+        f64::from(theme.tokens.radii.xl) * layout.scale,
+    );
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
@@ -448,7 +454,7 @@ fn draw_lock_widget(
     scene.stroke(
         &Stroke::new((1.0 * layout.scale).max(1.0)),
         Affine::IDENTITY,
-        theme.border_standard,
+        ui::chrome::shell::panel_border(theme),
         None,
         &panel,
     );
