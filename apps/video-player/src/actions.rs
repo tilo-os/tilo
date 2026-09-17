@@ -15,6 +15,16 @@ pub const OPERATION_TYPE: &str = "video-player.operation";
 /// a host resolve a specific omitted item on demand.
 pub const CONTEXTUAL_CHILD_LIMIT: usize = 32;
 
+/// The player library is a device-local presentation. Its explicit navigation
+/// operations are safe to repeat after a delayed host response; they neither
+/// replay a document mutation nor touch a decoder, portal, or external device.
+fn local_presentation_contract() -> ActionContract {
+    ActionContract {
+        tags: vec!["device-local".into(), "media".into(), "presentation".into()],
+        ..ActionContract::view()
+    }
+}
+
 /// Register every durable document action published by Video Player.
 pub fn register(registry: &mut ActionRegistry) {
     crate::shared::register(registry);
@@ -37,7 +47,11 @@ pub enum PlayerOperation {
     ClearRecentHistory,
     /// Reveal the device-local queue and recent-history panel.
     RevealLibrary,
+    /// Reveal the recent-history view of the device-local library.
+    RevealRecentLibrary,
     RevealSharedLibrary,
+    /// Close the app-owned library panel without changing media state.
+    HideLibrary,
     Close,
     TogglePlayback,
     ToggleMute,
@@ -801,6 +815,10 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource>
         tags: vec!["device-local".into(), "media".into()],
         ..ActionContract::default()
     };
+    // Presentational navigation has no hardware, file-system or document
+    // effect. It is safe—and useful—to retry it after a delayed host response,
+    // unlike queue/history mutation which remains at-most-once above.
+    let local_presentation_contract = local_presentation_contract();
     let mut queue = Resource::new(
         "video-player.queue.local",
         "media.queue",
@@ -915,7 +933,34 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource>
         OPERATION_TYPE,
         &PlayerOperation::RevealLibrary,
     ) {
-        app = app.with_action(reveal_library.with_contract(local_library_contract));
+        app = app.with_action(reveal_library.with_contract(local_presentation_contract.clone()));
+    }
+    if let Ok(hide_library) = ActionSpec::operation(
+        "hide-library",
+        "Close library",
+        OperationKind::View,
+        OPERATION_TYPE,
+        &PlayerOperation::HideLibrary,
+    ) {
+        app = app.with_action(hide_library.with_contract(local_presentation_contract.clone()));
+    }
+    if let Ok(show_queue) = ActionSpec::operation(
+        "show",
+        "Show queue",
+        OperationKind::View,
+        OPERATION_TYPE,
+        &PlayerOperation::RevealLibrary,
+    ) {
+        queue = queue.with_action(show_queue.with_contract(local_presentation_contract.clone()));
+    }
+    if let Ok(show_recent) = ActionSpec::operation(
+        "show",
+        "Show recent videos",
+        OperationKind::View,
+        OPERATION_TYPE,
+        &PlayerOperation::RevealRecentLibrary,
+    ) {
+        recent = recent.with_action(show_recent.with_contract(local_presentation_contract));
     }
     let shared = shared_resources(doc, CONTEXTUAL_CHILD_LIMIT);
     app = app
@@ -944,6 +989,17 @@ fn shared_resources(doc: &AutoCommit, limit: usize) -> Resource {
         "media.playlists",
         format!("Shared playlists · {}", state.playlists.len()),
     );
+    if let Ok(show) = ActionSpec::operation(
+        "show",
+        "Show shared library",
+        OperationKind::View,
+        OPERATION_TYPE,
+        &PlayerOperation::RevealSharedLibrary,
+    ) {
+        playlists
+            .actions
+            .push(show.with_contract(local_presentation_contract()));
+    }
     playlists.actions.push(
         ActionSpec::typed(
             "create",
@@ -1615,7 +1671,17 @@ mod tests {
             .unwrap();
         let playlists = &shared.children[0];
         assert_eq!(playlists.children.len(), CONTEXTUAL_CHILD_LIMIT);
-        assert_eq!(playlists.actions[0].kind, OperationKind::Document);
+        assert!(
+            playlists
+                .actions
+                .iter()
+                .any(|action| { action.id == "create" && action.kind == OperationKind::Document })
+        );
+        assert!(playlists.actions.iter().any(|action| {
+            action.id == "show"
+                && action.kind == OperationKind::View
+                && action.contract.retry == RetryPolicy::Idempotent
+        }));
         let late_id = playlist_resource_id(&format!("p-{}", CONTEXTUAL_CHILD_LIMIT + 1));
         let late = resource(&ctx(false), &doc, &late_id).expect("lazy shared playlist");
         assert_eq!(late.id.0, late_id);
