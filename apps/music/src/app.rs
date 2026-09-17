@@ -4209,10 +4209,7 @@ impl MusicApp {
             Action::ToggleLike(track),
         );
 
-        let p = self.clamp_menu_origin(self.mouse);
-        self.context.open_at([p.x as f32, p.y as f32]);
-        self.layout_context_menu();
-        self.dirty = true;
+        self.open_context_menu_at_pointer();
     }
 
     /// Build + open the "Add to playlist…" secondary picker.
@@ -4245,38 +4242,21 @@ impl MusicApp {
             );
         }
 
-        let p = self.clamp_menu_origin(self.mouse);
-        self.context.open_at([p.x as f32, p.y as f32]);
-        self.layout_context_menu();
+        self.open_context_menu_at_pointer();
+    }
+
+    /// Open the populated context menu at the pointer, bounded by the app rect.
+    ///
+    /// `ContextMenu::open_anchored` owns the geometry: it measures its rows with
+    /// the frame's renderer and theme when it paints, flips above the anchor
+    /// when there is no room below, and clamps to the viewport. The previous
+    /// hand-rolled nudge guessed `220 × (rows·28 + 24)` and laid the menu out
+    /// against `Theme::dark()` regardless of the live theme, so its hit rows
+    /// could disagree with the painted ones at any other density or scale.
+    fn open_context_menu_at_pointer(&mut self) {
+        let anchor = Rect::from_origin_size(self.mouse, (0.0, 0.0));
+        self.context.open_anchored(anchor, self.rect);
         self.dirty = true;
-    }
-
-    /// Nudge a menu anchor so the menu stays within the app rect. The menu is
-    /// `MENU_WIDTH` (220) wide; height grows with the item count.
-    fn clamp_menu_origin(&self, p: Point) -> Point {
-        let menu_w = 220.0;
-        let rows = self.menu_actions.len() as f64;
-        let menu_h = rows * 28.0 + 24.0;
-        let x = p.x.min(self.rect.x1 - menu_w - 8.0).max(self.rect.x0 + 8.0);
-        let y = p.y.min(self.rect.y1 - menu_h - 8.0).max(self.rect.y0 + 8.0);
-        Point::new(x, y)
-    }
-
-    /// Run the context menu's own layout pass against a throwaway taffy tree
-    /// so its `rect` (and row geometry) are populated for hit-testing + draw.
-    fn layout_context_menu(&mut self) {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let theme = Theme::dark();
-        let node = self.context.build_layout(&mut taffy, &theme, &mut node_map);
-        let _ = taffy.compute_layout(
-            node,
-            Size {
-                width: taffy::AvailableSpace::Definite(240.0),
-                height: taffy::AvailableSpace::MaxContent,
-            },
-        );
-        self.context.apply_layout(&taffy, node, Point::ZERO);
     }
 
     /// Drain a context-menu selection (set by a row callback) and dispatch the
@@ -4812,6 +4792,51 @@ mod tests {
         app.ensure_seeded(&mut doc);
         app.reload(&mut doc);
         (app, doc)
+    }
+
+    /// 2026-09-16 alignment review: the track context menu used a hand-rolled
+    /// "nudge to stay in the app rect" that guessed the menu as 220 × (rows·28
+    /// + 24) and laid it out against `Theme::dark()`. It now opens through the
+    /// shared `ContextMenu::open_anchored`, whose geometry is measured with the
+    /// frame's renderer and theme and clamped to the viewport — including when
+    /// the pointer is in the bottom-right corner.
+    #[test]
+    fn track_context_menu_stays_inside_the_app_rect_from_every_corner() {
+        let (mut app, _doc) = app_with_doc();
+        app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
+        // A track from the bundled sample library (see
+        // `open_track_menu_lists_expected_actions`).
+        let track = String::from("tk_g2");
+        assert!(
+            app.lib.tracks.contains_key(&track),
+            "sample library has tk_g2"
+        );
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        for pointer in [
+            Point::new(4.0, 4.0),
+            Point::new(896.0, 4.0),
+            Point::new(4.0, 596.0),
+            Point::new(896.0, 596.0),
+        ] {
+            app.mouse = pointer;
+            app.open_track_menu(track.clone(), None, None);
+            assert!(app.context.is_open(), "menu opens at {pointer:?}");
+            // Settle text metrics the way the paint pass does.
+            app.context.layout_within(&mut tr, &theme);
+            let menu = app.context.get_rect();
+            assert!(
+                menu.width() > 0.0 && menu.height() > 0.0,
+                "menu has measured geometry at {pointer:?}: {menu:?}"
+            );
+            assert!(
+                app.rect.contains(menu.origin())
+                    && app.rect.contains(Point::new(menu.x1 - 0.5, menu.y1 - 0.5)),
+                "menu {menu:?} stays inside {:?} for pointer {pointer:?}",
+                app.rect
+            );
+            app.context.close();
+        }
     }
 
     #[test]
