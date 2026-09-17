@@ -87,6 +87,7 @@ mod quick_settings_root;
 mod quick_settings_vpn;
 mod quick_settings_wifi;
 pub mod realtime_session;
+pub mod remote_audio;
 pub mod remote_cursors;
 pub mod render;
 pub mod room_activity;
