@@ -285,10 +285,7 @@ pub fn dynamic_launcher_records() -> Vec<DynamicLauncherRecord> {
                 editable_icon: false,
                 icon_kind: record.icon_kind.clone(),
                 icon_bytes: record.icon_bytes.clone(),
-            }) && record
-                .icon_bytes
-                .as_deref()
-                .is_none_or(crate::portal::dynamic_launcher::valid_icon_payload)
+            }) && record.icon_bytes.as_deref().is_none_or(valid_icon_payload)
         })
         .collect()
 }
@@ -719,9 +716,7 @@ impl SettingsServiceHandle {
         }
     }
 
-    pub(crate) fn subscribe(
-        &self,
-    ) -> tokio::sync::broadcast::Receiver<(String, String, PortalSetting)> {
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<(String, String, PortalSetting)> {
         self.0.changes.subscribe()
     }
 }
@@ -1393,7 +1388,7 @@ mod tests {
         let uri = format!("file://{}", exported.display()).replace(' ', "%20");
         assert_eq!(
             document_portal_path_from_uri_at(&uri, root.path()).unwrap(),
-            exported
+            exported.canonicalize().unwrap()
         );
         assert!(document_portal_path_from_uri_at("file:///etc/passwd", root.path()).is_err());
         assert!(document_portal_path_from_uri_at("file://remote/path", root.path()).is_err());
@@ -1444,4 +1439,75 @@ mod tests {
             assert!(normalized.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]));
         }
     }
+}
+
+fn jpeg_dimensions(bytes: &[u8]) -> Option<(u16, u16)> {
+    if !bytes.starts_with(&[0xff, 0xd8]) {
+        return None;
+    }
+    let mut index: usize = 2;
+    while index.saturating_add(9) <= bytes.len() {
+        if bytes[index] != 0xff {
+            return None;
+        }
+        while bytes.get(index) == Some(&0xff) {
+            index += 1;
+        }
+        let marker = *bytes.get(index)?;
+        index += 1;
+        if marker == 0xd9 || marker == 0xda {
+            return None;
+        }
+        let length = usize::from(u16::from_be_bytes([
+            *bytes.get(index)?,
+            *bytes.get(index + 1)?,
+        ]));
+        if length < 7 || index.saturating_add(length) > bytes.len() {
+            return None;
+        }
+        if matches!(marker, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf) {
+            return Some((
+                u16::from_be_bytes([bytes[index + 5], bytes[index + 6]]),
+                u16::from_be_bytes([bytes[index + 3], bytes[index + 4]]),
+            ));
+        }
+        index += length;
+    }
+    None
+}
+pub(crate) fn valid_icon_payload(bytes: &[u8]) -> bool {
+    if bytes.is_empty() || bytes.len() > 2 * 1024 * 1024 {
+        return false;
+    }
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
+        let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+        return (1..=512).contains(&width) && (1..=512).contains(&height);
+    }
+    if let Some((width, height)) = jpeg_dimensions(&bytes) {
+        return (1..=512).contains(&u32::from(width)) && (1..=512).contains(&u32::from(height));
+    }
+    if bytes.len() > 256 * 1024 {
+        return false;
+    }
+    let Ok(svg) = std::str::from_utf8(&bytes) else {
+        return false;
+    };
+    let lower = svg.to_ascii_lowercase();
+    lower.trim_start().starts_with("<svg")
+        && ![
+            "<script",
+            "<foreignobject",
+            "href=\"http:",
+            "href='http:",
+            "href=\"file:",
+            "href='file:",
+            "href=\"data:",
+            "href='data:",
+            "url(http",
+            "url(file",
+            "url(data",
+        ]
+        .iter()
+        .any(|forbidden| lower.contains(forbidden))
 }

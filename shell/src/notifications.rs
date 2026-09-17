@@ -25,21 +25,32 @@
               lint fires on macro-generated code a per-function #[allow] cannot reach"
 )]
 
+#[cfg(target_os = "linux")]
+use crate::priority_contacts::ContactProjection;
+#[cfg(target_os = "linux")]
+use crate::priority_contacts::PriorityContactRegistry;
 use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(target_os = "linux")]
+use zbus::interface;
+#[cfg(target_os = "linux")]
+use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
+use zbus::object_server::SignalContext;
+
+#[cfg(any(test, target_os = "linux"))]
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use zbus::interface;
-use zbus::names::OwnedUniqueName;
-use zbus::object_server::SignalContext;
+#[cfg(any(test, target_os = "linux"))]
 use zbus::zvariant::OwnedValue;
 
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
-use crate::portal::{CallerMap, PortalCaller};
-use crate::priority_contacts::{ContactProjection, PriorityContactRegistry};
+#[cfg(target_os = "linux")]
+use crate::portal::CallerMap;
+use crate::portal::PortalCaller;
 
 /// Bus name the freedesktop notification spec reserves for the
 /// notification daemon; owning it makes the compositor the system notification server.
@@ -826,6 +837,7 @@ fn evict_oldest_remote_if_full(inner: &mut BridgeInner) {
 }
 
 /// Parse the `urgency` hint (a `y`/byte); defaults to `1` (normal) when absent or the wrong type — never refuse a notification over a bad hint.
+#[cfg(any(test, target_os = "linux"))]
 fn parse_urgency(hints: &HashMap<String, OwnedValue>) -> u8 {
     hints
         .get("urgency")
@@ -834,6 +846,7 @@ fn parse_urgency(hints: &HashMap<String, OwnedValue>) -> u8 {
         .unwrap_or(1)
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn parse_badge_count(hints: &HashMap<String, OwnedValue>) -> Option<u32> {
     hints
         .get("x-tilo-badge-count")
@@ -842,6 +855,7 @@ fn parse_badge_count(hints: &HashMap<String, OwnedValue>) -> Option<u32> {
         .map(|value| value.min(9_999))
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn parse_contact_endpoint(hints: &HashMap<String, OwnedValue>) -> Option<String> {
     let value = hints
         .get("x-tilo-contact-handle")?
@@ -868,6 +882,7 @@ fn parse_notification_sharing(hints: &HashMap<String, OwnedValue>) -> Notificati
 }
 
 /// Un-flatten the spec's `[key1, label1, key2, label2, …]` actions array into `(key, label)` pairs, dropping a dangling trailing key.
+#[cfg(any(test, target_os = "linux"))]
 fn pair_actions(actions: &[String]) -> Vec<(String, String)> {
     actions
         .chunks_exact(2)
@@ -882,6 +897,7 @@ fn pair_actions(actions: &[String]) -> Vec<(String, String)> {
 
 /// The `org.freedesktop.Notifications` D-Bus interface. One instance per
 /// [`serve_notifications`] call, held by the zbus `ObjectServer` for the connection's life.
+#[cfg(target_os = "linux")]
 pub struct NotificationService {
     bridge: NotificationBridge,
     callers: CallerMap,
@@ -889,6 +905,7 @@ pub struct NotificationService {
     priority_contacts: PriorityContactRegistry,
 }
 
+#[cfg(target_os = "linux")]
 impl NotificationService {
     pub fn new(bridge: NotificationBridge, callers: CallerMap) -> Self {
         Self {
@@ -973,11 +990,13 @@ impl NotificationService {
 /// only. Flatpak provides two independent pieces of immutable runtime
 /// metadata — its per-process `.flatpak-info` and systemd cgroup — which are
 /// checked against an installed desktop entry before a per-app rule is used.
+#[cfg(target_os = "linux")]
 fn verified_foreign_notification_identity(pid: u32) -> Option<String> {
     let entries = &desktop_entry::cache::cached_scan().entries;
     verified_foreign_notification_identity_from(Path::new("/proc"), pid, entries)
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn verified_foreign_notification_identity_from(
     proc_root: &Path,
     pid: u32,
@@ -1000,11 +1019,13 @@ fn verified_foreign_notification_identity_from(
         .then_some(app_id)
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn read_bounded(path: &Path, max_bytes: u64) -> Option<String> {
     let metadata = std::fs::metadata(path).ok()?;
     (metadata.len() <= max_bytes).then(|| std::fs::read_to_string(path).ok())?
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn valid_notification_app_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 160
@@ -1013,6 +1034,7 @@ fn valid_notification_app_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn flatpak_application_id(info_path: &Path) -> Option<String> {
     let info = read_bounded(info_path, 16 * 1024)?;
     let mut application_section = false;
@@ -1034,6 +1056,7 @@ fn flatpak_application_id(info_path: &Path) -> Option<String> {
     clippy::case_sensitive_file_extension_comparisons,
     reason = "Systemd scope unit names use the literal lowercase `.scope` suffix; accepting a differently cased unit would not identify a Flatpak application scope."
 )]
+#[cfg(any(test, target_os = "linux"))]
 fn flatpak_cgroup_matches(cgroup: &str, app_id: &str) -> bool {
     let raw_prefix = format!("app-flatpak-{app_id}");
     let escaped_prefix = format!("app-flatpak-{}", systemd_escape(app_id));
@@ -1054,6 +1077,7 @@ fn flatpak_cgroup_matches(cgroup: &str, app_id: &str) -> bool {
     })
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn systemd_escape(value: &str) -> String {
     value.bytes().fold(String::new(), |mut out, byte| {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_') {
@@ -1073,6 +1097,7 @@ fn systemd_escape(value: &str) -> String {
 }
 
 #[interface(name = "org.freedesktop.Notifications")]
+#[cfg(target_os = "linux")]
 impl NotificationService {
     /// `Notify` — the core method. Queues a toast and returns its id.
     ///
@@ -1209,10 +1234,12 @@ impl NotificationService {
 }
 
 /// RAII handle keeping the notification D-Bus connection alive; dropping it releases the bus name and tears down the object server.
+#[cfg(target_os = "linux")]
 pub struct ServerHandle {
     connection: zbus::Connection,
 }
 
+#[cfg(target_os = "linux")]
 impl ServerHandle {
     pub fn connection(&self) -> &zbus::Connection {
         &self.connection
@@ -1230,6 +1257,7 @@ impl ServerHandle {
 /// Returns an error if registering [`NotificationService`] at
 /// [`OBJECT_PATH`] fails. A failed [`BUS_NAME`] request is logged, not
 /// propagated.
+#[cfg(target_os = "linux")]
 pub async fn serve_notifications(
     connection: zbus::Connection,
     service: NotificationService,
@@ -1243,6 +1271,7 @@ pub async fn serve_notifications(
 
 /// Spawn the reverse-direction signal pump: a tokio task draining the
 /// bridge's closed/action queues into D-Bus signals; must run inside a tokio runtime, lives until the connection drops.
+#[cfg(target_os = "linux")]
 pub fn spawn_signal_emitter(
     connection: zbus::Connection,
     bridge: NotificationBridge,
@@ -1271,6 +1300,7 @@ pub fn spawn_signal_emitter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use crate::shell::state::WorkspaceId;
 
     fn flatpak_entries(root: &Path, app_id: &str) -> Vec<desktop_entry::DesktopEntry> {
@@ -1751,8 +1781,10 @@ mod tests {
     // `tests/portal_test.rs`'s hermetic fixture: a `UnixStream::pair()`
     // carries a server and a raw-proxy client — no real session bus or broker needed.
 
+    #[cfg(target_os = "linux")]
     const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
 
+    #[cfg(target_os = "linux")]
     async fn bring_up_pair(
         bridge: NotificationBridge,
         callers: CallerMap,
@@ -1775,6 +1807,7 @@ mod tests {
         (server_conn, client_conn)
     }
 
+    #[cfg(target_os = "linux")]
     async fn notifications_proxy(client: &zbus::Connection) -> zbus::Proxy<'_> {
         zbus::proxy::Builder::<zbus::Proxy<'_>>::new(client)
             .destination(BUS_NAME)
@@ -1789,6 +1822,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(target_os = "linux")]
     async fn notify_round_trips_with_caller_attribution() {
         let bridge = NotificationBridge::new();
         let callers = CallerMap::new();
@@ -1846,6 +1880,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(target_os = "linux")]
     async fn replaces_id_is_preserved() {
         let bridge = NotificationBridge::new();
         let (_server, client) = bring_up_pair(bridge.clone(), CallerMap::new()).await;
@@ -1870,6 +1905,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(target_os = "linux")]
     async fn close_notification_enqueues_close_request() {
         let bridge = NotificationBridge::new();
         let (_server, client) = bring_up_pair(bridge.clone(), CallerMap::new()).await;
@@ -1883,6 +1919,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(target_os = "linux")]
     async fn get_capabilities_and_server_information() {
         let bridge = NotificationBridge::new();
         let (_server, client) = bring_up_pair(bridge, CallerMap::new()).await;

@@ -44,6 +44,16 @@ fn lexical_strength(needle: &str, result: &SearchResult) -> f32 {
         return 0.0;
     }
     let title = result.title.to_lowercase();
+    // Application providers decorate the app name with the launch verb.
+    // Compare its name on the same basis as a file or note title.
+    let title = if matches!(
+        result.kind,
+        ResourceKind::Application | ResourceKind::HostApplication
+    ) {
+        title.strip_prefix("open ").unwrap_or(&title)
+    } else {
+        &title
+    };
     if title == needle {
         return 4.0;
     }
@@ -1251,7 +1261,7 @@ mod tests {
                     ResourceKind::Application,
                     "applications",
                     "dev.tilo.app",
-                    "The App",
+                    needle,
                     100,
                 )],
                 max_score: None,

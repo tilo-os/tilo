@@ -12,9 +12,9 @@ use thiserror::Error;
 use crate::canonical::{CanonicalError, signing_digest};
 
 /// Signing-domain tag for `DeviceCert`. Frozen wire ABI:
-/// `tilo-devcert-v1` + NUL. Any change breaks in-field
+/// `qos-devcert-v1` + NUL. Any change breaks in-field
 /// certificates.
-pub const DEVCERT_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v1\0";
+pub const DEVCERT_PREIMAGE_TAG: &[u8] = b"qos-devcert-v1\0";
 
 /// What a device may do on behalf of its user.
 ///

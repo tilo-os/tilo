@@ -68,12 +68,13 @@ impl StatusModel {
             SaveStatus::Saved => "Saved",
             SaveStatus::Saving => "Saving…",
             SaveStatus::Failed => "Save failed",
+            SaveStatus::SessionOnly => "Session only",
         }
     }
 
     pub fn save_color(&self, theme: &Theme) -> Color {
         match self.state.save_status {
-            SaveStatus::Saved => theme.tokens.colors.text_dim,
+            SaveStatus::Saved | SaveStatus::SessionOnly => theme.tokens.colors.text_dim,
             SaveStatus::Saving => theme.accent_primary,
             SaveStatus::Failed => theme.tokens.colors.semantic.danger,
         }

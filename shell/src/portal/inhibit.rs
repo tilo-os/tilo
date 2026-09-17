@@ -5,11 +5,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tilo_power_mgmt::{InhibitRegistry, InhibitToken};
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
 use zbus::zvariant::{ObjectPath, OwnedValue};
 
-use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+use super::lifecycle::PortalLifecycle;
+#[cfg(target_os = "linux")]
+use super::lifecycle::{LifecycleEntry, LifecycleResource};
+#[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call};
 
 /// Portal inhibit flags.
@@ -32,21 +38,45 @@ pub fn publish_screensaver_state(active: bool) {
 }
 
 #[derive(Clone, Default)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+    )
+)]
 pub struct InhibitMonitorHandle(Arc<Mutex<HashSet<String>>>);
 
 pub struct InhibitBackend {
+    #[cfg(target_os = "linux")]
     ctx: PortalContext,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     registry: InhibitRegistry,
     holds: Arc<Mutex<HashMap<String, InhibitToken>>>,
     monitors: InhibitMonitorHandle,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     lifecycle: PortalLifecycle,
 }
 impl InhibitBackend {
+    #[cfg(target_os = "linux")]
     pub fn new(ctx: PortalContext, registry: InhibitRegistry) -> Self {
         Self::with_lifecycle(ctx, registry, PortalLifecycle::new())
     }
+    #[cfg(target_os = "linux")]
     pub fn with_lifecycle(
-        ctx: PortalContext,
+        #[cfg(target_os = "linux")] ctx: PortalContext,
         registry: InhibitRegistry,
         lifecycle: PortalLifecycle,
     ) -> Self {
@@ -75,6 +105,7 @@ impl InhibitBackend {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[interface(name = "org.freedesktop.impl.portal.Inhibit")]
 impl InhibitBackend {
     /// The request path owns the RAII token.  Closing that request (or the
@@ -213,6 +244,7 @@ impl InhibitBackend {
     ) -> zbus::Result<()>;
 }
 
+#[cfg(target_os = "linux")]
 pub fn spawn_state_emitter(connection: zbus::Connection, monitors: InhibitMonitorHandle) {
     let task_connection = connection.clone();
     connection
@@ -257,12 +289,14 @@ pub fn spawn_state_emitter(connection: zbus::Connection, monitors: InhibitMonito
         )
         .detach();
 }
+#[cfg(target_os = "linux")]
 fn valid_reason(value: &str) -> bool {
     !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     fn context() -> PortalContext {
         let (grants, _) = crate::portal::GrantStoreHandle::test_with_workspace(
             crate::shell::state::Workspace::test_default(
@@ -279,7 +313,14 @@ mod tests {
     #[test]
     fn handle_close_releases_real_registry_hold() {
         let registry = InhibitRegistry::new();
-        let backend = InhibitBackend::new(context(), registry.clone());
+        let backend = InhibitBackend {
+            #[cfg(target_os = "linux")]
+            ctx: context(),
+            registry: registry.clone(),
+            holds: Arc::new(Mutex::new(HashMap::new())),
+            monitors: InhibitMonitorHandle::default(),
+            lifecycle: PortalLifecycle::new(),
+        };
         backend.holds.lock().unwrap().insert(
             "/org/freedesktop/portal/desktop/request/x".into(),
             registry.acquire("test"),

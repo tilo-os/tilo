@@ -49,6 +49,8 @@ pub fn run_with_options(enable_peer_sync: bool) {
     reason = "hosted session startup deliberately keeps the ordered ownership, networking, portal, identity-broker, and event-loop lifetimes visible in one orchestration path"
 )]
 pub fn run_with_full_options(opts: HostedOptions) {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     let HostedOptions {
         enable_peer_sync,
         enable_portals,
@@ -183,7 +185,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
     }
     let root: Box<dyn Widget> = Box::new(host) as Box<dyn Widget>;
     tilo_startup_metrics::mark("hosted-app-new-start");
-    let mut app = App::new(state, root);
+    let mut app = App::from_scoped_parts(wake_scope, state, root);
     tilo_startup_metrics::mark("hosted-app-new-done");
     // Seed per-tab presence from the tree's collaborator roster so tab-pill presence dots render
     // on first draw; network-driven updates later rewrite the same keys via the collab pump, so this doesn't conflict with live peer attribution.

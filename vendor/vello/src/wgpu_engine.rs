@@ -2183,6 +2183,36 @@ impl WgpuEngine {
     where
         F: FnOnce(&mut CommandEncoder),
     {
+        self.run_recording_with_post_render_checked(
+            device,
+            queue,
+            recording,
+            external_resources,
+            label,
+            post_render,
+            || true,
+            #[cfg(feature = "wgpu-profiler")]
+            profiler,
+        )
+    }
+
+    /// The gate runs after encoding, immediately before command-buffer submission.
+    /// Rejection leaves encoded resources unusable: the owning renderer must be dropped.
+    pub fn run_recording_with_post_render_checked<F, G>(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        recording: &Recording,
+        external_resources: &[ExternalResource<'_>],
+        label: &'static str,
+        post_render: F,
+        before_submit: G,
+        #[cfg(feature = "wgpu-profiler")] profiler: &mut wgpu_profiler::GpuProfiler,
+    ) -> Result<()>
+    where
+        F: FnOnce(&mut CommandEncoder),
+        G: FnOnce() -> bool,
+    {
         let cpu_pathtag_reuse_active = self.cpu_pathtag_reuse_active();
         let cpu_metadata_active = self.cpu_metadata_active();
         let cpu_draw_prefix_active = self.cpu_draw_prefix_active();
@@ -2652,7 +2682,17 @@ impl WgpuEngine {
         let dispatch_timestamp_readback =
             self.gpu_dispatch_timestamps.finish_recording(&mut encoder);
         post_render(&mut encoder);
-        queue.submit(Some(encoder.finish()));
+        let command_buffer = encoder.finish();
+        if !before_submit() {
+            // begin_recording assigned diagnostic identities before encoding. They do not
+            // name submissions when this gate rejects the command buffer. The renderer is
+            // reconstruct-only after abort, so discard both trackers (including older maps)
+            // rather than exposing an identity/sample from an unusable recording.
+            self.gpu_timestamps = GpuTimestampTracker::Disabled;
+            self.gpu_dispatch_timestamps = GpuDispatchTimestampTracker::Disabled;
+            return Err(Error::SubmissionAborted);
+        }
+        queue.submit(Some(command_buffer));
         if timestamp_readback {
             self.gpu_timestamps.map_after_submit();
         }

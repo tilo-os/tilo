@@ -671,6 +671,7 @@ impl<M: ListModel> VirtualList<M> {
             .collect::<HashMap<_, _>>();
         let mut seen = HashSet::new();
         let mut mounted = Vec::with_capacity(range.len());
+        let mut replaced = false;
         for index in range {
             let Some(key) = self.model.key_at(index) else {
                 continue;
@@ -683,23 +684,25 @@ impl<M: ListModel> VirtualList<M> {
             let mut row = old
                 .remove(&key)
                 .filter(|row| row.state == mounted_state)
-                .unwrap_or_else(|| MountedRow {
-                    widget: (self.row_builder)(&self.model, index, &key, state),
-                    key: key.clone(),
-                    index,
-                    state: mounted_state,
-                    node: None,
+                .unwrap_or_else(|| {
+                    replaced = true;
+                    MountedRow {
+                        widget: (self.row_builder)(&self.model, index, &key, state),
+                        key: key.clone(),
+                        index,
+                        state: mounted_state,
+                        node: None,
+                    }
                 });
             row.widget.set_interaction_environment(interaction);
             row.index = index;
-            row.node = None;
             mounted.push(row);
         }
         let next_keys = mounted
             .iter()
             .map(|row| row.key.clone())
             .collect::<Vec<_>>();
-        if old_keys != next_keys {
+        if replaced || old_keys != next_keys {
             self.structure_dirty = true;
         }
         self.mounted = mounted;
@@ -1947,6 +1950,40 @@ mod tests {
             taffy,
         );
         handled
+    }
+
+    #[test]
+    fn sync_retains_built_row_nodes_and_invalidates_same_key_replacements() {
+        let states = Rc::new(RefCell::new(HashMap::new()));
+        let model = PagedList {
+            count: 1,
+            states: states.clone(),
+            requests: Rc::default(),
+            changed: Rc::default(),
+            pending: Rc::default(),
+        };
+        let mut list = VirtualList::new(model, 24.0, |_, _, key| {
+            Box::new(crate::widget::Button::new(&key.to_string(), "Row", None))
+        })
+        .with_viewport_height(48.0);
+        let _ = lay_out(&mut list, 300.0);
+        list.take_structure_dirty();
+        let before = list.mounted[0].node;
+        assert!(before.is_some());
+        let mut doc = AutoCommit::new();
+        list.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            list.mounted[0].node, before,
+            "sync preserves a retained row's layout node"
+        );
+        list.take_structure_dirty();
+        states.borrow_mut().insert(0, 1);
+        list.sync(&mut doc, &automerge::ROOT);
+        assert!(list.mounted[0].node.is_none());
+        assert!(
+            list.take_structure_dirty(),
+            "same key with new state replaces a delegate and invalidates topology"
+        );
     }
 
     #[test]

@@ -252,7 +252,11 @@ enum TourPage {
 // particular, Super+W closes a tab and must never be advertised as Overview.
 const NAVIGATE_CARDS: &[(&str, &str)] = &[
     (
-        "Search  ·  Super+K or Super+Space",
+        if cfg!(target_os = "macos") {
+            "Search  ·  Command+K or Option+Space"
+        } else {
+            "Search  ·  Super+K or Super+Space"
+        },
         "Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.",
     ),
     (
@@ -3371,8 +3375,13 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
 
-        assert!(navigation.contains("Super+K"));
-        assert!(navigation.contains("Super+Space"));
+        if cfg!(target_os = "macos") {
+            assert!(navigation.contains("Command+K"));
+            assert!(navigation.contains("Option+Space"));
+        } else {
+            assert!(navigation.contains("Super+K"));
+            assert!(navigation.contains("Super+Space"));
+        }
         assert!(navigation.contains("Start here, Everyday, Work, Media, and System tools"));
         assert!(navigation.contains("Super+Tab"));
         assert!(navigation.contains("four-finger swipe"));

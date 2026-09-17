@@ -1,7 +1,7 @@
 //! `Section` — an intrinsic vertical stack with reliable, explicit spacing.
 //!
-//! Taffy's intrinsic block layout ignores flex/grid `gap`, so `Section` inserts
-//! spacer widgets between its children while retaining `Column` traversal,
+//! `Section` owns its spacing through explicit spacer widgets, independently
+//! of the underlying layout mode, while retaining `Column` traversal,
 //! focus, accessibility, actions, and document sync.
 
 use std::collections::HashMap;
@@ -35,7 +35,10 @@ impl Section {
     pub fn with_gap(items: Vec<Element>, gap: f32) -> Self {
         let gap = gap.max(0.0);
         let last = items.len().saturating_sub(1);
-        let mut column = Column::new().with_no_padding().with_intrinsic_height();
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(0.0);
         for (index, item) in items.into_iter().enumerate() {
             column = column.push(item);
             if index != last && gap > 0.0 {
