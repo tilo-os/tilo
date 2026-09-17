@@ -1010,6 +1010,51 @@ fn image_crop(b: &BlockView) -> (f64, f64, f64, f64) {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct ImagePaintOptions {
+    flip_horizontal: bool,
+    flip_vertical: bool,
+    crop: (f64, f64, f64, f64),
+}
+
+fn image_paint_options(block: Option<&BlockView>) -> ImagePaintOptions {
+    block.map_or_else(ImagePaintOptions::default, |block| ImagePaintOptions {
+        flip_horizontal: matches!(block.attrs.get("flip_h"), Some(AttrVal::Bool(true))),
+        flip_vertical: matches!(block.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
+        crop: image_crop(block),
+    })
+}
+
+fn image_paint_transform(base: Affine, rect: Rect, options: ImagePaintOptions) -> Affine {
+    if !options.flip_horizontal && !options.flip_vertical {
+        return base;
+    }
+    let cx = f64::midpoint(rect.x0, rect.x1);
+    let cy = f64::midpoint(rect.y0, rect.y1);
+    base * Affine::translate((cx, cy))
+        * Affine::scale_non_uniform(
+            if options.flip_horizontal { -1.0 } else { 1.0 },
+            if options.flip_vertical { -1.0 } else { 1.0 },
+        )
+        * Affine::translate((-cx, -cy))
+}
+
+fn cropped_image_source(rect: Rect, crop: (f64, f64, f64, f64)) -> Rect {
+    let (left, top, right, bottom) = crop;
+    let visible_w = (1.0 - left - right).max(0.05);
+    let visible_h = (1.0 - top - bottom).max(0.05);
+    Rect::new(
+        rect.x0 - rect.width() * left / visible_w,
+        rect.y0 - rect.height() * top / visible_h,
+        rect.x0 + rect.width() * (1.0 - left) / visible_w,
+        rect.y0 + rect.height() * (1.0 - top) / visible_h,
+    )
+}
+
+fn image_crop_is_active(crop: (f64, f64, f64, f64)) -> bool {
+    crop != (0.0, 0.0, 0.0, 0.0)
+}
+
 /// A page-relative free object's persisted position. The `Option` separates
 /// legacy/imported page anchors (which retain their old flow placement) from a
 /// user-positioned object, even when that user deliberately places it at 0,0.
@@ -7596,10 +7641,6 @@ impl WordProcessorWidget {
     /// One pass-2 image item: paint it (mirrored per `flip_h`/`flip_v`, or a
     /// placeholder if undecoded), then ring it with the selection chrome when
     /// it's the caret's block.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one image paint path keeps crop, flip, fallback, and selection chrome geometrically consistent"
-    )]
     fn draw_laid_image(
         &mut self,
         scene: &mut Scene,
@@ -7611,46 +7652,17 @@ impl WordProcessorWidget {
         // Mirror flips (`flip_h` / `flip_v` block attrs) are applied as a
         // scale-about-centre on the paint transform, so the image draws
         // mirrored in place without moving its slot.
-        let (fh, fv, crop) = self.blocks.iter().find(|b| b.id == l.id).map_or(
-            (false, false, (0.0, 0.0, 0.0, 0.0)),
-            |b| {
-                (
-                    matches!(b.attrs.get("flip_h"), Some(AttrVal::Bool(true))),
-                    matches!(b.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
-                    image_crop(b),
-                )
-            },
-        );
-        let itf = if fh || fv {
-            let cx = f64::midpoint(rect.x0, rect.x1);
-            let cy = f64::midpoint(rect.y0, rect.y1);
-            fg.ctf
-                * Affine::translate((cx, cy))
-                * Affine::scale_non_uniform(
-                    if fh { -1.0 } else { 1.0 },
-                    if fv { -1.0 } else { 1.0 },
-                )
-                * Affine::translate((-cx, -cy))
-        } else {
-            fg.ctf
-        };
+        let options = image_paint_options(self.blocks.iter().find(|b| b.id == l.id));
+        let image_transform = image_paint_transform(fg.ctf, rect, options);
         if let Some(hash) = &l.image_hash {
             if let Some(slot) = self.image_cache.get_mut(hash)
                 && let Some(img) = slot
             {
-                let (left, top, right, bottom) = crop;
-                let visible_w = (1.0 - left - right).max(0.05);
-                let visible_h = (1.0 - top - bottom).max(0.05);
                 // Paint a scaled full-source rectangle through a clip matching
                 // the stable display frame. This is source cropping, not a
                 // resize: the frame and surrounding text layout never jump.
-                let source = Rect::new(
-                    rect.x0 - rect.width() * left / visible_w,
-                    rect.y0 - rect.height() * top / visible_h,
-                    rect.x0 + rect.width() * (1.0 - left) / visible_w,
-                    rect.y0 + rect.height() * (1.0 - top) / visible_h,
-                );
-                if left != 0.0 || top != 0.0 || right != 0.0 || bottom != 0.0 {
+                let source = cropped_image_source(rect, options.crop);
+                if image_crop_is_active(options.crop) {
                     scene.push_layer(
                         Fill::NonZero,
                         vello::peniko::BlendMode::default(),
@@ -7658,65 +7670,83 @@ impl WordProcessorWidget {
                         fg.ctf,
                         &rect,
                     );
-                    img.paint_at(scene, itf, source);
+                    img.paint_at(scene, image_transform, source);
                     scene.pop_layer();
                 } else {
-                    img.paint_at(scene, itf, rect);
+                    img.paint_at(scene, image_transform, rect);
                 }
             }
         } else {
-            // Missing or undecodable (e.g. non-PNG) image — placeholder.
-            scene.fill(
-                Fill::NonZero,
-                fg.ctf,
-                Color::from_rgb8(0xee, 0xee, 0xf2),
-                None,
-                &vello::kurbo::RoundedRect::from_rect(rect, 6.0),
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                fg.ctf,
-                Color::from_rgb8(0xcc, 0xce, 0xd6),
-                None,
-                &vello::kurbo::RoundedRect::from_rect(rect, 6.0),
-            );
-            text_renderer.draw_text(
-                scene,
-                &t("canvas-image-missing"),
-                14.0,
-                PAPER_MUTED,
-                fg.ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)),
-                None,
-            );
+            Self::draw_missing_image(scene, fg.ctf, text_renderer, rect);
         }
         // Selection chrome: when this image is the caret's block, ring it
         // with an accent border + corner resize handles so it reads as
         // "selected" (the panel then shows the resize / flip controls).
         if l.id == self.inner.caret.block {
-            let accent = self.chrome.accent;
-            scene.stroke(&vello::kurbo::Stroke::new(2.0), fg.ctf, accent, None, &rect);
-            let handle_r = 5.0;
-            for (handle_x, handle_y) in [
-                (rect.x0, rect.y0),
-                (rect.x1, rect.y0),
-                (rect.x0, rect.y1),
-                (rect.x1, rect.y1),
-            ] {
-                let handle_rect = Rect::new(
-                    handle_x - handle_r,
-                    handle_y - handle_r,
-                    handle_x + handle_r,
-                    handle_y + handle_r,
-                );
-                scene.fill(Fill::NonZero, fg.ctf, Color::WHITE, None, &handle_rect);
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.5),
-                    fg.ctf,
-                    accent,
-                    None,
-                    &handle_rect,
-                );
-            }
+            Self::draw_selected_image_chrome(scene, fg.ctf, rect, self.chrome.accent);
+        }
+    }
+
+    fn draw_missing_image(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        rect: Rect,
+    ) {
+        let rounded = vello::kurbo::RoundedRect::from_rect(rect, 6.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Color::from_rgb8(0xee, 0xee, 0xf2),
+            None,
+            &rounded,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            Color::from_rgb8(0xcc, 0xce, 0xd6),
+            None,
+            &rounded,
+        );
+        text_renderer.draw_text(
+            scene,
+            &t("canvas-image-missing"),
+            14.0,
+            PAPER_MUTED,
+            transform * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)),
+            None,
+        );
+    }
+
+    fn draw_selected_image_chrome(scene: &mut Scene, transform: Affine, rect: Rect, accent: Color) {
+        scene.stroke(
+            &vello::kurbo::Stroke::new(2.0),
+            transform,
+            accent,
+            None,
+            &rect,
+        );
+        let handle_radius = 5.0;
+        for (x, y) in [
+            (rect.x0, rect.y0),
+            (rect.x1, rect.y0),
+            (rect.x0, rect.y1),
+            (rect.x1, rect.y1),
+        ] {
+            let handle = Rect::new(
+                x - handle_radius,
+                y - handle_radius,
+                x + handle_radius,
+                y + handle_radius,
+            );
+            scene.fill(Fill::NonZero, transform, Color::WHITE, None, &handle);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.5),
+                transform,
+                accent,
+                None,
+                &handle,
+            );
         }
     }
 
@@ -12557,6 +12587,51 @@ mod tests {
     use std::fmt::Write as _;
     use taffy::AvailableSpace;
     use ui::permissions::PermissionContext;
+
+    #[test]
+    fn cropped_image_source_expands_behind_the_stable_frame() {
+        let frame = Rect::new(10.0, 20.0, 110.0, 70.0);
+        let source = cropped_image_source(frame, (0.1, 0.2, 0.3, 0.1));
+
+        assert!((source.x0 - (-6.666_666_666_666_668)).abs() < 1e-9);
+        assert!((source.y0 - 5.714_285_714_285_713).abs() < 1e-9);
+        assert!((source.x1 - 160.0).abs() < 1e-9);
+        assert!((source.y1 - 77.142_857_142_857_14).abs() < 1e-9);
+        assert_eq!(cropped_image_source(frame, (0.0, 0.0, 0.0, 0.0)), frame);
+    }
+
+    #[test]
+    fn image_flip_transform_mirrors_around_the_frame_center() {
+        let frame = Rect::new(10.0, 20.0, 110.0, 70.0);
+        let horizontal = image_paint_transform(
+            Affine::IDENTITY,
+            frame,
+            ImagePaintOptions {
+                flip_horizontal: true,
+                ..ImagePaintOptions::default()
+            },
+        );
+        let vertical = image_paint_transform(
+            Affine::IDENTITY,
+            frame,
+            ImagePaintOptions {
+                flip_vertical: true,
+                ..ImagePaintOptions::default()
+            },
+        );
+
+        assert_eq!(
+            horizontal * Point::new(frame.x0, frame.y0),
+            Point::new(frame.x1, frame.y0)
+        );
+        assert_eq!(
+            vertical * Point::new(frame.x0, frame.y0),
+            Point::new(frame.x0, frame.y1)
+        );
+        let center = Point::new(frame.center().x, frame.center().y);
+        assert_eq!(horizontal * center, center);
+        assert_eq!(vertical * center, center);
+    }
 
     #[test]
     fn native_document_edit_has_writer_provenance() {
