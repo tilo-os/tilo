@@ -462,6 +462,22 @@ struct InspectorRects {
     font_input: Option<Rect>,
 }
 
+/// Framework event state shared by the small embedded-widget routers.
+///
+/// Keeping this boundary explicit prevents every router from mirroring the
+/// full [`Widget::handle_event`] signature and makes it clear which values are
+/// forwarded unchanged to child widgets.
+struct RoutedEvent<'a> {
+    event: &'a WindowEvent,
+    scale_factor: f64,
+    modifiers: Modifiers,
+    state: &'a mut AutoCommit,
+    path: &'a ObjId,
+    focus_target: &'a mut Option<NodeId>,
+    node_id: NodeId,
+    taffy: &'a TaffyTree<()>,
+}
+
 /// Default size of the fill colour-picker popover, in logical px.
 const FILL_PICKER_W: f64 = 260.0;
 const FILL_PICKER_H: f64 = 220.0;
@@ -3445,18 +3461,7 @@ impl SlidesApp {
     /// Route an event to the inline title [`TextInput`] while renaming. Returns
     /// `true` if the event was consumed. Enter / Esc commit; a press outside the
     /// field commits and falls through so the click still acts.
-    #[allow(clippy::too_many_arguments)]
-    fn route_title_edit(
-        &mut self,
-        event: &WindowEvent,
-        sf: f64,
-        mods: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn route_title_edit(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
         if !self.editing_title {
             return false;
         }
@@ -3464,9 +3469,12 @@ impl SlidesApp {
         let rect = self.title_input_rect(&chrome);
         self.title_input.apply_layout_external(rect);
 
-        match event {
+        match routed.event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / sf, position.y / sf);
+                self.last_mouse = Point::new(
+                    position.x / routed.scale_factor,
+                    position.y / routed.scale_factor,
+                );
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -3477,7 +3485,7 @@ impl SlidesApp {
                     },
                 ..
             } => {
-                self.commit_title_edit(state);
+                self.commit_title_edit(routed.state);
                 return true;
             }
             WindowEvent::MouseInput {
@@ -3486,27 +3494,27 @@ impl SlidesApp {
                 ..
             } if !rect.inflate(4.0, 8.0).contains(self.last_mouse) => {
                 // Click away commits, then falls through so the click still acts.
-                self.commit_title_edit(state);
+                self.commit_title_edit(routed.state);
                 return false;
             }
             _ => {}
         }
         let mut h = false;
         self.title_input.handle_event(
-            event,
-            sf,
-            &mods,
-            state,
-            path,
+            routed.event,
+            routed.scale_factor,
+            &routed.modifiers,
+            routed.state,
+            routed.path,
             &mut h,
-            focus_target,
-            node_id,
-            taffy,
+            routed.focus_target,
+            routed.node_id,
+            routed.taffy,
         );
         // Live-splice each edit into the CRDT title (the mirror is refreshed on
         // commit; while editing, the field is the source of truth).
         if let Some(t) = self.title_input.take_dirty() {
-            SlidesDoc::set_title(state, &t);
+            SlidesDoc::set_title(routed.state, &t);
             self.mark();
         }
         true
@@ -3515,18 +3523,7 @@ impl SlidesApp {
     /// Route the inspector notes box through its directly-bound multiline
     /// [`TextInput`]. Escape or a press outside ends editing; all editor events
     /// otherwise stay in the shared caret/selection/IME path.
-    #[allow(clippy::too_many_arguments)]
-    fn route_notes_edit(
-        &mut self,
-        event: &WindowEvent,
-        sf: f64,
-        mods: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn route_notes_edit(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
         if !self.editing_notes {
             return false;
         }
@@ -3535,9 +3532,12 @@ impl SlidesApp {
             return false;
         };
         self.notes_input.apply_layout_external(rect);
-        match event {
+        match routed.event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / sf, position.y / sf);
+                self.last_mouse = Point::new(
+                    position.x / routed.scale_factor,
+                    position.y / routed.scale_factor,
+                );
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -3563,19 +3563,19 @@ impl SlidesApp {
         }
         let mut input_handled = false;
         self.notes_input.handle_event(
-            event,
-            sf,
-            &mods,
-            state,
-            path,
+            routed.event,
+            routed.scale_factor,
+            &routed.modifiers,
+            routed.state,
+            routed.path,
             &mut input_handled,
-            focus_target,
-            node_id,
-            taffy,
+            routed.focus_target,
+            routed.node_id,
+            routed.taffy,
         );
         if self.notes_input.take_dirty().is_some() {
             self.mark();
-            self.reload(state);
+            self.reload(routed.state);
         }
         input_handled
     }
@@ -5965,16 +5965,17 @@ impl Widget for SlidesApp {
         ) {
             self.io_toast = None;
         }
-        if self.route_notes_edit(
+        let mut routed = RoutedEvent {
             event,
             scale_factor,
-            *modifiers,
+            modifiers: *modifiers,
             state,
             path,
             focus_target,
             node_id,
             taffy,
-        ) {
+        };
+        if self.route_notes_edit(&mut routed) {
             *handled = true;
             return;
         }
@@ -5984,55 +5985,34 @@ impl Widget for SlidesApp {
             state: ElementState::Pressed,
             button: MouseButton::Right,
             ..
-        } = event
+        } = routed.event
         {
-            self.on_right_press(state, self.last_mouse, handled);
+            self.on_right_press(routed.state, self.last_mouse, handled);
             return;
         }
         // While a context menu is open it is modal: every other event goes to it.
-        if self.route_context_menu(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+        if self.route_context_menu(&mut routed) {
             *handled = true;
             return;
         }
         // The inline title editor owns input while renaming.
-        if self.route_title_edit(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+        if self.route_title_edit(&mut routed) {
             *handled = true;
             return;
         }
         // The inspector's embedded widgets (font-size field, fill picker) get
         // first refusal on events over them.
-        if self.route_inspector_widgets(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+        if self.route_inspector_widgets(&mut routed) {
             *handled = true;
             return;
         }
-        self.dispatch_unmodal_event(event, scale_factor, *modifiers, state, handled);
+        self.dispatch_unmodal_event(
+            routed.event,
+            routed.scale_factor,
+            routed.modifiers,
+            routed.state,
+            handled,
+        );
     }
 
     fn name(&self) -> &'static str {
@@ -7074,44 +7054,32 @@ impl SlidesApp {
 
     /// Forward an event to the open context menu and apply any chosen action.
     /// Returns `true` if a menu was open (and thus consumed the event).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors ui's own Widget::handle_event signature, which every embedded-widget \
-                  router in this file forwards verbatim"
-    )]
-    fn route_context_menu(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn route_context_menu(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
         if !self.ctx_menu.is_open() {
             return false;
         }
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+        if let WindowEvent::CursorMoved { position, .. } = routed.event {
+            self.last_mouse = Point::new(
+                position.x / routed.scale_factor,
+                position.y / routed.scale_factor,
+            );
         }
         let mut menu_handled = false;
         self.ctx_menu.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
+            routed.event,
+            routed.scale_factor,
+            &routed.modifiers,
+            routed.state,
+            routed.path,
             &mut menu_handled,
-            focus_target,
-            node_id,
-            taffy,
+            routed.focus_target,
+            routed.node_id,
+            routed.taffy,
         );
         if let Some(idx) = self.ctx_menu.take_selection()
             && let Some(Some(hit)) = self.ctx_hits.get(idx).cloned()
         {
-            self.apply_hit(state, hit);
+            self.apply_hit(routed.state, hit);
         }
         true
     }
@@ -7121,18 +7089,7 @@ impl SlidesApp {
     /// `true` when the event was consumed (so `handle_event` should stop).
     /// The picker popover is modal while open; the font field only claims
     /// presses on its own rect and keystrokes while focused.
-    #[allow(clippy::too_many_arguments)]
-    fn route_inspector_widgets(
-        &mut self,
-        event: &WindowEvent,
-        sf: f64,
-        mods: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn route_inspector_widgets(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
         if self.mode != Mode::Edit || self.drag.active() {
             return false;
         }
@@ -7146,51 +7103,30 @@ impl SlidesApp {
         self.position_inspector_widgets(&chrome);
 
         if self.fill_picker_open {
-            return self.route_fill_picker(
-                event,
-                sf,
-                mods,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            return self.route_fill_picker(routed);
         }
 
         if chrome.font_input_rect.is_none() {
             return false;
         }
-        self.route_font_input(event, sf, mods, state, path, focus_target, node_id, taffy)
+        self.route_font_input(routed)
     }
 
     /// The fill [`ColorPicker`] popover: modal while open, so a routed event
     /// is always consumed. A press outside its panel closes it instead of
     /// reaching the field.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors ui's own Widget::handle_event signature, which every embedded-widget \
-                  router in this file forwards verbatim"
-    )]
-    fn route_fill_picker(
-        &mut self,
-        event: &WindowEvent,
-        sf: f64,
-        mods: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(position.x / sf, position.y / sf);
+    fn route_fill_picker(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
+        if let WindowEvent::CursorMoved { position, .. } = routed.event {
+            self.last_mouse = Point::new(
+                position.x / routed.scale_factor,
+                position.y / routed.scale_factor,
+            );
         }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
-        } = event
+        } = routed.event
         {
             let panel = self.fill_picker.get_rect().inflate(12.0, 16.0);
             if !panel.contains(self.last_mouse) {
@@ -7201,27 +7137,27 @@ impl SlidesApp {
         }
         let mut h = false;
         self.fill_picker.handle_event(
-            event,
-            sf,
-            &mods,
-            state,
-            path,
+            routed.event,
+            routed.scale_factor,
+            &routed.modifiers,
+            routed.state,
+            routed.path,
             &mut h,
-            focus_target,
-            node_id,
-            taffy,
+            routed.focus_target,
+            routed.node_id,
+            routed.taffy,
         );
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
-        } = event
+        } = routed.event
             && self.fill_picker.get_rect().contains(self.last_mouse)
         {
             Widget::set_focus(&mut self.fill_picker, true);
         }
         if let Some(col) = self.fill_picker.take_changed() {
-            self.set_sel_str(state, "fill", &crate::model::color_to_hex(col));
+            self.set_sel_str(routed.state, "fill", &crate::model::color_to_hex(col));
         }
         true
     }
@@ -7230,39 +7166,27 @@ impl SlidesApp {
     /// consumed (canvas hover still wants it), a press on the field focuses
     /// and forwards it, a press elsewhere commits + blurs, and keystrokes
     /// while focused edit it (Esc commits + blurs).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors ui's own Widget::handle_event signature, which every embedded-widget \
-                  router in this file forwards verbatim"
-    )]
-    fn route_font_input(
-        &mut self,
-        event: &WindowEvent,
-        sf: f64,
-        mods: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        match event {
+    fn route_font_input(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
+        match routed.event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / sf, position.y / sf);
+                self.last_mouse = Point::new(
+                    position.x / routed.scale_factor,
+                    position.y / routed.scale_factor,
+                );
                 let mut h = false;
                 self.font_input.handle_event(
-                    event,
-                    sf,
-                    &mods,
-                    state,
-                    path,
+                    routed.event,
+                    routed.scale_factor,
+                    &routed.modifiers,
+                    routed.state,
+                    routed.path,
                     &mut h,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    routed.focus_target,
+                    routed.node_id,
+                    routed.taffy,
                 );
                 if let Some(v) = self.font_input.take_changed() {
-                    self.set_sel_f64(state, "font_size", v);
+                    self.set_sel_f64(routed.state, "font_size", v);
                 }
                 // Don't consume — canvas hover still wants the move.
                 false
@@ -7275,19 +7199,19 @@ impl SlidesApp {
                 if self.font_input.get_rect().contains(self.last_mouse) {
                     let mut h = false;
                     self.font_input.handle_event(
-                        event,
-                        sf,
-                        &mods,
-                        state,
-                        path,
+                        routed.event,
+                        routed.scale_factor,
+                        &routed.modifiers,
+                        routed.state,
+                        routed.path,
                         &mut h,
-                        focus_target,
-                        node_id,
-                        taffy,
+                        routed.focus_target,
+                        routed.node_id,
+                        routed.taffy,
                     );
                     Widget::set_focus(&mut self.font_input, true);
                     if let Some(v) = self.font_input.take_changed() {
-                        self.set_sel_f64(state, "font_size", v);
+                        self.set_sel_f64(routed.state, "font_size", v);
                     }
                     true
                 } else if self.font_input.is_focused() {
@@ -7295,37 +7219,23 @@ impl SlidesApp {
                     // press can still hit whatever it landed on.
                     Widget::set_focus(&mut self.font_input, false);
                     if let Some(v) = self.font_input.take_changed() {
-                        self.set_sel_f64(state, "font_size", v);
+                        self.set_sel_f64(routed.state, "font_size", v);
                     }
                     false
                 } else {
                     false
                 }
             }
-            WindowEvent::KeyboardInput { .. } if self.font_input.is_focused() => self
-                .route_font_input_key(event, sf, mods, state, path, focus_target, node_id, taffy),
+            WindowEvent::KeyboardInput { .. } if self.font_input.is_focused() => {
+                self.route_font_input_key(routed)
+            }
             _ => false,
         }
     }
 
     /// A keystroke while the font-size field is focused: Esc blurs it
     /// (committing any change); everything else edits it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors ui's own Widget::handle_event signature, which every embedded-widget \
-                  router in this file forwards verbatim"
-    )]
-    fn route_font_input_key(
-        &mut self,
-        event: &WindowEvent,
-        sf: f64,
-        mods: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn route_font_input_key(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -7334,28 +7244,28 @@ impl SlidesApp {
                     ..
                 },
             ..
-        } = event
+        } = routed.event
         {
             Widget::set_focus(&mut self.font_input, false);
             if let Some(v) = self.font_input.take_changed() {
-                self.set_sel_f64(state, "font_size", v);
+                self.set_sel_f64(routed.state, "font_size", v);
             }
             return true;
         }
         let mut h = false;
         self.font_input.handle_event(
-            event,
-            sf,
-            &mods,
-            state,
-            path,
+            routed.event,
+            routed.scale_factor,
+            &routed.modifiers,
+            routed.state,
+            routed.path,
             &mut h,
-            focus_target,
-            node_id,
-            taffy,
+            routed.focus_target,
+            routed.node_id,
+            routed.taffy,
         );
         if let Some(v) = self.font_input.take_changed() {
-            self.set_sel_f64(state, "font_size", v);
+            self.set_sel_f64(routed.state, "font_size", v);
         }
         true
     }
