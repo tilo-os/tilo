@@ -20,11 +20,14 @@ use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
+use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::colors::Colors;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
 };
@@ -157,12 +160,10 @@ impl<Row> ColumnDef<Row> {
     {
         let value: CellAccessibleValue<Row> = Arc::new(value);
         self.accessible_value = Some(Arc::clone(&value));
-        self.text_render = Some(Box::new(move |row, scene, text, rect, theme, selected| {
-            let color = if selected {
-                theme.tokens.colors.on_accent(4.5)
-            } else {
-                theme.text_primary
-            };
+        self.text_render = Some(Box::new(move |row, scene, text, rect, theme, _selected| {
+            // A selected row is a lift (HIG §9.3), so its ink stays the
+            // ordinary text colour on every theme.
+            let color = theme.text_primary;
             let size = renderer_type_size(text, theme.tokens.typography.scale.sm);
             let label = value(row);
             let (_, text_h) = text.measure(&label, size, None);
@@ -1215,16 +1216,12 @@ impl<Row> DataTable<Row> {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surface_white_5,
+            crate::widget::scrollbar::track_color(theme),
             None,
             &RoundedRect::from_rect(track, radius),
         );
         if let Some(thumb) = self.vbar.thumb_rect(track, self.v_metrics()) {
-            let color = if self.vbar.is_active() {
-                theme.text_dim
-            } else {
-                theme.border_standard
-            };
+            let color = crate::widget::scrollbar::thumb_color(theme, self.vbar.is_active());
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -1298,14 +1295,16 @@ impl<Row> DataTable<Row> {
             None,
             &header_rect,
         );
+        // The header rule derives from the band it closes (HIG §9.5), on
+        // the band's last pixel row so it never lands on the body.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_standard,
+            crate::surface::edge_on(tokens.colors.surfaces.raised),
             None,
             &vello::kurbo::Line::new(
-                (header_rect.x0, header_rect.y1),
-                (header_rect.x1, header_rect.y1),
+                (header_rect.x0, header_rect.y1 - 0.5),
+                (header_rect.x1, header_rect.y1 - 0.5),
             ),
         );
 
@@ -1386,20 +1385,16 @@ impl<Row> DataTable<Row> {
             // Whole-row geometry: the caller's body clip layer trims the part
             // that scrolls past the viewport, so cells see their real row.
             let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1);
-            // Selection fill takes precedence over the zebra stripe.
+            // Selection is a lift (HIG §9.3), never an accent wash, and
+            // takes precedence over the zebra stripe; the stripe is the
+            // faintest derived tier on the ground, not a ramp slot.
             if selected {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-                    None,
-                    &row_rect,
-                );
+                paint_selected_row(scene, transform, theme, row_rect, 1.0);
             } else if ri % 2 == 1 {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.neutral[5],
+                    tier_on(tokens.colors.surfaces.base, ZEBRA_ALPHA),
                     None,
                     &row_rect,
                 );
@@ -2499,6 +2494,186 @@ fn compute_column_rects<Row>(
         x = next;
     }
     rects
+}
+
+/// Alpha of a zebra stripe: the faintest derived tier on the table's
+/// ground (HIG §9.5), shared by [`DataTable`] and [`crate::widget::Table`].
+pub(crate) const ZEBRA_ALPHA: u8 = 13;
+
+/// A ground is *near black* below this relative luminance. sRGB is compressed
+/// there, so a white veneer moves the luminance far less than the same alpha
+/// does on the dark preset's `#16171B` (0.0086): white at 26 lifts that ground
+/// by 0.023 but pure black by only 0.010. The high-contrast and OLED presets
+/// sit on pure black, which is why `Theme::high_contrast` re-solves its
+/// veneers to roughly three times the dark tiers.
+pub(crate) const NEAR_BLACK_GROUND_LUMINANCE: f64 = 0.005;
+
+/// Gain applied to a derived tier's alpha on a near-black ground, and the
+/// alpha it never drops below — the high-contrast preset's own faintest
+/// re-solved veneer (`theme.rs`, `set_overlays`: 51 / 77 / 110 / 153 / 217
+/// against the dark 13 / 26 / 40 / 51 / 72). An alpha multiplier, not a
+/// pixel value.
+pub(crate) const NEAR_BLACK_TIER_GAIN: u32 = 3;
+pub(crate) const NEAR_BLACK_TIER_FLOOR: u8 = 51;
+
+/// Alpha of the selected-row fill on a near-black ground: the high-contrast
+/// preset's middle re-solved tier, a 4.1:1 step off black that still carries
+/// white text at 5.1:1. On such a ground `Colors::lift(1.0)` collapses to its
+/// hairline fallback (HIG §9.3 names this weakness), so the row takes a floor
+/// of its own; idle rows stay transparent, so the state order is kept.
+pub(crate) const NEAR_BLACK_SELECTED_ALPHA: u8 = 110;
+
+/// A derived fill tier (band, stripe, track, thumb) on `surface`:
+/// [`Colors::hairline_on`] at `alpha`, with the near-black gain where the
+/// ground would otherwise swallow it. On the dark and light presets this is
+/// exactly `hairline_on(surface, alpha)`.
+#[must_use]
+pub(crate) fn tier_on(surface: Color, alpha: u8) -> Color {
+    use crate::a11y::relative_luminance;
+    let alpha = if relative_luminance(surface) < NEAR_BLACK_GROUND_LUMINANCE {
+        let boosted =
+            u8::try_from((u32::from(alpha) * NEAR_BLACK_TIER_GAIN).min(255)).unwrap_or(u8::MAX);
+        boosted.max(NEAR_BLACK_TIER_FLOOR)
+    } else {
+        alpha
+    };
+    Colors::hairline_on(surface, alpha)
+}
+
+/// The fill of a selected row (HIG §9.3): the shared active tier, or the
+/// near-black floor where that tier does not register against the ground.
+#[must_use]
+pub(crate) fn selection_fill(theme: &Theme) -> Color {
+    use crate::a11y::relative_luminance;
+    let base = theme.tokens.colors.surfaces.base;
+    if relative_luminance(base) < NEAR_BLACK_GROUND_LUMINANCE {
+        return Colors::hairline_on(base, NEAR_BLACK_SELECTED_ALPHA);
+    }
+    crate::chrome::selection_tier(theme, crate::chrome::SelectionState::active(true)).fill
+}
+
+/// Paint one selected row as the shared selection lift (HIG §9.3), never an
+/// accent wash. Rows stack full-width, so — unlike an isolated pill — the
+/// tier's hairline is not stroked: adjacent selected rows would otherwise
+/// meet in a doubled rule (HIG §7 "nothing touches") and the run would read
+/// as a ruled table rather than one lift. `opacity` fades a row
+/// mid-transition; a settled row passes `1.0`.
+pub(crate) fn paint_selected_row(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    row: Rect,
+    opacity: f32,
+) {
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        selection_fill(theme).with_alpha_factor(opacity),
+        None,
+        &row,
+    );
+}
+
+#[cfg(test)]
+mod tier_tests {
+    use super::*;
+    use crate::a11y::contrast_ratio;
+    use crate::surface::edge_delta;
+    use crate::tokens::colors::{HAIRLINE_MIN_DELTA, NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
+
+    fn presets() -> [Theme; 3] {
+        [Theme::dark(), Theme::light(), Theme::high_contrast()]
+    }
+
+    /// Composite `over` (with its alpha) onto an opaque `ground`.
+    fn blend(over: Color, ground: Color) -> Color {
+        let a = over.components[3];
+        let o = over.components;
+        let g = ground.components;
+        Color::new([
+            o[0] * a + g[0] * (1.0 - a),
+            o[1] * a + g[1] * (1.0 - a),
+            o[2] * a + g[2] * (1.0 - a),
+            1.0,
+        ])
+    }
+
+    #[test]
+    fn selected_row_fill_registers_on_every_preset() {
+        for theme in presets() {
+            let base = theme.tokens.colors.surfaces.base;
+            let fill = selection_fill(&theme);
+            let moved = edge_delta(fill, base);
+            assert!(
+                moved >= HAIRLINE_MIN_DELTA,
+                "{}: selected row moved the ground only {moved:.4}",
+                theme.name
+            );
+        }
+    }
+
+    /// HIG §9.3's caveat made concrete: on the pure-black high-contrast ground
+    /// the shared lift is weaker than a floor, so the row takes one that reads
+    /// as a control and still carries the theme's text.
+    #[test]
+    fn selected_row_on_a_black_ground_reads_as_a_control_and_carries_text() {
+        let theme = Theme::high_contrast();
+        let base = theme.tokens.colors.surfaces.base;
+        let shared =
+            crate::chrome::selection_tier(&theme, crate::chrome::SelectionState::active(true)).fill;
+        assert!(
+            edge_delta(shared, base) < HAIRLINE_MIN_DELTA,
+            "fixture: the shared lift is expected to collapse on this ground"
+        );
+        let fill = blend(selection_fill(&theme), base);
+        let step = contrast_ratio(fill, base);
+        assert!(
+            step >= NON_TEXT_MIN_CONTRAST,
+            "selected row step {step:.2}:1"
+        );
+        let ink = contrast_ratio(theme.tokens.colors.text_primary, fill);
+        assert!(
+            ink >= ON_FILL_MIN_CONTRAST,
+            "text on the selected row {ink:.2}:1"
+        );
+    }
+
+    /// Pins the dark and light screenshots: on the two grounds this module's
+    /// callers paint tiers on, the gain never engages. (The dark preset's
+    /// overlay tier is itself near black and does take it, by design.)
+    #[test]
+    fn tier_on_is_plain_hairline_on_ordinary_grounds() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let s = &theme.tokens.colors.surfaces;
+            for ground in [s.base, s.raised] {
+                for alpha in [ZEBRA_ALPHA, crate::chrome::HAIRLINE_ALPHA, 40, 72] {
+                    assert_eq!(tier_on(ground, alpha), Colors::hairline_on(ground, alpha));
+                }
+            }
+        }
+    }
+
+    /// The stripe stays fainter than the band on every preset, and on black
+    /// both still register (the high-contrast preset's own floor).
+    #[test]
+    fn tiers_keep_their_order_and_register_on_black() {
+        for theme in presets() {
+            let raised = theme.tokens.colors.surfaces.raised;
+            let zebra = edge_delta(tier_on(raised, ZEBRA_ALPHA), raised);
+            let band = edge_delta(tier_on(raised, crate::chrome::HAIRLINE_ALPHA), raised);
+            assert!(
+                zebra < band,
+                "{}: zebra {zebra:.4} vs band {band:.4}",
+                theme.name
+            );
+        }
+        let black = Theme::high_contrast().tokens.colors.surfaces.raised;
+        assert!(edge_delta(tier_on(black, ZEBRA_ALPHA), black) >= HAIRLINE_MIN_DELTA);
+        assert_eq!(
+            tier_on(black, ZEBRA_ALPHA),
+            Colors::hairline_on(black, NEAR_BLACK_TIER_FLOOR)
+        );
+    }
 }
 
 #[cfg(test)]
