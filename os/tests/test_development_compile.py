@@ -25,6 +25,56 @@ CACHE = driver.cache_configuration(CACHE_ENV)
 
 
 class CompileBoundaries(unittest.TestCase):
+    def test_arm_requires_explicit_kernel_and_never_uses_x64_default(self):
+        kernel = 'code.podesta.ai/qos/tilo-kernel@sha256:' + 'c' * 64
+        rpms = 'code.podesta.ai/qos/tilo-rpms@sha256:' + 'd' * 64
+        defaults = {'BASE_REF': WPE, 'RPMS_REF': WPE, 'KERNEL_RPMS_REF': WPE}
+        with patch.object(driver, 'pinned_inputs', return_value=defaults.copy()) as pins:
+            with self.assertRaisesRegex(ValueError, 'explicit immutable kernel'):
+                driver.selected_pins('aarch64')
+            pins.assert_not_called()
+            selected = driver.selected_pins('aarch64', kernel, rpms)
+            self.assertEqual(selected['KERNEL_RPMS_REF'], kernel)
+            self.assertEqual(selected['RPMS_REF'], rpms)
+        driver.validate_inputs(WPE, '7', REVISION, 'refs/heads/codex/test',
+                               architecture='aarch64', kernel_candidate=kernel)
+        for bad in ('latest', kernel.replace('@sha256:', ':sha256-'), kernel + ';false'):
+            with self.assertRaises(ValueError):
+                driver.validate_inputs(WPE, '7', REVISION, 'refs/heads/codex/test',
+                                       architecture='aarch64', kernel_candidate=bad)
+        env = driver.build_environment(WPE, '7', REVISION, 'c' * 64, '/signer', CACHE,
+                                       'aarch64', selected)
+        self.assertTrue(env['TILO_TARGET_IMGREF'].endswith('-aarch64'))
+        self.assertEqual(env['KERNEL_RPMS_REF'], kernel)
+        self.assertEqual(env['RPMS_REF'], rpms)
+        self.assertEqual(env['TILO_HARDWARE_PROFILE'], 'generic')
+        self.assertEqual(driver.LOADER_NAMES['aarch64'], 'systemd-bootaa64.efi')
+
+    def test_native_config_checks_reject_wrong_architecture_and_os(self):
+        for architecture, config, accepted in (
+            ('aarch64', {'architecture': 'arm64', 'os': 'linux'}, True),
+            ('x86_64', {'architecture': 'amd64', 'os': 'linux'}, True),
+            ('aarch64', {'architecture': 'amd64', 'os': 'linux'}, False),
+            ('aarch64', {'architecture': 'arm64', 'os': 'windows'}, False)):
+            with self.subTest(config=config), patch.object(driver, 'run', return_value=json.dumps(config)) as run:
+                if accepted:
+                    self.assertEqual(driver.verify_native_image(WPE, architecture)['architecture'], config['architecture'])
+                else:
+                    with self.assertRaises(ValueError):
+                        driver.verify_native_image(WPE, architecture)
+                command = run.call_args.args
+                self.assertIn('--config', command)
+                self.assertEqual(command[command.index('--override-arch') + 1], driver.ARCHITECTURES[architecture])
+
+    def test_cross_architecture_host_rejected_before_any_work(self):
+        with patch.object(driver.os, 'getuid', return_value=0, create=True), \
+             patch.object(driver.platform, 'machine', return_value='x86_64'), \
+             patch.object(driver, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'matching native'):
+                driver.main(['--architecture', 'aarch64', '--revision', REVISION,
+                             '--branch', 'refs/heads/codex/test'])
+            run.assert_not_called()
+
     def test_full_build_requires_completed_wpe(self):
         with self.assertRaisesRegex(ValueError, 'requires a completed WPE'):
             driver.completed_wpe_receipt(None, WPE)
@@ -53,6 +103,14 @@ class CompileBoundaries(unittest.TestCase):
                     else:
                         with self.assertRaises(ValueError):
                             driver.completed_wpe_receipt(path, WPE)
+            receipt['inputs'] = inputs | {'architecture': 'aarch64'}
+            receipt['reference'] = receipt['reference'].replace('stage-x86_64@', 'stage-aarch64@')
+            receipt['dependency_key'] = hashlib.sha256(json.dumps(receipt['inputs'],
+                sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            path.write_text(json.dumps(receipt))
+            self.assertEqual(driver.completed_wpe_receipt(path, WPE, 'aarch64'), receipt)
+            with self.assertRaises(ValueError):
+                driver.completed_wpe_receipt(path, WPE)
 
     def test_cache_only_and_default_exit_before_key_generation_or_os_build(self):
         for mode in ([], ['--mode', 'cache-only']):
