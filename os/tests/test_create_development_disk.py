@@ -33,15 +33,20 @@ class CreationTests(unittest.TestCase):
 
         @contextmanager
         def verified(args):
-            events.append('verified')
-            self.verifier_auth = os.environ.get('REGISTRY_AUTH_FILE')
-            try:
-                yield SimpleNamespace(image_id=self.image, root=Path('/fixture'),
-                    public_bundle=Path('/public'), receipt={'source': args.source})
-            finally:
-                events.append('unmounted')
-                if getattr(self, 'fail_unmount', False):
-                    raise ValueError('unmount failed')
+            with tempfile.TemporaryDirectory() as auth_dir:
+                auth = None
+                if os.environ.get('REGISTRY_AUTH_FILE'):
+                    auth = Path(auth_dir) / 'auth.json'
+                    disk_creator.source.snapshot_auth(os.environ['REGISTRY_AUTH_FILE'], auth)
+                events.append('verified')
+                self.verifier_auth = auth
+                try:
+                    yield SimpleNamespace(image_id=self.image, root=Path('/fixture'),
+                        public_bundle=Path('/public'), receipt={'source': args.source}, auth_file=auth)
+                finally:
+                    events.append('unmounted')
+                    if getattr(self, 'fail_unmount', False):
+                        raise ValueError('unmount failed')
 
         class Disk:
             def __init__(inner, path, size):
@@ -127,7 +132,7 @@ class CreationTests(unittest.TestCase):
             self.assertEqual(snapshot.read_bytes(), original.read_bytes())
             self.assertEqual(snapshot.stat().st_mode & 0o777, 0o600)
             self.assertEqual(snapshot.parent.stat().st_mode & 0o777, 0o700)
-            self.assertEqual(os.environ['REGISTRY_AUTH_FILE'], str(snapshot))
+            self.assertEqual(os.environ['REGISTRY_AUTH_FILE'], str(original))
             self.assertIn('REGISTRY_AUTH_FILE=/run/tilo-registry-auth.json', argv)
             self.assertNotIn('test-secret', str(argv))
             observed.append(snapshot)
@@ -136,7 +141,7 @@ class CreationTests(unittest.TestCase):
             receipt = self.execute()
             self.assertEqual(os.environ['REGISTRY_AUTH_FILE'], str(original))
         self.assertFalse(observed[0].exists())
-        self.assertEqual(self.verifier_auth, str(observed[0]))
+        self.assertEqual(self.verifier_auth, observed[0])
         self.assertNotIn('test-secret', str(receipt))
         self.assertNotIn('/run/tilo-registry-auth.json', str(self.calls[0]))
 
@@ -144,7 +149,7 @@ class CreationTests(unittest.TestCase):
         original = Path(self.tmp.name) / 'auth.json'
         original.write_text('{"auths":{}}')
         snapshots = []
-        self.inspect_install = lambda argv: snapshots.append(Path(os.environ['REGISTRY_AUTH_FILE']))
+        self.inspect_install = lambda argv: snapshots.append(self.verifier_auth)
         with patch.dict(os.environ, {'REGISTRY_AUTH_FILE': str(original)}):
             with self.assertRaisesRegex(ValueError, 'installer failed'):
                 self.execute(fail=True)
