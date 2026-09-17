@@ -17,7 +17,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use tilo_actions::{ActionAddress, ActionSpec, OperationKind, Resource};
+use tilo_actions::{
+    ActionAddress, ActionContract, ActionSpec, ConfirmationPolicy, ExecutionMode, OperationKind,
+    Resource, ResultSpec, RetryPolicy, RiskLevel,
+};
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, MAX_SEARCH_QUERY_SCALARS,
@@ -25,10 +28,11 @@ use ui::search::{
 };
 
 use crate::actions::{
-    EBOOK_OPERATION_TYPE, EbookOperation, delete_annotation_action, delete_highlight_action,
-    edit_note_action, encode, remove_library_book_action,
+    CommentDraft, EBOOK_OPERATION_TYPE, EbookOperation, NoteDraft, change_color_action,
+    delete_annotation_action, delete_highlight_action, edit_note_action, encode,
+    remove_library_book_action,
 };
-use crate::model::{AnnoKind, Annotation, Book, LibraryEntry};
+use crate::model::{AnnoKind, Annotation, AnnotationAnchor, Book, HiColor, LibraryEntry};
 
 pub const BOOK_KIND: &str = "Books";
 pub const CHAPTER_KIND: &str = "Chapters";
@@ -542,20 +546,47 @@ impl BookSearchProvider {
                     book_id: book_id.to_string(),
                 },
             )
-            .ok()?;
+            .ok()?
+            .with_contract(ActionContract {
+                risk: RiskLevel::Low,
+                retry: RetryPolicy::Idempotent,
+                execution: ExecutionMode::Background { cancellable: true },
+                result: ResultSpec::Job,
+                tags: vec!["workspace".into(), "materialize".into()],
+                ..ActionContract::default()
+            });
             let remove = ActionSpec::immediate(
                 "remove-from-library",
                 "Remove from library",
                 crate::actions::EBOOK_ACTION_TYPE,
                 &remove_library_book_action(book_id),
             )
-            .ok()?;
+            .ok()?
+            .with_contract(ActionContract {
+                risk: RiskLevel::Destructive,
+                confirmation: ConfirmationPolicy::Confirm,
+                retry: RetryPolicy::Idempotent,
+                reversible: true,
+                tags: vec!["library".into(), "tombstone".into()],
+                ..ActionContract::default()
+            });
             resource = resource.with_action(share).with_action(remove);
         }
         if let SearchTarget::Annotation { index, comment, .. } = entry.target {
             let annotation = self.annotations.get(index)?;
             match annotation.kind {
                 AnnoKind::Highlight => {
+                    let group = annotation.group;
+                    resource = resource.with_action(ActionSpec::prompted(
+                        "change-color",
+                        "Change colour",
+                        "Colour",
+                        "yellow, green, blue, pink, purple",
+                        tilo_actions::ExecutionLocus::ClientLocal,
+                        move |name| {
+                            encode(&change_color_action(group, HiColor::from_str(name.trim())))
+                        },
+                    ));
                     let delete = ActionSpec::immediate(
                         "delete-highlight",
                         "Delete highlight",
@@ -563,7 +594,39 @@ impl BookSearchProvider {
                         &delete_highlight_action(annotation.group),
                     )
                     .ok()?;
-                    resource = resource.with_action(delete);
+                    let book_id = annotation.doc_id.clone();
+                    let anchor = AnnotationAnchor {
+                        chapter: annotation.chapter,
+                        block: annotation.block,
+                        start: annotation.start,
+                        end: annotation.end,
+                        excerpt: annotation.excerpt.clone(),
+                    };
+                    let color = annotation.color;
+                    resource = resource
+                        .with_action(delete)
+                        .with_action(ActionSpec::prompted(
+                            "add-comment",
+                            "Add comment",
+                            "Comment",
+                            "your comment…",
+                            tilo_actions::ExecutionLocus::ClientLocal,
+                            move |text| {
+                                encode(
+                                    &CommentDraft {
+                                        group,
+                                        note: NoteDraft {
+                                            book_id: book_id.clone(),
+                                            id: uuid::Uuid::new_v4(),
+                                            anchor: anchor.clone(),
+                                            color,
+                                            text: text.to_string(),
+                                        },
+                                    }
+                                    .into_action(),
+                                )
+                            },
+                        ));
                 }
                 AnnoKind::Bookmark => {
                     let delete = ActionSpec::immediate(
