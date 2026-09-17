@@ -1795,7 +1795,7 @@ pub use document_view::ModelView;
 mod divider;
 pub use divider::{Divider, DividerAxis};
 mod link;
-pub use link::Link;
+pub use link::{Link, os_open as open_external_url};
 mod nav_split;
 pub use nav_split::{
     DEFAULT_BREAKPOINT, DEFAULT_SIDEBAR_WIDTH, FlapState, NavSplit, PushPane, SplitLayout,
