@@ -18,7 +18,6 @@ use crate::{ForwardedGamepadEvent, GamepadAxis, GamepadButton};
 const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
 const EV_ABS: u16 = 0x03;
-const SYN_REPORT: u16 = 0;
 const SYN_DROPPED: u16 = 3;
 
 const ABS_X: u16 = 0x00;
@@ -66,17 +65,17 @@ pub struct PhysicalGamepadInfo {
 /// independently testable without real input hardware.
 #[derive(Clone, Debug)]
 pub struct LinuxPhysicalGamepadCatalog {
-    input_root: PathBuf,
-    udev_root: PathBuf,
-    sys_class_input_root: PathBuf,
+    input: PathBuf,
+    udev_data: PathBuf,
+    sys_class_input: PathBuf,
 }
 
 impl Default for LinuxPhysicalGamepadCatalog {
     fn default() -> Self {
         Self {
-            input_root: PathBuf::from("/dev/input"),
-            udev_root: PathBuf::from("/run/udev/data"),
-            sys_class_input_root: PathBuf::from("/sys/class/input"),
+            input: PathBuf::from("/dev/input"),
+            udev_data: PathBuf::from("/run/udev/data"),
+            sys_class_input: PathBuf::from("/sys/class/input"),
         }
     }
 }
@@ -84,9 +83,13 @@ impl Default for LinuxPhysicalGamepadCatalog {
 impl LinuxPhysicalGamepadCatalog {
     /// Enumerate only evdev character devices classified exclusively as a
     /// joystick/game controller by udev.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the local input directory cannot be enumerated.
     pub fn discover(&self) -> io::Result<Vec<PhysicalGamepadInfo>> {
         let mut controllers = Vec::new();
-        let entries = match fs::read_dir(&self.input_root) {
+        let entries = match fs::read_dir(&self.input) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(controllers),
             Err(error) => return Err(error),
@@ -106,10 +109,7 @@ impl LinuxPhysicalGamepadCatalog {
             if !metadata.file_type().is_char_device() || !self.is_controller_rdev(metadata.rdev()) {
                 continue;
             }
-            let name_path = self
-                .sys_class_input_root
-                .join(file_name)
-                .join("device/name");
+            let name_path = self.sys_class_input.join(file_name).join("device/name");
             let name = fs::read_to_string(name_path)
                 .ok()
                 .and_then(|name| sanitize_local_name(&name))
@@ -125,8 +125,13 @@ impl LinuxPhysicalGamepadCatalog {
 
     /// Open a previously discovered controller, rechecking its identity and
     /// udev classification to close replacement races.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the id is outside the catalog, no longer names an
+    /// exclusive controller, cannot be opened, or has invalid axis metadata.
     pub fn open(&self, id: &PhysicalGamepadId) -> io::Result<LinuxPhysicalGamepadSource> {
-        if id.0.parent() != Some(self.input_root.as_path())
+        if id.0.parent() != Some(self.input.as_path())
             || !id
                 .0
                 .file_name()
@@ -151,7 +156,7 @@ impl LinuxPhysicalGamepadCatalog {
     fn is_controller_rdev(&self, rdev: u64) -> bool {
         let major = libc::major(rdev as libc::dev_t);
         let minor = libc::minor(rdev as libc::dev_t);
-        let path = self.udev_root.join(format!("c{major}:{minor}"));
+        let path = self.udev_data.join(format!("c{major}:{minor}"));
         fs::read_to_string(path)
             .ok()
             .is_some_and(|properties| is_exclusive_controller(&properties))
@@ -186,11 +191,8 @@ impl LinuxPhysicalGamepadSource {
                 Ok(info) => {
                     calibrations.insert(code, AxisCalibration::from_abs_info(info, kind)?);
                 }
-                Err(error)
-                    if matches!(
-                        error.raw_os_error(),
-                        Some(libc::EINVAL) | Some(libc::ENOTTY)
-                    ) => {}
+                Err(error) if matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOTTY)) => {
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -206,6 +208,11 @@ impl LinuxPhysicalGamepadSource {
     /// codes are discarded inside this module and cannot cross the API.
     /// `SYN_DROPPED`, short reads, EOF and I/O errors fail closed so the
     /// caller can revoke the forwarding lease and neutralize the target.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on lost kernel synchronization, disconnection, a
+    /// short event record, or another evdev read failure.
     pub fn drain(&mut self, limit: usize) -> io::Result<PhysicalGamepadDrain> {
         let mut events = Vec::with_capacity(limit.min(32));
         let mut consumed = 0;
@@ -213,9 +220,8 @@ impl LinuxPhysicalGamepadSource {
             let Some(raw) = read_event(&mut self.file)? else {
                 break;
             };
-            consumed += 1;
+            consumed = consumed.saturating_add(1);
             match (raw.type_, raw.code) {
-                (EV_SYN, SYN_REPORT) => {}
                 (EV_SYN, SYN_DROPPED) => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -306,7 +312,7 @@ impl AxisCalibration {
         let value = value.clamp(self.minimum, self.maximum);
         match self.kind {
             AxisKind::Trigger => scale(value, self.minimum, self.maximum, 0, i32::from(i16::MAX)),
-            AxisKind::Stick if value.abs_diff(self.center) <= self.flat as u32 => 0,
+            AxisKind::Stick if value.abs_diff(self.center) <= self.flat.cast_unsigned() => 0,
             AxisKind::Stick if value < self.center => {
                 scale(value, self.minimum, self.center, i32::from(i16::MIN), 0)
             }
@@ -316,14 +322,15 @@ impl AxisCalibration {
 }
 
 fn midpoint(minimum: i32, maximum: i32) -> i32 {
-    i32::try_from((i64::from(minimum) + i64::from(maximum)) / 2).unwrap_or_default()
+    i32::try_from(i64::midpoint(i64::from(minimum), i64::from(maximum))).unwrap_or_default()
 }
 
 fn scale(value: i32, from_min: i32, from_max: i32, to_min: i32, to_max: i32) -> i16 {
-    let numerator =
-        (i64::from(value) - i64::from(from_min)) * (i64::from(to_max) - i64::from(to_min));
-    let denominator = i64::from(from_max) - i64::from(from_min);
-    let mapped = i64::from(to_min) + numerator / denominator;
+    let numerator = i64::from(value)
+        .saturating_sub(i64::from(from_min))
+        .saturating_mul(i64::from(to_max).saturating_sub(i64::from(to_min)));
+    let denominator = i64::from(from_max).saturating_sub(i64::from(from_min));
+    let mapped = i64::from(to_min).saturating_add(numerator.checked_div(denominator).unwrap_or(0));
     i16::try_from(mapped.clamp(i64::from(i16::MIN), i64::from(i16::MAX))).unwrap_or_default()
 }
 
@@ -377,7 +384,11 @@ fn query_abs_info(fd: libc::c_int, code: u16) -> io::Result<libc::input_absinfo>
     // request is the kernel EVIOCGABS read ioctl for one fixed axis code, and
     // the pointer remains valid and uniquely borrowed for the call.
     let mut info: libc::input_absinfo = unsafe { std::mem::zeroed() };
-    let request = nix::request_code_read!(b'E', 0x40 + code, size_of::<libc::input_absinfo>());
+    let request = nix::request_code_read!(
+        b'E',
+        0x40_u16.saturating_add(code),
+        size_of::<libc::input_absinfo>()
+    );
     let result = unsafe { libc::ioctl(fd, request as libc::c_ulong, &mut info) };
     if result < 0 {
         Err(io::Error::last_os_error())
