@@ -62,7 +62,8 @@ pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
-Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Image Editor and Photos have been built and run on Windows. Other apps
+Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Image Editor,
+Photos and Hex Editor have been built and run on Windows. Other apps
 are still being ported; a
 workspace-wide build currently includes Linux services and is not a Windows
 application build command.
@@ -219,6 +220,18 @@ wake the host so the library finishes loading without pointer or keyboard input.
 cargo test --locked -p photos --all-targets
 cargo test --locked -p qdoc --lib blobstore::
 ./tools/install-windows-apps.ps1 -Apps photos
+```
+
+Hex Editor is installed as **Hex Editor** (`hex-editor.exe`). Open a file through
+the native picker or pass its path as the first positional argument. `Ctrl+S`
+saves to the opened file. Bytes, paths and undo history stay device-local rather
+than entering the collaboration document. The executable regression test opens a
+Unicode path, edits a byte through the real headless input path, saves it and
+checks both the resulting file and the collaboration document.
+
+```powershell
+cargo test --locked -p hex-editor --all-targets
+./tools/install-windows-apps.ps1 -Apps hex-editor
 ```
 
 Clocks saves private device state under `%LOCALAPPDATA%/tilo/clocks.json` on
