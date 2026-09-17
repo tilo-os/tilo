@@ -1193,30 +1193,31 @@ pub fn install_document_opener(chrome: &chrome_state::Chrome) {
                 || path.display().to_string(),
                 |name| name.to_string_lossy().into_owned(),
             );
-            let tab = window_actions::open_hosted(
+            window_actions::open_hosted_after_setup(
                 &mut chrome.borrow_mut(),
                 app.kind,
                 title,
                 window_actions::Destination::Here,
-            );
-            {
-                let state = chrome.borrow_mut();
-                let mut tree = state.tree_mut();
-                tree.native_document_tabs.insert(
-                    tab,
-                    state::NativeDocumentReference {
-                        provider_id: app.package_id.to_string(),
-                        path: path.clone(),
-                    },
-                );
-                tree.flush_to_disk();
-            }
-            chrome.borrow().hosted_inputs.bind_document(
-                tab,
-                hosted_inputs::HostedDocument {
-                    provider_id: app.package_id,
-                    path,
-                    text,
+                |state, tab| {
+                    {
+                        let mut tree = state.tree_mut();
+                        tree.native_document_tabs.insert(
+                            tab,
+                            state::NativeDocumentReference {
+                                provider_id: app.package_id.to_string(),
+                                path: path.clone(),
+                            },
+                        );
+                        tree.flush_to_disk();
+                    }
+                    state.hosted_inputs.bind_document(
+                        tab,
+                        hosted_inputs::HostedDocument {
+                            provider_id: app.package_id,
+                            path,
+                            text,
+                        },
+                    );
                 },
             );
             return Ok(());
@@ -1353,7 +1354,16 @@ pub(crate) fn build_workspace_root_with_scene_parts(
             let groups: Vec<UiGroup> = strip
                 .window_groups
                 .iter()
-                .map(|g| to_ui_window_group_with_inputs(g, records, &chrome.borrow().hosted_inputs))
+                .map(|g| {
+                    let state = chrome.borrow();
+                    let mut group =
+                        to_ui_window_group_with_inputs(g, records, &state.hosted_inputs);
+                    tab_documents::apply_creation_failures(
+                        &mut group,
+                        &state.record_creation_errors(tree),
+                    );
+                    group
+                })
                 .collect();
             let mut strip_row: Box<GroupRow> = Box::new(
                 GroupRow::new(groups)

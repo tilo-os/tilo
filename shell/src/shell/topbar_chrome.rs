@@ -628,6 +628,7 @@ impl TopBarChrome {
     const CONTROL_OVERVIEW: &'static str = "topbar:overview";
     const CONTROL_WORKSPACE_UP: &'static str = "topbar:workspace-up";
     const CONTROL_WORKSPACE_DOWN: &'static str = "topbar:workspace-down";
+    const WORKSPACE_SETTINGS_ICON: ui::icons::Icon = ui::icons::Icon::Pencil;
     const CONTROL_WORKSPACE_SETTINGS: &'static str = "topbar:workspace-settings";
     const CONTROL_CENTER_CLOCK: &'static str = "topbar:center:clock";
     const CONTROL_CENTER_MONITOR: &'static str = "topbar:center:system-monitor";
@@ -1061,6 +1062,36 @@ impl TopBarChrome {
         x + switch_w + f64::from(tokens.spacing.s3)
     }
 
+    fn workspace_label(
+        &self,
+        text_renderer: &mut TextRenderer,
+        ws_text_size: f32,
+        label_budget: f32,
+    ) -> String {
+        // Workspace identity has priority over a redundant single-workspace count.
+        let position_suffix = if self.workspace_total <= 1 {
+            String::new()
+        } else {
+            format!(
+                "  {}/{}",
+                self.workspace_index.saturating_add(1),
+                self.workspace_total
+            )
+        };
+        let ws_weight = self.workspace_name_text_weight();
+        let suffix_width = text_renderer
+            .measure_weighted(&position_suffix, ws_text_size, None, ws_weight)
+            .0;
+        let name_budget = (label_budget - suffix_width).max(0.0);
+        let visible_name = text_renderer.elide_to_width_weighted(
+            &self.workspace_name,
+            ws_text_size,
+            name_budget,
+            ws_weight,
+        );
+        format!("{visible_name}{position_suffix}")
+    }
+
     /// Workspace-name pill (click toggles workspace settings) and its
     /// trailing gear glyph, starting at `x`.
     fn draw_workspace_pill(
@@ -1075,11 +1106,6 @@ impl TopBarChrome {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let ws_text_size = tokens.typography.scale.sm;
-        let position_suffix = format!(
-            "  {}/{}",
-            self.workspace_index.saturating_add(1),
-            self.workspace_total
-        );
         // Measured at the same weight it's drawn at (Semibold), so the
         // pill width tracks the glyph advance, not the narrower Regular.
         let ws_weight = self.workspace_name_text_weight();
@@ -1091,17 +1117,7 @@ impl TopBarChrome {
         let center_left =
             f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
         let label_budget = ui::num::f32_of_f64((center_left - x - 54.0).clamp(32.0, 260.0));
-        let suffix_width = text_renderer
-            .measure_weighted(&position_suffix, ws_text_size, None, ws_weight)
-            .0;
-        let name_budget = (label_budget - suffix_width).max(0.0);
-        let visible_name = text_renderer.elide_to_width_weighted(
-            &self.workspace_name,
-            ws_text_size,
-            name_budget,
-            ws_weight,
-        );
-        let ws_label = format!("{visible_name}{position_suffix}");
+        let ws_label = self.workspace_label(text_renderer, ws_text_size, label_budget);
         let (ws_w, ws_h) = text_renderer.measure_weighted(&ws_label, ws_text_size, None, ws_weight);
         let ws_y = center_y - f64::from(ws_h) / 2.0;
         let ws_pill_outer = Rect::new(
@@ -1167,7 +1183,7 @@ impl TopBarChrome {
             scene,
             transform,
             gear_rect,
-            ui::icons::Icon::Settings2,
+            Self::WORKSPACE_SETTINGS_ICON,
             if workspace_lens_open {
                 colors.accent[5]
             } else {
@@ -2997,6 +3013,25 @@ mod calendar_strip_tests {
 mod tests {
     use super::*;
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+
+    #[test]
+    fn compact_workspace_identity_outranks_redundant_position() {
+        let mut bar = sample_chrome();
+        bar.workspace_name = "Home".into();
+        bar.workspace_total = 1;
+        bar.workspace_index = 0;
+        let mut tr = TextRenderer::new();
+        let label = bar.workspace_label(&mut tr, 28.0, 112.0);
+        assert!(label.contains("Home"), "{label}");
+    }
+
+    #[test]
+    fn workspace_settings_affordance_is_distinct_from_global_controls() {
+        assert_ne!(
+            TopBarChrome::WORKSPACE_SETTINGS_ICON,
+            ui::icons::Icon::Settings2
+        );
+    }
 
     #[test]
     fn desktop_topbar_uses_scaled_tokens_once_and_contains_workspace_text() {

@@ -26,7 +26,7 @@ struct NotebookPreview {
     bounds: Rect,
     view: PreviewView,
 }
-pub(super) fn preview(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
+pub(crate) fn preview(input: PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
     let doc = automerge::AutoCommit::load(input.snapshot.bytes()).map_err(|e| e.to_string())?;
     let body = doc
         .get(ROOT, "body")
@@ -579,7 +579,7 @@ fn exported_accessibility_activation_preserves_pending_edits_through_back_live()
 }
 
 #[test]
-fn managed_registration_refuses_unsupported_multiple_scopes_and_empty_namespace() {
+fn managed_registration_supports_multiple_scopes_and_refuses_empty_namespace() {
     static MULTI: HistoryDefinition = HistoryDefinition {
         app_id: "dev.qos.history-fixture",
         scopes: &[
@@ -610,14 +610,11 @@ fn managed_registration_refuses_unsupported_multiple_scopes_and_empty_namespace(
         })
         .collect();
     let registration = HistoryRegistration::new(&MULTI, sources).unwrap();
-    assert!(
-        Driver::from_managed_root(
-            State::new(),
-            ManagedRoot::new(Box::new(Column::new()), registration),
-            (900, 650)
-        )
-        .is_err()
-    );
+    let mut driver = Driver::from_managed_root(
+        State::new(), ManagedRoot::new(Box::new(Column::new()), registration), (900, 650)
+    ).expect("registered scopes must compose in the managed host");
+    driver.click_named("history-scope-b").unwrap();
+    assert!(driver.targets().contains_key("history-scope-a"));
     assert!(
         HistoryRegistration::new(
             &DEFINITION,

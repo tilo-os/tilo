@@ -110,6 +110,35 @@ impl RecordPublisher {
         self.actor
     }
 
+    pub(crate) fn publication_lease(&self) -> Result<std::sync::MutexGuard<'_, ()>, RecordPublisherError> {
+        self.publish_lock.lock().map_err(|_| RecordPublisherError::PublicationUnavailable)
+    }
+
+    pub(crate) fn repository(&self) -> &Arc<RecordRepository> { &self.repository }
+
+    /// Build the exact bounded restore batch while the caller retains P and R.
+    pub(crate) fn sign_checked_restore(
+        &self, manifest: FileMutationTransactionManifestV1, previous_sequence: u64,
+    ) -> Result<crate::record_transaction::RecordTransactionJournalEntry, RecordPublisherError> {
+        if manifest.workspace_id != self.workspace_id || manifest.actor != self.actor
+            || !matches!(manifest.operation, collab_types::FileMutationOperationV1::RestoreContent { .. }) {
+            return Err(RecordPublisherError::TransactionScopeMismatch);
+        }
+        let transaction = FileMutationTransactionV1::signed(manifest, &self.signing_key)
+            .map_err(|_| RecordPublisherError::InvalidTransaction)?;
+        let record_id = transaction.manifest.participants[0].record_id;
+        let prepare = previous_sequence.checked_add(1).ok_or(RecordPublisherError::SequenceContention)?;
+        let commit = prepare.checked_add(1).ok_or(RecordPublisherError::SequenceContention)?;
+        Ok(crate::record_transaction::RecordTransactionJournalEntry {
+            schema_version: crate::record_transaction::RECORD_TRANSACTION_JOURNAL_VERSION,
+            participant_batches: vec![crate::record_transaction::RecordTransactionParticipantBatch {
+                record_id, envelopes: vec![
+                    RecordEnvelopeV1::signed(record_id, self.actor, prepare, RecordOperationV1::PrepareTransaction(transaction.clone()), &self.signing_key)?,
+                    RecordEnvelopeV1::signed(record_id, self.actor, commit, RecordOperationV1::CommitTransaction { transaction_id: transaction.manifest.transaction_id }, &self.signing_key)?,
+                ] }], transaction, phase: crate::record_transaction::RecordTransactionPhase::Prepared, namespace_delta: None,
+        })
+    }
+
     /// Sign, journal, commit, persist, and broadcast one replacement rename
     /// while holding the same local mutation lock as ordinary publication.
     ///
@@ -230,6 +259,11 @@ impl RecordPublisher {
             .map_err(|_| RecordPublisherError::PublicationUnavailable)?;
         let entries = journal.entries().cloned().collect::<Vec<_>>();
         for entry in entries {
+            if entry.phase == crate::record_transaction::RecordTransactionPhase::BroadcastCommitted
+                && matches!(entry.transaction.manifest.operation, collab_types::FileMutationOperationV1::RestoreContent { .. }) {
+                if entry.transaction.manifest.workspace_id != self.workspace_id { return Err(RecordPublisherError::TransactionScopeMismatch); }
+                continue;
+            }
             if entry.transaction.manifest.workspace_id != self.workspace_id
                 || entry.transaction.manifest.actor != self.actor
             {

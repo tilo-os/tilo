@@ -6589,7 +6589,7 @@ async fn drive_connection(
     clippy::similar_names,
     reason = "sk/pk and owner/editor pairings are the conventional, intentional names for a keypair and a two-role fixture"
 )]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -6604,7 +6604,7 @@ mod tests {
     use ed25519_dalek::SigningKey;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    enum DirectoryResolveMode {
+    pub(crate) enum DirectoryResolveMode {
         Found,
         Stale,
         NotFound,
@@ -6613,11 +6613,12 @@ mod tests {
     /// A real `Cap'n Proto` directory endpoint retained by the `LocalSet` test
     /// below. It answers only bounded inert rows, but is deliberately a
     /// capability client rather than a mock of the shell bridge.
-    struct TestActionDirectory {
+    pub(crate) struct TestActionDirectory {
         revision: String,
-        resolve_mode: DirectoryResolveMode,
+        pub(crate) resolve_mode: DirectoryResolveMode,
         confirmation_required: bool,
         query_count: usize,
+        resolve_count: usize,
     }
 
     impl TestActionDirectory {
@@ -6691,7 +6692,8 @@ mod tests {
             _params: action_directory::ResolveParams,
             mut results: action_directory::ResolveResults,
         ) -> Promise<(), capnp::Error> {
-            let state = self.state.borrow();
+            let mut state = self.state.borrow_mut();
+            state.resolve_count = state.resolve_count.saturating_add(1);
             let mut out = results.get().init_resolution();
             match state.resolve_mode {
                 DirectoryResolveMode::Found => {
@@ -6704,12 +6706,12 @@ mod tests {
         }
     }
 
-    struct LocalDirectoryFixture {
+    pub(crate) struct LocalDirectoryFixture {
         state: Arc<CapnpBrokerState>,
         directories: Rc<LocalActionDirectoryRegistry>,
         directory: action_directory::Client,
         directory_state: Rc<RefCell<TestActionDirectory>>,
-        broker: crate::shell::collab_broker::AppActionBroker,
+        pub(crate) broker: crate::shell::collab_broker::AppActionBroker,
         chrome: crate::shell::chrome_state::Chrome,
         cluster_id: String,
         route: CrdtRoute,
@@ -6717,18 +6719,45 @@ mod tests {
         invocation_rx: tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope>,
     }
 
+    impl LocalDirectoryFixture {
+        pub(crate) fn set_resolve_mode(&self, mode: DirectoryResolveMode) {
+            self.directory_state.borrow_mut().resolve_mode = mode;
+        }
+
+        pub(crate) fn take_invocation_actor(&mut self) -> Option<String> {
+            self.invocation_rx
+                .try_recv()
+                .ok()
+                .map(|invocation| invocation.actor)
+        }
+
+        pub(crate) fn resolve_count(&self) -> usize {
+            self.directory_state.borrow().resolve_count
+        }
+    }
+
     fn local_directory_fixture() -> LocalDirectoryFixture {
-        const PEER_ID: u64 = 71;
         let mut tree = WorkspaceTree::default();
         let mut workspace = crate::shell::state::Workspace::test_default(
             crate::shell::state::WorkspaceId(71),
             "Directory test room",
         );
-        let cluster_id = workspace.room.to_string();
         workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
         tree.workspaces.push(workspace);
         tree.set_active(crate::shell::state::WorkspaceId(71));
-        let membership = tree.shared();
+        local_directory_fixture_with_membership(tree.shared())
+    }
+
+    pub(crate) fn local_directory_fixture_with_membership(
+        membership: crate::shell::state::WorkspaceTreeHandle,
+    ) -> LocalDirectoryFixture {
+        const PEER_ID: u64 = 71;
+        let cluster_id = membership
+            .read()
+            .active_workspace()
+            .expect("directory fixture requires an active workspace")
+            .room
+            .to_string();
         let route = CrdtRoute::record("dev.qos.atlas", cluster_id.clone(), "atlas");
         let fanout = Arc::new(FanoutState::new());
         let (state, bridge_rx) = CapnpBrokerState::new(
@@ -6744,6 +6773,7 @@ mod tests {
             resolve_mode: DirectoryResolveMode::Found,
             confirmation_required: false,
             query_count: 0,
+            resolve_count: 0,
         }));
         let directory: action_directory::Client =
             capnp_rpc::new_client(TestActionDirectoryServer {
@@ -6797,7 +6827,7 @@ mod tests {
         clippy::future_not_send,
         reason = "the directory bridge is deliberately driven on the LocalSet because its Cap'n Proto state contains Rc values"
     )]
-    async fn drain_directory_bridge(fixture: &LocalDirectoryFixture) {
+    pub(crate) async fn drain_directory_bridge(fixture: &LocalDirectoryFixture) {
         fixture
             .state
             .drain_action_directory_bridge(&fixture.directories);

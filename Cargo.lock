@@ -1504,6 +1504,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "dirs 6.0.0",
+ "libc",
  "png 0.18.1",
  "pollster",
  "qos-actions",
@@ -9437,6 +9438,7 @@ dependencies = [
  "bitflags 2.11.0",
  "block2 0.6.2",
  "objc2 0.6.3",
+ "objc2-core-foundation",
  "objc2-foundation 0.3.2",
 ]
 
@@ -11440,6 +11442,28 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "zeroize",
+]
+
+[[package]]
+name = "qos-scratchpad"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atomic-file",
+ "automerge",
+ "clap",
+ "dirs 6.0.0",
+ "fs",
+ "iroh-blobs",
+ "qos-actions",
+ "qos-app",
+ "serde",
+ "serde_json",
+ "taffy",
+ "tempfile",
+ "tokio",
+ "vello",
+ "winit",
 ]
 
 [[package]]
@@ -15772,6 +15796,7 @@ dependencies = [
  "runtime-collab",
  "runtime-identity",
  "runtime-portal",
+ "rustc-hash 2.1.1",
  "rustls",
  "serde",
  "serde_bytes",
@@ -15802,6 +15827,7 @@ dependencies = [
  "vello",
  "vello_encoding",
  "wgpu",
+ "wgpu-hal",
  "winit",
  "zbus 4.4.0",
  "zeroize",
@@ -17163,8 +17189,6 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "29.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31f8e1a9e7a8512f276f7c62e018c7fa8d60954303fed2e5750114332049193f"
 dependencies = [
  "android_system_properties",
  "arrayvec",

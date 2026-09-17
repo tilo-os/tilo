@@ -49,6 +49,7 @@ mod ruler;
 mod style_color_picker;
 mod style_menu;
 mod template_picker;
+mod unsaved_changes;
 mod zoom_control;
 pub use ui::num;
 pub mod styles;
@@ -414,22 +415,69 @@ pub mod recovery {
     pub fn recovery_path_for(doc_path: Option<&Path>) -> PathBuf {
         let key = match doc_path {
             Some(p) => {
-                // Canonicalise lightly: prefer an absolute path so two ways of
-                // naming the same file collide on one recovery slot. We do NOT
-                // require the file to exist (it may be brand-new), so fall back
-                // to the path as-given when it can't be made absolute.
+                // Preserve the canonical identity of existing files, and resolve
+                // symlinked ancestors before a new file (or directory) exists.
+                // Otherwise first save can change /var/... into /private/var/...
+                // and strand the recovery copy under its former hash.
                 let abs = std::fs::canonicalize(p).unwrap_or_else(|_| {
-                    if p.is_absolute() {
+                    let absolute = if p.is_absolute() {
                         p.to_path_buf()
                     } else {
                         std::env::current_dir().map_or_else(|_| p.to_path_buf(), |d| d.join(p))
+                    };
+                    let mut resolved = PathBuf::new();
+                    for component in absolute.components() {
+                        match component {
+                            std::path::Component::CurDir => {}
+                            std::path::Component::ParentDir => {
+                                resolved.pop();
+                            }
+                            component => {
+                                resolved.push(component.as_os_str());
+                                if let Ok(canonical) = std::fs::canonicalize(&resolved) {
+                                    resolved = canonical;
+                                }
+                            }
+                        }
                     }
+                    resolved
                 });
                 abs.to_string_lossy().into_owned()
             }
             None => ":untitled:".to_string(),
         };
         base_dir().join(format!("{:016x}.md", fnv1a(key.as_bytes())))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_identity_survives_creation_below_symlinked_ancestor() {
+        let _guard = crate::tests::RECOVERY_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir =
+            std::env::temp_dir().join(format!("writer-recovery-identity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("alias")).unwrap();
+        let target = dir.join("alias/new/nested/doc.md");
+        let before = recovery_path_for(Some(&target));
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"saved").unwrap();
+        assert_eq!(
+            before,
+            recovery_path_for(Some(&target)),
+            "creating a file must preserve its recovery identity"
+        );
+        assert_eq!(
+            before,
+            recovery_path_for(Some(&target.canonicalize().unwrap()))
+        );
+        let with_parent = dir.join("alias/new/nested/../other.md");
+        let before_parent = recovery_path_for(Some(&with_parent));
+        std::fs::write(&with_parent, b"saved").unwrap();
+        assert_eq!(before_parent, recovery_path_for(Some(&with_parent)));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// Write a recovery copy (Markdown bytes) for `doc_path`. Best-effort: creates
@@ -1005,7 +1053,7 @@ mod tests {
     /// Each such test holds this for its whole body so the var is never observed
     /// half-set by a sibling. `lock().unwrap_or_else(|e| e.into_inner())` keeps a
     /// panicking test from poisoning the suite.
-    static RECOVERY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(super) static RECOVERY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// A unique temp directory for a recovery test, cleaned up by the test (the
     /// recovery store never touches the real `$HOME` thanks to the base override).

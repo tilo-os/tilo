@@ -76,11 +76,25 @@ pub fn open_hosted(
     title: impl Into<String>,
     dest: Destination,
 ) -> TabId {
+    open_hosted_after_setup(st, kind, title, dest, |_, _| {})
+}
+
+/// File openers finalize their reference and startup payload before the
+/// creation owner captures its exact scratch-record ticket.
+pub(crate) fn open_hosted_after_setup(
+    st: &mut ChromeState,
+    kind: AppKind,
+    title: impl Into<String>,
+    dest: Destination,
+    setup: impl FnOnce(&mut ChromeState, TabId),
+) -> TabId {
     let placement = placement_for(st, dest);
     let id = {
         let mut tree = st.tree_mut();
         tab_binding::open_hosted_app(&mut tree, kind, title, placement)
     };
+    setup(st, id);
+    st.create_new_tab_record(id);
     st.bump();
     id
 }
@@ -163,6 +177,7 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateErro
         let mut tree = st.tree_mut();
         tab_binding::open_hosted_app(&mut tree, kind, title, placement)
     };
+    st.create_new_tab_record(id);
     st.bump();
     Ok(id)
 }
@@ -175,6 +190,28 @@ mod tests {
 
     fn chrome_with_default_tree() -> crate::shell::chrome_state::Chrome {
         ChromeState::new(WorkspaceTree::bootstrap_demo())
+    }
+
+    #[test]
+    fn history_new_hosted_tabs_have_records_before_tree_rebuild() {
+        let chrome = chrome_with_default_tree();
+        let mut st = chrome.borrow_mut();
+        let first = open_hosted(
+            &mut st,
+            AppKind::Other("Notes".into()),
+            "Notes",
+            Destination::Beside,
+        );
+        let second = duplicate_active_tab(&mut st).unwrap();
+        for id in [first, second] {
+            assert!(
+                st.records()
+                    .read(&ui::RecordId::for_tab(id), |_| ())
+                    .is_some(),
+                "the creating action must establish its new record before presentation"
+            );
+        }
+        assert_ne!(first, second);
     }
 
     /// The group the user is looking at, and the number of tabs in it.

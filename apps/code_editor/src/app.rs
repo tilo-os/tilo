@@ -425,6 +425,19 @@ fn language_from_label(label: &str) -> Option<Language> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct DiagnosticsRevision {
+    heads: Vec<ChangeHash>,
+    buffer: String,
+    language: Language,
+    scope: lint::Scope,
+}
+
+struct DiagnosticsCache {
+    revision: DiagnosticsRevision,
+    local: Vec<crate::bottom_panel::Diagnostic>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SearchProjectionRevision {
     /// Collaborative text and durable file metadata are authoritative in the
     /// CRDT, so its heads cheaply cover every remote/local document edit.
@@ -568,6 +581,9 @@ pub struct CodeApp {
     /// The buffer text last sent to the LSP server (as `didChange`), so we only
     /// notify on an actual change.
     lsp_sent_text: String,
+    diagnostics_cache: Option<DiagnosticsCache>,
+    #[cfg(test)]
+    diagnostics_buffer_reads: usize,
     /// What the server is currently busy with, if anything. Shown in the status
     /// bar so a multi-minute rust-analyzer index reads as "working", not
     /// "broken".
@@ -924,6 +940,9 @@ impl CodeApp {
             lsp_version: 0,
             lsp_diagnostics: std::collections::HashMap::new(),
             lsp_sent_text: String::new(),
+            diagnostics_cache: None,
+            #[cfg(test)]
+            diagnostics_buffer_reads: 0,
             lsp_status: LspStatus::None,
             lsp_failed: std::collections::HashSet::new(),
             find: FindBar::new(),
@@ -1467,6 +1486,17 @@ impl CodeApp {
     /// information cannot usefully disagree with a compiler, and when it does
     /// the user is the one who has to work out which to believe.
     fn refresh_diagnostics(&mut self, doc: &AutoCommit) {
+        use automerge::transaction::Transactable;
+        // Heads identify committed CRDT content, including remote/history changes.
+        // Even zero pending operations may hide an open empty transaction.
+        // Obtain the witness on a clone: get_heads must never close the caller's
+        // transaction or change its patch/history cursors. Pending edits bypass
+        // caching; an equal pending-operation count is not a content version.
+        let heads = (doc.pending_ops() == 0).then(|| doc.clone().get_heads());
+        self.refresh_diagnostics_at(doc, heads);
+    }
+
+    fn refresh_diagnostics_at(&mut self, doc: &AutoCommit, heads: Option<Vec<ChangeHash>>) {
         let lsp_for_buffer = self
             .lsp_uri
             .as_ref()
@@ -1480,13 +1510,43 @@ impl CodeApp {
             lint::Scope::Full
         };
 
-        let mut diagnostics = match self.session.active_buffer() {
-            Some(buf) => {
-                let text =
-                    EditorDoc::read_buffer_key(doc, &self.buffer_key(buf.node)).unwrap_or_default();
-                lint::lint(&text, buf.language, scope)
-            }
-            None => Vec::new(),
+        let active = self
+            .session
+            .active_buffer()
+            .map(|buf| (self.buffer_key(buf.node), buf.language));
+        let revision = heads.and_then(|heads| {
+            active.as_ref().map(|(buffer, language)| DiagnosticsRevision {
+                heads,
+                buffer: buffer.clone(),
+                language: *language,
+                scope,
+            })
+        });
+        let cached = revision.as_ref().and_then(|revision| {
+            self.diagnostics_cache
+                .as_ref()
+                .filter(|cache| &cache.revision == revision)
+        });
+        let mut diagnostics = if let Some(cache) = cached {
+            cache.local.clone()
+        } else {
+            let local = match active {
+                Some((key, language)) => {
+                    #[cfg(test)]
+                    {
+                        self.diagnostics_buffer_reads += 1;
+                    }
+                    // The editor's optimistic text is not authoritative here.
+                    let text = EditorDoc::read_buffer_key(doc, &key).unwrap_or_default();
+                    lint::lint(&text, language, scope)
+                }
+                None => Vec::new(),
+            };
+            self.diagnostics_cache = revision.map(|revision| DiagnosticsCache {
+                revision,
+                local: local.clone(),
+            });
+            local
         };
         if let Some(lsp) = lsp_for_buffer {
             diagnostics.extend(lsp.iter().map(super::lsp::LspDiagnostic::to_panel));
@@ -3505,7 +3565,7 @@ impl CodeApp {
             self.editor.set_diagnostics(&diags);
             self.lsp_diagnostics.insert(uri, diags);
         }
-        self.refresh_diagnostics(doc);
+        self.refresh_diagnostics_at(doc, None);
 
         // Canned completion response fed through the real parser.
         let completion_json = serde_json::json!({
@@ -4161,6 +4221,43 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 }
 
 impl Widget for CodeApp {
+    fn native_input_snapshot(&self, doc: &AutoCommit, _path: &ObjId) -> Option<serde_json::Value> {
+        fn rect(rect: Rect) -> [f64; 4] {
+            [rect.x0, rect.y0, rect.x1, rect.y1]
+        }
+        // Read authoritative text, never the editor's optimistic render cache.
+        // Only the opt-in native input observer invokes this O(buffer length) read.
+        let buffer_id = self.active_file_node().map(|node| self.buffer_key(node));
+        let body = buffer_id
+            .as_ref()
+            .and_then(|key| EditorDoc::read_buffer_key(doc, key));
+        let editor_rect = self.editor.get_rect();
+        let (offset_x, offset_y) = self.editor.native_scroll_offsets();
+        let (caret_line, caret_column) = self.editor.primary_caret();
+        Some(serde_json::json!({
+            "app": "dev.qos.code-editor",
+            "editor_id": "editor_view",
+            "hash_algorithm": "sha256",
+            "buffer_id": buffer_id,
+            "body_hash": body.as_ref().map(|text| crate::native_fixture::hash(text.as_bytes())),
+            "body_bytes": body.as_ref().map(String::len),
+            "editor_focused": self.editor.is_focused(),
+            "caret_line": caret_line,
+            "caret_column": caret_column,
+            "caret_count": self.editor.caret_count(),
+            "selection_chars": self.editor.selection_len(),
+            "offset_x": offset_x,
+            "offset_y": offset_y,
+            "offset_x_unit": "pixels",
+            "offset_y_unit": "lines",
+            "root_rect": rect(self.rect),
+            "editor_rect": rect(editor_rect),
+            "ready": body.is_some() && self.editor.is_bound()
+                && self.rect.width() > 0.0 && self.rect.height() > 0.0
+                && editor_rect.width() > 0.0 && editor_rect.height() > 0.0,
+        }))
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CODE_EDITOR_OPERATION_TYPE]
     }
@@ -6645,3 +6742,11 @@ mod tests {
         assert_eq!(app.session.open.len(), before - 1);
     }
 }
+
+#[cfg(test)]
+#[path = "native_proof_tests.rs"]
+mod native_proof_tests;
+
+#[cfg(test)]
+#[path = "diagnostics_cache_tests.rs"]
+mod diagnostics_cache_tests;

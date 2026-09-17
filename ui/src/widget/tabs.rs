@@ -540,7 +540,7 @@ impl TabBar {
         } else {
             text_dim
         };
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = theme.tokens.typography.scale.sm / tr.text_scale();
         let title_weight = TextWeight::Semibold;
         let (_tw, th) = tr.measure_weighted(&t.title, text_size, None, title_weight);
         let accent = self.accent_ids.get(&t.id).copied();
@@ -901,7 +901,7 @@ impl TabBar {
             &pill_appearance(theme, false, true, false),
             1.0,
         );
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = theme.tokens.typography.scale.sm / tr.text_scale();
         let title_weight = TextWeight::Semibold;
         let (_tw, th) = tr.measure_weighted(&c.desc.title, text_size, None, title_weight);
         let leading_shift = if let Some(kind) = c.desc.app_kind {
@@ -1193,7 +1193,7 @@ impl TabBar {
         if self.pinned_ids.contains(&t.id) {
             return None;
         }
-        let size = theme.tokens.typography.scale.sm;
+        let size = theme.tokens.typography.scale.sm / tr.text_scale();
         let title = t.title.clone();
         let id = t.id;
         // Record the shaped advance here — `apply_layout` has no text renderer of
@@ -1212,6 +1212,27 @@ impl TabBar {
         let budget = (zx1 - zx0) as f32;
         if full_w <= budget {
             return Some(title);
+        }
+        if let Some((stem, extension)) = title.rsplit_once('.') {
+            let chars: Vec<char> = stem.chars().collect();
+            // File identities often differ at the end (number/version). Keep
+            // that suffix; drop the extension only if it would hide identity.
+            for suffix in [format!(".{extension}"), String::new()] {
+                for keep in (3..=chars.len()).rev() {
+                    let tail: String = chars
+                        .iter()
+                        .skip(chars.len().saturating_sub(keep))
+                        .collect();
+                    let candidate = format!("…{tail}{suffix}");
+                    if tr
+                        .measure_weighted(&candidate, size, None, TextWeight::Semibold)
+                        .0
+                        <= budget
+                    {
+                        return Some(candidate);
+                    }
+                }
+            }
         }
         Some(tr.elide_to_width_weighted(&title, size, budget, TextWeight::Semibold))
     }
@@ -3080,6 +3101,51 @@ mod tests {
             Rect::new(180.0, 10.0, 196.0, 30.0),
         ];
         b
+    }
+
+    #[test]
+    fn compact_large_text_document_tabs_remain_distinguishable() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let mut bar = TabBar::new(
+            "docs",
+            vec![
+                TabDescriptor::new(1, "Document-000.txt"),
+                TabDescriptor::new(2, "Document-060.txt"),
+            ],
+            1,
+        );
+        lay_out_at_width(&mut bar, 350.0);
+        let first = bar.visible_title(0, &mut tr, &theme).unwrap();
+        let second = bar.visible_title(1, &mut tr, &theme).unwrap();
+        assert_ne!(first, second, "document identity must survive narrow tabs");
+        assert!(second.contains("060"), "{second}");
+        let mut scene = Scene::new();
+        bar.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        assert!(
+            scene
+                .encoding()
+                .resources
+                .glyph_runs
+                .iter()
+                .all(|run| run.font_size <= theme.tokens.typography.scale.sm)
+        );
+        assert!(
+            scene
+                .encoding()
+                .resources
+                .glyph_runs
+                .iter()
+                .any(|run| (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.01),
+            "tab title must retain the requested 200% font size"
+        );
     }
 
     #[test]

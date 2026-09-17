@@ -144,6 +144,10 @@ pub struct NavShell {
 
     // --- inner taffy for the children ---
     inner_taffy: Option<TaffyTree<()>>,
+    /// Pane constraints used by the retained child tree (origins may translate).
+    inner_extents: Option<[(f64, f64); 3]>,
+    /// Preserve the outer layout typography for the isolated child tree.
+    layout_theme: Theme,
     sidebar_node: Option<NodeId>,
     overview_node: Option<NodeId>,
     detail_node: Option<NodeId>,
@@ -179,6 +183,8 @@ impl NavShell {
             hide_docked_toggle: false,
             last_cursor: Point::ZERO,
             inner_taffy: None,
+            inner_extents: None,
+            layout_theme: Theme::dark(),
             sidebar_node: None,
             overview_node: None,
             detail_node: None,
@@ -204,6 +210,7 @@ impl NavShell {
     /// Attach a genuine sidebar: `[ sidebar | overview | detail ]`.
     #[must_use]
     pub fn with_sidebar(mut self, sidebar: Element) -> Self {
+        self.inner_taffy = None;
         self.sidebar = Some(sidebar);
         self
     }
@@ -254,10 +261,12 @@ impl NavShell {
     // swapping preserves the sidebar/push position across the rebuild.
 
     pub fn set_overview(&mut self, overview: Element) {
+        self.inner_taffy = None;
         self.overview = overview;
     }
 
     pub fn set_detail(&mut self, detail: Element) {
+        self.inner_taffy = None;
         self.detail = Some(detail);
     }
 
@@ -265,6 +274,7 @@ impl NavShell {
     /// shell. Writes the same slot as [`Self::set_overview`]; named so a
     /// single-pane app doesn't have to call its content an "overview".
     pub fn set_content(&mut self, content: Element) {
+        self.inner_taffy = None;
         self.overview = content;
     }
 
@@ -273,6 +283,7 @@ impl NavShell {
     }
 
     pub fn set_sidebar(&mut self, sidebar: Option<Element>) {
+        self.inner_taffy = None;
         self.sidebar = sidebar;
     }
 
@@ -665,30 +676,52 @@ impl NavShell {
             );
         }
 
+        self.apply_child_layout(&taffy, o_node, d_node, s_node);
+        self.inner_taffy = Some(taffy);
+        self.inner_extents = Some(self.child_extents());
+        self.overview_node = Some(o_node);
+        self.detail_node = d_node;
+        self.sidebar_node = s_node;
+    }
+
+    fn child_extents(&self) -> [(f64, f64); 3] {
+        [
+            self.content_child_rect(self.overview_rect),
+            self.content_child_rect(self.detail_rect),
+            self.sidebar_content_rect(),
+        ]
+        .map(|rect| (rect.width(), rect.height()))
+    }
+
+    fn apply_child_layout(
+        &mut self,
+        taffy: &TaffyTree<()>,
+        o_node: NodeId,
+        d_node: Option<NodeId>,
+        s_node: Option<NodeId>,
+    ) {
+        let sidebar_child_rect = self.sidebar_content_rect();
+        let overview_child_rect = self.content_child_rect(self.overview_rect);
+        let detail_child_rect = self.content_child_rect(self.detail_rect);
         self.overview.apply_layout(
-            &taffy,
+            taffy,
             o_node,
             Point::new(overview_child_rect.x0, overview_child_rect.y0),
         );
         if let (Some(d), Some(dn)) = (self.detail.as_mut(), d_node) {
             d.apply_layout(
-                &taffy,
+                taffy,
                 dn,
                 Point::new(detail_child_rect.x0, detail_child_rect.y0),
             );
         }
         if let (Some(sb), Some(sn)) = (self.sidebar.as_mut(), s_node) {
             sb.apply_layout(
-                &taffy,
+                taffy,
                 sn,
                 Point::new(sidebar_child_rect.x0, sidebar_child_rect.y0),
             );
         }
-
-        self.inner_taffy = Some(taffy);
-        self.overview_node = Some(o_node);
-        self.detail_node = d_node;
-        self.sidebar_node = s_node;
     }
 
     /// Driven from the draw path, never `update` (which `ui::App` never
@@ -811,6 +844,16 @@ impl NavShell {
 }
 
 impl Widget for NavShell {
+    fn has_action_control_bindings(&self) -> bool {
+        let mut found = false;
+        self.for_each_child(&mut |child| {
+            if !found {
+                found = child.has_action_control_bindings();
+            }
+        });
+        found
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.overview.sync(state, path);
         if let Some(d) = self.detail.as_mut() {
@@ -824,9 +867,12 @@ impl Widget for NavShell {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_theme = theme.clone();
+        // A rebuilt outer tree carries new typography or child structure.
+        self.inner_taffy = None;
         // Children live in an isolated inner tree: their rects escape normal
         // flow in overlay/push mode.
         let node = taffy.leaf_node(Style {
@@ -865,14 +911,40 @@ impl Widget for NavShell {
         self.last_mode = Some(mode);
 
         self.recompute_rects();
+        // Scroll-only frames reuse solved sizes throughout the framework.
+        // Apply them again so descendant scroll offsets and translated origins
+        // reach hit testing, without rebuilding trees or loading system fonts.
+        // A resize, rebuilt outer tree, swapped pane, or measure-dirty child
+        // takes the existing full measurement path below.
+        // Modal traversal intentionally exposes only the sidebar for input
+        // and accessibility, but all retained backdrop panes still sync/draw.
+        let children_need_measure = self.overview.layout_needs_measure()
+            || self
+                .detail
+                .as_ref()
+                .is_some_and(|pane| pane.layout_needs_measure())
+            || self
+                .sidebar
+                .as_ref()
+                .is_some_and(|pane| pane.layout_needs_measure());
+        if !children_need_measure
+            && self.inner_extents == Some(self.child_extents())
+            && let Some(o_node) = self.overview_node
+            && let Some(taffy) = self.inner_taffy.take()
+        {
+            self.apply_child_layout(&taffy, o_node, self.detail_node, self.sidebar_node);
+            self.inner_taffy = Some(taffy);
+            return;
+        }
         let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
+        let theme = self.layout_theme.clone();
+        tr.set_text_scale(theme.text_scale);
         self.place_children(&theme, &mut tr);
     }
 
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        // Slides advance from the draw path (`self_tick`); `ui::App` never
-        // calls `update`. Just forward and report whether frames are needed.
+        // Slides advance from the draw path (`self_tick`). The admitted
+        // primary-frame update forwards model/momentum updates to every pane.
         let mut any = self.overview.update(state, path);
         if let Some(d) = self.detail.as_mut() {
             any |= d.update(state, path);
@@ -1125,6 +1197,16 @@ impl Widget for NavShell {
         self.rect
     }
 
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        // Modal traversal hides backdrop panes from interaction/accessibility,
+        // but those retained panes still draw and must wake for timed changes.
+        self.overview.next_wake_deadline()
+            .into_iter()
+            .chain(self.detail.as_ref().and_then(|pane| pane.next_wake_deadline()))
+            .chain(self.sidebar.as_ref().and_then(|pane| pane.next_wake_deadline()))
+            .min()
+    }
+
     fn needs_animation_frame(&self) -> bool {
         self.animating
             || self.sidebar_flap.is_animating(self.sidebar_split_layout())
@@ -1147,6 +1229,9 @@ impl Widget for NavShell {
         }
         if let Some(s) = self.sidebar.as_mut() {
             d |= s.take_structure_dirty();
+        }
+        if d {
+            self.inner_taffy = None;
         }
         d
     }
@@ -1289,6 +1374,7 @@ mod tests {
     /// routing assertion rather than only a geometry assertion.
     struct EventProbe {
         id: &'static str,
+        deadline: Option<Instant>,
         events: std::rc::Rc<std::cell::Cell<usize>>,
         rect: Rect,
     }
@@ -1297,6 +1383,7 @@ mod tests {
         fn new(id: &'static str, events: std::rc::Rc<std::cell::Cell<usize>>) -> Self {
             Self {
                 id,
+                deadline: None,
                 events,
                 rect: Rect::ZERO,
             }
@@ -1304,6 +1391,10 @@ mod tests {
     }
 
     impl Widget for EventProbe {
+        fn next_wake_deadline(&self) -> Option<Instant> {
+            self.deadline
+        }
+
         fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
         fn build_layout(
@@ -1403,6 +1494,200 @@ mod tests {
             )
             .unwrap();
         ns.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    #[test]
+    fn translated_scroll_layout_reuses_measured_child_tree_without_new_fonts() {
+        use crate::widget::Scrollable;
+        let content = Scrollable::new_vertical().with_child(Box::new(Text::new(
+            &"file row with a measured label\n".repeat(100),
+        )));
+        let mut ns = NavShell::sidebar_over_content(
+            Box::new(Text::new("Places\nHome\nDownloads")),
+            Box::new(content),
+        );
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::new();
+        let mut map = HashMap::new();
+        let node = ns.build_layout(&mut taffy, &theme, &mut map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1000.0),
+                    height: taffy::AvailableSpace::Definite(500.0),
+                },
+            )
+            .unwrap();
+        ns.apply_layout(&taffy, node, Point::ZERO);
+        ns.mark_drawn();
+        let old_child = ns.overview.children()[0].get_rect();
+        let old_node = ns.overview_node;
+        crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
+        for _ in 1..=4 {
+            ns.overview
+                .as_any_mut()
+                .unwrap()
+                .downcast_mut::<Scrollable>()
+                .unwrap()
+                .scroll_by(0.0, 20.0);
+            assert!(ns.is_layout_dirty(), "scroll must reposition children");
+            assert!(
+                !ns.layout_needs_measure(),
+                "scroll leaves intrinsic sizes intact"
+            );
+            ns.apply_layout(&taffy, node, Point::new(12.0, 7.0));
+            ns.mark_drawn();
+        }
+        let child = ns.overview.children()[0].get_rect();
+        assert_eq!(child.x0, old_child.x0 + 12.0);
+        assert_eq!(child.y0, old_child.y0 + 7.0 - 80.0);
+        assert_eq!(ns.overview_node, old_node);
+        assert_eq!(
+            crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get),
+            0,
+            "translation-only layout must not reload system fonts"
+        );
+    }
+
+    #[test]
+    fn opaque_hold_deadline_reaches_host_through_modal_nav_shell() {
+        let deadline = Instant::now() + std::time::Duration::from_millis(900);
+        let mut content = EventProbe::new("content", Default::default());
+        content.deadline = Some(deadline);
+        let mut ns = NavShell::sidebar_over_content(Box::new(Text::new("places")), Box::new(content));
+        lay_out(&mut ns, 420.0, 500.0);
+        ns.snap_sidebar(true);
+        assert!(ns.overlay_sidebar_is_modal());
+        assert_eq!(ns.next_wake_deadline(), Some(deadline), "a live backdrop must still wake for its fade");
+    }
+
+    #[test]
+    fn control_presence_modal_exposure_matches_full_inventory() {
+        let resource = qos_actions::Resource::new("test-pane", "test", "Test")
+            .with_action(qos_actions::ActionSpec::operation("go", "Go", qos_actions::OperationKind::View, "test.go", &()).unwrap());
+        let button = crate::widget::Button::new("go", "Go", None)
+            .on_action(qos_actions::ActionBinding::unit_for(&resource, "go").unwrap());
+        let mut ns = NavShell::sidebar_over_content(Box::new(Text::new("places")), Box::new(button));
+        lay_out(&mut ns, 420.0, 500.0);
+        for open in [false, true, false] {
+            ns.snap_sidebar(open);
+            let inventory = ns.control_action_bindings().iter().any(|b|
+                matches!(b.kind, crate::widget::ControlBindingKind::Action(_)));
+            assert_eq!(ns.has_action_control_bindings(), inventory);
+            assert_eq!(inventory, !open, "modal sidebar hides overview emitter");
+        }
+    }
+
+    #[test]
+    fn modal_drawer_remeasures_changed_backdrop_panes() {
+        use automerge::transaction::Transactable;
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "label", "first line").unwrap();
+        let mut ns = NavShell::sidebar_over_content(
+            Box::new(Text::new("places")),
+            Box::new(Text::from_document_string("label")),
+        );
+        ns.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut ns, 420.0, 500.0);
+        ns.snap_sidebar(true);
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::new();
+        let node = ns.build_layout(&mut taffy, &theme, &mut HashMap::new());
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(420.0),
+                    height: taffy::AvailableSpace::Definite(500.0),
+                },
+            )
+            .unwrap();
+        ns.apply_layout(&taffy, node, Point::ZERO);
+        ns.overview.mark_drawn();
+        ns.sidebar.as_mut().unwrap().mark_drawn();
+        let before = ns.overview.get_rect();
+        doc.put(
+            automerge::ROOT,
+            "label",
+            "first line\nsecond line\nthird line",
+        )
+        .unwrap();
+        ns.sync(&mut doc, &automerge::ROOT);
+        assert!(ns.overlay_sidebar_is_modal());
+        assert!(ns.overview.layout_needs_measure());
+        assert!(
+            !ns.layout_needs_measure(),
+            "modal traversal exposes only the clean sidebar"
+        );
+        ns.apply_layout(&taffy, node, Point::ZERO);
+        let reused = ns.overview.get_rect();
+        assert!(
+            reused.height() > before.height(),
+            "live backdrop must receive changed text geometry"
+        );
+        // Force the authoritative full path and compare its complete rectangle.
+        ns.inner_taffy = None;
+        ns.apply_layout(&taffy, node, Point::ZERO);
+        assert_eq!(reused, ns.overview.get_rect());
+    }
+
+    #[test]
+    fn measured_shell_rebuilds_after_theme_resize_and_child_replacement() {
+        let mut ns = NavShell::new(
+            Box::new(Text::new("overview")),
+            Box::new(Text::new("detail")),
+        );
+        lay_out(&mut ns, 1000.0, 500.0);
+        ns.mark_drawn();
+        let original = ns.overview.get_rect();
+        let mut theme = Theme::dark();
+        theme.text_scale = 1.5;
+        let mut taffy = TaffyTree::new();
+        let mut map = HashMap::new();
+        let node = ns.build_layout(&mut taffy, &theme, &mut map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1200.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+        ns.apply_layout(&taffy, node, Point::ZERO);
+        assert!(ns.overview.get_rect().height() > original.height());
+        let mut fresh = NavShell::new(
+            Box::new(Text::new("overview")),
+            Box::new(Text::new("detail")),
+        );
+        let mut fresh_taffy = TaffyTree::new();
+        let fresh_node = fresh.build_layout(&mut fresh_taffy, &theme, &mut HashMap::new());
+        fresh_taffy
+            .compute_layout(
+                fresh_node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1200.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+        fresh.apply_layout(&fresh_taffy, fresh_node, Point::ZERO);
+        assert_eq!(ns.overview.get_rect(), fresh.overview.get_rect());
+        ns.mark_drawn();
+        // Swapping a previously laid-out, clean pane must invalidate the
+        // retained tree even though the incoming widget needs no measurement.
+        let mut replacement = NavShell::new(
+            Box::new(Text::new("replacement\nsecond line")),
+            Box::new(Text::new("detail")),
+        );
+        lay_out(&mut replacement, 1200.0, 600.0);
+        replacement.mark_drawn();
+        assert!(!replacement.overview.layout_needs_measure());
+        ns.set_overview(replacement.overview);
+        assert!(!ns.layout_needs_measure());
+        ns.apply_layout(&taffy, node, Point::ZERO);
+        assert!(ns.overview.get_rect().height() > fresh.overview.get_rect().height());
     }
 
     fn sidebar_content_shell(w: f64) -> NavShell {

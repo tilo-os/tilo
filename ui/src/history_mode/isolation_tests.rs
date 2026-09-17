@@ -20,26 +20,33 @@ use vello::{
 };
 use winit::event::WindowEvent;
 
-fn resource() -> qos_actions::Resource {
-    qos_actions::Resource::new("live", "fixture", "Live owner").with_action(
+fn resource() -> qos_actions::Resource { resource_for("live", "fixture.export") }
+fn resource_for(id: &str, operation: &str) -> qos_actions::Resource {
+    qos_actions::Resource::new(id, "fixture", "Live owner").with_action(
         qos_actions::ActionSpec::operation(
             "export",
             "Export",
             qos_actions::OperationKind::Effect,
-            "fixture.export",
+            operation,
             &(),
         )
         .unwrap()
-        .execution(qos_actions::ExecutionMode::Background { cancellable: false }),
+        .execution(qos_actions::ExecutionMode::Background { cancellable: false })
+        .returns(qos_actions::ResultSpec::Job),
     )
 }
 struct LiveOwner {
+    resource_id: &'static str,
+    type_id: &'static str,
     text: Text,
     emitter: Rc<RefCell<ActionEmitter<()>>>,
     starts: Rc<Cell<usize>>,
     finish: Rc<Cell<bool>>,
     completions: Rc<Cell<usize>>,
     local_events: Rc<Cell<usize>>,
+    collab_events: Rc<Cell<usize>>,
+    bracket: Rc<RefCell<Option<Vec<automerge::ChangeHash>>>>,
+    undo_request: Rc<Cell<Option<crate::undo::UndoRequest>>>,
     active: Option<qos_actions::InvocationId>,
 }
 impl Widget for LiveOwner {
@@ -47,7 +54,7 @@ impl Widget for LiveOwner {
         "Live owner"
     }
     fn test_id(&self) -> Option<&str> {
-        Some("live-owner")
+        Some(if self.resource_id == "live" { "live-owner" } else { self.resource_id })
     }
     fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
         self.text.sync(doc, path);
@@ -92,12 +99,18 @@ impl Widget for LiveOwner {
     ) {
         self.local_events.set(self.local_events.get() + 1);
     }
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> { self.bracket.borrow_mut().take() }
+    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> { self.undo_request.take() }
+    fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) { self.collab_events.set(self.collab_events.get()+1); }
     fn handle_local_undo_request(&mut self, _: crate::undo::UndoRequest) -> bool {
         self.local_events.set(self.local_events.get() + 1);
         true
     }
     fn resources(&self, _: &AutoCommit) -> Vec<qos_actions::Resource> {
-        vec![resource()]
+        vec![resource_for(self.resource_id, self.type_id)]
+    }
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        [self.type_id.to_owned()].into_iter().collect()
     }
     fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
         self.emitter.borrow_mut().take()
@@ -106,11 +119,12 @@ impl Widget for LiveOwner {
         &mut self,
         invocation: qos_actions::InvocationId,
         _: qos_actions::OperationKind,
-        _: &str,
+        type_id: &str,
         _: &[u8],
         _: &mut AutoCommit,
         _: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        if type_id != self.type_id { return Ok(None); }
         self.starts.set(self.starts.get() + 1);
         self.active = Some(invocation);
         Ok(Some(crate::widget::ResourceOperationStart::Accepted))
@@ -143,12 +157,15 @@ fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effec
     let completions = Rc::new(Cell::new(0));
     let local_events = Rc::new(Cell::new(0));
     let owner = LiveOwner {
+        resource_id: "live", type_id: "fixture.export",
         text: Text::new("Live owner"),
         emitter: emitter.clone(),
         starts: starts.clone(),
         finish: finish.clone(),
         completions: completions.clone(),
         local_events: local_events.clone(),
+        collab_events: Rc::new(Cell::new(0)),
+        bracket: Rc::new(RefCell::new(None)), undo_request: Rc::new(Cell::new(None)),
         active: None,
     };
     let mut state = State::new();
@@ -206,4 +223,36 @@ fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effec
         "preview cannot leave a queued local effect to run on return"
     );
     assert!(local_events.get() > events, "normal live input resumes");
+}
+
+
+pub(crate) struct EffectProbe {
+    pub(crate) root: Box<dyn crate::widget::AppWidget>,
+    pub(crate) emitter: Rc<RefCell<ActionEmitter<()>>>,
+    pub(crate) starts: Rc<Cell<usize>>,
+    pub(crate) finish: Rc<Cell<bool>>,
+    pub(crate) completions: Rc<Cell<usize>>,
+    pub(crate) collab_events: Rc<Cell<usize>>,
+    pub(crate) bracket: Rc<RefCell<Option<Vec<automerge::ChangeHash>>>>,
+    pub(crate) undo_request: Rc<Cell<Option<crate::undo::UndoRequest>>>,
+}
+pub(crate) fn native_effect_probe_parts(id: &'static str, operation: &'static str) -> EffectProbe {
+    let starts = Rc::new(Cell::new(0));
+    let finish = Rc::new(Cell::new(false));
+    let completions = Rc::new(Cell::new(0));
+    let emitter = Rc::new(RefCell::new(ActionEmitter::new(qos_actions::ActionBinding::unit_for(&resource_for(id, operation), "export").unwrap())));
+    let collab_events = Rc::new(Cell::new(0));
+    let bracket = Rc::new(RefCell::new(None)); let undo_request = Rc::new(Cell::new(None));
+    let root = Box::new(LiveOwner {
+        resource_id: id, type_id: operation, bracket: bracket.clone(), undo_request: undo_request.clone(),
+        text: Text::new(id), emitter: emitter.clone(), starts: starts.clone(), finish: finish.clone(),
+        completions: completions.clone(), collab_events: collab_events.clone(), local_events: Rc::new(Cell::new(0)), active: None,
+    });
+    EffectProbe { root, emitter, starts, finish, completions, collab_events, bracket, undo_request }
+}
+impl crate::widget::AppWidget for LiveOwner {
+    fn app_kind(&self) -> crate::widget::AppKind { crate::widget::AppKind::Editor }
+    fn app_title(&self) -> &str { "Live effect probe" }
+    fn app_icon(&self) -> crate::widget::IconDescriptor { crate::widget::IconDescriptor::Glyph("P") }
+    fn permission_hint(&self) -> Option<crate::widget::AppKind> { None }
 }

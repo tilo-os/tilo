@@ -647,6 +647,22 @@ impl DocStore {
     /// # Errors
     /// Refuses empty, corrupt, changed or unsupported documents without publishing a repair.
     pub fn load_canonical(&mut self) -> Result<Option<CanonicalLoad>, StoreError> {
+        self.load_canonical_with_recovery(true)
+    }
+
+    /// Decode a complete canonical graph without authorizing partial-tail repair.
+    /// The candidate stays bound to this owner and its exact source bytes until acceptance.
+    ///
+    /// # Errors
+    /// Refuses empty, incomplete, corrupt, changed or unsupported documents.
+    pub fn load_canonical_complete(&mut self) -> Result<Option<CanonicalLoad>, StoreError> {
+        self.load_canonical_with_recovery(false)
+    }
+
+    fn load_canonical_with_recovery(
+        &mut self,
+        recover_partial: bool,
+    ) -> Result<Option<CanonicalLoad>, StoreError> {
         self.check_canonical_source()?;
         let source_bytes = match fs::read(&self.document) {
             Ok(bytes) => bytes,
@@ -663,6 +679,7 @@ impl DocStore {
             LoadOptions::new().on_partial_load(OnPartialLoad::Error),
         ) {
             Ok(doc) => (doc, false),
+            Err(error) if !recover_partial => return Err(self.automerge_error(error)),
             Err(_) => (
                 AutoCommit::load_with_options(
                     &source_bytes,
@@ -789,6 +806,10 @@ impl DocStore {
     /// bytes aren't a loadable Automerge document, or if it declares a schema
     /// layout newer than this build understands ([`StoreError::NewerSchema`]).
     pub fn load(&mut self) -> Result<Option<AutoCommit>, StoreError> {
+        self.load_with_completeness(false)
+    }
+
+    fn load_with_completeness(&mut self, complete: bool) -> Result<Option<AutoCommit>, StoreError> {
         let bytes = match fs::read(&self.document) {
             Ok(b) => b,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -797,11 +818,21 @@ impl DocStore {
             }
         };
         if bytes.is_empty() {
-            return Ok(None);
+            return if complete {
+                Err(StoreError::EmptyExistingDocument {
+                    path: self.document.clone(),
+                })
+            } else {
+                Ok(None)
+            };
         }
         let mut doc = AutoCommit::load_with_options(
             &bytes,
-            LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
+            LoadOptions::new().on_partial_load(if complete {
+                OnPartialLoad::Error
+            } else {
+                OnPartialLoad::Ignore
+            }),
         )
         .map_err(|source| StoreError::Automerge {
             path: self.document.clone(),
@@ -820,6 +851,14 @@ impl DocStore {
         doc.set_actor(self.actor.clone());
         self.persisted = doc.get_heads();
         Ok(Some(doc))
+    }
+
+    /// Load a complete existing change graph for checked record admission.
+    ///
+    /// # Errors
+    /// Rejects incomplete, empty, unreadable, or unsupported stored documents.
+    pub fn load_complete(&mut self) -> Result<Option<AutoCommit>, StoreError> {
+        self.load_with_completeness(true)
     }
 
     /// Load the persisted document, falling back to an empty one. An unreadable
@@ -1349,6 +1388,61 @@ mod tests {
             std::env::remove_var("QOS_PACKAGE_ID");
         }
         tmp
+    }
+
+    #[test]
+    fn complete_load_refuses_truncated_increment_without_accepting_or_rewriting_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store =
+            DocStore::open_in("dev.qos.complete-load", tmp.path().to_path_buf()).unwrap();
+        let mut doc = store.new_document();
+        doc.put(ROOT, "body", "first").unwrap();
+        let mut bytes = doc.save();
+        doc.put(ROOT, "body", "later version").unwrap();
+        let increment = doc.save_incremental();
+        assert!(increment.len() > 8);
+        bytes.extend_from_slice(&increment[..increment.len() - 3]);
+        fs::write(store.document_path(), &bytes).unwrap();
+        let before = store.persisted.clone();
+        assert!(
+            store.load_complete().is_err(),
+            "checked admission cannot accept a valid prefix with a truncated appended change"
+        );
+        assert_eq!(
+            store.persisted, before,
+            "refused content cannot become the admitted persisted frontier"
+        );
+        assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
+        let legacy = store.load().unwrap().unwrap();
+        assert_eq!(
+            legacy.get(ROOT, "body").unwrap().unwrap().0.to_str(),
+            Some("first"),
+            "ordinary legacy recovery retains its prior partial-load behavior"
+        );
+    }
+
+    #[test]
+    fn complete_load_accepts_full_history_and_distinguishes_missing_from_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store =
+            DocStore::open_in("dev.qos.complete-load", tmp.path().to_path_buf()).unwrap();
+        assert!(store.load_complete().unwrap().is_none());
+        fs::write(store.document_path(), []).unwrap();
+        assert!(matches!(
+            store.load_complete(),
+            Err(StoreError::EmptyExistingDocument { .. })
+        ));
+        let mut doc = store.new_document();
+        doc.put(ROOT, "body", "first").unwrap();
+        let mut bytes = doc.save();
+        doc.put(ROOT, "body", "second").unwrap();
+        bytes.extend_from_slice(&doc.save_incremental());
+        let heads = doc.get_heads();
+        fs::write(store.document_path(), &bytes).unwrap();
+        let mut loaded = store.load_complete().unwrap().unwrap();
+        assert_eq!(loaded.get_heads(), heads);
+        assert_eq!(store.persisted, heads);
+        assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
     }
 
     #[test]

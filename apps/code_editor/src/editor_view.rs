@@ -36,7 +36,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Window
 use winit::keyboard::{Key, NamedKey};
 
 use crate::bottom_panel::Severity;
-use crate::highlight::{Highlighter, Span};
+use crate::highlight::{IncrementalHighlights, Span};
 use crate::lsp::{CompletionItem, LspDiagnostic, severity_from_lsp};
 use crate::model::Language;
 
@@ -135,6 +135,7 @@ pub struct EditorView {
     lines: Vec<String>,
     /// Highlight spans per line, recomputed when the buffer changes.
     spans: Vec<Vec<Span>>,
+    highlight_cache: IncrementalHighlights,
     /// The Automerge Text object this view edits. `None` until bound.
     text_obj: Option<ObjId>,
     /// Active language → grammar for highlighting.
@@ -213,6 +214,7 @@ impl EditorView {
             rect: Rect::ZERO,
             lines: vec![String::new()],
             spans: vec![Vec::new()],
+            highlight_cache: IncrementalHighlights::default(),
             text_obj: None,
             language: Language::PlainText,
             carets: vec![Caret::at(0, 0)],
@@ -313,9 +315,15 @@ impl EditorView {
         self.text_obj = None;
         self.lines = vec![String::new()];
         self.spans = vec![Vec::new()];
+        self.highlight_cache = IncrementalHighlights::default();
         self.carets = vec![Caret::at(0, 0)];
         self.cached_text.clear();
         self.dirty = true;
+    }
+
+    /// Read-only native diagnostic offsets: horizontal pixels, vertical lines.
+    pub(crate) fn native_scroll_offsets(&self) -> (f64, f64) {
+        (self.scroll_x, self.scroll_y)
     }
 
     pub fn is_bound(&self) -> bool {
@@ -366,7 +374,7 @@ impl EditorView {
     /// Rebuild the line + highlight caches from the buffer text.
     fn rebuild(&mut self, text: &str) {
         self.cached_text = text.to_string();
-        self.lines = if text.is_empty() {
+        let lines = if text.is_empty() {
             vec![String::new()]
         } else {
             text.split('\n')
@@ -375,26 +383,11 @@ impl EditorView {
         };
         // split('\n') on "a\n" yields ["a", ""]; that trailing empty line is
         // the editable line after the final newline, which is what we want.
-        self.recompute_highlight();
+        self.highlight_cache
+            .update(self.language, &self.lines, &lines, &mut self.spans);
+        self.lines = lines;
         self.clamp_carets();
         self.dirty = true;
-    }
-
-    /// Recompute highlight spans for every line. Multi-line constructs (block
-    /// comments, multi-line strings) carry state across lines via the
-    /// highlighter's `LineState`.
-    fn recompute_highlight(&mut self) {
-        let hl = Highlighter::for_language(self.language);
-        let mut state = hl.fresh_state();
-        self.spans = Vec::with_capacity(self.lines.len());
-        for line in &self.lines {
-            // The highlighter wants the trailing newline so anchored rules
-            // (line comments, etc.) terminate correctly.
-            let mut with_nl = line.clone();
-            with_nl.push('\n');
-            let spans = hl.highlight_line(&with_nl, &mut state);
-            self.spans.push(spans);
-        }
     }
 
     fn clamp_carets(&mut self) {
@@ -3090,5 +3083,28 @@ mod tests {
         ev.set_caret_for_test(0, 11);
         key(&mut ev, &mut doc, Key::Character("v".into()), true, false);
         assert_eq!(ev.text_for_test(), "hello worldhello");
+    }
+}
+
+#[cfg(test)]
+mod incremental_regression {
+    use super::*;
+
+    #[test]
+    fn rebuild_reuses_unchanged_highlight_suffix() {
+        let source = (0..2000)
+            .map(|i| format!("let value_{i} = {i};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut editor = EditorView::new();
+        editor.language = Language::Rust;
+        editor.rebuild(&source);
+        crate::highlight::take_parsed_line_count();
+        editor.rebuild(&source.replacen("value_0", "changed_0", 1));
+        let parsed = crate::highlight::take_parsed_line_count();
+        assert_eq!(
+            parsed, 1,
+            "a local edit with identical parser state must not reparse the other1999 lines"
+        );
     }
 }

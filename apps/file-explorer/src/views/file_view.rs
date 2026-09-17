@@ -157,6 +157,7 @@ pub struct FileView {
     selection: SelectionModel,
     mode: ViewMode,
     scale: f64,
+    text_scale: f64,
     sort_by: SortBy,
     sort_order: SortOrder,
     sink: CommandSink,
@@ -201,6 +202,7 @@ impl FileView {
             selection: selection.clone(),
             mode: ViewMode::List,
             scale: 1.0,
+            text_scale: 1.0,
             sort_by: SortBy::Name,
             sort_order: SortOrder::Ascending,
             sink: sink.clone(),
@@ -277,10 +279,10 @@ impl FileView {
     // --- scaled metrics ---------------------------------------------------
 
     fn row_h(&self) -> f64 {
-        LIST_ROW_H * self.scale
+        LIST_ROW_H * self.scale * self.text_scale
     }
     fn header_h(&self) -> f64 {
-        LIST_HEADER_H * self.scale
+        LIST_HEADER_H * self.scale * self.text_scale
     }
     /// Resolve grid geometry from the actual pane width. At large zoom a
     /// phone pane can fit two slightly narrower tiles even though it cannot
@@ -317,10 +319,10 @@ impl FileView {
         CONTENT_PAD_X * self.scale
     }
     fn body_text(&self, theme: &Theme) -> f32 {
-        (f64::from(theme.tokens.typography.scale.base) * self.scale) as f32
+        (f64::from(theme.tokens.typography.scale.base / theme.text_scale) * self.scale) as f32
     }
     fn header_text(theme: &Theme) -> f32 {
-        theme.tokens.typography.scale.sm
+        theme.tokens.typography.scale.sm / theme.text_scale
     }
 
     /// Grid columns that fit `width` (never zero).
@@ -500,10 +502,10 @@ impl FileView {
     /// cutoff made a 390 px window waste most of a large-text row on a `—`
     /// size placeholder and truncate the filename.
     fn show_size(&self) -> bool {
-        self.rect.width() > 340.0 * self.scale
+        self.rect.width() > 340.0 * self.scale * self.text_scale
     }
     fn show_modified(&self) -> bool {
-        self.rect.width() > 560.0 * self.scale
+        self.rect.width() > 560.0 * self.scale * self.text_scale
     }
     /// Whether list column `i` (0 name, 1 size, 2 modified) is currently shown.
     fn col_visible(&self, i: usize) -> bool {
@@ -541,8 +543,8 @@ impl FileView {
     fn header_col_rect(&self, i: usize) -> Rect {
         let x0 = self.rect.x0 + self.pad_x();
         let x1 = self.rect.x1 - self.pad_x();
-        let size_w = SIZE_COL_W * self.scale;
-        let mod_w = MOD_COL_W * self.scale;
+        let size_w = SIZE_COL_W * self.scale * self.text_scale;
+        let mod_w = MOD_COL_W * self.scale * self.text_scale;
         let gap = COL_GAP * self.scale;
         let show_mod = self.show_modified();
         let show_size = self.show_size();
@@ -627,7 +629,8 @@ impl FileView {
                 continue;
             }
             let cr = self.header_col_rect(i);
-            let ty = top + (header_h - f64::from(hsize)) / 2.0;
+            let (_, height) = tr.measure("Ag", hsize, None);
+            let ty = top + (header_h - f64::from(height)) / 2.0;
             let header = t(col.header_key);
             tr.draw_text(
                 scene,
@@ -803,7 +806,8 @@ impl FileView {
         let size = self.body_text(theme);
         // Optically center the row text so it lines up with the icon, which is
         // centered by its box (see `crate::text_layout`).
-        let text_y = crate::text_layout::centered_text_y(row.y0, row.height(), size);
+        let (_, height) = tr.measure("Ag", size, None);
+        let text_y = row.y0 + (row.height() - f64::from(height)) / 2.0;
         if self.renaming == Some(i) {
             // Publish the name field's rect and omit the label; the host
             // draws the in-place rename editor here.
@@ -1192,15 +1196,37 @@ impl FileView {
     }
 }
 
+#[cfg(test)]
+thread_local! { static MEASURE_CALLS: Cell<usize> = const { Cell::new(0) }; }
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static ACCESSIBILITY_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl Widget for FileView {
+    fn has_action_control_bindings(&self) -> bool {
+        // This custom-painted leaf exposes semantic actions, not ActionEmitters.
+        false
+    }
+
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn is_layout_dirty(&self) -> bool {
+        // Entries, mode and zoom are construction inputs: the host replaces
+        // this view when they change. Pointer/selection/thumbnail updates do
+        // not change its intrinsic geometry. Parent constraints still force
+        // measurement on resize, and a theme rebuild updates text_scale.
+        false
+    }
 
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = f64::from(theme.text_scale);
         // Fill the parent width (so the grid's column count is derived from the
         // real pane width, never collapsing to one column) and measure the
         // content height.
@@ -1239,8 +1265,11 @@ impl Widget for FileView {
         &mut self,
         known: taffy::Size<Option<f32>>,
         available: taffy::Size<taffy::AvailableSpace>,
-        _tr: &mut TextRenderer,
+        tr: &mut TextRenderer,
     ) -> taffy::Size<f32> {
+        #[cfg(test)]
+        MEASURE_CALLS.with(|count| count.set(count.get() + 1));
+        self.text_scale = f64::from(tr.text_scale());
         let width = known.width.map_or_else(
             || match available.width {
                 taffy::AvailableSpace::Definite(w) => f64::from(w),
@@ -1469,6 +1498,8 @@ impl Widget for FileView {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        #[cfg(test)]
+        ACCESSIBILITY_BUILDS.with(|count| count.set(count.get() + 1));
         use ui::a11y::{AccessNode, AccessState, Role};
         let primary = self.selection.primary();
         let value = primary
@@ -1753,10 +1784,18 @@ fn truncate(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> String 
     let mut keep = chars.len();
     while keep > 0 {
         keep -= 1;
-        let candidate: String = chars
-            .get(..keep)
-            .map_or_else(String::new, |s| s.iter().collect())
-            + "\u{2026}";
+        // Preserve the extension and distinguishing filename suffix at narrow
+        // widths; leading-only elision makes numbered documents identical.
+        let suffix = keep.saturating_mul(2).div_ceil(3);
+        let prefix = keep.saturating_sub(suffix);
+        let candidate = format!(
+            "{}…{}",
+            chars.iter().take(prefix).collect::<String>(),
+            chars
+                .iter()
+                .skip(chars.len().saturating_sub(suffix))
+                .collect::<String>()
+        );
         let (cw, _) = tr.measure(&candidate, size, None);
         if f64::from(cw) <= max_w {
             return candidate;
@@ -1824,6 +1863,206 @@ mod tests {
         v.rect = Rect::new(0.0, 0.0, width, 600.0);
         v.columns = v.columns_for_width(width);
         v
+    }
+
+    #[test]
+    fn scroll_layout_reuses_real_file_view_measurement() {
+        use ui::widget::{NavShell, Scrollable};
+        fn scroll(nav: &mut NavShell) -> &mut Scrollable {
+            nav.children_mut()
+                .into_iter()
+                .find_map(|child| child.as_any_mut()?.downcast_mut::<Scrollable>())
+                .expect("real scroll content")
+        }
+        for mode in [ViewMode::List, ViewMode::Grid] {
+            let sink = new_sink();
+            let sidebar = crate::places_sidebar::PlacesSidebar::new(
+                crate::places_sidebar::new_store(vec![]),
+                PathBuf::from("/x"),
+                sink.clone(),
+            );
+            let view = FileView::new(&items(1200), &SelectionModel::new(), &sink).mode(mode);
+            let mut nav = NavShell::sidebar_over_content(
+                Box::new(sidebar),
+                Box::new(Scrollable::new_vertical().with_child(Box::new(view))),
+            );
+            let theme = Theme::dark();
+            let mut tree = TaffyTree::new();
+            let node = nav.build_layout(&mut tree, &theme, &mut HashMap::new());
+            tree.compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1000.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+            nav.apply_layout(&tree, node, Point::ZERO);
+            nav.mark_drawn();
+            let before = scroll(&mut nav).children()[0].get_rect();
+            MEASURE_CALLS.with(|count| count.set(0));
+            for _ in 0..4 {
+                scroll(&mut nav).scroll_by(0.0, 20.0);
+                nav.apply_layout(&tree, node, Point::ZERO);
+                nav.mark_drawn();
+            }
+            let after = scroll(&mut nav).children()[0].get_rect();
+            assert_eq!(after.y0, before.y0 - 80.0);
+            assert_eq!(after.size(), before.size());
+            assert_eq!(
+                MEASURE_CALLS.with(Cell::get),
+                0,
+                "scrolling an unchanged directory must not remeasure its rows"
+            );
+            // Real pane resizing must still measure the width-dependent content.
+            tree.compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1200.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+            nav.apply_layout(&tree, node, Point::ZERO);
+            assert!(MEASURE_CALLS.with(Cell::get) > 0);
+            let resized = scroll(&mut nav).children()[0].get_rect();
+            if mode == ViewMode::Grid {
+                assert!(resized.height() < before.height());
+            }
+            // Theme rebuilds invalidate the retained tree, including scaled rows.
+            let scaled = Theme::dark().with_text_scale(2.0);
+            let node = nav.build_layout(&mut tree, &scaled, &mut HashMap::new());
+            tree.compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1200.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+            MEASURE_CALLS.with(|count| count.set(0));
+            nav.apply_layout(&tree, node, Point::ZERO);
+            assert!(MEASURE_CALLS.with(Cell::get) > 0);
+            let scaled_rect = scroll(&mut nav).children()[0].get_rect();
+            let mut expected =
+                FileView::new(&items(1200), &SelectionModel::new(), &sink).mode(mode);
+            expected.text_scale = 2.0;
+            expected.columns = expected.columns_for_width(scaled_rect.width());
+            assert!(
+                (scaled_rect.height() - expected.content_height(scaled_rect.width())).abs() < 0.01
+            );
+            // A new directory snapshot is remeasured even at identical pane size.
+            nav.set_content(Box::new(Scrollable::new_vertical().with_child(Box::new(
+                FileView::new(&items(120), &SelectionModel::new(), &sink).mode(mode),
+            ))));
+            MEASURE_CALLS.with(|count| count.set(0));
+            nav.apply_layout(&tree, node, Point::ZERO);
+            assert!(MEASURE_CALLS.with(Cell::get) > 0);
+            let replaced = scroll(&mut nav).children()[0].get_rect();
+            let mut expected = FileView::new(&items(120), &SelectionModel::new(), &sink).mode(mode);
+            expected.text_scale = 2.0;
+            expected.columns = expected.columns_for_width(replaced.width());
+            assert!((replaced.height() - expected.content_height(replaced.width())).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn nested_navigation_layout_preserves_large_text_file_row_geometry() {
+        let sink = new_sink();
+        let view = FileView::new(&items(2), &SelectionModel::new(), &sink);
+        let mut nav = ui::widget::NavShell::sidebar_over_content(
+            Box::new(ui::widget::Text::new("Places")),
+            Box::new(view),
+        );
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tree = TaffyTree::new();
+        let root = nav.build_layout(&mut tree, &theme, &mut HashMap::new());
+        tree.compute_layout(
+            root,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(1000.0),
+                height: taffy::AvailableSpace::Definite(700.0),
+            },
+        )
+        .unwrap();
+        nav.apply_layout(&tree, root, Point::ZERO);
+        let row = nav
+            .children()
+            .iter()
+            .filter_map(|child| child.accessibility())
+            .flat_map(|node| node.children)
+            .find(|node| node.name.as_deref() == Some("f0"))
+            .unwrap();
+        let bounds = row.bounds.unwrap();
+        assert!(
+            bounds.y1 - bounds.y0 >= 68.0,
+            "nested rows must receive200% layout scale: {bounds:?}"
+        );
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let mut scene = Scene::new();
+        nav.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        assert!(
+            scene
+                .encoding()
+                .resources
+                .glyph_runs
+                .iter()
+                .any(|run| (run.font_size - theme.tokens.typography.scale.base).abs() < 0.01)
+        );
+    }
+
+    #[test]
+    fn large_text_list_reserves_scaled_rows_and_filename_width() {
+        let sink = new_sink();
+        let mut view = FileView::new(&items(2), &SelectionModel::new(), &sink);
+        view.rect = Rect::new(0.0, 0.0, 350.0, 600.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        Widget::measure(
+            &mut view,
+            taffy::Size {
+                width: Some(350.0),
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(350.0),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut tr,
+        );
+        assert!(
+            view.row_h() >= 60.0,
+            "scaled rows need room for large glyphs"
+        );
+        assert!(view.header_h() >= 50.0);
+        let (_, painted_height) = tr.measure(
+            "Ag",
+            view.body_text(&Theme::dark().with_text_scale(2.0)),
+            None,
+        );
+        assert!(f64::from(painted_height) <= view.row_h());
+        assert!(
+            !view.show_size(),
+            "compact large-text names need the full row"
+        );
+        assert!(!view.show_modified());
+    }
+
+    #[test]
+    fn truncated_file_names_preserve_distinguishing_suffix() {
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let first = truncate(&mut tr, "Document-000.txt", 16.0, 190.0);
+        let next = truncate(&mut tr, "Document-060.txt", 16.0, 190.0);
+        assert_ne!(first, next);
+        assert!(next.ends_with("060.txt"), "{next}");
     }
 
     #[test]

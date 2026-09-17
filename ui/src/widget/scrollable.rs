@@ -653,26 +653,47 @@ impl Scrollable {
         self.bar_opacity_at(Instant::now(), theme.reduce_motion)
     }
 
-    fn fade_in_progress(&self) -> bool {
+    fn fade_in_progress_at(&self, now: Instant) -> bool {
         if !self.overlay || self.reduce_motion_active || self.bar_pinned() {
             return false;
         }
-        match self.last_activity {
-            None => false,
-            Some(t) => t.elapsed() < Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS),
+        self.last_activity.is_some_and(|activity| {
+            let elapsed = now.saturating_duration_since(activity);
+            elapsed >= Duration::from_millis(VISIBLE_HOLD_MS)
+                && elapsed < Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS)
+        })
+    }
+
+    fn fade_in_progress(&self) -> bool {
+        self.fade_in_progress_at(Instant::now())
+    }
+
+    fn fade_start_deadline_at(&self, now: Instant) -> Option<Instant> {
+        if !self.overlay || self.reduce_motion_active || self.bar_pinned() {
+            return None;
         }
+        self.last_activity?
+            .checked_add(Duration::from_millis(VISIBLE_HOLD_MS))
+            .filter(|deadline| *deadline > now)
     }
 
     /// Once the fade deadline passes, the compositor still needs one frame to
-    /// replace the last visible thumb with the transparent scene.
-    fn needs_terminal_fade_frame(&self) -> bool {
+    /// replace the last visible thumb with the transparent scene. The opaque
+    /// hold is neither an animation nor an expired fade.
+    fn needs_terminal_fade_frame_at(&self, now: Instant) -> bool {
         self.terminal_fade_damage.get()
             || (self.bar_visible_last_draw.get()
                 && self.overlay
                 && !self.reduce_motion_active
                 && !self.bar_pinned()
-                && self.last_activity.is_some()
-                && !self.fade_in_progress())
+                && self.last_activity.is_some_and(|activity| {
+                    now.saturating_duration_since(activity)
+                        >= Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS)
+                }))
+    }
+
+    fn needs_terminal_fade_frame(&self) -> bool {
+        self.needs_terminal_fade_frame_at(Instant::now())
     }
 
     fn advance_hold(&mut self, now: Instant) {
@@ -1119,6 +1140,16 @@ fn max_bottom_edge(w: &dyn Widget) -> f64 {
 }
 
 impl Widget for Scrollable {
+    fn has_action_control_bindings(&self) -> bool {
+        let mut found = false;
+        self.for_each_child(&mut |child| {
+            if !found {
+                found = child.has_action_control_bindings();
+            }
+        });
+        found
+    }
+
     fn child_clip_rect(&self) -> Option<Rect> {
         Some(self.content_viewport_rect())
     }
@@ -1535,7 +1566,8 @@ impl Widget for Scrollable {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.hold.is_some()
+        self.momentum_speed() > 0.0
+            || self.hold.is_some()
             || self.fade_in_progress()
             || self.needs_terminal_fade_frame()
             || self
@@ -1544,9 +1576,15 @@ impl Widget for Scrollable {
                 .is_some_and(|c| c.needs_animation_frame())
     }
 
-    /// A wheel-only event mutates no child and a fade tick mutates nothing
-    /// at all, so without the fade/hold clauses the next frame would
-    /// silently not get scheduled.
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.fade_start_deadline_at(Instant::now())
+            .into_iter()
+            .chain(self.child.as_ref().and_then(|child| child.next_wake_deadline()))
+            .min()
+    }
+
+    /// Wheel activity damages the viewport immediately. During the opaque
+    /// hold the thumb stays unchanged; only the fade itself needs new damage.
     fn needs_redraw(&self) -> bool {
         self.scroll_dirty
             || self.bar_dirty
@@ -2576,6 +2614,8 @@ mod tests {
             s.hold.is_some(),
             "a track press below the thumb arms a hold"
         );
+        assert!(s.needs_animation_frame(), "track repeat must still pump");
+        assert_eq!(s.next_wake_deadline(), None, "a held track pins the bar");
         let after_first = s.offset_y();
         assert!(after_first > 0.0, "first page moved down: {after_first}");
         assert!(
@@ -2714,7 +2754,80 @@ mod tests {
     }
 
     #[test]
-    fn needs_animation_frame_only_while_fading_or_holding() {
+    fn opaque_hold_sleeps_until_fade_start_without_losing_initial_damage() {
+        let mut s = vertical(1200.0);
+        s.wake();
+        let activity = s.last_activity.unwrap();
+        assert!(s.needs_redraw(), "activity must still paint the thumb");
+        s.bar_visible_last_draw.set(true);
+        s.mark_drawn();
+        assert!(!s.needs_animation_frame(), "opaque hold must not pump frames");
+        assert!(!s.needs_redraw(), "unchanged opaque thumb needs no damage");
+        assert!(!s.needs_terminal_fade_frame(), "hold is not an expired fade");
+        assert_eq!(s.next_wake_deadline(), Some(activity + Duration::from_millis(900)));
+    }
+
+    #[test]
+    fn opaque_hold_boundaries_preserve_fade_and_terminal_clear() {
+        let mut s = vertical(1200.0);
+        let start = Instant::now();
+        s.last_activity = Some(start);
+        s.bar_visible_last_draw.set(true);
+        let fade_start = start + Duration::from_millis(900);
+        let fade_end = start + Duration::from_millis(1220);
+        assert_eq!(s.fade_start_deadline_at(start), Some(fade_start));
+        assert!(!s.fade_in_progress_at(fade_start - Duration::from_nanos(1)));
+        assert!(!s.needs_terminal_fade_frame_at(fade_start - Duration::from_nanos(1)));
+        assert!(s.fade_in_progress_at(fade_start));
+        assert_eq!(s.fade_start_deadline_at(fade_start), None);
+        assert!(s.fade_in_progress_at(fade_end - Duration::from_nanos(1)));
+        assert!(!s.needs_terminal_fade_frame_at(fade_end - Duration::from_nanos(1)));
+        assert!(!s.fade_in_progress_at(fade_end));
+        assert!(s.needs_terminal_fade_frame_at(fade_end));
+        s.last_activity = Some(start + Duration::from_millis(50));
+        assert_eq!(s.fade_start_deadline_at(start + Duration::from_millis(50)), Some(fade_start + Duration::from_millis(50)));
+        s.focused = true;
+        assert_eq!(s.fade_start_deadline_at(start), None);
+        s.focused = false;
+        s.reduce_motion_active = true;
+        assert_eq!(s.fade_start_deadline_at(start), None);
+        s.reduce_motion_active = false;
+        s.overlay = false;
+        assert_eq!(s.fade_start_deadline_at(start), None);
+    }
+
+    #[test]
+    fn opaque_hold_preserves_earlier_child_deadline() {
+        let now = Instant::now();
+        let mut child = vertical(1200.0);
+        child.last_activity = Some(now - Duration::from_millis(100));
+        let mut outer = vertical(1200.0);
+        outer.last_activity = Some(now);
+        outer.child = Some(Box::new(child));
+        assert_eq!(outer.next_wake_deadline(), Some(now + Duration::from_millis(800)));
+    }
+
+    #[test]
+    fn opaque_hold_removal_preserves_independent_momentum_demand() {
+        let mut s = vertical(1200.0);
+        s.fling(0.0, 120.0);
+        assert!(s.needs_animation_frame(), "momentum must not depend on scrollbar opacity");
+        let mut doc = AutoCommit::new();
+        // Match the admitted primary-frame lifecycle: update runs even when
+        // the prior frame consumed all ordinary dirty flags.
+        for _ in 0..240 {
+            if !s.needs_animation_frame() { break; }
+            s.update(&mut doc, &automerge::ROOT);
+            s.sync(&mut doc, &automerge::ROOT);
+            s.mark_drawn();
+        }
+        assert!(s.offset_y() > 0.0, "the demanded frames advance content");
+        assert_eq!(s.momentum_speed(), 0.0);
+        assert!(!s.needs_animation_frame(), "settled momentum must stop the pump");
+    }
+
+    #[test]
+    fn needs_animation_frame_only_while_fading_or_repeating() {
         let s = vertical(1200.0);
         assert!(
             !Widget::needs_animation_frame(&s),
@@ -2726,7 +2839,7 @@ mod tests {
             "persistent bar is static"
         );
         let mut fading = vertical(1200.0);
-        fading.wake();
+        fading.last_activity = Some(Instant::now() - Duration::from_millis(VISIBLE_HOLD_MS + 1));
         assert!(
             Widget::needs_animation_frame(&fading),
             "a fading bar pumps frames"

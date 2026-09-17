@@ -358,6 +358,7 @@ pub fn spawn(path: &Path) -> shell::shell::collab_broker::BrokerHandle {
             ("dev.qos.word-processor", "insert-table"),
             ("dev.qos.word-processor", "place-image"),
             ("dev.qos.photos", "rotate-right"),
+            ("dev.qos.photos", "export-edited-content"),
         ],
     )
 }

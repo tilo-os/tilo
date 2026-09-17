@@ -1585,6 +1585,38 @@ impl WorkspaceSettingsOverlay {
         reason = "one positional argument per painted value, plus the state it's read \
                   from; matching every other draw_ws_settings_* helper in this impl"
     )]
+    fn name_selection_geometry(
+        text_renderer: &mut TextRenderer,
+        shown: &str,
+        input_size: f32,
+        input_rect: Rect,
+        selection: ui::text_selection::Selection,
+    ) -> (Rect, Rect) {
+        let x = input_rect.x0 + 12.0;
+        let (_, height) = text_renderer.measure("Ag", input_size, None);
+        let y = input_rect.y0 + (input_rect.height() - f64::from(height)) / 2.0;
+        let advance = |renderer: &mut TextRenderer, offset| {
+            f64::from(
+                renderer
+                    .measure(shown.get(..offset).unwrap_or(shown), input_size, None)
+                    .0,
+            )
+        };
+        let anchor = x + advance(text_renderer, selection.anchor);
+        let focus = x + advance(text_renderer, selection.cursor);
+        (
+            Rect::new(
+                anchor.min(focus),
+                y,
+                anchor.max(focus),
+                y + f64::from(height),
+            ),
+            Rect::new(focus, y, focus + 2.0, y + f64::from(height)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+
     fn draw_ws_settings_name_input(
         &self,
         scene: &mut Scene,
@@ -1673,24 +1705,32 @@ impl WorkspaceSettingsOverlay {
             .editing_workspace_name
             .as_deref()
             .unwrap_or(active_name);
-        let input_size = tokens.typography.scale.base;
+        let input_size = tokens.typography.scale.base / text_renderer.text_scale();
+        let (selected, caret) = Self::name_selection_geometry(
+            text_renderer,
+            shown,
+            input_size,
+            input_rect,
+            state.editing_workspace_name_selection,
+        );
+        if editing && selected.width() > 0.0 {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[5].with_alpha_factor(0.35),
+                None,
+                &selected,
+            );
+        }
         text_renderer.draw_text(
             scene,
             shown,
             input_size,
             colors.text_primary,
-            transform.pre_translate((input_rect.x0 + 12.0, input_rect.y0 + 6.0).into()),
+            transform.pre_translate((input_rect.x0 + 12.0, caret.y0).into()),
             None,
         );
         if editing {
-            let (tw, _th) = text_renderer.measure(shown, input_size, None);
-            let caret_x = input_rect.x0 + 12.0 + f64::from(tw) + 1.0;
-            let caret = Rect::new(
-                caret_x,
-                input_rect.y0 + 6.0,
-                caret_x + 2.0,
-                input_rect.y0 + 6.0 + f64::from(input_size),
-            );
             scene.fill(Fill::NonZero, transform, colors.accent[5], None, &caret);
         }
         editing
@@ -2029,6 +2069,29 @@ fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rename_selection_paint_tracks_selected_range_and_caret() {
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let rect = Rect::new(20.0, 30.0, 400.0, 100.0);
+        let (selected, caret) = WorkspaceSettingsOverlay::name_selection_geometry(
+            &mut tr,
+            "Home",
+            16.0,
+            rect,
+            ui::text_selection::Selection {
+                anchor: 4,
+                cursor: 0,
+            },
+        );
+        assert!(
+            selected.width() > 20.0,
+            "select-all needs a painted highlight"
+        );
+        assert_eq!(caret.x0, rect.x0 + 12.0);
+        assert!(caret.height() >= 32.0);
+    }
 
     #[test]
     fn close_transition_remains_visible_until_exit_settles() {

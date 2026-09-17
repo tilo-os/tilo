@@ -147,6 +147,18 @@ impl ContextMenu {
         self.layout_at_position();
     }
 
+    /// Keep a standalone menu inside its owner's current viewport, preserving
+    /// its opening anchor across resize and text-metric changes.
+    pub fn constrain_to(&mut self, viewport: Rect) {
+        let anchor = self.bounds.map(|(anchor, _)| anchor).or_else(|| {
+            self.position
+                .map(|[x, y]| Rect::new(f64::from(x), f64::from(y), f64::from(x), f64::from(y)))
+        });
+        if let Some(anchor) = anchor {
+            self.reanchor(anchor, viewport);
+        }
+    }
+
     pub fn layout_within(&mut self, text: &mut TextRenderer, theme: &Theme) {
         let style = text.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
         let mut width: f64 = 0.0;

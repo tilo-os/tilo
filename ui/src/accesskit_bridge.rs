@@ -611,6 +611,15 @@ pub(crate) fn build_presentation_tree_bound<S: BuildHasher>(
     build_tree_update_with_resources_impl::<S, true>(roots, node_map, focused, scale, &[])
 }
 
+/// Multiple presentation roots retain ordinary live resource nodes when their
+/// owner is interactive; callers supply only currently presented resources.
+pub(crate) fn build_presentation_with_resources_bound<S: BuildHasher>(
+    roots: &[&dyn Widget], node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
+    focused: Option<TaffyNodeId>, scale: f64, resources: &[qos_actions::Resource],
+) -> TreeUpdate {
+    build_tree_update_with_resources_impl::<S, true>(roots, node_map, focused, scale, resources)
+}
+
 fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
     roots: &[&dyn Widget],
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,

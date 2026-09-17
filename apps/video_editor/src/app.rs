@@ -9170,8 +9170,8 @@ impl Widget for VideoEditorApp {
     /// redo buttons are drawn from. Scoped to this author exactly as Ctrl+Z
     /// is, so the buttons and the shortcut can never disagree about whether
     /// there is anything to go back to.
-    fn set_undo_status(&mut self, status: &ui::UndoStatus) {
-        self.undo.publish(status);
+    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> ui::UndoStatus) {
+        self.undo.publish(&status());
     }
 
     fn take_undo_request(&mut self) -> Option<ui::UndoRequest> {
@@ -25498,7 +25498,7 @@ mod tests {
             "with nothing to undo the button raises no request at all",
         );
         // Once the host says there is, the same press does.
-        app.set_undo_status(&ui::UndoStatus {
+        app.set_undo_status(&mut || ui::UndoStatus {
             can_undo: true,
             undo_summary: Some("2 fields".into()),
             ..Default::default()
@@ -25546,7 +25546,7 @@ mod tests {
             "the reader hears the honest reason, not a described action",
         );
 
-        app.set_undo_status(&ui::UndoStatus {
+        app.set_undo_status(&mut || ui::UndoStatus {
             can_undo: true,
             undo_summary: Some("2 fields".into()),
             ..Default::default()
@@ -25566,7 +25566,7 @@ mod tests {
     #[test]
     fn activating_the_undo_node_raises_the_same_request_a_click_does() {
         let (mut app, _doc) = app_and_doc();
-        app.set_undo_status(&ui::UndoStatus {
+        app.set_undo_status(&mut || ui::UndoStatus {
             can_undo: true,
             ..Default::default()
         });
@@ -25574,7 +25574,7 @@ mod tests {
         assert!(app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
         assert_eq!(app.take_undo_request(), Some(ui::UndoRequest::Undo));
         // With the history empty again the same activation refuses.
-        app.set_undo_status(&ui::UndoStatus::empty());
+        app.set_undo_status(&mut || ui::UndoStatus::empty());
         assert!(!app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
         assert_eq!(app.take_undo_request(), None);
         // And the transport's own buttons still work, so the new key lookup

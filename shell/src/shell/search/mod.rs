@@ -118,6 +118,15 @@ pub enum InvocationDisposition {
     Accepted(ActionReceipt),
     Pending(PendingInvocation),
 }
+
+impl std::fmt::Debug for InvocationDisposition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Accepted(receipt) => f.debug_tuple("Accepted").field(receipt).finish(),
+            Self::Pending(_) => f.write_str("Pending(<admission ticket>)"),
+        }
+    }
+}
 pub type BeginInvokeFn = dyn Fn(
     &mut AutoCommit,
     &ObjId,
@@ -150,6 +159,9 @@ impl ActionReceipt {
 #[derive(Clone)]
 pub struct SearchResult {
     pub kind: ResourceKind,
+    /// What invoking the row changes. Content/open rows are local views;
+    /// canonical app and shell actions preserve their declared operation kind.
+    pub operation_kind: qos_actions::OperationKind,
     pub provider_id: String,
     /// Stable identifier within the provider, used for de-dup.
     pub id: String,
@@ -265,6 +277,7 @@ impl SearchResult {
     ) -> Self {
         Self {
             kind,
+            operation_kind: qos_actions::OperationKind::View,
             provider_id: provider_id.into(),
             id: id.into(),
             title: title.into(),
@@ -296,6 +309,7 @@ impl SearchResult {
     ) -> Self {
         Self {
             kind,
+            operation_kind: qos_actions::OperationKind::Effect,
             provider_id: provider_id.into(),
             id: id.into(),
             title: title.into(),
@@ -314,6 +328,7 @@ impl std::fmt::Debug for SearchResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SearchResult")
             .field("kind", &self.kind)
+            .field("operation_kind", &self.operation_kind)
             .field("provider_id", &self.provider_id)
             .field("id", &self.id)
             .field("title", &self.title)
@@ -343,6 +358,18 @@ pub trait SearchProvider {
     /// (filter chips + scope); a remote-backed provider should dispatch
     /// ONE query and split the response into the wanted kinds.
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult>;
+
+    /// Resolve one provider-local id from current provider state. The default
+    /// is suitable for small providers whose empty query is their complete
+    /// action surface. Retained or remote providers override this so selecting
+    /// an already-discovered address does not issue a different search query
+    /// and discard the page that disclosed it.
+    fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        self.query_page(ctx, None, SearchBudget::PALETTE)
+            .results
+            .into_iter()
+            .find(|result| result.id == id)
+    }
 
     /// Non-query maintenance hook for retained indexes. The compositor calls
     /// this from its frame/timer tick, before an input event is routed. A
@@ -480,6 +507,54 @@ impl SearchRegistry {
     /// Used by the shell's scope-narrow helper to look up which provider owns a tab.
     pub fn providers_iter(&self) -> impl Iterator<Item = &dyn SearchProvider> {
         self.providers.iter().map(std::convert::AsRef::as_ref)
+    }
+
+    /// Resolve one exact provider-local id under the same scope and kind
+    /// routing used by search. This keeps invocation attached to the source
+    /// that disclosed the id while allowing that provider to revalidate its
+    /// current retained state.
+    pub fn resolve(
+        &self,
+        provider_id: &str,
+        id: &str,
+        args: &QueryArgs<'_>,
+    ) -> Option<SearchResult> {
+        let provider = self
+            .providers
+            .iter()
+            .find(|provider| provider.id() == provider_id)?;
+        if !scope_allows(provider.as_ref(), args.scope, args.active_provider_id) {
+            return None;
+        }
+        let wanted = if args.wanted_kinds.is_empty() {
+            provider.resource_kinds().to_vec()
+        } else {
+            provider
+                .resource_kinds()
+                .iter()
+                .filter(|kind| args.wanted_kinds.contains(kind))
+                .cloned()
+                .collect()
+        };
+        if wanted.is_empty() {
+            return None;
+        }
+        provider
+            .resolve(
+                id,
+                SearchContext {
+                    needle: "",
+                    wanted: &wanted,
+                    chrome: args.chrome,
+                    doc: args.doc,
+                    doc_root: args.doc_root,
+                },
+            )
+            .filter(|result| {
+                result.provider_id == provider_id
+                    && result.id == id
+                    && wanted.contains(&result.kind)
+            })
     }
 
     /// Poll/start retained index maintenance without routing a query. This is
