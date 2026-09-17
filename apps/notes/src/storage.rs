@@ -39,6 +39,8 @@ pub enum SaveStatus {
     /// The most recent write failed. Stays sticky until a fresh
     /// write succeeds.
     Failed,
+    /// The record exists only in this session and has no durable writer.
+    SessionOnly,
 }
 
 impl SaveStatus {
@@ -47,12 +49,14 @@ impl SaveStatus {
             SaveStatus::Saved => 0,
             SaveStatus::Saving => 1,
             SaveStatus::Failed => 2,
+            SaveStatus::SessionOnly => 3,
         }
     }
     fn from_u8(v: u8) -> Self {
         match v {
             1 => SaveStatus::Saving,
             2 => SaveStatus::Failed,
+            3 => SaveStatus::SessionOnly,
             _ => SaveStatus::Saved,
         }
     }

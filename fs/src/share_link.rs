@@ -1,6 +1,6 @@
 //! Endpoint-bound, copyable collaborative-file links.
 //!
-//! The earlier `qos-file://v1/` representation carries a signed token but no
+//! The earlier `tilo-file://v1/` representation carries a signed token but no
 //! place to redeem it. V2 has a distinct prefix, carries an Iroh
 //! [`EndpointAddr`], and has the invite issuer sign the endpoint-to-token
 //! binding. The bearer secret is encoded only after `#`.
@@ -15,8 +15,8 @@ use iroh_base::EndpointAddr;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const FILE_SHARE_LINK_V2_DOMAIN_TAG: &str = "qos-file-share-link-v2";
-pub const FILE_SHARE_LINK_V2_PREFIX: &str = "qos-file://v2/";
+pub const FILE_SHARE_LINK_V2_DOMAIN_TAG: &str = "tilo-file-share-link-v2";
+pub const FILE_SHARE_LINK_V2_PREFIX: &str = "tilo-file://v2/";
 pub const MAX_FILE_SHARE_LINK_V2_PAYLOAD_BYTES: usize = 32 * 1024;
 const VERSION: u8 = 2;
 
@@ -260,7 +260,7 @@ fn now_ms() -> u64 {
 
 #[derive(Debug, Error)]
 pub enum FileShareLinkError {
-    #[error("qos-file v1 is token-only and contains no redemption endpoint")]
+    #[error("tilo-file v1 is token-only and contains no redemption endpoint")]
     LegacyTokenOnlyV1,
     #[error("file share URI is malformed")]
     InvalidUri,
@@ -376,7 +376,7 @@ mod tests {
             Err(FileShareLinkError::Invite(FileInviteError::Expired))
         ));
         assert!(matches!(
-            FileShareLinkV2::decode_uri_at("qos-file://v1/00#00", NOW),
+            FileShareLinkV2::decode_uri_at("tilo-file://v1/00#00", NOW),
             Err(FileShareLinkError::LegacyTokenOnlyV1)
         ));
         let oversized = format!(

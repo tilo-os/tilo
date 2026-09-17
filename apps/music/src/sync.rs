@@ -1,4 +1,4 @@
-//! CRDT P2P library sync — the qOS self-hosting seam.
+//! CRDT P2P library sync — the Tilo self-hosting seam.
 //!
 //! The whole library (catalog + playlists + liked + saved albums + play
 //! state) lives in one Automerge document ([`crate::doc`]). Because Automerge
@@ -256,7 +256,7 @@ pub mod live {
     /// Runtime probe: only spin up the live engine where a QUIC socket + a
     /// Tokio runtime can actually exist.
     pub fn environment_supports_p2p() -> bool {
-        std::env::var("QOS_MUSIC_P2P").is_ok()
+        std::env::var("TILO_MUSIC_P2P").is_ok()
     }
 }
 
@@ -284,7 +284,7 @@ mod tests {
     fn default_sync_falls_back_to_loopback_without_p2p() {
         let mut base = seeded();
         let s = default_sync(&mut base);
-        // No `p2p` feature (or no QOS_MUSIC_P2P env) → loopback.
+        // No `p2p` feature (or no TILO_MUSIC_P2P env) → loopback.
         if !is_p2p_available() {
             assert!(!s.is_live());
         }

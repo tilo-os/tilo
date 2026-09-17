@@ -1,14 +1,14 @@
-# qos-threshold-identity
+# tilo-threshold-identity
 
-FROST(Ed25519, SHA-512) threshold-shared identity for qOS.
+FROST(Ed25519, SHA-512) threshold-shared identity for Tilo.
 
 ## Headline property
 
 A signature produced by collaborative threshold signing across
 multiple devices verifies **byte-for-byte** through the standard
-Ed25519 verification routine. The rest of the qOS stack — including
-`qos_collab_types::verify_event` and the eight-step inbound-op
-validator in `qos_collab_types::validator` — does not need to know
+Ed25519 verification routine. The rest of the Tilo stack — including
+`tilo_collab_types::verify_event` and the eight-step inbound-op
+validator in `tilo_collab_types::validator` — does not need to know
 that an op was signed via threshold. This is the IETF RFC 9591
 guarantee and it is exercised end-to-end in
 `tests/interop_with_collab_types.rs`.
@@ -33,7 +33,7 @@ tests/
   dkg_two_devices.rs              — 2-of-2 DKG + threshold sign
   dkg_three_devices.rs            — 2-of-3 DKG + sign with any 2
   recovery_share.rs               — paper-share export / re-import
-  interop_with_collab_types.rs    — verify via qos_collab_types
+  interop_with_collab_types.rs    — verify via tilo_collab_types
 ```
 
 ## Three identity modes
@@ -55,8 +55,8 @@ output by design. The first DKG run rotates the group public key.
 
 `EnrolmentRound1`, `EnrolmentRound2`,
 `SigningRound1Commitment`, and `SigningRound2Partial` derive
-`Serialize + Deserialize` so the qOS broker can ship them over
-Iroh direct-message tunnels. Each carries a small qOS header
+`Serialize + Deserialize` so the Tilo broker can ship them over
+Iroh direct-message tunnels. Each carries a small Tilo header
 (sender's share index) wrapping the FROST round-package bytes.
 
 ## Security notes
@@ -66,8 +66,8 @@ Iroh direct-message tunnels. Each carries a small qOS header
   `SigningKey` are `ZeroizeOnDrop`; the secret material is
   wiped on drop.
 - Every public sign helper documents whether it canonicalises
-  the input via `qos_collab_types::canonical_bytes` (the
+  the input via `tilo_collab_types::canonical_bytes` (the
   `sign_round2` family) or signs raw bytes (`sign_round2_raw`).
   The canonical path is what makes the signature
-  interchangeable with `qos_collab_types::sign_event` over the
+  interchangeable with `tilo_collab_types::sign_event` over the
   same logical value.

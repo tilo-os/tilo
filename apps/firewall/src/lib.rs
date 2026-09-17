@@ -1,4 +1,4 @@
-//! Firewall — qOS native app (CRDT-native, built on the `ui` toolkit).
+//! Firewall — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A firewalld/nftables front-end: a zone rail, a per-zone rules table, a
 //! toggleable services panel, a posture summary, and an add-rule form. The

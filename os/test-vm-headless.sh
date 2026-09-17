@@ -16,7 +16,7 @@ if [ ! -f "$OVMF" ]; then
     OVMF="/usr/share/OVMF/OVMF_CODE.fd"
 fi
 
-echo "Starting Headless qOS VM..."
+echo "Starting Headless Tilo VM..."
 echo "Logging to $LOG_FILE"
 
 # Run QEMU with timeout and UEFI

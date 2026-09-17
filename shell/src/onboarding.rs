@@ -1,13 +1,13 @@
 //! First-login identity onboarding.
 //!
-//! A signing identity appears on a qOS machine the first time someone
+//! A signing identity appears on a Tilo machine the first time someone
 //! logs in; this module is the ceremony that puts a name and a
 //! consequence on it, rather than letting it appear silently. Four short
 //! steps make the important decisions explicit: what the identity enables;
 //! **that there is no escrow or reset service**, acknowledged explicitly;
 //! a deliberate encrypted portable-backup choice; and a concise hand-off.
 //!
-//! qOS mints a personal Ed25519 root plus a distinct device key certified
+//! Tilo mints a personal Ed25519 root plus a distinct device key certified
 //! by that root, with no escrow or recovery phrase. `threshold-identity`
 //! implements share-based recovery only after a genuine multi-device
 //! ceremony; this path creates a single-device identity, whose actual
@@ -38,9 +38,9 @@ pub enum Screen {
 }
 
 /// Title and body for the first screen.
-pub const INTRO_TITLE: &str = "Create your local qOS identity";
-pub const INTRO_BODY: &str = "qOS will create a cryptographic identity that belongs to you, \
-     then certify a separate key for this device. qOS uses that chain for collaboration and \
+pub const INTRO_TITLE: &str = "Create your local Tilo identity";
+pub const INTRO_BODY: &str = "Tilo will create a cryptographic identity that belongs to you, \
+     then certify a separate key for this device. Tilo uses that chain for collaboration and \
      peer invitations. Individual app edits are not all cryptographically signed yet.";
 
 /// The specific things the identity does today, without promising that every
@@ -68,7 +68,7 @@ pub const ACKNOWLEDGEMENT: &str =
     "I understand that losing this device without a backup means losing this identity.";
 
 pub const DONE_TITLE: &str = "Your identity is ready";
-pub const DONE_BODY: &str = "This fingerprint identifies your local cryptographic root. qOS can \
+pub const DONE_BODY: &str = "This fingerprint identifies your local cryptographic root. Tilo can \
      present it in collaboration flows that support verification; you do not need to type it.";
 
 /// The ceremony's state. Pure: no widgets, no I/O, no clock.
@@ -244,7 +244,7 @@ pub fn mint_into(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError>
     mint_into_with_paths(identity_dir, &identity_paths, false)
 }
 
-/// Mint for qDesktop running on a pre-existing Linux distribution.
+/// Mint for Tilo Desktop running on a pre-existing Linux distribution.
 ///
 /// This is the only path that associates a fresh identity with the current
 /// Unix account's passwd display name.
@@ -262,7 +262,7 @@ pub fn mint_into_for_legacy_linux_host(
 
 fn mint_into_with_paths(
     identity_dir: &Path,
-    identity_paths: &qos_user_identity::IdentityPaths,
+    identity_paths: &tilo_user_identity::IdentityPaths,
     legacy_linux_host: bool,
 ) -> Result<MintedIdentity, OnboardingError> {
     use crate::firstboot::{
@@ -420,7 +420,7 @@ mod tests {
 
     /// The copy must not imply a safety net that does not exist.
     ///
-    /// qOS mints a root and certified device key with no escrow or recovery phrase.
+    /// Tilo mints a root and certified device key with no escrow or recovery phrase.
     /// `threshold-identity` implements share-based recovery but is
     /// deliberately not wired into this path. A user-held encrypted export is
     /// a backup, but it is not escrow and cannot help without its passphrase.
@@ -487,13 +487,13 @@ mod tests {
     #[test]
     fn minting_writes_a_readable_record_and_reports_its_fingerprint() {
         let dir = std::env::temp_dir().join(format!(
-            "qos-onboarding-{}-{}",
+            "tilo-onboarding-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos())
         ));
-        let system = qos_user_identity::IdentityPaths::under(dir.join("system"));
+        let system = tilo_user_identity::IdentityPaths::under(dir.join("system"));
         let minted = mint_into_with_paths(&dir, &system, false).expect("mint");
         assert_eq!(minted.fingerprint.len(), 64, "hex of 32 bytes");
         assert!(minted.path.exists());

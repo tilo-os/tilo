@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate qOS's dependency-free UKI splash as a 24-bit BMP."""
+"""Generate Tilo's dependency-free UKI splash as a 24-bit BMP."""
 
 import math
 import struct

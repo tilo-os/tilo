@@ -6,7 +6,7 @@
 //! absolute path the local machine had staged it at:
 //!
 //! ```text
-//! photos.image:/run/user/1000/qlva3099960/qos-opened/623fdbf0….png
+//! photos.image:/run/user/1000/qlva3099960/tilo-opened/623fdbf0….png
 //! ```
 //!
 //! Each session stages the content it is handed under its *own* runtime
@@ -14,7 +14,7 @@
 //! `qlvx…` there, `qlvq…` in the third. Same bytes, same blake3 hash, three
 //! names.
 //!
-//! An address is resolved by string equality (`qos_actions::door::resolve`),
+//! An address is resolved by string equality (`tilo_actions::door::resolve`),
 //! so an operation invoked on one of those ids reached exactly one session:
 //! the one whose path happened to win. That is what happened — an agent
 //! cropped the editor in `qlva…` while the person watching was looking at the
@@ -42,8 +42,8 @@ use automerge::AutoCommit;
 use photos::PhotosApp;
 use photos::actions::{PhotosResources, register};
 use photos::doc::PhotosDoc;
-use qos_actions::door::{self, ActionAddress};
-use qos_actions::{ActionRegistry, ResourceProvider};
+use tilo_actions::door::{self, ActionAddress};
+use tilo_actions::{ActionRegistry, ResourceProvider};
 
 /// The bytes of one photograph. Identical in every session below — that is the
 /// premise: one picture, staged more than once.
@@ -87,8 +87,8 @@ impl Session {
             .tempdir()
             .expect("a runtime directory for this session");
         // The shape `shell::shell::agent_opens::staging_dir` writes: under the
-        // session's own runtime directory, in `qos-opened`.
-        let staged = dir.path().join("qos-opened");
+        // session's own runtime directory, in `tilo-opened`.
+        let staged = dir.path().join("tilo-opened");
         std::fs::create_dir_all(&staged).expect("a staging directory");
         let path = staged.join(file_name);
         std::fs::write(&path, bytes).expect("the session stages its own copy");

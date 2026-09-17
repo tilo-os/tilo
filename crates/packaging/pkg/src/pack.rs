@@ -35,7 +35,7 @@ use crate::validate::{ManifestError, validate_manifest_with_payload};
               per pack/sign call, never per-item in a hot loop"
 )]
 pub enum SigningIdentity {
-    /// Plain Ed25519 — simplest case; used by tests, CI signing, and `qos-pkg sign --identity`.
+    /// Plain Ed25519 — simplest case; used by tests, CI signing, and `tilo-pkg sign --identity`.
     Ed25519(ed25519_dalek::SigningKey),
     /// A 1-of-1 threshold identity; goes through the same `sign_raw` path and produces a regular Ed25519 sig.
     /// Boxed: `ThresholdIdentity` carries frost-core key-package material far
@@ -44,7 +44,7 @@ pub enum SigningIdentity {
 }
 
 impl SigningIdentity {
-    /// Generate a fresh random Ed25519 identity, for tests + ad-hoc `qos-pkg sign` signing.
+    /// Generate a fresh random Ed25519 identity, for tests + ad-hoc `tilo-pkg sign` signing.
     pub fn generate() -> Self {
         let mut rng = OsRng;
         Self::Ed25519(ed25519_dalek::SigningKey::generate(&mut rng))
@@ -136,7 +136,7 @@ pub enum PackError {
     ThresholdSigningUnsupported,
     #[error("threshold-internal error: {0}")]
     ThresholdInternal(String),
-    #[error("payload path {0:?} is not valid UTF-8 — qOS packages require UTF-8 path names")]
+    #[error("payload path {0:?} is not valid UTF-8 — Tilo packages require UTF-8 path names")]
     NonUtf8Path(PathBuf),
 }
 

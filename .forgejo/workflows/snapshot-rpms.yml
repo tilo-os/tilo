@@ -20,7 +20,7 @@ on:
       - os/dev/derive-rpm-package-set.py
       - os/Containerfile.host
       - os/dev/composefs/Containerfile
-      - os/containers/qos-relay/Containerfile
+      - os/containers/tilo-relay/Containerfile
       - os/kernel/Containerfile
       - .forgejo/workflows/snapshot-rpms.yml
 
@@ -31,6 +31,7 @@ concurrency:
 jobs:
   snapshot:
     runs-on: runner
+    timeout-minutes: 240
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -104,8 +105,8 @@ jobs:
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
             PACKAGES=${{ env.PACKAGES }}
-          cache-from: type=registry,ref=code.podesta.ai/qos/qos-rpms-buildcache:latest
-          cache-to: type=registry,ref=code.podesta.ai/qos/qos-rpms-buildcache:latest,mode=max
+          cache-from: type=registry,ref=code.podesta.ai/qos/tilo-rpms-buildcache:latest
+          cache-to: type=registry,ref=code.podesta.ai/qos/tilo-rpms-buildcache:latest,mode=max
           provenance: false
 
       - name: Report the pinned RPMS_REF to commit
@@ -135,8 +136,8 @@ jobs:
             echo "Snapshot pin is already current"
             exit 0
           fi
-          git config user.name "qOS CI"
-          git config user.email "ci@qos.invalid"
+          git config user.name "Tilo CI"
+          git config user.email "ci@tilo.invalid"
           git add os/rpms-snapshot.env
           git commit -m "os: refresh frozen RPM snapshot"
           git pull --rebase origin "${GITHUB_REF_NAME}"

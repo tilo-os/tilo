@@ -4,7 +4,7 @@
 //! navigation calls [`History::record`], which de-duplicates by URL
 //! (bumping the visit count and refreshing the title + timestamp) so the
 //! list stays one-row-per-page. It persists as a JSON array under
-//! `dirs::data_dir()/qos-browser/history.json`.
+//! `dirs::data_dir()/tilo-browser/history.json`.
 //!
 //! [`History::suggest`] powers the address-bar overlay. It fuzzy-matches
 //! the query as a case-insensitive *subsequence* of each entry's title
@@ -360,10 +360,10 @@ fn bounded_text(value: &str, limit: usize) -> String {
 }
 
 /// Absolute path to the history file:
-/// `dirs::data_dir()/qos-browser/history.json`. `None` when the platform
+/// `dirs::data_dir()/tilo-browser/history.json`. `None` when the platform
 /// exposes no data directory.
 pub fn history_path() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| d.join("qos-browser").join("history.json"))
+    dirs::data_dir().map(|d| d.join("tilo-browser").join("history.json"))
 }
 
 /// Current Unix-epoch time in seconds (0 if the clock is before the
@@ -730,10 +730,10 @@ mod tests {
     }
 
     #[test]
-    fn history_path_is_under_qos_browser() {
+    fn history_path_is_under_tilo_browser() {
         // Only assert the tail so the test is host-agnostic.
         if let Some(p) = history_path() {
-            assert!(p.ends_with("qos-browser/history.json"), "path was {p:?}");
+            assert!(p.ends_with("tilo-browser/history.json"), "path was {p:?}");
         }
     }
 }

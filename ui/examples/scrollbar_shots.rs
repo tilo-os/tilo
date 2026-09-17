@@ -51,12 +51,12 @@ fn long_list(both: bool) -> Box<dyn Widget> {
             // width exceeds the viewport and the horizontal bar appears.
             let mut r = Row::new();
             for c in 0..10 {
-                r = r.push(Box::new(Text::new(&format!("r{i:02}c{c}: qos-fs.service"))));
+                r = r.push(Box::new(Text::new(&format!("r{i:02}c{c}: tilo-fs.service"))));
             }
             col = col.push(Box::new(r));
         } else {
             col = col.push(Box::new(Text::new(&format!(
-                "{i:>3}  2026-07-09T12:{:02}:{:02}Z  systemd[1]: Started qOS session service.",
+                "{i:>3}  2026-07-09T12:{:02}:{:02}Z  systemd[1]: Started Tilo session service.",
                 i % 60,
                 i.saturating_mul(7).checked_rem(60).unwrap_or(0)
             ))));

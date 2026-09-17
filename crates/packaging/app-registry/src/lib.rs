@@ -1,4 +1,4 @@
-//! `app-registry` — the qOS app registry protocol, end to end.
+//! `app-registry` — the Tilo app registry protocol, end to end.
 //!
 //! This crate is the spine that makes "open an app from the store"
 //! fetch, verify, and cache a remote `.qpkg`. It sits between the
@@ -8,7 +8,7 @@
 //! - the app-host daemon, whose remote-fetch calls
 //!   [`resolve::fetch_qpkg`] and hands the verified bytes to its
 //!   installer;
-//! - `qos-pkg publish`, which uses [`publish`] to sign an index entry,
+//! - `tilo-pkg publish`, which uses [`publish`] to sign an index entry,
 //!   upload the blob, and emit the entry to a registry.
 //!
 //! ## Shape of the protocol

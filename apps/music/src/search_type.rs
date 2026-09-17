@@ -1,4 +1,4 @@
-//! Search-type seam — registering Music's result types with qOS's coming
+//! Search-type seam — registering Music's result types with Tilo's coming
 //! **global-search** framework.
 //!
 //! Music must *not* build a bespoke OS-wide search. Instead it exposes clean
@@ -27,7 +27,7 @@
 //! provider query with no reach into app internals. Search activation itself
 //! goes through the shared operation broker and Music's exported resource tree.
 
-use qos_actions::ActionAddress;
+use tilo_actions::ActionAddress;
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
@@ -440,7 +440,7 @@ fn playlist_subtitle(owner: &str, tracks: u64) -> String {
 //
 // The seam above ([`SearchHit`], [`MusicSearchProvider`]) is Music's rich,
 // backend-facing shape. The block below is the thin adapter that plugs it into
-// the *shared* framework every qOS app registers with — [`ui::search`] — so a
+// the *shared* framework every Tilo app registers with — [`ui::search`] — so a
 // song / album / artist / playlist appears in the one Ctrl+K palette
 // [`ui::app::App`] drives, ranked on an even footing with every other app's
 // hits, and activating a row routes onto Music's real play/navigate path

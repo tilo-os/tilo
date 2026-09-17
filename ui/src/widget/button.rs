@@ -55,6 +55,9 @@ pub struct Button {
     click_value: Option<String>,
     /// Size the width from the visible label rather than using the 120px default.
     fit_content: bool,
+    measured_fit_width: Option<f32>,
+    content_sized: bool,
+    content_padding: f32,
     /// Fires on release-while-hovered *in addition to* any
     /// `on_click_path` CRDT mutation, for app code that isn't modelling
     /// its control flow in the CRDT (e.g. the file explorer's command sink).
@@ -65,7 +68,7 @@ pub struct Button {
     /// Resource and handler synthesized by the low-ceremony `on_effect` /
     /// `on_view` APIs. The closure is still ordinary Rust, but it is reachable
     /// only through the same published action door as agents and search.
-    native_resource: Option<qos_actions::Resource>,
+    native_resource: Option<tilo_actions::Resource>,
     native_handler: Option<Box<dyn FnMut()>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -108,6 +111,9 @@ impl Button {
             on_click_path: on_click_path.map(std::string::ToString::to_string),
             click_value: None,
             fit_content: false,
+            measured_fit_width: None,
+            content_sized: false,
+            content_padding: 16.0,
             on_click: None,
             action: None,
             native_resource: None,
@@ -152,7 +158,7 @@ impl Button {
     /// exported resource action. The host resolves policy against the fresh
     /// resource tree before dispatch.
     #[must_use]
-    pub fn on_action(mut self, binding: qos_actions::ActionBinding<()>) -> Self {
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
         self.on_click_path = None;
         self.click_value = None;
@@ -164,10 +170,10 @@ impl Button {
     ///
     /// This is the quick-app path: it keeps closure ergonomics without making
     /// an invisible callback-only control. For replayable document mutations,
-    /// prefer a typed document [`Action`](qos_actions::Action).
+    /// prefer a typed document [`Action`](tilo_actions::Action).
     #[must_use]
     pub fn on_effect<F: FnMut() + 'static>(self, handler: F) -> Self {
-        self.on_native(qos_actions::OperationKind::Effect, handler)
+        self.on_native(tilo_actions::OperationKind::Effect, handler)
     }
 
     /// Publish a zero-argument transient presentation action. View actions are
@@ -175,7 +181,7 @@ impl Button {
     /// history and collaboration logs.
     #[must_use]
     pub fn on_view<F: FnMut() + 'static>(self, handler: F) -> Self {
-        self.on_native(qos_actions::OperationKind::View, handler)
+        self.on_native(tilo_actions::OperationKind::View, handler)
     }
 
     #[expect(
@@ -184,12 +190,12 @@ impl Button {
     )]
     fn on_native<F: FnMut() + 'static>(
         mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         handler: F,
     ) -> Self {
-        const TYPE_ID: &str = "qos.ui.control.invoke";
-        let resource_id = format!("qos.control:{}", self.id);
-        let mut spec = qos_actions::ActionSpec::operation(
+        const TYPE_ID: &str = "tilo.ui.control.invoke";
+        let resource_id = format!("tilo.control:{}", self.id);
+        let mut spec = tilo_actions::ActionSpec::operation(
             "invoke",
             self.label.clone(),
             kind,
@@ -197,10 +203,10 @@ impl Button {
             &self.id,
         )
         .expect("a control id is always JSON serializable");
-        spec.contract.discovery = qos_actions::DiscoveryScope::Launchable;
-        let resource = qos_actions::Resource::new(resource_id, "qos.control", self.label.clone())
+        spec.contract.discovery = tilo_actions::DiscoveryScope::Launchable;
+        let resource = tilo_actions::Resource::new(resource_id, "tilo.control", self.label.clone())
             .with_action(spec);
-        let binding = qos_actions::ActionBinding::unit_for(&resource, "invoke")
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "invoke")
             .expect("the synthesized invoke action is nullary");
         self = self.on_action(binding);
         self.native_resource = Some(resource);
@@ -246,7 +252,7 @@ impl Button {
         if revision != self.i18n_revision {
             self.i18n_revision = revision;
             self.dirty = true;
-            self.layout_dirty |= self.fit_content;
+            self.layout_dirty |= self.fit_content || self.content_sized;
         }
     }
 
@@ -255,6 +261,8 @@ impl Button {
     pub fn with_size(mut self, width: f32, height: f32) -> Self {
         self.size = Some((width, height));
         self.fill_width = false;
+        self.fit_content = false;
+        self.content_sized = false;
         self
     }
 
@@ -264,20 +272,43 @@ impl Button {
         self.size = Some((0.0, height));
         self.fill_width = true;
         self.fit_content = false;
+        self.content_sized = false;
         self
     }
 
-    /// Use a compact label-derived width and the supplied height.
+    /// Measure the actual label and icon width, retaining the supplied fixed height.
+    /// Long text may intentionally overflow that explicit height.
     ///
-    /// Layout cannot access the text renderer, so this deliberately mirrors the
-    /// conservative sizing used by app-local buttons: 8px per character plus
-    /// 30px of horizontal padding, with a 64px minimum.
+    /// App and `FrameHarness` settle the measured width before applying layout.
+    /// Manual hosts must use [`crate::widget::compute_widget_layout`]; direct
+    /// Taffy computation skips this settlement and can stretch the auto width.
+    /// Rebuild layout after changing renderer metrics or localization so the
+    /// next measurement resolves current content rather than a previous width.
     #[must_use]
     pub fn fit_content(mut self, height: f32) -> Self {
         self.fit_content = true;
+        self.content_sized = false;
         self.fill_width = false;
         self.size = Some((0.0, height));
         self
+    }
+
+    /// Size both dimensions from the measured label, wrapping to available width.
+    #[must_use]
+    pub fn content_sized(mut self) -> Self {
+        self.content_sized = true;
+        self.fit_content = false;
+        self.fill_width = false;
+        self.size = None;
+        self
+    }
+
+    pub(crate) fn with_action_sizing(self) -> Self {
+        if self.size.is_none() {
+            self.content_sized()
+        } else {
+            self
+        }
     }
 
     /// Write `value` to the click path on activation instead of pulsing it as a
@@ -567,6 +598,7 @@ pub struct ButtonFace<'a> {
     weight: crate::text_render::TextWeight,
     text_size: f32,
     accessible_name: Option<&'a str>,
+    wrap_label: bool,
 }
 
 impl<'a> ButtonFace<'a> {
@@ -581,7 +613,14 @@ impl<'a> ButtonFace<'a> {
             weight: crate::text_render::TextWeight::Medium,
             text_size: 14.0,
             accessible_name: None,
+            wrap_label: false,
         }
+    }
+    /// Wrap the label inside this manually assigned rectangle using theme insets.
+    #[must_use]
+    pub fn wrap_label(mut self) -> Self {
+        self.wrap_label = true;
+        self
     }
     #[must_use]
     pub fn style(mut self, style: ButtonStyle) -> Self {
@@ -671,15 +710,17 @@ impl<'a> ButtonFace<'a> {
     }
 }
 
-/// Widens a label's character count for the `fit_content` width estimate.
-/// A button label is a handful of characters, so this is far below `f32`'s
-/// exact-integer range.
 #[allow(
-    clippy::cast_precision_loss,
-    reason = "a button label's character count is always far below f32's exact-integer range"
+    clippy::cast_possible_truncation,
+    reason = "logical layout width narrows to renderer precision"
 )]
-fn label_px(chars: usize) -> f32 {
-    chars as f32
+fn label_width(rect: Rect, icon: Option<crate::icons::Icon>, padding: f32) -> f32 {
+    let icon_width = if icon.is_some() {
+        (rect.height() - 14.0).clamp(12.0, 22.0) + 6.0
+    } else {
+        0.0
+    };
+    (rect.width() as f32 - padding * 2.0 - icon_width as f32).max(0.0)
 }
 
 /// Paints the icon and/or label centred in `rect`: icon-only centres the
@@ -699,6 +740,7 @@ fn paint_icon_and_label(
     icon: Option<crate::icons::Icon>,
     label: &str,
     text_size: f32,
+    max_label_width: Option<f32>,
     weight: crate::text_render::TextWeight,
     fg: vello::peniko::Color,
 ) {
@@ -718,7 +760,8 @@ fn paint_icon_and_label(
             );
         }
         (icon, _) => {
-            let (text_width, _) = text_renderer.measure_weighted(label, text_size, None, weight);
+            let (text_width, text_height) =
+                text_renderer.measure_weighted(label, text_size, max_label_width, weight);
             let gap = if icon.is_some() { 6.0 } else { 0.0 };
             let icon_w = if icon.is_some() { icon_px } else { 0.0 };
             let cluster_w = icon_w + gap + f64::from(text_width);
@@ -735,14 +778,14 @@ fn paint_icon_and_label(
                 );
             }
             let text_x = start_x + icon_w + gap;
-            let text_y = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
+            let text_y = rect.y0 + (rect.height() - f64::from(text_height)) / 2.0;
             text_renderer.draw_text_weighted(
                 scene,
                 label,
                 text_size,
                 fg,
                 transform.pre_translate(Vec2::new(text_x, text_y)),
-                None,
+                max_label_width,
                 weight,
             );
         }
@@ -786,6 +829,8 @@ impl Button {
             face.icon,
             &label,
             face.text_size,
+            face.wrap_label
+                .then(|| label_width(face.rect, face.icon, theme.padding_standard)),
             face.weight,
             fg,
         );
@@ -819,32 +864,131 @@ impl Widget for Button {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.observe_i18n_revision();
+        self.measured_fit_width = None;
+        self.content_padding = theme.padding_standard;
         let (mut w, mut h) = self.size.unwrap_or((120.0, 40.0));
         let minimum_target = self.interaction.minimum_target();
         w = w.max(minimum_target);
         h = h.max(minimum_target);
-        if self.fit_content {
-            let label = i18n!(&self.label);
-            w = (label_px(label.chars().count()) * 8.0 + 30.0).max(64.0);
-        }
         let node = taffy.leaf_node(Style {
-            flex_shrink: 0.0,
+            flex_shrink: if self.content_sized { 1.0 } else { 0.0 },
+            min_size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::auto(),
+            },
+            max_size: Size {
+                width: if self.content_sized {
+                    Dimension::percent(1.0)
+                } else {
+                    Dimension::auto()
+                },
+                height: Dimension::auto(),
+            },
             size: Size {
                 width: if self.fill_width {
                     Dimension::percent(1.0)
+                } else if self.fit_content || self.content_sized {
+                    Dimension::auto()
                 } else {
                     Dimension::length(w)
                 },
-                height: Dimension::length(h),
+                height: if self.content_sized {
+                    Dimension::auto()
+                } else {
+                    Dimension::length(h)
+                },
             },
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        available: Size<taffy::AvailableSpace>,
+        text: &mut TextRenderer,
+    ) -> Size<f32> {
+        let label = i18n!(&self.label);
+        let fixed_height = self
+            .size
+            .map_or(40.0, |(_, h)| h)
+            .max(self.interaction.minimum_target());
+        let icon_width = if self.icon.is_some() {
+            if self.content_sized {
+                22.0
+            } else {
+                (fixed_height - 14.0).clamp(12.0, 22.0)
+            }
+        } else {
+            0.0
+        };
+        let icon_gap = if self.icon.is_some() && !label.is_empty() {
+            6.0
+        } else {
+            0.0
+        };
+        let horizontal = if self.content_sized {
+            self.content_padding * 2.0
+        } else {
+            30.0
+        };
+        let extra_width = icon_width + icon_gap + horizontal;
+        let max_width = if self.content_sized {
+            known
+                .width
+                .or(match available.width {
+                    taffy::AvailableSpace::Definite(width) => Some(width),
+                    taffy::AvailableSpace::MinContent => Some(0.0),
+                    taffy::AvailableSpace::MaxContent => None,
+                })
+                .map(|width| (width.floor() - extra_width).max(0.0))
+        } else {
+            None
+        };
+        let (width, height) = text.measure(&label, 14.0, max_width);
+        let intrinsic_width = (width + extra_width)
+            .ceil()
+            .max(if self.content_sized { 0.0 } else { 64.0 })
+            .max(self.interaction.minimum_target());
+        if self.fit_content {
+            // Capture the real width even when a stretching parent supplies
+            // a known width. The shared solver pins it before geometry lands.
+            self.measured_fit_width = Some(intrinsic_width);
+        }
+        Size {
+            width: known.width.unwrap_or(intrinsic_width),
+            height: known.height.unwrap_or_else(|| {
+                if self.content_sized {
+                    (height.max(icon_width) + self.content_padding)
+                        .max(40.0)
+                        .max(self.interaction.minimum_target())
+                } else {
+                    fixed_height
+                }
+            }),
+        }
+    }
+
+    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Some(width) = self.measured_fit_width.filter(|_| self.fit_content) else {
+            return false;
+        };
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let width = Dimension::length(width);
+        if style.size.width == width {
+            return false;
+        }
+        let mut style = style.clone();
+        style.size.width = width;
+        taffy.set_style(node, style).is_ok()
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -950,6 +1094,8 @@ impl Widget for Button {
             self.icon,
             &label,
             14.0,
+            self.content_sized
+                .then(|| label_width(self.rect, self.icon, self.content_padding)),
             crate::text_render::TextWeight::Regular,
             fg_color,
         );
@@ -980,7 +1126,8 @@ impl Widget for Button {
     fn is_layout_dirty(&self) -> bool {
         self.cache_rect == Rect::ZERO
             || self.layout_dirty
-            || (self.fit_content && self.i18n_revision != crate::i18n::I18nManager::revision())
+            || ((self.fit_content || self.content_sized)
+                && self.i18n_revision != crate::i18n::I18nManager::revision())
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1082,27 +1229,27 @@ impl Widget for Button {
         self.effectively_enabled()
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         self.native_resource.iter().cloned().collect()
     }
 
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         self.native_resource
             .as_ref()
-            .map(|_| std::iter::once("qos.ui.control.invoke".to_owned()).collect())
+            .map(|_| std::iter::once("tilo.ui.control.invoke".to_owned()).collect())
             .unwrap_or_default()
     }
 
     fn invoke_resource_operation_v2(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Result<Option<qos_actions::ActionOutput>, String> {
-        if kind == qos_actions::OperationKind::Document
-            || type_id != "qos.ui.control.invoke"
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        if kind == tilo_actions::OperationKind::Document
+            || type_id != "tilo.ui.control.invoke"
             || self.native_handler.is_none()
         {
             return Ok(None);
@@ -1114,12 +1261,12 @@ impl Widget for Button {
         if let Some(handler) = &mut self.native_handler {
             handler();
         }
-        Ok(Some(qos_actions::ActionOutput::default()))
+        Ok(Some(tilo_actions::ActionOutput::default()))
     }
 
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         if let Some(action) = &mut self.action {
             let before = action.is_available();
@@ -1130,7 +1277,7 @@ impl Widget for Button {
         }
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
 
@@ -1299,6 +1446,408 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    fn layout_fit_host(
+        host: &mut dyn Widget,
+        alignment: taffy::AlignItems,
+        theme: &Theme,
+        text: &mut TextRenderer,
+    ) -> Rect {
+        let mut tree = TaffyTree::new();
+        let mut map = std::collections::HashMap::new();
+        let root = host.build_layout(&mut tree, theme, &mut map);
+        let mut style = tree.style(root).unwrap().clone();
+        style.size.width = Dimension::length(600.0);
+        if style.display == taffy::Display::Grid {
+            style.justify_items = Some(alignment);
+        } else if style.flex_direction == taffy::FlexDirection::Row {
+            style.justify_content = Some(match alignment {
+                taffy::AlignItems::Center => taffy::JustifyContent::Center,
+                taffy::AlignItems::End => taffy::JustifyContent::End,
+                _ => taffy::JustifyContent::Start,
+            });
+        } else {
+            style.align_items = Some(alignment);
+        }
+        tree.set_style(root, style).unwrap();
+        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        unsafe {
+            bindings.rebuild(host, &tree, root, &map);
+            crate::widget::compute_widget_layout(
+                &mut tree,
+                root,
+                Size {
+                    width: taffy::AvailableSpace::Definite(600.0),
+                    height: taffy::AvailableSpace::Definite(200.0),
+                },
+                &map,
+                &bindings,
+                text,
+            )
+            .unwrap();
+        }
+        host.apply_layout(&tree, root, Point::ZERO);
+        host.children()[0].get_rect()
+    }
+
+    fn fit_host(kind: usize, button: Button) -> crate::widget::Element {
+        match kind {
+            0 => Box::new(
+                crate::widget::Column::new()
+                    .with_no_padding()
+                    .push(Box::new(button)),
+            ),
+            1 => Box::new(
+                crate::widget::Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .push(Box::new(button)),
+            ),
+            _ => Box::new(
+                crate::widget::Container::new()
+                    .with_no_padding()
+                    .with_child(Box::new(button)),
+            ),
+        }
+    }
+
+    #[test]
+    fn fit_content_stays_compact_in_stretched_flex_column() {
+        let mut host = fit_host(
+            0,
+            Button::new("back", "Back to apps", None).fit_content(40.0),
+        );
+        let rect = layout_fit_host(
+            host.as_mut(),
+            taffy::AlignItems::Stretch,
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+        );
+        assert!(rect.width() < 300.0, "fit_content stretched: {rect:?}");
+        assert_eq!(rect.height(), 40.0);
+    }
+
+    #[test]
+    fn fit_content_stays_compact_in_intrinsic_grid_column() {
+        let mut host = fit_host(
+            1,
+            Button::new("back", "Back to apps", None).fit_content(40.0),
+        );
+        let rect = layout_fit_host(
+            host.as_mut(),
+            taffy::AlignItems::Stretch,
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+        );
+        assert!(rect.width() < 300.0, "fit_content stretched: {rect:?}");
+        assert_eq!(rect.height(), 40.0);
+    }
+
+    #[test]
+    fn compact_fit_width_preserves_host_center_and_end_alignment() {
+        for kind in 0..3 {
+            for alignment in [taffy::AlignItems::Center, taffy::AlignItems::End] {
+                let mut host = fit_host(
+                    kind,
+                    Button::new("back", "Back to apps", None).fit_content(40.0),
+                );
+                let rect = layout_fit_host(
+                    host.as_mut(),
+                    alignment,
+                    &Theme::dark(),
+                    &mut TextRenderer::new(),
+                );
+                assert!(rect.width() < 300.0, "host {kind}: {rect:?}");
+                let edge = if alignment == taffy::AlignItems::Center {
+                    rect.center().x * 2.0
+                } else {
+                    rect.x1
+                };
+                assert!(
+                    (edge - 600.0).abs() <= 1.0,
+                    "host {kind}, {alignment:?}: {rect:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compact_fit_width_is_the_prepaint_click_and_focus_geometry() {
+        let fired = Arc::new(AtomicUsize::new(0));
+        let clicks = Arc::clone(&fired);
+        let button = Button::new("back", "Back to apps", None)
+            .fit_content(40.0)
+            .on_click(move || {
+                clicks.fetch_add(1, Ordering::SeqCst);
+            });
+        let mut harness = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            fit_host(1, button),
+            (600, 200),
+            Theme::dark(),
+        );
+        let before = harness.inspection().root.children[0].rect;
+        harness.click_at(550.0, before[1] + before[3] / 2.0);
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            0,
+            "blank grid track must not activate compact button"
+        );
+        harness.click_at(before[0] + before[2] / 2.0, before[1] + before[3] / 2.0);
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            harness
+                .focused_access_node()
+                .unwrap()
+                .semantic_key
+                .as_deref(),
+            Some("back")
+        );
+        harness.resize((800, 200)).unwrap();
+        assert_eq!(harness.inspection().root.children[0].rect[2], before[2]);
+    }
+
+    #[test]
+    fn retained_fit_width_remeasures_scale_and_locale_after_rebuild() {
+        use crate::i18n::I18nManager;
+        I18nManager::install(
+            "en-US",
+            "en-US",
+            &[
+                ("en-US", "fit-refresh = Refresh"),
+                ("de", "fit-refresh = Verbindungen aktualisieren"),
+            ],
+        )
+        .unwrap();
+        let mut host = fit_host(
+            1,
+            Button::new("refresh", "fit-refresh", None).fit_content(40.0),
+        );
+        let mut text = TextRenderer::new();
+        let normal = layout_fit_host(
+            host.as_mut(),
+            taffy::AlignItems::Stretch,
+            &Theme::dark(),
+            &mut text,
+        );
+        text.set_text_scale(2.0);
+        let large = layout_fit_host(
+            host.as_mut(),
+            taffy::AlignItems::Stretch,
+            &Theme::dark().with_text_scale(2.0),
+            &mut text,
+        );
+        assert!(
+            large.width() > normal.width(),
+            "renderer scale must refresh retained width: {normal:?} -> {large:?}"
+        );
+        I18nManager::set_locale("de");
+        assert!(host.is_layout_dirty());
+        let localized = layout_fit_host(
+            host.as_mut(),
+            taffy::AlignItems::Stretch,
+            &Theme::dark().with_text_scale(2.0),
+            &mut text,
+        );
+        assert!(
+            localized.width() > large.width(),
+            "locale must refresh retained width: {large:?} -> {localized:?}"
+        );
+        assert_eq!(localized.height(), 40.0);
+    }
+
+    #[test]
+    fn explicit_fill_width_still_stretches_in_intrinsic_column() {
+        let mut host = fit_host(
+            1,
+            Button::new("fill", "Back to apps", None).fill_width(40.0),
+        );
+        let rect = layout_fit_host(
+            host.as_mut(),
+            taffy::AlignItems::Stretch,
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+        );
+        assert_eq!(rect.width(), 600.0);
+    }
+
+    fn measured_button_rect(button: Button, scale: f32) -> Rect {
+        let harness = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(crate::widget::Row::new().push(Box::new(button))),
+            (1000, 200),
+            Theme::dark().with_text_scale(scale),
+        );
+        let rect = harness.inspection().root.children[0].rect;
+        Rect::new(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3])
+    }
+
+    #[test]
+    fn content_sized_wraps_long_scaled_actions_inside_available_width() {
+        let label = "Refresh all remote connections and discover updates";
+        let harness = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(
+                crate::widget::Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .push(Box::new(
+                        Button::new("refresh", label, None)
+                            .with_icon(crate::icons::Icon::Search)
+                            .content_sized(),
+                    )),
+            ),
+            (220, 400),
+            Theme::dark().with_text_scale(2.0),
+        );
+        let rect = harness.inspection().root.children[0].rect;
+        assert!(rect[2] <= 220.0);
+        assert!(
+            rect[3] > 70.0,
+            "wrapped action must grow in height: {rect:?}"
+        );
+    }
+
+    #[test]
+    fn label_line_box_is_centered_at_scaled_size() {
+        let mut text = TextRenderer::new();
+        text.set_text_scale(2.0);
+        let mut scene = Scene::new();
+        let rect = Rect::new(0.0, 0.0, 200.0, 40.0);
+        let (_, height) = text.measure("Refresh", 14.0, None);
+        paint_icon_and_label(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            rect,
+            None,
+            "Refresh",
+            14.0,
+            None,
+            crate::text_render::TextWeight::Regular,
+            vello::peniko::Color::WHITE,
+        );
+        let actual = &scene.encoding().resources.glyph_runs[0];
+        let mut expected = Scene::new();
+        text.draw_text_weighted(
+            &mut expected,
+            "Refresh",
+            14.0,
+            vello::peniko::Color::WHITE,
+            Affine::translate((0.0, (40.0 - f64::from(height)) / 2.0)),
+            None,
+            crate::text_render::TextWeight::Regular,
+        );
+        let reference = &expected.encoding().resources.glyph_runs[0];
+        assert_eq!(
+            actual.transform.translation[1],
+            reference.transform.translation[1]
+        );
+    }
+
+    #[test]
+    fn wrapped_retained_and_immediate_labels_share_geometry() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(2.0);
+        let label = "Refresh all remote connections";
+        let rect = Rect::new(10.0, 20.0, 230.0, 180.0);
+        let mut button = Button::new("action", label, None)
+            .content_sized()
+            .with_icon(crate::icons::Icon::Refresh);
+        let mut tree = TaffyTree::new();
+        button.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
+        button.apply_layout_external(rect);
+        let mut retained = Scene::new();
+        button.draw(
+            &mut retained,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &crate::presence::PresenceCtx::default(),
+        );
+        let mut immediate = Scene::new();
+        Button::paint(
+            &mut immediate,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &ButtonFace::new(rect, label)
+                .icon(crate::icons::Icon::Refresh)
+                .wrap_label()
+                .weight(crate::text_render::TextWeight::Regular),
+        );
+        let a = &retained.encoding().resources.glyph_runs;
+        let b = &immediate.encoding().resources.glyph_runs;
+        assert!(!a.is_empty());
+        assert_eq!(a.len(), b.len());
+        for (a, b) in a.iter().zip(b) {
+            assert_eq!(a.transform, b.transform);
+            assert_eq!(a.font_size, b.font_size);
+        }
+    }
+
+    #[test]
+    fn intrinsic_width_rounding_does_not_wrap_a_fitting_single_line() {
+        let mut text = TextRenderer::new();
+        for label in ["Install workspace", "Refresh connections", "View details"] {
+            let rect =
+                measured_button_rect(Button::new("action", label, None).content_sized(), 1.0);
+            let (width, _) = text.measure(label, 14.0, None);
+            assert!(
+                rect.width() >= f64::from(width + Theme::dark().padding_standard * 2.0),
+                "rounded width clips or wraps {label}: {rect:?}, text {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn manual_modifiers_replace_fully_content_sized_mode() {
+        let rect = measured_button_rect(
+            Button::new("action", "A long scaled label", None)
+                .content_sized()
+                .with_size(81.0, 35.0),
+            2.0,
+        );
+        assert_eq!(rect.size(), vello::kurbo::Size::new(81.0, 35.0));
+        let rect = measured_button_rect(
+            Button::new("action", "Short", None)
+                .content_sized()
+                .fit_content(36.0),
+            2.0,
+        );
+        assert_eq!(rect.height(), 36.0);
+    }
+
+    #[test]
+    fn fit_content_contains_real_scaled_label_and_icon() {
+        let label = "WWW Refresh remote connections";
+        let mut text = TextRenderer::new();
+        text.set_text_scale(2.0);
+        let (width, _) = text.measure(label, 14.0, None);
+        let rect = measured_button_rect(
+            Button::new("refresh", label, None)
+                .with_icon(crate::icons::Icon::Search)
+                .fit_content(40.0),
+            2.0,
+        );
+        assert!(
+            rect.width() >= f64::from(width) + 22.0 + 6.0,
+            "measured label and icon escape button: {rect:?}, text width {width}"
+        );
+        assert_eq!(rect.height(), 40.0, "fit_content keeps explicit height");
+    }
+
+    #[test]
+    fn manual_size_after_fit_content_owns_both_dimensions() {
+        let rect = measured_button_rect(
+            Button::new("manual", "Long label intentionally clipped", None)
+                .fit_content(40.0)
+                .with_size(81.0, 35.0),
+            2.0,
+        );
+        assert_eq!(rect.size(), vello::kurbo::Size::new(81.0, 35.0));
+    }
+
     #[test]
     fn button_test_id_is_stable_constructor_id() {
         let b = Button::new("id", "Save", None);
@@ -1311,17 +1860,17 @@ mod tests {
 
     #[test]
     fn action_mode_suppresses_raw_mutation_and_callback() {
-        let resource = qos_actions::Resource::new("doc:1", "doc", "Document").with_action(
-            qos_actions::ActionSpec::operation(
+        let resource = tilo_actions::Resource::new("doc:1", "doc", "Document").with_action(
+            tilo_actions::ActionSpec::operation(
                 "save",
                 "Save",
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 "test.save",
                 &(),
             )
             .unwrap(),
         );
-        let binding = qos_actions::ActionBinding::unit_for(&resource, "save").unwrap();
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let callback_calls = calls.clone();
         let mut button = Button::new("save", "Save", Some("legacy"))
@@ -1337,7 +1886,7 @@ mod tests {
         let intent = button.take_control_invocation().expect("one intent");
         assert_eq!(
             intent.address,
-            qos_actions::ActionAddress::new("doc:1", "save")
+            tilo_actions::ActionAddress::new("doc:1", "save")
         );
         assert!(intent.arguments.is_empty());
         assert_eq!(button.control_action_bindings().len(), 1);
@@ -1345,17 +1894,17 @@ mod tests {
 
     #[test]
     fn action_availability_revokes_and_restores_without_overriding_authored_state() {
-        let resource = qos_actions::Resource::new("doc:1", "doc", "Document").with_action(
-            qos_actions::ActionSpec::operation(
+        let resource = tilo_actions::Resource::new("doc:1", "doc", "Document").with_action(
+            tilo_actions::ActionSpec::operation(
                 "save",
                 "Save",
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 "test.save",
                 &(),
             )
             .unwrap(),
         );
-        let binding = qos_actions::ActionBinding::unit_for(&resource, "save").unwrap();
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
         let mut button = Button::new("save", "Save", None).on_action(binding);
         button.activate(&mut AutoCommit::new(), &automerge::ROOT);
         Widget::refresh_control_action_availability(&mut button, &std::collections::HashSet::new());
@@ -1366,7 +1915,7 @@ mod tests {
         );
         Widget::refresh_control_action_availability(
             &mut button,
-            &std::collections::HashSet::from([qos_actions::ActionAddress::new("doc:1", "save")]),
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new("doc:1", "save")]),
         );
         assert!(Widget::is_enabled(&button));
 
@@ -1374,7 +1923,7 @@ mod tests {
         Widget::refresh_control_action_availability(&mut button, &std::collections::HashSet::new());
         Widget::refresh_control_action_availability(
             &mut button,
-            &std::collections::HashSet::from([qos_actions::ActionAddress::new("doc:1", "save")]),
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new("doc:1", "save")]),
         );
         assert!(
             !Widget::is_enabled(&button),
@@ -1540,12 +2089,12 @@ mod tests {
     /// must win over stale pointer/focus state and never recover a semantic
     /// action colour or focus ring.
     #[test]
-    #[ignore = "developer visual audit writes /tmp/qos-button-disabled-audit"]
+    #[ignore = "developer visual audit writes /tmp/tilo-button-disabled-audit"]
     fn disabled_button_visual_audit() {
         use std::path::Path;
         use vello::peniko::Color;
 
-        let output = Path::new("/tmp/qos-button-disabled-audit");
+        let output = Path::new("/tmp/tilo-button-disabled-audit");
         std::fs::create_dir_all(output).expect("visual-audit output directory");
         for (name, theme) in [
             ("light", Theme::light()),

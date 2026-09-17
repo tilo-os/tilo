@@ -1,4 +1,4 @@
-package qos:format-provider@1.0.0;
+package tilo:format-provider@1.0.0;
 
 interface format-provider {
     record confidence { tier: u32, score: f32 }

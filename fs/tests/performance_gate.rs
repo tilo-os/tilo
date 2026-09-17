@@ -1,7 +1,7 @@
 //! Deterministic collaborative-files release performance gate.
 //!
 //! Ordinary `cargo test` keeps this cheap. Release CI opts in with
-//! `QOS_FS_PERF_GATE=1`; once enabled every ceiling is a hard assertion. The
+//! `TILO_FS_PERF_GATE=1`; once enabled every ceiling is a hard assertion. The
 //! fixtures are generated from fixed data, use local stores only, and contain
 //! no polling, sleeps, peer discovery, or remote requests.
 
@@ -14,7 +14,7 @@ use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
 use iroh::{Endpoint, endpoint::presets, protocol::Router};
 use thumbnail::FileCategory;
 
-const ENABLE_ENV: &str = "QOS_FS_PERF_GATE";
+const ENABLE_ENV: &str = "TILO_FS_PERF_GATE";
 
 const DIRECTORY_ENTRIES: usize = 1_000;
 const LARGE_FILE_BYTES: usize = 64 * 1024 * 1024;

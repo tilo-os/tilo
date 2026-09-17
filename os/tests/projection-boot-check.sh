@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-for helper in qos-projector qos-doubletake qos-fluxcast; do
+for helper in tilo-projector tilo-doubletake tilo-fluxcast; do
   test -x "/usr/libexec/$helper"
 done
 
@@ -13,7 +13,7 @@ import json
 import subprocess
 
 devices = subprocess.run(
-    ["/usr/libexec/qos-projector", "discover", "--timeout-ms", "0"],
+    ["/usr/libexec/tilo-projector", "discover", "--timeout-ms", "0"],
     check=True,
     capture_output=True,
     text=True,
@@ -26,6 +26,6 @@ PY
 # acquired its backend name and exported the ScreenCast interface, rather than
 # merely checking that an XML file was copied into the image.
 busctl --user introspect \
-  org.freedesktop.impl.portal.desktop.qos \
+  org.freedesktop.impl.portal.desktop.tilo \
   /org/freedesktop/portal/desktop \
   org.freedesktop.impl.portal.ScreenCast | grep -q 'CreateSession'

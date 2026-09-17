@@ -1,10 +1,10 @@
 # The agent action API
 
-qOS apps export typed actions. A program that cannot see the screen can ask the
+Tilo apps export typed actions. A program that cannot see the screen can ask the
 shell what is possible right now, and then perform one of those things by name.
 No screenshot, no hit-test, no synthetic click.
 
-Two ops on the `QOS_TEST_CONTROL` socket carry this. Both use the existing
+Two ops on the `TILO_TEST_CONTROL` socket carry this. Both use the existing
 newline-delimited JSON framing described in `docs/headless-testing.md`: one JSON
 object per line, request and response.
 
@@ -120,9 +120,9 @@ empty list, no hint that the rest exists.
 
 ## Pointing Claude Code at it
 
-`scripts/qos-mcp-server.py` is an MCP stdio server exposing the typed qOS
+`scripts/tilo-mcp-server.py` is an MCP stdio server exposing the typed Tilo
 tools and a lazy resource tree. `resources/list` returns only application
-surfaces at `qos://application/<app>`; it does not put every action schema into
+surfaces at `tilo://application/<app>`; it does not put every action schema into
 the model's initial context. Reading one application returns the objects it
 currently publishes with each object's full action descriptors nested beneath
 it.
@@ -142,16 +142,16 @@ not what the caller is allowed to reach. Standard library only, no SDK.
 Start a compositor, then register the shim:
 
 ```bash
-export QOS_TEST_CONTROL=/tmp/nirios.sock
+export TILO_TEST_CONTROL=/tmp/tilo.sock
 cargo run --bin shell -- --backend headless &
 
 # Verify the shim reaches the compositor before putting a model behind it:
-scripts/qos-mcp-server.py --selftest
+scripts/tilo-mcp-server.py --selftest
 
-claude mcp add qos -- /absolute/path/to/scripts/qos-mcp-server.py
+claude mcp add tilo -- /absolute/path/to/scripts/tilo-mcp-server.py
 ```
 
-The socket path comes from `$QOS_TEST_CONTROL`, or `--socket`. The shim never
+The socket path comes from `$TILO_TEST_CONTROL`, or `--socket`. The shim never
 fabricates an action list or a success: if the compositor is unreachable, or
 answers `{"err": ...}`, the model receives that as a tool error with the
 compositor's own code and message intact.
@@ -161,7 +161,7 @@ compositor's own code and message intact.
 An action sequence is a data path, not just a list of commands. The broker's
 terminal `Succeeded` update contains the declared `ActionOutput`; the agent
 retains that output for exactly the immediately following step. Content bytes
-are represented by one canonical resource address, `qos.content:<hash>`. An
+are represented by one canonical resource address, `tilo.content:<hash>`. An
 action built with `prompted_content` consumes that hash from the preceding
 application result and replaces any value the model tried to provide.
 
@@ -186,5 +186,5 @@ the origin of the content mechanically checkable.
 | Capability gate + policy | `shell/src/shell/search/visibility.rs` |
 | Live end-to-end proof | `scripts/headless-examples/action-api-demo.py` |
 | Cross-app result hand-off proof | `apps/agent/tests/discovered_operations.rs` |
-| MCP shim | `scripts/qos-mcp-server.py` |
+| MCP shim | `scripts/tilo-mcp-server.py` |
 | Socket framing, other ops | `docs/headless-testing.md` |

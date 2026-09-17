@@ -63,7 +63,7 @@ def architecture_matrix(
 
 def app_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
     result: dict[str, dict[str, str]] = {}
-    for manifest in sorted((root / "apps").glob("*/qos-app.toml")):
+    for manifest in sorted((root / "apps").glob("*/tilo-app.toml")):
         directory = manifest.parent
         cargo = tomllib.loads((directory / "Cargo.toml").read_text())
         app = tomllib.loads(manifest.read_text())
@@ -79,7 +79,7 @@ def app_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
             "manifest": str(manifest.relative_to(root)),
         }
     if not result:
-        raise ValueError("no apps/*/qos-app.toml manifests found")
+        raise ValueError("no apps/*/tilo-app.toml manifests found")
     return result
 
 

@@ -21,7 +21,7 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
     ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
@@ -53,6 +53,15 @@ pub fn tag_resource_id(tag: &str) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     format!("snippets.tag:{encoded}")
+}
+
+/// Stable, punctuation-safe component for custom-painted semantic controls.
+pub fn stable_key(value: &str) -> String {
+    value
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Canonical view action that reveals all snippets carrying `tag`.
@@ -458,7 +467,7 @@ impl ResourceProvider for crate::app::SnippetsApp {
 mod tests {
     use super::*;
     use crate::app::SnippetsApp;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -609,7 +618,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert!(
@@ -648,8 +657,8 @@ mod tests {
         let action = rename_action(target.id, "Converged Title");
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -678,7 +687,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let left = SnippetsDoc::list(&doc);
         assert_eq!(left.len(), before - 1, "exactly one snippet removed");

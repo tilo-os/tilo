@@ -1,5 +1,5 @@
 //! `notes` — a small reference CLI app that writes a note into
-//! the qOS workspace (or the standalone fallback dir when the
+//! the Tilo workspace (or the standalone fallback dir when the
 //! FUSE isn't mounted).
 //!
 //! ### Shape
@@ -13,15 +13,15 @@
 //! ### Storage
 //!
 //! One flat file: `notes/inbox.md` under the workspace root
-//! (or `~/.local/share/dev.qos.notes-cli/notes/inbox.md` when
+//! (or `~/.local/share/dev.tilo.notes-cli/notes/inbox.md` when
 //! standalone).
 //!
 //! ### Publishing
 //!
-//! Ships as `dev.qos.notes-cli` via the crate's
+//! Ships as `dev.tilo.notes-cli` via the crate's
 //! `manifest.toml`. The `[cli].commands = ["notes"]` block causes
-//! `qos-install install ...` to drop a `notes` shim into
-//! `~/.local/share/qos-apps/bin/`.
+//! `tilo-install install ...` to drop a `notes` shim into
+//! `~/.local/share/tilo-apps/bin/`.
 
 #![cfg_attr(
     test,
@@ -53,12 +53,12 @@ use clap::Parser;
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-/// `notes` — CLI notes for qOS.
+/// `notes` — CLI notes for Tilo.
 #[derive(Debug, Parser)]
 #[command(
     name = "notes",
     version,
-    about = "Write a note into the qOS workspace."
+    about = "Write a note into the Tilo workspace."
 )]
 struct Cli {
     /// Words to append as a single note line. If no words are

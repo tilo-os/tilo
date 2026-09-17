@@ -43,7 +43,7 @@ const W: f32 = 1200.0;
 // Tall enough for the complete category corpus. Sidebar scrolling itself is
 // covered by Scrollable's integration tests; this suite exercises category
 // activation and must click visible rows rather than coordinates below clip.
-const H: f32 = 1280.0;
+const H: f32 = 1800.0;
 
 /// Run the full `build_layout → compute_layout(measure) → apply_layout` cycle
 /// the host runs each frame, returning the app's root taffy node + the live
@@ -184,6 +184,10 @@ fn click_navigates_to(target: Category) {
     let root = automerge::ROOT;
     let mods = winit::event::Modifiers::default();
     let center = rect.center();
+    assert!(
+        rect.y0 >= 0.0 && rect.y1 <= f64::from(H),
+        "navigation fixture must show {target:?}: {rect:?}"
+    );
 
     let cursor = winit::event::WindowEvent::CursorMoved {
         device_id: unsafe { std::mem::zeroed() },
@@ -305,6 +309,10 @@ fn two_consecutive_clicks_navigate() {
                  doc: &mut AutoCommit,
                  target: Category| {
         let rect = row_rect(app, target.label()).expect("row exists");
+        assert!(
+            rect.y0 >= 0.0 && rect.y1 <= f64::from(H),
+            "navigation fixture must show {target:?}: {rect:?}"
+        );
         let center = rect.center();
         let cursor = winit::event::WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },

@@ -1,6 +1,6 @@
 # VM testing guide
 
-This guide covers image-level checks in a qOS QEMU VM. For headless
+This guide covers image-level checks in a Tilo QEMU VM. For headless
 compositor and application lanes, see [`headless-testing.md`](headless-testing.md).
 
 ## Verification System
@@ -41,9 +41,9 @@ journalctl -u fs-test
 ```
 
 The test confirms that `/var/workspace` is a FUSE mount, the synthetic
-`hello.txt` content is available, core binaries are executable, the qOS portal
+`hello.txt` content is available, core binaries are executable, the Tilo portal
 definition is registered, and the shell command surface runs. The browser is
-optional when the image was built with `QOS_WITH_BROWSER=0`.
+optional when the image was built with `TILO_WITH_BROWSER=0`.
 
 ---
 
@@ -70,7 +70,7 @@ If you want to test the production image manually:
 2.  **Launch**: Run `./os/test-vm.sh`.
 3.  **Login**: Use the default credentials:
     -   **User**: `quickuser`
-    -   **Password**: `quickdesktop`
+    -   **Password**: `tilo`
 
 ### Useful VM commands
 

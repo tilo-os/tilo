@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Minimal qOS-native app for demonstrating the app install pipeline."
+description = "Minimal Tilo-native app for demonstrating the app install pipeline."
 
 [[bin]]
-name = "qos-hello"
+name = "tilo-hello"
 path = "src/main.rs"
 
 [features]

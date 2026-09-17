@@ -5,7 +5,7 @@ use std::ptr;
 
 use objc2::rc::{Retained, WeakId};
 use objc2::runtime::{AnyObject, Sel};
-use objc2::{declare_class, msg_send_id, mutability, sel, ClassType, DeclaredClass};
+use objc2::{ClassType, DeclaredClass, declare_class, msg_send_id, mutability, sel};
 use objc2_app_kit::{
     NSApplication, NSCursor, NSEvent, NSEventPhase, NSResponder, NSTextInputClient,
     NSTrackingRectTag, NSView, NSViewFrameDidChangeNotification,
@@ -16,14 +16,14 @@ use objc2_foundation::{
     NSPoint, NSRange, NSRect, NSSize, NSString, NSUInteger,
 };
 
+use super::DEVICE_ID;
 use super::app_state::ApplicationDelegate;
 use super::cursor::{default_cursor, invisible_cursor};
 use super::event::{
-    code_to_key, code_to_location, create_key_event, event_mods, lalt_pressed, ralt_pressed,
-    scancode_to_physicalkey, KeyEventExtra,
+    KeyEventExtra, code_to_key, code_to_location, create_key_event, event_mods, lalt_pressed,
+    ralt_pressed, scancode_to_physicalkey,
 };
 use super::window::WinitWindow;
-use super::DEVICE_ID;
 use crate::dpi::{LogicalPosition, LogicalSize};
 use crate::event::{
     DeviceEvent, ElementState, Ime, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, TouchPhase,
@@ -40,7 +40,10 @@ struct CursorState {
 
 impl Default for CursorState {
     fn default() -> Self {
-        Self { visible: true, cursor: default_cursor() }
+        Self {
+            visible: true,
+            cursor: default_cursor(),
+        }
     }
 }
 
@@ -700,6 +703,24 @@ declare_class!(
             });
         }
 
+        #[method(swipeWithEvent:)]
+        fn swipe_with_event(&self, event: &NSEvent) {
+            trace_scope!("swipeWithEvent:");
+
+            self.mouse_motion(event);
+            self.update_modifiers(event, false);
+
+            // AppKit swipes are discrete directions, not pixel deltas or phased
+            // scroll streams. Its positive axes mean left/up; winit uses right/down.
+            self.queue_event(WindowEvent::SwipeGesture {
+                device_id: DEVICE_ID,
+                delta: crate::dpi::PhysicalPosition::new(
+                    -unsafe { event.deltaX() },
+                    -unsafe { event.deltaY() },
+                ),
+            });
+        }
+
         #[method(magnifyWithEvent:)]
         fn magnify_with_event(&self, event: &NSEvent) {
             trace_scope!("magnifyWithEvent:");
@@ -832,11 +853,16 @@ impl WinitView {
         // (which is incompatible with `frameDidChange:`)
         //
         // unsafe { msg_send_id![self, window] }
-        self.ivars()._ns_window.load().expect("view to have a window")
+        self.ivars()
+            ._ns_window
+            .load()
+            .expect("view to have a window")
     }
 
     fn queue_event(&self, event: WindowEvent) {
-        self.ivars().app_delegate.maybe_queue_window_event(self.window().id(), event);
+        self.ivars()
+            .app_delegate
+            .maybe_queue_window_event(self.window().id(), event);
     }
 
     fn scale_factor(&self) -> f64 {
@@ -967,8 +993,9 @@ impl WinitView {
                 let location_mask = ModLocationMask::from_location(event.location);
 
                 let mut phys_mod_state = self.ivars().phys_modifiers.borrow_mut();
-                let phys_mod =
-                    phys_mod_state.entry(logical_key).or_insert(ModLocationMask::empty());
+                let phys_mod = phys_mod_state
+                    .entry(logical_key)
+                    .or_insert(ModLocationMask::empty());
 
                 let is_active = current_modifiers.state().contains(event_modifier);
                 let mut events = VecDeque::with_capacity(2);
@@ -1118,7 +1145,9 @@ fn replace_event(event: &NSEvent, option_as_alt: OptionAsAlt) -> Retained<NSEven
 
     if ignore_alt_characters {
         let ns_chars = unsafe {
-            event.charactersIgnoringModifiers().expect("expected characters to be non-null")
+            event
+                .charactersIgnoringModifiers()
+                .expect("expected characters to be non-null")
         };
 
         unsafe {

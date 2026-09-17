@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
@@ -204,7 +204,7 @@ fn pump_no_op(host: &mut ShellOverlayHost, layout: &Layout) {
 )]
 fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
     let (tree, s_a, s_b, a_tabs, _b_tabs) = two_strip_two_tab_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
     // Without a layout pass the resolver compares release points against
     // `Rect::ZERO` and never matches.
@@ -324,7 +324,7 @@ fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
 #[test]
 fn drag_outside_every_strip_returns_tab_to_source_row() {
     let (tree, s_a, _s_b, a_tabs, _b_tabs) = two_strip_two_tab_tree();
-    let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
     // Far above every strip's band: the fallback splices into a new group on

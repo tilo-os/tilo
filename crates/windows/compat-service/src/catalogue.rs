@@ -20,9 +20,9 @@ pub struct ShippedCataloguePaths {
 
 impl Default for ShippedCataloguePaths {
     fn default() -> Self {
-        let root = Path::new("/usr/share/qos/windows/catalogues");
+        let root = Path::new("/usr/share/tilo/windows/catalogues");
         Self {
-            builtins: root.join("qos-builtins.json"),
+            builtins: root.join("tilo-builtins.json"),
             umu_csv: root.join("umu-database.csv"),
             bottles_root: root.join("bottles-programs"),
         }
@@ -195,7 +195,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let root = temp.path().to_path_buf();
         fs::write(
-            root.join("qos-builtins.json"),
+            root.join("tilo-builtins.json"),
             r#"{"schema_version":1,"records":[{"id":"visual-studio-vm","version":1,"provenance":"built_in","signed":true,"matches":[{"publisher":"Microsoft","product":"Visual Studio"}],"recipe":{"layer":"vm","runner":{"family":"windows-vm","version":"managed"},"settings":{},"security_profile":"windows-app"}}]}"#,
         )
         .unwrap();
@@ -213,7 +213,7 @@ mod tests {
         (
             temp,
             ShippedCataloguePaths {
-                builtins: root.join("qos-builtins.json"),
+                builtins: root.join("tilo-builtins.json"),
                 umu_csv: root.join("umu.csv"),
                 bottles_root: root.join("bottles"),
             },

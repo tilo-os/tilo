@@ -3084,7 +3084,7 @@ mod tests {
             crate::account::AccountStore::new(),
             crate::app::avatar_store_offline(),
         ));
-        let raw = b"From: Ada <ada@x.example>\r\nTo: you@qos.example\r\n\
+        let raw = b"From: Ada <ada@x.example>\r\nTo: you@tilo.example\r\n\
 Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
         let id = {
             let mut st = sh.borrow_mut();
@@ -3122,7 +3122,7 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
             st.mailbox
                 .messages
                 .values()
-                .find(|m| m.from.email == "news@weekly.qos.example")
+                .find(|m| m.from.email == "news@weekly.tilo.example")
                 .expect("the sample HTML newsletter is present")
                 .id
         };
@@ -3206,7 +3206,7 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
             st.mailbox
                 .messages
                 .values()
-                .find(|m| m.from.email == "news@weekly.qos.example")
+                .find(|m| m.from.email == "news@weekly.tilo.example")
                 .unwrap()
                 .id
         };

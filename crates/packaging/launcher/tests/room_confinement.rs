@@ -9,7 +9,7 @@
 //! boundary.
 //!
 //! Not `#[ignore]`d, unlike other live-bwrap tests here: bwrap is how a
-//! qOS app runs at all, so a machine that can't run these can't run the
+//! Tilo app runs at all, so a machine that can't run these can't run the
 //! product, and a boundary whose proof is opt-in is a boundary nobody
 //! checks.
 
@@ -30,7 +30,7 @@ use launcher::appdir;
 use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox};
 use launcher::run::{RunError, RunOptions, run_with_captured};
 
-const PACKAGE: &str = "dev.qos.roomtest";
+const PACKAGE: &str = "dev.tilo.roomtest";
 
 /// Build the fixture with `rustc` directly, outside the workspace, so
 /// a single-shot build doesn't dirty the workspace target dir.
@@ -96,7 +96,7 @@ fn bwrap() -> PathBuf {
     let p = PathBuf::from("/usr/bin/bwrap");
     assert!(
         p.exists(),
-        "bwrap is not installed. It is how a qOS app runs, so this is a \
+        "bwrap is not installed. It is how a Tilo app runs, so this is a \
          broken environment rather than a reason to skip the test."
     );
     p
@@ -186,7 +186,7 @@ fn an_app_cannot_read_across_rooms() {
     // The bytes really landed, on the host, in room A's directory.
     let host_file = data
         .path
-        .join("qos-rooms/room-a")
+        .join("tilo-rooms/room-a")
         .join(PACKAGE)
         .join("record.txt");
     assert_eq!(
@@ -200,10 +200,10 @@ fn an_app_cannot_read_across_rooms() {
     let from_b = run_in_room(
         payload.path(),
         Some("room-b"),
-        &["read", "/run/qos/app/record.txt"],
+        &["read", "/run/tilo/app/record.txt"],
     );
     assert_eq!(
-        from_b, "ERR /run/qos/app/record.txt ENOENT",
+        from_b, "ERR /run/tilo/app/record.txt ENOENT",
         "an app in room B must not find a record it wrote in room A"
     );
 
@@ -220,7 +220,11 @@ fn an_app_cannot_read_across_rooms() {
 
     // The room-B directory is genuinely empty of the record, rather than
     // holding a copy the app happened not to open.
-    let listing = run_in_room(payload.path(), Some("room-b"), &["readdir", "/run/qos/app"]);
+    let listing = run_in_room(
+        payload.path(),
+        Some("room-b"),
+        &["readdir", "/run/tilo/app"],
+    );
     assert!(
         !listing.contains("record.txt"),
         "room B's directory must not contain room A's record: {listing}"
@@ -230,10 +234,10 @@ fn an_app_cannot_read_across_rooms() {
     let from_a = run_in_room(
         payload.path(),
         Some("room-a"),
-        &["read", "/run/qos/app/record.txt"],
+        &["read", "/run/tilo/app/record.txt"],
     );
     assert_eq!(
-        from_a, "OK /run/qos/app/record.txt room-A-secret",
+        from_a, "OK /run/tilo/app/record.txt room-A-secret",
         "room A must still see its own record — otherwise the failure in \
          room B proves nothing about rooms"
     );
@@ -252,10 +256,10 @@ fn a_workspace_cannot_read_the_personal_room() {
     let from_workspace = run_in_room(
         payload.path(),
         Some("some-workspace"),
-        &["read", "/run/qos/app/diary.txt"],
+        &["read", "/run/tilo/app/diary.txt"],
     );
     assert_eq!(
-        from_workspace, "ERR /run/qos/app/diary.txt ENOENT",
+        from_workspace, "ERR /run/tilo/app/diary.txt ENOENT",
         "the personal room must be as unreachable from a workspace as any \
          other room"
     );
@@ -278,7 +282,7 @@ fn home_and_the_xdg_variables_all_point_into_the_one_directory() {
         "XDG_CONFIG_HOME",
         "XDG_STATE_HOME",
         "XDG_CACHE_HOME",
-        "QOS_APP_DIR",
+        "TILO_APP_DIR",
     ] {
         let line = run_in_room(payload.path(), Some("room-a"), &["env", var]);
         let value = line.split_once('=').expect("ENV k=v").1;
@@ -303,7 +307,7 @@ fn home_and_the_xdg_variables_all_point_into_the_one_directory() {
     assert!(wrote.starts_with("WROTE "), "{wrote}");
     let host = data
         .path
-        .join("qos-rooms/room-a")
+        .join("tilo-rooms/room-a")
         .join(PACKAGE)
         .join(".local/share")
         .join(PACKAGE)
@@ -368,9 +372,9 @@ fn the_read_profile_is_all_there_is_and_it_is_read_only() {
     // file could do it for every other app on the machine. Asserted by
     // attempting the write, not by reading the bind flag back out of an argv.
     for target in [
-        "/usr/share/fonts/qos-confinement-probe",
+        "/usr/share/fonts/tilo-confinement-probe",
         "/etc/ld.so.cache",
-        "/usr/lib64/qos-confinement-probe.so",
+        "/usr/lib64/tilo-confinement-probe.so",
     ] {
         let line = run_in_room(
             payload.path(),
@@ -394,7 +398,7 @@ fn the_read_profile_is_all_there_is_and_it_is_read_only() {
     let ok = run_in_room(
         payload.path(),
         Some("room-a"),
-        &["writeabs", "/run/qos/app/probe", "owned"],
+        &["writeabs", "/run/tilo/app/probe", "owned"],
     );
     assert!(
         ok.starts_with("WROTE "),
@@ -415,16 +419,16 @@ fn one_app_cannot_read_another_apps_directory() {
     // Stand in for another package's secrets, in the same room.
     let victim = data
         .path
-        .join("qos-rooms/room-a")
-        .join("dev.qos.totp")
+        .join("tilo-rooms/room-a")
+        .join("dev.tilo.totp")
         .join("seeds.bin");
     std::fs::create_dir_all(victim.parent().unwrap()).unwrap();
     std::fs::write(&victim, b"totp-seed").unwrap();
 
     for attempt in [
         victim.display().to_string(),
-        "/run/qos/app/../dev.qos.totp/seeds.bin".to_string(),
-        "/run/qos/../qos/app/../dev.qos.totp/seeds.bin".to_string(),
+        "/run/tilo/app/../dev.tilo.totp/seeds.bin".to_string(),
+        "/run/tilo/../tilo/app/../dev.tilo.totp/seeds.bin".to_string(),
     ] {
         let line = run_in_room(payload.path(), Some("room-a"), &["read", &attempt]);
         assert!(
@@ -447,7 +451,7 @@ fn a_manifest_that_names_a_path_is_refused_at_launch() {
     let payload = tempfile::tempdir().unwrap();
     build_fixture(payload.path());
 
-    let victim = data.path.join("dev.qos.totp");
+    let victim = data.path.join("dev.tilo.totp");
     for (field, entry) in [
         ("write", "~"),
         ("write", "/"),

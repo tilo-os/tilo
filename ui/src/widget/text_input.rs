@@ -351,6 +351,10 @@ impl TextInput {
     pub fn new(path: Vec<PathSegment>) -> Self {
         let spell_language = spellcheck::default_language();
         spellcheck::warm_up_language(&spell_language);
+        Self::with_language(path, spell_language)
+    }
+
+    fn with_language(path: Vec<PathSegment>, spell_language: String) -> Self {
         Self {
             id: String::new(),
             path,
@@ -454,8 +458,28 @@ impl TextInput {
         self.bound_text.as_ref()
     }
 
-    /// Keep an existing document binding readable while preventing this input
-    /// from directly splicing the backing `Text` object on user input.
+    /// Adopt only the bound Text and align presentation/edit-notification baselines.
+    pub(super) fn adopt_bound_text(
+        &mut self,
+        state: &AutoCommit,
+    ) -> Result<(), crate::view::ThawError> {
+        let obj = self
+            .bound_text
+            .as_ref()
+            .ok_or_else(|| crate::view::ThawError::State("text is not bound".into()))?;
+        let text = state
+            .text(obj)
+            .map_err(|e| crate::view::ThawError::State(e.to_string()))?;
+        if self.text != text {
+            self.text = text;
+            self.dirty = true;
+        }
+        self.clamp_to_text();
+        self.last_notified_text.clone_from(&self.text);
+        Ok(())
+    }
+
+    /// Keep the binding readable while an owning action bridge handles user writes.
     pub fn set_direct_crdt_writes(&mut self, enabled: bool) {
         self.direct_crdt_writes = enabled;
     }
@@ -813,6 +837,11 @@ impl TextInput {
         s
     }
 
+    /// Explicit host language without discovery or background dictionary warmup.
+    pub(crate) fn local_with_language(language: &str) -> Self {
+        Self::with_language(Vec::new(), language.to_owned())
+    }
+
     /// Create a true two-way binding to typed process-local text state.
     ///
     /// User edits update `state`; mutations through any clone of `state`
@@ -913,7 +942,7 @@ impl TextInput {
     /// Route committed keyboard, paste, IME, and accessibility edits through
     /// an exported action with the complete current string as input.
     #[must_use]
-    pub fn on_action(mut self, binding: qos_actions::ActionBinding<String>) -> Self {
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
         self.on_change = None;
         self
@@ -3467,12 +3496,8 @@ impl Widget for TextInput {
             value.push_str(&self.text);
         }
         // Directly-bound Text wins over the string-path mode entirely.
-        if let Some(obj_id) = self.bound_text.clone() {
-            if let Ok(text) = state.text(&obj_id) {
-                self.text = text;
-            }
-            self.clamp_to_text();
-            self.last_notified_text.clone_from(&self.text);
+        if self.bound_text.is_some() {
+            let _ = self.adopt_bound_text(state);
             return;
         }
         if !self.crdt_bound {
@@ -3758,13 +3783,13 @@ impl Widget for TextInput {
         "TextInput"
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
 
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         if let Some(action) = &mut self.action {
             action.refresh_availability(allowed);
@@ -4016,6 +4041,14 @@ impl Widget for TextInput {
     }
 
     fn get_state(&self) -> Option<String> {
+        if let Some(anchor) = self.selection_anchor {
+            let affinity = if self.caret_affinity == TextAffinity::After {
+                "a"
+            } else {
+                "b"
+            };
+            return Some(format!("{}:{affinity}:{anchor}", self.cursor_pos));
+        }
         Some(match self.caret_affinity {
             // Keep the historical state shape for the overwhelmingly common
             // unambiguous/default caret.
@@ -4025,9 +4058,13 @@ impl Widget for TextInput {
     }
 
     fn set_state(&mut self, state: &str) {
-        let (byte, affinity) = state.split_once(':').unwrap_or((state, "b"));
+        let mut parts = state.split(':');
+        let byte = parts.next().unwrap_or_default();
+        let affinity = parts.next().unwrap_or("b");
+        let anchor = parts.next().and_then(|anchor| anchor.parse::<usize>().ok());
         if let Ok(pos) = byte.parse::<usize>() {
             self.cursor_pos = pos;
+            self.selection_anchor = anchor;
             self.caret_affinity = if affinity == "a" {
                 TextAffinity::After
             } else {
@@ -5286,6 +5323,25 @@ mod tests {
         assert_eq!(ti.caret_position(), right);
         assert_eq!(left.byte, right.byte);
         assert_ne!(left.affinity, right.affinity);
+    }
+
+    #[test]
+    fn selection_survives_widget_state_round_trip_and_legacy_state_still_loads() {
+        let mut original = TextInput::local().with_initial_value("hello world");
+        original.cursor_pos = 5;
+        original.selection_anchor = Some(1);
+        let saved = original.get_state().unwrap();
+        let mut rebuilt = TextInput::local().with_initial_value("hello world");
+        rebuilt.set_state(&saved);
+        assert_eq!(rebuilt.selection_range_public(), Some((1, 5)));
+        rebuilt.set_state("3");
+        assert_eq!(rebuilt.cursor_pos(), 3);
+        assert_eq!(rebuilt.selection_range_public(), None);
+        rebuilt.set_state("4:a");
+        assert_eq!(
+            rebuilt.caret_position(),
+            TextPosition::with_affinity(4, TextAffinity::After)
+        );
     }
 
     #[test]
@@ -7422,10 +7478,9 @@ mod tests {
     /// requested named family rather than silently reverting to sans.
     #[test]
     fn font_family_override_shapes_in_named_family() {
-        let mut tr = TextRenderer::new();
-        let fams = tr.system_families();
-        assert!(!fams.is_empty(), "the system font db exposes some families");
-        let fam = fams[0].clone();
+        let mut tr = crate::font_catalog::fixture_renderer();
+        let fam = crate::text_render::UI_SERIF_FAMILY.to_owned();
+        assert!(tr.system_families().contains(&fam));
 
         let mut ti = TextInput::local()
             .with_initial_value("Reading")
@@ -7813,7 +7868,7 @@ mod tests {
         assert!(input.is_disabled());
         Widget::refresh_control_action_availability(
             &mut input,
-            &std::collections::HashSet::from([qos_actions::ActionAddress::new(
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                 "test:control",
                 "set",
             )]),

@@ -50,10 +50,10 @@ documented run command.
 # Full plumbing + live-render pixel inspection (needs real network + a GPU).
 # Writes maps-live-{before,after}.png to $MAPS_LIVE_OUT (default apps/maps/live-out/).
 MAPS_LIVE=1 MAPS_LIVE_OUT=apps/maps/live-out \
-  qos-build test -p maps --test live_maps -- --nocapture --test-threads 1
+  tilo-build test -p maps --test live_maps -- --nocapture --test-threads 1
 ```
 
-Without `MAPS_LIVE`, the lane self-skips and `qos-build test -p maps` stays green
+Without `MAPS_LIVE`, the lane self-skips and `tilo-build test -p maps` stays green
 offline. The pre-existing `tiles::tests::live_tile_fetch_real_network` (an
 `#[ignore]`d raw-fetch smoke test) still exists; the `live_maps` lane supersedes
 it by driving the whole app, not just `load_tile`.
@@ -73,7 +73,7 @@ TTY and record this matrix:
 - select a known test ICC profile and compare a measured color target, then
   enable Night Light and verify calibration remains applied beneath it.
 
-Capture `$XDG_RUNTIME_DIR/qos/display-state.json`, compositor DRM logs, and a
+Capture `$XDG_RUNTIME_DIR/tilo/display-state.json`, compositor DRM logs, and a
 photo/video of the Keep/Revert path with the report. Do not mark HDR or VRR
 available from EDID/kernel capability alone: the lane must also verify HDR DRM
 metadata/colorspace plus 10-bit encoding, or VRR CRTC activation plus measured

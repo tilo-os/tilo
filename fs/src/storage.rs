@@ -614,8 +614,8 @@ mod tests {
     #[test]
     fn only_explicit_app_namespaces_are_attributed() {
         assert_eq!(
-            app_from_path("/apps/org.qos.Notes/a"),
-            Some("org.qos.Notes".into())
+            app_from_path("/apps/org.tilo.Notes/a"),
+            Some("org.tilo.Notes".into())
         );
         assert_eq!(app_from_path("/personal/notes"), None);
         assert_eq!(app_from_path("/apps"), None);

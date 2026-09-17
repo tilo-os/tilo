@@ -7,9 +7,11 @@
 //! complete legacy record.  No public API here returns that record or its
 //! secret bytes.
 
+#[cfg(target_os = "linux")]
 use std::ffi::CString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
+#[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -21,7 +23,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use super::{IdentityLock, MAX_RECORD_BYTES, identity_from_record};
 
-const MAGIC: &[u8; 8] = b"QOSIBK\0\x01";
+const MAGIC: &[u8; 8] = b"TLOIBK\0\x01";
 const FORMAT_VERSION: u8 = 1;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
@@ -586,7 +588,7 @@ fn new_temp_path(parent: &Path) -> io::Result<PathBuf> {
     for _ in 0..16 {
         let mut nonce = [0_u8; 16];
         getrandom::getrandom(&mut nonce).map_err(random_error)?;
-        let candidate = parent.join(format!(".qos-identity-backup-{}.tmp", hex::encode(nonce)));
+        let candidate = parent.join(format!(".tilo-identity-backup-{}.tmp", hex::encode(nonce)));
         if !candidate.exists() {
             return Ok(candidate);
         }
@@ -602,6 +604,7 @@ fn new_temp_path(parent: &Path) -> io::Result<PathBuf> {
 /// that fallback retains no-replace semantics and is followed by a directory
 /// fsync. A filesystem supporting neither is refused rather than risking an
 /// attacker swapping in a destination between a preflight check and rename.
+#[cfg(target_os = "linux")]
 fn publish_new_file(temp: &Path, destination: &Path) -> io::Result<()> {
     let source = CString::new(temp.as_os_str().as_bytes()).map_err(|_| {
         io::Error::new(
@@ -633,11 +636,19 @@ fn publish_new_file(temp: &Path, destination: &Path) -> io::Result<()> {
         error.raw_os_error(),
         Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP)
     ) {
-        fs::hard_link(temp, destination)?;
-        fs::remove_file(temp)?;
-        return Ok(());
+        return publish_with_link(temp, destination);
     }
     Err(error)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn publish_new_file(temp: &Path, destination: &Path) -> io::Result<()> {
+    publish_with_link(temp, destination)
+}
+
+fn publish_with_link(temp: &Path, destination: &Path) -> io::Result<()> {
+    fs::hard_link(temp, destination)?;
+    fs::remove_file(temp)
 }
 
 fn sync_directory(path: &Path) {
@@ -691,6 +702,7 @@ fn not_available_as_io(error: super::NotAvailable) -> io::Error {
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::sync::{Arc, Barrier};
 
     struct FailingProvider;
 
@@ -748,7 +760,7 @@ mod tests {
         let source = tempfile::tempdir().expect("source");
         let identity = secured_identity(source.path(), "personal", 71);
         let backup_dir = tempfile::tempdir().expect("backup dir");
-        let backup = backup_dir.path().join("ada.qos-identity-backup");
+        let backup = backup_dir.path().join("ada.tilo-identity-backup");
         let passphrase = b"correct horse battery staple";
 
         let info = export_portable_backup(&identity, &backup, passphrase).expect("export");
@@ -767,7 +779,7 @@ mod tests {
         let source = tempfile::tempdir().expect("source");
         let identity = secured_identity(source.path(), "personal", 72);
         let backup_dir = tempfile::tempdir().expect("backup dir");
-        let backup = backup_dir.path().join("ada.qos-identity-backup");
+        let backup = backup_dir.path().join("ada.tilo-identity-backup");
         export_portable_backup(&identity, &backup, b"the passphrase").expect("export");
 
         let bytes = fs::read(&backup).expect("read envelope");
@@ -811,7 +823,7 @@ mod tests {
         let source = tempfile::tempdir().expect("source");
         let identity = secured_identity(source.path(), "personal", 73);
         let backup_dir = tempfile::tempdir().expect("backup dir");
-        let backup = backup_dir.path().join("ada.qos-identity-backup");
+        let backup = backup_dir.path().join("ada.tilo-identity-backup");
         export_portable_backup(&identity, &backup, b"the passphrase").expect("export");
 
         let mut bytes = fs::read(&backup).expect("read");
@@ -829,6 +841,52 @@ mod tests {
             io::ErrorKind::AlreadyExists
         );
         assert_eq!(fs::read(&existing).unwrap(), b"do not replace");
+    }
+
+    #[test]
+    fn concurrent_publication_preserves_the_winner_and_loser_staging_file() {
+        let dir = tempfile::tempdir().expect("dir");
+        let first_staging = dir.path().join("first.tmp");
+        let second_staging = dir.path().join("second.tmp");
+        let destination = dir.path().join("identity.backup");
+        fs::write(&first_staging, b"first complete payload").expect("first staging file");
+        fs::write(&second_staging, b"second complete payload").expect("second staging file");
+
+        let start = Arc::new(Barrier::new(2));
+        let first_start = Arc::clone(&start);
+        let first_source = first_staging.clone();
+        let first_destination = destination.clone();
+        let first = std::thread::spawn(move || {
+            first_start.wait();
+            publish_new_file(&first_source, &first_destination)
+        });
+        let second_source = second_staging.clone();
+        let second_destination = destination.clone();
+        let second = std::thread::spawn(move || {
+            start.wait();
+            publish_new_file(&second_source, &second_destination)
+        });
+
+        let first_result = first.join().expect("first publisher");
+        let second_result = second.join().expect("second publisher");
+        assert_ne!(
+            first_result.is_ok(),
+            second_result.is_ok(),
+            "exactly one publication must succeed"
+        );
+
+        if first_result.is_ok() {
+            assert_eq!(fs::read(&destination).unwrap(), b"first complete payload");
+            assert!(!first_staging.exists(), "winning staging name is consumed");
+            assert_eq!(
+                fs::read(&second_staging).unwrap(),
+                b"second complete payload"
+            );
+        } else {
+            assert_eq!(fs::read(&destination).unwrap(), b"second complete payload");
+            assert!(!second_staging.exists(), "winning staging name is consumed");
+            assert_eq!(fs::read(&first_staging).unwrap(), b"first complete payload");
+        }
     }
 
     #[test]
@@ -875,7 +933,7 @@ mod tests {
         let source = tempfile::tempdir().expect("source");
         let identity = secured_identity(source.path(), "personal", 75);
         let backup_dir = tempfile::tempdir().expect("backup dir");
-        let backup = backup_dir.path().join("ada.qos-identity-backup");
+        let backup = backup_dir.path().join("ada.tilo-identity-backup");
         let passphrase = b"a sufficient passphrase";
         export_portable_backup(&identity, &backup, passphrase).expect("export");
 

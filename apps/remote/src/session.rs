@@ -15,7 +15,7 @@
 //! [`crate::vnc`] speaks RFB. Those app-owned transports deliberately remain
 //! behind an explicit development capability: the packaged Remote sandbox has
 //! no arbitrary egress and SSH host-key trust still needs a per-profile policy.
-//! qOS device control uses the production shell broker and is available without
+//! Tilo device control uses the production shell broker and is available without
 //! that opt-in.
 
 use crate::model::{Connection, ConnectionKind};
@@ -33,7 +33,7 @@ pub enum TransportReadiness {
     /// The protocol implementation exists, but this process has not been
     /// granted the deliberately explicit live-session capability.
     NeedsLiveSessionCapability,
-    /// The persisted profile is retained for compatibility, but qOS has no
+    /// The persisted profile is retained for compatibility, but Tilo has no
     /// implementation for this protocol.
     BackendUnavailable,
     /// The saved profile does not describe a target/authentication pair this
@@ -80,7 +80,7 @@ impl TransportReadiness {
                 _ => "This transport needs a capability before it can connect.",
             },
             Self::BackendUnavailable => {
-                "RDP profiles are preserved, but this qOS build has no RDP client backend."
+                "RDP profiles are preserved, but this Tilo build has no RDP client backend."
             }
             Self::InvalidProfile => {
                 "This saved connection has incompatible target or authentication settings."
@@ -90,7 +90,7 @@ impl TransportReadiness {
 }
 
 /// Whether app-owned SSH/VNC sessions are enabled. Off by default so those
-/// transports do not touch the network until a developer opts in. qOS device
+/// transports do not touch the network until a developer opts in. Tilo device
 /// control does not use this switch.
 pub fn live_sessions_enabled() -> bool {
     std::env::var("REMOTE_LIVE_SESSIONS").is_ok()
@@ -101,7 +101,7 @@ pub fn live_sessions_enabled() -> bool {
 /// resources, and keyboard handlers.
 pub fn transport_readiness(kind: ConnectionKind) -> TransportReadiness {
     match kind {
-        ConnectionKind::Qos => TransportReadiness::Ready,
+        ConnectionKind::Tilo => TransportReadiness::Ready,
         ConnectionKind::Ssh | ConnectionKind::Vnc if live_sessions_enabled() => {
             TransportReadiness::Ready
         }
@@ -129,7 +129,7 @@ pub fn connection_readiness(connection: &Connection) -> TransportReadiness {
     TransportReadiness::Ready
 }
 
-/// Whether this connection kind may start its real transport now. qOS is a
+/// Whether this connection kind may start its real transport now. Tilo is a
 /// production broker capability; SSH/VNC retain the explicit developer gate.
 pub fn can_attempt_live(kind: ConnectionKind) -> bool {
     transport_readiness(kind).can_connect()
@@ -175,7 +175,7 @@ mod tests {
             port: kind.default_port(),
             user: String::new(),
             kind,
-            auth: if kind == ConnectionKind::Qos {
+            auth: if kind == ConnectionKind::Tilo {
                 crate::model::AuthMethod::DeviceIdentity
             } else {
                 crate::model::AuthMethod::Password
@@ -188,8 +188,8 @@ mod tests {
     }
 
     #[test]
-    fn qos_broker_transport_is_production_on() {
-        assert!(can_attempt_live(ConnectionKind::Qos));
+    fn tilo_broker_transport_is_production_on() {
+        assert!(can_attempt_live(ConnectionKind::Tilo));
         assert!(!can_attempt_live(ConnectionKind::Rdp));
         assert_eq!(
             can_attempt_live(ConnectionKind::Ssh),
@@ -208,7 +208,7 @@ mod tests {
             TransportReadiness::BackendUnavailable
         );
         assert_eq!(
-            transport_readiness(ConnectionKind::Qos),
+            transport_readiness(ConnectionKind::Tilo),
             TransportReadiness::Ready
         );
         assert_eq!(
@@ -219,14 +219,14 @@ mod tests {
 
     #[test]
     fn connection_preflight_fails_closed_for_bad_profiles_but_not_cached_presence() {
-        let mut qos = connection(ConnectionKind::Qos);
-        qos.host = "friendly-name".into();
+        let mut tilo = connection(ConnectionKind::Tilo);
+        tilo.host = "friendly-name".into();
         assert_eq!(
-            connection_readiness(&qos),
+            connection_readiness(&tilo),
             TransportReadiness::InvalidProfile
         );
 
-        let mut offline = connection(ConnectionKind::Qos);
+        let mut offline = connection(ConnectionKind::Tilo);
         offline.presence = crate::model::Presence::Offline;
         assert_eq!(connection_readiness(&offline), TransportReadiness::Ready);
     }

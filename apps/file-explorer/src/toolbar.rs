@@ -3,8 +3,8 @@
 //! One row, no banding:
 //!
 //! ```text
-//! [ ← → ↑ ]   [ Home › Projects › qos ················· ]   [ List | Grid ]  ( Sort by )  [ ⋯ ]
-//! [ ← ↑ ]     [ Home › Projects › qos ················· ]                         [ ⋯ ]
+//! [ ← → ↑ ]   [ Home › Projects › tilo ················· ]   [ List | Grid ]  ( Sort by )  [ ⋯ ]
+//! [ ← ↑ ]     [ Home › Projects › tilo ················· ]                         [ ⋯ ]
 //! ```
 //!
 //! * a nav cluster (back / forward / up) — the only icon-only controls, and

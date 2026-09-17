@@ -92,8 +92,8 @@ fn payload_size(_store: &Store, entry: &RegistryEntry) -> u64 {
 }
 
 fn launcher_bin() -> std::path::PathBuf {
-    std::env::var_os("QOS_LAUNCHER_BIN").map_or_else(
-        || std::path::PathBuf::from("/usr/bin/qos-launcher"),
+    std::env::var_os("TILO_LAUNCHER_BIN").map_or_else(
+        || std::path::PathBuf::from("/usr/bin/tilo-launcher"),
         std::path::PathBuf::from,
     )
 }

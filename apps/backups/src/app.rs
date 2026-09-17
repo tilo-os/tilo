@@ -159,7 +159,7 @@ pub struct BackupsApp {
     /// snapshot list on wide windows, a summoned overlay drawer when narrow.
     drawer: SidebarDrawer,
     /// `--shots` hook: force the overlay rail open so its narrow state can be
-    /// captured headlessly (`QOS_BACKUPS_RAIL_OPEN=1`).
+    /// captured headlessly (`TILO_BACKUPS_RAIL_OPEN=1`).
     force_rail_open: bool,
     /// Framework-owned action dispatch: every retention-policy edit goes through
     /// here so it brackets one undo boundary, encodes under [`BACKUPS_ACTION_TYPE`],
@@ -248,7 +248,7 @@ impl BackupsApp {
                 .docked_width(RAIL_W)
                 .overlay_width(RAIL_W.max(288.0))
                 .breakpoint(RAIL_BREAKPOINT),
-            force_rail_open: std::env::var("QOS_BACKUPS_RAIL_OPEN").as_deref() == Ok("1"),
+            force_rail_open: std::env::var("TILO_BACKUPS_RAIL_OPEN").as_deref() == Ok("1"),
             actions: ui::ActionHost::new(),
             status_bubble: ui::StatusBubble::new(),
             status_shown: String::new(),
@@ -285,14 +285,14 @@ impl BackupsApp {
             doc,
             BACKUPS_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Backups", "Backups", &action),
+            tilo_actions::ActionContext::for_action("org.tilo.Backups", "Backups", &action),
         );
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// test.
     #[cfg(test)]
-    pub(crate) fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -316,7 +316,7 @@ impl BackupsApp {
             .or_else(|| {
                 std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
             })
-            .map(|root| root.join("qos/backups/config.json"))
+            .map(|root| root.join("tilo/backups/config.json"))
     }
 
     fn read_config() -> Option<(PathBuf, PathBuf)> {
@@ -4687,12 +4687,12 @@ impl Widget for BackupsApp {
 
     /// Publish the retention-policy resource tree to the shell's Ctrl+K palette
     /// (see [`crate::actions`]).
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
@@ -4708,7 +4708,7 @@ impl Widget for BackupsApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
@@ -4716,7 +4716,7 @@ impl Widget for BackupsApp {
     ) -> Result<bool, String> {
         if !matches!(
             kind,
-            qos_actions::OperationKind::Effect | qos_actions::OperationKind::View
+            tilo_actions::OperationKind::Effect | tilo_actions::OperationKind::View
         ) {
             return Ok(false);
         }
@@ -5467,9 +5467,9 @@ mod tests {
                 .any(|resource| resource.kind == "backups.workspace")
         );
         assert!(
-            qos_actions::flatten(&resources)
+            tilo_actions::flatten(&resources)
                 .iter()
-                .any(|entry| entry.action.kind == qos_actions::OperationKind::Effect)
+                .any(|entry| entry.action.kind == tilo_actions::OperationKind::Effect)
         );
     }
 

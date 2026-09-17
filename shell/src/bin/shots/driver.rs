@@ -1,4 +1,4 @@
-//! `ShellDriver` — programmable, headless-friendly driver for the nirios
+//! `ShellDriver` — programmable, headless-friendly driver for the tilo
 //! shell tree. Owns a `ShellOverlayHost` plus everything the layout +
 //! draw + event passes need (taffy tree, text renderer, theme, viewport,
 //! Automerge doc), and exposes a small API the three modes (window,
@@ -101,6 +101,10 @@ impl ShellDriver {
     /// the taffy tree is rebuilt first so the new structure participates
     /// in layout. Mirrors `App::handle_window_event`'s post-event sweep.
     pub fn relayout(&mut self) {
+        // A compositor frame harvests pending tab/group gestures before it
+        // rebuilds layout. A drag can enqueue a topology change without
+        // changing the live rows until this production update pass runs.
+        self.fb.pump_apps(&mut self.state, &self.root_obj);
         self.fb.relayout();
     }
 
@@ -133,14 +137,14 @@ impl ShellDriver {
         self.fb.host_mut()
     }
 
-    /// Show the same reduced first-login ceremony used when qOS is installed
+    /// Show the same reduced first-login ceremony used when Tilo is installed
     /// as an additional session on an existing Linux desktop. The path is
     /// deliberately read-only/nonexistent: this visual scenario never mints
     /// an identity, and cannot touch the developer's real first-login state.
     pub fn show_host_desktop_onboarding(&mut self) {
         self.fb
             .enable_host_desktop_onboarding(std::path::PathBuf::from(
-                "/var/empty/qos-shots-identity",
+                "/var/empty/tilo-shots-identity",
             ));
     }
 
@@ -641,6 +645,118 @@ impl ShellDriver {
         self.seed_shared_room();
     }
 
+    pub fn seed_inferred_status_for_shots(&mut self, text: &str) {
+        self.host_mut().seed_inferred_status_for_shots(text);
+        let actor = {
+            let state = self.chrome();
+            if state.local_user_id.trim().is_empty() {
+                shell::shell::state::local_user_id()
+            } else {
+                state.local_user_id.clone()
+            }
+        };
+        let resource_id = "shots:q3-forecast".to_string();
+        self.fb.apply_remote_presence_for_shots(
+            actor.clone(),
+            ui::presence::PresenceKey::Resource {
+                app: "org.tilo.Sheets".to_string(),
+                id: resource_id.clone(),
+                kind: "sheet".to_string(),
+            },
+            ui::collaboration::PresencePayload::Interaction(Box::new(
+                tilo_actions::SemanticInteraction {
+                    version: tilo_actions::INTERACTION_VERSION,
+                    invocation: tilo_actions::InvocationId::new(),
+                    sequence: 1,
+                    actor: tilo_actions::InteractionActor {
+                        id: actor,
+                        kind: tilo_actions::InteractionActorKind::Person,
+                    },
+                    phase: tilo_actions::InteractionPhase::Applying,
+                    action: tilo_actions::InteractionAction {
+                        id: "reconciling".to_string(),
+                        label: "Reconciling".to_string(),
+                        app: Some(tilo_actions::ActionApp {
+                            id: "org.tilo.Sheets".to_string(),
+                            label: "Sheets".to_string(),
+                        }),
+                    },
+                    resource: tilo_actions::ActionResource {
+                        id: resource_id,
+                        kind: "sheet".to_string(),
+                        label: "Q3 forecast".to_string(),
+                    },
+                    anchor: tilo_actions::InteractionAnchor::Resource,
+                    group: None,
+                },
+            )),
+        );
+    }
+
+    /// Populate the live room through the same collaborator/capability state
+    /// the People overlay reads. The varied tab attribution lets the rendered
+    /// proof exercise meaningful location lines instead of screenshot-only
+    /// placeholder text.
+    pub fn seed_crowded_workspace_for_shots(&mut self) {
+        use shell::shell::state::{CapOverride, Collaborator, Subject, Verb};
+
+        let handle = self.chrome_handle();
+        let owner = handle.borrow().local_user_id.clone();
+        {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            tree.adopt_ownerless_workspaces(&owner);
+            let workspace = tree.active;
+            let room = workspace.raw().to_string();
+            let tab_ids = tree
+                .active_workspace()
+                .into_iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>();
+            for (index, (id, name)) in [
+                ("ada", "Ada"),
+                ("bo", "Bo"),
+                ("cam", "Cam"),
+                ("dev", "Dev"),
+                ("eli", "Eli"),
+                ("flo", "Flo"),
+                ("gia", "Gia"),
+                ("han", "Han"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                tree.grant_in_workspace(
+                    workspace,
+                    &owner,
+                    CapOverride::membership(
+                        Subject::person(id),
+                        room.clone(),
+                        if index % 3 == 2 {
+                            Verb::Read
+                        } else {
+                            Verb::Write
+                        },
+                    ),
+                );
+                if let Some(active) = tree.active_workspace_mut()
+                    && !active.collaborators.iter().any(|person| person.id == id)
+                {
+                    let mut collaborator = Collaborator::new(id, name);
+                    collaborator.active_tab = tab_ids.get(index % tab_ids.len().max(1)).copied();
+                    active.collaborators.push(collaborator);
+                }
+            }
+        }
+        self.with_chrome(|state| {
+            state.overlays.collaborators = true;
+            state.bump();
+        });
+    }
+
     /// Materialise the durable half of an invite without pretending the
     /// recipient is already online. The membership record takes the same
     /// authority-checked path as workspace settings; the `invited` presence
@@ -709,7 +825,117 @@ impl ShellDriver {
             state.overlays.collaborators = true;
             state.bump();
         });
+        if admitted {
+            self.seed_ada_intent_for_shots();
+            self.seed_ada_live_work_for_shots("Editing", "Onboarding notes");
+        }
         admitted
+    }
+
+    /// The remote participant's on-device model publishes only this short,
+    /// room-scoped result. Their live tab remains a separate, factual action
+    /// line in People, so the proof cannot conflate "where" with "why".
+    fn seed_ada_intent_for_shots(&mut self) {
+        let room = {
+            let state = self.chrome();
+            let tree = state.tree();
+            tree.active_workspace()
+                .map(|workspace| workspace.room.to_string())
+        };
+        if let Some(room) = room {
+            self.fb.apply_remote_presence_for_shots(
+                "ada".to_string(),
+                ui::presence::PresenceKey::Workspace { id: room },
+                ui::collaboration::PresencePayload::Status {
+                    text: "Preparing the board review".to_string(),
+                    automatic: true,
+                },
+            );
+        }
+    }
+
+    fn seed_ada_live_work_for_shots(&mut self, action: &str, resource: &str) {
+        let room = {
+            let state = self.chrome();
+            let tree = state.tree();
+            tree.active_workspace()
+                .map(|workspace| workspace.room.to_string())
+        };
+        if room.is_some() {
+            let resource_id = format!("shots:{}", resource.to_ascii_lowercase().replace(' ', "-"));
+            self.fb.apply_remote_presence_for_shots(
+                "ada".to_string(),
+                ui::presence::PresenceKey::Resource {
+                    app: "tilo-shell-shots".to_string(),
+                    id: resource_id.clone(),
+                    kind: "workspace.resource".to_string(),
+                },
+                ui::collaboration::PresencePayload::Interaction(Box::new(
+                    tilo_actions::SemanticInteraction {
+                        version: tilo_actions::INTERACTION_VERSION,
+                        invocation: tilo_actions::InvocationId::new(),
+                        sequence: 1,
+                        actor: tilo_actions::InteractionActor {
+                            id: "ada".to_string(),
+                            kind: tilo_actions::InteractionActorKind::Person,
+                        },
+                        phase: tilo_actions::InteractionPhase::Applying,
+                        action: tilo_actions::InteractionAction {
+                            id: action.to_ascii_lowercase(),
+                            label: action.to_string(),
+                            app: None,
+                        },
+                        resource: tilo_actions::ActionResource {
+                            id: resource_id,
+                            kind: "workspace.resource".to_string(),
+                            label: resource.to_string(),
+                        },
+                        anchor: tilo_actions::InteractionAnchor::Resource,
+                        group: None,
+                    },
+                )),
+            );
+        }
+    }
+
+    pub fn seed_foreign_app_work_for_shots(&mut self, app_id: &str, action: &str, resource: &str) {
+        let resource_id = format!("shots:{}", resource.to_ascii_lowercase().replace(' ', "-"));
+        self.fb.set_remote_display_name_for_shots("ada", "Ada");
+        self.fb.apply_remote_presence_for_shots(
+            "ada".to_string(),
+            ui::presence::PresenceKey::Resource {
+                app: app_id.to_string(),
+                id: resource_id.clone(),
+                kind: "workspace.resource".to_string(),
+            },
+            ui::collaboration::PresencePayload::Interaction(Box::new(
+                tilo_actions::SemanticInteraction {
+                    version: tilo_actions::INTERACTION_VERSION,
+                    invocation: tilo_actions::InvocationId::new(),
+                    sequence: 1,
+                    actor: tilo_actions::InteractionActor {
+                        id: "ada".to_string(),
+                        kind: tilo_actions::InteractionActorKind::Person,
+                    },
+                    phase: tilo_actions::InteractionPhase::Applying,
+                    action: tilo_actions::InteractionAction {
+                        id: action.to_ascii_lowercase().replace(' ', "-"),
+                        label: action.to_string(),
+                        app: Some(tilo_actions::ActionApp {
+                            id: app_id.to_string(),
+                            label: app_id.to_string(),
+                        }),
+                    },
+                    resource: tilo_actions::ActionResource {
+                        id: resource_id,
+                        kind: "workspace.resource".to_string(),
+                        label: resource.to_string(),
+                    },
+                    anchor: tilo_actions::InteractionAnchor::Resource,
+                    group: None,
+                },
+            )),
+        );
     }
 
     /// Revert the earliest non-current entry that can produce a forward
@@ -793,6 +1019,7 @@ impl ShellDriver {
             state.overlays.collaborators = true;
             state.bump();
         });
+        self.seed_ada_live_work_for_shots("Organizing", "Board review packet");
         true
     }
 
@@ -958,7 +1185,7 @@ impl ShellDriver {
         self.fb.host_mut().set_palette_visible(true);
         self.fb.host_mut().set_palette_focus(true);
         self.fb.host_mut().force_palette_settled();
-        self.fb.host_mut().set_palette_query("nirios");
+        self.fb.host_mut().set_palette_query("tilo");
         self.fb
             .host_mut()
             .refresh_search_results_for_shots(&mut self.state, &root);
@@ -1299,6 +1526,78 @@ impl ShellDriver {
     /// drawing state.
     pub fn seed_room_activity_for_shots(&mut self, explore: bool) {
         self.scene_room_activity();
+        if !explore {
+            use collab_types::{ArtifactKind, OpClass};
+            use ui::tilo_actions::ActionContext;
+            use ui::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
+
+            let local = shell::shell::state::local_user_id();
+            self.fb
+                .host_mut()
+                .room_activity_mut()
+                .open_external_entry(HistoryEntry {
+                    id: HistoryEntryId([0x51; 16]),
+                    author: HistoryAuthor::new(
+                        local.clone(),
+                        ui::history_source::stable_hue(&local),
+                        ui::history_source::short_id(&local),
+                    ),
+                    op_class: OpClass::Splice,
+                    artifact_kind: ArtifactKind::File,
+                    timestamp: std::time::SystemTime::now(),
+                    summary: "Updated revenue assumptions".into(),
+                    text_delta: Some((18, 4)),
+                    diff_payload: None,
+                    redaction: None,
+                    context: Some(
+                        ActionContext::for_resource(
+                            "Edit assumptions",
+                            "sheets:q2-finance",
+                            "spreadsheet",
+                            "Q2 finance report",
+                        )
+                        .with_app("org.tilo.Sheets", "Sheets")
+                        .with_purpose("Preparing the board review"),
+                    ),
+                });
+
+            // Catch up needs two adjacent, shared work sessions so expanding
+            // either card proves the editable seam in the rendered product.
+            // These names go through the same document write path as the UI;
+            // the external resume hint above is deliberately not grouped.
+            let handle = self.chrome_handle();
+            let state = handle.borrow();
+            let mut tree = state.tree_mut();
+            let entries = self.fb.host().room_activity().entries().to_vec();
+            if entries.len() >= 4 {
+                let split = entries.len() / 2;
+                if split >= 2 && entries.len().saturating_sub(split) >= 2 {
+                    let first_end = split.saturating_sub(1);
+                    let last = entries.len().saturating_sub(1);
+                    let pane = self.fb.host_mut().room_activity_mut();
+                    pane.apply_name(
+                        &mut tree,
+                        &ui::GroupNameRequest {
+                            record_id: None,
+                            start: entries[0].id,
+                            end: entries[first_end].id,
+                            label: "Write Q3 financial report".to_string(),
+                        },
+                    );
+                    pane.apply_name(
+                        &mut tree,
+                        &ui::GroupNameRequest {
+                            record_id: None,
+                            start: entries[split].id,
+                            end: entries[last].id,
+                            label: "Onboard Sarah".to_string(),
+                        },
+                    );
+                }
+            }
+            drop(tree);
+            drop(state);
+        }
         self.fb.host_mut().room_activity_mut().set_view(if explore {
             shell::shell::room_activity::ActivityView::Explore
         } else {
@@ -1310,6 +1609,95 @@ impl ShellDriver {
         // Build one CPU-side scene (no adapter/GPU involved) so keyboard
         // actions exercise the same rendered control set in every mode.
         let _ = self.fb.paint();
+    }
+
+    pub fn seed_automatic_work_sessions_for_shots(&mut self) {
+        let handle = self.chrome_handle();
+        {
+            let state = handle.borrow();
+            let mut tree = state.tree_mut();
+            let workspace = tree.active;
+            for (actor, group_id, group_label, action) in [
+                (
+                    "Xaver",
+                    "finance",
+                    "Write Q3 financial report",
+                    "Draft totals",
+                ),
+                (
+                    "Quinten",
+                    "finance",
+                    "Write Q3 financial report",
+                    "Check forecast",
+                ),
+                (
+                    "Sarah",
+                    "finance",
+                    "Write Q3 financial report",
+                    "Reconcile actuals",
+                ),
+                (
+                    "Ada",
+                    "finance",
+                    "Write Q3 financial report",
+                    "Review variance",
+                ),
+                ("Sarah", "onboarding", "Onboard Sarah", "Open welcome notes"),
+                ("Ada", "onboarding", "Onboard Sarah", "Assign mentor"),
+            ] {
+                let context = tilo_actions::ActionContext::for_resource(
+                    action,
+                    format!("shots:{group_id}"),
+                    "document",
+                    group_label,
+                )
+                .with_app("org.tilo.Writer", "Writer")
+                .with_group(group_id, group_label, "work-session");
+                let _ = tree.append_workspace_effect_receipt_for_shots(
+                    workspace,
+                    tilo_actions::InvocationId::new(),
+                    actor,
+                    context,
+                    tilo_actions::EffectReceiptStatus::Succeeded,
+                );
+            }
+        }
+        self.with_chrome(|state| {
+            state.overlays.room_activity = true;
+            state.bump();
+        });
+        self.fb
+            .host_mut()
+            .room_activity_mut()
+            .set_view(shell::shell::room_activity::ActivityView::CatchUp);
+        self.fb.host_mut().force_room_activity_settled();
+        let _ = self.fb.paint();
+    }
+
+    pub fn expand_automatic_work_session_for_shots(&mut self) -> bool {
+        let expanded = self
+            .fb
+            .host_mut()
+            .room_activity_mut()
+            .expand_work_session_for_shots(0);
+        let _ = self.fb.paint();
+        expanded
+    }
+
+    pub fn correct_automatic_work_session_for_shots(&mut self) -> bool {
+        let handle = self.chrome_handle();
+        let state = handle.borrow();
+        let mut tree = state.tree_mut();
+        let corrected = self
+            .fb
+            .host_mut()
+            .room_activity_mut()
+            .move_work_session_boundary_for_shots(&mut tree, 1, 0, true);
+        drop(tree);
+        drop(state);
+        self.fb.host_mut().force_room_activity_settled();
+        let _ = self.fb.paint();
+        corrected
     }
 
     pub fn show_room_activity_replay_for_shots(&mut self) {

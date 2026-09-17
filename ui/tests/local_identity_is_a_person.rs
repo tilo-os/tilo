@@ -71,10 +71,10 @@ impl Drop for EnvGuard {
 fn a_person_is_not_the_application_they_are_running() {
     let _lock = env_lock();
     let _env = EnvGuard::set(&[
-        ("QOS_PACKAGE_ID", Some("dev.qos.word-processor")),
-        ("QOS_USER_ID", None),
-        ("QOS_PRESENCE_HANDLE", None),
-        ("QOS_USER_IDENTITY", None),
+        ("TILO_PACKAGE_ID", Some("dev.tilo.word-processor")),
+        ("TILO_USER_ID", None),
+        ("TILO_PRESENCE_HANDLE", None),
+        ("TILO_USER_IDENTITY", None),
     ]);
 
     assert_ne!(
@@ -93,19 +93,19 @@ fn two_people_running_one_app_are_two_people() {
 
     let alice = {
         let _env = EnvGuard::set(&[
-            ("QOS_PACKAGE_ID", Some("dev.qos.word-processor")),
-            ("QOS_USER_ID", Some("alice")),
-            ("QOS_PRESENCE_HANDLE", None),
-            ("QOS_USER_IDENTITY", None),
+            ("TILO_PACKAGE_ID", Some("dev.tilo.word-processor")),
+            ("TILO_USER_ID", Some("alice")),
+            ("TILO_PRESENCE_HANDLE", None),
+            ("TILO_USER_IDENTITY", None),
         ]);
         local_user_id()
     };
     let bob = {
         let _env = EnvGuard::set(&[
-            ("QOS_PACKAGE_ID", Some("dev.qos.word-processor")),
-            ("QOS_USER_ID", Some("bob")),
-            ("QOS_PRESENCE_HANDLE", None),
-            ("QOS_USER_IDENTITY", None),
+            ("TILO_PACKAGE_ID", Some("dev.tilo.word-processor")),
+            ("TILO_USER_ID", Some("bob")),
+            ("TILO_PRESENCE_HANDLE", None),
+            ("TILO_USER_IDENTITY", None),
         ]);
         local_user_id()
     };
@@ -122,10 +122,10 @@ fn two_people_running_one_app_are_two_people() {
 fn the_same_person_is_the_same_id_every_time() {
     let _lock = env_lock();
     let _env = EnvGuard::set(&[
-        ("QOS_PACKAGE_ID", Some("dev.qos.word-processor")),
-        ("QOS_USER_ID", None),
-        ("QOS_PRESENCE_HANDLE", None),
-        ("QOS_USER_IDENTITY", None),
+        ("TILO_PACKAGE_ID", Some("dev.tilo.word-processor")),
+        ("TILO_USER_ID", None),
+        ("TILO_PRESENCE_HANDLE", None),
+        ("TILO_USER_IDENTITY", None),
     ]);
 
     let first = local_user_id();

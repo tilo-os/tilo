@@ -1,4 +1,4 @@
-//! Spawns the nirios shell headless, embeds a real terminal and a real
+//! Spawns the tilo shell headless, embeds a real terminal and a real
 //! file-explorer and browser in tabs, and asserts their `AppWidget` metadata reaches
 //! the live `Shell::workspace_tree()`. Also drives them through an
 //! abbreviated render pipeline and asserts visible content: a non-empty
@@ -15,6 +15,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+#[cfg(target_os = "macos")]
+use crate as shell;
 use shell::shell::{Shell, tile::TileContent};
 use std::time::Duration;
 use ui::AppKind;
@@ -60,27 +62,29 @@ fn default_workspace_hosts_terminal_files_and_real_browser_widget() {
 
 #[test]
 fn terminal_tab_emits_a_prompt_within_10_seconds() {
-    // PTY init time is environment-dependent (shell rc files, distro
-    // defaults, container start-up); a 3s budget proved flaky on slower CI.
-    // 10s gives even a cold bash with a heavy `.bashrc` time to print its
-    // first prompt line.
-    let mut shell = Shell::new_with_default_demo_workspace();
-
-    // A failed PTY spawn (e.g. sandboxed CI without /dev/ptmx) leaves a Stub
-    // rather than an App; skip so this doesn't assert against an
-    // environment-shaped failure.
-    if shell.first_terminal_line().is_none() {
-        eprintln!(
-            "skipped: no live terminal tile (PTY spawn likely failed; tile fell back to Stub)"
-        );
-        return;
-    }
+    // A real interactive PTY with an explicit startup environment. No operator
+    // login/rc files are read; the shell emits its normal interactive prompt.
+    let directory = tempfile::tempdir().expect("terminal working directory");
+    let mut command = terminal::CommandBuilder::new("/bin/sh");
+    command.arg("-i");
+    command.env_clear();
+    command.env("HOME", directory.path());
+    command.env("PATH", "/usr/bin:/bin");
+    command.env("PS1", "tilo-fixture$ ");
+    command.cwd(directory.path());
+    let terminal = terminal::TerminalWidget::spawn_command(command).expect("real fixture PTY");
+    let mut shell = Shell::new_with_demo_terminal(terminal);
+    assert!(
+        shell.first_terminal_line().is_some(),
+        "the provided PTY must be mounted as a live tile"
+    );
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         shell.tick_for_test();
         if let Some(line0) = shell.first_terminal_line()
             && !line0.trim().is_empty()
+            && line0.contains("tilo-fixture$")
         {
             return;
         }

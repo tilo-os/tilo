@@ -31,6 +31,10 @@ pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPrese
         PresencePayload::Interaction(update) => {
             PeerPresencePayload::InteractionJson(serde_json::to_string(update).ok()?)
         }
+        PresencePayload::Status { text, automatic } => PeerPresencePayload::Status {
+            text: text.clone(),
+            automatic: *automatic,
+        },
     };
     Some(PeerPresence { key, payload })
 }
@@ -62,6 +66,9 @@ pub fn from_peer(presence: PeerPresence) -> Option<(PresenceKey, PresencePayload
         PeerPresencePayload::InteractionJson(json) => {
             PresencePayload::Interaction(Box::new(serde_json::from_str(&json).ok()?))
         }
+        PeerPresencePayload::Status { text, automatic } => {
+            PresencePayload::Status { text, automatic }
+        }
     };
     Some((key, payload))
 }
@@ -84,30 +91,34 @@ mod tests {
                 target: Some("peer@7".into()),
             },
             PresencePayload::Following { target: None },
-            PresencePayload::Interaction(Box::new(qos_actions::SemanticInteraction {
-                version: qos_actions::INTERACTION_VERSION,
-                invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(7)),
+            PresencePayload::Interaction(Box::new(tilo_actions::SemanticInteraction {
+                version: tilo_actions::INTERACTION_VERSION,
+                invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(7)),
                 sequence: 2,
-                actor: qos_actions::InteractionActor {
+                actor: tilo_actions::InteractionActor {
                     id: "quill".into(),
-                    kind: qos_actions::InteractionActorKind::Agent,
+                    kind: tilo_actions::InteractionActorKind::Agent,
                 },
-                phase: qos_actions::InteractionPhase::Committed,
-                action: qos_actions::InteractionAction {
+                phase: tilo_actions::InteractionPhase::Committed,
+                action: tilo_actions::InteractionAction {
                     id: "rename".into(),
                     label: "Rename".into(),
                     app: None,
                 },
-                resource: qos_actions::ActionResource {
+                resource: tilo_actions::ActionResource {
                     id: "file:draft".into(),
                     kind: "files.entry".into(),
                     label: "Draft.md".into(),
                 },
-                anchor: qos_actions::InteractionAnchor::ListItems {
+                anchor: tilo_actions::InteractionAnchor::ListItems {
                     ids: vec!["file:draft".into()],
                 },
                 group: None,
             })),
+            PresencePayload::Status {
+                text: "Reviewing Q2 assumptions".into(),
+                automatic: true,
+            },
         ];
         for payload in variants {
             let wire = to_peer(&key, &payload).expect("encode typed presence");

@@ -42,7 +42,7 @@ struct TaskAction {
 #[derive(Clone, Debug, Default, PartialEq)]
 struct StepOutcome {
     /// The application-declared result returned by the broker.
-    output: qos_actions::ActionOutput,
+    output: tilo_actions::ActionOutput,
     /// A local document's app-derived product. Local document actions predate
     /// `ActionOutput`; this preserves their existing honest hand-off without
     /// pretending the model or the generic action door produced it.
@@ -55,7 +55,7 @@ impl StepOutcome {
             .output
             .resources
             .iter()
-            .filter_map(|address| qos_actions::content_hash(address));
+            .filter_map(|address| tilo_actions::content_hash(address));
         if let Some(hash) = hashes.next() {
             if hashes.next().is_some() {
                 return Err("the previous action produced more than one content resource".into());
@@ -85,10 +85,17 @@ fn arguments_for_step(
     // parameter name. Replace any model-authored value: the descriptor says
     // the value is carried, so only the preceding application may supply it.
     arguments.insert(
-        qos_actions::PROMPTED_PARAM.to_string(),
+        tilo_actions::PROMPTED_PARAM.to_string(),
         serde_json::Value::String(hash.to_string()),
     );
     Ok(arguments)
+}
+
+fn dispatched_action_key(
+    id: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    format!("{id}\0{}", serde_json::Value::Object(arguments.clone()))
 }
 
 #[derive(Debug)]
@@ -110,7 +117,7 @@ fn validate_task_run(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String
     {
         return Err("The task envelope has an invalid id, title, or lease".into());
     }
-    let context = serde_json::from_value::<qos_actions::ActionContext>(run.action_context.clone())
+    let context = serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone())
         .map_err(|_| "The task has an invalid action context".to_string())?;
     let valid_group = context.group.as_ref().is_some_and(|group| {
         group.id == run.task_id && group.label == run.title && group.kind == "task"
@@ -130,12 +137,12 @@ fn task_action_from_offer(
         .ok_or_else(|| "Tasks cannot invoke a local-only action".to_string())?;
     if !matches!(
         offer.descriptor.contract.confirmation,
-        qos_actions::ConfirmationPolicy::None
+        tilo_actions::ConfirmationPolicy::None
     ) {
         return Err("Tasks cannot invoke an action requiring human confirmation".into());
     }
     if !offer.wants_content() {
-        qos_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments)
+        tilo_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments)
             .map_err(|error| format!("The planned action arguments are invalid: {error}"))?;
     }
     Ok(TaskAction {
@@ -311,8 +318,14 @@ impl Session {
         link.join_route(RouteSpec::cluster(cfg.cluster));
         // The broker directs the late-join request to one existing holder.
         ask_for_document(&mut link)?;
+        link.send(&CollabRequest::Presence {
+            key: PresenceKey::Workspace {
+                id: cfg.cluster.to_string(),
+            },
+            payload: PresencePayload::Arrived,
+        })?;
         tracing::info!(
-            transport = if cfg.endpoint.is_some() { "typed-endpoint" } else { "QOS_SVC_COLLAB_FD" },
+            transport = if cfg.endpoint.is_some() { "typed-endpoint" } else { "TILO_SVC_COLLAB_FD" },
             app = %cfg.app_id,
             room = %cfg.cluster,
             record = ?cfg.record,
@@ -572,7 +585,7 @@ impl Session {
                 offer.broker_peer_id.is_some()
                     && matches!(
                         offer.descriptor.contract.confirmation,
-                        qos_actions::ConfirmationPolicy::None
+                        tilo_actions::ConfirmationPolicy::None
                     )
             })
             .collect::<Vec<_>>();
@@ -667,7 +680,7 @@ impl Session {
                 })?;
                 let _ = self.wait_for_broker_result(cancel_request)?;
                 interaction_sequence = interaction_sequence.saturating_add(1);
-                let cancelled = qos_actions::InvocationUpdate::Cancelled {
+                let cancelled = tilo_actions::InvocationUpdate::Cancelled {
                     invocation: update.invocation(),
                     message: Some("Cancelled from Task Center".into()),
                 };
@@ -686,12 +699,12 @@ impl Session {
             self.publish_task_interaction(run, action, &update, interaction_sequence);
         }
         match update {
-            qos_actions::InvocationUpdate::Succeeded { output, .. } => Ok(Ok(StepOutcome {
+            tilo_actions::InvocationUpdate::Succeeded { output, .. } => Ok(Ok(StepOutcome {
                 output,
                 product: self.product_for_app(&action.app),
             })),
-            qos_actions::InvocationUpdate::Cancelled { .. } => Ok(Err(TaskActionStop::Cancelled)),
-            qos_actions::InvocationUpdate::Failed { error, .. } => {
+            tilo_actions::InvocationUpdate::Cancelled { .. } => Ok(Err(TaskActionStop::Cancelled)),
+            tilo_actions::InvocationUpdate::Failed { error, .. } => {
                 Ok(Err(TaskActionStop::Failed(error.message)))
             }
             other => {
@@ -700,9 +713,9 @@ impl Session {
                 self.publish_task_interaction(
                     run,
                     action,
-                    &qos_actions::InvocationUpdate::Failed {
+                    &tilo_actions::InvocationUpdate::Failed {
                         invocation: other.invocation(),
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "timeout".into(),
                             message: message.into(),
                             details: None,
@@ -723,76 +736,76 @@ impl Session {
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
         action: &TaskAction,
-        update: &qos_actions::InvocationUpdate,
+        update: &tilo_actions::InvocationUpdate,
         sequence: u64,
     ) {
         let phase = match update {
-            qos_actions::InvocationUpdate::Accepted { .. } => {
-                qos_actions::InteractionPhase::Applying
+            tilo_actions::InvocationUpdate::Accepted { .. } => {
+                tilo_actions::InteractionPhase::Applying
             }
-            qos_actions::InvocationUpdate::Progress {
+            tilo_actions::InvocationUpdate::Progress {
                 phase,
                 completed,
                 total,
                 ..
-            } => qos_actions::InteractionPhase::Progress {
+            } => tilo_actions::InteractionPhase::Progress {
                 label: phase.clone(),
                 completed: *completed,
                 total: *total,
             },
-            qos_actions::InvocationUpdate::Item { .. } => qos_actions::InteractionPhase::Applying,
-            qos_actions::InvocationUpdate::Succeeded { .. } => {
-                qos_actions::InteractionPhase::Committed
+            tilo_actions::InvocationUpdate::Item { .. } => tilo_actions::InteractionPhase::Applying,
+            tilo_actions::InvocationUpdate::Succeeded { .. } => {
+                tilo_actions::InteractionPhase::Committed
             }
-            qos_actions::InvocationUpdate::Failed { error, .. } => {
-                qos_actions::InteractionPhase::Failed {
+            tilo_actions::InvocationUpdate::Failed { error, .. } => {
+                tilo_actions::InteractionPhase::Failed {
                     code: Some(error.code.clone()),
                     message: error.message.clone(),
                 }
             }
-            qos_actions::InvocationUpdate::Cancelled { message, .. } => {
-                qos_actions::InteractionPhase::Cancelled {
+            tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
+                tilo_actions::InteractionPhase::Cancelled {
                     message: message.clone(),
                 }
             }
         };
         let context =
-            serde_json::from_value::<qos_actions::ActionContext>(run.action_context.clone()).ok();
-        let interaction = qos_actions::SemanticInteraction {
-            version: qos_actions::INTERACTION_VERSION,
+            serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone()).ok();
+        let interaction = tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
             invocation: update.invocation(),
             sequence,
             // The local broker replaces these fields from the authenticated
             // admission before fan-out. They are populated only so the
             // strongly typed value is valid before crossing that boundary.
-            actor: qos_actions::InteractionActor {
+            actor: tilo_actions::InteractionActor {
                 id: self.cfg.name.clone(),
-                kind: qos_actions::InteractionActorKind::Agent,
+                kind: tilo_actions::InteractionActorKind::Agent,
             },
             phase,
-            action: qos_actions::InteractionAction {
+            action: tilo_actions::InteractionAction {
                 id: action.action.clone(),
                 label: action.label.clone(),
-                app: Some(qos_actions::ActionApp {
+                app: Some(tilo_actions::ActionApp {
                     id: action.app.clone(),
                     label: action.app.clone(),
                 }),
             },
-            resource: qos_actions::ActionResource {
+            resource: tilo_actions::ActionResource {
                 id: action.resource.clone(),
                 kind: action.resource_kind.clone(),
                 label: action.resource_label.clone(),
             },
             anchor: if let Some(id) = action.resource.strip_prefix("ui:") {
-                qos_actions::InteractionAnchor::SemanticControl { id: id.into() }
+                tilo_actions::InteractionAnchor::SemanticControl { id: id.into() }
             } else if action.resource_kind.contains("entry")
                 || action.resource_kind.contains("file")
             {
-                qos_actions::InteractionAnchor::ListItems {
+                tilo_actions::InteractionAnchor::ListItems {
                     ids: vec![action.resource.clone()],
                 }
             } else {
-                qos_actions::InteractionAnchor::Resource
+                tilo_actions::InteractionAnchor::Resource
             },
             group: context.and_then(|context| context.group),
         };
@@ -806,7 +819,7 @@ impl Session {
     fn wait_for_task_action_result(
         &mut self,
         request_id: u64,
-    ) -> Result<Result<(u64, qos_actions::InvocationUpdate), String>> {
+    ) -> Result<Result<(u64, tilo_actions::InvocationUpdate), String>> {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut deferred = Vec::new();
         loop {
@@ -1210,7 +1223,7 @@ impl Session {
         if !confirmation.satisfies(&descriptor.contract.confirmation) {
             return Ok(Err("that action requires explicit confirmation".to_string()));
         }
-        if let Err(error) = qos_actions::ActionArgs::bind_json(&descriptor.params, arguments) {
+        if let Err(error) = tilo_actions::ActionArgs::bind_json(&descriptor.params, arguments) {
             return Ok(Err(format!("I couldn't do that - {error}")));
         }
         let confirmation_json = match confirmation {
@@ -1262,15 +1275,15 @@ impl Session {
             )));
         }
         match update {
-            qos_actions::InvocationUpdate::Failed { error, .. } => {
+            tilo_actions::InvocationUpdate::Failed { error, .. } => {
                 Ok(Err(format!("I couldn't do that - {}", error.message)))
             }
-            qos_actions::InvocationUpdate::Cancelled { message, .. } => {
+            tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
                 Ok(Err(message.unwrap_or_else(|| {
                     "that action was cancelled".to_string()
                 })))
             }
-            qos_actions::InvocationUpdate::Succeeded { output, .. } => {
+            tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
                 tracing::info!(%id, invocation_id, ?output, "broker action completed");
                 std::thread::sleep(self.cfg.pace);
                 Ok(Ok(StepOutcome {
@@ -1313,7 +1326,7 @@ impl Session {
         editor.set_history_context(context);
         let before = editor.latest_entry_id();
         let live = editor.resources(&view);
-        let Some(descriptor) = qos_actions::door::survey(&live)
+        let Some(descriptor) = tilo_actions::door::survey(&live)
             .into_iter()
             .find(|descriptor| descriptor.address == address)
         else {
@@ -1350,7 +1363,7 @@ impl Session {
                 }
                 std::thread::sleep(self.cfg.pace);
                 Ok(Ok(StepOutcome {
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                     product,
                 }))
             }
@@ -1374,7 +1387,7 @@ impl Session {
     fn wait_for_broker_result(
         &mut self,
         request_id: u64,
-    ) -> Result<Result<(u64, qos_actions::InvocationUpdate), String>> {
+    ) -> Result<Result<(u64, tilo_actions::InvocationUpdate), String>> {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut deferred = Vec::new();
         loop {
@@ -1484,16 +1497,16 @@ impl Session {
             .map(|version| version.actor_hex)
     }
 
-    fn task_context(&self) -> Option<qos_actions::ActionContext> {
+    fn task_context(&self) -> Option<tilo_actions::ActionContext> {
         let run = self.active_run.as_ref()?;
         let record = self.cfg.record.as_deref().unwrap_or("active document");
         let mut context =
-            qos_actions::ActionContext::for_resource("Agent task", record, "document", record)
+            tilo_actions::ActionContext::for_resource("Agent task", record, "document", record)
                 .with_app(&self.cfg.app_id, "Agent")
                 .with_purpose(&run.instruction)
                 .with_group(&run.group_id, &run.instruction, "agent-run");
         if let Some(issuer) = &run.issued_by {
-            context = context.with_facet(qos_actions::ActionFacet::new("assigned-by", issuer));
+            context = context.with_facet(tilo_actions::ActionFacet::new("assigned-by", issuer));
         }
         Some(context)
     }
@@ -1685,34 +1698,36 @@ impl Session {
                 }
                 // A surveyed operation, named by address. Guarded by
                 // `dispatched_this_turn`: a clause asked again mid-plan can
-                // come back naming a step this turn already performed, and
-                // without the guard "put it in the open document" placed
-                // the same image twice.
+                // come back naming the exact step this turn already performed.
+                // Include bound arguments in the identity: assigning one role
+                // to Ada and Lin, or creating several roles, is intentional
+                // repeated use of one canonical action rather than a duplicate.
                 Instruction::Perform {
                     id,
                     arguments,
                     confirmation,
                 } => {
-                    if self.dispatched_this_turn.contains(id) {
+                    let arguments =
+                        match arguments_for_step(step.carries, arguments, previous.as_ref()) {
+                            Ok(arguments) => arguments,
+                            Err(why) => {
+                                self.splice_reply(
+                                    &blocks,
+                                    ins_id,
+                                    &format!("{}: I couldn't do that - {why}", self.cfg.name),
+                                )?;
+                                self.finish_run()?;
+                                return Ok(true);
+                            }
+                        };
+                    let dispatch_key = dispatched_action_key(id, &arguments);
+                    if self.dispatched_this_turn.contains(&dispatch_key) {
                         true
                     } else {
-                        let arguments =
-                            match arguments_for_step(step.carries, arguments, previous.as_ref()) {
-                                Ok(arguments) => arguments,
-                                Err(why) => {
-                                    self.splice_reply(
-                                        &blocks,
-                                        ins_id,
-                                        &format!("{}: I couldn't do that - {why}", self.cfg.name),
-                                    )?;
-                                    self.finish_run()?;
-                                    return Ok(true);
-                                }
-                            };
                         let id = id.clone();
                         match self.perform(&id, &arguments, confirmation)? {
                             Ok(performed) => {
-                                self.dispatched_this_turn.insert(id);
+                                self.dispatched_this_turn.insert(dispatch_key);
                                 outcome = Some(performed);
                                 true
                             }
@@ -1906,7 +1921,7 @@ impl Session {
     )]
     fn edit(&mut self, focus: &str, action: &WordProcessorAction) -> Result<()> {
         let before = self.editor.as_mut().and_then(Editor::latest_entry_id);
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let resource_id = "word-processor.document".to_string();
         let agent_name = self.cfg.name.clone();
         let app_id = self.cfg.app_id.clone();
@@ -1916,24 +1931,24 @@ impl Session {
             .clone()
             .unwrap_or_else(|| "Open document".into());
         let group = self.task_context().and_then(|context| context.group);
-        let semantic = |phase, sequence| qos_actions::SemanticInteraction {
-            version: qos_actions::INTERACTION_VERSION,
+        let semantic = |phase, sequence| tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
             invocation,
             sequence,
-            actor: qos_actions::InteractionActor {
+            actor: tilo_actions::InteractionActor {
                 id: agent_name.clone(),
-                kind: qos_actions::InteractionActorKind::Agent,
+                kind: tilo_actions::InteractionActorKind::Agent,
             },
             phase,
-            action: qos_actions::InteractionAction {
+            action: tilo_actions::InteractionAction {
                 id: "word-processor.edit".into(),
                 label: describe(action),
-                app: Some(qos_actions::ActionApp {
+                app: Some(tilo_actions::ActionApp {
                     id: app_id.clone(),
                     label: "Word Processor".into(),
                 }),
             },
-            resource: qos_actions::ActionResource {
+            resource: tilo_actions::ActionResource {
                 id: resource_id.clone(),
                 kind: "word-processor.document".into(),
                 label: resource_label.clone(),
@@ -1946,7 +1961,7 @@ impl Session {
         let _ = self.link.send(&CollabRequest::Presence {
             key: interaction_key.clone(),
             payload: PresencePayload::Interaction(Box::new(semantic(
-                qos_actions::InteractionPhase::Applying,
+                tilo_actions::InteractionPhase::Applying,
                 0,
             ))),
         });
@@ -1988,7 +2003,7 @@ impl Session {
             let _ = self.link.send(&CollabRequest::Presence {
                 key: interaction_key,
                 payload: PresencePayload::Interaction(Box::new(semantic(
-                    qos_actions::InteractionPhase::Committed,
+                    tilo_actions::InteractionPhase::Committed,
                     1,
                 ))),
             });
@@ -2004,7 +2019,7 @@ impl Session {
             let _ = self.link.send(&CollabRequest::Presence {
                 key: interaction_key,
                 payload: PresencePayload::Interaction(Box::new(semantic(
-                    qos_actions::InteractionPhase::Failed {
+                    tilo_actions::InteractionPhase::Failed {
                         code: Some("no_change".into()),
                         message: "The operation made no change".into(),
                     },
@@ -2018,10 +2033,10 @@ impl Session {
     }
 }
 
-fn comment_text_anchor(block: &str, start: usize, end: usize) -> qos_actions::InteractionAnchor {
-    qos_actions::InteractionAnchor::Text {
+fn comment_text_anchor(block: &str, start: usize, end: usize) -> tilo_actions::InteractionAnchor {
+    tilo_actions::InteractionAnchor::Text {
         region: "document".into(),
-        ranges: vec![qos_actions::InteractionTextRange {
+        ranges: vec![tilo_actions::InteractionTextRange {
             block: block.to_string(),
             start: u64::try_from(start).unwrap_or(u64::MAX),
             end: u64::try_from(end).unwrap_or(u64::MAX),
@@ -2034,13 +2049,13 @@ fn selection_text_anchor(
     start: usize,
     end_block: &str,
     end: usize,
-) -> qos_actions::InteractionAnchor {
-    let range = |block: &str, start, end| qos_actions::InteractionTextRange {
+) -> tilo_actions::InteractionAnchor {
+    let range = |block: &str, start, end| tilo_actions::InteractionTextRange {
         block: block.to_string(),
         start: u64::try_from(start).unwrap_or(u64::MAX),
         end: u64::try_from(end).unwrap_or(u64::MAX),
     };
-    qos_actions::InteractionAnchor::Text {
+    tilo_actions::InteractionAnchor::Text {
         region: "document".into(),
         ranges: if start_block == end_block {
             vec![range(start_block, start, end)]
@@ -2050,8 +2065,8 @@ fn selection_text_anchor(
     }
 }
 
-fn object_anchor(id: &str) -> qos_actions::InteractionAnchor {
-    qos_actions::InteractionAnchor::Objects {
+fn object_anchor(id: &str) -> tilo_actions::InteractionAnchor {
+    tilo_actions::InteractionAnchor::Objects {
         ids: vec![id.to_string()],
     }
 }
@@ -2059,7 +2074,7 @@ fn object_anchor(id: &str) -> qos_actions::InteractionAnchor {
 fn word_action_anchor(
     action: &WordProcessorAction,
     _focus: &str,
-) -> qos_actions::InteractionAnchor {
+) -> tilo_actions::InteractionAnchor {
     match action {
         WordProcessorAction::SpliceText {
             block,
@@ -2067,9 +2082,9 @@ fn word_action_anchor(
             del,
             ins,
             ..
-        } => qos_actions::InteractionAnchor::Text {
+        } => tilo_actions::InteractionAnchor::Text {
             region: "document".into(),
-            ranges: vec![qos_actions::InteractionTextRange {
+            ranges: vec![tilo_actions::InteractionTextRange {
                 block: block.clone(),
                 start: u64::try_from(*at).unwrap_or(u64::MAX),
                 end: u64::try_from(at.saturating_add((*del).max(ins.chars().count())))
@@ -2090,11 +2105,11 @@ fn word_action_anchor(
             end,
             ..
         } => selection_text_anchor(start_block, *start, end_block, *end),
-        WordProcessorAction::SetMark { spans, .. } => qos_actions::InteractionAnchor::Text {
+        WordProcessorAction::SetMark { spans, .. } => tilo_actions::InteractionAnchor::Text {
             region: "document".into(),
             ranges: spans
                 .iter()
-                .map(|span| qos_actions::InteractionTextRange {
+                .map(|span| tilo_actions::InteractionTextRange {
                     block: span.block.clone(),
                     start: u64::try_from(span.start).unwrap_or(u64::MAX),
                     end: u64::try_from(span.end).unwrap_or(u64::MAX),
@@ -2104,11 +2119,13 @@ fn word_action_anchor(
         WordProcessorAction::SetParagraphStyle { blocks, .. }
         | WordProcessorAction::ApplyNamedStyle { blocks, .. }
         | WordProcessorAction::SetBlockAttr { blocks, .. }
-        | WordProcessorAction::RemoveBlocks { blocks } => qos_actions::InteractionAnchor::Objects {
-            ids: blocks.clone(),
-        },
+        | WordProcessorAction::RemoveBlocks { blocks } => {
+            tilo_actions::InteractionAnchor::Objects {
+                ids: blocks.clone(),
+            }
+        }
         WordProcessorAction::SetPageMargins { .. } | WordProcessorAction::GenerateToc { .. } => {
-            qos_actions::InteractionAnchor::Resource
+            tilo_actions::InteractionAnchor::Resource
         }
         WordProcessorAction::SetStyleProperty { style, .. }
         | WordProcessorAction::DeleteStyle { style, .. } => object_anchor(style),
@@ -2124,22 +2141,22 @@ fn word_action_anchor(
         | WordProcessorAction::InsertField { block, at, .. } => {
             comment_text_anchor(block, *at, *at)
         }
-        WordProcessorAction::ReplaceBody { .. } => qos_actions::InteractionAnchor::Resource,
+        WordProcessorAction::ReplaceBody { .. } => tilo_actions::InteractionAnchor::Resource,
         WordProcessorAction::AcceptChanges { id } | WordProcessorAction::RejectChanges { id } => id
             .as_ref()
-            .map_or(qos_actions::InteractionAnchor::Resource, |id| {
-                qos_actions::InteractionAnchor::Objects {
+            .map_or(tilo_actions::InteractionAnchor::Resource, |id| {
+                tilo_actions::InteractionAnchor::Objects {
                     ids: vec![id.clone()],
                 }
             }),
-        WordProcessorAction::ResolveComment { id } => qos_actions::InteractionAnchor::Objects {
+        WordProcessorAction::ResolveComment { id } => tilo_actions::InteractionAnchor::Objects {
             ids: vec![id.clone()],
         },
         WordProcessorAction::AddComment {
             block, start, end, ..
         } => comment_text_anchor(block, *start, *end),
         WordProcessorAction::ReplyToComment { comment, .. } => {
-            qos_actions::InteractionAnchor::Objects {
+            tilo_actions::InteractionAnchor::Objects {
                 ids: vec![comment.clone()],
             }
         }
@@ -2193,7 +2210,7 @@ mod tests {
         for action in actions {
             assert_eq!(
                 word_action_anchor(&action, "unused-focus"),
-                qos_actions::InteractionAnchor::Objects {
+                tilo_actions::InteractionAnchor::Objects {
                     ids: vec!["image-7".into()],
                 }
             );
@@ -2212,9 +2229,9 @@ mod tests {
         };
         assert_eq!(
             word_action_anchor(&add, "unused-focus"),
-            qos_actions::InteractionAnchor::Text {
+            tilo_actions::InteractionAnchor::Text {
                 region: "document".into(),
-                ranges: vec![qos_actions::InteractionTextRange {
+                ranges: vec![tilo_actions::InteractionTextRange {
                     block: "paragraph-7".into(),
                     start: 4,
                     end: 11,
@@ -2230,7 +2247,7 @@ mod tests {
         };
         assert_eq!(
             word_action_anchor(&reply, "unused-focus"),
-            qos_actions::InteractionAnchor::Objects {
+            tilo_actions::InteractionAnchor::Objects {
                 ids: vec!["comment-3".into()],
             }
         );
@@ -2271,10 +2288,10 @@ mod tests {
 
     #[test]
     fn a_content_step_uses_only_the_immediately_preceding_application_result() {
-        let output = qos_actions::ActionOutput {
+        let output = tilo_actions::ActionOutput {
             value: Some(serde_json::json!({"display": "ignored"})),
             resources: vec![
-                qos_actions::content_resource("abc123")
+                tilo_actions::content_resource("abc123")
                     .expect("the producer returned a valid content hash"),
             ],
         };
@@ -2285,14 +2302,14 @@ mod tests {
             }),
         };
         let planned = serde_json::Map::from_iter([(
-            qos_actions::PROMPTED_PARAM.to_string(),
+            tilo_actions::PROMPTED_PARAM.to_string(),
             serde_json::Value::String("model-invented".into()),
         )]);
 
         let bound = arguments_for_step(true, &planned, Some(&previous))
             .expect("one content result binds the next content input");
         assert_eq!(
-            bound.get(qos_actions::PROMPTED_PARAM),
+            bound.get(tilo_actions::PROMPTED_PARAM),
             Some(&serde_json::Value::String("abc123".into())),
             "the preceding app result must replace model input and its legacy product fallback"
         );
@@ -2305,9 +2322,9 @@ mod tests {
     #[test]
     fn a_content_step_refuses_ambiguous_or_wrong_kind_results() {
         let ambiguous = StepOutcome {
-            output: qos_actions::ActionOutput {
+            output: tilo_actions::ActionOutput {
                 value: None,
-                resources: vec!["qos.content:first".into(), "qos.content:second".into()],
+                resources: vec!["tilo.content:first".into(), "tilo.content:second".into()],
             },
             product: None,
         };
@@ -2317,7 +2334,7 @@ mod tests {
         );
 
         let wrong_kind = StepOutcome {
-            output: qos_actions::ActionOutput {
+            output: tilo_actions::ActionOutput {
                 value: None,
                 resources: vec!["files.entry:/tmp/picture.png".into()],
             },
@@ -2332,7 +2349,7 @@ mod tests {
     #[test]
     fn a_local_apps_declared_product_can_feed_the_next_content_step() {
         let previous = StepOutcome {
-            output: qos_actions::ActionOutput::default(),
+            output: tilo_actions::ActionOutput::default(),
             product: Some(surface::Product::Content {
                 hash: "rendered-photo".into(),
             }),
@@ -2340,8 +2357,28 @@ mod tests {
         let bound = arguments_for_step(true, &serde_json::Map::new(), Some(&previous))
             .expect("the app, not the agent, declared the local document's product");
         assert_eq!(
-            bound.get(qos_actions::PROMPTED_PARAM),
+            bound.get(tilo_actions::PROMPTED_PARAM),
             Some(&serde_json::Value::String("rendered-photo".into()))
+        );
+    }
+
+    #[test]
+    fn repeated_action_ids_remain_distinct_when_arguments_differ() {
+        let ada = serde_json::Map::from_iter([(
+            "subject".into(),
+            serde_json::Value::String("ada".into()),
+        )]);
+        let lin = serde_json::Map::from_iter([(
+            "subject".into(),
+            serde_json::Value::String("lin".into()),
+        )]);
+        assert_eq!(
+            dispatched_action_key("profile.assign", &ada),
+            dispatched_action_key("profile.assign", &ada)
+        );
+        assert_ne!(
+            dispatched_action_key("profile.assign", &ada),
+            dispatched_action_key("profile.assign", &lin)
         );
     }
 

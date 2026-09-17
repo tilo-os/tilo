@@ -4,7 +4,7 @@
 //! device with [`wgpu::MemoryHints::Manual`] instead of the default.
 //!
 //! `vello::util::RenderContext` defaults to `MemoryHints::Performance` — right
-//! for a game alone on a discrete card, wrong for a qOS session where a dozen
+//! for a game alone on a discrete card, wrong for a Tilo session where a dozen
 //! clients share one integrated GPU whose memory is the machine's memory.
 //! Measured on an idle file manager: 488 MB across 459 buffers, of which
 //! 448 MB was three suballocator chunks (256 + 128 + 64 MB) and only 20 MB
@@ -17,6 +17,8 @@
 //! reimplementing, for its private `adapter` field. vello stays unmodified,
 //! and this file stays close to `vello::util`'s own logic so the two can be
 //! compared when vello moves.
+
+use std::sync::{Arc, Mutex};
 
 use vello::util::RenderSurface;
 use wgpu::{
@@ -32,9 +34,29 @@ pub struct DeviceHandle {
     pub adapter: Adapter,
     pub device: Device,
     pub queue: Queue,
+    loss: DeviceLossMonitor,
+}
+
+/// Shared, read-only observation of the context-owned device loss callback.
+#[derive(Clone, Default)]
+pub struct DeviceLossMonitor(Arc<Mutex<Option<String>>>);
+
+impl DeviceLossMonitor {
+    /// Actual device loss reason, when the context callback has observed one.
+    pub fn reason(&self) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 impl DeviceHandle {
+    /// Observe loss without replacing the context-owned callback.
+    pub fn loss_monitor(&self) -> DeviceLossMonitor {
+        self.loss.clone()
+    }
+
     /// A method as well as a field, because vello's handle offers one and call
     /// sites were written against it.
     pub fn adapter(&self) -> &Adapter {
@@ -136,7 +158,7 @@ impl RenderContext {
             } else {
                 if dispatch_timestamps_requested {
                     eprintln!(
-                        "qos: VELLO_GPU_DISPATCH_TIMESTAMPS=1 requested, but this adapter does not support TIMESTAMP_QUERY_INSIDE_PASSES"
+                        "tilo: VELLO_GPU_DISPATCH_TIMESTAMPS=1 requested, but this adapter does not support TIMESTAMP_QUERY_INSIDE_PASSES"
                     );
                 }
                 timestamp_feature
@@ -144,12 +166,12 @@ impl RenderContext {
         } else {
             if gpu_timestamps_requested {
                 eprintln!(
-                    "qos: VELLO_GPU_TIMESTAMPS=1 requested, but this adapter does not support TIMESTAMP_QUERY"
+                    "tilo: VELLO_GPU_TIMESTAMPS=1 requested, but this adapter does not support TIMESTAMP_QUERY"
                 );
             }
             if dispatch_timestamps_requested {
                 eprintln!(
-                    "qos: VELLO_GPU_DISPATCH_TIMESTAMPS=1 requires VELLO_GPU_TIMESTAMPS=1 with TIMESTAMP_QUERY"
+                    "tilo: VELLO_GPU_DISPATCH_TIMESTAMPS=1 requires VELLO_GPU_TIMESTAMPS=1 with TIMESTAMP_QUERY"
                 );
             }
             wgpu::Features::empty()
@@ -177,10 +199,22 @@ impl RenderContext {
             })
             .await
             .ok()?;
+        let loss = DeviceLossMonitor::default();
+        let observer = loss.clone();
+        device.set_device_lost_callback(move |reason, message| {
+            let mut recorded = observer
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if recorded.is_none() {
+                *recorded = Some(format!("{reason:?}: {message}"));
+            }
+        });
         self.devices.push(DeviceHandle {
             adapter,
             device,
             queue,
+            loss,
         });
         Some(self.devices.len().saturating_sub(1))
     }
@@ -288,6 +322,23 @@ pub enum CreateSurfaceError {
 mod tests {
     use super::create_targets;
     use crate::offscreen::shared_gpu;
+
+    #[test]
+    fn device_loss_observers_share_the_context_callback() {
+        let mut context = super::RenderContext::new();
+        let index = pollster::block_on(context.device(None)).expect("real GPU adapter");
+        let handle = &context.devices[index];
+        let first = handle.loss_monitor();
+        let second = handle.loss_monitor();
+        assert!(first.reason().is_none());
+        handle.device.destroy();
+        let _ = handle.device.poll(wgpu::PollType::Poll);
+        assert!(
+            first.reason().is_some(),
+            "context must record actual destroyed-device loss"
+        );
+        assert_eq!(first.reason(), second.reason());
+    }
 
     #[test]
     fn live_retained_target_accepts_native_damage_copy() {

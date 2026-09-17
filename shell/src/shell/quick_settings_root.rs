@@ -58,7 +58,7 @@ pub enum SliderCommit {
     Volume(f32),
 }
 
-/// Root interaction state.  Editing uses the shared qOS reorder controller;
+/// Root interaction state.  Editing uses the shared Tilo reorder controller;
 /// it never serialises paint geometry, only stable control identifiers.
 pub struct QuickSettingsRoot {
     panel: Rect,

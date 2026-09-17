@@ -32,7 +32,7 @@ use vello::kurbo::{Point, Rect};
 const W: f32 = 1200.0;
 // Wide navigation tests address every category directly; keep each target
 // visible. Short-viewport sidebar scrolling is exercised separately.
-const H: f32 = 1280.0;
+const H: f32 = 1800.0;
 
 /// Run the host's per-frame `build_layout → compute_layout(measure) →
 /// apply_layout` cycle at the default wide viewport, returning the live tree
@@ -146,14 +146,14 @@ fn click_at(
             let control = intent
                 .address
                 .resource
-                .strip_prefix("qos.control:")
+                .strip_prefix("tilo.control:")
                 .expect("Settings control actions use the toolkit control resource");
             let payload = serde_json::to_vec(control).expect("control id is valid JSON");
             let started = app
                 .start_resource_operation(
-                    qos_actions::InvocationId::new(),
-                    qos_actions::OperationKind::View,
-                    "qos.ui.control.invoke",
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    "tilo.ui.control.invoke",
                     &payload,
                     doc,
                     &root,
@@ -174,6 +174,10 @@ fn navigate(
     let (taffy, node) = lay_out(app);
     let row = find_rect(app, "SidebarRow", Some(target.label()))
         .unwrap_or_else(|| panic!("no sidebar row for {target:?}"));
+    assert!(
+        row.y0 >= 0.0 && row.y1 <= f64::from(H),
+        "navigation fixture must show {target:?}: {row:?}"
+    );
     click_at(app, &taffy, node, doc, row.center());
     let root = automerge::ROOT;
     app.sync(doc, &root);

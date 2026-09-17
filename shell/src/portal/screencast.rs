@@ -24,29 +24,42 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
 use zbus::object_server::SignalContext;
-use zbus::zvariant::{ObjectPath, OwnedValue, Value};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+use zbus::zvariant::{OwnedValue, Value};
 
+#[cfg(target_os = "linux")]
 use crate::shell::state::{Capability, GRANT_ONCE};
 
+use super::PortalCaller;
 #[cfg(test)]
 use super::PromptOutcome;
+#[cfg(target_os = "linux")]
 use super::auth::authenticate_call;
+#[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
 use super::screencast_pipewire::{
     PipewireStreamInfo, PipewireStreamRequest, ScreenCastStreamProvisionerHandle,
 };
-use super::{CapabilityKind, PortalCaller, PortalContext, flow};
+#[cfg(target_os = "linux")]
+use super::{CapabilityKind, PortalContext, flow};
 
+#[cfg(target_os = "linux")]
 const MAX_LIVE_SESSIONS: usize = 64;
 const MAX_RESTORE_TOKENS: usize = 256;
-const RESTORE_VENDOR: &str = "qos";
+const RESTORE_VENDOR: &str = "tilo";
 const RESTORE_DATA_VERSION: u32 = 1;
 
 /// Source-type bitmask (`ScreenCast.AvailableSourceTypes`).
@@ -74,23 +87,93 @@ pub const SCREENCAST_VERSION: u32 = 4;
 /// Per-session negotiated selection, keyed by the frontend's `session_handle` object path.
 #[derive(Clone, Debug, Default)]
 struct ScreenCastSession {
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     owner: String,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     app_id: String,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     caller: Option<PortalCaller>,
     /// Bitmask of requested source types (`SelectSources` `types`).
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     source_types: u32,
     /// Requested cursor mode.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     cursor_mode: u32,
     /// Whether the app allowed selecting multiple sources.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     multiple: bool,
     /// Requested persistence: 0 none, 1 while-running, 2 until-revoked.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     persist_mode: u32,
     /// True once valid standard `restore_data` pre-approved this session, so
     /// `Start` skips the consent prompt (persisted-share fast path).
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     restored: bool,
     /// Consent is requested exactly once, at Start (unless restored).
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     consented: bool,
     /// Serializes concurrent Start calls across the async prompt.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     starting: bool,
     /// PipeWire nodes owned by this session, released on lifecycle close.
     streams: Vec<u32>,
@@ -120,6 +203,7 @@ struct RestoreStore {
 }
 
 impl RestoreStore {
+    #[cfg(target_os = "linux")]
     fn load() -> Self {
         Self::load_at(restore_path())
     }
@@ -212,11 +296,12 @@ impl RestoreStore {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn restore_path() -> Option<PathBuf> {
     let root = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| dirs::state_dir())?;
-    Some(root.join("qos/portal/screencast-restore.json"))
+    Some(root.join("tilo/portal/screencast-restore.json"))
 }
 
 fn valid_restore_map(records: &HashMap<String, RestoreData>) -> bool {
@@ -231,6 +316,7 @@ fn valid_restore_map(records: &HashMap<String, RestoreData>) -> bool {
         })
 }
 
+#[cfg(target_os = "linux")]
 pub struct ScreenCastBackend {
     ctx: PortalContext,
     lifecycle: PortalLifecycle,
@@ -282,6 +368,7 @@ impl ScreenCastSessionHandle {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl ScreenCastBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self::with_lifecycle(ctx, PortalLifecycle::new())
@@ -304,7 +391,7 @@ impl ScreenCastBackend {
     }
 
     /// Remove durable and session restore records when an app is uninstalled,
-    /// its capture permission is revoked, or qOS privacy controls disable
+    /// its capture permission is revoked, or Tilo privacy controls disable
     /// screen sharing.  Tokens remain app-bound even before this is called.
     pub fn revoke_restore_tokens_for_app(&self, app_id: &str) -> Result<(), String> {
         self.restore
@@ -323,6 +410,7 @@ impl ScreenCastBackend {
 }
 
 #[interface(name = "org.freedesktop.impl.portal.ScreenCast")]
+#[cfg(target_os = "linux")]
 impl ScreenCastBackend {
     /// Source types the compositor can capture.
     #[zbus(property)]
@@ -483,7 +571,7 @@ impl ScreenCastBackend {
         let mut persist_mode = opt_u32(&options, "persist_mode").unwrap_or(0);
 
         // `restore_data` is a standard `(suv)` tuple. Its payload is opaque
-        // to xdg-desktop-portal; qOS uses a random private-store key so an
+        // to xdg-desktop-portal; Tilo uses a random private-store key so an
         // application cannot forge a durable grant by manufacturing fields.
         // A matching record pre-approves the session and
         // restores its previous selection (source types, cursor mode, multiple, persist mode).
@@ -768,21 +856,24 @@ fn selected_source_types(mask: u32, multiple: bool) -> Vec<u32> {
 /// Return the least-significant supported portal bit. Portal source and cursor
 /// bitmasks deliberately use independent single-bit flags, so this chooses a
 /// deterministic default without inventing an unsupported capability.
+#[cfg(target_os = "linux")]
 fn first_supported_bit(mask: u32) -> Option<u32> {
     (mask != 0).then_some(mask & mask.wrapping_neg())
 }
 
+#[cfg(target_os = "linux")]
 fn opt_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
     let v = options.get(key)?.try_clone().ok()?;
     u32::try_from(v).ok()
 }
 
+#[cfg(target_os = "linux")]
 fn opt_bool(options: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
     let v = options.get(key)?.try_clone().ok()?;
     bool::try_from(v).ok()
 }
 
-/// Decode qOS's opaque key from standard `restore_data` `(suv)`. Unknown
+/// Decode Tilo's opaque key from standard `restore_data` `(suv)`. Unknown
 /// vendors, versions, malformed variants, and non-UUID payloads are not an
 /// error: the portal spec says a backend may simply prompt normally when it
 /// cannot restore a record.
@@ -855,17 +946,11 @@ fn outcome_to_start_response_for_tests(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::portal::{
-        CallerMap, FilePickerSpawnerHandle, GrantStoreHandle, MockScreenCastProvisioner,
-        NullFilePickerSpawner, PromptQueueHandle, PromptResolver,
-        ScreenCastStreamProvisionerHandle,
+    use crate::portal::screencast_pipewire::{
+        MockScreenCastProvisioner, ScreenCastStreamProvisionerHandle,
     };
-    use crate::shell::state::{Workspace, WorkspaceId};
+    use crate::shell::state::WorkspaceId;
     use std::sync::Arc;
-
-    fn empty_ws(id: u64) -> Workspace {
-        Workspace::test_default(WorkspaceId(id), "sc")
-    }
 
     #[test]
     fn start_allow_returns_response_zero_with_streams_key() {
@@ -929,7 +1014,7 @@ mod tests {
     }
 
     #[test]
-    fn standard_restore_data_round_trips_only_qos_uuid_payloads() {
+    fn standard_restore_data_round_trips_only_tilo_uuid_payloads() {
         let key = uuid::Uuid::new_v4().to_string();
         let mut options = HashMap::new();
         options.insert("restore_data".into(), restore_data(key.clone()).unwrap());
@@ -995,7 +1080,7 @@ mod tests {
 
     #[test]
     fn durable_restore_survives_a_store_restart_and_stays_app_bound() {
-        let root = std::env::temp_dir().join(format!("qos-sc-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
         let path = root.join("restore.json");
         let token = uuid::Uuid::new_v4().to_string();
         let mut store = RestoreStore::load_at(Some(path.clone()));
@@ -1013,7 +1098,7 @@ mod tests {
 
     #[test]
     fn corrupt_durable_restore_is_quarantined_and_never_restored() {
-        let root = std::env::temp_dir().join(format!("qos-sc-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("root");
         let path = root.join("restore.json");
         std::fs::write(&path, b"not json").expect("corrupt fixture");
@@ -1035,7 +1120,7 @@ mod tests {
 
     #[test]
     fn revocation_removes_durable_restore_authority() {
-        let root = std::env::temp_dir().join(format!("qos-sc-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("tilo-sc-{}", uuid::Uuid::new_v4()));
         let path = root.join("restore.json");
         let token = uuid::Uuid::new_v4().to_string();
         let mut store = RestoreStore::load_at(Some(path.clone()));
@@ -1051,27 +1136,9 @@ mod tests {
     /// The provisioner records the request the Start path forwards, including the selected source type + size.
     #[test]
     fn screencast_provisioner_records_source_type_and_size() {
-        let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(40));
-        let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
+        let ws_id = WorkspaceId(40);
         let provisioner = Arc::new(MockScreenCastProvisioner::new_with_node(13, "sc"));
         let sc_handle = ScreenCastStreamProvisionerHandle::new(provisioner.clone());
-        let map = CallerMap::new();
-        let caller = PortalCaller::new(ws_id, "org.example");
-        map.force_caller_for_tests(caller);
-        let ctx = PortalContext {
-            grants: store,
-            prompts: queue,
-            caller_map: map,
-            file_picker: FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-            screencast_provisioner: sc_handle,
-            remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
-            input_capture: crate::portal::InputCaptureCompositorHandle::unavailable(),
-            documents: crate::portal::DocumentStoreHandle::host_paths(),
-            print_spooler: crate::portal::PrintSpoolerHandle::null(),
-            notifications: crate::notifications::NotificationBridge::new(),
-            desktop_services: Default::default(),
-            authenticator: None,
-        };
         let req = PipewireStreamRequest {
             caller: PortalCaller::new(ws_id, "org.example"),
             width: 1024,
@@ -1080,10 +1147,7 @@ mod tests {
             source_type: source_type::WINDOW,
             cursor_mode: cursor_mode::HIDDEN,
         };
-        let info = ctx
-            .screencast_provisioner
-            .provision(&req)
-            .expect("provision");
+        let info = sc_handle.provision(&req).expect("provision");
         assert_eq!(info.node_id, 13);
         assert_eq!(info.size, (1024, 768));
         assert_eq!(info.source_type, source_type::WINDOW);

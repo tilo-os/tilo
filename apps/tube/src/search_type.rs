@@ -7,7 +7,7 @@
 //! by Tube's visual Ctrl+K overlay while it is open.
 
 use crate::backend::{BackendResult, YtBackend};
-use qos_actions::ActionAddress;
+use tilo_actions::ActionAddress;
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,

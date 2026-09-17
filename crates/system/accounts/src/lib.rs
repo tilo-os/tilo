@@ -1,4 +1,4 @@
-//! The shared **online-accounts** model + store, used by every qOS app that consumes
+//! The shared **online-accounts** model + store, used by every Tilo app that consumes
 //! external accounts (Mail, Calendar, and the Settings hub).
 //!
 //! # Why one crate
@@ -14,7 +14,7 @@
 //! - [`Account`] — the type-agnostic envelope. `config` is opaque type-specific JSON,
 //!   (de)serialised by the owning type. **No secret fields live here.**
 //! - [`AccountStore`] — the canonical multi-account store, one pretty-JSON document at
-//!   `$XDG_CONFIG_HOME/qos/accounts/store.json`, holding every account plus the per-type
+//!   `$XDG_CONFIG_HOME/tilo/accounts/store.json`, holding every account plus the per-type
 //!   active selection.
 //! - [`SecretVault`] — the encrypted-at-rest credential store keyed by [`AccountId`] (see
 //!   [`vault`]). Credentials go here, never into [`AccountStore`].
@@ -327,14 +327,14 @@ impl AccountStore {
     }
 }
 
-/// The per-user qOS config root: `$XDG_CONFIG_HOME/qos` or `~/.config/qos`. Deliberately
+/// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo` or `~/.config/tilo`. Deliberately
 /// identical to the Settings app's `config_root()` so every app resolves the same directory.
 pub fn config_root() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
         .or_else(|| dirs::home_dir().map(|h| h.join(".config")))?;
-    Some(base.join("qos"))
+    Some(base.join("tilo"))
 }
 
 /// The accounts directory under a config root (`root/accounts`).
@@ -379,7 +379,7 @@ mod tests {
     }
 
     fn temp_root() -> PathBuf {
-        std::env::temp_dir().join(format!("qos-accounts-store-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("tilo-accounts-store-{}", uuid::Uuid::new_v4()))
     }
 
     #[test]

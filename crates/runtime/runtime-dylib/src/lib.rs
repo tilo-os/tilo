@@ -1,8 +1,8 @@
-//! `runtime-dylib` — the qOS runtime SDK and UI toolkit, packaged as a
+//! `runtime-dylib` — the Tilo runtime SDK and UI toolkit, packaged as a
 //! single shared object (`libruntime_dylib.so`).
 //!
 //! This crate carries **no logic of its own** — it re-exports the three
-//! surfaces a qOS app links against ([`runtime`], [`cli`], [`ui`]) so that
+//! surfaces a Tilo app links against ([`runtime`], [`cli`], [`ui`]) so that
 //! building it as a `dylib` pulls their whole transitive graph (portal /
 //! collab / fs / identity, and for `ui` the wgpu + vello + cosmic-text +
 //! automerge + taffy + fluent + winit stack) into one shared library.
@@ -39,9 +39,9 @@
 pub use cli;
 pub use comemo;
 pub use iroh;
-pub use qos_callstream;
 pub use runtime;
 pub use rustypipe;
+pub use tilo_callstream;
 pub use tiny_skia;
 pub use typst;
 pub use typst_assets;

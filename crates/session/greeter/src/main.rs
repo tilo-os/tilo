@@ -1,10 +1,10 @@
-// Thin binary entry point for the qOS graphical greeter — all logic
+// Thin binary entry point for the Tilo graphical greeter — all logic
 // lives in the library (mirrors apps/file-explorer/src/main.rs).
 //
 // Modes:
 //   * default — build a `GreeterApp`, hand it to `ui::App`, run the live
 //     winit event loop. Launched at the greetd VT under `cage`:
-//         cage -s -- /usr/bin/qos-greeter
+//         cage -s -- /usr/bin/tilo-greeter
 //     The event-loop proxy is captured via `run_with_setup` so the
 //     background auth worker can pump prompts/results back into the UI.
 //   * `--shots <PATH> [--scenario <name>] [--viewport <WIDTH>x<HEIGHT>]`
@@ -55,6 +55,7 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// Returns an error if `--shots` rendering fails (see
 /// [`render_shot_to_png`]); the live event-loop path does not return.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _detached = ui::wake::WakeScope::enter_detached();
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
@@ -77,12 +78,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     // Slot the event loop populates once it starts; the greeter reads it to
     // spawn the background auth worker.
     let proxy_slot: Arc<OnceLock<EventLoopProxy<UserEvent>>> = Arc::new(OnceLock::new());
     let widget = GreeterApp::new().with_proxy_slot(proxy_slot.clone());
     let state = ui::State::new();
-    let mut app = ui::App::new(state, Box::new(widget));
+    let mut app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget));
     // On a personal machine with one unambiguous interactive account, the
     // greeter hides the redundant username field and this lands on Passcode.
     // Zero/multiple candidates retain the two-field fallback and autofocus
@@ -303,7 +306,7 @@ fn render_shot_to_png(
     }
     let mut renderer = OffscreenRenderer::new(w, h);
     renderer.render_png(&scene, Color::TRANSPARENT, out);
-    println!("qos-greeter: wrote shot to {}", out.display());
+    println!("tilo-greeter: wrote shot to {}", out.display());
     Ok(())
 }
 
@@ -318,11 +321,11 @@ mod tests {
     #[test]
     fn viewport_accepts_separate_and_equals_forms() {
         assert_eq!(
-            parse_viewport_arg(&args(&["qos-greeter", "--viewport", "640x480"])),
+            parse_viewport_arg(&args(&["tilo-greeter", "--viewport", "640x480"])),
             Some((640, 480))
         );
         assert_eq!(
-            parse_viewport_arg(&args(&["qos-greeter", "--viewport=360X640"])),
+            parse_viewport_arg(&args(&["tilo-greeter", "--viewport=360X640"])),
             Some((360, 640))
         );
     }
@@ -331,7 +334,7 @@ mod tests {
     fn viewport_rejects_malformed_or_empty_dimensions() {
         for raw in ["", "640", "x480", "640x", "0x480", "640x0", "-1x480"] {
             assert_eq!(
-                parse_viewport_arg(&args(&["qos-greeter", "--viewport", raw])),
+                parse_viewport_arg(&args(&["tilo-greeter", "--viewport", raw])),
                 None,
                 "accepted malformed viewport {raw:?}"
             );
@@ -341,12 +344,12 @@ mod tests {
     #[test]
     fn shot_text_scale_accepts_only_bounded_finite_values() {
         assert_eq!(
-            parse_text_scale_arg(&args(&["qos-greeter", "--text-scale=1.3"])),
+            parse_text_scale_arg(&args(&["tilo-greeter", "--text-scale=1.3"])),
             Some(1.3)
         );
         for value in ["NaN", "0.5", "2.1", "not-a-number"] {
             assert_eq!(
-                parse_text_scale_arg(&args(&["qos-greeter", "--text-scale", value])),
+                parse_text_scale_arg(&args(&["tilo-greeter", "--text-scale", value])),
                 None
             );
         }
@@ -365,7 +368,7 @@ mod tests {
             ("personal-starting", AuthScenario::PersonalStarting),
         ] {
             assert_eq!(
-                parse_scenario_arg(&args(&["qos-greeter", "--scenario", name])),
+                parse_scenario_arg(&args(&["tilo-greeter", "--scenario", name])),
                 Some(expected)
             );
         }

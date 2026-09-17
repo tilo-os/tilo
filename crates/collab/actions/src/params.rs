@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 /// Marks the legacy single-string invocation slot as carrying a canonical
 /// JSON argument object. The record-separator prefix cannot be produced by a
 /// normal palette text field, preserving unambiguous backward compatibility.
-pub const ARGUMENTS_JSON_PREFIX: &str = "\u{1e}qos-args:";
+pub const ARGUMENTS_JSON_PREFIX: &str = "\u{1e}tilo-args:";
 
 /// A string that is either a `&'static str` (so a parameter list can be a
 /// `const`) or owned (so an app can build one per frame from its document).
@@ -60,7 +60,7 @@ pub enum ParamType {
     Boolean,
     Object,
     Array,
-    /// Stable address of another published qOS resource.
+    /// Stable address of another published Tilo resource.
     Resource,
     /// RFC 3339 timestamp.
     DateTime,
@@ -584,6 +584,14 @@ impl ActionArgs {
         }
     }
 
+    /// The JSON array bound to `name`, if any.
+    pub fn array(&self, name: &str) -> Option<&[serde_json::Value]> {
+        match self.values.get(name) {
+            Some(ArgValue::Array(values)) => Some(values),
+            _ => None,
+        }
+    }
+
     /// The number bound to `name`, if any. An integer argument widens, matching
     /// [`ArgValue::satisfies`].
     #[allow(
@@ -727,6 +735,15 @@ pub(crate) fn validate_schema(
     let Some(schema) = schema.as_object() else {
         return Err("has a schema that is not an object".into());
     };
+    if let Some(alternatives) = schema.get("oneOf").and_then(serde_json::Value::as_array) {
+        let matches = alternatives
+            .iter()
+            .filter(|alternative| validate_schema(value, alternative).is_ok())
+            .count();
+        if matches != 1 {
+            return Err("must match exactly one `oneOf` alternative".into());
+        }
+    }
     validate_schema_type(value, schema)?;
     validate_schema_equality(value, schema)?;
     validate_schema_number(value, schema)?;
@@ -851,7 +868,7 @@ fn validate_schema_object(
 }
 
 /// Validate one JSON value against the deterministic JSON Schema subset used
-/// by qOS action contracts.
+/// by Tilo action contracts.
 ///
 /// # Errors
 ///
@@ -880,6 +897,7 @@ const SCHEMA_ASSERTIONS: &[&str] = &[
     "required",
     "properties",
     "additionalProperties",
+    "oneOf",
 ];
 const SCHEMA_ANNOTATIONS: &[&str] = &[
     "$schema",
@@ -907,7 +925,7 @@ pub(crate) fn validate_schema_definition(schema: &serde_json::Value) -> Result<(
             && !SCHEMA_ANNOTATIONS.contains(&keyword.as_str())
         {
             return Err(format!(
-                "schema uses unsupported keyword `{keyword}`; qOS rejects unknown keywords instead of silently weakening a contract"
+                "schema uses unsupported keyword `{keyword}`; Tilo rejects unknown keywords instead of silently weakening a contract"
             ));
         }
     }
@@ -992,6 +1010,16 @@ fn validate_schema_definition_collections(
     }
     if let Some(items) = object.get("items") {
         validate_schema_definition(items).map_err(|reason| format!("items {reason}"))?;
+    }
+    if let Some(alternatives) = object.get("oneOf") {
+        let alternatives = alternatives
+            .as_array()
+            .filter(|alternatives| !alternatives.is_empty())
+            .ok_or_else(|| "schema `oneOf` must be a non-empty array".to_string())?;
+        for (index, alternative) in alternatives.iter().enumerate() {
+            validate_schema_definition(alternative)
+                .map_err(|reason| format!("oneOf alternative {index} {reason}"))?;
+        }
     }
     Ok(())
 }
@@ -1106,7 +1134,20 @@ mod rich_schema_tests {
     #[test]
     fn malformed_schema_is_rejected_before_it_describes_values() {
         assert!(validate_schema_definition(&json!({"pattern":"["})).is_err());
-        assert!(validate_schema_definition(&json!({"format":"qos-maybe"})).is_err());
+        assert!(validate_schema_definition(&json!({"format":"tilo-maybe"})).is_err());
+        assert!(validate_schema_definition(&json!({"oneOf": []})).is_err());
+        let one_of = json!({
+            "oneOf": [
+                {"const": "Workspace"},
+                {"type": "object", "required": ["App"], "properties": {
+                    "App": {"type": "string"}
+                }, "additionalProperties": false}
+            ]
+        });
+        assert!(validate_schema_definition(&one_of).is_ok());
+        assert!(validate_json_schema(&json!("Workspace"), &one_of).is_ok());
+        assert!(validate_json_schema(&json!({"App": "dev.tilo.notes"}), &one_of).is_ok());
+        assert!(validate_json_schema(&json!({"App": "notes", "extra": true}), &one_of).is_err());
         assert!(
             validate_schema_definition(&json!({
                 "properties": {"nested": {"type":"mystery"}}

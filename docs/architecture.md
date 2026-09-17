@@ -1,6 +1,6 @@
 # OS Architecture Documentation
 
-qOS is a bootable, container-based operating system built on the **Fedora Bootc** framework.
+Tilo is a bootable, container-based operating system built on the **Fedora Bootc** framework.
 
 ## Core Components
 
@@ -37,11 +37,11 @@ The OS is built using `Containerfile` and converted to a bootable image via `os/
 
 1.  **UEFI/systemd-boot**: Firmware starts the signed unified kernel image and
     systemd.
-2.  **greetd + Cage**: Starts the qOS greeter Wayland session. The greeter
-    hands an authenticated login to `qos-session`; it is not `tuigreet`.
+2.  **greetd + Cage**: Starts the Tilo greeter Wayland session. The greeter
+    hands an authenticated login to `tilo-session`; it is not `tuigreet`.
 3.  **`fs.service`**: Mounts the collaborative filesystem at `/var/workspace`
     before the graphical session.
-4.  **`qos-session`**: Verifies or provisions the local identity, then starts
-    the qOS Wayland session and its compositor-owned desktop targets.
+4.  **`tilo-session`**: Verifies or provisions the local identity, then starts
+    the Tilo Wayland session and its compositor-owned desktop targets.
 5.  **`shell`**: Runs as the native Wayland compositor on the DRM backend (or
     the winit/headless backend during development).

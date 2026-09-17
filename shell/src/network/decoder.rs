@@ -255,7 +255,7 @@ static FFMPEG_INIT: std::sync::Once = std::sync::Once::new();
 impl HevcDecoder {
     /// Construct a new HEVC decoder.
     ///
-    /// That is the **expected** outcome on a stock qOS image: Fedora's
+    /// That is the **expected** outcome on a stock Tilo image: Fedora's
     /// `libavcodec-free` is configured `--disable-decoder='h264,hevc,vc1,vvc'`
     /// and carries no `hevc` entry at all. Only a host that replaced it
     /// (`libavcodec-freeworld`, or a self-built ffmpeg) can construct this
@@ -494,11 +494,11 @@ mod tests {
     /// answers are the HEVC decoder or a backend failure — never
     /// `UnknownCodec` (arm dropped) and never `FeatureDisabled` (feature
     /// compiled in). Both happen in practice: whether libavcodec carries HEVC
-    /// is the distro's choice, and Fedora's `libavcodec-free` — what qOS
+    /// is the distro's choice, and Fedora's `libavcodec-free` — what Tilo
     /// builds against — disables it.
     ///
     /// Asserting success here would assert a property of whoever's ffmpeg
-    /// happened to be installed, not of qOS; the actual promise is asserted
+    /// happened to be installed, not of Tilo; the actual promise is asserted
     /// on the production receive path in `shell::shell::peer_view::tests`, which holds either way.
     #[cfg(feature = "hdr-decode")]
     #[test]

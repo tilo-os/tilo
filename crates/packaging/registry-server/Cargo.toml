@@ -10,7 +10,7 @@ name = "registry_server"
 path = "src/lib.rs"
 
 [[bin]]
-name = "qos-registry-server"
+name = "tilo-registry-server"
 path = "src/main.rs"
 
 # Self-hostable HTTP registry for `.qpkg` bundles. Serves the

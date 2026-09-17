@@ -6,11 +6,11 @@ executable stand-alone; the higher-level flow is described below.
 ## Measure
 
 - `binary-sizes.sh [target-dir]` — walk `target/release/` (or the
-  given dir) for shell + terminal + file-explorer + qos-relay + fs +
-  qos-install, emit a `{name: bytes}` JSON blob on stdout.
+  given dir) for shell + terminal + file-explorer + tilo-relay + fs +
+  tilo-install, emit a `{name: bytes}` JSON blob on stdout.
 
 - `qemu-boot-measure.sh <qcow2> <label>` — headless QEMU boot of a
-  qcow2 using qemu-system-x86_64 + OVMF. Set `QOS_DISTROBOX` when those
+  qcow2 using qemu-system-x86_64 + OVMF. Set `TILO_DISTROBOX` when those
   tools are in a distrobox. Snapshots the base so consecutive runs are hermetic; polls
   the serial console for the multi-user.target reach; extracts the
   kernel timestamp on the reach line into a JSON `{state, boot_ms}`
@@ -30,14 +30,14 @@ executable stand-alone; the higher-level flow is described below.
 ## Optimise (three-step PGO + optional BOLT)
 
 1. `pgo-instrument.sh` — build shell + terminal + file-explorer +
-   qos-install with `-C profile-generate` into `target/pgo-instrumented/`.
+   tilo-install with `-C profile-generate` into `target/pgo-instrumented/`.
    Run the resulting binaries; they drop `.profraw` files into
    `target/pgo-profraw/`.
 2. `pgo-merge.sh` — merge every `target/pgo-profraw/*.profraw` into
-   `os/pgo/qos.profdata`. **Commit that file** — pinning the profile
+   `os/pgo/tilo.profdata`. **Commit that file** — pinning the profile
    bytes in-tree is what makes the second-phase build reproducible
    under the frozen RPM repo.
-3. `pgo-rebuild.sh` — read `os/pgo/qos.profdata` and rebuild with
+3. `pgo-rebuild.sh` — read `os/pgo/tilo.profdata` and rebuild with
    `-C profile-use`. Output lands at `target/pgo-release/`.
 4. (optional) `bolt-optimize.sh` — post-link `llvm-bolt` on the PGO'd
    binaries using the same profile signal. Output at `target/bolted/`.
@@ -52,5 +52,5 @@ executable stand-alone; the higher-level flow is described below.
   rebuilt image + qcow2 flow through the release channel.
 
 Measurements are workload- and host-dependent. Record the image revision,
-CPU/memory/KVM settings, adapter, and `QOS_DISTROBOX` value with each result;
+CPU/memory/KVM settings, adapter, and `TILO_DISTROBOX` value with each result;
 do not treat an old run as a repository baseline.

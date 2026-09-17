@@ -1,4 +1,4 @@
-//! Shared global-search framework for qOS.
+//! Shared global-search framework for Tilo.
 //!
 //! Rather than each app rolling its own search bar, result list, and
 //! ranking, an app declares what it can find by implementing
@@ -30,8 +30,8 @@ mod registry;
 
 pub use provider::{
     DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT,
-    MAX_SEARCH_QUERY_SCALARS, SearchCatalog, SearchCatalogError, SearchCatalogStats, SearchCursor,
-    SearchPage, SearchProvider, SearchResult, SearchTextIndex, SearchTextPage, fuzzy_score,
-    normalize_search_text,
+    MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, SearchCatalog, SearchCatalogError,
+    SearchCatalogStats, SearchCursor, SearchPage, SearchProvider, SearchResult, SearchTextIndex,
+    SearchTextPage, fuzzy_score, normalize_search_text,
 };
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};

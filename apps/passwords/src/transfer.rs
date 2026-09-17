@@ -14,7 +14,7 @@ pub const MAX_ROWS: usize = 10_000;
 pub const MAX_FIELDS: usize = 32;
 pub const MAX_FIELD_BYTES: usize = 16 * 1024;
 const MAX_BACKUP_BYTES: usize = 64 * 1024 * 1024;
-const BACKUP_MAGIC: &[u8] = b"QOSPWBACKUP";
+const BACKUP_MAGIC: &[u8] = b"TILOPWBACKUP";
 const BACKUP_VERSION: u8 = 1;
 const BACKUP_SALT_BYTES: usize = 16;
 const BACKUP_NONCE_BYTES: usize = 24;
@@ -45,13 +45,13 @@ pub fn backup_request() -> ui::portal::PickRequest {
     ui::portal::PickRequest::save(
         "Back up password vault",
         "Back up",
-        "passwords-backup.qospw",
+        "passwords-backup.tilopw",
     )
     .thread_name("passwords-portal-backup")
     .filter(
         ui::portal::FileFilter::new("Encrypted Passwords backup")
-            .mimetype("application/x-qos-passwords-backup")
-            .glob("*.qospw"),
+            .mimetype("application/x-tilo-passwords-backup")
+            .glob("*.tilopw"),
     )
     .all_files()
 }
@@ -61,8 +61,8 @@ pub fn restore_request() -> ui::portal::PickRequest {
         .thread_name("passwords-portal-restore")
         .filter(
             ui::portal::FileFilter::new("Encrypted Passwords backup")
-                .mimetype("application/x-qos-passwords-backup")
-                .glob("*.qospw"),
+                .mimetype("application/x-tilo-passwords-backup")
+                .glob("*.tilopw"),
         )
         .all_files()
 }
@@ -380,7 +380,7 @@ mod tests {
         assert_eq!(save.suggested_name(), Some("passwords.csv"));
         assert_eq!(save.filter_names(), vec!["CSV file", "All files"]);
         let backup = backup_request();
-        assert_eq!(backup.suggested_name(), Some("passwords-backup.qospw"));
+        assert_eq!(backup.suggested_name(), Some("passwords-backup.tilopw"));
         assert_eq!(
             backup.filter_names(),
             vec!["Encrypted Passwords backup", "All files"]

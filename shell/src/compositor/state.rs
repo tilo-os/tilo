@@ -96,13 +96,13 @@ use smithay::backend::input::KeyState;
 use std::collections::{HashMap, HashSet};
 use vello::kurbo::Rect;
 
-/// Stable identity from `apps/osk/qos-app.toml`. It is necessary but never
+/// Stable identity from `apps/osk/tilo-app.toml`. It is necessary but never
 /// sufficient for promotion: the connection must also be accepted on the
 /// compositor's private OSK socket.
-pub const OSK_APP_ID: &str = "dev.qos.osk";
+pub use crate::shell::floating::OSK_APP_ID;
 
 /// A deliberately narrow app-id convention for the clean, audience-facing
-/// side of a presentation.  It is a normal xdg toplevel, but qOS owns its
+/// side of a presentation.  It is a normal xdg toplevel, but Tilo owns its
 /// placement so it cannot collapse the presenter's workspace group.
 pub const OUTPUT_PRESENTATION_APP_ID_SUFFIX: &str = ".audience";
 
@@ -153,197 +153,11 @@ pub(crate) struct OutputPresentationSurface {
     pub rect: Rect,
 }
 
-/// Frozen pixels from the final app-owned frame. The shell moves this exact
-/// image under the pointer while the authenticated secondary surface warms,
-/// then drops it atomically on the first native buffer.
-#[derive(Clone, Debug)]
-pub(crate) struct FloatingTransferFrame {
-    pub rgba: Arc<Vec<u8>>,
-    pub width: u32,
-    pub height: u32,
-}
-
-/// Primary-app rect the frozen transfer was cut from. The proxy remains here
-/// until the app explicitly confirms that its cleared primary frame presented;
-/// moving it sooner would reveal the same card in both owners.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct FloatingTransferSource {
-    pub rect: vello::kurbo::Rect,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct PendingFloatingToplevel {
-    pub token: String,
-    pub connection: u64,
-    pub public_id: String,
-    pub app_id: String,
-    pub content_rect: vello::kurbo::Rect,
-    pub rect: vello::kurbo::Rect,
-    pub transfer_frame: Option<FloatingTransferFrame>,
-    pub transfer_source: Option<FloatingTransferSource>,
-    pub suspended: bool,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct FloatingToplevel {
-    pub surface_id: u64,
-    pub token: String,
-    pub connection: u64,
-    pub public_id: String,
-    pub app_id: String,
-    pub content_rect: vello::kurbo::Rect,
-    pub rect: vello::kurbo::Rect,
-    pub transfer_frame: Option<FloatingTransferFrame>,
-    pub transfer_source: Option<FloatingTransferSource>,
-    /// Hidden while the activity is attached inside its app. The Wayland
-    /// surface and authenticated capability deliberately remain alive so a
-    /// later detach can resume without renderer or identity churn.
-    pub suspended: bool,
-    /// True only after the first commit carrying pixels. Constructing an
-    /// `xdg_toplevel` alone is not a visible ownership transfer.
-    pub presented: bool,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum FloatingToplevelEvent {
-    Mapped(FloatingToplevel),
-    Destroyed { connection: u64, public_id: String },
-}
-
-fn suspend_floating_entries(
-    pending: &mut [PendingFloatingToplevel],
-    live: &mut [FloatingToplevel],
-    connection: u64,
-    public_id: &str,
-) -> bool {
-    if let Some(surface) = live
-        .iter_mut()
-        .find(|surface| surface.connection == connection && surface.public_id == public_id)
-    {
-        let changed = !surface.suspended;
-        surface.suspended = true;
-        return changed;
-    }
-    if let Some(pending) = pending
-        .iter_mut()
-        .find(|pending| pending.connection == connection && pending.public_id == public_id)
-    {
-        let changed = !pending.suspended;
-        pending.suspended = true;
-        return changed;
-    }
-    false
-}
-
-fn resume_floating_entries(
-    pending: &mut [PendingFloatingToplevel],
-    live: &mut [FloatingToplevel],
-    connection: u64,
-    public_id: &str,
-    geometry: (vello::kurbo::Rect, vello::kurbo::Rect),
-    transfer_frame: Option<FloatingTransferFrame>,
-    transfer_source: Option<FloatingTransferSource>,
-) -> Option<String> {
-    let (rect, content_rect) = geometry;
-    if let Some(surface) = live
-        .iter_mut()
-        .find(|surface| surface.connection == connection && surface.public_id == public_id)
-    {
-        surface.rect = rect;
-        surface.content_rect = content_rect;
-        surface.transfer_frame = transfer_frame;
-        surface.transfer_source = transfer_source;
-        surface.suspended = false;
-        // Keep the frozen app frame on top until a fresh buffer commits; the
-        // retained window's previous buffer must never flash stale.
-        surface.presented = false;
-        return Some(surface.token.clone());
-    }
-    if let Some(pending) = pending
-        .iter_mut()
-        .find(|pending| pending.connection == connection && pending.public_id == public_id)
-    {
-        pending.rect = rect;
-        pending.content_rect = content_rect;
-        pending.transfer_frame = transfer_frame;
-        pending.transfer_source = transfer_source;
-        pending.suspended = false;
-        return Some(pending.token.clone());
-    }
-    None
-}
-
-fn complete_floating_return_entries(
-    pending: &mut [PendingFloatingToplevel],
-    live: &mut [FloatingToplevel],
-    connection: u64,
-    public_id: &str,
-) -> bool {
-    if let Some(surface) = live
-        .iter_mut()
-        .find(|surface| surface.connection == connection && surface.public_id == public_id)
-    {
-        if !surface.suspended {
-            return false;
-        }
-        let changed = surface.transfer_source.take().is_some();
-        surface.transfer_frame = None;
-        return changed;
-    }
-    if let Some(pending) = pending
-        .iter_mut()
-        .find(|pending| pending.connection == connection && pending.public_id == public_id)
-    {
-        if !pending.suspended {
-            return false;
-        }
-        let changed = pending.transfer_source.take().is_some();
-        pending.transfer_frame = None;
-        return changed;
-    }
-    false
-}
-
-fn clear_floating_source_entries(
-    pending: &mut [PendingFloatingToplevel],
-    live: &mut [FloatingToplevel],
-    connection: u64,
-    public_id: &str,
-) -> bool {
-    if let Some(surface) = live
-        .iter_mut()
-        .find(|surface| surface.connection == connection && surface.public_id == public_id)
-    {
-        // A late detach acknowledgement must never clear the newer reverse
-        // handoff proxy after the surface has already been suspended.
-        return !surface.suspended && surface.transfer_source.take().is_some();
-    }
-    if let Some(pending) = pending
-        .iter_mut()
-        .find(|pending| pending.connection == connection && pending.public_id == public_id)
-    {
-        return !pending.suspended && pending.transfer_source.take().is_some();
-    }
-    false
-}
-
-fn dismiss_floating_entries(
-    pending: &mut Vec<PendingFloatingToplevel>,
-    live: &mut Vec<FloatingToplevel>,
-    connection: u64,
-    public_id: &str,
-) -> bool {
-    let pending_before = pending.len();
-    pending
-        .retain(|candidate| candidate.connection != connection || candidate.public_id != public_id);
-    let live_before = live.len();
-    live.retain(|surface| surface.connection != connection || surface.public_id != public_id);
-    pending_before != pending.len() || live_before != live.len()
-}
+pub(crate) use crate::shell::floating::*;
 
 /// Read the persisted `HiDPI` display scale from the shared settings store.
 ///
-/// The Settings app writes `~/.config/qos/settings.json` with a
+/// The Settings app writes `~/.config/tilo/settings.json` with a
 /// `"display"` object carrying a `"scale"` number (1.0=100%, …); the
 /// compositor reads the same file via `settings_store`, resolving the same
 /// XDG rule the apps use. Any read/parse failure or out-of-range value falls back to `1.0`.
@@ -1027,14 +841,14 @@ impl State {
         let (dmabuf_device, dmabuf_global) = Self::init_dmabuf(&display_handle, &mut dmabuf_state);
 
         // Register a real seat with a pointer device for `apply_remote_input` to inject into; name matches the wayland.rs sibling for consistency.
-        let mut seat = seat_state.new_wl_seat(&display_handle, "quick-desktop");
+        let mut seat = seat_state.new_wl_seat(&display_handle, "tilo-desktop");
         seat.add_pointer();
         let initial_keyboard_index = Self::init_seat_keyboard(&mut seat);
         // A touchscreen can't reach a client without this — chrome uses the synthesised pointer stream, but real multi-touch needs `wl_touch`.
         seat.add_touch();
         // Text fields are public; the input method and virtual keyboard are
         // not. Sandboxed apps only see the public Wayland socket. Even a
-        // process spoofing `dev.qos.osk` there cannot bind either privileged
+        // process spoofing `dev.tilo.osk` there cannot bind either privileged
         // global: authorization is immutable per-connection state set by the
         // dedicated socket acceptor.
         let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
@@ -3020,13 +2834,13 @@ fn floating_capability_token(app_id: &str) -> Option<&str> {
 }
 
 /// Map the client-bound `wl_output` object back to the stable backend id.
-/// `OutputGlobals` names its Smithay outputs `qOS-<OutputId>`; parsing only
+/// `OutputGlobals` names its Smithay outputs `Tilo-<OutputId>`; parsing only
 /// that compositor-owned prefix rejects arbitrary/foreign output objects.
 fn requested_output_id(output: Option<&WlOutput>) -> Option<crate::compositor::backend::OutputId> {
     let output = SmithayOutput::from_resource(output?)?;
     output
         .name()
-        .strip_prefix("qOS-")?
+        .strip_prefix("Tilo-")?
         .parse::<u32>()
         .ok()
         .map(crate::compositor::backend::OutputId)
@@ -3336,7 +3150,7 @@ impl State {
     }
 
     /// Expire compositor-created launch tokens even when no subsequent launch
-    /// occurs. Smithay owns the protocol store; qOS owns the placement
+    /// occurs. Smithay owns the protocol store; Tilo owns the placement
     /// metadata and retires both together after the same bounded age.
     pub(crate) fn expire_host_launch_activations(&mut self) {
         let now = std::time::Instant::now();
@@ -3880,7 +3694,7 @@ impl XdgShellHandler for State {
     }
 }
 
-/// Who draws the frame around a toplevel. On qOS, the compositor —
+/// Who draws the frame around a toplevel. On Tilo, the compositor —
 /// always, and to every client that asks.
 ///
 /// States the shell's model, not a preference: a window lives in a
@@ -4060,7 +3874,7 @@ delegate_ext_data_control!(State);
 // `ext_session_lock_v1`: a client can lock the session; while locked the
 // compositor hides all normal client surfaces + routes input only to the
 // lock surface (enforced by the native run loop, which owns the
-// authoritative lock + overlay). qOS renders its own lock UI rather than a
+// authoritative lock + overlay). Tilo renders its own lock UI rather than a
 // client lock surface, so the handler bridges protocol lock/unlock into that one lock state via [`SessionLockHooks`].
 impl SessionLockHandler for State {
     fn lock_state(&mut self) -> &mut SessionLockManagerState {
@@ -4079,7 +3893,7 @@ impl SessionLockHandler for State {
     }
 
     fn new_surface(&mut self, surface: LockSurface, _output: WlOutput) {
-        // qOS renders its own lock overlay, so a client lock surface is accepted (no error/hang) but not composited; configured to the output size.
+        // Tilo renders its own lock overlay, so a client lock surface is accepted (no error/hang) but not composited; configured to the output size.
         let (w, h) = self.output_size;
         if w > 0 && h > 0 {
             // Already checked positive above, so this never hits the fallback in practice.
@@ -4343,7 +4157,7 @@ mod osk_identity_tests {
     fn only_private_socket_plus_exact_app_id_is_trusted() {
         assert!(osk_identity_is_trusted(Some(OSK_APP_ID), true));
         assert!(!osk_identity_is_trusted(Some(OSK_APP_ID), false));
-        assert!(!osk_identity_is_trusted(Some("dev.qos.lookalike"), true));
+        assert!(!osk_identity_is_trusted(Some("dev.tilo.lookalike"), true));
         assert!(!osk_identity_is_trusted(None, true));
     }
 
@@ -4357,16 +4171,16 @@ mod osk_identity_tests {
     fn launcher_attribution_overrides_missing_app_id_and_rejects_spoofing() {
         let room = crate::shell::state::RoomId::new();
         let client = ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
-            package_id: "dev.qos.notes".into(),
+            package_id: "dev.tilo.notes".into(),
             workspace_id: Some(room.to_string()),
             confined: true,
         });
         assert_eq!(
             authenticated_toplevel_identity(Some(&client), None),
-            Ok((Some("dev.qos.notes".into()), Some(room)))
+            Ok((Some("dev.tilo.notes".into()), Some(room)))
         );
         assert!(
-            authenticated_toplevel_identity(Some(&client), Some("dev.qos.file-explorer".into()))
+            authenticated_toplevel_identity(Some(&client), Some("dev.tilo.file-explorer".into()))
                 .is_err()
         );
     }
@@ -4375,7 +4189,7 @@ mod osk_identity_tests {
     fn stale_workspace_attribution_fails_closed_but_host_clients_remain_compatible() {
         let attributed =
             ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
-                package_id: "dev.qos.notes".into(),
+                package_id: "dev.tilo.notes".into(),
                 workspace_id: Some("not-a-room".into()),
                 confined: true,
             });
@@ -4413,147 +4227,10 @@ mod osk_identity_tests {
             None
         );
         assert_eq!(
-            floating_capability_token("dev.qos.shell-float.predictable"),
+            floating_capability_token("dev.tilo.shell-float.predictable"),
             None
         );
-        assert_eq!(floating_capability_token("dev.qos.chat"), None);
-    }
-}
-
-#[cfg(test)]
-mod floating_lifecycle_tests {
-    use super::*;
-
-    fn live_surface() -> FloatingToplevel {
-        FloatingToplevel {
-            surface_id: 41,
-            token: "5e8f16a2a2e24bf7ad86758f2f28e316".into(),
-            connection: 7,
-            public_id: "maps-navigation:active".into(),
-            app_id: "dev.qos.maps".into(),
-            content_rect: vello::kurbo::Rect::new(100.0, 80.0, 420.0, 260.0),
-            rect: vello::kurbo::Rect::new(92.0, 72.0, 428.0, 268.0),
-            transfer_frame: None,
-            transfer_source: None,
-            suspended: false,
-            presented: true,
-        }
-    }
-
-    #[test]
-    fn suspend_and_resume_reuses_the_exact_authenticated_surface() {
-        let mut pending = Vec::new();
-        let mut live = vec![live_surface()];
-        assert!(suspend_floating_entries(
-            &mut pending,
-            &mut live,
-            7,
-            "maps-navigation:active"
-        ));
-        assert!(live[0].suspended);
-
-        let next_window = vello::kurbo::Rect::new(692.0, 52.0, 1_028.0, 248.0);
-        let next_content = vello::kurbo::Rect::new(700.0, 60.0, 1_020.0, 240.0);
-        let token = resume_floating_entries(
-            &mut pending,
-            &mut live,
-            7,
-            "maps-navigation:active",
-            (next_window, next_content),
-            None,
-            None,
-        );
-        assert_eq!(token.as_deref(), Some("5e8f16a2a2e24bf7ad86758f2f28e316"));
-        assert_eq!(live[0].surface_id, 41);
-        assert_eq!(live[0].rect, next_window);
-        assert!(!live[0].suspended);
-        assert!(!live[0].presented, "resume waits for fresh pixels");
-    }
-
-    #[test]
-    fn return_proxy_survives_suspend_until_primary_destination_is_presented() {
-        let mut pending = Vec::new();
-        let mut live = vec![live_surface()];
-        let return_rect = live[0].rect;
-        live[0].transfer_frame = Some(FloatingTransferFrame {
-            rgba: std::sync::Arc::new(vec![0xff; 4 * 4 * 4]),
-            width: 4,
-            height: 4,
-        });
-        live[0].transfer_source = Some(FloatingTransferSource { rect: return_rect });
-
-        assert!(suspend_floating_entries(
-            &mut pending,
-            &mut live,
-            7,
-            "maps-navigation:active"
-        ));
-        assert!(live[0].suspended);
-        assert_eq!(live[0].transfer_source.unwrap().rect, return_rect);
-        assert!(live[0].transfer_frame.is_some());
-        assert!(
-            !clear_floating_source_entries(&mut pending, &mut live, 7, "maps-navigation:active"),
-            "a late detach acknowledgement cannot tear down the newer return proxy"
-        );
-        assert!(live[0].transfer_source.is_some());
-
-        assert!(complete_floating_return_entries(
-            &mut pending,
-            &mut live,
-            7,
-            "maps-navigation:active"
-        ));
-        assert!(live[0].transfer_source.is_none());
-        assert!(live[0].transfer_frame.is_none());
-        assert!(
-            !complete_floating_return_entries(&mut pending, &mut live, 7, "maps-navigation:active"),
-            "the destination acknowledgement is idempotent"
-        );
-    }
-
-    #[test]
-    fn capability_cannot_be_resumed_from_another_connection() {
-        let mut pending = Vec::new();
-        let mut live = vec![live_surface()];
-        assert!(
-            resume_floating_entries(
-                &mut pending,
-                &mut live,
-                99,
-                "maps-navigation:active",
-                (vello::kurbo::Rect::ZERO, vello::kurbo::Rect::ZERO),
-                None,
-                None,
-            )
-            .is_none()
-        );
-        assert_eq!(live[0].connection, 7);
-        assert!(live[0].presented);
-    }
-
-    #[test]
-    fn permanent_dismiss_cannot_be_resumed() {
-        let mut pending = Vec::new();
-        let mut live = vec![live_surface()];
-        assert!(dismiss_floating_entries(
-            &mut pending,
-            &mut live,
-            7,
-            "maps-navigation:active"
-        ));
-        assert!(live.is_empty());
-        assert!(
-            resume_floating_entries(
-                &mut pending,
-                &mut live,
-                7,
-                "maps-navigation:active",
-                (vello::kurbo::Rect::ZERO, vello::kurbo::Rect::ZERO),
-                None,
-                None,
-            )
-            .is_none()
-        );
+        assert_eq!(floating_capability_token("dev.tilo.chat"), None);
     }
 }
 
@@ -4621,29 +4298,29 @@ mod tick_hook_tests {
 
     #[test]
     fn audience_identity_is_narrow_and_does_not_match_the_presenter() {
-        assert!(is_output_presentation_app_id("dev.qos.slides.audience"));
-        assert!(!is_output_presentation_app_id("dev.qos.slides"));
+        assert!(is_output_presentation_app_id("dev.tilo.slides.audience"));
+        assert!(!is_output_presentation_app_id("dev.tilo.slides"));
         assert!(!is_output_presentation_app_id(".audience"));
     }
 
     #[test]
     fn audience_role_requires_an_exact_same_client_presenter() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        tab_binding::adopt_toplevel(&mut tree, (9_u64 << 32) | 1, Some("dev.qos.slides".into()));
+        tab_binding::adopt_toplevel(&mut tree, (9_u64 << 32) | 1, Some("dev.tilo.slides".into()));
         assert!(output_presentation_owner_is_live(
             &tree,
             (9_u64 << 32) | 2,
-            "dev.qos.slides.audience"
+            "dev.tilo.slides.audience"
         ));
         assert!(!output_presentation_owner_is_live(
             &tree,
             (10_u64 << 32) | 2,
-            "dev.qos.slides.audience"
+            "dev.tilo.slides.audience"
         ));
         assert!(!output_presentation_owner_is_live(
             &tree,
             (9_u64 << 32) | 2,
-            "dev.qos.evil.audience"
+            "dev.tilo.evil.audience"
         ));
     }
 
@@ -4661,7 +4338,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: 77,
-                app_id: "dev.qos.slides.audience".into(),
+                app_id: "dev.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(2),
                 rect: Rect::ZERO,
             });
@@ -4685,7 +4362,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: 88,
-                app_id: "dev.qos.slides.audience".into(),
+                app_id: "dev.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(2),
                 rect: Rect::new(100.0, 0.0, 200.0, 100.0),
             });
@@ -4707,7 +4384,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: id,
-                app_id: "dev.qos.slides.audience".into(),
+                app_id: "dev.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(2),
                 rect: Rect::new(100.0, 0.0, 200.0, 100.0),
             });
@@ -4721,7 +4398,7 @@ mod tick_hook_tests {
         state.set_output_layout(&[out(2, (0, 0), (1920, 1080), 1.0)]);
         assert!(!state.promote_output_presentation_toplevel(
             (44_u64 << 32) | 2,
-            "dev.qos.evil.audience".into()
+            "dev.tilo.evil.audience".into()
         ));
         assert!(state.output_presentation_surfaces.is_empty());
     }
@@ -4733,7 +4410,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: (8_u64 << 32) | 5,
-                app_id: "dev.qos.slides.audience".into(),
+                app_id: "dev.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(2),
                 rect: Rect::new(1280.0, 0.0, 1920.0, 720.0),
             });
@@ -4758,7 +4435,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: live,
-                app_id: "dev.qos.slides.audience".into(),
+                app_id: "dev.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(2),
                 rect: Rect::new(1280.0, 0.0, 1920.0, 720.0),
             });
@@ -4766,7 +4443,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: live + 1,
-                app_id: "dev.qos.slides.audience".into(),
+                app_id: "dev.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(3),
                 rect: Rect::new(1920.0, 0.0, 2560.0, 720.0),
             });

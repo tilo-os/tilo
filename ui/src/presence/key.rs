@@ -243,7 +243,7 @@ mod view_key_tests {
         let room = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
         // SAFETY: serialised against the other env-reading tests here.
         unsafe {
-            std::env::set_var("QOS_WORKSPACE_ID", room);
+            std::env::set_var("TILO_WORKSPACE_ID", room);
             std::env::remove_var("QUICK_CLUSTER_ID");
         }
         assert_eq!(
@@ -257,7 +257,7 @@ mod view_key_tests {
             room,
             "presence must be scoped from the same value the routing uses"
         );
-        unsafe { std::env::remove_var("QOS_WORKSPACE_ID") };
+        unsafe { std::env::remove_var("TILO_WORKSPACE_ID") };
     }
 
     /// The nil uuid addresses nobody, so no workspace means no scope.
@@ -266,7 +266,7 @@ mod view_key_tests {
     fn no_workspace_means_no_scope() {
         // SAFETY: see above.
         unsafe {
-            std::env::remove_var("QOS_WORKSPACE_ID");
+            std::env::remove_var("TILO_WORKSPACE_ID");
             std::env::remove_var("QUICK_CLUSTER_ID");
         }
         assert!(crate::collaboration::local_cluster_id().is_nil());
@@ -281,11 +281,11 @@ mod view_key_tests {
     fn empty_workspace_id_is_treated_as_unset() {
         // SAFETY: see above.
         unsafe {
-            std::env::set_var("QOS_WORKSPACE_ID", "");
+            std::env::set_var("TILO_WORKSPACE_ID", "");
             std::env::remove_var("QUICK_CLUSTER_ID");
         }
         assert_eq!(PresenceKey::for_local_workspace(), None);
-        unsafe { std::env::remove_var("QOS_WORKSPACE_ID") };
+        unsafe { std::env::remove_var("TILO_WORKSPACE_ID") };
     }
 
     /// The ordinals in the postcard key wire contract are written
@@ -318,7 +318,7 @@ mod view_key_tests {
     fn a_pointer_key_carries_its_space_across_the_wire_encoding() {
         for key in [
             PresenceKey::desktop_pointer("room-7"),
-            PresenceKey::surface_pointer("dev.qos.word-processor"),
+            PresenceKey::surface_pointer("dev.tilo.word-processor"),
         ] {
             let bytes = postcard::to_stdvec(&key).expect("a pointer key encodes");
             let back: PresenceKey =
@@ -336,8 +336,8 @@ mod view_key_tests {
     /// decided — before anything has been drawn, from the key alone.
     #[test]
     fn two_surfaces_are_two_spaces() {
-        let wp = PresenceKey::surface_pointer("dev.qos.word-processor");
-        let fm = PresenceKey::surface_pointer("dev.qos.files");
+        let wp = PresenceKey::surface_pointer("dev.tilo.word-processor");
+        let fm = PresenceKey::surface_pointer("dev.tilo.files");
         assert_ne!(wp.pointer_space(), fm.pointer_space());
         assert!(!wp.scopes_a_desktop_pointer());
         assert!(!fm.scopes_a_desktop_pointer());

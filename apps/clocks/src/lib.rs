@@ -158,7 +158,7 @@ pub mod transport {
     pub fn path() -> Option<PathBuf> {
         std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
-            .map(|p| p.join("qos/clocks.json"))
+            .map(|p| p.join("tilo/clocks.json"))
     }
     pub fn publish(snapshot: &ShellSnapshot) -> io::Result<()> {
         let path = path()
@@ -191,7 +191,7 @@ pub mod transport {
     pub fn take_command() -> Option<(String, Option<uuid::Uuid>)> {
         let path = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)?
-            .join("qos/clocks-command.json");
+            .join("tilo/clocks-command.json");
         let bytes = fs::read(&path).ok()?;
         let _ = fs::remove_file(path);
         if bytes.len() > 1024 {
@@ -279,7 +279,7 @@ fn state_path() -> Option<PathBuf> {
                 .map(PathBuf::from)
                 .map(|p| p.join(".local/state"))
         })
-        .map(|p| p.join("qos/clocks.json"))
+        .map(|p| p.join("tilo/clocks.json"))
 }
 
 fn command_timer(timers: &mut [Timer], activity_id: Option<Uuid>) -> Option<&mut Timer> {

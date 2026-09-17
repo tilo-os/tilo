@@ -1,5 +1,4 @@
 use automerge::{AutoCommit, ObjId};
-use qos_actions::{ActionContract, ActionSpec, OperationKind, Resource};
 use std::collections::HashMap;
 use std::io::Write;
 #[cfg(unix)]
@@ -7,6 +6,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use taffy::{NodeId, TaffyTree};
+use tilo_actions::{ActionContract, ActionSpec, OperationKind, Resource};
 use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
@@ -2187,7 +2187,7 @@ fn demo_view(scenario: DemoScenario) -> El {
 fn request_snapshot() -> Option<mpsc::Receiver<Snapshot>> {
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
-        .name("qos-print-centre-refresh".into())
+        .name("tilo-print-centre-refresh".into())
         .spawn(move || {
             let _ = tx.send(Snapshot {
                 queues: os_actions::printing::queues(),
@@ -2291,7 +2291,7 @@ impl PrintCentre {
         self.print_preview = PrintPreview::Loading;
         self.print_preview_rx = Some(rx);
         let _ = std::thread::Builder::new()
-            .name("qos-print-preview".into())
+            .name("tilo-print-preview".into())
             .spawn(move || {
                 let _ = tx.send(load_print_preview(&path));
             });
@@ -2420,7 +2420,7 @@ impl PrintCentre {
                 };
                 if !bytes.is_empty() {
                     self.spawn_effect(
-                        "qos-save-scanned-page",
+                        "tilo-save-scanned-page",
                         if save_document {
                             "Scanned document saved"
                         } else {
@@ -2542,7 +2542,7 @@ impl PrintCentre {
                 self.inner = discovery_view(None, &self.commands_tx);
                 let tx = self.commands_tx.clone();
                 let _ = std::thread::Builder::new()
-                    .name("qos-printer-discovery".into())
+                    .name("tilo-printer-discovery".into())
                     .spawn(move || {
                         let _ = tx.send(UiCommand::DiscoveryFinished(
                             os_actions::printing::discover_driverless(),
@@ -2555,7 +2555,7 @@ impl PrintCentre {
             UiCommand::AddPrinter(printer) => {
                 let shown = display_name(&printer.name);
                 self.spawn_effect(
-                    "qos-add-printer",
+                    "tilo-add-printer",
                     "Printer added",
                     format!("{shown} is ready for your apps."),
                     "Could not add printer",
@@ -2566,7 +2566,7 @@ impl PrintCentre {
             UiCommand::SetDefault(name) => {
                 let shown = display_name(&name);
                 self.spawn_effect(
-                    "qos-default-printer",
+                    "tilo-default-printer",
                     "Preferred printer changed",
                     format!("New documents will use {shown} unless you choose another printer."),
                     "Could not change the preferred printer",
@@ -2575,7 +2575,7 @@ impl PrintCentre {
                 );
             }
             UiCommand::SetEnabled(name, enabled) => self.spawn_effect(
-                "qos-toggle-printer",
+                "tilo-toggle-printer",
                 if enabled {
                     "Printer resumed"
                 } else {
@@ -2608,7 +2608,7 @@ impl PrintCentre {
             UiCommand::ConfirmCancel(id) => {
                 self.pending_cancel = None;
                 self.spawn_effect(
-                    "qos-cancel-print-job",
+                    "tilo-cancel-print-job",
                     "Document canceled",
                     "It was removed from the printer.".into(),
                     "Could not cancel document",
@@ -2617,7 +2617,7 @@ impl PrintCentre {
                 );
             }
             UiCommand::RetryJob(id) => self.spawn_effect(
-                "qos-retry-print-job",
+                "tilo-retry-print-job",
                 "Document sent again",
                 "It is back in the print queue.".into(),
                 "Could not try again",
@@ -2660,7 +2660,7 @@ impl PrintCentre {
                     .unwrap_or(1);
                 let two_sided = self.print_two_sided.get();
                 self.spawn_effect(
-                    "qos-print-document",
+                    "tilo-print-document",
                     "Document sent to printer",
                     format!("{filename} was sent to {shown_queue}."),
                     "Could not print document",
@@ -2731,7 +2731,7 @@ impl PrintCentre {
                 self.rebuild_scan_setup();
                 let tx = self.commands_tx.clone();
                 let _ = std::thread::Builder::new()
-                    .name("qos-scan-document".into())
+                    .name("tilo-scan-document".into())
                     .spawn(move || {
                         let result = os_actions::printing::scan_page(
                             &device,
@@ -2747,7 +2747,7 @@ impl PrintCentre {
                             let width = decoded.width();
                             let height = decoded.height();
                             let rgba: Arc<[u8]> = Arc::from(decoded.to_rgba8().into_raw());
-                            let (recognized_text, ocr_note) = match qos_ocr::recognize(&decoded, ocr_code) {
+                            let (recognized_text, ocr_note) = match tilo_ocr::recognize(&decoded, ocr_code) {
                                 Ok(document) if document.words.is_empty() => {
                                     (None, "No text was found on this page.".into())
                                 }
@@ -2755,7 +2755,7 @@ impl PrintCentre {
                                     let count = document.words.len();
                                     (Some(document.plain_text()), format!("Recognized {count} words."))
                                 }
-                                Err(qos_ocr::Error::Unavailable) => (
+                                Err(tilo_ocr::Error::Unavailable) => (
                                     None,
                                     "Text recognition is not installed; the scanned page is still ready.".into(),
                                 ),
@@ -2947,40 +2947,41 @@ impl PrintCentre {
                 self.rebuild_scan_setup();
                 let identity = page.png.clone();
                 let tx = self.commands_tx.clone();
-                let _ = std::thread::Builder::new()
-                    .name("qos-recognize-scanned-page".into())
-                    .spawn(move || {
-                        let result =
-                            image::RgbaImage::from_raw(page.width, page.height, page.rgba.to_vec())
-                                .ok_or_else(|| {
-                                    "The scanned page pixels were incomplete.".to_string()
-                                })
-                                .and_then(|rgba| {
-                                    let code = match page.ocr_language.as_str() {
-                                        "German" => "deu",
-                                        "French" => "fra",
-                                        "Spanish" => "spa",
-                                        _ => "eng",
-                                    };
-                                    qos_ocr::recognize(&image::DynamicImage::ImageRgba8(rgba), code)
-                                        .map(|document| {
-                                            let count = document.words.len();
-                                            let text = document.plain_text();
-                                            let recognized =
-                                                (!text.trim().is_empty()).then_some(text);
-                                            let note = if count == 0 {
-                                                "No text was found on this page.".into()
-                                            } else {
-                                                format!("Recognized {count} words.")
-                                            };
-                                            (recognized, note)
-                                        })
-                                        .map_err(|_| {
-                                            "Text could not be recognized on this page.".into()
-                                        })
-                                });
-                        let _ = tx.send(UiCommand::RecognitionFinished(identity, result));
-                    });
+                let _ =
+                    std::thread::Builder::new()
+                        .name("tilo-recognize-scanned-page".into())
+                        .spawn(move || {
+                            let result = image::RgbaImage::from_raw(
+                                page.width,
+                                page.height,
+                                page.rgba.to_vec(),
+                            )
+                            .ok_or_else(|| "The scanned page pixels were incomplete.".to_string())
+                            .and_then(|rgba| {
+                                let code = match page.ocr_language.as_str() {
+                                    "German" => "deu",
+                                    "French" => "fra",
+                                    "Spanish" => "spa",
+                                    _ => "eng",
+                                };
+                                tilo_ocr::recognize(&image::DynamicImage::ImageRgba8(rgba), code)
+                                    .map(|document| {
+                                        let count = document.words.len();
+                                        let text = document.plain_text();
+                                        let recognized = (!text.trim().is_empty()).then_some(text);
+                                        let note = if count == 0 {
+                                            "No text was found on this page.".into()
+                                        } else {
+                                            format!("Recognized {count} words.")
+                                        };
+                                        (recognized, note)
+                                    })
+                                    .map_err(|_| {
+                                        "Text could not be recognized on this page.".into()
+                                    })
+                            });
+                            let _ = tx.send(UiCommand::RecognitionFinished(identity, result));
+                        });
             }
             UiCommand::RecognitionFinished(identity, result) => {
                 let Some(index) = self
@@ -3209,9 +3210,10 @@ mod tests {
 
     #[test]
     fn scan_review_actions_wrap_inside_phone_viewports() {
-        fn inspect(widget: &dyn Widget, width: f64, buttons: &mut usize) {
-            let rect = widget.get_rect();
-            if widget.name() == "Button" && rect.area() > 0.0 {
+        fn inspect(widget: &ui::headless::InspectionNode, width: f64, buttons: &mut usize) {
+            let [x, y, w, h] = widget.rect;
+            let rect = Rect::new(x, y, x + w, y + h);
+            if widget.widget == "Button" && rect.area() > 0.0 {
                 *buttons += 1;
                 assert!(rect.width() >= 44.0, "button is too narrow: {rect:?}");
                 assert!(rect.height() >= 44.0, "button is too short: {rect:?}");
@@ -3221,61 +3223,47 @@ mod tests {
                     "button escaped {width}px phone viewport: {rect:?}"
                 );
             }
-            for child in widget.children() {
+            for child in &widget.children {
                 inspect(child, width, buttons);
             }
         }
 
-        for width in [360.0, 390.0] {
-            let mut centre = PrintCentre::demo(DemoScenario::ScanResult);
-            let mut tree = TaffyTree::new();
-            let mut map = HashMap::new();
-            let node = centre.build_layout(&mut tree, &Theme::dark(), &mut map);
-            tree.compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(width as f32),
-                    height: taffy::AvailableSpace::Definite(760.0),
-                },
-            )
-            .unwrap();
-            centre.apply_layout(&tree, node, Point::ZERO);
+        for width in [360_u32, 390] {
+            let centre = ui::headless::Driver::new(
+                ui::State::new(),
+                Box::new(PrintCentre::demo(DemoScenario::ScanResult)),
+                (width, 760),
+            );
             let mut buttons = 0;
-            inspect(&centre, width, &mut buttons);
+            inspect(&centre.inspection().root, f64::from(width), &mut buttons);
             assert!(buttons >= 8, "expected the complete scan-review action set");
         }
     }
 
     #[test]
     fn print_setup_footer_stays_visible_and_touch_sized_on_phones() {
-        fn collect_buttons(widget: &dyn Widget, buttons: &mut Vec<Rect>) {
-            let rect = widget.get_rect();
-            if widget.name() == "Button" && rect.area() > 0.0 {
+        fn collect_buttons(widget: &ui::headless::InspectionNode, buttons: &mut Vec<Rect>) {
+            let [x, y, w, h] = widget.rect;
+            let rect = Rect::new(x, y, x + w, y + h);
+            if widget.widget == "Button" && rect.area() > 0.0 {
                 buttons.push(rect);
             }
-            for child in widget.children() {
+            for child in &widget.children {
                 collect_buttons(child, buttons);
             }
         }
 
-        for width in [360.0_f32, 520.0_f32] {
-            let height = 820.0_f32;
-            let mut centre = PrintCentre::demo(DemoScenario::PrintSetup);
-            let mut tree = TaffyTree::new();
-            let mut map = HashMap::new();
-            let node = centre.build_layout(&mut tree, &Theme::dark(), &mut map);
-            tree.compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(width),
-                    height: taffy::AvailableSpace::Definite(height),
-                },
-            )
-            .unwrap();
-            centre.apply_layout(&tree, node, Point::ZERO);
+        for width in [360_u32, 520] {
+            let height = 820_u32;
+            let centre = ui::headless::Driver::new(
+                ui::State::new(),
+                Box::new(PrintCentre::demo(DemoScenario::PrintSetup)),
+                (width, height),
+            );
+            let snapshot = centre.inspection();
 
             let mut buttons = Vec::new();
-            collect_buttons(&centre, &mut buttons);
+            collect_buttons(&snapshot.root, &mut buttons);
             buttons.sort_by(|left, right| left.y0.total_cmp(&right.y0));
             let footer_buttons = buttons.iter().skip(1).collect::<Vec<_>>();
             assert_eq!(
@@ -3283,7 +3271,7 @@ mod tests {
                 2,
                 "Cancel and Print must stay visible; buttons were {buttons:?}"
             );
-            let root_bottom = centre.get_rect().y1;
+            let root_bottom = snapshot.root.rect[1] + snapshot.root.rect[3];
             for rect in footer_buttons {
                 assert!(
                     rect.width() >= 44.0,

@@ -2,10 +2,10 @@
 #
 # Shape mirrors `pkg::Manifest` — the launcher's minimal shim
 # also decodes this file. Placeholder publisher key; a real
-# publish would go through `qos-pkg-cli sign`.
+# publish would go through `tilo-pkg-cli sign`.
 
 [package]
-id      = "dev.qos.notes-cli"
+id      = "dev.tilo.notes-cli"
 version = "0.1.0"
 kind    = "app"
 
@@ -15,7 +15,7 @@ signature = ""
 
 [sandbox]
 namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
-seccomp    = "qos-default"
+seccomp    = "tilo-default"
 landlock   = "strict"
 
 [sandbox.net]

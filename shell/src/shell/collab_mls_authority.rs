@@ -170,7 +170,7 @@ impl SecretServiceMlsVault {
                 "launcher did not provide XDG_STATE_HOME for MLS state".into(),
             )
         })?;
-        Self::open(PathBuf::from(state).join("qos/collaboration/mls"))
+        Self::open(PathBuf::from(state).join("tilo/collaboration/mls"))
     }
 
     /// Broker-owned WAL location paired with this provider. It is derived
@@ -488,10 +488,10 @@ fn secret_service_store(locator: &str, secret: &[u8]) -> Result<(), MlsAuthority
     let mut child = Command::new("secret-tool")
         .args([
             "store",
-            "--label=qOS MLS key",
-            "qos-purpose",
+            "--label=Tilo MLS key",
+            "tilo-purpose",
             "mls",
-            "qos-mls-key",
+            "tilo-mls-key",
             locator,
         ])
         .stdin(Stdio::piped())
@@ -520,7 +520,7 @@ fn secret_service_store(locator: &str, secret: &[u8]) -> Result<(), MlsAuthority
 
 fn secret_service_load(locator: &str) -> Result<Zeroizing<[u8; 32]>, MlsAuthorityError> {
     let output = Command::new("secret-tool")
-        .args(["lookup", "qos-purpose", "mls", "qos-mls-key", locator])
+        .args(["lookup", "tilo-purpose", "mls", "tilo-mls-key", locator])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()

@@ -4,10 +4,10 @@
 //! apps talk to when they need privileged operations the sandbox blocks —
 //! file open/save, screencast, camera access. The host portal proxies
 //! every request to a *backend* implementation that owns the
-//! decision-and-UI side; this is that backend for the Nirios compositor.
+//! decision-and-UI side; this is that backend for the Tilo compositor.
 //!
 //! We expose these D-Bus interfaces under
-//! `org.freedesktop.impl.portal.desktop.qos`:
+//! `org.freedesktop.impl.portal.desktop.tilo`:
 //!
 //! - `org.freedesktop.impl.portal.FileChooser` — `OpenFile` / `SaveFile` / `SaveFiles`.
 //! - `org.freedesktop.impl.portal.ScreenCast` — `CreateSession` /
@@ -48,89 +48,136 @@
     reason = "portal implementation methods mirror fixed freedesktop D-Bus signatures and decode bounded wire/state formats; protocol and adversarial behavior is covered by focused tests"
 )]
 
+#[cfg(any(test, target_os = "linux"))]
 pub mod account;
+#[cfg(any(test, target_os = "linux"))]
 pub mod app_chooser;
+#[cfg(target_os = "linux")]
 pub mod auth;
+#[cfg(any(test, target_os = "linux"))]
 pub mod background;
+#[cfg(any(test, target_os = "linux"))]
 pub mod camera;
 pub mod capture_broker;
 pub mod clipboard;
 pub mod desktop_services;
 pub mod doc_store;
+#[cfg(any(test, target_os = "linux"))]
 pub mod dynamic_launcher;
+#[cfg(any(test, target_os = "linux"))]
 pub mod email;
 pub mod file_chooser;
 pub mod file_picker_spawner;
 pub mod global_shortcuts;
+#[cfg(any(test, target_os = "linux"))]
 pub mod inhibit;
+#[cfg(any(test, target_os = "linux"))]
 pub mod input_capture;
 pub mod lifecycle;
+#[cfg(any(test, target_os = "linux"))]
 pub mod lockdown;
+#[cfg(any(test, target_os = "linux"))]
 pub mod notification;
+#[cfg(any(test, target_os = "linux"))]
 pub mod permission_store;
 pub mod picker_queue;
 pub mod print;
+#[cfg(any(test, target_os = "linux"))]
 pub mod remote_desktop;
+#[cfg(any(test, target_os = "linux"))]
 pub mod screencast;
 pub mod screencast_pipewire;
+#[cfg(any(test, target_os = "linux"))]
 pub mod screenshot;
+#[cfg(any(test, target_os = "linux"))]
 pub mod secret;
+#[cfg(any(test, target_os = "linux"))]
 pub mod settings;
+#[cfg(any(test, target_os = "linux"))]
 pub mod usb;
+#[cfg(any(test, target_os = "linux"))]
 pub mod wallpaper;
 
 // Re-exported so integration tests can construct the backend types
 // directly and register them on a custom `ConnectionBuilder` (see `tests/portal_test.rs`).
+#[cfg(target_os = "linux")]
 pub use account::AccountBackend;
+#[cfg(target_os = "linux")]
 pub use app_chooser::AppChooserBackend;
+#[cfg(target_os = "linux")]
 pub use auth::{AuthenticatedCall, PortalAuthenticator};
+#[cfg(target_os = "linux")]
 pub use background::BackgroundBackend;
+#[cfg(target_os = "linux")]
 pub use camera::AccessBackend;
 pub use capture_broker::{
     CaptureAuthorizationId, CaptureBroker, CaptureKind, CaptureLeaseGrant, CaptureLeaseId,
     CapturePrivacyEvent, CaptureRevocation, CaptureSessionBinding, CaptureSourceView,
     LocalCaptureHandle,
 };
+#[cfg(target_os = "linux")]
 pub use clipboard::ClipboardBackend;
 pub use desktop_services::DesktopPortalServices;
+#[cfg(target_os = "linux")]
 pub use doc_store::{DocumentStore, DocumentStoreHandle, HostPathStore, PublishedDoc};
+#[cfg(target_os = "linux")]
 pub use dynamic_launcher::DynamicLauncherBackend;
+#[cfg(target_os = "linux")]
 pub use email::EmailBackend;
+#[cfg(target_os = "linux")]
 pub use file_chooser::FileChooserBackend;
 pub use file_picker_spawner::{
     FilePickerOptions, FilePickerRequest, FilePickerSpawner, FilePickerSpawnerHandle,
     MockFilePickerSpawner, NullFilePickerSpawner, PickerFilter,
 };
+#[cfg(target_os = "linux")]
 pub use global_shortcuts::GlobalShortcutsBackend;
+#[cfg(target_os = "linux")]
 pub use inhibit::InhibitBackend;
+#[cfg(target_os = "linux")]
 pub use input_capture::{
     CaptureZone, CapturedInput, InputCaptureBackend, InputCaptureCompositorHandle,
 };
+#[cfg(target_os = "linux")]
 pub use lockdown::LockdownBackend;
+#[cfg(target_os = "linux")]
 pub use notification::NotificationBackend;
+#[cfg(target_os = "linux")]
 pub use permission_store::PermissionStoreBackend;
 pub use picker_queue::{FilePickerQueue, PickerScope};
+#[cfg(target_os = "linux")]
 pub use print::{
     LpSpooler, NullPrintSpooler, PrintBackend, PrintJobRequest, PrintSpooler, PrintSpoolerHandle,
     RecordingSpooler,
 };
+#[cfg(target_os = "linux")]
 pub use remote_desktop::{
     ChannelInjector, RecordingInjector, RemoteDesktopBackend, RemoteInputInjector,
     RemoteInputInjectorHandle,
 };
+#[cfg(target_os = "linux")]
 pub use screencast::ScreenCastBackend;
+#[cfg(target_os = "linux")]
 pub use screencast_pipewire::{
     MockScreenCastProvisioner, PipewireStreamInfo, ProvisioningError, RealPipewireProvisioner,
     ScreenCastStreamProvisioner, ScreenCastStreamProvisionerHandle,
     UnavailableScreenCastProvisioner,
 };
+#[cfg(target_os = "linux")]
 pub use screenshot::ScreenshotBackend;
+#[cfg(target_os = "linux")]
 pub use secret::SecretBackend;
+#[cfg(target_os = "linux")]
 pub use settings::SettingsBackend;
+#[cfg(target_os = "linux")]
 pub use usb::UsbBackend;
+#[cfg(target_os = "linux")]
 pub use wallpaper::WallpaperBackend;
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+#[cfg(any(test, target_os = "linux"))]
+use std::collections::HashMap;
+
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -518,7 +565,7 @@ pub(crate) fn private_state_root() -> Option<PathBuf> {
 }
 
 fn default_portal_consent_path() -> Option<PathBuf> {
-    private_state_root().map(|root| root.join("qos/portal/consents.json"))
+    private_state_root().map(|root| root.join("tilo/portal/consents.json"))
 }
 
 fn persist_portal_consents(path: &Path, always: &BTreeSet<String>) -> std::io::Result<()> {
@@ -727,6 +774,7 @@ impl PromptQueueHandle {
 
 /// Configuration handed to [`serve`] / interface constructors.
 #[derive(Clone)]
+#[cfg(target_os = "linux")]
 pub struct PortalContext {
     pub grants: GrantStoreHandle,
     pub prompts: PromptQueueHandle,
@@ -766,6 +814,7 @@ pub struct PortalContext {
     pub authenticator: Option<PortalAuthenticator>,
 }
 
+#[cfg(target_os = "linux")]
 impl PortalContext {
     /// Build a context wired with null spawners — `FileChooser` cancels every
     /// request and `ScreenCast` explicitly reports that no capture producer is
@@ -782,7 +831,7 @@ impl PortalContext {
             file_picker: FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
             screencast_provisioner: ScreenCastStreamProvisionerHandle::new(Arc::new(
                 UnavailableScreenCastProvisioner::new(
-                    "this qOS session has no PipeWire capture producer",
+                    "this Tilo session has no PipeWire capture producer",
                 ),
             )),
             remote_input_injector: RemoteInputInjectorHandle::null(),
@@ -801,6 +850,7 @@ impl PortalContext {
 /// In-memory D-Bus unique-name → `PortalCaller` lookup. `Arc<Mutex<…>>`
 /// so it's cheap to clone across interface impls and pushable from a different thread than the D-Bus reader.
 #[derive(Clone, Default)]
+#[cfg(any(test, target_os = "linux"))]
 pub struct CallerMap {
     inner: Arc<Mutex<HashMap<String, PortalCaller>>>,
     /// Test-only forced override: every `lookup` returns this caller
@@ -808,6 +858,7 @@ pub struct CallerMap {
     forced: Arc<Mutex<Option<PortalCaller>>>,
 }
 
+#[cfg(any(test, target_os = "linux"))]
 impl CallerMap {
     pub fn new() -> Self {
         Self::default()
@@ -839,23 +890,46 @@ impl CallerMap {
 
 /// Shared sub-flow every interface uses: lookup or prompt, return the
 /// outcome. Kept here so "Always-grant skips the prompt" is asserted by one test all three interfaces share.
+/// Grant and prompt authority used by the shared consent flow.
+pub trait ConsentContext {
+    fn grants(&self) -> &GrantStoreHandle;
+    fn prompts(&self) -> &PromptQueueHandle;
+}
+impl ConsentContext for (GrantStoreHandle, PromptQueueHandle) {
+    fn grants(&self) -> &GrantStoreHandle {
+        &self.0
+    }
+    fn prompts(&self) -> &PromptQueueHandle {
+        &self.1
+    }
+}
+#[cfg(target_os = "linux")]
+impl ConsentContext for PortalContext {
+    fn grants(&self) -> &GrantStoreHandle {
+        &self.grants
+    }
+    fn prompts(&self) -> &PromptQueueHandle {
+        &self.prompts
+    }
+}
+
 pub mod flow {
     use super::{
-        Capability, CapabilityKind, GRANT_ALWAYS, GRANT_ONCE, PortalCaller, PortalContext,
+        Capability, CapabilityKind, ConsentContext, GRANT_ALWAYS, GRANT_ONCE, PortalCaller,
         PromptOutcome,
     };
 
     pub async fn resolve(
-        ctx: &PortalContext,
+        ctx: &impl ConsentContext,
         caller: PortalCaller,
         kind: CapabilityKind,
         cap_template: Capability,
     ) -> PromptOutcome {
         // Fast path — `Always`-scoped grant already present.
-        if matches!(ctx.grants.lookup(&caller, kind), Some(GRANT_ALWAYS)) {
+        if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
             return PromptOutcome::AllowAlways;
         }
-        let rx = ctx.prompts.enqueue(caller.clone(), cap_template.clone());
+        let rx = ctx.prompts().enqueue(caller.clone(), cap_template.clone());
         match rx.await {
             Ok(outcome) => {
                 // Persist Session/Always — Once is treated as one-shot.
@@ -863,7 +937,7 @@ pub mod flow {
                     && !matches!(scope, GRANT_ONCE)
                 {
                     let cap = super::with_scope(cap_template, scope);
-                    ctx.grants.insert_portal_consent(&caller, &cap);
+                    ctx.grants().insert_portal_consent(&caller, &cap);
                 }
                 outcome
             }
@@ -875,25 +949,25 @@ pub mod flow {
     /// Request-owned variant of [`resolve`]. It lets a portal close remove
     /// the matching visible sheet rather than merely discarding its result.
     pub async fn resolve_for_request(
-        ctx: &PortalContext,
+        ctx: &impl ConsentContext,
         caller: PortalCaller,
         kind: CapabilityKind,
         cap_template: Capability,
         request_key: String,
     ) -> PromptOutcome {
-        if matches!(ctx.grants.lookup(&caller, kind), Some(GRANT_ALWAYS)) {
+        if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
             return PromptOutcome::AllowAlways;
         }
-        let rx = ctx
-            .prompts
-            .enqueue_for_request(caller.clone(), cap_template.clone(), request_key);
+        let rx =
+            ctx.prompts()
+                .enqueue_for_request(caller.clone(), cap_template.clone(), request_key);
         match rx.await {
             Ok(outcome) => {
                 if let Some(scope) = outcome.to_scope()
                     && !matches!(scope, GRANT_ONCE)
                 {
                     let cap = super::with_scope(cap_template, scope);
-                    ctx.grants.insert_portal_consent(&caller, &cap);
+                    ctx.grants().insert_portal_consent(&caller, &cap);
                 }
                 outcome
             }
@@ -904,21 +978,23 @@ pub mod flow {
     /// Consent path for portal-only capability kinds. It deliberately never
     /// falls through to a broader workspace capability with a similar name.
     pub async fn resolve_local(
-        ctx: &PortalContext,
+        ctx: &impl ConsentContext,
         caller: PortalCaller,
         kind: CapabilityKind,
         cap_template: Capability,
     ) -> PromptOutcome {
-        if matches!(ctx.grants.lookup(&caller, kind), Some(GRANT_ALWAYS)) {
+        if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
             return PromptOutcome::AllowAlways;
         }
-        let rx = ctx.prompts.enqueue(caller.clone(), cap_template);
+        let rx = ctx.prompts().enqueue(caller.clone(), cap_template);
         match rx.await {
             Ok(outcome) => {
                 if let Some(scope) = outcome.to_scope()
                     && !matches!(scope, GRANT_ONCE)
                 {
-                    let _ = ctx.grants.insert_portal_consent_kind(&caller, kind, scope);
+                    let _ = ctx
+                        .grants()
+                        .insert_portal_consent_kind(&caller, kind, scope);
                 }
                 outcome
             }
@@ -942,6 +1018,7 @@ pub fn with_scope(cap: Capability, scope: GrantScope) -> Capability {
 }
 
 /// The document store this session should use — one place to make the choice. See [`doc_store`] for what the host-path store does and doesn't reach.
+#[cfg(target_os = "linux")]
 pub fn documents_for_session() -> DocumentStoreHandle {
     DocumentStoreHandle::host_paths()
 }
@@ -949,9 +1026,9 @@ pub fn documents_for_session() -> DocumentStoreHandle {
 /// Bus name we register under. xdg-desktop-portal expects backends to
 /// own `org.freedesktop.impl.portal.desktop.<vendor>`; matched against
 /// `portals/<vendor>.portal` (see
-/// `os/usr/share/xdg-desktop-portal/portals/qos.portal`). The compositor is
+/// `os/usr/share/xdg-desktop-portal/portals/tilo.portal`). The compositor is
 /// deliberately the sole owner; there is no competing activation service.
-pub const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.qos";
+pub const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.tilo";
 
 /// Object path the portal's frontend dispatches to; xdg-desktop-portal hard-codes `/org/freedesktop/portal/desktop`.
 pub const OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
@@ -970,20 +1047,22 @@ pub const OBJECT_PATH: &str = "/org/freedesktop/portal/desktop";
 /// [`OBJECT_PATH`] fails. Failing to *own* [`BUS_NAME`] is not an error
 /// here — it is recorded on the returned [`ServerHandle::owns_name`],
 /// since a p2p test connection has no broker to request a name from.
+#[cfg(target_os = "linux")]
 pub async fn serve(
     connection: zbus::Connection,
     ctx: PortalContext,
 ) -> Result<ServerHandle, zbus::Error> {
-    serve_with_inhibit(connection, ctx, qos_power_mgmt::InhibitRegistry::new()).await
+    serve_with_inhibit(connection, ctx, tilo_power_mgmt::InhibitRegistry::new()).await
 }
 
 /// Serve the portal backend using the compositor's actual inhibitor registry.
 /// Native sessions call this so an application hold reaches both the idle
 /// state machine and logind; standalone test/headless servers use [`serve`].
+#[cfg(target_os = "linux")]
 pub async fn serve_with_inhibit(
     connection: zbus::Connection,
     ctx: PortalContext,
-    inhibit_registry: qos_power_mgmt::InhibitRegistry,
+    inhibit_registry: tilo_power_mgmt::InhibitRegistry,
 ) -> Result<ServerHandle, zbus::Error> {
     serve_with_inhibit_and_clipboard(
         connection,
@@ -997,10 +1076,11 @@ pub async fn serve_with_inhibit(
 /// Native compositor entry point.  The caller supplies its live
 /// focus-gated selection mirror; hosted/headless runs intentionally use the
 /// unavailable broker above rather than pretending Clipboard works.
+#[cfg(target_os = "linux")]
 pub async fn serve_with_inhibit_and_clipboard(
     connection: zbus::Connection,
     mut ctx: PortalContext,
-    inhibit_registry: qos_power_mgmt::InhibitRegistry,
+    inhibit_registry: tilo_power_mgmt::InhibitRegistry,
     clipboard_broker: clipboard::ClipboardBrokerHandle,
 ) -> Result<ServerHandle, zbus::Error> {
     use account::AccountBackend;
@@ -1172,6 +1252,7 @@ pub async fn serve_with_inhibit_and_clipboard(
 }
 
 /// RAII handle keeping the portal D-Bus connection alive; drop releases the bus name and tears down the object server.
+#[cfg(target_os = "linux")]
 pub struct ServerHandle {
     // Never read on purpose: holding the `Connection` IS the job — dropping it releases the bus name and tears the object server down.
     #[allow(dead_code)]
@@ -1179,6 +1260,7 @@ pub struct ServerHandle {
     owns_name: bool,
 }
 
+#[cfg(target_os = "linux")]
 impl ServerHandle {
     /// Did this connection actually acquire [`BUS_NAME`]?
     ///
@@ -1416,7 +1498,7 @@ mod tests {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let queue = PromptQueueHandle::new(PromptResolver::Channel);
         let caller = PortalCaller::new(ws_id, "app");
-        let ctx = PortalContext::new_with_null_spawners(store, queue.clone(), CallerMap::new());
+        let ctx = (store, queue.clone());
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1439,7 +1521,7 @@ mod tests {
         let queue =
             PromptQueueHandle::new(PromptResolver::AutoOutcome(PromptOutcome::AllowSession));
         let caller = PortalCaller::new(ws_id, "app");
-        let ctx = PortalContext::new_with_null_spawners(store.clone(), queue, CallerMap::new());
+        let ctx = (store.clone(), queue);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1505,7 +1587,7 @@ mod tests {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
         let caller = PortalCaller::new(ws_id, "app");
-        let ctx = PortalContext::new_with_null_spawners(store.clone(), queue, CallerMap::new());
+        let ctx = (store.clone(), queue);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1529,7 +1611,7 @@ mod tests {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let queue = PromptQueueHandle::new(PromptResolver::AutoDeny);
         let caller = PortalCaller::new(ws_id, "app");
-        let ctx = PortalContext::new_with_null_spawners(store.clone(), queue, CallerMap::new());
+        let ctx = (store.clone(), queue);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

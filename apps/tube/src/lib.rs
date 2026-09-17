@@ -1,4 +1,4 @@
-//! Tube — a privacy-respecting `YouTube` client for qOS.
+//! Tube — a privacy-respecting `YouTube` client for Tilo.
 //!
 //! No ads, no tracking, no Google player. Video search + metadata come from
 //! public Invidious instances; `SponsorBlock` marks and auto-skips sponsor /

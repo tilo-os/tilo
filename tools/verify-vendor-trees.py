@@ -2,7 +2,7 @@
 """Verify that checked-in vendor sources reproduce the standalone histories.
 
 The winit crates.io source archive contains Cargo publication bookkeeping
-that qOS deliberately omits from that vendored tree. qOS also adds one local
+that Tilo deliberately omits from that vendored tree. Tilo also adds one local
 ``cargo-machete`` annotation to winit's normalized manifest. Everything else,
 including Vello's retained package files, must match the recorded standalone
 tips byte-for-byte.
@@ -128,7 +128,7 @@ def main() -> int:
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    print("vendored sources match standalone histories and documented qOS overlays")
+    print("vendored sources match standalone histories and documented Tilo overlays")
     return 0
 
 

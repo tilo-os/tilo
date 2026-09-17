@@ -7,22 +7,23 @@
 //! This module closes that gap in three lines. Instead of
 //!
 //! ```ignore
-//! let state = ui::State::new();
-//! ui::App::new(state, my_app::app_root()).run();
+//! ui::App::from_factory(ui::State::new(), my_app::app_root).run();
 //! ```
 //!
 //! an app writes
 //!
 //! ```ignore
-//! let (state, autosave) = ui::persist::open("dev.qos.my-app");
-//! ui::App::new(state, my_app::app_root()).with_autosave(autosave).run();
+//! let (state, autosave) = ui::persist::open("dev.tilo.my-app");
+//! ui::App::from_factory(state, my_app::app_root)
+//!     .with_autosave(autosave)
+//!     .run();
 //! ```
 //!
 //! and gets the previous session's document loaded before the first
 //! `sync`, every change written back atomically and debounced, and a
 //! flush on exit. Where the bytes live is documented on [`app_state`].
 //!
-//! The id string is a fallback: `QOS_PACKAGE_ID`, set by the launcher on
+//! The id string is a fallback: `TILO_PACKAGE_ID`, set by the launcher on
 //! every sandboxed launch, always wins — without it a binary run from
 //! `target/debug` would share one document with every other app.
 //!
@@ -68,7 +69,7 @@ pub fn open(manifest_id: &str) -> (State, Autosave) {
 /// moved or deleted.  The next autosave lands in the room directory, so a
 /// crash during migration still leaves the legacy source intact.
 pub fn open_room(manifest_id: &str, room_id: &str) -> (State, Autosave) {
-    let package_id = std::env::var("QOS_PACKAGE_ID")
+    let package_id = std::env::var("TILO_PACKAGE_ID")
         .ok()
         .filter(|id| !id.is_empty())
         .unwrap_or_else(|| manifest_id.to_string());
@@ -157,8 +158,8 @@ fn finish(mut store: DocStore) -> (State, Autosave) {
             "app state was written by a newer version of this app; running \
              without persistence so the file on disk is left intact"
         );
-        eprintln!("qos: {reason}");
-        eprintln!("qos: this session starts empty and will NOT be saved.");
+        eprintln!("tilo: {reason}");
+        eprintln!("tilo: this session starts empty and will NOT be saved.");
         return (State::from_doc(doc), Autosave::disabled(reason));
     }
     let mut autosave = Autosave::spawn(store, DEFAULT_DEBOUNCE);
@@ -178,7 +179,7 @@ fn in_memory_fallback() -> (State, Autosave) {
 }
 
 /// Convenience for tests and tools: same as [`open`] but for an explicit
-/// package id rather than `QOS_PACKAGE_ID`.
+/// package id rather than `TILO_PACKAGE_ID`.
 ///
 /// # Errors
 ///
@@ -219,7 +220,7 @@ mod tests {
     #[serial_test::serial(state_dir_env)]
     fn open_keeps_autosave_enabled_when_the_state_dir_already_exists() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        let pkg = "dev.qos.persist-open-twice";
+        let pkg = "dev.tilo.persist-open-twice";
 
         // Directory present before the first open, as on every later launch.
         let dir = tmp.path().join(pkg);
@@ -228,7 +229,7 @@ mod tests {
         // between the set here and the removal at the end.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
 
         // Run 1: write and flush a value.
@@ -265,10 +266,10 @@ mod tests {
     #[serial_test::serial(state_dir_env)]
     fn legacy_record_index_is_imported_by_one_room_only() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        let package = "dev.qos.legacy-room-index";
+        let package = "dev.tilo.legacy-room-index";
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
         let id = crate::record::RecordId::minted();
         let kind = crate::record::RecordKind::new("note");
@@ -297,7 +298,7 @@ mod tests {
     #[serial_test::serial(state_dir_env)]
     fn open_recovers_when_the_state_path_is_a_stale_file() {
         let tmp = tempfile::tempdir().expect("temp dir");
-        let pkg = "dev.qos.stale-file-open";
+        let pkg = "dev.tilo.stale-file-open";
 
         // Old layout's leftover: a file where the new layout wants a directory.
         let path = tmp.path().join(pkg);
@@ -306,7 +307,7 @@ mod tests {
         // SAFETY: serialised on `app_state_dir`.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
 
         // Run 1: `open` must recover to enabled persistence.
