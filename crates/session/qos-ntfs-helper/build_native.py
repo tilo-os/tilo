@@ -6,7 +6,8 @@ PIN = "d327833ec1d5eb1358b6f2c37139f10a3460944d"
 SHA = "b90caed8fade648f119c767bd310419be56a2b0014b16e6b2c68b50bc6c7e9cd"
 def build(output, fixture=False):
     archive = ROOT / "vendor/ntfs-3g-source.tar.gz"
-    assert hashlib.sha256(archive.read_bytes()).hexdigest() == SHA, "NTFS source checksum mismatch"
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA:
+        raise RuntimeError("NTFS source checksum mismatch")
     output = pathlib.Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     src = output / ("ntfs-3g-" + PIN)

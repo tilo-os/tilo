@@ -20,3 +20,6 @@ pub fn command(args: &[String]) -> io::Result<()> {
 }
 #[cfg(target_os = "linux")]
 mod linux;
+
+#[cfg(any(target_os = "linux", test))]
+mod topology;

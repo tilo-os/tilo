@@ -325,14 +325,11 @@ static int check_hiber(struct state *s, ntfs_volume *v) {
     return fail(s, 4, EPERM);
   return event(s, "{\"kind\":\"hibernation\",\"state\":\"zero-header\"}");
 }
+int qos_check_logfile_strict(ntfs_attr *attr);
 static int check_log(struct state *s, ntfs_volume *v) {
   ntfs_inode *ni = ntfs_inode_open(v, FILE_LogFile);
   ntfs_attr *a = ni ? ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0) : NULL;
-  RESTART_PAGE_HEADER *rp = NULL;
-  int ok = a && ntfs_check_logfile(a, &rp) && ntfs_is_logfile_clean(a, rp);
-  if (rp && le16_to_cpu(rp->major_ver) == 2 && le16_to_cpu(rp->minor_ver) == 0)
-    ok = 0;
-  free(rp);
+  int ok = a && qos_check_logfile_strict(a);
   if (a)
     ntfs_attr_close(a);
   if (ni && ntfs_inode_close(ni))

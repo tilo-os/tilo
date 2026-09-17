@@ -14,27 +14,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("pinned native build failed".into());
     }
     let src = out.join("ntfs-3g-d327833ec1d5eb1358b6f2c37139f10a3460944d");
-    let status = Command::new(&compiler)
-        .args([
-            "-std=c11",
-            "-D_DARWIN_C_SOURCE",
-            "-D_GNU_SOURCE",
-            "-DHAVE_CONFIG_H",
-            "-Wall",
-            "-Wextra",
-            "-Werror",
-            "-c",
-            "native/ntfs_reader.c",
-            "-o",
-        ])
-        .arg(out.join("ntfs_reader.o"))
-        .arg("-I")
-        .arg(&src)
-        .arg("-I")
-        .arg(src.join("include/ntfs-3g"))
-        .status()?;
-    if !status.success() {
-        return Err("reader C compilation failed".into());
+    for source in ["ntfs_reader", "strict_logfile"] {
+        let status = Command::new(&compiler)
+            .args([
+                "-std=c11",
+                "-D_DARWIN_C_SOURCE",
+                "-D_GNU_SOURCE",
+                "-DHAVE_CONFIG_H",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-c",
+                &format!("native/{source}.c"),
+                "-o",
+            ])
+            .arg(out.join(format!("{source}.o")))
+            .arg("-I")
+            .arg(&src)
+            .arg("-I")
+            .arg(src.join("include/ntfs-3g"))
+            .status()?;
+        if !status.success() {
+            return Err("reader C compilation failed".into());
+        }
     }
     if !Command::new(&compiler)
         .args([
@@ -57,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .arg("rcs")
         .arg(out.join("libqos_ntfs_reader.a"))
         .arg(out.join("ntfs_reader.o"))
+        .arg(out.join("strict_logfile.o"))
         .arg(out.join("sandbox.o"))
         .status()?
         .success()

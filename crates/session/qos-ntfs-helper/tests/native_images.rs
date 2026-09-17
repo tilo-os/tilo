@@ -222,3 +222,37 @@ fn native_folder_identity_rejects_a_regular_file_mft_locator() {
         serde_json::from_value(probe("clean").unwrap()).unwrap();
     assert!(qos_ntfs_helper::protocol::identity(&report, 64).is_err());
 }
+
+#[test]
+fn native_restart_valid_pair_is_clean() {
+    assert_eq!(probe("restart-clean").unwrap()["status"], 0);
+}
+#[test]
+fn native_restart_corrupt_first_refuses_without_clean_fact() {
+    restart_refuses("restart-bad-first").unwrap();
+}
+#[test]
+fn native_restart_corrupt_second_refuses_without_clean_fact() {
+    restart_refuses("restart-bad-second").unwrap();
+}
+#[test]
+fn native_restart_version_two_refuses_without_clean_fact() {
+    restart_refuses("restart-v2").unwrap();
+}
+fn restart_refuses(name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let report = probe(name)?;
+    if report.get("status") != Some(&serde_json::json!(3)) {
+        return Err(format!("{name}: expected refusal 3, got {:?}", report.get("status")).into());
+    }
+    let facts = report
+        .get("facts")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("missing facts")?;
+    if facts.iter().any(|f| {
+        f.get("kind") == Some(&serde_json::json!("logfile"))
+            && f.get("state") == Some(&serde_json::json!("clean"))
+    }) {
+        return Err(format!("{name}: refused restart pair emitted clean logfile fact").into());
+    }
+    Ok(())
+}

@@ -112,10 +112,58 @@ fd_boundary test with --ignored only in that environment. Tests do not create,
 format, mount, detach or reconfigure block devices. They exercise actual kernel
 readonly/seccomp/allocation limits; image-only runs are not substitutes.
 
-Live detach/replacement, cross-namespace automounter races, watchdog death,
-actual Windows Fast Startup/hibernation and allocation-bomb Linux scenarios still
-need coordinator-driven native evidence. The live detach test is not implemented
-as a fake passing/ignored assertion. Root's acceptance checklist tracks it.
+The runnable `production_physical_partition_inventory_and_inspection` test
+requires `QOS_NTFS_NATIVE_DEVICE` to be a direct, unmounted physical partition
+with native WWID, partition geometry and disk sequence; its image must be clean
+and have a root directory. The coordinator must remove clone ambiguity and
+provision the dedicated account. It runs actual production inventory and
+inspection and requires native identity, status 0, zero writes and enforced Linux
+memory limits. It never substitutes the image-only reader for production.
+
+For both production tests, set `QOS_NTFS_NATIVE_COORDINATOR_SCRIPT` to the deployed
+`tests/native_coordinator.py`. `QOS_NTFS_NATIVE_PROBE` optionally identifies the
+deployed production executable when running a cross-built test executable whose
+compiled Cargo path is not present. The native runner needs Python 3 and root
+ptrace permission. This does not relax the production sandbox.
+
+Run `production_detach_replacement_invalidates_evidence` twice, on separately
+prepared disposable fixtures: once with `QOS_NTFS_NATIVE_ACTION_KIND=detach`, once
+with `QOS_NTFS_NATIVE_ACTION_KIND=replace`. Set `QOS_NTFS_NATIVE_ACTION` to an
+absolute executable path for the **external fixture coordinator**. The harness
+first requires the same positive inventory/inspection as above. It then traces a
+fresh actual production process to its first native reader fork, verifies the
+selected readonly block descriptor in both processes, and keeps them stopped
+while the external action executes. No production hooks, fake claims or device
+mutations are built into the test harness.
+
+The action receives one argument (`detach` or `replace`) and a JSON stdin request
+with schema 1, action, phase `production-claimed-reader-fork`, device, native
+inventory, broker/reader PIDs and claim FDs. Within five seconds it must actually
+detach or replace that explicitly authorized disposable fixture and return only
+`{"schema":1,"completed":"detach"}` (or `"replace"`) on stdout. Replacement
+must change the kernel object/disk sequence; a no-op action cannot pass. The
+coordinator independently checks kernel identity invalidation, removes ptrace
+before the production privilege/seccomp setup, and requires nonzero termination,
+zero evidence output, exited reader and no remaining claim descriptors. Its
+cleanup kills only its own recorded processes. The source supports these tests;
+**neither positive, detach nor replacement has been executed on Linux yet**.
+The external action remains environment-specific and must be supplied by the
+fixture controller; there is deliberately no default device mutation command.
+
+Cross-namespace automounter races, watchdog death, actual Windows Fast Startup/
+hibernation and allocation-bomb Linux scenarios also need native evidence.
+
+## Strict logfile admission
+
+The pinned recovery parser can ignore one malformed restart page. Stage 1 instead
+compiles its internal structural validators from the checksum-verified source
+and calls them on **both** restart pages without recovery. Public recovery/write
+entry points in that translation unit are renamed and unused. Both pages must
+be version 1.1 with consistent geometry, intact MST sectors, valid restart areas
+and client lists, and clean state. CHKD, version 2.0 and pages larger than 64 KiB
+are conservatively refused. An erased logfile is accepted only after every byte
+is verified as 0xff through the same bounded readonly adapter; cached empty flags
+and sparse header sampling do not establish emptiness.
 
 ## Staging only
 
