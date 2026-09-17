@@ -2508,6 +2508,15 @@ impl PlayerApp {
                     annotation.time_ms as f64 / 1000.0
                 )
             };
+            let row = Rect::new(panel.x0 + 12.0, *row_y, panel.x1 - 12.0, *row_y + row_h);
+            fill_rect(scene, transform, row, theme.tokens.colors.surfaces.base);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.border_standard,
+                None,
+                &row,
+            );
             panel_text(
                 scene,
                 text_renderer,
