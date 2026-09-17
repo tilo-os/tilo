@@ -608,9 +608,25 @@ impl BookSearchProvider {
                 tags: vec!["workspace".into(), "materialize".into(), "remote".into()],
                 ..ActionContract::default()
             });
+            let remove = ActionSpec::immediate(
+                "remove-from-library",
+                "Remove from library",
+                crate::actions::EBOOK_ACTION_TYPE,
+                &remove_library_book_action(&remote.id),
+            )
+            .ok()?
+            .with_contract(ActionContract {
+                risk: RiskLevel::Destructive,
+                confirmation: ConfirmationPolicy::Confirm,
+                retry: RetryPolicy::Idempotent,
+                reversible: true,
+                tags: vec!["library".into(), "tombstone".into()],
+                ..ActionContract::default()
+            });
             return Some(
                 Resource::new(&address.resource, "ebook.book", &entry.result.title)
-                    .with_action(hydrate),
+                    .with_action(hydrate)
+                    .with_action(remove),
             );
         }
         let (kind, book_id, chapter, block) = match entry.target {
@@ -1797,6 +1813,15 @@ mod tests {
                 book_id: "book:remote".into(),
             })
         );
+        let remove = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "remove-from-library")
+            .expect("remote remove");
+        assert_eq!(remove.contract.risk, RiskLevel::Destructive);
+        assert_eq!(remove.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert_eq!(remove.contract.retry, RetryPolicy::Idempotent);
+        assert!(remove.contract.reversible);
     }
 
     #[test]
