@@ -277,7 +277,8 @@ mod tests {
         assert!(
             found
                 .iter()
-                .any(|(p, t)| p == "schema" && t == "tilo.richtext"),
+                // This captured pre-rename document deliberately retains its persisted schema ID.
+                .any(|(p, t)| p == "schema" && t == "qos.richtext"),
             "and it is a word-processor document all the same, so the negative \
              above is an answer and not an empty walk",
         );
