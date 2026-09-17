@@ -119,13 +119,19 @@ marked debug binary to `~/.local/share/tilo-dev/shell` and updates the existing
 developer-session config, so later cycles do not install an RPM.  Change the
 remote account/location with `TILO_VM_USER`, `TILO_VM_HOST`, and
 `TILO_VM_DEV_ROOT`; `TILO_VM_SSH_PORT` is always mandatory.  Build an app or
-the two non-shell host executables on demand with, for example,
-`build calculator` or `build host`, rather than rebuilding the application
-collection.
+an app or the two canonical host executables on demand with, for example,
+`build calculator`, `build tilo-launcher`, `build tilo-unlock-helper`, or
+`build host`, rather than rebuilding the application collection.
 
-The shell command is specifically `--no-default-features --features dev-session`.
-That avoids a default media/FFmpeg linkage path that is irrelevant to shell UX
-and can select a different Fedora ABI from the one in the VM.
+The shell command builds `--bin shell --features dev-session` so Cargo does not
+also compile screenshot tooling during compositor iteration. It retains the
+normal shell features inside Fedora 44, matching the actual session rather than
+silently dropping media behavior to work around a host ABI mismatch.
+
+The loop also pins sccache to a container-local server/namespace.  Distrobox
+copies host environment variables inward; without this pin, a host sccache
+server can compile the generated SPA/PipeWire C shims using the host headers,
+which is not a valid Fedora 44 result.
 
 ### Hardware-dependent settings
 
