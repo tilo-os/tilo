@@ -296,6 +296,21 @@ struct PaintContext<'a> {
     theme: &'a Theme,
 }
 
+/// The shared widget-system inputs needed by Calendar's internal event
+/// handlers. Keeping them together preserves the dispatch contract while the
+/// individual handlers expose only their own semantic arguments.
+struct InputContext<'a> {
+    event: &'a WindowEvent,
+    scale_factor: f64,
+    modifiers: winit::event::Modifiers,
+    state: &'a mut AutoCommit,
+    path: &'a ObjId,
+    handled: &'a mut bool,
+    focus_target: &'a mut Option<NodeId>,
+    node_id: NodeId,
+    taffy: &'a TaffyTree<()>,
+}
+
 /// Payload delivered by a finished background `CalDAV` sync worker: the pull
 /// result, the merged outcome, the ids that uploaded successfully, and the
 /// ids the server confirmed deleted.
@@ -2467,18 +2482,7 @@ impl CalendarApp {
 
     /// Route input to the Agenda scroller or the self-contained week/day
     /// controller. Typed timeline effects return here for domain/CRDT mutation.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_timeline_input(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn handle_timeline_input(&mut self, input: &mut InputContext<'_>) -> bool {
         if !matches!(self.view, View::Week | View::Day) {
             self.timeline.cancel_drag();
         }
@@ -2486,16 +2490,7 @@ impl CalendarApp {
             return false;
         }
         if matches!(self.view, View::Agenda) {
-            return self.handle_agenda_timeline_input(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            return self.handle_agenda_timeline_input(input);
         }
         if !matches!(self.view, View::Week | View::Day) {
             return false;
@@ -2506,21 +2501,21 @@ impl CalendarApp {
         let spans = self.timeline_spans(&days);
         let outcome = self.timeline.handle_event(
             TimelineEventCtx {
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
+                event: input.event,
+                scale_factor: input.scale_factor,
+                modifiers: input.modifiers,
+                state: &mut *input.state,
+                path: input.path,
+                focus_target: &mut *input.focus_target,
+                node_id: input.node_id,
+                taffy: input.taffy,
             },
             area,
             &days,
             &spans,
         );
         if let Some(effect) = outcome.effect {
-            self.apply_timeline_effect(effect, state);
+            self.apply_timeline_effect(effect, input.state);
         }
         if outcome.handled {
             self.dirty = true;
@@ -2548,20 +2543,9 @@ impl CalendarApp {
 
     /// The Agenda view's timeline input: scroll only, no drag. Split out of
     /// `handle_timeline_input` to keep it within the line-count lint.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_agenda_timeline_input(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn handle_agenda_timeline_input(&mut self, input: &mut InputContext<'_>) -> bool {
         if matches!(
-            event,
+            input.event,
             WindowEvent::MouseWheel { .. }
                 | WindowEvent::CursorMoved { .. }
                 | WindowEvent::MouseInput {
@@ -2572,14 +2556,14 @@ impl CalendarApp {
             let p = self.last_mouse;
             if self.agenda.wants_pointer_capture() || self.view_rect().contains(p) {
                 let handled = self.agenda.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    input.event,
+                    input.scale_factor,
+                    input.modifiers,
+                    input.state,
+                    input.path,
+                    input.focus_target,
+                    input.node_id,
+                    input.taffy,
                 );
                 if handled {
                     self.dirty = true;
@@ -2814,37 +2798,29 @@ impl CalendarApp {
 
     /// Route input through the self-contained popover controller, then apply
     /// any semantic edit it emits through the calendar action model.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_popover_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_popover_event(&mut self, input: &mut InputContext<'_>) {
         let (consumed, edit) = self.event_popovers.handle_event(
-            event,
+            input.event,
             self.last_mouse,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
+            input.scale_factor,
+            input.modifiers,
+            input.state,
+            input.path,
+            input.focus_target,
+            input.node_id,
+            input.taffy,
         );
-        *handled |= consumed;
+        *input.handled |= consumed;
         match edit {
-            Some(PopoverEdit::Date(which, date)) => self.set_event_date(which, date, state),
-            Some(PopoverEdit::Time(which, hour, minute)) => {
-                self.set_event_time(which, hour, minute, state);
+            Some(PopoverEdit::Date(which, date)) => {
+                self.set_event_date(which, date, input.state);
             }
-            Some(PopoverEdit::Calendar(target)) => self.set_event_calendar(&target, state),
+            Some(PopoverEdit::Time(which, hour, minute)) => {
+                self.set_event_time(which, hour, minute, input.state);
+            }
+            Some(PopoverEdit::Calendar(target)) => {
+                self.set_event_calendar(&target, input.state);
+            }
             None => {}
         }
     }
@@ -5632,34 +5608,12 @@ impl CalendarApp {
     /// — the dismiss scrim, a calendar row, or a popover guard (part of
     /// [`Widget::handle_event`]).
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "internal event-handling split of an over-length function"
     )]
-    fn handle_popover_priority(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.handle_popover_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
-        if *handled {
+    fn handle_popover_priority(&mut self, input: &mut InputContext<'_>) {
+        self.handle_popover_event(input);
+        if *input.handled {
             self.dirty = true;
             return;
         }
@@ -5667,11 +5621,11 @@ impl CalendarApp {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
-        } = event
+        } = input.event
             && let Some(a) = self.hit_action_at(self.last_mouse)
         {
-            self.apply_action(a, state);
-            *handled = true;
+            self.apply_action(a, input.state);
+            *input.handled = true;
         }
         self.dirty = true;
     }
@@ -5908,21 +5862,12 @@ impl CalendarApp {
     /// generic hit-map (topmost last) (part of [`Widget::handle_event`]).
     /// Returns `true` if the event was consumed.
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "internal event-handling split of an over-length function"
     )]
     fn handle_mouse_click(
         &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        input: &mut InputContext<'_>,
         form_active: bool,
         in_notes: bool,
     ) -> bool {
@@ -5930,7 +5875,7 @@ impl CalendarApp {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
-        } = event
+        } = input.event
         else {
             return false;
         };
@@ -5942,17 +5887,17 @@ impl CalendarApp {
             self.notes_editor.set_focus(false);
             self.title_input.set_focus(true);
             self.title_input.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                input.event,
+                input.scale_factor,
+                &input.modifiers,
+                input.state,
+                input.path,
+                input.handled,
+                input.focus_target,
+                input.node_id,
+                input.taffy,
             );
-            *handled = true;
+            *input.handled = true;
             self.dirty = true;
             return true;
         }
@@ -5962,17 +5907,17 @@ impl CalendarApp {
             self.notes_editor.set_focus(false);
             self.location_input.set_focus(true);
             self.location_input.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                input.event,
+                input.scale_factor,
+                &input.modifiers,
+                input.state,
+                input.path,
+                input.handled,
+                input.focus_target,
+                input.node_id,
+                input.taffy,
             );
-            *handled = true;
+            *input.handled = true;
             self.dirty = true;
             return true;
         }
@@ -5982,17 +5927,17 @@ impl CalendarApp {
             self.notes_editor.set_focus(false);
             self.invite_input.set_focus(true);
             self.invite_input.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                input.event,
+                input.scale_factor,
+                &input.modifiers,
+                input.state,
+                input.path,
+                input.handled,
+                input.focus_target,
+                input.node_id,
+                input.taffy,
             );
-            *handled = true;
+            *input.handled = true;
             self.dirty = true;
             return true;
         }
@@ -6004,18 +5949,18 @@ impl CalendarApp {
             if let Some(n) = self.editor_node {
                 self.notes_editor.begin_action_intercept();
                 self.notes_editor.handle_event(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
+                    input.event,
+                    input.scale_factor,
+                    &input.modifiers,
+                    input.state,
+                    input.path,
+                    input.handled,
+                    input.focus_target,
                     n,
-                    taffy,
+                    input.taffy,
                 );
                 let ops = self.notes_editor.take_intercepted_ops();
-                self.dispatch_note_ops(state, ops);
+                self.dispatch_note_ops(input.state, ops);
             }
             self.dirty = true;
             return true;
@@ -6026,8 +5971,8 @@ impl CalendarApp {
             self.location_input.set_focus(false);
             self.invite_input.set_focus(false);
             self.notes_editor.set_focus(false);
-            self.apply_action(a, state);
-            *handled = true;
+            self.apply_action(a, input.state);
+            *input.handled = true;
             return true;
         }
         false
@@ -6037,67 +5982,52 @@ impl CalendarApp {
     /// edits land, mirroring the change into the event via
     /// [`Self::flush_form_edits`] (part of [`Widget::handle_event`]).
     /// Returns `true` if the caller should stop dispatching.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal event-handling split of an over-length function"
-    )]
-    fn handle_form_field_input(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn handle_form_field_input(&mut self, input: &mut InputContext<'_>) -> bool {
         if self.title_input.is_focused() {
             self.title_input.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                input.event,
+                input.scale_factor,
+                &input.modifiers,
+                input.state,
+                input.path,
+                input.handled,
+                input.focus_target,
+                input.node_id,
+                input.taffy,
             );
-            self.flush_form_edits(state);
+            self.flush_form_edits(input.state);
             self.dirty = true;
-            return *handled;
+            return *input.handled;
         } else if self.location_input.is_focused() {
             self.location_input.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                input.event,
+                input.scale_factor,
+                &input.modifiers,
+                input.state,
+                input.path,
+                input.handled,
+                input.focus_target,
+                input.node_id,
+                input.taffy,
             );
-            self.flush_form_edits(state);
+            self.flush_form_edits(input.state);
             self.dirty = true;
-            return *handled;
+            return *input.handled;
         } else if self.invite_input.is_focused() {
             self.invite_input.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                input.event,
+                input.scale_factor,
+                &input.modifiers,
+                input.state,
+                input.path,
+                input.handled,
+                input.focus_target,
+                input.node_id,
+                input.taffy,
             );
-            self.submit_invite(state);
+            self.submit_invite(input.state);
             self.dirty = true;
-            return *handled;
+            return *input.handled;
         }
         false
     }
@@ -6921,17 +6851,17 @@ impl Widget for CalendarApp {
 
         // --- Open popover owns input first --------------------------------
         if popover_open {
-            self.handle_popover_priority(
+            self.handle_popover_priority(&mut InputContext {
                 event,
                 scale_factor,
-                *modifiers,
+                modifiers: *modifiers,
                 state,
                 path,
                 handled,
                 focus_target,
                 node_id,
                 taffy,
-            );
+            });
             return;
         }
 
@@ -6983,16 +6913,18 @@ impl Widget for CalendarApp {
         // --- Week/day timeline + agenda: scroll and drag ------------------
         // Owns mouse input inside the scrolling views (wheel, scrollbar,
         // drag-to-create / drag-to-move) before the generic hit-map path.
-        if self.handle_timeline_input(
+        let timeline_handled = self.handle_timeline_input(&mut InputContext {
             event,
             scale_factor,
-            *modifiers,
+            modifiers: *modifiers,
             state,
             path,
+            handled,
             focus_target,
             node_id,
             taffy,
-        ) {
+        });
+        if timeline_handled {
             self.dirty = true;
             return;
         }
@@ -7002,15 +6934,17 @@ impl Widget for CalendarApp {
         }
 
         if self.handle_mouse_click(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut InputContext {
+                event,
+                scale_factor,
+                modifiers: *modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
             form_active,
             in_notes,
         ) {
@@ -7019,17 +6953,17 @@ impl Widget for CalendarApp {
 
         // Forward typing (and other events) to a focused form text field so
         // edits land, mirroring the change into the event via `flush_form_edits`.
-        if self.handle_form_field_input(
+        if self.handle_form_field_input(&mut InputContext {
             event,
             scale_factor,
-            *modifiers,
+            modifiers: *modifiers,
             state,
             path,
             handled,
             focus_target,
             node_id,
             taffy,
-        ) {
+        }) {
             return;
         }
 
