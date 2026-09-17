@@ -6,7 +6,7 @@ on:
       proof:
         description: Native proof to run; full runs every fixture
         type: choice
-        options: [full, prediction, retention]
+        options: [full, prediction, retention, prediction-retention]
         default: full
   push:
     branches: [main]
@@ -98,5 +98,8 @@ jobs:
             retention)
               docker run --rm --privileged --tmpfs /tmp --tmpfs /run --entrypoint bash \
                 "$image" -euc 'python3 /fixture/os/tests/test_retain_development_rootfs.py; python3 /fixture/os/tests/development_retention_native.py' ;;
+            prediction-retention)
+              docker run --rm --privileged --tmpfs /tmp --tmpfs /run --entrypoint bash \
+                "$image" -euc 'python3 /fixture/os/tests/development_prediction_native.py; python3 /fixture/os/tests/test_retain_development_rootfs.py; python3 /fixture/os/tests/development_retention_native.py' ;;
             *) echo 'Unknown native proof selection' >&2; exit 2 ;;
           esac
