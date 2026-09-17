@@ -13,6 +13,9 @@ static TEXT: HistoryRestoreSchema = HistoryRestoreSchema {
         required: true,
         expected_type: RestoreValueType::Object(ObjType::Text),
     }],
+    selectors: &[],
+    preserved: &[],
+    validate_result: |_| Ok(()),
     preserved_roots: &["notes_import_v1"],
     validate: |_| Ok(()),
 };
@@ -24,6 +27,9 @@ static MAP: HistoryRestoreSchema = HistoryRestoreSchema {
         required: true,
         expected_type: RestoreValueType::Object(ObjType::Map),
     }],
+    selectors: &[],
+    preserved: &[],
+    validate_result: |_| Ok(()),
     preserved_roots: &[],
     validate: |_| Ok(()),
 };
@@ -422,6 +428,9 @@ static OPTIONAL: HistoryRestoreSchema = HistoryRestoreSchema {
             expected_type: RestoreValueType::Scalar(ScalarType::String),
         },
     ],
+    selectors: &[],
+    preserved: &[],
+    validate_result: |_| Ok(()),
     preserved_roots: &[],
     validate: |_| Ok(()),
 };
