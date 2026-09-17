@@ -2602,7 +2602,6 @@ impl ShellOverlayHost {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn with_fixture_content(content: Box<dyn Widget>) -> Self {
         let mut host = Self::new(content);
         let mut search_registry = crate::shell::search::SearchRegistry::new();
