@@ -36,8 +36,8 @@ winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
 
-# On-disk photo library: file dimensions, decode + downscale for thumbnails.
-# Default features are trimmed to the formats a camera roll actually holds.
+# Capture encoding plus portal-selected image decoding for code scanning.
+# Default features are trimmed to formats cameras and image portals provide.
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 png.workspace = true
 dirs.workspace = true
@@ -45,7 +45,7 @@ tilo-ocr = { path = "../../crates/media/ocr" }
 qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
 os-actions = { path = "../../crates/system/os-actions" }
 
-# Pure-Rust QR/barcode encoding and detection for share and scan flows.
+# Pure-Rust QR/barcode fixtures and detection for scanner flows.
 qrcode.workspace = true
 rqrr.workspace = true
 
