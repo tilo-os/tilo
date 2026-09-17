@@ -9,6 +9,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'windows-app-names.ps1')
 if (-not $IsWindows) { throw 'Run this installer from PowerShell on Windows.' }
 if ($Apps.Count -eq 0) { throw 'Select at least one application.' }
 $repository = Split-Path -Parent $PSScriptRoot
@@ -86,17 +87,7 @@ if ('pdf-viewer' -in $applications -or 'file-explorer' -in $applications) {
 foreach ($application in $applications) {
     $destination = Join-Path $installDirectory "$application.exe"
     Copy-Item -LiteralPath $executables[$application] -Destination $destination -Force
-    $title = switch ($application) {
-        'file-explorer' { 'Files' }
-        'word-processor' { 'Word Processor' }
-        'image-editor' { 'Image Editor' }
-        'hex-editor' { 'Hex Editor' }
-        'code-editor' { 'Code Editor' }
-        'api-tester' { 'API Tester' }
-        'pdf-viewer' { 'PDF Viewer' }
-        'ebook' { 'Books' }
-        default { (Get-Culture).TextInfo.ToTitleCase($application) }
-    }
+    $title = Get-TiloWindowsAppName -Application $application
     $shortcutPath = Join-Path $menuDirectory "$title.lnk"
     $shortcut = $shortcutShell.CreateShortcut($shortcutPath)
     $shortcut.TargetPath = $destination
