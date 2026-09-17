@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Input and environment boundaries for the provisional full OS compilation job."""
 import importlib.util
+import hashlib
 import os
 import json
 from pathlib import Path
@@ -24,6 +25,35 @@ CACHE = driver.cache_configuration(CACHE_ENV)
 
 
 class CompileBoundaries(unittest.TestCase):
+    def test_full_build_requires_completed_wpe(self):
+        with self.assertRaisesRegex(ValueError, 'requires a completed WPE'):
+            driver.completed_wpe_receipt(None, WPE)
+
+    @unittest.skipUnless(hasattr(os, 'O_NOFOLLOW'), 'native Linux receipt reader')
+    def test_completed_wpe_preflight_binds_buildroot_architecture_and_epoch(self):
+        inputs = {'architecture': 'x86_64', 'epoch': '0', 'wpe_buildroot': WPE}
+        receipt = {'schema': 1, 'purpose': 'tilo-development-wpe-completed-stage',
+            'production_signed': False, 'inputs': inputs,
+            'reference': 'code.sandbox.example/qos/tilo-development-wpe-stage-x86_64@sha256:' + 'a' * 64,
+            'config_digest': 'sha256:' + 'b' * 64,
+            'build': {'jobs': 6, 'revision': REVISION, 'run_id': '1', 'attempt': '1',
+                      'source_completed_stage_id': 'sha256:' + 'c' * 64}}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'receipt.json'
+            for field, value in [(None, None), ('epoch', '1'), ('architecture', 'aarch64'),
+                                  ('wpe_buildroot', WPE.replace('a' * 64, 'c' * 64))]:
+                with self.subTest(field=field):
+                    selected = inputs if field is None else inputs | {field: value}
+                    receipt['inputs'] = selected
+                    receipt['dependency_key'] = hashlib.sha256(json.dumps(selected,
+                        sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                    path.write_text(json.dumps(receipt))
+                    if field is None:
+                        self.assertEqual(driver.completed_wpe_receipt(path, WPE), receipt)
+                    else:
+                        with self.assertRaises(ValueError):
+                            driver.completed_wpe_receipt(path, WPE)
+
     def test_cache_only_and_default_exit_before_key_generation_or_os_build(self):
         for mode in ([], ['--mode', 'cache-only']):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
@@ -78,8 +108,7 @@ class CompileBoundaries(unittest.TestCase):
                 self.assertEqual((directory / filename).read_text(), credentials[variable])
             env = driver.build_environment(WPE, '7', REVISION, 'c' * 64, '/signer', CACHE)
             self.assertIn('--build-arg TILO_REQUIRE_COMPILER_CACHE=1', env['TILO_BUILD_ARGS'])
-            self.assertEqual(env['TILO_WPE_BUILD_CACHE_REF'],
-                             'code.sandbox.example/qos/tilo-development-wpe-cache-x86_64')
+            self.assertEqual(env['TILO_WPE_STAGE_RECEIPT'], str(driver.EVIDENCE / 'wpe-stage.json'))
             self.assertEqual(env['TILO_WPE_SOURCE_DATE_EPOCH'], '0')
             for variable, value in credentials.items():
                 self.assertNotIn(variable, env)
@@ -223,6 +252,8 @@ class CompileBoundaries(unittest.TestCase):
         self.assertEqual(env['TILO_WITH_BROWSER'], '1')
         self.assertEqual(env['TILO_SKIP_BUILD'], '0')
         self.assertEqual(env['TILO_RAW_ROOTFS_ONLY'], '1')
+        self.assertTrue(env['TILO_WPE_STAGE_RECEIPT'].endswith('wpe-stage.json'))
+        self.assertNotIn('TILO_WPE_BUILD_CACHE_REF', env)
         self.assertEqual(env['TILO_PUBLIC_TRUST_MODE'], 'development')
         self.assertEqual(env['WPE_BUILDROOT_REF'], WPE)
         self.assertEqual(env['TILO_GENERATION'], '7')

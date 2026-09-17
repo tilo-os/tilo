@@ -19,6 +19,10 @@ on:
         description: 'Full-build only: explicit positive test generation'
         required: false
         type: string
+      wpe_stage_receipt:
+        description: 'Full-build only: public JSON receipt from the completed WPE producer'
+        required: false
+        type: string
 
 concurrency:
   group: development-compile-${{ github.ref }}
@@ -62,6 +66,7 @@ jobs:
           COMPILE_MODE: ${{ inputs.mode }}
           WPE_CANDIDATE: ${{ inputs.wpe_candidate }}
           TEST_GENERATION: ${{ inputs.generation }}
+          WPE_STAGE_RECEIPT: ${{ inputs.wpe_stage_receipt }}
         shell: bash
         run: |
           set -euo pipefail
@@ -72,7 +77,7 @@ jobs:
           mkdir "$evidence"
           cleanup() {
             # Export an explicit public allowlist, never the private workspace.
-            for file in inputs.json tools.json workspace.json result.json raw-rootfs.json raw-rootfs-audit.json retained-rootfs.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json cache-configuration.json base-installation-tooling.json raw-installation-tooling.json; do
+            for file in inputs.json tools.json workspace.json result.json wpe-stage.json raw-rootfs.json raw-rootfs-audit.json retained-rootfs.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json cache-configuration.json base-installation-tooling.json raw-installation-tooling.json; do
               docker cp "$name:/evidence/$file" "$evidence/$file" >/dev/null 2>&1 || true
             done
             mkdir -p "$evidence/public-trust"
@@ -85,6 +90,14 @@ jobs:
             rm -rf -- "$context" "$cache_secrets"
           }
           trap cleanup EXIT
+          # Receipt text is data, never interpolated into shell commands.
+          python3 - "$context/wpe-stage.json" <<'PY'
+          import os, pathlib, sys
+          raw = os.environ.get('WPE_STAGE_RECEIPT', '').encode()
+          if len(raw) > 65536 or (os.environ['COMPILE_MODE'] == 'full-build' and not raw):
+              raise SystemExit('full-build requires a bounded completed WPE receipt')
+          pathlib.Path(sys.argv[1]).write_bytes(raw)
+          PY
           # Existing runner credentials enter only a private disposable volume,
           # then Podman secret mounts. They never enter a build context or ARG.
           python3 - "$cache_secrets" <<'PY'
@@ -111,8 +124,10 @@ jobs:
             --env SCCACHE_S3_USE_SSL --env SCCACHE_S3_KEY_PREFIX \
             --env REGISTRY_AUTH_FILE=/registry-auth.json \
             "$name:tools" --mode "$COMPILE_MODE" --wpe "$WPE_CANDIDATE" --generation "$TEST_GENERATION" \
+              --wpe-stage-receipt /work/wpe-stage.json \
               --revision "$GITHUB_SHA" --branch "$GITHUB_REF"
           docker cp . "$name:/work/repo"
+          docker cp "$context/wpe-stage.json" "$name:/work/wpe-stage.json"
           docker cp "$cache_secrets/." "$name:/run/tilo-cache-secrets/"
           python3 - "${DOCKER_CONFIG:-$HOME/.docker}/config.json" "$context/registry-auth.json" <<'PY'
           import json, os, sys
