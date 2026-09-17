@@ -28,17 +28,31 @@ pub enum BadgeContent {
     Text(String),
 }
 
+/// Theme-relative semantic treatment for status pills.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BadgeTone {
+    Success,
+    Warning,
+    Neutral,
+    Accent,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BadgeTint {
+    Default,
+    Fixed(Color),
+    Semantic(BadgeTone),
+}
+
 pub struct Badge {
     content: BadgeContent,
     rect: Rect,
     cached: vello::Scene,
     dirty: bool,
     cache_rect: Rect,
-    /// `None` keeps the default notification treatment
-    /// (`theme.tokens.colors.semantic.danger`). Stored as a resolved
-    /// [`Color`], not a theme token, so a caller wanting a theme-relative
-    /// tint passes a resolved colour.
-    tint: Option<Color>,
+    /// Notification default, fixed caller colour, or a theme-relative status
+    /// tone.
+    tint: BadgeTint,
 }
 
 impl Badge {
@@ -49,7 +63,7 @@ impl Badge {
             cached: vello::Scene::new(),
             dirty: true,
             cache_rect: Rect::ZERO,
-            tint: None,
+            tint: BadgeTint::Default,
         }
     }
 
@@ -60,7 +74,7 @@ impl Badge {
             cached: vello::Scene::new(),
             dirty: true,
             cache_rect: Rect::ZERO,
-            tint: None,
+            tint: BadgeTint::Default,
         }
     }
 
@@ -71,7 +85,7 @@ impl Badge {
             cached: vello::Scene::new(),
             dirty: true,
             cache_rect: Rect::ZERO,
-            tint: None,
+            tint: BadgeTint::Default,
         }
     }
 
@@ -85,20 +99,39 @@ impl Badge {
             cached: vello::Scene::new(),
             dirty: true,
             cache_rect: Rect::ZERO,
-            tint: Some(tint),
+            tint: BadgeTint::Fixed(tint),
+        }
+    }
+
+    /// A status pill whose colour follows the active theme.
+    pub fn semantic_pill(label: impl Into<String>, tone: BadgeTone) -> Self {
+        Self {
+            content: BadgeContent::Text(label.into()),
+            rect: Rect::ZERO,
+            cached: vello::Scene::new(),
+            dirty: true,
+            cache_rect: Rect::ZERO,
+            tint: BadgeTint::Semantic(tone),
         }
     }
 
     /// Pairs with [`Badge::count`] / [`Badge::text`] without switching to [`Badge::pill`].
     #[must_use]
     pub fn with_tint(mut self, tint: Color) -> Self {
-        self.tint = Some(tint);
+        self.tint = BadgeTint::Fixed(tint);
         self
     }
 
     /// Exposed so tests can pin the kind-tag colour without rendering.
     pub fn background(&self, theme: &Theme) -> Color {
-        self.tint.unwrap_or(theme.tokens.colors.semantic.danger)
+        match self.tint {
+            BadgeTint::Default => theme.tokens.colors.semantic.danger,
+            BadgeTint::Fixed(color) => color,
+            BadgeTint::Semantic(BadgeTone::Success) => theme.status_success,
+            BadgeTint::Semantic(BadgeTone::Warning) => theme.tokens.colors.semantic.warning,
+            BadgeTint::Semantic(BadgeTone::Neutral) => theme.text_dim,
+            BadgeTint::Semantic(BadgeTone::Accent) => theme.accent_primary,
+        }
     }
 
     /// `None` when no text should be drawn (the dot variant, or the
