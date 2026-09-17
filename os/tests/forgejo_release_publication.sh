@@ -2,6 +2,10 @@
 # Exercise immutable Forgejo attachment publication against a local API double.
 set -euo pipefail
 
+# Match the mock server's public repository, independently of the caller's CI
+# release configuration. Individual negative cases override this explicitly.
+export TILO_RELEASE_REPOSITORY=tilo/releases
+
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 publisher="$repo/apps/imager/packaging/publish-forgejo-release.sh"
 work="$(mktemp -d /var/tmp/tilo-forgejo-publication-test.XXXXXX)"
