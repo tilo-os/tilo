@@ -7,6 +7,8 @@
 **Tech Stack:** Rust, serde_json, existing Tokio/broker APIs, Python native proof client.
 **Spec:** docs/superpowers/specs/2026-09-17-shared-runtime-mcp.md
 
+**Completion:** Tasks 1–6 and final review are complete; the original checklists below preserve the execution brief. Task5 was superseded by its documented diagnosis correction. Current status and evidence: [completion audit](../audits/shared-runtime-mcp-final/completion-audit.md).
+
 ## Global Constraints
 - YAGNI; maximize shared code; platform code only at edges.
 - Reuse Session, AppActionBroker and existing ui::App publication/execution; no second registry, authority system or workflow engine.
