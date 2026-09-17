@@ -64,7 +64,7 @@ else
 fi
 
 for policy_fragment in \
-  '"code.podesta.ai/tilo/tilo"' \
+  '"code.podesta.ai/qos/tilo"' \
   '"type": "sigstoreSigned"' \
   '"keyPath": "/usr/share/tilo/cosign.pub"'; do
   grep -Fq "$policy_fragment" "$audit" \

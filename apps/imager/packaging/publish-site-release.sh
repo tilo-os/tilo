@@ -115,7 +115,7 @@ npm --prefix "$work/site" run build
 expected_download="$release_root/download/$GITHUB_REF_NAME/$(jq -r '.assets.windowsX64Setup' "$manifest")"
 grep -R -Fq -- "href=\"$expected_download\"" "$work/site/dist" \
   || { printf 'landing page does not consume the public releaseRoot manifest field\n' >&2; exit 1; }
-if grep -R -Fq -- 'https://code.podesta.ai/tilo/tilo/releases/download/' "$work/site/dist"; then
+if grep -R -Fq -- 'https://code.podesta.ai/qos/tilo/releases/download/' "$work/site/dist"; then
   printf 'landing page still contains private-source release downloads\n' >&2
   exit 1
 fi

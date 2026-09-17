@@ -30,7 +30,7 @@ Version:        %{tilo_version}
 Release:        1%{?dist}
 Summary:        %{tilo_summary}
 License:        AGPL-3.0-only
-URL:            https://code.podesta.ai/tilo/tilo
+URL:            https://code.podesta.ai/qos/tilo
 Source0:        %{name}-%{version}.tar.gz
 
 # The payload contains native ELF binaries. CI builds it on each enabled

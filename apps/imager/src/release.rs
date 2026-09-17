@@ -630,7 +630,7 @@ mod tests {
             channel: "stable".into(),
             local_path: String::new(),
             url:
-                "https://code.podesta.ai/tilo/releases/releases/download/imager-v1.0.0/tilo.img.zst"
+                "https://code.podesta.ai/qos/releases/releases/download/imager-v1.0.0/tilo.img.zst"
                     .into(),
             archive_sha256: "a".repeat(64),
             archive_size: 1,
