@@ -29,6 +29,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::data_table::renderer_type_size;
 
 const PAD: f64 = 14.0;
 const ICON_D: f64 = 18.0;
@@ -118,13 +119,19 @@ fn paint_stat_tile(
         &card,
     );
 
-    let caption_size = theme.tokens.typography.scale.sm;
-    let value_size = theme.tokens.typography.scale.x2l;
-    let delta_size = theme.tokens.typography.scale.sm;
+    // Row positions follow the theme sizes that `tile_height` reserves;
+    // glyphs are drawn at the renderer-relative size so the accessibility
+    // scale is applied exactly once.
+    let caption_step = f64::from(theme.tokens.typography.scale.sm);
+    let value_step = f64::from(theme.tokens.typography.scale.x2l);
+    let caption_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+    let value_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.x2l);
+    let delta_size = caption_size;
 
     let x = rect.x0 + PAD;
     let mut y = rect.y0 + PAD;
 
+    let (_, caption_h) = text_renderer.measure(caption, caption_size, None);
     text_renderer.draw_text(
         scene,
         caption,
@@ -135,14 +142,16 @@ fn paint_stat_tile(
     );
 
     if let Some(icon) = icon {
+        // Centre the glyph on the caption's measured line so the two read as
+        // one row.
         let ir = Rect::from_center_size(
-            Point::new(rect.x1 - PAD - ICON_D / 2.0, rect.y0 + PAD + ICON_D / 2.0),
+            Point::new(rect.x1 - PAD - ICON_D / 2.0, y + f64::from(caption_h) / 2.0),
             (ICON_D, ICON_D),
         );
         icon.draw_with_stroke(scene, transform, ir, theme.text_dim, 1.6);
     }
 
-    y += f64::from(caption_size) + 6.0;
+    y += caption_step + 6.0;
 
     text_renderer.draw_text(
         scene,
@@ -152,15 +161,21 @@ fn paint_stat_tile(
         transform.pre_translate(Vec2::new(x, y)),
         None,
     );
-    y += f64::from(value_size) + 6.0;
+    y += value_step + 6.0;
 
     if let Some((delta_text, trend)) = delta {
         let col = trend.color(theme);
         let mut dx = x;
         if let Some(arrow) = trend.arrow() {
-            let ar = Rect::new(dx, y, dx + f64::from(delta_size), y + f64::from(delta_size));
+            // Centre the arrow on the delta text's measured line, like the
+            // icon on the caption line.
+            let (_, delta_h) = text_renderer.measure(delta_text, delta_size, None);
+            let ar = Rect::from_center_size(
+                Point::new(dx + caption_step / 2.0, y + f64::from(delta_h) / 2.0),
+                (caption_step, caption_step),
+            );
             arrow.draw_with_stroke(scene, transform, ar, col, 1.8);
-            dx += f64::from(delta_size) + 2.0;
+            dx += caption_step + 2.0;
         }
         text_renderer.draw_text(
             scene,

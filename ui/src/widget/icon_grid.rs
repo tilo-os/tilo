@@ -24,6 +24,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::data_table::renderer_type_size;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IconGridItem {
@@ -310,7 +311,9 @@ impl Widget for IconGrid {
         presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        let label_size = tokens.typography.scale.sm;
+        let label_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let label_gap = f64::from(tokens.spacing.s2);
+        let label_inset = f64::from(tokens.spacing.s2);
         for (i, item) in self.items.iter().enumerate() {
             let cell = self.cell_rect(i);
             if presence.should_cull(cell) {
@@ -328,8 +331,18 @@ impl Widget for IconGrid {
                 scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
             }
 
+            let label = truncate_to_width(
+                text_renderer,
+                &item.label,
+                label_size,
+                self.cell_w - label_inset,
+            );
+            let (tw, th) = text_renderer.measure(&label, label_size, None);
+            // The glyph + label block is centred in the cell so the margins
+            // above and below match; the label is centred under the glyph.
+            let block_h = self.icon_px + label_gap + f64::from(th);
             let icon_x = cell.x0 + (self.cell_w - self.icon_px) / 2.0;
-            let icon_y = cell.y0 + 10.0;
+            let icon_y = cell.y0 + ((self.cell_h - block_h) / 2.0).max(0.0);
             let icon_rect = Rect::new(icon_x, icon_y, icon_x + self.icon_px, icon_y + self.icon_px);
             let glyph_color = if selected {
                 tokens
@@ -347,11 +360,8 @@ impl Widget for IconGrid {
                 LUCIDE_DEFAULT_STROKE_PX,
             );
 
-            let label =
-                truncate_to_width(text_renderer, &item.label, label_size, self.cell_w - 8.0);
-            let (tw, _) = text_renderer.measure(&label, label_size, None);
             let tx = cell.x0 + (self.cell_w - f64::from(tw)) / 2.0;
-            let ty = icon_y + self.icon_px + 8.0;
+            let ty = icon_y + self.icon_px + label_gap;
             let label_color = if selected {
                 tokens
                     .colors
