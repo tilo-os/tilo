@@ -78,6 +78,11 @@ impl PresenceCtx {
     /// broker has authenticated and routed the event; app canvases continue
     /// to use `apply_remote_presence`, whose resource-key check prevents an
     /// interaction from painting in unrelated applications.
+    ///
+    /// # Errors
+    ///
+    /// Returns the interaction contract's validation error when the incoming
+    /// update is malformed or exceeds its wire bounds.
     pub fn observe_interaction(
         &mut self,
         interaction: SemanticInteraction,

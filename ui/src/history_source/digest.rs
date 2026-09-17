@@ -153,14 +153,12 @@ impl ActivityDigest {
                     .map(|group| group.id.clone());
                 let title = digest_outcome_title(group, recent, &resources);
                 let group_detail = group.subtitle(recent);
-                let detail = if title != group.title(recent) {
-                    if group_detail.is_empty() {
-                        format!("{} changes", group.len())
-                    } else {
-                        format!("{} changes · {group_detail}", group.len())
-                    }
-                } else {
+                let detail = if title == group.title(recent) {
                     group_detail
+                } else if group_detail.is_empty() {
+                    format!("{} changes", group.len())
+                } else {
+                    format!("{} changes · {group_detail}", group.len())
                 };
                 ActivityBrief {
                     title,
