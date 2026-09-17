@@ -42,6 +42,9 @@ def install(source, official, destination, mode, digest, owner, target_ref="", i
     for name, data in inputs.items():
         (destination / name).write_bytes(data)
     if provenance:
+        owner_directory = destination / 'trust'
+        owner_directory.mkdir(exist_ok=True)
+        (owner_directory / 'tilo-main-registry-owner.pub').write_text(owner + '\n')
         directory = destination / 'development-trust'
         directory.mkdir()
         for name in (*trust.FILES, 'manifest.json'):
