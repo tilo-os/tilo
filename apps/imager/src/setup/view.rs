@@ -181,7 +181,7 @@ impl SetupApp {
 
     #[must_use]
     pub fn for_shot(scenario: &str) -> Self {
-        let experience_only = scenario == "setup-experience";
+        let experience_only = scenario.starts_with("setup-experience");
         let mut app = Self::with_capabilities(SetupCapabilities {
             platform: Capabilities {
                 host: HostOs::Linux,
@@ -190,6 +190,22 @@ impl SetupApp {
             },
             connected_folders: scenario == "setup-folders-connected",
         });
+        if experience_only {
+            app.desktop_flow = DesktopFlow::from_fixture_state(match scenario {
+                "setup-experience-checking" => DesktopFlowState::Checking,
+                "setup-experience-failed" => DesktopFlowState::Failed {
+                    selection: None,
+                    kind: DesktopFailureKind::WorkerLost,
+                    message: "The host check worker stopped before reporting readiness.".into(),
+                },
+                _ => DesktopFlowState::Unavailable {
+                    host: "fedora 44 (aarch64)".into(),
+                    reasons: vec![
+                        "No authenticated Desktop release matches this exact host.".into(),
+                    ],
+                },
+            });
+        }
         app.known_folders = KnownFolderKind::ALL
             .into_iter()
             .map(|kind| KnownFolder {
@@ -572,6 +588,52 @@ impl SetupApp {
             .on_effect(move || sink.borrow_mut().push(command))
     }
 
+    fn desktop_experience_status(&self) -> (String, bool) {
+        match self.desktop_flow.state() {
+            DesktopFlowState::Checking => (
+                "Checking this host and the authenticated qOS Desktop catalog…".into(),
+                false,
+            ),
+            DesktopFlowState::Unavailable { host, reasons } => {
+                (format!("Host: {host}\n{}", reasons.join("\n")), true)
+            }
+            DesktopFlowState::Ready(selection) => (
+                format!(
+                    "qOS Desktop {} is available for {}.",
+                    selection.release.version, selection.host
+                ),
+                false,
+            ),
+            DesktopFlowState::Downloading(selection) => (
+                format!(
+                    "Downloading qOS Desktop {} for {}.",
+                    selection.release.version, selection.host
+                ),
+                false,
+            ),
+            DesktopFlowState::Authorizing(selection)
+            | DesktopFlowState::Preparing(selection)
+            | DesktopFlowState::Installing(selection)
+            | DesktopFlowState::Verifying(selection) => (
+                format!(
+                    "Installing qOS Desktop {} for {}.",
+                    selection.release.version, selection.host
+                ),
+                false,
+            ),
+            DesktopFlowState::Installed { selection, result } => (
+                format!(
+                    "qOS Desktop {} is installed and verified on {}.",
+                    result.version, selection.host
+                ),
+                false,
+            ),
+            DesktopFlowState::Failed { message, .. } => {
+                (format!("Desktop check failed: {message}"), true)
+            }
+        }
+    }
+
     fn experience_body(&self) -> Box<dyn Widget> {
         let mut body = Column::new()
             .with_no_padding()
@@ -612,9 +674,24 @@ impl SetupApp {
             let mut card_body = Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .push(Box::new(Text::new(description)))
-                .push(Box::new(choose));
-            if !supported {
+                .push(Box::new(Text::new(description)));
+            if experience == Experience::Desktop {
+                let (status, can_recheck) = self.desktop_experience_status();
+                card_body = card_body.push(Box::new(
+                    Text::new(&status)
+                        .with_id("setup.desktop.live")
+                        .with_live(Politeness::Polite),
+                ));
+                if can_recheck {
+                    card_body = card_body.push(Box::new(self.button(
+                        "setup.desktop.recheck",
+                        "Recheck Desktop support",
+                        SetupCommand::RetryDesktop,
+                    )));
+                }
+            }
+            card_body = card_body.push(Box::new(choose));
+            if !supported && experience != Experience::Desktop {
                 card_body = card_body.push(Box::new(
                     Text::new(&experience_unavailable_reason(
                         self.capabilities.platform,
@@ -1634,7 +1711,11 @@ pub fn app_root() -> Box<dyn Widget> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::{Arc, atomic::AtomicBool, mpsc};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    };
 
     use ui::a11y::Action;
     use ui::headless::{FrameHarness, SemanticExpectation};
@@ -2089,6 +2170,98 @@ mod tests {
     ) -> Result<super::super::desktop_flow::InstallReceiver, String> {
         let (_tx, rx) = mpsc::channel();
         Ok(rx)
+    }
+
+    static RECOVERY_PROBES: AtomicUsize = AtomicUsize::new(0);
+
+    fn recoverable_desktop_probe() -> Result<super::super::desktop_flow::ProbeReceiver, String> {
+        let (tx, rx) = mpsc::channel();
+        if RECOVERY_PROBES.fetch_add(1, Ordering::SeqCst) > 0 {
+            tx.send(Ok(super::super::desktop_flow::DesktopProbeSnapshot {
+                host: super::super::desktop_probe::DesktopHost {
+                    operating_system: "linux".into(),
+                    os_release: Ok(super::super::desktop_probe::OsRelease {
+                        id: "fedora".into(),
+                        version_id: Some("44".into()),
+                    }),
+                    architecture: Ok("aarch64".into()),
+                    package_manager: Ok(super::super::desktop_probe::PackageManager::Dnf),
+                    immutable: Ok(false),
+                    sandboxed: Ok(false),
+                    session: Ok(super::super::desktop_probe::SessionSupport {
+                        display_manager: "gdm.service".into(),
+                        other_wayland_sessions: vec!["gnome.desktop".into()],
+                    }),
+                    installed_package: Ok(super::super::desktop_probe::InstalledPackage::Absent),
+                },
+                releases: vec![fixture_desktop_release()],
+            }))
+            .unwrap();
+        }
+        drop(tx);
+        Ok(rx)
+    }
+
+    #[test]
+    fn initial_worker_loss_can_recheck_and_recover_navigation_in_the_same_app() {
+        RECOVERY_PROBES.store(0, Ordering::SeqCst);
+        let mut app = SetupApp::with_capabilities(SetupCapabilities {
+            platform: Capabilities {
+                host: HostOs::Linux,
+                desktop_session: false,
+                internal_dual_boot: false,
+            },
+            connected_folders: false,
+        });
+        app.controller.borrow_mut().add_folder_unresolved(shot_scan(
+            "Documents",
+            38,
+            2_460_000_000,
+        ));
+        assert!(
+            app.controller
+                .borrow_mut()
+                .set_folder_mode(0, FolderMode::Later)
+        );
+        app.desktop_flow = DesktopFlow::without_start(super::super::desktop_flow::DesktopRuntime {
+            launch_probe: recoverable_desktop_probe,
+            launch_download: disconnected_desktop_download,
+            launch_install: disconnected_desktop_install,
+        });
+        app.desktop_flow.start_check().unwrap();
+        assert!(app.poll_background());
+        let observed = app.controller_handle();
+        let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
+
+        harness
+            .expect(
+                &SemanticExpectation::named("setup.desktop.live").name_contains("worker stopped"),
+            )
+            .unwrap();
+        harness
+            .expect(&SemanticExpectation::named("setup.desktop.recheck").enabled(true))
+            .unwrap();
+        harness
+            .perform_named("setup.desktop.recheck", &Action::Activate)
+            .unwrap();
+        harness
+            .expect(&SemanticExpectation::named("setup.experience.desktop").enabled(true))
+            .unwrap();
+        harness
+            .perform_named("setup.experience.desktop", &Action::Activate)
+            .unwrap();
+        harness
+            .perform_named("setup.next", &Action::Activate)
+            .unwrap();
+
+        assert_eq!(observed.borrow().page(), SetupPage::Folders);
+        assert_eq!(observed.borrow().folders()[0].mode, FolderMode::Later);
+        assert!(observed.borrow().folders()[0].mode_overridden);
+        assert_eq!(
+            observed.borrow().folders()[0].destination,
+            FolderDestination::Unresolved
+        );
+        assert_eq!(RECOVERY_PROBES.load(Ordering::SeqCst), 2);
     }
 
     #[test]
