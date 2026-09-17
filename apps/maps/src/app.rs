@@ -31,6 +31,9 @@ use ui::qos_actions::{
 };
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::Metrics;
+use ui::tokens::spacing::Spacing;
+use ui::tokens::typography::TypeScale;
 use ui::widget::{ContextMenu, MenuItem};
 use ui::widget::{ResourceOperationStart, Widget};
 
@@ -54,19 +57,30 @@ use crate::tiles::{GeoBounds, TileId, TileLayer, TileStyle};
 use crate::traffic::{Congestion, TrafficData};
 
 // --- Layout metrics (logical px) -------------------------------------------
-const MARGIN: f64 = 16.0;
-const SEARCH_H: f64 = 48.0;
+// The window margin is the theme's `s4`, the search bar an `s12` strip, the
+// panel header the theme's bar height and the docked/drawer breakpoint its
+// compact breakpoint — read through `MapsApp::margin` & co. from the cached
+// theme tokens. The values below are the deliberately authored ones.
+/// Gap between adjacent floating elements; deliberately off the spacing
+/// scale (between `s2` and `s3`) — the authored 1× rhythm of the map chrome.
 const GAP: f64 = 10.0;
-/// Height of the side panel's header bar (back / title / collapse toggle).
-const PANEL_HEADER_H: f64 = 40.0;
 const CTRL_SIZE: f64 = crate::map_controls::SIZE;
 const ROW_H: f64 = 56.0;
-/// Below this window width the side panel stops being docked and becomes a
-/// closed overlay drawer that the user opens over the map (Adwaita flap).
-const NAV_OVERLAY_BELOW: f64 = 720.0;
 /// Widest the panel is ever drawn (docked, or as an overlay drawer).
 const PANEL_MAX_W: f64 = 384.0;
 const PANEL_MIN_W: f64 = 300.0;
+/// Authored 1× height of the floating navigation card; its width is the
+/// theme's list-panel width. The card stacks a title (`sm`), the next
+/// instruction, its distance (`sm`) and the summary row (`lg`); the card's
+/// intrinsic size grows from these, see [`navigation_card_size`].
+const NAV_CARD_H: f64 = 156.0;
+/// Base size of the next-instruction line (15pt sits between the type
+/// scale's `base` and `lg`).
+const NAV_INSTR_TEXT: f32 = 15.0;
+/// Authored 1× width of the card's End pill and its label size (11pt sits
+/// between `xs` and `sm`); the pill is an `s6` tall.
+const NAV_END_W: f64 = 50.0;
+const NAV_END_TEXT: f32 = 11.0;
 /// One semantic live-activity identity for the current turn-by-turn session.
 /// Rerouting changes its content, not the surface the user positioned.
 const NAVIGATION_FLOAT_ID: &str = "maps.active-navigation";
@@ -168,6 +182,14 @@ pub struct MapsApp {
     /// panel's hand-laid rows size and centre their text from the same lines
     /// the renderer draws.
     text_scale: f32,
+    /// The theme's spacing and density metrics, cached in `build_layout` so
+    /// the renderer-less geometry reads the same tokens the painters do.
+    spacing: Spacing,
+    metrics: Metrics,
+    /// How much wider the End pill's label measures at the last seen text
+    /// scale than at 1× — `(scale, growth)`, re-measured only when the scale
+    /// changes rather than every frame.
+    nav_end_growth: (f32, f64),
     scroll: f64,
     content_h: f64,
     content_view_h: f64,
@@ -287,7 +309,7 @@ impl MapsApp {
                     element_id: "active-navigation".into(),
                     region: source_region,
                 },
-                preferred_size: vello::kurbo::Size::new(360.0, 156.0),
+                preferred_size: navigation_card_size(&self.metrics, self.text_scale),
                 aspect_ratio: None,
                 initial_rect: Some(self.navigation_rect()),
                 presentation_rect: Some(self.navigation_rect().inflate(8.0, 8.0)),
@@ -311,20 +333,78 @@ impl MapsApp {
         text_vmid(y, h, size, self.text_scale)
     }
 
+    /// The window margin every floating element keeps — the theme's `s4`.
+    fn margin(&self) -> f64 {
+        f64::from(self.spacing.s4)
+    }
+
+    /// The search bar's height — the theme's `s12` strip.
+    fn search_h(&self) -> f64 {
+        f64::from(self.spacing.s12)
+    }
+
+    /// The side panel's header bar (back / title / collapse toggle) — the
+    /// theme's bar height.
+    fn panel_header_h(&self) -> f64 {
+        f64::from(self.metrics.bar_height)
+    }
+
+    /// How much wider the End pill's label measures at the renderer's scale
+    /// than at 1×, re-measured only when the scale changes.
+    fn nav_end_label_growth(&mut self, tr: &mut TextRenderer) -> f64 {
+        let scale = tr.text_scale();
+        if self.nav_end_growth.0.to_bits() != scale.to_bits() {
+            let growth = if scale > 1.0 {
+                let scaled = tr
+                    .measure_weighted("End", NAV_END_TEXT, None, TextWeight::Medium)
+                    .0;
+                // Measuring at `size / scale` yields the 1× width on the same
+                // renderer, which multiplies every size by its scale.
+                let one_x = tr
+                    .measure_weighted("End", NAV_END_TEXT / scale, None, TextWeight::Medium)
+                    .0;
+                f64::from(scaled - one_x).max(0.0)
+            } else {
+                0.0
+            };
+            self.nav_end_growth = (scale, growth);
+        }
+        self.nav_end_growth.1
+    }
+
     fn map_controls_viewport(&self) -> Rect {
-        let mut viewport = self.rect;
+        let viewport = self.rect;
         if !self.navigation_surface_visible_in_app() {
             return viewport;
         }
+        let margin = self.margin();
         let nav = self.navigation_rect();
+        let column_h = margin + 4.0 * CTRL_SIZE + 2.0 * GAP;
         let column = Rect::new(
-            self.rect.x1 - MARGIN - CTRL_SIZE,
+            self.rect.x1 - margin - CTRL_SIZE,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + MARGIN + 4.0 * CTRL_SIZE + 2.0 * GAP,
+            self.rect.y0 + column_h,
         );
-        if nav.intersect(column).area() > 0.0 && nav.y1 < self.rect.y1 {
-            viewport.y0 = nav.y1;
+        if nav.intersect(column).area() <= 0.0 {
+            return viewport;
+        }
+        // Beneath the card when the whole column still clears the ⋯ overflow
+        // button at the bottom; otherwise beside the card's leading edge when
+        // that clears the docked side panel; otherwise the corner stays as it
+        // was (the card covers it) rather than laying the cluster out off the
+        // bottom of a short window or under the overflow button.
+        let floor = self.overflow_rect().y0 - GAP;
+        if nav.y1 < self.rect.y1 && nav.y1 + column_h <= floor {
+            return Rect::new(viewport.x0, nav.y1, viewport.x1, viewport.y1);
+        }
+        let panel_right = if self.panel_docked_expanded() {
+            self.panel_rect().x1 + GAP
+        } else {
+            self.rect.x0 + margin
+        };
+        if nav.x0 - GAP - CTRL_SIZE >= panel_right {
+            return Rect::new(viewport.x0, viewport.y0, nav.x0 - GAP + margin, viewport.y1);
         }
         viewport
     }
@@ -384,7 +464,22 @@ impl MapsApp {
         let body = ui::surface::soft_outline(rect);
         scene.fill(Fill::NonZero, visual, c.surfaces.raised, None, &body);
         scene.stroke(&Stroke::new(1.0), visual, c.border_standard, None, &body);
-        let end = Rect::new(rect.x1 - 58.0, rect.y0 + 6.0, rect.x1 - 8.0, rect.y0 + 30.0);
+        // The End pill is its authored 50px wide and an `s6` tall at 1×,
+        // grown by the label's measured extra width (cached per scale) and
+        // its line plus an `s1` above and below once scaled type needs more,
+        // so "End" never spills out of its own face.
+        let end_scale = tr.text_scale();
+        let end_label_growth = self.nav_end_label_growth(tr);
+        let end_w = (NAV_END_W + end_label_growth).ceil();
+        let end_h = (line_h(NAV_END_TEXT, end_scale) + 2.0 * f64::from(self.spacing.s1))
+            .ceil()
+            .max(f64::from(self.spacing.s6));
+        let end = Rect::new(
+            rect.x1 - 8.0 - end_w,
+            rect.y0 + 6.0,
+            rect.x1 - 8.0,
+            rect.y0 + 6.0 + end_h,
+        );
         self.navigation_end_rect = end;
         let handle = Rect::new(rect.x0, rect.y0, end.x0 - 4.0, rect.y0 + 34.0);
         self.navigation_drag_handle = handle;
@@ -395,7 +490,7 @@ impl MapsApp {
             "Navigation",
             rect.x0 + 16.0,
             rect.y0 + 10.0,
-            12.0,
+            text_sm(),
             theme.text_dim,
             TextWeight::Medium,
         );
@@ -439,8 +534,8 @@ impl MapsApp {
             visual,
             "End",
             end.x0 + 19.0,
-            end.y0 + 6.0,
-            11.0,
+            text_vmid(end.y0, end.height(), NAV_END_TEXT, end_scale),
+            NAV_END_TEXT,
             end_text,
             TextWeight::Medium,
         );
@@ -448,11 +543,15 @@ impl MapsApp {
         let instruction = route.steps.first();
         let glyph = instruction.map_or("↑", |step| step.maneuver.glyph());
         let text = instruction.map_or("Continue on the route", |step| step.instruction.as_str());
+        // The instruction row starts where the design put it plus the growth
+        // of the title line above it, so a scaled "Navigation" never runs
+        // into the badge and instruction beneath.
+        let title_growth = line_growth(text_sm(), tr.text_scale());
         let badge = Rect::new(
             rect.x0 + 16.0,
-            rect.y0 + 48.0,
+            rect.y0 + 48.0 + title_growth,
             rect.x0 + 52.0,
-            rect.y0 + 84.0,
+            rect.y0 + 84.0 + title_growth,
         );
         draw::fill_circle(
             scene,
@@ -477,11 +576,11 @@ impl MapsApp {
         // at fixed offsets a scaled instruction runs into. (The card's own
         // height is fixed by the floating-surface placement — see the review
         // notes — so at large scales the stack can still exceed the card.)
-        let instr_y = rect.y0 + 47.0;
-        let instr_h = f64::from(tr.measure("Ag", 15.0, None).1);
-        let dist_h = f64::from(tr.measure("Ag", 12.0, None).1);
+        let instr_y = rect.y0 + 47.0 + title_growth;
+        let instr_h = f64::from(tr.measure("Ag", NAV_INSTR_TEXT, None).1);
+        let dist_h = f64::from(tr.measure("Ag", text_sm(), None).1);
         let dist_y = instr_y + instr_h + 2.0;
-        let rule_y = (dist_y + dist_h + 12.0).max(rect.y0 + 98.0);
+        let rule_y = (dist_y + dist_h + 12.0).max(rect.y0 + 98.0 + title_growth);
         let shift = rule_y - (rect.y0 + 98.0);
         draw::text_clip(
             scene,
@@ -593,6 +692,9 @@ impl MapsApp {
             drag_moved: false,
             click_targets: Vec::new(),
             text_scale: 1.0,
+            spacing: Spacing::default(),
+            metrics: Metrics::BASE,
+            nav_end_growth: (1.0, 0.0),
             scroll: 0.0,
             content_h: 0.0,
             content_view_h: 0.0,
@@ -627,7 +729,7 @@ impl MapsApp {
             traffic: TrafficData::default(),
             pending_floating: None,
             navigation_placement: ui::floating_surface::FloatingPlacement::attached(
-                vello::kurbo::Size::new(360.0, 156.0),
+                navigation_card_size(&Metrics::BASE, 1.0),
             ),
             navigation_drag_handle: Rect::ZERO,
             navigation_end_rect: Rect::ZERO,
@@ -924,7 +1026,10 @@ impl MapsApp {
     /// drawer. Derived from the *current* allocated width every call, so a
     /// resize between breakpoints reflows immediately — never cached.
     fn overlay_mode(&self) -> bool {
-        self.rect.width() < NAV_OVERLAY_BELOW
+        // The theme's compact breakpoint; scaling breakpoints with the text
+        // is the shell family's policy (NavShell / SidebarDrawer), not an
+        // app's — this hand-rolled drawer reads the token and leaves it.
+        self.rect.width() < f64::from(self.metrics.compact_breakpoint)
     }
 
     /// Is the side panel currently on screen? Always in docked layouts; only
@@ -943,10 +1048,27 @@ impl MapsApp {
     /// Panel width for the current window: a docked column proportional to the
     /// window when wide, or a near-full-width drawer when narrow.
     fn panel_w(&self) -> f64 {
+        // The panel carries text, so its authored bounds grow with the text
+        // scale (never shrink): a 2× row keeps the character budget a 1× row
+        // has instead of eliding inside a 1× column. Bounds are combined with
+        // `max`/`min` rather than `clamp`: a degenerate rect can put them out
+        // of order, and `clamp` panics where these just pick the finite one.
+        let grow = f64::from(self.text_scale.clamp(1.0, 4.0));
+        let avail = (self.rect.width() - 2.0 * self.margin()).max(1.0);
         if self.overlay_mode() {
-            (self.rect.width() - 2.0 * MARGIN).min(PANEL_MAX_W)
+            // The 1× drawer is exactly what it was; only the *extra* width a
+            // scaled drawer gains stops short of the trailing zoom/locate
+            // column (as the search bar does), so growth never slides the
+            // drawer under the map controls.
+            let one_x = avail.min(PANEL_MAX_W);
+            let scaled = (PANEL_MAX_W * grow).min((avail - CTRL_SIZE - GAP).max(1.0));
+            scaled.max(one_x)
         } else {
-            (self.rect.width() * 0.42).clamp(PANEL_MIN_W, PANEL_MAX_W)
+            // Docked: 42 % of the window inside the scaled authored bounds,
+            // and never more than 60 % so the map keeps room beside it.
+            let max_w = (PANEL_MAX_W * grow).min(avail).min(self.rect.width() * 0.6);
+            let min_w = (PANEL_MIN_W * grow).min(max_w);
+            (self.rect.width() * 0.42).max(min_w).min(max_w)
         }
     }
 
@@ -955,36 +1077,36 @@ impl MapsApp {
         if !self.overlay_mode() {
             return None;
         }
-        let x0 = self.rect.x0 + MARGIN;
-        let y0 = self.rect.y0 + MARGIN;
-        Some(Rect::new(x0, y0, x0 + CTRL_SIZE, y0 + SEARCH_H))
+        let x0 = self.rect.x0 + self.margin();
+        let y0 = self.rect.y0 + self.margin();
+        Some(Rect::new(x0, y0, x0 + CTRL_SIZE, y0 + self.search_h()))
     }
 
     fn search_rect(&self) -> Rect {
-        let y0 = self.rect.y0 + MARGIN;
+        let y0 = self.rect.y0 + self.margin();
         if self.overlay_mode() {
             // Sits between the leading menu button and the trailing zoom column
             // so the bar spans the full top edge without colliding.
-            let x0 = self.rect.x0 + MARGIN + CTRL_SIZE + GAP;
-            let x1 = self.rect.x1 - MARGIN - CTRL_SIZE - GAP;
-            Rect::new(x0, y0, x1.max(x0 + 120.0), y0 + SEARCH_H)
+            let x0 = self.rect.x0 + self.margin() + CTRL_SIZE + GAP;
+            let x1 = self.rect.x1 - self.margin() - CTRL_SIZE - GAP;
+            Rect::new(x0, y0, x1.max(x0 + 120.0), y0 + self.search_h())
         } else {
-            let x0 = self.rect.x0 + MARGIN;
-            Rect::new(x0, y0, x0 + self.panel_w(), y0 + SEARCH_H)
+            let x0 = self.rect.x0 + self.margin();
+            Rect::new(x0, y0, x0 + self.panel_w(), y0 + self.search_h())
         }
     }
 
     fn panel_rect(&self) -> Rect {
-        let x0 = self.rect.x0 + MARGIN;
-        let top = self.rect.y0 + MARGIN + SEARCH_H + GAP;
-        Rect::new(x0, top, x0 + self.panel_w(), self.rect.y1 - MARGIN)
+        let x0 = self.rect.x0 + self.margin();
+        let top = self.rect.y0 + self.margin() + self.search_h() + GAP;
+        Rect::new(x0, top, x0 + self.panel_w(), self.rect.y1 - self.margin())
     }
 
     /// The bottom-right ⋯ overflow button (attribution / offline maps / licenses).
     /// Downloads and the credit line moved off the map into this menu.
     fn overflow_rect(&self) -> Rect {
-        let x1 = self.rect.x1 - MARGIN;
-        let y1 = self.rect.y1 - MARGIN;
+        let x1 = self.rect.x1 - self.margin();
+        let y1 = self.rect.y1 - self.margin();
         Rect::new(x1 - 40.0, y1 - 30.0, x1, y1)
     }
 
@@ -1681,9 +1803,9 @@ impl MapsApp {
         // In the docked layout the map shares the width with the panel; in the
         // overlay layout the drawer floats over a full-width map.
         let w = if self.overlay_mode() {
-            self.rect.width() - MARGIN * 2.0
+            self.rect.width() - self.margin() * 2.0
         } else {
-            self.rect.width() - (self.panel_w() + MARGIN * 2.0 + GAP)
+            self.rect.width() - (self.panel_w() + self.margin() * 2.0 + GAP)
         };
         let h = self.rect.height();
         if let Some((c, z)) = geo::fit_bounds(pts, w.max(200.0), h, 70.0) {
@@ -2357,7 +2479,64 @@ fn keyword_match(needle: &str, cat: Category) -> bool {
 /// `size × text_scale × 1.25`, so centring on the unscaled size would drop the
 /// text below centre at every scale above 1×.
 fn text_vmid(y: f64, h: f64, size: f32, text_scale: f32) -> f64 {
-    y + (h - f64::from(size) * 1.25 * f64::from(text_scale.max(0.5))) / 2.0
+    y + (h - line_h(size, text_scale)) / 2.0
+}
+
+/// Height of one line of `size`-pt text at `text_scale` — what the renderer
+/// measures for a single line. The crate's one copy of the line formula;
+/// `text_vmid` and the authored row heights below all read it.
+fn line_h(size: f32, text_scale: f32) -> f64 {
+    let scale = if text_scale.is_finite() {
+        text_scale.clamp(0.5, 4.0)
+    } else {
+        1.0
+    };
+    f64::from(ui::text_render::TextStyle::new(size * scale).line_height_px())
+}
+
+/// How much taller one line of `size`-pt text is at `text_scale` than at 1×;
+/// zero at or below 1×.
+fn line_growth(size: f32, text_scale: f32) -> f64 {
+    (line_h(size, text_scale) - line_h(size, 1.0)).max(0.0)
+}
+
+/// Base (unscaled) text sizes handed to the legacy renderer, read from the
+/// default type scale so the app states no sizes of its own; the renderer
+/// applies the accessibility scale. Sizes off the scale are named beside the
+/// surfaces that use them.
+fn text_sm() -> f32 {
+    TypeScale::default().sm
+}
+fn text_lg() -> f32 {
+    TypeScale::default().lg
+}
+
+/// An authored 1× height grown by exactly the extra room its text lines need
+/// at `text_scale`, snapped up to a whole pixel — the design exactly at 1×
+/// (a 28px row stays 28, not `16.25 + 12 = 28.25`), and never a fraction.
+fn authored_h(authored: f64, sizes: &[f32], text_scale: f32) -> f64 {
+    let growth: f64 = sizes
+        .iter()
+        .map(|&size| line_growth(size, text_scale))
+        .sum();
+    (authored + growth).ceil()
+}
+
+/// Intrinsic size of the floating navigation card at `text_scale`: the
+/// authored 360×156 at 1×; the height grows by the title, instruction,
+/// distance and summary lines it stacks, the width with the scale so the
+/// instruction keeps its 1× character budget instead of eliding at 2×. The
+/// placement clamps it to the window it floats in.
+fn navigation_card_size(metrics: &Metrics, text_scale: f32) -> vello::kurbo::Size {
+    let grow = f64::from(text_scale.clamp(1.0, 4.0));
+    vello::kurbo::Size::new(
+        (f64::from(metrics.panel_width_list) * grow).ceil(),
+        authored_h(
+            NAV_CARD_H,
+            &[text_sm(), NAV_INSTR_TEXT, text_sm(), text_lg()],
+            text_scale,
+        ),
+    )
 }
 
 // ===========================================================================
@@ -2762,9 +2941,9 @@ impl MapsApp {
         let area_x0 = if self.panel_docked_expanded() {
             self.panel_rect().x1 + GAP
         } else {
-            self.rect.x0 + MARGIN
+            self.rect.x0 + self.margin()
         };
-        let area_x1 = self.rect.x1 - MARGIN;
+        let area_x1 = self.rect.x1 - self.margin();
         let w = 360.0_f64.min((area_x1 - area_x0).max(200.0));
         let row_h = 24.0;
         let card_h = 118.0 + rows.len() as f64 * row_h;
@@ -2904,9 +3083,9 @@ impl MapsApp {
         let map_left = if self.panel_docked_expanded() {
             self.panel_rect().x1 + GAP
         } else {
-            self.rect.x0 + MARGIN
+            self.rect.x0 + self.margin()
         };
-        let bottom = self.rect.y1 - MARGIN;
+        let bottom = self.rect.y1 - self.margin();
 
         if self.traffic.is_empty() {
             // Honest empty state — no fabricated congestion.
@@ -3038,7 +3217,7 @@ impl MapsApp {
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);
         // Sit below the top search row so it never overlaps the search field
         // (which spans most of the top edge in the narrow layout).
-        let top = self.rect.y0 + MARGIN + SEARCH_H + GAP;
+        let top = self.rect.y0 + self.margin() + self.search_h() + GAP;
         let r = Rect::new(cx - w / 2.0, top, cx + w / 2.0, top + 30.0);
         draw::card(
             scene,
@@ -3140,10 +3319,15 @@ impl MapsApp {
         // affordance so the map reclaims the column. A plain collapse/expand
         // toggle — not a mode/tab.
         if self.panel_collapsed && docked {
-            let bar = Rect::new(pr.x0, pr.y0, pr.x1, pr.y0 + PANEL_HEADER_H + 2.0 * inset);
+            let bar = Rect::new(
+                pr.x0,
+                pr.y0,
+                pr.x1,
+                pr.y0 + self.panel_header_h() + 2.0 * inset,
+            );
             draw::card(scene, t, bar, 14.0, c.surfaces.raised, c.border_standard);
             self.click_targets.push((bar, Hit::Consume));
-            let by = self.vmid(bar.y0 + inset, PANEL_HEADER_H, 15.0);
+            let by = self.vmid(bar.y0 + inset, self.panel_header_h(), 15.0);
             draw::text_w(
                 scene,
                 tr,
@@ -3156,7 +3340,7 @@ impl MapsApp {
                 TextWeight::Semibold,
             );
             let btn = Rect::new(
-                bar.x1 - inset - PANEL_HEADER_H,
+                bar.x1 - inset - self.panel_header_h(),
                 bar.y0 + inset,
                 bar.x1 - inset,
                 bar.y1 - inset,
@@ -3192,11 +3376,11 @@ impl MapsApp {
             pr.x0 + inset,
             pr.y0 + inset,
             pr.x1 - inset,
-            pr.y0 + inset + PANEL_HEADER_H,
+            pr.y0 + inset + self.panel_header_h(),
         );
         let mut hx = header.x0;
         if directions {
-            let back = Rect::new(hx, header.y0, hx + PANEL_HEADER_H, header.y1);
+            let back = Rect::new(hx, header.y0, hx + self.panel_header_h(), header.y1);
             draw::fill_rrect(scene, t, back, 8.0, c.surfaces.base);
             draw::text_center(
                 scene,
@@ -3225,7 +3409,12 @@ impl MapsApp {
             TextWeight::Bold,
         );
         if docked {
-            let btn = Rect::new(header.x1 - PANEL_HEADER_H, header.y0, header.x1, header.y1);
+            let btn = Rect::new(
+                header.x1 - self.panel_header_h(),
+                header.y0,
+                header.x1,
+                header.y1,
+            );
             draw::fill_rrect(scene, t, btn, 8.0, c.surfaces.base);
             draw::text_center(
                 scene,
@@ -3717,7 +3906,9 @@ impl MapsApp {
         // label line plus its padding, whichever is taller, so scaled type
         // never spills out of a chip, a segment or a step band.
         let line = |tr: &mut TextRenderer, size: f32| f64::from(tr.measure("Ag", size, None).1);
-        let loc_h = (line(tr, 13.0) + 12.0).max(30.0);
+        // Authored 1× rows grown by their line's extra height (whole pixels;
+        // see `authored_h`), never `line + pad` floored at the design.
+        let loc_h = authored_h(30.0, &[13.0], tr.text_scale());
         let loc_label = if self.locating {
             "Locating…"
         } else {
@@ -3778,7 +3969,7 @@ impl MapsApp {
         // Mode segmented control — Drive / Transit / Cycle / Walk. Transit is
         // a mode here, not a separate tab: selecting it swaps the route summary
         // below for the public-transport departures.
-        let mode_h = (line(tr, 12.0) + 16.0).max(40.0);
+        let mode_h = authored_h(40.0, &[12.0], tr.text_scale());
         let mode_rect = Rect::new(x, y, right, y + mode_h);
         draw::fill_rrect(scene, t, mode_rect, 9.0, c.surfaces.base);
         let seg_w = mode_rect.width() / TravelMode::ALL.len() as f64;
@@ -3905,7 +4096,7 @@ impl MapsApp {
                     TextWeight::Medium,
                 );
             }
-            y += (line(tr, 13.0) + 12.0).max(28.0);
+            y += authored_h(28.0, &[13.0], tr.text_scale());
 
             draw::line(
                 scene,
@@ -3921,8 +4112,7 @@ impl MapsApp {
             // its own measured row beneath it — at 1× the authored 46px band,
             // taller once the type grows so the two never overprint.
             let instr_h = line(tr, 13.0);
-            let dist_h = line(tr, 11.0);
-            let rh = (instr_h + dist_h + 12.0).max(46.0);
+            let rh = authored_h(46.0, &[13.0, 11.0], tr.text_scale());
             for (i, step) in route.steps.iter().enumerate() {
                 // Glyph badge, centred on the instruction line.
                 let bc = Point::new(x + 16.0, y + instr_h / 2.0 + 2.0);
@@ -4040,7 +4230,7 @@ impl MapsApp {
         // control that stays at "Leave now" most of the time.
         // The authored 36px row, or the tallest label it carries (the 18pt
         // stepper glyphs) plus padding once the type has grown.
-        let row_h = (f64::from(tr.measure("Ag", 18.0, None).1) + 12.0).max(36.0);
+        let row_h = authored_h(36.0, &[18.0], tr.text_scale());
         let toggle_w = 150.0_f64.min((right - x - 8.0) * 0.5);
 
         // Travel mode above is the person's first decision. Timing is a
@@ -4789,9 +4979,17 @@ impl Widget for MapsApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // The text scale is read here, in the layout pass, so the panel
+        // width, the navigation card's intrinsic size and every row solved
+        // before the first paint already follow the type they will carry.
+        self.text_scale = theme.text_scale;
+        self.spacing = theme.tokens.spacing;
+        self.metrics = theme.tokens.metrics;
+        self.navigation_placement
+            .set_preferred_size(navigation_card_size(&self.metrics, theme.text_scale));
         #[allow(
             clippy::unwrap_used,
             reason = "a fresh leaf on a live taffy tree cannot fail short of OOM, and \
@@ -5900,6 +6098,205 @@ mod tests {
         // At 2× the same line is 30px tall, so it starts at 5 — not at 12.5,
         // which would push half the glyphs out of the band.
         assert!((text_vmid(0.0, 40.0, 12.0, 2.0) - 5.0).abs() < 1e-9);
+    }
+
+    /// Authored rows and the navigation card are the 1× design exactly and
+    /// grow to whole pixels that hold their scaled lines.
+    #[test]
+    fn authored_rows_and_navigation_card_are_exact_at_one_x_and_whole_at_two_x() {
+        assert_eq!(
+            authored_h(28.0, &[13.0], 1.0),
+            28.0,
+            "not 16.25 + 12 = 28.25"
+        );
+        assert_eq!(authored_h(46.0, &[13.0, 11.0], 1.0), 46.0);
+        for (authored, sizes) in [(30.0, &[13.0][..]), (40.0, &[12.0]), (36.0, &[18.0])] {
+            assert_eq!(authored_h(authored, sizes, 1.0), authored);
+            let two = authored_h(authored, sizes, 2.0);
+            assert_eq!(two.fract(), 0.0);
+            assert!(two >= sizes.iter().map(|&s| line_h(s, 2.0)).sum::<f64>());
+        }
+        let mx = Metrics::BASE;
+        let one = navigation_card_size(&mx, 1.0);
+        assert_eq!(
+            (one.width, one.height),
+            (f64::from(mx.panel_width_list), NAV_CARD_H)
+        );
+        let two = navigation_card_size(&mx, 2.0);
+        assert_eq!(two.height.fract(), 0.0);
+        assert!(two.height > one.height && two.width > one.width);
+        // The stack the card paints (title, instruction, distance, summary)
+        // fits inside the scaled card with the design's own padding.
+        let stack: f64 = [text_sm(), NAV_INSTR_TEXT, text_sm(), text_lg()]
+            .iter()
+            .map(|&s| line_h(s, 2.0))
+            .sum();
+        assert!(two.height >= stack);
+    }
+
+    /// In a short window the lowered cluster would run off the bottom and
+    /// under the ⋯ overflow button; it moves beside the card instead, and
+    /// every control stays on screen, clear of both, with hit == paint.
+    #[test]
+    fn map_controls_fit_a_short_window_beside_the_navigation_card() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 360.0);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(a.navigation_surface_visible_in_app());
+        let nav = a.navigation_rect();
+        let overflow = a.overflow_rect();
+        for action in [
+            MapControlAction::ZoomIn,
+            MapControlAction::ZoomOut,
+            MapControlAction::Locate,
+            MapControlAction::ToggleTraffic,
+        ] {
+            let rect = a.map_controls.rect(action);
+            assert!(
+                rect.y0 >= a.rect.y0 && rect.y1 <= a.rect.y1 && rect.x0 >= a.rect.x0,
+                "{action:?} {rect:?} must stay inside the window {:?}",
+                a.rect
+            );
+            assert!(
+                rect.intersect(nav).area() <= 0.0,
+                "{action:?} {rect:?} overlaps the navigation card {nav:?}"
+            );
+            assert!(
+                rect.intersect(overflow).area() <= 0.0,
+                "{action:?} {rect:?} overlaps the overflow button {overflow:?}"
+            );
+            assert_eq!(a.map_controls.hit_test(rect.center()), Some(action));
+        }
+        assert!(
+            a.map_controls.rect(MapControlAction::ZoomIn).x1 <= nav.x0,
+            "the cluster sits beside the card when it cannot fit beneath it"
+        );
+    }
+
+    /// When the cluster fits neither beneath the card nor beside it — a
+    /// short docked window whose panel reaches the card, or a tiny overlay
+    /// window — the corner keeps HEAD's placement (the card covers it) and
+    /// the controls never land under the docked panel, off the bottom, or
+    /// under the overflow button.
+    #[test]
+    fn map_controls_never_land_under_the_panel_or_off_screen() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let controls = [
+            MapControlAction::ZoomIn,
+            MapControlAction::ZoomOut,
+            MapControlAction::Locate,
+            MapControlAction::ToggleTraffic,
+        ];
+
+        // Docked, 720×400: beside would overlap the panel, below would run
+        // past the overflow button.
+        let mut docked = app_at(720.0, 400.0);
+        let mut scene = Scene::new();
+        docked.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(docked.navigation_surface_visible_in_app() && !docked.overlay_mode());
+        let panel = docked.panel_rect();
+        let overflow = docked.overflow_rect();
+        for action in controls {
+            let rect = docked.map_controls.rect(action);
+            assert!(
+                rect.intersect(panel).area() <= 0.0,
+                "{action:?} {rect:?} must not cover the docked panel {panel:?}"
+            );
+            assert!(
+                rect.intersect(overflow).area() <= 0.0,
+                "{action:?} {rect:?} must not cover the overflow button {overflow:?}"
+            );
+            assert!(rect.x0 >= docked.rect.x0 && rect.x1 <= docked.rect.x1);
+        }
+        assert_eq!(
+            docked.map_controls_viewport(),
+            docked.rect,
+            "with no fitting placement the corner keeps HEAD's layout"
+        );
+
+        // Overlay, 380×330, drawer closed so the card shows: neither fits.
+        let mut tiny = app_at(380.0, 330.0);
+        tiny.nav_open = false;
+        tiny.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(tiny.overlay_mode());
+        if tiny.navigation_surface_visible_in_app() {
+            let overflow = tiny.overflow_rect();
+            for action in controls {
+                let rect = tiny.map_controls.rect(action);
+                assert!(rect.y0 >= tiny.rect.y0 && rect.x1 <= tiny.rect.x1);
+                assert!(
+                    rect.intersect(overflow).area() <= 0.0,
+                    "{action:?} {rect:?} must not cover the overflow button {overflow:?}"
+                );
+            }
+            assert_eq!(tiny.map_controls_viewport(), tiny.rect);
+        }
+    }
+
+    /// The panel's authored width bounds scale with the text (never below
+    /// 1×) so a 2× panel keeps its 1× character budget; the breakpoint is the
+    /// theme's compact breakpoint and is not scaled by the app; and the 1×
+    /// drawer is exactly what it was — only a scaled drawer's extra width
+    /// stops short of the trailing controls column.
+    #[test]
+    fn panel_width_follows_the_text_scale_and_the_drawer_keeps_its_one_x_width() {
+        let mut a = app_at(1600.0, 900.0);
+        a.text_scale = 1.0;
+        assert!(!a.overlay_mode());
+        assert_eq!(
+            a.panel_w(),
+            PANEL_MAX_W,
+            "1600 × 0.42 clamps to the authored 384"
+        );
+        a.text_scale = 2.0;
+        assert!(!a.overlay_mode(), "the breakpoint is the theme's, unscaled");
+        let two = a.panel_w();
+        assert!(two > PANEL_MAX_W, "a 2× panel is wider than the 1× column");
+        assert!(
+            two <= 1600.0 * 0.6,
+            "the map keeps at least 40 % of a docked window"
+        );
+        assert_eq!(
+            two,
+            (1600.0_f64 * 0.42)
+                .max(PANEL_MIN_W * 2.0)
+                .min(PANEL_MAX_W * 2.0)
+        );
+
+        // The breakpoint is the theme token at every scale.
+        let mut mid = app_at(800.0, 900.0);
+        mid.text_scale = 2.0;
+        assert!(!mid.overlay_mode());
+        assert_eq!(f64::from(mid.metrics.compact_breakpoint), 720.0);
+
+        // A 400px drawer at 1× is the authored 368 (window − 2·s4), under the
+        // controls column exactly as before; at 2× it does not shrink below
+        // that, and a drawer that *would* grow past the controls stops short
+        // of them.
+        let mut narrow = app_at(400.0, 800.0);
+        narrow.text_scale = 1.0;
+        assert!(narrow.overlay_mode());
+        let one_x = 400.0 - 2.0 * narrow.margin();
+        assert_eq!(narrow.panel_w(), one_x);
+        narrow.text_scale = 2.0;
+        assert_eq!(narrow.panel_w(), one_x, "the 1× drawer width is the floor");
+        let mut wide_drawer = app_at(700.0, 800.0);
+        wide_drawer.text_scale = 2.0;
+        assert!(wide_drawer.overlay_mode());
+        assert_eq!(
+            wide_drawer.panel_w(),
+            700.0 - 2.0 * wide_drawer.margin() - CTRL_SIZE - GAP,
+            "a scaled drawer stops short of the controls column"
+        );
+        assert!(wide_drawer.panel_w() >= (700.0 - 2.0 * wide_drawer.margin()).min(PANEL_MAX_W));
+
+        // A degenerate rect never panics the docked bounds.
+        let mut degenerate = app_at(0.0, 0.0);
+        degenerate.text_scale = 1.0;
+        let _ = degenerate.panel_w();
     }
 
     #[test]

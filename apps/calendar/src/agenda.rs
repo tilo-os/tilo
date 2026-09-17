@@ -43,10 +43,6 @@ const ROW_GAP: f64 = 2.0;
 /// Top padding above the first heading. Deliberately off-scale (18px), the
 /// authored 1× offset that lines the first heading up with the topbar title.
 const TOP_PAD: f64 = 18.0;
-/// Trailing padding after the last section.
-const BOTTOM_PAD: f64 = 8.0;
-/// Horizontal inset of the list inside its area (`s6`).
-const SIDE_PAD: f64 = 24.0;
 /// Left edge of the day-heading date relative to the heading label.
 const HEADING_DATE_X: f64 = 120.0;
 /// Share of a row the trailing location column may take before eliding.
@@ -77,6 +73,10 @@ pub(crate) struct AgendaMetrics {
     pub section_gap: f64,
     /// Inner horizontal insets read from the spacing scale.
     pub bar_inset: f64,
+    /// Horizontal inset of the whole list inside its area (`s6`), and the
+    /// pad after the last row (`s2`). Read from the theme, never restated.
+    pub side_pad: f64,
+    pub bottom_pad: f64,
     pub time_x: f64,
     pub check_gap: f64,
     /// Title column start for event rows (after the time column).
@@ -92,12 +92,13 @@ impl AgendaMetrics {
         let row_text_h = metrics::line_h(ROW_TEXT, text_scale);
         let row_meta_h = metrics::line_h(ROW_META_TEXT, text_scale);
         let row_flag_h = metrics::line_h(ROW_FLAG_TEXT, text_scale);
-        // The authored minima keep the 1× design exactly (18.75 + 4 and
-        // 16.25 + 12 both sit inside them); the measured terms win once the
-        // type has grown past what those rows can hold. No rounding — a
-        // snapped row can end up a fraction short of its text plus padding.
-        let heading_h = metrics::at_least(HEADING_MIN_H, heading_text_h + f64::from(spacing.s1));
-        let row_h = metrics::at_least(ROW_MIN_H, row_text_h + f64::from(spacing.s3));
+        // The authored rows are the 1× design exactly; at larger scales they
+        // grow by their line's extra height and snap up to a whole pixel, so a
+        // scaled row is never a fraction short of its text plus the padding
+        // the design gave it.
+        let heading_h =
+            metrics::at_least_whole(HEADING_MIN_H, heading_text_h + f64::from(spacing.s1));
+        let row_h = metrics::at_least_whole(ROW_MIN_H, row_text_h + f64::from(spacing.s3));
         let time_x = f64::from(spacing.s4);
         Self {
             heading_h,
@@ -110,6 +111,8 @@ impl AgendaMetrics {
             row_flag_h,
             section_gap: f64::from(spacing.s3),
             bar_inset: f64::from(spacing.s1),
+            side_pad: f64::from(spacing.s6),
+            bottom_pad: f64::from(spacing.s2),
             time_x,
             check_gap: f64::from(spacing.s2),
             title_x: time_x + TIME_COL_MIN_W,
@@ -122,7 +125,8 @@ impl AgendaMetrics {
     /// extent does not depend on it.
     pub(crate) fn measure_time_column(&mut self, tr: &mut TextRenderer, spacing: &Spacing) {
         let widest = f64::from(tr.measure(ALL_DAY_LABEL, ROW_META_TEXT, None).0);
-        self.title_x = self.time_x + metrics::at_least(TIME_COL_MIN_W, widest + f64::from(spacing.s3));
+        self.title_x =
+            self.time_x + metrics::at_least(TIME_COL_MIN_W, widest + f64::from(spacing.s3));
     }
 }
 
@@ -222,7 +226,7 @@ impl AgendaView {
         let end = anchor + Duration::days(DAYS_SHOWN);
         let mut m = AgendaMetrics::new(&theme.tokens.spacing, text.text_scale());
         m.measure_time_column(text, &theme.tokens.spacing);
-        let x0 = area.x0 + SIDE_PAD;
+        let x0 = area.x0 + m.side_pad;
         let show_location = area.width() >= 520.0;
         let mut y = area.y0 + TOP_PAD - f64::from(self.scroll.offset_y());
         let mut drew_any = false;
@@ -380,7 +384,7 @@ fn draw_event_row(
     hits: &mut Vec<(Rect, AgendaAction)>,
 ) {
     let colors = &theme.tokens.colors;
-    let row = Rect::new(x0, y, area.x1 - SIDE_PAD, y + m.row_h);
+    let row = Rect::new(x0, y, area.x1 - m.side_pad, y + m.row_h);
     if row.y1 > area.y0 && row.y0 < area.y1 {
         if row.contains(pointer) {
             fill_round(scene, transform, colors.lift(0.35), row, 6.0);
@@ -468,7 +472,7 @@ fn draw_task_row(
     hits: &mut Vec<(Rect, AgendaAction)>,
 ) {
     let colors = &theme.tokens.colors;
-    let row = Rect::new(x0, y, area.x1 - SIDE_PAD, y + m.row_h);
+    let row = Rect::new(x0, y, area.x1 - m.side_pad, y + m.row_h);
     if row.y1 > area.y0 && row.y0 < area.y1 {
         if row.contains(pointer) {
             fill_round(scene, transform, colors.lift(0.35), row, 6.0);
@@ -587,7 +591,7 @@ fn content_height(
         }
         day += Duration::days(1);
     }
-    height + BOTTOM_PAD
+    height + m.bottom_pad
 }
 
 fn clamp_hit(row: Rect, viewport: Rect) -> Option<Rect> {
@@ -640,7 +644,10 @@ mod tests {
         };
         let m = AgendaMetrics::new(&Spacing::default(), 1.0);
         // 18 top pad + 26 heading + 2 × 32 rows + 12 section gap + 8 bottom.
-        assert_eq!(content_height(&model, anchor, &HashSet::new(), None, &m), 128.0);
+        assert_eq!(
+            content_height(&model, anchor, &HashSet::new(), None, &m),
+            128.0
+        );
     }
 
     #[test]
@@ -653,7 +660,10 @@ mod tests {
         let hidden = HashSet::from(["hidden".to_string()]);
         let m = AgendaMetrics::new(&Spacing::default(), 1.0);
         assert_eq!(content_height(&model, anchor, &hidden, None, &m), 26.0);
-        assert_eq!(content_height(&model, anchor, &HashSet::new(), None, &m), 96.0);
+        assert_eq!(
+            content_height(&model, anchor, &HashSet::new(), None, &m),
+            96.0
+        );
     }
 
     #[test]
@@ -666,6 +676,24 @@ mod tests {
         assert_eq!(m.row_pitch, 32.0);
         assert_eq!(m.title_x, 90.0);
         assert_eq!(m.check_size, 16.0);
+        let sp = Spacing::default();
+        assert_eq!(m.side_pad, f64::from(sp.s6));
+        assert_eq!(m.bottom_pad, f64::from(sp.s2));
+    }
+
+    /// Scaled rows are whole pixels too: a 2× row is the authored row plus
+    /// its line's growth, snapped up, never a fraction.
+    #[test]
+    fn scaled_rows_land_on_whole_pixels() {
+        let m = AgendaMetrics::new(&Spacing::default(), 2.0);
+        for value in [m.heading_h, m.row_h, m.row_pitch] {
+            assert_eq!(value.fract(), 0.0, "{value} is not a whole pixel");
+        }
+        // Each row is its scaled line plus the same theme pad the painter
+        // leaves, rounded up — never a fraction short of it.
+        let sp = Spacing::default();
+        assert_eq!(m.row_h, (m.row_text_h + f64::from(sp.s3)).ceil());
+        assert_eq!(m.heading_h, (m.heading_text_h + f64::from(sp.s1)).ceil());
     }
 
     #[test]
@@ -685,7 +713,10 @@ mod tests {
         };
         let one = content_height(&model, anchor, &HashSet::new(), None, &m1);
         let two = content_height(&model, anchor, &HashSet::new(), None, &m2);
-        assert_eq!(two - one, (m2.heading_h - m1.heading_h) + (m2.row_pitch - m1.row_pitch));
+        assert_eq!(
+            two - one,
+            (m2.heading_h - m1.heading_h) + (m2.row_pitch - m1.row_pitch)
+        );
     }
 
     #[test]
