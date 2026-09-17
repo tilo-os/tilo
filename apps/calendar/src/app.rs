@@ -65,7 +65,7 @@ use crate::ics;
 use crate::input_context::InputContext;
 use crate::mini_month::{MiniMonth, Outcome as MiniMonthOutcome};
 use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
-use crate::sidebar::{Action as SidebarAction, Mode as SidebarMode, Sidebar};
+use crate::sidebar::{Action as SidebarAction, ChromeModel, Mode as SidebarMode, Sidebar};
 use crate::timeline_interaction::{
     TIMELINE_SNAP_MIN, TimelineEffect, TimelineEventCtx, TimelineInteraction, TimelineRenderEvent,
     TimelineRenderModel, TimelineSpan,
@@ -3896,12 +3896,14 @@ impl CalendarApp {
         };
         let Some(chrome) = self.sidebar.draw_chrome(
             &mut paint,
-            self.rect,
-            self.content_rect,
-            self.detail_rect,
-            self.topbar.switcher_visible(),
-            self.view,
-            self.last_mouse,
+            ChromeModel {
+                window: self.rect,
+                content: self.content_rect,
+                detail: self.detail_rect,
+                switcher_in_topbar: self.topbar.switcher_visible(),
+                view: self.view,
+                pointer: self.last_mouse,
+            },
         ) else {
             return Vec::new();
         };
