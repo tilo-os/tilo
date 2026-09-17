@@ -85,6 +85,19 @@ pub const USER_OPERATION_TYPE: &str = "settings.user-operation";
 /// the supervised server belong to this machine, so these requests are never
 /// replicated as collaborative preferences.
 pub const AGENT_MODEL_OPERATION_TYPE: &str = "settings.agent-model-operation";
+/// Device-mesh role, relay services and workspace pinning configure this
+/// machine's trust boundary. They are local effects, never CRDT preferences.
+pub const DEVICE_MESH_OPERATION_TYPE: &str = "settings.device-mesh-operation";
+pub const AGENT_PROVIDER_OPERATION_TYPE: &str = "settings.agent-provider-operation";
+
+/// Hard ceiling for any live/discovered collection published by Settings.
+///
+/// A compositor, service, or corrupted local inventory is not allowed to make
+/// opening global search allocate an unbounded resource/action tree. Exact
+/// lookup is scoped to one section below and uses the same ceiling.
+const MAX_DYNAMIC_RESOURCES: usize = 256;
+/// Hard ceiling for choices/actions attached to one dynamic resource.
+const MAX_DYNAMIC_CHOICES: usize = 128;
 
 /// Device-local account-management commands. Payloads contain only stable ids
 /// and provider kinds; credentials are collected by the Settings form and
@@ -241,6 +254,41 @@ pub enum AgentModelOperation {
     Remove { id: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeviceMeshOperation {
+    SetRole { role: String },
+    SetReplication { replication: String },
+    SetService { service: String, enabled: bool },
+    SetWorkspace { id: u64, enabled: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentProviderOperation {
+    Add {
+        protocol: String,
+    },
+    SetProtocol {
+        id: String,
+        protocol: String,
+    },
+    SetEnabled {
+        id: String,
+        enabled: bool,
+    },
+    Remove {
+        id: String,
+    },
+    SetDefault {
+        id: String,
+    },
+    SetDetails {
+        id: String,
+        label: String,
+        endpoint: String,
+        model: Option<String>,
+    },
+}
+
 /// Lifecycle reported by the pane that actually executes a device-local
 /// command. Unlike a document action this is intentionally process-local and
 /// never replicated or persisted as a preference.
@@ -323,6 +371,11 @@ pub fn local_operation_token(type_id: &str, payload: &[u8]) -> Result<String, St
         }
         AGENT_MODEL_OPERATION_TYPE => {
             let operation: AgentModelOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        DEVICE_MESH_OPERATION_TYPE => {
+            let operation: DeviceMeshOperation =
                 serde_json::from_slice(payload).map_err(|e| e.to_string())?;
             Ok(local_operation_token_for(type_id, &operation))
         }
@@ -581,25 +634,9 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         }
         key if key.starts_with("default_apps.") && !presentation_key => text(),
         _ if valid_notification_app_key => true,
-        // Device-mesh resources are discovered at runtime. Their stable
-        // namespace is the stale-target boundary; only its documented scalar
-        // preferences can enter it.
-        "device_mesh.role" | "device_mesh.replication" => text(),
-        "device_mesh.inbound_relay"
-        | "device_mesh.remote_control_relay"
-        | "device_mesh.app_serving"
-        | "device_mesh.compute"
-        | "device_mesh.continuity.enabled"
-        | "device_mesh.continuity.clipboard"
-        | "device_mesh.continuity.notifications"
-        | "device_mesh.continuity.wifi_settings"
-        | "device_mesh.continuity.media"
-        | "device_mesh.continuity.display_input"
-        | "device_mesh.continuity.file_transfer"
-        | "device_mesh.continuity.realtime_sessions"
-        | "device_mesh.continuity.typed_gamepad"
-        | "device_mesh.continuity.app_continuations" => boolean(),
-        key if key.starts_with("device_mesh.workspace.") && !presentation_key => boolean(),
+        // Trust, service and residency policy is deliberately absent: those
+        // settings use typed device-local effect operations and must never
+        // enter the replayable SettingsAction namespace.
         _ => false,
     };
     allowed.then_some(()).ok_or_else(|| {
@@ -783,6 +820,25 @@ fn local_operation_spec<T: Serialize>(
         .map(|spec| spec.with_contract(local_operation_contract(tags)))
 }
 
+fn immediate_local_effect_spec<T: Serialize>(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    type_id: &str,
+    operation: &T,
+    tags: &[&str],
+) -> Option<ActionSpec> {
+    ActionSpec::operation(id, label, OperationKind::Effect, type_id, operation)
+        .ok()
+        .map(|spec| {
+            spec.with_contract(ActionContract {
+                retry: RetryPolicy::AtMostOnce,
+                reversible: false,
+                tags: tags.iter().map(|tag| (*tag).into()).collect(),
+                ..ActionContract::default()
+            })
+        })
+}
+
 fn encode_local_operation<T: Serialize>(type_id: &str, operation: &T) -> EncodedAction {
     EncodedAction::encode_operation(type_id, operation).unwrap_or_else(|_| EncodedAction {
         type_id: type_id.into(),
@@ -862,46 +918,97 @@ pub fn provide_resources_with_accounts(
     let d = SystemPrefs::load();
     let mut root = Resource::new("settings.root", "settings.root", "Settings");
     for category in Category::ALL.iter().copied() {
-        let mut pane = match category {
-            Category::Network => network_section(doc),
-            Category::Bluetooth => bluetooth_section(doc),
-            Category::Sound => sound_section(doc),
-            Category::Displays => displays_section(doc, &d),
-            Category::MouseKeyboard => input_section(doc, &d),
-            Category::Power => power_section(doc, &d),
-            Category::Appearance => appearance_section(doc, &d),
-            Category::Accessibility => accessibility_section(doc, &d),
-            Category::Notifications => notifications_section(doc, &d),
-            Category::RegionFormats => region_section(doc, &d),
-            Category::TimeDate => time_date_section(doc, &d),
-            Category::KeyboardShortcuts => shortcuts_section(doc),
-            Category::DeviceMesh => device_mesh_section(doc),
-            Category::Updates => updates_section(),
-            Category::ExternalAccounts => accounts_section(account_inventory),
-            Category::AgentModels => agent_models_section(),
-            Category::DefaultApps => default_apps_section(doc),
-            Category::Storage => storage_section(),
-            Category::Printers => printers_section(),
-            Category::Users => users_section(),
-            _ => Resource::new(
-                pane_resource_id(category),
-                "settings.section",
-                category.label(),
-            ),
-        };
-        if let Some(open) = pane_navigation_resource(category)
-            .actions
-            .into_iter()
-            .next()
-        {
-            // `&str` serialization is infallible in serde_json. Keep the
-            // fallible API boundary explicit; the resource-coverage test
-            // ensures a framework regression cannot silently drop this door.
-            pane.actions.insert(0, open);
-        }
-        root = root.with_child(pane);
+        root = root.with_child(section_resource(category, doc, &d, account_inventory));
     }
     vec![root]
+}
+
+fn section_resource(
+    category: Category,
+    doc: &AutoCommit,
+    prefs: &SystemPrefs,
+    account_inventory: &[accounts::Account],
+) -> Resource {
+    let mut pane = match category {
+        Category::Network => network_section(doc),
+        Category::Bluetooth => bluetooth_section(doc),
+        Category::Sound => sound_section(doc),
+        Category::Displays => displays_section(doc, prefs),
+        Category::MouseKeyboard => input_section(doc, prefs),
+        Category::Power => power_section(doc, prefs),
+        Category::Appearance => appearance_section(doc, prefs),
+        Category::Accessibility => accessibility_section(doc, prefs),
+        Category::Notifications => notifications_section(doc, prefs),
+        Category::RegionFormats => region_section(doc, prefs),
+        Category::TimeDate => time_date_section(doc, prefs),
+        Category::KeyboardShortcuts => shortcuts_section(doc),
+        Category::DeviceMesh => device_mesh_section(doc),
+        Category::Updates => updates_section(),
+        Category::ExternalAccounts => accounts_section(account_inventory),
+        Category::AgentModels => agent_models_section(),
+        Category::DefaultApps => default_apps_section(doc),
+        Category::Storage => storage_section(),
+        Category::Printers => printers_section(),
+        Category::Users => users_section(),
+        _ => Resource::new(
+            pane_resource_id(category),
+            "settings.section",
+            category.label(),
+        ),
+    };
+    if let Some(open) = pane_navigation_resource(category)
+        .actions
+        .into_iter()
+        .next()
+    {
+        pane.actions.insert(0, open);
+    }
+    pane
+}
+
+fn category_for_resource_id(id: &str) -> Option<Category> {
+    if let Some(category) = Category::ALL
+        .iter()
+        .copied()
+        .find(|category| pane_resource_id(*category) == id)
+    {
+        return Some(category);
+    }
+    let mappings = [
+        ("settings.default-app:", Category::DefaultApps),
+        ("settings.account:", Category::ExternalAccounts),
+        ("settings.notification-app:", Category::Notifications),
+        ("settings.audio-output:", Category::Sound),
+        ("settings.audio-input:", Category::Sound),
+        ("settings.audio-playback:", Category::Sound),
+        ("settings.audio-recording:", Category::Sound),
+        ("settings.display-output:", Category::Displays),
+        ("settings.input-source:", Category::MouseKeyboard),
+        ("settings.bluetooth-device:", Category::Bluetooth),
+        ("settings.printer:", Category::Printers),
+        ("settings.print-job:", Category::Printers),
+        ("settings.user:", Category::Users),
+        ("settings.device-mesh-workspace:", Category::DeviceMesh),
+        (
+            "settings.agent-model-recommendation:",
+            Category::AgentModels,
+        ),
+        ("settings.agent-model:", Category::AgentModels),
+        ("settings.agent-provider:", Category::AgentModels),
+    ];
+    mappings
+        .into_iter()
+        .find_map(|(prefix, category)| id.starts_with(prefix).then_some(category))
+}
+
+fn find_resource(mut resource: Resource, id: &str) -> Option<Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource);
+    }
+    resource
+        .children
+        .drain(..)
+        .find_map(|child| find_resource(child, id))
 }
 
 /// Personal defaults are a bounded, device-discovered hierarchy: each file
@@ -939,11 +1046,12 @@ fn default_apps_section_with_candidates(
         "settings.default-apps",
         Category::DefaultApps.label(),
     );
-    for kind in kinds {
+    for kind in kinds.into_iter().take(MAX_DYNAMIC_RESOURCES) {
         let mut choices: Vec<String> = candidates
             .iter()
             .filter(|candidate| candidate.handles(&kind))
             .map(option)
+            .take(MAX_DYNAMIC_CHOICES)
             .collect();
         choices.sort();
         choices.dedup();
@@ -994,7 +1102,16 @@ fn account_operation_spec(
     kind: OperationKind,
     operation: &AccountOperation,
 ) -> Option<ActionSpec> {
-    ActionSpec::operation(id, label, kind, ACCOUNT_OPERATION_TYPE, operation).ok()
+    let mut spec =
+        ActionSpec::operation(id, label, kind, ACCOUNT_OPERATION_TYPE, operation).ok()?;
+    if matches!(operation, AccountOperation::Test { .. }) {
+        spec = spec.with_contract(local_operation_contract(&[
+            "device-local",
+            "accounts",
+            "network-probe",
+        ]));
+    }
+    Some(spec)
 }
 
 /// Build the exact nullary door used by both account-row controls and the
@@ -1039,7 +1156,7 @@ fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
             section = section.with_action(action);
         }
     }
-    for account in account_inventory {
+    for account in account_inventory.iter().take(MAX_DYNAMIC_RESOURCES) {
         let mut resource = Resource::new(
             format!("settings.account:{}", account.id),
             "settings.external-account",
@@ -1220,6 +1337,8 @@ fn notifications_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     }
     for (app_id, app_name) in
         crate::panes::notifications::resource_notification_apps(&d.notifications)
+            .into_iter()
+            .take(MAX_DYNAMIC_RESOURCES)
     {
         let mut resource = Resource::new(
             format!("settings.notification-app:{app_id}"),
@@ -1344,7 +1463,7 @@ fn sound_section(doc: &AutoCommit) -> Resource {
         1.0,
     ));
     let graph = media::audio::enumerate();
-    for device in &graph.sinks {
+    for device in graph.sinks.iter().take(MAX_DYNAMIC_RESOURCES) {
         let mut resource = Resource::new(
             format!("settings.audio-output:{}", device.id),
             "settings.audio-output",
@@ -1364,7 +1483,7 @@ fn sound_section(doc: &AutoCommit) -> Resource {
         }
         sec = sec.with_child(resource);
     }
-    for device in &graph.sources {
+    for device in graph.sources.iter().take(MAX_DYNAMIC_RESOURCES) {
         let mut resource = Resource::new(
             format!("settings.audio-input:{}", device.id),
             "settings.audio-input",
@@ -1384,13 +1503,13 @@ fn sound_section(doc: &AutoCommit) -> Resource {
         }
         sec = sec.with_child(resource);
     }
-    for stream in &graph.playback_streams {
+    for stream in graph.playback_streams.iter().take(MAX_DYNAMIC_RESOURCES) {
         let mut resource = Resource::new(
             format!("settings.audio-playback:{}", stream.id),
             "settings.audio-playback",
             stream.label(),
         );
-        for device in &graph.sinks {
+        for device in graph.sinks.iter().take(MAX_DYNAMIC_CHOICES) {
             if let Some(action) = local_operation_spec(
                 format!("route-to-{}", device.id),
                 format!("Route to {}", device.description),
@@ -1407,13 +1526,13 @@ fn sound_section(doc: &AutoCommit) -> Resource {
         }
         sec = sec.with_child(resource);
     }
-    for stream in &graph.record_streams {
+    for stream in graph.record_streams.iter().take(MAX_DYNAMIC_RESOURCES) {
         let mut resource = Resource::new(
             format!("settings.audio-recording:{}", stream.id),
             "settings.audio-recording",
             stream.label(),
         );
-        for device in &graph.sources {
+        for device in graph.sources.iter().take(MAX_DYNAMIC_CHOICES) {
             if let Some(action) = local_operation_spec(
                 format!("route-to-{}", device.id),
                 format!("Route to {}", device.description),
@@ -1484,7 +1603,7 @@ fn displays_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     // Output topology is supplied by the compositor's live, PID-validated
     // snapshot.  Do not turn an absent/stale snapshot into invented monitors.
     if let Some(snapshot) = settings_store::hardware::DisplayHardwareSnapshot::load() {
-        for output in snapshot.outputs {
+        for output in snapshot.outputs.into_iter().take(MAX_DYNAMIC_RESOURCES) {
             let descriptor = output.descriptor;
             let connector = descriptor.connector.clone();
             let mut resource = Resource::new(
@@ -1521,7 +1640,7 @@ fn displays_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
                     resource = resource.with_action(action);
                 }
             }
-            for mode in descriptor.modes.iter().copied() {
+            for mode in descriptor.modes.iter().copied().take(MAX_DYNAMIC_CHOICES) {
                 if let Some(action) = local_operation_spec(
                     format!("mode-{}-{}-{}", mode.width, mode.height, mode.refresh_mhz),
                     format!("Use {}", mode.label()),
@@ -1607,7 +1726,7 @@ fn displays_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             ) {
                 resource = resource.with_action(action);
             }
-            for profile in &descriptor.color_profiles {
+            for profile in descriptor.color_profiles.iter().take(MAX_DYNAMIC_CHOICES) {
                 if let Some(action) = local_operation_spec(
                     format!("profile-{profile}"),
                     format!("Use colour profile {profile}"),
@@ -1828,7 +1947,7 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             .with_contract(local_operation_contract(&["device-local", "input-source"])),
         );
     }
-    for (index, source) in sources.iter().enumerate() {
+    for (index, source) in sources.iter().take(MAX_DYNAMIC_RESOURCES).enumerate() {
         let label = catalog
             .iter()
             .find(|entry| entry.id == *source)
@@ -2497,7 +2616,11 @@ fn bluetooth_section(doc: &AutoCommit) -> Resource {
     // Device resources are deliberately live: an object path is meaningful
     // only while BlueZ advertises it. The host revalidates it again before
     // latching the pane command, closing the stale-resource race.
-    for device in os_actions::bluez::devices().unwrap_or_default() {
+    for device in os_actions::bluez::devices()
+        .unwrap_or_default()
+        .into_iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
         let mut resource = Resource::new(
             format!("settings.bluetooth-device:{}", device.path),
             "settings.bluetooth-device",
@@ -2550,7 +2673,7 @@ fn bluetooth_section(doc: &AutoCommit) -> Resource {
                 &["device-local", "bluetooth", "destructive", "live-device"],
             )
         {
-            resource = resource.with_action(action);
+            resource = resource.with_action(action.destructive());
         }
         bt = bt.with_child(resource);
     }
@@ -2577,7 +2700,7 @@ fn storage_section() -> Resource {
             StorageOperation::OpenBackups,
         ),
     ] {
-        if let Some(action) = local_operation_spec(
+        if let Some(mut action) = local_operation_spec(
             id,
             label,
             OperationKind::Effect,
@@ -2585,6 +2708,12 @@ fn storage_section() -> Resource {
             &operation,
             &["device-local", "storage"],
         ) {
+            if matches!(
+                operation,
+                StorageOperation::CleanupCaches | StorageOperation::FreeSyncedFiles
+            ) {
+                action = action.destructive();
+            }
             storage = storage.with_action(action);
         }
     }
@@ -2620,7 +2749,11 @@ fn printers_section() -> Resource {
             sec = sec.with_action(action);
         }
     }
-    for queue in os_actions::printing::queues().unwrap_or_default() {
+    for queue in os_actions::printing::queues()
+        .unwrap_or_default()
+        .into_iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
         let mut resource = Resource::new(
             format!("settings.printer:{}", queue.name),
             "settings.printer",
@@ -2658,7 +2791,7 @@ fn printers_section() -> Resource {
                 },
             ),
         ] {
-            if let Some(action) = local_operation_spec(
+            if let Some(mut action) = local_operation_spec(
                 id,
                 label,
                 OperationKind::Effect,
@@ -2666,12 +2799,19 @@ fn printers_section() -> Resource {
                 &operation,
                 &["device-local", "printers", "live-queue"],
             ) {
+                if matches!(operation, PrinterOperation::Remove { .. }) {
+                    action = action.destructive();
+                }
                 resource = resource.with_action(action);
             }
         }
         sec = sec.with_child(resource);
     }
-    for job in os_actions::printing::jobs().unwrap_or_default() {
+    for job in os_actions::printing::jobs()
+        .unwrap_or_default()
+        .into_iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
         let mut resource = Resource::new(
             format!("settings.print-job:{}", job.id),
             "settings.print-job",
@@ -2711,7 +2851,10 @@ fn users_section() -> Resource {
         "settings.section",
         "Users",
     );
-    for user in crate::panes::users::users_for_display() {
+    for user in crate::panes::users::users_for_display()
+        .into_iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
         if user.current {
             continue;
         }
@@ -2793,6 +2936,131 @@ fn agent_models_section() -> Resource {
         "settings.agent-models",
         Category::AgentModels.label(),
     );
+    for (id, label, protocol) in [
+        ("add-anthropic", "Add Anthropic provider", "anthropic"),
+        (
+            "add-openai-compatible",
+            "Add compatible API provider",
+            "openai-compatible",
+        ),
+    ] {
+        if let Some(action) = immediate_local_effect_spec(
+            id,
+            label,
+            AGENT_PROVIDER_OPERATION_TYPE,
+            &AgentProviderOperation::Add {
+                protocol: protocol.into(),
+            },
+            &["device-local", "agent-provider"],
+        ) {
+            section = section.with_action(action);
+        }
+    }
+    let provider_config = agent_provider_config::ProviderConfig::load();
+    for profile in provider_config
+        .profiles
+        .iter()
+        .filter(|profile| profile.location != agent_provider_config::EndpointLocation::ThisDevice)
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
+        let mut resource = Resource::new(
+            format!("settings.agent-provider:{}", profile.id),
+            "settings.agent-provider",
+            profile.display_label(),
+        );
+        let alternate = match profile.protocol {
+            agent_provider_config::ProviderProtocol::Anthropic => "openai-compatible",
+            agent_provider_config::ProviderProtocol::OpenAiCompatible => "anthropic",
+        };
+        for (id, label, operation) in [
+            (
+                "set-protocol",
+                format!("Use {alternate} protocol"),
+                AgentProviderOperation::SetProtocol {
+                    id: profile.id.clone(),
+                    protocol: alternate.into(),
+                },
+            ),
+            (
+                if profile.enabled { "disable" } else { "enable" },
+                if profile.enabled {
+                    "Disable provider".into()
+                } else {
+                    "Enable provider".into()
+                },
+                AgentProviderOperation::SetEnabled {
+                    id: profile.id.clone(),
+                    enabled: !profile.enabled,
+                },
+            ),
+            (
+                "remove",
+                "Remove provider".into(),
+                AgentProviderOperation::Remove {
+                    id: profile.id.clone(),
+                },
+            ),
+        ] {
+            if let Some(mut action) = immediate_local_effect_spec(
+                id,
+                label,
+                AGENT_PROVIDER_OPERATION_TYPE,
+                &operation,
+                &["device-local", "agent-provider"],
+            ) {
+                if matches!(operation, AgentProviderOperation::Remove { .. }) {
+                    action = action.destructive();
+                }
+                resource = resource.with_action(action);
+            }
+        }
+        let details_id = profile.id.clone();
+        resource = resource.with_action(
+            ActionSpec::typed_operation(
+                "set-details",
+                "Update provider details",
+                "Provider name",
+                OperationKind::Effect,
+                AGENT_PROVIDER_OPERATION_TYPE,
+                vec![
+                    ActionParam::required("label", ParamType::Text, "Provider name"),
+                    ActionParam::required("endpoint", ParamType::Text, "HTTPS API endpoint"),
+                    ActionParam::optional("model", ParamType::Text, "Default model id"),
+                ],
+                move |args| {
+                    encode_local_operation(
+                        AGENT_PROVIDER_OPERATION_TYPE,
+                        &AgentProviderOperation::SetDetails {
+                            id: details_id.clone(),
+                            label: args.text("label").unwrap_or_default().to_string(),
+                            endpoint: args.text("endpoint").unwrap_or_default().to_string(),
+                            model: args.text("model").map(str::to_string),
+                        },
+                    )
+                },
+            )
+            .with_contract(ActionContract {
+                retry: RetryPolicy::AtMostOnce,
+                reversible: false,
+                tags: vec!["device-local".into(), "agent-provider".into()],
+                ..ActionContract::default()
+            }),
+        );
+        if profile.default_model.is_some()
+            && let Some(action) = immediate_local_effect_spec(
+                "set-default",
+                "Use by default",
+                AGENT_PROVIDER_OPERATION_TYPE,
+                &AgentProviderOperation::SetDefault {
+                    id: profile.id.clone(),
+                },
+                &["device-local", "agent-provider"],
+            )
+        {
+            resource = resource.with_action(action);
+        }
+        section = section.with_child(resource);
+    }
     let Ok(snapshot) = agent_models::live_snapshot() else {
         return section;
     };
@@ -2840,7 +3108,7 @@ fn agent_models_section() -> Resource {
             section = section.with_child(resource);
         }
     }
-    for model in snapshot.models {
+    for model in snapshot.models.into_iter().take(MAX_DYNAMIC_RESOURCES) {
         let mut resource = Resource::new(
             format!("settings.agent-model:{}", model.package.id),
             "settings.agent-model",
@@ -2901,6 +3169,28 @@ fn agent_models_section() -> Resource {
         section = section.with_child(resource);
     }
     section
+}
+
+pub fn agent_provider_action_resources() -> Resource {
+    agent_models_section()
+}
+
+pub fn agent_provider_binding(
+    section: &Resource,
+    profile_id: Option<&str>,
+    action_id: &str,
+) -> Option<tilo_actions::ActionBinding<()>> {
+    let resource = match profile_id {
+        None => section.clone(),
+        Some(profile_id) => section
+            .children
+            .iter()
+            .find(|resource| {
+                resource.id.as_str() == format!("settings.agent-provider:{profile_id}")
+            })?
+            .clone(),
+    };
+    tilo_actions::ActionBinding::unit_for(&resource, action_id).ok()
 }
 
 /// Region and time are deliberately represented as individual named actions,
@@ -3069,48 +3359,78 @@ fn shortcuts_section(doc: &AutoCommit) -> Resource {
     section
 }
 
-fn device_mesh_section(doc: &AutoCommit) -> Resource {
-    let b = |key: &str, fallback| doc_bool(doc, key).unwrap_or(fallback);
+#[allow(
+    clippy::too_many_lines,
+    reason = "the declaration keeps the closed device-local trust and Continuity action catalogue auditable in one place"
+)]
+fn device_mesh_section(_doc: &AutoCommit) -> Resource {
     let mut section = Resource::new(
         pane_resource_id(Category::DeviceMesh),
         "settings.section",
         "Devices & Sync",
     );
-    section = section.with_action(choice_prompt_spec(
+    section = section.with_action(device_mesh_choice_spec(
         "role",
-        "Set device role",
-        "device_mesh.role",
-        "Personal device, Available while active, Always-on server",
+        "Set device role on this device",
         &[
             "Personal device",
             "Available while active",
             "Always-on server",
         ],
-        doc_str(doc, "device_mesh.role").unwrap_or_else(|| "Personal device".into()),
+        |role| DeviceMeshOperation::SetRole { role },
     ));
-    section = section.with_action(choice_prompt_spec(
+    section = section.with_action(device_mesh_choice_spec(
         "replication",
-        "Set replication",
-        "device_mesh.replication",
-        "On demand, Workspace state, Full workspace copy",
+        "Set local replication policy",
         &["On demand", "Workspace state", "Full workspace copy"],
-        doc_str(doc, "device_mesh.replication").unwrap_or_else(|| "On demand".into()),
+        |replication| DeviceMeshOperation::SetReplication { replication },
     ));
-    for (id, key, label) in [
-        (
-            "inbound-relay",
-            "device_mesh.inbound_relay",
-            "inbound relay",
-        ),
+    for (id, service, label) in [
+        ("inbound-relay", "inbound_relay", "Set inbound relay"),
         (
             "remote-control",
-            "device_mesh.remote_control_relay",
-            "remote-control relay",
+            "remote_control_relay",
+            "Set remote-control relay",
         ),
-        ("app-serving", "device_mesh.app_serving", "app serving"),
-        ("compute", "device_mesh.compute", "remote compute"),
+        ("app-serving", "app_serving", "Set app serving"),
+        ("compute", "compute", "Set remote compute"),
     ] {
-        section = section.with_action(bool_flip_spec(id, key, b(key, false), label));
+        section = section.with_action(device_mesh_bool_spec(id, label, service));
+    }
+    for (workspace_id, name) in crate::panes::device_mesh::resource_workspaces()
+        .into_iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
+        let resource_id = format!("settings.device-mesh-workspace:{workspace_id}");
+        let action = ActionSpec::typed_operation(
+            "set-available",
+            "Set availability on this device",
+            "On or off on this device",
+            OperationKind::Effect,
+            DEVICE_MESH_OPERATION_TYPE,
+            vec![ActionParam::required(
+                "value",
+                ParamType::Boolean,
+                "Whether this workspace is available on this device",
+            )],
+            move |args| {
+                encode_local_operation(
+                    DEVICE_MESH_OPERATION_TYPE,
+                    &DeviceMeshOperation::SetWorkspace {
+                        id: workspace_id,
+                        enabled: args.boolean("value").unwrap_or(false),
+                    },
+                )
+            },
+        )
+        .with_contract(local_operation_contract(&[
+            "device-local",
+            "device-mesh",
+            "workspace",
+        ]));
+        section = section.with_child(
+            Resource::new(resource_id, "settings.device-mesh-workspace", name).with_action(action),
+        );
     }
     for (id, key, label) in [
         (
@@ -3164,14 +3484,136 @@ fn device_mesh_section(doc: &AutoCommit) -> Resource {
             "Continuity app continuations",
         ),
     ] {
-        section = section.with_action(bool_flip_spec(id, key, b(key, false), label));
+        let service = key.strip_prefix("device_mesh.").unwrap_or(key).to_string();
+        section = section.with_action(device_mesh_bool_spec(id, label, &service));
     }
     section
+}
+
+fn device_mesh_choice_spec(
+    id: &'static str,
+    label: &'static str,
+    choices: &'static [&'static str],
+    operation: fn(String) -> DeviceMeshOperation,
+) -> ActionSpec {
+    let spec = ActionSpec::typed_operation(
+        id,
+        label,
+        "Choose a value",
+        OperationKind::Effect,
+        DEVICE_MESH_OPERATION_TYPE,
+        vec![
+            ActionParam::required("choice", ParamType::Text, "Device-local value")
+                .with_choices(choices.iter().copied()),
+        ],
+        move |args| {
+            encode_local_operation(
+                DEVICE_MESH_OPERATION_TYPE,
+                &operation(args.text("choice").unwrap_or_default().to_string()),
+            )
+        },
+    )
+    .with_contract(local_operation_contract(&[
+        "device-local",
+        "security",
+        "device-mesh",
+    ]));
+    if id == "role" {
+        spec.destructive()
+    } else {
+        spec
+    }
+}
+
+fn device_mesh_bool_spec(id: &str, label: &str, service: &str) -> ActionSpec {
+    let service = service.to_string();
+    ActionSpec::typed_operation(
+        id,
+        label,
+        "On or off on this device",
+        OperationKind::Effect,
+        DEVICE_MESH_OPERATION_TYPE,
+        vec![ActionParam::required(
+            "value",
+            ParamType::Boolean,
+            "Whether this local service is enabled",
+        )],
+        move |args| {
+            encode_local_operation(
+                DEVICE_MESH_OPERATION_TYPE,
+                &DeviceMeshOperation::SetService {
+                    service: service.clone(),
+                    enabled: args.boolean("value").unwrap_or(false),
+                },
+            )
+        },
+    )
+    .with_contract(local_operation_contract(&[
+        "device-local",
+        "security",
+        "device-mesh",
+    ]))
+}
+
+pub fn device_mesh_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
+    let resource = device_mesh_section(&AutoCommit::new());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".to_string(), serde_json::Value::Bool(value))])
+    })
+    .ok()
+}
+
+pub fn device_mesh_text_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<String>> {
+    let resource = device_mesh_section(&AutoCommit::new());
+    let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
+    tilo_actions::ActionBinding::new(&resource, spec, |choice| {
+        serde_json::Map::from_iter([("choice".to_string(), serde_json::Value::String(choice))])
+    })
+    .ok()
+}
+
+pub fn device_mesh_workspace_binding(
+    workspace_id: u64,
+) -> Option<tilo_actions::ActionBinding<bool>> {
+    let resource = device_mesh_section(&AutoCommit::new())
+        .children
+        .into_iter()
+        .find(|resource| {
+            resource.id.as_str() == format!("settings.device-mesh-workspace:{workspace_id}")
+        })?;
+    let spec = resource
+        .actions
+        .iter()
+        .find(|spec| spec.id == "set-available")?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".to_string(), serde_json::Value::Bool(value))])
+    })
+    .ok()
 }
 
 impl ResourceProvider for crate::SettingsApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources_with_accounts(doc, self.account_resource_inventory())
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id == "settings.root" {
+            // Exact root lookup is intentionally shallow. Building every live
+            // hardware inventory merely to resolve the root made one address
+            // proportional to every device, stream, account, job, and model.
+            let root = Category::ALL.iter().copied().fold(
+                Resource::new("settings.root", "settings.root", "Settings"),
+                |root, category| root.with_child(pane_navigation_resource(category)),
+            );
+            return Some(root);
+        }
+        let category = category_for_resource_id(id)?;
+        let prefs = SystemPrefs::load();
+        find_resource(
+            section_resource(category, doc, &prefs, self.account_resource_inventory()),
+            id,
+        )
     }
 }
 
@@ -3285,6 +3727,44 @@ mod tests {
     }
 
     #[test]
+    fn exact_root_lookup_is_shallow_and_section_lookup_is_canonical() {
+        let app = SettingsApp::new();
+        let doc = AutoCommit::new();
+        let root =
+            ResourceProvider::resource(&app, &doc, "settings.root").expect("root resolves exactly");
+        assert_eq!(root.children.len(), Category::ALL.len());
+        assert!(
+            root.children
+                .iter()
+                .all(|section| section.children.is_empty()),
+            "resolving the root must not enumerate live dynamic inventories"
+        );
+
+        let appearance =
+            ResourceProvider::resource(&app, &doc, &pane_resource_id(Category::Appearance))
+                .expect("one section resolves without rebuilding every other section");
+        assert_eq!(appearance.label, Category::Appearance.label());
+        assert!(appearance.actions.iter().any(|action| action.id == "theme"));
+    }
+
+    #[test]
+    fn adversarial_account_inventory_is_hard_bounded() {
+        let accounts: Vec<_> = (0..100_001)
+            .map(|index| accounts::Account::new(format!("account-{index}"), "nextcloud"))
+            .collect();
+        let section = accounts_section(&accounts);
+        assert_eq!(section.children.len(), MAX_DYNAMIC_RESOURCES);
+        assert_eq!(
+            section.children[0].id.as_str(),
+            "settings.account:account-0"
+        );
+        assert_eq!(
+            section.children[MAX_DYNAMIC_RESOURCES - 1].id.as_str(),
+            "settings.account:account-255"
+        );
+    }
+
+    #[test]
     fn account_removal_resource_requires_host_confirmation() {
         let mut account = accounts::Account::new("stable-account", "nextcloud");
         account.display_name = "Work cloud".into();
@@ -3306,6 +3786,33 @@ mod tests {
             remove.contract.confirmation,
             tilo_actions::ConfirmationPolicy::Confirm
         );
+        let test = account
+            .actions
+            .iter()
+            .find(|action| action.id == "test")
+            .expect("account test resource action");
+        assert_eq!(
+            test.contract.execution,
+            ExecutionMode::Background { cancellable: false }
+        );
+        assert!(matches!(test.contract.result, ResultSpec::Json { .. }));
+    }
+
+    #[test]
+    fn storage_reclamation_requires_host_confirmation() {
+        let storage = storage_section();
+        for id in ["cleanup-caches", "free-synced-files"] {
+            let action = storage
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("{id} action is published"));
+            assert_eq!(action.contract.risk, tilo_actions::RiskLevel::Destructive);
+            assert_eq!(
+                action.contract.execution,
+                ExecutionMode::Background { cancellable: false }
+            );
+        }
     }
 
     /// A bool flip spec's target follows the current document value: on when the
@@ -3772,57 +4279,86 @@ mod tests {
     }
 
     #[test]
-    fn continuity_actions_are_discoverable_and_target_the_closed_boolean_catalogue() {
+    fn continuity_actions_are_typed_device_local_effects() {
         let resources = provide_resources(&AutoCommit::new());
         let devices = find(&resources, &pane_resource_id(Category::DeviceMesh));
         let targets = [
-            ("continuity-enabled", "device_mesh.continuity.enabled"),
-            ("continuity-clipboard", "device_mesh.continuity.clipboard"),
-            (
-                "continuity-notifications",
-                "device_mesh.continuity.notifications",
-            ),
-            (
-                "continuity-wifi-settings",
-                "device_mesh.continuity.wifi_settings",
-            ),
-            ("continuity-media", "device_mesh.continuity.media"),
-            (
-                "continuity-display-input",
-                "device_mesh.continuity.display_input",
-            ),
-            (
-                "continuity-file-transfer",
-                "device_mesh.continuity.file_transfer",
-            ),
+            ("continuity-enabled", "continuity.enabled"),
+            ("continuity-clipboard", "continuity.clipboard"),
+            ("continuity-notifications", "continuity.notifications"),
+            ("continuity-wifi-settings", "continuity.wifi_settings"),
+            ("continuity-media", "continuity.media"),
+            ("continuity-display-input", "continuity.display_input"),
+            ("continuity-file-transfer", "continuity.file_transfer"),
             (
                 "continuity-realtime-sessions",
-                "device_mesh.continuity.realtime_sessions",
+                "continuity.realtime_sessions",
             ),
-            (
-                "continuity-typed-gamepad",
-                "device_mesh.continuity.typed_gamepad",
-            ),
+            ("continuity-typed-gamepad", "continuity.typed_gamepad"),
             (
                 "continuity-app-continuations",
-                "device_mesh.continuity.app_continuations",
+                "continuity.app_continuations",
             ),
         ];
 
-        for (id, key) in targets {
+        for (id, service) in targets {
             let spec = devices
                 .actions
                 .iter()
                 .find(|action| action.id == id)
                 .unwrap_or_else(|| panic!("missing Continuity action {id}"));
-            let encoded = immediate_encode(spec);
-            let decoded = registry().decode(&encoded).expect("registered action");
-            let mut doc = AutoCommit::new();
-            let mut transport = LocalTransport::new();
-            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
-                .expect("catalogued boolean target is valid");
-            assert_eq!(doc_bool(&doc, key), Some(true));
+            assert_eq!(spec.kind, OperationKind::Effect);
+            assert_eq!(
+                spec.operation_type.as_deref(),
+                Some(DEVICE_MESH_OPERATION_TYPE)
+            );
+            let args =
+                serde_json::Map::from_iter([("value".to_string(), serde_json::Value::Bool(true))]);
+            let encoded = spec.build_json(&args).expect("typed boolean value");
+            let decoded: DeviceMeshOperation =
+                serde_json::from_slice(&encoded.payload).expect("device-local payload");
+            assert_eq!(
+                decoded,
+                DeviceMeshOperation::SetService {
+                    service: service.into(),
+                    enabled: true,
+                }
+            );
         }
+
+        let mut doc = AutoCommit::new();
+        assert!(
+            set_text_action("device_mesh.role", "Always-on server")
+                .apply(&mut doc)
+                .is_err(),
+            "device trust policy must not enter the replayable document action namespace"
+        );
+        let role = devices
+            .actions
+            .iter()
+            .find(|action| action.id == "role")
+            .unwrap();
+        assert_eq!(role.contract.risk, tilo_actions::RiskLevel::Destructive);
+    }
+
+    #[test]
+    fn agent_provider_configuration_is_a_typed_immediate_local_effect() {
+        let resources = provide_resources(&AutoCommit::new());
+        let models = find(&resources, &pane_resource_id(Category::AgentModels));
+        let add = models
+            .actions
+            .iter()
+            .find(|action| action.id == "add-openai-compatible")
+            .expect("provider creation is agent-addressable");
+        assert_eq!(add.kind, OperationKind::Effect);
+        assert_eq!(add.locus, ExecutionLocus::ClientLocal);
+        assert_eq!(
+            add.operation_type.as_deref(),
+            Some(AGENT_PROVIDER_OPERATION_TYPE)
+        );
+        assert!(matches!(add.contract.execution, ExecutionMode::Immediate));
+        assert!(matches!(add.contract.result, ResultSpec::None));
+        assert!(add.contract.tags.iter().any(|tag| tag == "device-local"));
     }
 
     #[test]
