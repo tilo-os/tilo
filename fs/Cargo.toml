@@ -5,49 +5,110 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The content plane is portable. Filesystem projection, mounting and service
+# protocols remain enabled by default for the OS; app-only consumers opt out.
+[features]
+default = ["filesystem"]
+filesystem = [
+    "dep:clap",
+    "dep:iroh",
+    "dep:iroh-base",
+    "dep:iroh-gossip",
+    "dep:automerge",
+    "dep:qdoc",
+    "dep:collab-types",
+    "dep:ed25519-dalek",
+    "dep:getrandom",
+    "dep:thumbnail",
+    "dep:tilo-user-identity",
+    "dep:tilo-power-mgmt",
+    "dep:runtime-fs",
+    "dep:libc",
+    "dep:serde_bytes",
+    "dep:serde_json",
+    "dep:toml",
+    "dep:uuid",
+    "dep:thiserror",
+    "dep:hex",
+    "dep:blake3",
+    "dep:futures-util",
+    "dep:rand",
+    "dep:fuser",
+]
+
+[[bin]]
+name = "fs"
+path = "src/main.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "collab_release_matrix"
+path = "tests/collab_release_matrix.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "corruption_matrix"
+path = "tests/corruption_matrix.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "exact_share_process_fuse"
+path = "tests/exact_share_process_fuse.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "integration_test"
+path = "tests/integration_test.rs"
+required-features = ["filesystem"]
+
+[[test]]
+name = "performance_gate"
+path = "tests/performance_gate.rs"
+required-features = ["filesystem"]
+
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../crates/system/atomic-file" }
 anyhow.workspace = true
 bytes.workspace = true
-clap.workspace = true
-iroh.workspace = true
-iroh-base.workspace = true
+clap = { workspace = true, optional = true }
+iroh = { workspace = true, optional = true }
+iroh-base = { workspace = true, optional = true }
 iroh-blobs.workspace = true
-iroh-gossip.workspace = true
-automerge.workspace = true
-qdoc = { path = "../crates/doc/qdoc" }
-collab-types = { path = "../crates/collab/collab-types" }
-ed25519-dalek.workspace = true
-getrandom.workspace = true
+iroh-gossip = { workspace = true, optional = true }
+automerge = { workspace = true, optional = true }
+qdoc = { path = "../crates/doc/qdoc", optional = true }
+collab-types = { path = "../crates/collab/collab-types", optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
 # The shared thumbnail generator + content-addressed cache. Default features
 # only (raster images + EPUB covers — pure Rust, no native deps): the OS
 # filesystem daemon host-generates the light preview types and never pulls
 # pdfium or the gstreamer stack into the image. PDF/video previews are the
 # client's job (the file manager builds this crate with those features on).
-thumbnail = { path = "../crates/thumbnail" }
+thumbnail = { path = "../crates/thumbnail", optional = true }
 # The machine's one device key. The mount derives its iroh node key from
 # it rather than minting its own, so the node id names the device.
-tilo-user-identity = { path = "../crates/identity/tilo-user-identity" }
+tilo-user-identity = { path = "../crates/identity/tilo-user-identity", optional = true }
 # Bus-free, production battery/AC sampling for speculative-hydration policy.
-tilo-power-mgmt = { path = "../crates/system/power", default-features = false }
-runtime-fs = { path = "../crates/runtime/runtime-fs" }
-libc.workspace = true
+tilo-power-mgmt = { path = "../crates/system/power", default-features = false, optional = true }
+runtime-fs = { path = "../crates/runtime/runtime-fs", optional = true }
+libc = { workspace = true, optional = true }
 moka = { version = "0.12.15", features = ["sync"] }
 serde.workspace = true
-serde_bytes.workspace = true
-serde_json.workspace = true
-toml.workspace = true
-uuid.workspace = true
+serde_bytes = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
 tempfile.workspace = true
-thiserror.workspace = true
+thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["full"] }
-hex.workspace = true
-blake3.workspace = true
+hex = { workspace = true, optional = true }
+blake3 = { workspace = true, optional = true }
 postcard = { workspace = true, features = ["use-std"] }
 futures-lite.workspace = true
-futures-util.workspace = true
-rand.workspace = true
+futures-util = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Encode PNG fixtures for the thumbnail tests (the crate itself never decodes
@@ -58,8 +119,8 @@ image = { workspace = true, features = ["png"] }
 workspace = true
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-fuser.workspace = true
+fuser = { workspace = true, optional = true }
 
 # Shared filesystem and relay data remain available; no native mount provider.
 [target.'cfg(target_os = "macos")'.dependencies]
-fuser = { workspace = true, features = ["macos-no-mount"] }
+fuser = { workspace = true, features = ["macos-no-mount"], optional = true }
