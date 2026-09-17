@@ -78,7 +78,7 @@ jobs:
           docker volume create "$name-storage"
           # These volumes and privileges exist only in the disposable Kata CI
           # guest. No physical disk, TPM, host directory or Docker socket is mounted.
-          docker create --name "$name" --privileged \
+          docker create --name "$name" --privileged --memory=9g --memory-swap=9g \
             --mount "type=volume,src=$name-work,dst=/work" \
             --mount "type=volume,src=$name-storage,dst=/var/lib/containers" \
             --env REGISTRY_AUTH_FILE=/registry-auth.json \
