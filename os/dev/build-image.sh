@@ -324,6 +324,7 @@ else
     python3 "$TILO_OS_DIR/dev/sign-development-rootfs.py" \
       --rootfs-id "$_tilo_raw_rootfs" --architecture "$TILO_WINDOWS_ARCH" \
       --revision "$_tilo_development_revision" --public-bundle "$TILO_PUBLIC_TRUST_BUNDLE" \
+      --source-date-epoch "$SOURCE_DATE_EPOCH" \
       --manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256" \
       --signer "$TILO_PCR_PREDICTION_SIGNER" --target "$TILO_TARGET_IMGREF" \
       > "$_tilo_signing_work/receipt.json"

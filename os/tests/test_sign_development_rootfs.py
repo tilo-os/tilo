@@ -67,6 +67,7 @@ class RootfsIdentityTests(unittest.TestCase):
 
     def arguments(self):
         return argparse.Namespace(rootfs_id=IMAGE, architecture='aarch64', revision=REVISION,
+                                  source_date_epoch='1700000000',
                                   target='code.podesta.ai/qos/tilo-development:testing-aarch64',
                                   signer=Path('/var/lib/tilo-test-identity/signer'))
 
@@ -80,6 +81,8 @@ class RootfsIdentityTests(unittest.TestCase):
             producer.inputs(self.arguments())
             for field, value in [('rootfs_id', 'localhost/image:latest'), ('rootfs_id', 'a' * 12),
                                  ('architecture', 'x86_64'), ('revision', 'main'),
+                                 *[('source_date_epoch', value) for value in
+                                   ('', '-1', '1.5', '01', ' 1', '253402300800')],
                                  ('target', 'code.podesta.ai/qos/tilo:testing-aarch64'),
                                  ('signer', Path('/var/lib/../signer')),
                                  ('signer', DEV / 'development-signer.py')]:
