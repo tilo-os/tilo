@@ -61,6 +61,7 @@ pub(crate) mod tests;
 /// Process connections explicitly granted to one hosted Terminal instance.
 #[derive(Default)]
 pub struct HostedProcessServices {
+    #[cfg(unix)]
     pub ush: Option<std::os::unix::net::UnixStream>,
 }
 

@@ -21,8 +21,8 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Best-effort — a launch failure is logged, not surfaced.
-fn os_open(url: &str) {
-    if let Err(e) = open::that(url) {
+pub fn os_open(url: &str) {
+    if let Err(e) = open::that_detached(url) {
         tracing::warn!("Link: failed to open {url:?}: {e}");
     }
 }
