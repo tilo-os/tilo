@@ -1791,7 +1791,7 @@ impl FeedsApp {
     /// content's toolbar so it never collides with the right-aligned action
     /// buttons.
     fn toggle_button_rect(toolbar: Rect) -> Rect {
-        let size = 36.0;
+        let size = 44.0;
         let x = toolbar.x0 + 10.0;
         let cy = toolbar.y0 + HEADER_H / 2.0;
         Rect::new(x, cy - size / 2.0, x + size, cy + size / 2.0)
@@ -1801,7 +1801,7 @@ impl FeedsApp {
     /// header returns to the list. Empty otherwise.
     fn build_back_affordance(&mut self) {
         self.back_rect = if self.single_pane() && self.detail_pushed {
-            let size = 36.0;
+            let size = 44.0;
             let x = self.reader_rect.x0 + 10.0;
             let cy = self.reader_rect.y0 + HEADER_H / 2.0;
             Rect::new(x, cy - size / 2.0, x + size, cy + size / 2.0)
@@ -1820,6 +1820,11 @@ impl FeedsApp {
         let x0 = self.sidebar_rect.x0;
         let x1 = self.sidebar_rect.x1;
         let mut y = self.sidebar_rect.y0 + HEADER_H + 8.0;
+        let row_h = if self.tier() == Tier::Narrow {
+            44.0
+        } else {
+            SIDE_ROW_H
+        };
 
         let push = |rows: &mut Vec<SidebarRow>,
                     y: &mut f64,
@@ -1853,7 +1858,7 @@ impl FeedsApp {
         push(
             &mut rows,
             &mut y,
-            SIDE_ROW_H,
+            row_h,
             14.0,
             "All Articles".into(),
             self.store.total_unread(),
@@ -1863,7 +1868,7 @@ impl FeedsApp {
         push(
             &mut rows,
             &mut y,
-            SIDE_ROW_H,
+            row_h,
             14.0,
             "Unread".into(),
             self.store.total_unread(),
@@ -1873,7 +1878,7 @@ impl FeedsApp {
         push(
             &mut rows,
             &mut y,
-            SIDE_ROW_H,
+            row_h,
             14.0,
             "Starred".into(),
             self.store.total_starred(),
@@ -1904,7 +1909,7 @@ impl FeedsApp {
             push(
                 &mut rows,
                 &mut y,
-                SIDE_ROW_H,
+                row_h,
                 14.0,
                 name,
                 self.store.unread_for_folder(fid),
@@ -1923,7 +1928,11 @@ impl FeedsApp {
                     push(
                         &mut rows,
                         &mut y,
-                        SIDE_ROW_H - 2.0,
+                        if self.tier() == Tier::Narrow {
+                            row_h
+                        } else {
+                            SIDE_ROW_H - 2.0
+                        },
                         34.0,
                         title,
                         self.store.unread_for_feed(id),
@@ -1947,7 +1956,11 @@ impl FeedsApp {
                 push(
                     &mut rows,
                     &mut y,
-                    SIDE_ROW_H - 2.0,
+                    if self.tier() == Tier::Narrow {
+                        row_h
+                    } else {
+                        SIDE_ROW_H - 2.0
+                    },
                     18.0,
                     title,
                     self.store.unread_for_feed(id),
@@ -1975,7 +1988,11 @@ impl FeedsApp {
                 push(
                     &mut rows,
                     &mut y,
-                    SIDE_ROW_H - 2.0,
+                    if self.tier() == Tier::Narrow {
+                        row_h
+                    } else {
+                        SIDE_ROW_H - 2.0
+                    },
                     18.0,
                     format!("#{tag}"),
                     self.store.count_for(Filter::Tag(key)),
@@ -2013,9 +2030,14 @@ impl FeedsApp {
         for (i, id) in articles.iter().enumerate() {
             let top = content_top + i as f64 * LIST_ROW_H - self.list_scroll;
             let rect = Rect::new(x0, top, x1, top + LIST_ROW_H);
+            let star_size = if self.tier() == Tier::Narrow {
+                44.0
+            } else {
+                32.0
+            };
             let star_rect = Rect::new(
-                x1 - 40.0,
-                top + LIST_ROW_H - 34.0,
+                x1 - 8.0 - star_size,
+                top + LIST_ROW_H - 2.0 - star_size,
                 x1 - 8.0,
                 top + LIST_ROW_H - 2.0,
             );
@@ -2378,7 +2400,10 @@ impl FeedsApp {
         // --- popover ----------------------------------------------------
         // Right-align under the gear, but clamp inside the reader pane so the
         // controls never spill off the edge on a narrow reader column.
-        let ph = 196.0;
+        // Three rows of mobile-friendly controls plus the heading and gaps.
+        // The old 196px card forced every stepper/segment down to 26px, which
+        // made the phone popover precise-pointer UI despite ample room below.
+        let ph = 220.0;
         let pw = 268.0_f64.min(self.reader_rect.width() - 16.0).max(180.0);
         let px1 = btn.x1.min(self.reader_rect.x1 - 8.0);
         let px0 = (px1 - pw).max(self.reader_rect.x0 + 8.0);
@@ -2423,7 +2448,7 @@ impl FeedsApp {
             t * Affine::translate((lx, y + 6.0)),
             None,
         );
-        let bsz = 26.0;
+        let bsz = 44.0;
         let plus = Rect::new(rx - bsz, y, rx, y + bsz);
         let pct = format!("{}%", (self.settings.font_scale * 100.0).round() as i32);
         let pctw = measure_w(tr, &pct, 12.5);
@@ -2546,7 +2571,10 @@ impl FeedsApp {
             glyph,
             16.0,
             c.text_primary,
-            t * Affine::translate((rect.center().x - gw / 2.0, rect.y0 + 3.0)),
+            t * Affine::translate((
+                rect.center().x - gw / 2.0,
+                rect.y0 + (rect.height() - 20.0) / 2.0,
+            )),
             None,
             TextWeight::Semibold,
         );
@@ -2599,7 +2627,10 @@ impl FeedsApp {
             label,
             12.0,
             col,
-            t * Affine::translate((inner.center().x - lw / 2.0, inner.y0 + 6.0)),
+            t * Affine::translate((
+                inner.center().x - lw / 2.0,
+                inner.y0 + (inner.height() - 16.0) / 2.0,
+            )),
             None,
         );
         self.settings_hits.push((*rect, action));
@@ -3112,19 +3143,21 @@ fn draw_list(
         None,
         TextWeight::Bold,
     );
-    let count_label = format!("{count}");
-    let title_w0 = measure_w(tr, title, 17.0);
-    tr.draw_text(
-        scene,
-        &count_label,
-        13.0,
-        c.text_dim,
-        // `measure_w` can be a little tighter than the painted glyph bounds
-        // at high text contrast / fallback-font settings. Keep a generous,
-        // stable gap so “All Articles” and its count never read as one word.
-        t * Affine::translate((title_x + title_w0 + 18.0, rect.y0 + 19.0)),
-        None,
-    );
+    if rect.width() >= 480.0 {
+        let count_label = format!("{count}");
+        let title_w0 = measure_w(tr, title, 17.0);
+        tr.draw_text(
+            scene,
+            &count_label,
+            13.0,
+            c.text_dim,
+            // `measure_w` can be a little tighter than the painted glyph bounds
+            // at high text contrast / fallback-font settings. Keep a generous,
+            // stable gap so “All Articles” and its count never read as one word.
+            t * Affine::translate((title_x + title_w0 + 18.0, rect.y0 + 19.0)),
+            None,
+        );
+    }
     let header_bottom = rect.y0 + HEADER_H;
     hline(
         scene,
@@ -5631,6 +5664,24 @@ mod tests {
     }
 
     #[test]
+    fn phone_reading_settings_controls_are_touch_sized() {
+        let mut a = app();
+        a.force_detail_pushed();
+        a.force_reader_settings_open();
+        lay_out(&mut a, 390.0, 844.0);
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        a.paint(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
+        assert_eq!(a.settings_hits.len(), 8);
+        assert!(
+            a.settings_hits
+                .iter()
+                .all(|(rect, _)| rect.height() >= 44.0),
+            "every setting row and stepper must remain touch-sized"
+        );
+    }
+
+    #[test]
     fn icon_only_controls_publish_teaching_tooltips() {
         let mut a = app();
         let mut doc = AutoCommit::new();
@@ -5724,6 +5775,28 @@ mod tests {
                 .iter()
                 .any(|node| { node.action_target.as_deref() == Some("feeds.sidebar") })
         );
+    }
+
+    #[test]
+    fn phone_navigation_and_article_star_are_touch_sized() {
+        let mut a = app();
+        lay_out(&mut a, 390.0, 844.0);
+        assert!(a.hamburger_rect.width() >= 44.0 && a.hamburger_rect.height() >= 44.0);
+        assert!(
+            a.sidebar_rows
+                .iter()
+                .filter(|row| !matches!(row.role, RowRole::Section))
+                .all(|row| row.rect.height() >= 44.0)
+        );
+        assert!(
+            a.list_rows
+                .iter()
+                .all(|row| row.star_rect.width() >= 44.0 && row.star_rect.height() >= 44.0)
+        );
+
+        a.force_detail_pushed();
+        lay_out_keep(&mut a, 390.0, 844.0);
+        assert!(a.back_rect.width() >= 44.0 && a.back_rect.height() >= 44.0);
     }
 
     #[test]

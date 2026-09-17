@@ -37,7 +37,9 @@ use tilo_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Reso
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{CodeEditor, EmptyState, FlapState, Language, SplitLayout, Widget};
+use ui::widget::{
+    Button, ButtonFace, CodeEditor, EmptyState, FlapState, Language, SplitLayout, Widget,
+};
 
 use crate::connect_modal::ConnectModal;
 use crate::doc::{ConnectionsDoc, EditorDoc};
@@ -56,7 +58,7 @@ const TOOLBAR_H: f64 = 40.0;
 const BREAKPOINT: f64 = 820.0;
 /// Hamburger toggle box drawn at the left of the tab bar when the sidebar is
 /// not fully docked-open, so a collapsed sidebar can be summoned.
-const TOGGLE_SIZE: f64 = 26.0;
+const TOGGLE_SIZE: f64 = 34.0;
 /// The single externally-invokable effect protocol for live database work.
 /// Unlike document actions, these payloads contain only stable object ids and
 /// SQL/table names — never passwords or live driver handles.
@@ -351,6 +353,35 @@ impl DbClientApp {
             app.pending_query_confirmation = Some("DELETE FROM tracks".into());
         }
         app
+    }
+
+    /// Put the hermetic demo on a representative production surface for the
+    /// shared visual-matrix runner. This replaces undocumented environment
+    /// choreography with discoverable named scenarios.
+    pub fn apply_shot_scenario(&mut self, scenario: &str) {
+        match scenario {
+            "data" => {
+                self.session.select_table("albums");
+                self.session.tab = MainTab::Data;
+                self.session.load_table_data();
+                self.session.block_until_idle();
+            }
+            "structure" => {
+                self.session.select_table("albums");
+                self.session.tab = MainTab::Structure;
+            }
+            "connect" => self.modal.open_new(),
+            "error" => {
+                self.session.status = RunStatus::Error(
+                    "Connection refused — retry when the server is reachable".into(),
+                );
+            }
+            "confirm" => {
+                self.pending_query_confirmation = Some("DELETE FROM tracks".into());
+            }
+            "status" => self.arm_status_bubble_for_shots(),
+            _ => {}
+        }
     }
 
     fn build(session: Session, demo: bool) -> Self {
@@ -2011,45 +2042,24 @@ impl DbClientApp {
             panel.x1 - 20.0,
             panel.y1 - 16.0,
         );
-        scene.fill(
-            Fill::NonZero,
-            t,
-            theme.bg_app,
-            None,
-            &self.confirm_cancel_btn.to_rounded_rect(6.0),
-        );
-        scene.fill(
-            Fill::NonZero,
-            t,
-            theme.tokens.colors.semantic.danger,
-            None,
-            &self.confirm_run_btn.to_rounded_rect(6.0),
-        );
-        tr.draw_text(
+        Button::paint(
             scene,
-            "Cancel",
-            12.0,
-            theme.text_primary,
-            t * Affine::translate((
-                self.confirm_cancel_btn.x0 + 20.0,
-                self.confirm_cancel_btn.y0 + 8.0,
-            )),
-            None,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(self.confirm_cancel_btn, "Cancel")
+                .radius(6.0)
+                .hovered(self.confirm_cancel_btn.contains(self.cursor)),
         );
-        tr.draw_text(
+        Button::paint(
             scene,
-            "Run",
-            12.0,
-            theme
-                .tokens
-                .colors
-                .on_surface(theme.tokens.colors.semantic.danger)
-                .ink,
-            t * Affine::translate((
-                self.confirm_run_btn.x0 + 21.0,
-                self.confirm_run_btn.y0 + 8.0,
-            )),
-            None,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(self.confirm_run_btn, "Run")
+                .radius(6.0)
+                .hovered(self.confirm_run_btn.contains(self.cursor))
+                .danger(),
         );
     }
 
@@ -2539,7 +2549,9 @@ impl DbClientApp {
         y: f64,
     ) {
         let p = theme.db();
-        let del = Rect::new(row.x1 - 26.0, y + 4.0, row.x1 - 6.0, y + 24.0);
+        // Keep the hover-only affordance comfortably targetable; the old
+        // 20×20 box was visually subtle but punishing with touch or tremor.
+        let del = Rect::new(row.x1 - 36.0, y + 4.0, row.x1 - 4.0, y + 36.0);
         self.conn_delete_rects.push((idx, del));
         let center = del.center();
         let over = del.contains(self.cursor);
@@ -2919,7 +2931,14 @@ impl DbClientApp {
             let (msg, color) = match &self.session.status {
                 RunStatus::Ok(m) => (m.clone(), theme.tokens.colors.semantic.success),
                 RunStatus::Error(m) if self.session.query_result.is_some() => (
-                    format!("✕ Query failed — previous result remains visible: {m}"),
+                    if self.main_rect.width() < 700.0 {
+                        // The detailed driver error remains available through
+                        // the status resource/bubble. Keep the inline strip
+                        // legible instead of letting it run beneath the edge.
+                        "✕ Query failed — previous results kept".to_string()
+                    } else {
+                        format!("✕ Query failed — previous result remains visible: {m}")
+                    },
                     theme.tokens.colors.semantic.danger,
                 ),
                 RunStatus::Error(m) => (format!("✕ {m}"), theme.tokens.colors.semantic.danger),
@@ -3755,6 +3774,30 @@ mod behavior_tests {
             "the first run asks for confirmation instead of issuing the effect"
         );
         assert!(!app.session.busy());
+    }
+
+    #[test]
+    fn visual_audit_scenarios_reach_distinct_production_surfaces() {
+        let mut data = DbClientApp::new_demo();
+        data.apply_shot_scenario("data");
+        assert_eq!(data.session.tab, MainTab::Data);
+        assert!(data.session.data_result.is_some());
+
+        let mut structure = DbClientApp::new_demo();
+        structure.apply_shot_scenario("structure");
+        assert_eq!(structure.session.tab, MainTab::Structure);
+
+        let mut connect = DbClientApp::new_demo();
+        connect.apply_shot_scenario("connect");
+        assert!(connect.modal.is_open());
+
+        let mut confirm = DbClientApp::new_demo();
+        confirm.apply_shot_scenario("confirm");
+        assert_eq!(
+            confirm.pending_query_confirmation.as_deref(),
+            Some("DELETE FROM tracks")
+        );
+        assert!(TOGGLE_SIZE >= 32.0, "narrow navigation must be targetable");
     }
 
     #[test]

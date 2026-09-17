@@ -24,19 +24,33 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
+const SHOT_SCENARIOS: &[&str] = &[
+    "empty",
+    "status",
+    "data",
+    "structure",
+    "connect",
+    "error",
+    "confirm",
+];
+
 #[allow(
     clippy::unnecessary_wraps,
     reason = "signature is fixed by ui::launch::ShotFactory"
 )]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     let width = f64::from(args.viewport.unwrap_or(ui::launch::DEFAULT_VIEWPORT).0);
-    Ok(if args.has("--empty") {
-        db_client::app_root_for_shot_empty(width)
-    } else if args.has("--status") {
-        db_client::app_root_for_shot_status(width)
-    } else {
-        db_client::app_root_for_shot(width)
-    })
+    Ok(
+        if args.scenario.as_deref() == Some("empty") || args.has("--empty") {
+            db_client::app_root_for_shot_empty(width)
+        } else if args.scenario.as_deref() == Some("status") || args.has("--status") {
+            db_client::app_root_for_shot_status(width)
+        } else if let Some(scenario) = args.scenario.as_deref() {
+            db_client::app_root_for_shot_scenario(width, scenario)
+        } else {
+            db_client::app_root_for_shot(width)
+        },
+    )
 }
 
 #[cfg(feature = "thin")]
@@ -46,6 +60,7 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.tilo.db-client", db_client::app_root)
             .shot_root(shot_root)
+            .scenarios(SHOT_SCENARIOS)
             .allowed_flags(&["--empty", "--status"])
             .configure_app(|app| db_client::actions::register(app.action_registry_mut())),
     );

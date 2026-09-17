@@ -93,6 +93,10 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         "reader-settings" => {
             app.set_read_font(ReadFont::Serif);
             app.set_read_theme(ReadTheme::Sepia);
+            // At middle/narrow widths the reader is a pushed detail page. A
+            // settings scenario that leaves the article list in front never
+            // captures the control it claims to exercise.
+            app.force_detail_pushed();
             app.force_reader_settings_open();
         }
         // A "Refresh all" mid-flight: the per-feed progress strip + bar.

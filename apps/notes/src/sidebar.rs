@@ -44,12 +44,12 @@ use crate::num;
 /// Per-row height. Comfortable rather than cramped — a page row breathes
 /// with vertical air above and below its label instead of butting rows
 /// edge to edge.
-const ROW_HEIGHT: f64 = 30.0;
+const ROW_HEIGHT: f64 = 32.0;
 /// Height of the sidebar header strip that hosts the "Pages" label and
 /// the "+" new-page button. Rows start below it.
 const HEADER_HEIGHT: f64 = 42.0;
 /// Side length of the square "+" new-page button in the header.
-const NEW_BTN_SIZE: f64 = 26.0;
+const NEW_BTN_SIZE: f64 = 32.0;
 /// Right/vertical inset of the "+" button inside the header strip.
 const NEW_BTN_MARGIN: f64 = 8.0;
 /// Left content inset: rows, the header label and the selection pill all

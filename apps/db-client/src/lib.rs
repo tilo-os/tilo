@@ -117,3 +117,11 @@ pub fn app_root_for_shot_status(width: f64) -> Box<dyn Widget> {
     app.arm_status_bubble_for_shots();
     Box::new(app)
 }
+
+/// Build a populated screenshot root in a named representative state.
+pub fn app_root_for_shot_scenario(width: f64, scenario: &str) -> Box<dyn Widget> {
+    let mut app = DbClientApp::new_demo();
+    app.apply_shot_scenario(scenario);
+    app.snap_flap_for_width(width);
+    Box::new(app)
+}
