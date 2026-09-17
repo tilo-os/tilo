@@ -99,7 +99,7 @@ struct SharedRowHit {
     annotation: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LibraryTab {
     Queue,
     Recent,
@@ -1109,6 +1109,37 @@ impl PlayerApp {
         self.request_library_action("video-player.history.local", "clear");
     }
 
+    fn request_library_hide(&mut self) {
+        self.request_library_action("video-player.application", "hide-library");
+    }
+
+    fn request_queue_library(&mut self) {
+        self.request_library_action("video-player.queue.local", "show");
+    }
+
+    fn request_recent_library(&mut self) {
+        self.request_library_action("video-player.history.local", "show");
+    }
+
+    fn request_shared_library(&mut self) {
+        self.request_library_action("video-player.playlists.shared", "show");
+    }
+
+    /// The Library button and `L` shortcut choose a concrete, replay-safe
+    /// action from the current presentation. We never publish a toggle: a
+    /// replay or delayed agent invocation must not invert a newer user choice.
+    fn request_library_visibility_change(&mut self) {
+        if self.library_visible {
+            self.request_library_hide();
+        } else {
+            match self.library_tab {
+                LibraryTab::Queue => self.request_queue_library(),
+                LibraryTab::Recent => self.request_recent_library(),
+                LibraryTab::Shared => self.request_shared_library(),
+            }
+        }
+    }
+
     fn dispatch_shared(&mut self, doc: &mut AutoCommit, action: &crate::shared::SharedAction) {
         let context = crate::shared::history_context(action);
         self.actions
@@ -1362,12 +1393,22 @@ impl PlayerApp {
             }
             PlayerOperation::RevealLibrary => {
                 self.library_visible = true;
+                self.library_tab = LibraryTab::Queue;
+                self.player.reveal_controls();
+            }
+            PlayerOperation::RevealRecentLibrary => {
+                self.library_visible = true;
+                self.library_tab = LibraryTab::Recent;
                 self.player.reveal_controls();
             }
             PlayerOperation::RevealSharedLibrary => {
                 self.library_visible = true;
                 self.library_tab = LibraryTab::Shared;
                 self.player.reveal_controls();
+            }
+            PlayerOperation::HideLibrary => {
+                self.library_visible = false;
+                self.library_focus_id = None;
             }
             PlayerOperation::Close => self.close_media(),
             PlayerOperation::TogglePlayback => self.player.toggle_play(),
@@ -2461,13 +2502,13 @@ impl PlayerApp {
     fn handle_app_pointer(&mut self, state: &mut AutoCommit) -> bool {
         if self.library_visible && self.library_panel_rect.contains(self.last_cursor) {
             if self.library_close_rect.contains(self.last_cursor) {
-                self.library_visible = false;
+                self.request_library_hide();
             } else if self.library_queue_tab_rect.contains(self.last_cursor) {
-                self.library_tab = LibraryTab::Queue;
+                self.request_queue_library();
             } else if self.library_recent_tab_rect.contains(self.last_cursor) {
-                self.library_tab = LibraryTab::Recent;
+                self.request_recent_library();
             } else if self.library_shared_tab_rect.contains(self.last_cursor) {
-                self.library_tab = LibraryTab::Shared;
+                self.request_shared_library();
             } else if self.library_tab == LibraryTab::Shared
                 && self.shared_watch_later_rect.contains(self.last_cursor)
             {
@@ -2525,20 +2566,22 @@ impl PlayerApp {
             return true;
         }
         if self.overlay_visible() && self.library_button_rect.contains(self.last_cursor) {
-            self.library_visible = !self.library_visible;
-            self.player.reveal_controls();
-            self.dirty = true;
+            self.request_library_visibility_change();
             return true;
         }
         false
     }
 
-    fn handle_app_shortcut(
+    /// Handle the keyboard values this app owns. Factoring this from winit's
+    /// event carrier keeps shortcut tests fully safe and avoids fabricating
+    /// invalid platform event structs just to exercise a key binding.
+    fn handle_app_shortcut_input(
         &mut self,
-        event: &winit::event::KeyEvent,
+        logical_key: &winit::keyboard::Key,
+        state: ElementState,
         modifiers: winit::event::Modifiers,
     ) -> bool {
-        if event.state != ElementState::Pressed {
+        if state != ElementState::Pressed {
             return false;
         }
         // The library is an app-owned side panel rather than a modal supplied
@@ -2547,30 +2590,39 @@ impl PlayerApp {
         // header button. Do not consume Escape while the panel is absent: the
         // shell and the embedded player may have a more relevant use for it.
         if matches!(
-            &event.logical_key,
+            logical_key,
             winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
         ) && self.library_visible
         {
-            self.library_visible = false;
-            self.library_focus_id = None;
-            self.dirty = true;
+            self.request_library_hide();
             return true;
         }
-        let winit::keyboard::Key::Character(key) = &event.logical_key else {
+        let winit::keyboard::Key::Character(key) = logical_key else {
             return false;
         };
         if modifiers.state().control_key() && key.eq_ignore_ascii_case("o") {
             self.request_open_action();
         } else if key.eq_ignore_ascii_case("l") {
-            self.library_visible = !self.library_visible;
-            self.player.reveal_controls();
-            self.dirty = true;
+            self.request_library_visibility_change();
         } else if key.eq_ignore_ascii_case("p") && self.player.has_media() {
             self.perform_resource_operation(PlayerOperation::OpenPictureInPicture);
         } else {
             return false;
         }
         true
+    }
+
+    /// Route a logical key through the app-owned shortcuts, then the focused
+    /// reusable player surface. This mirrors the live event order while
+    /// remaining safe to exercise without fabricating a platform `KeyEvent`.
+    fn route_key_input(
+        &mut self,
+        logical_key: &winit::keyboard::Key,
+        state: ElementState,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        self.handle_app_shortcut_input(logical_key, state, modifiers)
+            || self.player.handle_key_input(logical_key, state)
     }
 }
 
@@ -3061,7 +3113,7 @@ impl Widget for PlayerApp {
             return;
         }
         if let WindowEvent::KeyboardInput { event, .. } = event
-            && self.handle_app_shortcut(event, *modifiers)
+            && self.route_key_input(&event.logical_key, event.state, *modifiers)
         {
             *handled = true;
             return;
@@ -3376,9 +3428,7 @@ impl Widget for PlayerApp {
             self.request_open_action();
             true
         } else if target == "video-player.library" && matches!(action, ui::a11y::Action::Activate) {
-            self.library_visible = !self.library_visible;
-            self.player.reveal_controls();
-            self.dirty = true;
+            self.request_library_visibility_change();
             true
         } else if let Some(item_id) = target.strip_prefix("video-player.library.play.")
             && matches!(action, ui::a11y::Action::Activate)
@@ -3388,27 +3438,22 @@ impl Widget for PlayerApp {
         } else if target == "video-player.library.close"
             && matches!(action, ui::a11y::Action::Activate)
         {
-            self.library_visible = false;
-            self.library_focus_id = None;
-            self.dirty = true;
+            self.request_library_hide();
             true
         } else if target == "video-player.library.tab.queue"
             && matches!(action, ui::a11y::Action::Activate)
         {
-            self.library_tab = LibraryTab::Queue;
-            self.dirty = true;
+            self.request_queue_library();
             true
         } else if target == "video-player.library.tab.recent"
             && matches!(action, ui::a11y::Action::Activate)
         {
-            self.library_tab = LibraryTab::Recent;
-            self.dirty = true;
+            self.request_recent_library();
             true
         } else if target == "video-player.library.tab.shared"
             && matches!(action, ui::a11y::Action::Activate)
         {
-            self.library_tab = LibraryTab::Shared;
-            self.dirty = true;
+            self.request_shared_library();
             true
         } else if target == "video-player.shared.watch-later"
             && matches!(action, ui::a11y::Action::Activate)
@@ -3860,7 +3905,14 @@ mod tests {
             &mut doc,
             &path,
         ));
-        assert!(app.library_tab == LibraryTab::Recent);
+        let recent = Widget::take_control_invocation(&mut app).expect("recent intent");
+        assert_eq!(recent.address.resource, "video-player.history.local");
+        assert_eq!(recent.address.action, "show");
+        assert_eq!(
+            app.library_tab,
+            LibraryTab::Queue,
+            "a11y did not bypass host routing"
+        );
         assert!(Widget::perform_semantic_action(
             &mut app,
             "video-player.library.close",
@@ -3868,6 +3920,14 @@ mod tests {
             &mut doc,
             &path,
         ));
+        let close = Widget::take_control_invocation(&mut app).expect("close intent");
+        assert_eq!(close.address.resource, "video-player.application");
+        assert_eq!(close.address.action, "hide-library");
+        assert!(app.library_visible, "a11y did not bypass host routing");
+
+        app.perform_resource_operation(PlayerOperation::RevealRecentLibrary);
+        assert_eq!(app.library_tab, LibraryTab::Recent);
+        app.perform_resource_operation(PlayerOperation::HideLibrary);
         assert!(!app.library_visible);
     }
 
@@ -3878,17 +3938,18 @@ mod tests {
         app.last_cursor = Point::new(20.0, 20.0);
         assert_eq!(app.tooltip(), Some("Close library (Escape)"));
 
-        let escape = {
-            // `winit` intentionally does not expose a lightweight public key
-            // constructor. This mirrors the existing Space routing test above
-            // while only initializing the fields this handler reads.
-            let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            event.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
-            event.state = ElementState::Pressed;
-            event
-        };
-        assert!(app.handle_app_shortcut(&escape, winit::event::Modifiers::default()));
-        assert!(!app.library_visible);
+        assert!(app.handle_app_shortcut_input(
+            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+            ElementState::Pressed,
+            winit::event::Modifiers::default(),
+        ));
+        let close = Widget::take_control_invocation(&mut app).expect("escape close intent");
+        assert_eq!(close.address.resource, "video-player.application");
+        assert_eq!(close.address.action, "hide-library");
+        assert!(
+            app.library_visible,
+            "Escape did not bypass the host action lifecycle"
+        );
     }
 
     #[test]
@@ -3950,6 +4011,125 @@ mod tests {
                 "media.presentation",
             ]
         );
+    }
+
+    #[test]
+    fn library_navigation_is_published_as_canonical_actions() {
+        let app = PlayerApp::for_shot(None, Some("library"));
+        let resources = Widget::resources(&app, &AutoCommit::new());
+        let queue = find_resource(&resources, "video-player.queue.local").expect("queue resource");
+        let recent =
+            find_resource(&resources, "video-player.history.local").expect("recent resource");
+        let shared = find_resource(&resources, "video-player.playlists.shared")
+            .expect("shared library resource");
+        let root = &resources[0];
+
+        assert!(
+            root.actions
+                .iter()
+                .any(|action| action.id == "show-library")
+        );
+        assert!(
+            root.actions
+                .iter()
+                .any(|action| action.id == "hide-library")
+        );
+        assert!(queue.actions.iter().any(|action| action.id == "show"));
+        assert!(recent.actions.iter().any(|action| action.id == "show"));
+        assert!(shared.actions.iter().any(|action| action.id == "show"));
+        for action in root
+            .actions
+            .iter()
+            .filter(|action| matches!(action.id.as_str(), "show-library" | "hide-library"))
+            .chain(queue.actions.iter().filter(|action| action.id == "show"))
+            .chain(recent.actions.iter().filter(|action| action.id == "show"))
+            .chain(shared.actions.iter().filter(|action| action.id == "show"))
+        {
+            assert_eq!(action.contract.retry, tilo_actions::RetryPolicy::Idempotent);
+            assert_eq!(
+                action.contract.execution,
+                tilo_actions::ExecutionMode::Immediate
+            );
+            assert_eq!(
+                action.contract.tags,
+                vec!["device-local", "media", "presentation"]
+            );
+        }
+        let queued_item = queue.children.first().expect("queued item");
+        assert_eq!(
+            queued_item
+                .actions
+                .iter()
+                .find(|action| action.id == "remove")
+                .expect("remove action")
+                .contract
+                .retry,
+            tilo_actions::RetryPolicy::AtMostOnce
+        );
+    }
+
+    #[test]
+    fn library_visibility_controls_restore_the_last_explicit_tab() {
+        let mut app = PlayerApp::for_shot(None, Some("library"));
+        let mut doc = AutoCommit::new();
+
+        // Pointer activation reopens Recent, not the hard-coded Queue default.
+        app.library_tab = LibraryTab::Recent;
+        app.library_button_rect = Rect::new(0.0, 0.0, 100.0, 44.0);
+        app.last_cursor = Point::new(20.0, 20.0);
+        assert!(app.handle_app_pointer(&mut doc));
+        let hide = Widget::take_control_invocation(&mut app).expect("pointer hide intent");
+        assert_eq!(hide.address.action, "hide-library");
+        app.perform_resource_operation(PlayerOperation::HideLibrary);
+        assert!(app.handle_app_pointer(&mut doc));
+        let recent = Widget::take_control_invocation(&mut app).expect("pointer reopen intent");
+        assert_eq!(recent.address.resource, "video-player.history.local");
+        assert_eq!(recent.address.action, "show");
+
+        // `L` uses the same explicit intent and retains a Shared view.
+        app.perform_resource_operation(PlayerOperation::RevealSharedLibrary);
+        let shortcut = winit::keyboard::Key::Character("l".into());
+        assert!(app.handle_app_shortcut_input(
+            &shortcut,
+            ElementState::Pressed,
+            winit::event::Modifiers::default(),
+        ));
+        let hide = Widget::take_control_invocation(&mut app).expect("shortcut hide intent");
+        assert_eq!(hide.address.action, "hide-library");
+        app.perform_resource_operation(PlayerOperation::HideLibrary);
+        assert!(app.handle_app_shortcut_input(
+            &shortcut,
+            ElementState::Pressed,
+            winit::event::Modifiers::default(),
+        ));
+        let shared = Widget::take_control_invocation(&mut app).expect("shortcut reopen intent");
+        assert_eq!(shared.address.resource, "video-player.playlists.shared");
+        assert_eq!(shared.address.action, "show");
+
+        // Assistive-tech activation is routed through the identical Queue
+        // action rather than privately changing the current tab.
+        app.perform_resource_operation(PlayerOperation::RevealLibrary);
+        let path = root();
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "video-player.library",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &path,
+        ));
+        let hide = Widget::take_control_invocation(&mut app).expect("a11y hide intent");
+        assert_eq!(hide.address.action, "hide-library");
+        app.perform_resource_operation(PlayerOperation::HideLibrary);
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "video-player.library",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &path,
+        ));
+        let queue = Widget::take_control_invocation(&mut app).expect("a11y reopen intent");
+        assert_eq!(queue.address.resource, "video-player.queue.local");
+        assert_eq!(queue.address.action, "show");
     }
 
     #[test]
@@ -4268,62 +4448,17 @@ mod tests {
         let mut app = synth_app();
         app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
             .expect("source identity available");
-
-        // Lay the app out so `handle_event` can find the player child node.
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(640.0),
-                    height: taffy::AvailableSpace::Definite(480.0),
-                },
-            )
-            .unwrap();
-        app.apply_layout(&taffy, node, Point::ZERO);
         app.player.set_focus(true);
-
         let was_playing = app.player.is_playing();
-        let mut doc = AutoCommit::new();
-        let r = root();
-        let mods = winit::event::Modifiers::default();
-        let mut handled = false;
-        let mut focus_target = None;
-        let space = {
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space);
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
-            );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
-            WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: ev,
-                is_synthetic: false,
-            }
-        };
-        app.handle_event(
-            &space,
-            1.0,
-            &mods,
-            &mut doc,
-            &r,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
-        );
-        assert!(handled, "the app forwarded the key to the player");
+        assert!(app.route_key_input(
+            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space),
+            ElementState::Pressed,
+            winit::event::Modifiers::default(),
+        ));
         assert_ne!(
             app.player.is_playing(),
             was_playing,
-            "Space toggled playback via the app"
+            "Space reached the focused player through the app"
         );
     }
 
