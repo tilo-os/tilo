@@ -125,6 +125,57 @@ int main(int argc, char **argv) {
     ntfs_inode_mark_dirty(ctx->ntfs_ino);
     ntfs_attr_put_search_ctx(ctx);
     rc = ntfs_inode_close(ni);
+  } else if (!strcmp(argv[2], "times-missing")) {
+    ntfs_inode *ni = ntfs_pathname_to_inode(v, NULL, "/hello.txt");
+    if (!ni || ntfs_attr_remove(ni, AT_STANDARD_INFORMATION, AT_UNNAMED, 0))
+      return 22;
+    /* A base record without STANDARD_INFORMATION is structurally invalid.
+     * ntfs_inode_close must fail while still flushing the deliberately
+     * malformed test record; the production parser is expected to refuse it. */
+    if (!ntfs_inode_close(ni))
+      return 23;
+    rc = 0;
+  } else if (!strcmp(argv[2], "times-duplicate")) {
+    ntfs_inode *ni = ntfs_pathname_to_inode(v, NULL, "/hello.txt");
+    ntfs_attr_search_ctx *ctx = ni ? ntfs_attr_get_search_ctx(ni, NULL) : NULL;
+    if (!ctx || ntfs_attr_lookup(AT_STANDARD_INFORMATION, AT_UNNAMED, 0,
+                                 CASE_SENSITIVE, 0, NULL, 0, ctx))
+      return 24;
+    uint32_t length = le32_to_cpu(ctx->attr->length);
+    uint32_t used = le32_to_cpu(ni->mrec->bytes_in_use);
+    uint32_t allocated = le32_to_cpu(ni->mrec->bytes_allocated);
+    char *record = (char *)ni->mrec;
+    char *attribute = (char *)ctx->attr;
+    uint32_t offset = (uint32_t)(attribute - record);
+    if (used > allocated || length < sizeof(ATTR_RECORD) || offset > used ||
+        length > used - offset || length > allocated - used)
+      return 25;
+    unsigned char *copy = malloc(length);
+    if (!copy)
+      return 25;
+    memcpy(copy, attribute, length);
+    memmove(attribute + 2 * length, attribute + length,
+            used - offset - length);
+    memcpy(attribute + length, copy, length);
+    free(copy);
+    ATTR_RECORD *duplicate = (ATTR_RECORD *)(attribute + length);
+    duplicate->instance = ni->mrec->next_attr_instance;
+    ni->mrec->next_attr_instance = cpu_to_le16(
+        (uint16_t)(le16_to_cpu(ni->mrec->next_attr_instance) + 1));
+    ni->mrec->bytes_in_use = cpu_to_le32(used + length);
+    ntfs_inode_mark_dirty(ctx->ntfs_ino);
+    ntfs_attr_put_search_ctx(ctx);
+    rc = ntfs_inode_close(ni);
+  } else if (!strcmp(argv[2], "times-invalid-flags")) {
+    ntfs_inode *ni = ntfs_pathname_to_inode(v, NULL, "/hello.txt");
+    ntfs_attr_search_ctx *ctx = ni ? ntfs_attr_get_search_ctx(ni, NULL) : NULL;
+    if (!ctx || ntfs_attr_lookup(AT_STANDARD_INFORMATION, AT_UNNAMED, 0,
+                                 CASE_SENSITIVE, 0, NULL, 0, ctx))
+      return 26;
+    ctx->attr->flags = cpu_to_le16(ATTR_IS_COMPRESSED);
+    ntfs_inode_mark_dirty(ctx->ntfs_ino);
+    ntfs_attr_put_search_ctx(ctx);
+    rc = ntfs_inode_close(ni);
   } else if (!strcmp(argv[2], "metadata")) {
     ntfs_inode *ni = ntfs_inode_open(v, FILE_root);
     ntfschar ads[] = {cpu_to_le16('d'), cpu_to_le16('i'), cpu_to_le16('r')};
