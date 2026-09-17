@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u16 = 2;
-const FILE: &str = "continuity-provenance.json";
+pub const FILE_NAME: &str = "continuity-provenance.json";
 const MAX_RECORDS: usize = 512;
 const MAX_ORIGINS: usize = 32;
 const MAX_TEXT_BYTES: usize = 512;
@@ -241,7 +241,7 @@ fn origin_order(left: &Origin, right: &Origin) -> std::cmp::Ordering {
 
 #[must_use]
 pub fn path() -> Option<PathBuf> {
-    crate::config_root().map(|root| root.join(FILE))
+    crate::config_root().map(|root| root.join(FILE_NAME))
 }
 
 #[cfg(test)]
@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn round_trip_is_deterministic_bounded_and_secret_free() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(FILE);
+        let path = dir.path().join(FILE_NAME);
         let mut projection = RoamingProvenance {
             schema_version: SCHEMA_VERSION,
             generated_unix_ms: 9,
@@ -317,7 +317,7 @@ mod tests {
             }],
             ..RoamingProvenance::default()
         };
-        let path = tempfile::tempdir().unwrap().path().join(FILE);
+        let path = tempfile::tempdir().unwrap().path().join(FILE_NAME);
         assert_eq!(projection.save_at(&path), Err(ProvenanceError::Invalid));
     }
 }
