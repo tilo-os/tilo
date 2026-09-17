@@ -14,6 +14,8 @@ mod native_input_isolation;
 #[path = "animation_schedule.rs"]
 mod animation_schedule;
 
+mod action_directory_snapshot;
+
 /// Toolkit-owned continuation schema used when an app has no narrower
 /// domain-specific projection. The CRDT document travels on its stable record
 /// route; this payload restores the complementary local presentation state.
@@ -589,16 +591,11 @@ pub struct App {
     resource_cache: RefCell<Option<ResourceCache>>,
     bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
     bound_publication: crate::bound_dispatch::BoundPublication,
-    bound_directory_route: Option<crate::collaboration::PrimaryRouteWitness>,
     last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
     #[cfg(test)]
     bound_broker_route_for_test: Option<crate::collaboration::PrimaryRouteWitness>,
-    bound_directory_stamp: Option<(
-        Vec<crate::bound_dispatch::BoundDirectoryWitness>,
-        u64,
-        Vec<String>,
-        String,
-    )>,
+    action_directory_stamp: Option<(action_directory_snapshot::DirectoryWitness, String)>,
+    action_directory_snapshot: Option<action_directory_snapshot::ActionDirectorySnapshot>,
     bound_invocations: std::collections::HashMap<
         qos_actions::InvocationId,
         crate::bound_dispatch::BoundActionTarget,
@@ -1249,11 +1246,11 @@ impl App {
             resource_cache: RefCell::new(None),
             bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
             bound_publication: crate::bound_dispatch::BoundPublication::default(),
-            bound_directory_route: None,
             last_published_bound_route: None,
             #[cfg(test)]
             bound_broker_route_for_test: None,
-            bound_directory_stamp: None,
+            action_directory_stamp: None,
+            action_directory_snapshot: None,
             bound_invocations: std::collections::HashMap::new(),
             local_resource_cache: RefCell::new(None),
             resource_generation: Cell::new(0),
@@ -1712,6 +1709,9 @@ impl App {
         if let Some(next) = self.resource_generation.get().checked_add(1) {
             self.resource_generation.set(next);
         }
+        self.action_directory_snapshot = None;
+        self.action_directory_stamp = None;
+        self.action_directory_cursors.clear();
         self.resource_cache.get_mut().take();
         self.local_resource_cache.get_mut().take();
         self.last_control_availability = None;
@@ -2191,6 +2191,7 @@ impl App {
         let route = self.bound_broker_route().cloned();
         if self.last_published_bound_route != route {
             self.last_published_actions = None;
+            self.action_directory_snapshot = None;
             self.last_published_bound_route = route;
         }
         let publication_app_id = self.publication_app_id();
@@ -2209,6 +2210,9 @@ impl App {
             .iter()
             .any(|entry| entry.status == ControlBindingStatus::StaleAddress)
         {
+            self.action_directory_snapshot = None;
+            self.action_directory_stamp = None;
+            self.action_directory_cursors.clear();
             for entry in binding_coverage
                 .iter()
                 .filter(|entry| entry.status == ControlBindingStatus::StaleAddress)
@@ -2233,6 +2237,7 @@ impl App {
             return;
         }
         let descriptors = qos_actions::door::survey(&resources);
+        self.capture_action_directory_snapshot(&resources, &descriptors);
         if self.last_published_actions.as_ref() == Some(&descriptors) {
             return;
         }
@@ -2270,18 +2275,19 @@ impl App {
     }
 
     fn action_directory_revision(&mut self) -> String {
-        let route = self.bound_broker_route().cloned();
-        if self.bound_directory_route != route {
-            self.bound_directory_stamp = None;
-            self.bound_directory_route = route;
-        }
-        let Ok(witnesses) =
-            crate::bound_dispatch::directory_witness(self.root_widget.as_ref(), &self.state.doc)
-        else {
-            return format!("v4:{}", uuid::Uuid::new_v4());
-        };
-        if !witnesses.is_empty() {
-            let providers = crate::bound_dispatch::search_providers(self.root_widget.as_ref())
+        let owners =
+            crate::bound_dispatch::directory_witness(self.root_widget.as_ref(), &self.state.doc);
+        let reusable = owners
+            .as_ref()
+            .is_ok_and(|owners| owners.iter().all(|owner| owner.generation.is_some()));
+        let witness = action_directory_snapshot::DirectoryWitness {
+            key: self.resource_cache_key(),
+            permissions: self.permission_ctx.clone(),
+            permission_generation: self.permission_generation.get(),
+            route: self.bound_broker_route().cloned(),
+            owners: owners.unwrap_or_default(),
+            root_revision: self.root_widget.action_directory_revision(&self.state.doc),
+            providers: crate::bound_dispatch::search_providers(self.root_widget.as_ref())
                 .into_iter()
                 .map(|provider| {
                     format!(
@@ -2293,50 +2299,21 @@ impl App {
                         provider.action_directory_generation()
                     )
                 })
-                .collect::<Vec<_>>();
-            let local = self.resource_generation.get();
-            if let Some((old, generation, old_providers, revision)) = &self.bound_directory_stamp
-                && witnesses.iter().all(|witness| witness.generation.is_some())
-                && old == &witnesses
-                && *generation == local
-                && *old_providers == providers
-            {
-                return revision.clone();
-            }
-            let revision = format!("v4:{}", uuid::Uuid::new_v4());
-            self.bound_directory_stamp = Some((witnesses, local, providers, revision.clone()));
-            return revision;
+                .collect(),
+        };
+        if reusable
+            && let Some((old, revision)) = &self.action_directory_stamp
+            && old == &witness
+        {
+            return revision.clone();
         }
-
-        // Automerge heads are the authority generation for document-backed
-        // resources. Remote revisions never call legacy `resources()`: that
-        // hook predates paging and may allocate an unbounded contextual tree.
-        let heads = self
-            .state
-            .doc
-            .get_heads()
-            .iter()
-            .map(|head| format!("{head:?}"))
-            .collect::<Vec<_>>();
-        let root_revision = self
-            .root_widget
-            .action_directory_revision(&self.state.doc)
-            .unwrap_or_default();
-        let provider_generations =
-            crate::bound_dispatch::search_providers(self.root_widget.as_ref())
-                .into_iter()
-                .filter_map(|provider| {
-                    provider
-                        .action_directory_generation()
-                        .map(|generation| format!("{}:{generation}", provider.name()))
-                })
-                .collect::<Vec<_>>();
-        format!(
-            "v3:{}:{}:{}",
-            heads.join(","),
-            root_revision,
-            provider_generations.join("\u{1e}")
-        )
+        // Generations are updated at mutation boundaries; reading Automerge
+        // heads here would commit an open transaction and split an undo unit.
+        self.action_directory_snapshot = None;
+        self.action_directory_cursors.clear();
+        let revision = format!("v5:{}", uuid::Uuid::new_v4());
+        self.action_directory_stamp = Some((witness, revision.clone()));
+        revision
     }
 
     fn exported_directory_action(
@@ -2367,19 +2344,16 @@ impl App {
         }
     }
 
-    fn directory_resource_row(
+    fn directory_explicit_visibility(
         &self,
         resource: &qos_actions::Resource,
-        parent_resource: &str,
-        may_descend: bool,
-    ) -> Option<runtime_collab::ActionDirectoryRow> {
-        let descriptors = qos_actions::door::survey(std::slice::from_ref(resource));
+    ) -> Option<qos_actions::ActionAddress> {
         let target = self
             .bound_publication
             .target(&qos_actions::ActionAddress::new(resource.id.as_str(), ""))
             .ok()
             .flatten();
-        let explicit = crate::bound_dispatch::publication_visibility(
+        crate::bound_dispatch::publication_visibility(
             self.root_widget.as_ref(),
             &self.state.doc,
             target.as_ref().map(|target| &target.binding),
@@ -2395,16 +2369,41 @@ impl App {
                     .ok()?;
             }
             Some(address)
-        });
-        // A view operation is a safe derived disclosure policy: it does not
-        // mutate or trigger an external effect, and the broker still checks
-        // its action contract before forwarding this container label.
-        let visibility = descriptors.into_iter().find(|descriptor| {
-            explicit
-                .as_ref()
-                .is_some_and(|address| &descriptor.address == address)
-                || (explicit.is_none() && descriptor.kind == qos_actions::OperationKind::View)
-        })?;
+        })
+    }
+
+    fn directory_resource_row(
+        &self,
+        resource: &qos_actions::Resource,
+        parent_resource: &str,
+        may_descend: bool,
+    ) -> Option<runtime_collab::ActionDirectoryRow> {
+        let explicit = self.directory_explicit_visibility(resource);
+        // Preserve the explicit-or-View disclosure rule, finding only the
+        // needed descriptor in this bounded provider result, not surveying a
+        // complete action catalogue for each displayed row.
+        fn visibility(
+            resource: &qos_actions::Resource,
+            explicit: Option<&qos_actions::ActionAddress>,
+        ) -> Option<qos_actions::ActionDescriptor> {
+            resource
+                .actions
+                .iter()
+                .find(|action| match explicit {
+                    Some(address) => {
+                        address.resource == resource.id.as_str() && address.action == action.id
+                    }
+                    None => action.kind == qos_actions::OperationKind::View,
+                })
+                .map(|action| App::directory_descriptor(resource, action))
+                .or_else(|| {
+                    resource
+                        .children
+                        .iter()
+                        .find_map(|child| visibility(child, explicit))
+                })
+        }
+        let visibility = visibility(resource, explicit.as_ref())?;
         Some(runtime_collab::ActionDirectoryRow {
             parent_resource: parent_resource.to_owned(),
             resource: resource.id.as_str().to_owned(),
@@ -2419,13 +2418,45 @@ impl App {
         })
     }
 
+    fn directory_descriptor(
+        resource: &qos_actions::Resource,
+        action: &qos_actions::ActionSpec,
+    ) -> qos_actions::ActionDescriptor {
+        qos_actions::ActionDescriptor {
+            address: qos_actions::ActionAddress::new(resource.id.as_str(), &action.id),
+            resource_kind: resource.kind.clone(),
+            resource_label: resource.label.clone(),
+            action_label: action.label.clone(),
+            description: action.description.clone(),
+            locus: action.locus,
+            kind: action.kind,
+            contract: action.contract.clone(),
+            input: match &action.input {
+                qos_actions::ActionInput::Immediate(_) => qos_actions::InputSpec::None,
+                qos_actions::ActionInput::Prompted {
+                    prompt,
+                    placeholder,
+                    collects,
+                    ..
+                } => qos_actions::InputSpec::Text {
+                    prompt: prompt.clone(),
+                    placeholder: placeholder.clone(),
+                    collects: *collects,
+                },
+            },
+            params: action.params().to_vec(),
+        }
+    }
+
     fn directory_action_row(
         resource: &qos_actions::Resource,
         action_id: &str,
     ) -> Option<runtime_collab::ActionDirectoryRow> {
-        let descriptor = qos_actions::door::survey(std::slice::from_ref(resource))
-            .into_iter()
-            .find(|descriptor| descriptor.address.action == action_id)?;
+        let action = resource
+            .actions
+            .iter()
+            .find(|action| action.id == action_id)?;
+        let descriptor = Self::directory_descriptor(resource, action);
         let exported = Self::exported_directory_action(&descriptor);
         Some(runtime_collab::ActionDirectoryRow {
             parent_resource: resource.id.as_str().to_owned(),
@@ -2581,10 +2612,29 @@ impl App {
         if query.needle.is_empty() {
             if query.parent_resource.is_empty() {
                 let mut widget_index = state.root_widget_index;
-                let mut provider_cursor = state.root_provider_cursor;
+                let mut provider_cursor = state.root_provider_cursor.clone();
                 let mut inspected = 0usize;
                 let mut exhausted = false;
-                while rows.len() < max_results && inspected < max_work {
+                let mut projected_offset = state.browse_offset;
+                let mut projected_done = true;
+                if let Some(snapshot) = &self.action_directory_snapshot {
+                    while let Some(row) = snapshot.roots.get(projected_offset) {
+                        if rows.len() >= max_results || inspected >= max_work {
+                            break;
+                        }
+                        let mut row = row.clone();
+                        row.has_children &= max_depth > 0;
+                        add(row, &mut rows, &mut estimated_bytes);
+                        if estimated_bytes > max_bytes {
+                            rows.pop();
+                            break;
+                        }
+                        projected_offset = projected_offset.saturating_add(1);
+                        inspected = inspected.saturating_add(1);
+                    }
+                    projected_done = projected_offset >= snapshot.roots.len();
+                }
+                while projected_done && rows.len() < max_results && inspected < max_work {
                     let Some(page) = crate::widget::action_directory_page_at(
                         self.root_widget.as_ref(),
                         &self.state.doc,
@@ -2647,6 +2697,12 @@ impl App {
                     let before_index = widget_index;
                     let before_cursor = provider_cursor.clone();
                     if let Some(resource) = page.resources.first()
+                        && !self
+                            .action_directory_snapshot
+                            .as_ref()
+                            .is_some_and(|snapshot| {
+                                snapshot.nodes.contains_key(resource.id.as_str())
+                            })
                         && let Some(row) = self.directory_resource_row(resource, "", max_depth > 0)
                     {
                         add(row, &mut rows, &mut estimated_bytes);
@@ -2683,6 +2739,7 @@ impl App {
                 }
                 let next_cursor = (!exhausted).then(|| {
                     self.action_directory_next_cursor(ActionDirectoryCursor {
+                        browse_offset: projected_offset,
                         root_widget_index: widget_index,
                         root_provider_cursor: provider_cursor,
                         ..state
@@ -2697,6 +2754,45 @@ impl App {
                     budget_exhausted: !exhausted,
                 };
             }
+            let mut offset = state.browse_offset;
+            let mut inspected = 0usize;
+            let mut projected_total = 0usize;
+            if let Some(node) = self
+                .action_directory_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.nodes.get(&query.parent_resource))
+            {
+                projected_total = node.rows.len();
+                while let Some(row) = node.rows.get(offset) {
+                    if rows.len() >= max_results || inspected >= max_work {
+                        break;
+                    }
+                    let mut row = row.clone();
+                    row.has_children &= max_depth > 0
+                        && node.depth.saturating_add(1) < usize::from(ACTION_DIRECTORY_MAX_DEPTH);
+                    add(row, &mut rows, &mut estimated_bytes);
+                    if estimated_bytes > max_bytes {
+                        rows.pop();
+                        break;
+                    }
+                    offset = offset.saturating_add(1);
+                    inspected = inspected.saturating_add(1);
+                }
+            }
+            if offset < projected_total || rows.len() >= max_results || inspected >= max_work {
+                let next_cursor = self.action_directory_next_cursor(ActionDirectoryCursor {
+                    browse_offset: offset,
+                    ..state
+                });
+                return runtime_collab::ActionDirectoryPage {
+                    revision,
+                    rows,
+                    next_cursor,
+                    exhausted: false,
+                    stale_cursor: false,
+                    budget_exhausted: true,
+                };
+            }
             let parent = self.resolve_publication_resource(&query.parent_resource, "");
             let parent_actions = parent.as_ref().map_or_else(Vec::new, |resource| {
                 resource
@@ -2708,20 +2804,42 @@ impl App {
             let direct = parent
                 .as_ref()
                 .map_or_else(Vec::new, |resource| resource.children.clone());
-            let mut offset = state.browse_offset;
-            let mut inspected = 0usize;
-            let total = parent_actions.len().saturating_add(direct.len());
+            let total = projected_total
+                .saturating_add(parent_actions.len())
+                .saturating_add(direct.len());
             while offset < total && rows.len() < max_results && inspected < max_work {
-                let row = if offset < parent_actions.len() {
-                    parent.as_ref().and_then(|resource| {
-                        Self::directory_action_row(resource, &parent_actions[offset])
-                    })
+                let provider_offset = offset.saturating_sub(projected_total);
+                let row = if provider_offset < parent_actions.len() {
+                    let action = &parent_actions[provider_offset];
+                    let projected =
+                        self.action_directory_snapshot
+                            .as_ref()
+                            .is_some_and(|snapshot| {
+                                snapshot
+                                    .actions
+                                    .contains_key(&qos_actions::ActionAddress::new(
+                                        &query.parent_resource,
+                                        action,
+                                    ))
+                            });
+                    if projected {
+                        None
+                    } else {
+                        parent
+                            .as_ref()
+                            .and_then(|resource| Self::directory_action_row(resource, action))
+                    }
                 } else {
-                    self.directory_resource_row(
-                        &direct[offset - parent_actions.len()],
-                        &query.parent_resource,
-                        max_depth > 0,
-                    )
+                    let resource = &direct[provider_offset - parent_actions.len()];
+                    if self
+                        .action_directory_snapshot
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.nodes.contains_key(resource.id.as_str()))
+                    {
+                        None
+                    } else {
+                        self.directory_resource_row(resource, &query.parent_resource, max_depth > 0)
+                    }
                 };
                 if let Some(row) = row {
                     add(row, &mut rows, &mut estimated_bytes);
@@ -2948,6 +3066,17 @@ impl App {
     ) -> runtime_collab::ActionDirectoryResolution {
         if revision != self.action_directory_revision() {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
+        }
+        if let Some(row) = self
+            .action_directory_snapshot
+            .as_ref()
+            .and_then(|snapshot| {
+                snapshot
+                    .actions
+                    .get(&qos_actions::ActionAddress::new(resource_id, action_id))
+            })
+        {
+            return runtime_collab::ActionDirectoryResolution::Found(Box::new(row.clone()));
         }
         let resource = self.resolve_publication_resource(resource_id, action_id);
         resource
@@ -4787,6 +4916,9 @@ impl App {
         if let Some(next) = self.permission_generation.get().checked_add(1) {
             self.permission_generation.set(next);
         }
+        self.action_directory_snapshot = None;
+        self.action_directory_stamp = None;
+        self.action_directory_cursors.clear();
         self.local_resource_cache.get_mut().take();
         self.last_control_availability = None;
         self.refresh_control_action_availability();
@@ -14031,6 +14163,8 @@ mod semantic_tree_app_tests {
         assert_eq!(presses.get(), 0);
     }
 
+    include!("app/action_directory_snapshot_tests.rs");
+
     fn directory_query(
         revision: impl Into<String>,
         parent_resource: impl Into<String>,
@@ -15435,6 +15569,8 @@ mod bound_component_tests {
             }
         }
     }
+
+    include!("app/action_directory_snapshot_bound_tests.rs");
 
     #[test]
     fn task4_bound_publication_preserves_contracts_and_directed_owner() {
