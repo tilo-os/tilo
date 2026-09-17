@@ -97,6 +97,10 @@ def main():
                     require({entry.name for entry in mounted.iterdir()} == {'wpe'}, 'unrelated root entries exported')
                 receipt = wpe._export_stage(projected, inputs, 6, 'a' * 40, '42', '1',
                                             source_completed_stage_id=original)
+                podman('image', 'rm', '--no-prune', projected)
+                absent = subprocess.run(['podman', '--remote=false', 'image', 'exists', projected],
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                require(absent.returncode == 1, 'exported payload image still exists locally')
                 imported = wpe.import_stage(receipt, inputs)
                 require(imported == projected, 'registry roundtrip changed config identity')
 
@@ -143,6 +147,7 @@ def main():
                 skopeo_version=run('skopeo', '--version').decode().strip(),
                 original_image_id=original, projected_image_id=projected,
                 imported_image_id=imported, final_image_id=final, unrelated_toolchain_excluded=True,
+                exported_image_removed_before_import=True, cold_registry_restore_verified=True,
                 registry_manifest=receipt['reference'], config_digest=receipt['config_digest'],
                 rejected=rejected, original_stage_executed=False), sort_keys=True))
         finally:
