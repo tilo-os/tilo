@@ -95,7 +95,7 @@ def rpm_inventory(repo):
 
 
 def snapshot_contract(roots_path, repo, buildroot_ref):
-    return {
+    result = {
         "schema_version": 1,
         "distribution": "fedora",
         "releasever": "44",
@@ -106,6 +106,22 @@ def snapshot_contract(roots_path, repo, buildroot_ref):
         "package_roots": package_roots(roots_path),
         "rpms": rpm_inventory(repo),
     }
+    trust = Path(repo) / 'development-wine'
+    if trust.exists():
+        if trust.is_symlink() or not trust.is_dir():
+            raise ValueError('development Wine trust must be a regular directory')
+        names = {'public.asc', 'paired-contract.json', 'development-wine.json', 'reference.txt'}
+        if {p.name for p in trust.iterdir()} != names:
+            raise ValueError('development Wine trust has missing or unexpected files')
+        for name in names:
+            if (trust / name).is_symlink() or not (trust / name).is_file():
+                raise ValueError('development Wine trust must contain regular files')
+        result['development_wine'] = {
+            'reference': immutable_ref((trust / 'reference.txt').read_text().strip()),
+            'files': {name: digest(trust / name) for name in sorted(names)},
+            'development_only': True,
+        }
+    return result
 
 
 def verify_snapshot(roots_path, repo, buildroot_ref):
