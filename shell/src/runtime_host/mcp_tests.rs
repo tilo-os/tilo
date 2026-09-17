@@ -30,6 +30,75 @@ fn call(name: &str, args: Value) -> Value {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn unknown_tool_is_an_invalid_params_error_with_the_request_id() {
+    let (fixture, room, actor) = fixture();
+    let mut server = McpServer::new(fixture.broker.clone(), room, actor);
+    let reply = server
+        .handle(json!({
+            "jsonrpc": "2.0",
+            "id": "unknown-tool-request",
+            "method": "tools/call",
+            "params": {"name": "qos_not_a_tool", "arguments": {}}
+        }))
+        .await
+        .unwrap();
+
+    assert_eq!(reply["id"], "unknown-tool-request");
+    assert_eq!(reply["error"]["code"], -32602);
+    assert!(reply.get("result").is_none(), "{reply}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn null_id_is_rejected_before_mutating_dispatch_and_valid_id_boundaries_hold() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (fixture, room, actor) = fixture();
+            let mut server = McpServer::new(fixture.broker.clone(), room, actor);
+            let mut null_id = call(
+                "qos_invoke",
+                json!({
+                    "peer_id": 71,
+                    "revision": "directory-r1",
+                    "resource": "workspace:atlas",
+                    "action": "open",
+                    "arguments": {}
+                }),
+            );
+            null_id["id"] = Value::Null;
+            let reply = server.handle(null_id);
+            let (reply, ()) = tokio::join!(reply, async {
+                tokio::task::yield_now().await;
+                drain_directory_bridge(&fixture).await;
+            });
+            let reply = reply.unwrap();
+            assert_eq!(reply["id"], Value::Null);
+            assert_eq!(reply["error"]["code"], -32600);
+            assert!(reply.get("result").is_none(), "{reply}");
+            assert_eq!(fixture.resolve_count(), 0);
+
+            assert!(
+                server
+                    .handle(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+                    .await
+                    .is_none()
+            );
+            for id in [json!(7), json!("request-7")] {
+                let reply = server
+                    .handle(json!({
+                        "jsonrpc": "2.0",
+                        "id": id.clone(),
+                        "method": "ping"
+                    }))
+                    .await
+                    .unwrap();
+                assert_eq!(reply["id"], id);
+                assert_eq!(reply["result"], json!({}));
+            }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn protocol_and_argument_boundaries() {
     let (fixture, room, actor) = fixture();
     let mut server = McpServer::new(fixture.broker.clone(), room, actor);
@@ -126,6 +195,15 @@ async fn resources_are_live_room_scoped_and_reads_use_authority() {
         assert_eq!(other.handle(request("resources/list",json!({}))).await.unwrap()["result"]["resources"],json!([]));
         assert!(other.handle(request("resources/read",json!({"uri":"qos://apps/71"}))).await.unwrap().get("error").is_some());
         let mut denied=McpServer::new(fixture.broker.clone(),room,"outsider".into());
+        let read=denied.handle(request("resources/read",json!({"uri":"qos://apps/71"})));
+        let (reply,())=tokio::join!(read,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
+        let reply = reply.unwrap();
+        let text = reply["result"]["contents"][0]["text"]
+            .as_str()
+            .expect("same-room outsider read returns the broker-filtered page");
+        let page: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(page["rows"], json!([]), "{reply}");
+        assert!(!text.contains("workspace:atlas"), "{reply}");
         let call=denied.handle(call("qos_invoke",json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}})));
         let (reply,())=tokio::join!(call,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         assert_eq!(reply.unwrap()["result"]["isError"],true);
