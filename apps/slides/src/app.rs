@@ -4814,15 +4814,7 @@ impl SlidesApp {
         s: f64,
     ) {
         let style = TextBoxStyle::for_element(el, er, s);
-        self.draw_caret_in_box(
-            paint.scene,
-            paint.transform,
-            paint.text,
-            pal.accent,
-            &el.text,
-            self.caret,
-            style,
-        );
+        self.draw_caret_in_box(paint, pal.accent, &el.text, self.caret, style);
     }
 
     /// Paint a vertical caret over one line of text inside `er`. The caret
@@ -4832,20 +4824,20 @@ impl SlidesApp {
     /// ones. `caret` is a char index into `text`.
     fn draw_caret_in_box(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
+        paint: &mut PaintContext<'_>,
         accent: Color,
         text: &str,
         caret: usize,
         style: TextBoxStyle,
     ) {
-        let (top, line_h) = self.caret_geometry(tr, text, caret, style);
+        let (top, line_h) = self.caret_geometry(paint.text, text, caret, style);
         let bar = Line::new(
             Point::new(top.x, top.y + 2.0),
             Point::new(top.x, top.y + line_h - 2.0),
         );
-        scene.stroke(&Stroke::new(2.0), t, accent, None, &bar);
+        paint
+            .scene
+            .stroke(&Stroke::new(2.0), paint.transform, accent, None, &bar);
     }
 
     /// Pure geometry for [`Self::draw_caret_in_box`]: the caret bar's top point
@@ -7517,7 +7509,7 @@ impl SlidesApp {
         if self.editing_text || self.editing_notes || self.editing_title {
             self.on_key_editing_text(
                 doc,
-                EditingKey {
+                &EditingKey {
                     key,
                     text,
                     modifiers: mods,
@@ -7601,7 +7593,7 @@ impl SlidesApp {
     fn on_key_editing_text(
         &mut self,
         doc: &mut AutoCommit,
-        input: EditingKey<'_>,
+        input: &EditingKey<'_>,
         handled: &mut bool,
     ) {
         let shift = input.modifiers.shift_key();
