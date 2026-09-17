@@ -108,7 +108,7 @@ KERNEL_RPMS_REF="${_tilo_kernel_ref_override:-$_tilo_native_kernel_ref}"
 # Both of these check what a build would produce, so they have nothing to say
 # about an image that already exists.
 if [ "$TILO_SKIP_BUILD" != "1" ]; then
-[[ "$RPMS_REF" =~ ^code\.podesta\.ai/tilo/rpms@sha256:[0-9a-f]{64}$ ]] \
+[[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]] \
   || die "RPMS_REF must pin code.sandbox.example/qos/rpms by sha256 digest"
 command -v cosign >/dev/null || die "building an OS image requires cosign to verify the frozen RPM repository"
 _tilo_rpms_digest="${RPMS_REF##*@}"

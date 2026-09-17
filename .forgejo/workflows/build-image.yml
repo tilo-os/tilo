@@ -364,7 +364,7 @@ jobs:
         run: |
           set -euo pipefail
           . os/rpms-snapshot.env
-          [[ "$RPMS_REF" =~ ^code\.podesta\.ai/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || {
+          [[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]] || {
             printf 'RPMS_REF is not the digest-pinned Tilo RPM repository\n' >&2
             exit 1
           }
