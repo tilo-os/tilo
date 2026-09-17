@@ -167,7 +167,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn document(value: Value) -> Map<String, Value> {
+    fn document(value: &Value) -> Map<String, Value> {
         value.as_object().cloned().unwrap()
     }
 
@@ -178,7 +178,7 @@ mod tests {
             json!({"continuity": true}),
             json!({"continuity": {"enabled": true}}),
         ] {
-            let policy = ContinuityPolicySnapshot::from_document(&document(value));
+            let policy = ContinuityPolicySnapshot::from_document(&document(&value));
             for capability in [
                 ContinuityCapability::Clipboard,
                 ContinuityCapability::Notifications,
@@ -209,7 +209,7 @@ mod tests {
             "typed_gamepad": true,
             "app_continuations": true
         }});
-        let policy = ContinuityPolicySnapshot::from_document(&document(all));
+        let policy = ContinuityPolicySnapshot::from_document(&document(&all));
         assert!(!policy.enabled());
         assert!(!policy.permits(ContinuityCapability::Clipboard));
         assert!(!policy.permits(ContinuityCapability::TypedGamepad));
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn per_capability_and_master_kill_switches_report_revocation() {
-        let all = document(json!({"continuity": {
+        let all = document(&json!({"continuity": {
             "enabled": true,
             "clipboard": true,
             "notifications": true,

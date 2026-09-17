@@ -8380,6 +8380,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn production_realtime_bridge_delivers_two_peer_offer_and_cutover() {
         use crate::shell::realtime_session::{
             BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
@@ -8471,7 +8472,7 @@ mod tests {
                 "source-session".into(),
                 RealtimeBinding {
                     id,
-                    app: app.clone(),
+                    app,
                     source: source.clone(),
                     owner_peer: 7,
                     authorization: None,
