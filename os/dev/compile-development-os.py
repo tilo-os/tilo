@@ -684,7 +684,8 @@ def main(argv=None):
     native_inputs = {name: verify_native_image(reference, args.architecture)
                      for name, reference in references.items()}
     write_receipt('native-inputs.json', native_inputs)
-    write_receipt('inputs.json', {'purpose': 'retained-full-source-compilation',
+    write_receipt('inputs.json', {'purpose': ('retained-native-application-compilation'
+        if args.mode == 'native-payload' else 'retained-full-source-compilation'),
         'installable': False, 'revision': args.revision, 'architecture': args.architecture,
         'hardware_profile': args.hardware_profile, 'firmware_sha256': firmware,
         'firmware_candidate': args.firmware_candidate or None,
