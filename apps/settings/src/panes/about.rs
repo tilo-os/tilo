@@ -16,9 +16,15 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use ui::widget::Widget;
+use ui::widget::{Button, Widget};
 
 use crate::widgets::{caption, card, hero, rows, value_row};
+
+pub const PORTABLE_BACKUP_BUTTON: &str = "about.identity-backup.button";
+
+pub(crate) fn portable_identity_backup_intent() -> os_actions::ToolIntent {
+    os_actions::ToolIntent::IdentityBackup
+}
 
 /// Snapshot of the data the About pane reads at construction time.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,6 +161,23 @@ pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
         ]),
     );
 
+    let backup = card(
+        "Identity backup",
+        rows(vec![
+            caption(
+                "Create an encrypted portable copy of your identity. Tilo asks for a passphrase, \
+                 lets you choose where to save it, and verifies the copy before confirming success.",
+            ),
+            Box::new(
+                Button::new(PORTABLE_BACKUP_BUTTON, "Create encrypted backup…", None)
+                    .with_size(236.0, 40.0)
+                    .on_effect(|| {
+                        let _ = os_actions::open_tool(portable_identity_backup_intent());
+                    }),
+            ),
+        ]),
+    );
+
     let system = card(
         "System",
         rows(vec![
@@ -173,7 +196,7 @@ pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
         ]),
     );
 
-    crate::widgets::cards(vec![hero_block, identity, system, hardware])
+    crate::widgets::cards(vec![hero_block, identity, backup, system, hardware])
 }
 
 pub(crate) fn parse_os_release_pretty_name(contents: &str) -> Option<String> {
@@ -360,5 +383,12 @@ mod tests {
         );
         info.identity_public_key = Some([0xab; 32]);
         assert_eq!(info.fingerprint(), "abab·abab·abab·abab");
+    }
+
+    #[test]
+    fn portable_backup_action_uses_a_shell_owned_typed_intent() {
+        let intent = portable_identity_backup_intent();
+        assert_eq!(intent, os_actions::ToolIntent::IdentityBackup);
+        assert_eq!(intent.package_id(), None);
     }
 }

@@ -24,7 +24,7 @@ things that matter:
   That gap is closed: secure boot here now buys a verified *boot*, not merely a
   verified kernel.
 - **There is no bootupd.** A sealed image must not carry it, and it is not needed:
-  signing is `sbsign` over one artefact.
+  signing is the narrow Rust-native `tilo-crypto sign-efi` operation over one artefact.
 
 Why composefs rather than ostree at all is recorded in
 [composefs-decision.md](composefs-decision.md).
@@ -65,7 +65,9 @@ refuses its own boot artefacts. `tilo-secureboot enroll` therefore refuses unles
 
 `sign` is safe at any time: a signature on an artefact the firmware is not
 checking is inert. That asymmetry is why the signing side ships enabled and the
-enrolling side does not.
+enrolling side does not. A signing pass also requires at least one managed
+loader, UKI, or deployment kernel; an absent/unmounted ESP or unknown layout is
+a hard failure, never a successful zero-artifact pass.
 
 Three things keep the artefacts signed, in decreasing order of how much they are
 relied on:
@@ -82,9 +84,13 @@ relied on:
   The path unit depends on inotify firing and on the change happening somewhere
   we thought to watch; this one needs neither. Whatever touched the boot
   artefacts and however it did it, the last thing before the machine goes down
-  is a signing pass — while there is still a running system to do it with.
-- **`tilo-secureboot-sign.service`** at `multi-user.target`, which cannot rescue
-  the boot it runs in but does converge a machine that got here some other way.
+  is a signing pass — while there is still a running system to do it with. A
+  TPM-sealed db key is unsealed only inside this `ExecStop` pass and deleted
+  immediately afterward; it is not a long-lived systemd credential.
+- **`tilo-secureboot-sign.timer`** schedules a fallback scan 30 seconds after
+  boot, keeping PE parsing and writes out of the login I/O burst. The path and
+  update hooks still react promptly to changed artefacts. It cannot rescue the
+  boot it runs in but does converge a machine that got here some other way.
 
 `enroll` requires all three.
 
@@ -94,16 +100,80 @@ sudo tilo-secureboot capture-vendor-keys   # save the factory db/KEK while reada
 sudo tilo-secureboot generate-keys         # PK, KEK, db -> /var/lib/tilo/secureboot
 sudo tilo-secureboot sign                  # loaders + every deployment's kernel
 sudo tilo-secureboot status                # read this before going further
+# Copy PK.key and KEK.key to encrypted offline recovery media now.
 
 # Reboot into firmware setup, CLEAR the Secure Boot keys, boot back, then:
-sudo tilo-secureboot enroll --yes
+sudo tilo-secureboot enroll --yes --owner-only-db --retire-enrollment-keys
 # Reboot into firmware setup, turn Secure Boot ON.
+# After that verified Secure Boot boot:
+sudo tilo-secureboot seal-db-key --yes
 ```
 
-`capture-vendor-keys` matters: `enroll` carries the factory `db`/`KEK` alongside
-the owner's, so firmware capsule updates and signed option ROMs keep verifying.
+`capture-vendor-keys` matters: ordinary `enroll` carries the factory `db`/`KEK`
+alongside the owner's, so firmware capsule updates and signed option ROMs keep
+verifying. The hardened `--owner-only-db` profile keeps the captured vendor KEK
+but excludes vendor boot certificates from `db`; the capture remains available
+offline for recovery. Signed option ROMs may no longer verify under that profile.
 Once cleared, those keys cannot be read back, and proceeding without them takes
-`--no-vendor-keys`.
+`--no-vendor-keys`. A capture containing only one of `db` or `KEK` is not
+reported as complete; enrollment requires the same explicit override for that
+partial-backup case and preserves the list that was available.
+
+Enrollment does not trust a successful efivarfs write alone. It
+reads `db`, `KEK`, and `PK` back from firmware, parses their bounded EFI
+Signature Lists with `tilo-crypto`, and requires the exact owner certificate in
+each variable. Read-back also requires the exact nonvolatile, boot-service,
+runtime-service, and time-based-authenticated attribute set (`0x27`); an ESL
+stored as an unauthenticated variable is not accepted as firmware trust.
+`db` is addressed through the EFI image-security database GUID;
+`KEK` and `PK` use the EFI global-variable GUID. Each update carries an
+`EFI_VARIABLE_AUTHENTICATION_2` timestamp using current UTC, never a
+future-dated replay floor. Installing `PK` uses a Rust-native detached
+RSA/SHA-256 PKCS#7 self-signature and must make firmware leave Setup Mode.
+After that verification, `--retire-enrollment-keys` durably unlinks the online
+PK and KEK private keys. Their certificates and ESLs remain for inspection and
+the db key remains available for routine kernel/UKI signing. The retirement
+step refuses while firmware is still in Setup Mode, if the enrolled PK/KEK do
+not read back, or if db signing authority is missing or mismatched. It is also
+available later as `tilo-secureboot retire-enrollment-keys --yes`; the explicit
+confirmation exists because offline recovery copies are the only way to change
+the enrolled hierarchy without clearing it in firmware setup again.
+
+The delayed boot security audit repeats the public half of this proof on every
+boot. It validates the retained db/KEK/PK certificates and exclusive local ESLs,
+reads the bounded live firmware variables through `tilo-crypto`, and requires
+each variable to still contain its corresponding owner certificate. It also
+rejects unsafe, partial, hard-linked, or ambiguous plaintext/sealed/retired key
+state. Firmware reset or replacement therefore becomes a failed health
+invariant instead of being inferred only when the next signing operation fails.
+
+The remaining db key can be removed from persistent plaintext storage with
+`seal-db-key`. The command requires a TPM2 character device, binds a systemd
+encrypted credential to PCR 7, immediately unseals it and checks it against
+`db.crt`, publishes credential-loading drop-ins durably, reloads PID 1, and
+only then durably unlinks `db.key`. Ordinary signing activations receive the
+plaintext only as a kernel-managed credential under `/run` and have no TPM
+device access. The always-active shutdown hook deliberately receives no such
+credential: its `ExecStop` gets access only to `/dev/tpmrm0` or `/dev/tpm0`,
+unseals into its private mode-0700 runtime directory, verifies the key against
+`db.crt`, signs, and durably removes the plaintext before returning. The
+runtime directory is not preserved by systemd, so abnormal termination or a
+timeout also removes transient plaintext when the last signing unit releases
+it. Manual
+`tilo-secureboot sign` delegates to the ordinary credential-bearing service.
+
+Because PCR 7 identifies the enrolled policy rather than the selected UKI,
+`seal-db-key` also reads firmware `db` back and requires the owner certificate
+to be its only entry. Otherwise any vendor-signed alternate OS admitted by the
+same `db` could reproduce PCR 7 and decrypt Tilo's signing key. Machines that
+must preserve vendor boot certificates may keep `db.key` offline, but they
+cannot label a PCR7-only credential as isolated to Tilo.
+
+Seal only after booting with the final owner Secure Boot policy. PCR 7 changes
+when that policy changes, deliberately making unattended signing unavailable;
+the encrypted offline db recovery copy is then required to reseal. The command
+refuses until PK/KEK have already been retired, preventing the more powerful
+enrollment authority from being mistaken for routine signing state.
 
 If an enrolled machine does not boot, clearing the Secure Boot keys in firmware
 setup returns it to setup mode and it boots exactly as before. That is the escape
@@ -112,27 +182,66 @@ displace a live Platform Key.
 
 ### Prerequisite: the signing tools
 
-`tilo-secureboot` needs `sbsign`/`sbverify` (`sbsigntools`) and
-`cert-to-efi-sig-list`/`efi-updatevar`/`efi-readvar` (`efitools`). Both are now in
-the image and in the frozen package snapshot, along with `systemd-ukify` for
-building the UKI. Each subcommand still refuses with the exact remedy if a tool is
-missing, rather than half-signing a boot chain.
+`tilo-secureboot` uses Rust-native `tilo-crypto` for Authenticode signing and
+verification, signature-list creation, and bounded no-follow efivarfs writes
+and read-back. It is in the image and in the frozen package snapshot.
+`systemd-ukify` exists only in the throwaway UKI builder stage and is explicitly
+removed from the runtime rootfs; each runtime subcommand still refuses with the
+exact remedy if a required tool is missing, rather than half-signing a boot chain.
 
-Worth knowing how they were absent for so long: they were *named* in
-`os/Containerfile` but not present in the digest-pinned snapshot, and they live in
-a deliberately tolerant `dnf install` — so it installed nothing, silently, while
-every build stayed green. The snapshot's package set is scraped from those
-`dnf install` blocks, so adding a package means re-running the `snapshot-rpms`
-workflow and committing the new `RPMS_REF`; naming it alone does nothing. The
-tolerance is right (the tool fails closed), but it means a missing package is
-invisible unless something checks.
+The online db key is not a general EFI signing oracle. The signer considers only
+the fixed systemd-boot, bootc UKI, and OSTree kernel layouts; every candidate must
+be a nonempty, bounded, caller-owned, single-link file that is not writable by
+another account. Every directory between that file and the locked boot-store
+root must satisfy the same ownership and non-writability boundary. Signing and
+pre-enrollment verification both fail closed if those metadata checks do not
+hold, preventing a writable parent directory from rename-swapping arbitrary PE
+content into the managed set.
+PK, KEK, and db signature lists are also verified as exact, owner-exclusive
+encodings of their corresponding certificates before any firmware write;
+captured vendor authorities are merged only by the explicit enrollment policy.
+The complete merged db and KEK lists are then size-bounded and structurally
+parsed again, with the owner certificate required, before the first firmware
+variable is changed. The Rust `firmware-write-esl` primitive independently
+rejects empty, truncated, dimensionally invalid, or partially framed ESL data,
+so this boundary also holds for callers outside the enrollment script.
+
+The final image explicitly removes inherited `openssl`, `sbsigntools`,
+`efitools`, and `mokutil` command-line packages. It also removes the redundant
+OpenSSL-linked `systemd-resolved` subpackage; NetworkManager exclusively owns
+Tilo DNS state. Fedora core components including the remaining systemd binaries,
+cryptsetup, kmod, composefs, and the TPM stack still link the distribution's
+`libcrypto`; removing that ABI requires rebuilding those foundational packages.
+The finished-rootfs build enumerates every installed RPM's direct `libssl.so`
+and `libcrypto.so` requirements. It accepts only the reviewed compatibility
+sets in `os/scripts/verify-runtime-crypto-packages.sh` and fails when any new
+consumer appears; the verifier itself is deleted before the image is sealed.
+Tilo-owned ELF outputs are independently rejected for either ABI, and Tilo-owned
+TLS and signing remain Rust-native.
+
+The immutable host also excludes the Git CLI and NetworkManager's OpenVPN
+plugin. Both add avoidable OpenSSL-linked client stacks: Tilo's sandboxed Git
+application supplies repository workflows, development containers may install
+their own CLI, and the kernel/NetworkManager WireGuard path remains available
+without OpenVPN's general-purpose TLS implementation.
+Inherited OpenSSH clients and server components are removed as well; the Remote
+application uses its Rust SSH implementation, so host-wide OpenSSH adds parser,
+daemon, and OpenSSL surface without serving a Tilo runtime path.
+Tilo application TLS and all Tilo-owned signing paths do not use it.
+The workspace also patches `rustls-native-certs` with the small
+`tilo-native-certs` loader: on Tilo it reads only
+`/etc/pki/tls/certs/ca-bundle.crt`, ignores `SSL_CERT_FILE` and certificate
+directory overrides, and therefore removes the final `openssl-probe` crate as
+well as its heuristic trust-path discovery.
 
 ### What owner-enrolled Secure Boot buys
 
 `lockdown=integrity` (`os/usr/lib/bootc/kargs.d/01-hardening.toml`) only engages
 when the kernel is told by firmware that it booted verified. Without Secure Boot
-that karg is inert, so root can still load unsigned modules, read `/dev/mem` and
-kexec.
+that lockdown policy is inert. Tilo independently enforces module signatures,
+strict `/dev/mem`, and compiles kexec out entirely, but Secure Boot remains what
+authenticates the kernel containing those controls and closes the pre-kernel
+replacement boundary.
 
 PCR 7 measures the Secure Boot policy. A former LUKS TPM design bound only to
 that register; it has been removed because PCR 7 does not identify the selected
@@ -561,6 +670,11 @@ device-mapper setup, a TPM unseal or a passphrase prompt, `systemd-cryptsetup`.
 because the base's `layout=ostree` kernel-install config deliberately leaves
 initrd generation to the image build.
 
+Tilo supports local roots only. The signed initramfs therefore explicitly omits
+Dracut's network, NetworkManager, NFS, iSCSI, Clevis/NBDE, and crypt-SSH modules.
+Passphrase, TPM2, FIDO2, Plymouth, and rollback recovery remain mandatory. This
+cuts boot-time archive I/O and removes unused pre-root network and TLS parsers.
+
 ## Testing it in a VM
 
 `os/dev/vm.sh` always boots the 4 MB Secure-Boot OVMF build with SMM on and the
@@ -583,6 +697,20 @@ enrolment done inside the guest survives a restart of qemu, making enrolment an
 explicit step rather than something the firmware template arrived with.
 `TILO_SECBOOT_KEYS=microsoft` boots the vendor-key store on purpose; note that it
 rejects an owner-signed UKI outright, so nothing boots.
+
+`os/tests/secureboot_vm_probe.sh` is the lower-level enforcement probe used
+while developing the kernel and signing stack. It boots the compiled Tilo kernel
+against a fresh Secure-Boot-capable OVMF variable store, enrolls Rust-generated
+`db`, `KEK`, and self-signed `PK` updates through efivarfs, then reboots twice
+with that persisted store. The negative boot must contain OVMF's explicit
+`Access Denied -- rejected probably by Secure Boot`; the byte-identical EFI test
+application signed with the enrolled `db` must execute and emit
+`TILO_SECURE_BOOT_SIGNED_EFI_PASS` through the debug port. Absence of an unsigned
+marker alone is not accepted as proof.
+Kernel CI exports the exact freshly built x86 kernel, `gen_init_cpio`, and
+native Rust signer through a CI-only build target and runs this probe as a
+mandatory step. Kernel or signing changes therefore cannot pass on static
+format tests alone.
 
 `--tpm` attaches a software TPM, **started** (`--flags
 not-need-init,startup-clear`), whose state persists in `$TILO_TPM_DIR`, so a disk

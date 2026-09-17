@@ -30,6 +30,13 @@ Tilo owns the policy and presentation around existing engines:
 - UMU owns the supported non-Steam Proton invocation contract, Steam Runtime,
   game identifiers, and protonfix integration.
 - Steam owns Proton selection for games installed through Steam.
+- Tilo-owned Proton capsule launches inherit a modest 12.5% scheduler
+  utilization floor, one-microsecond timer slack, and priority 2 in the
+  ordinary best-effort I/O class. This reduces frequency-ramp, wake-up, and
+  asset/shader-cache loading latency without realtime CPU or I/O priority and
+  without `CAP_SYS_NICE`; ordinary Wine
+  productivity applications do not receive the hint, and unsupported kernels
+  simply ignore it.
 - libvirt and QEMU/KVM own the appliance lifecycle.
 - FreeRDP RemoteApp is the normal appliance presentation path.
 - Tilo's existing workspace grants, portals, launcher, window chrome, actions,

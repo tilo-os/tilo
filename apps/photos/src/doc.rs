@@ -56,6 +56,33 @@ pub fn bytes_of(open: &OpenImage) -> Option<Vec<u8>> {
 
 pub struct PhotosDoc;
 
+/// The durable metadata namespace behind a virtual Photos browse resource.
+///
+/// These entries retain only a public label and its live photograph count;
+/// they deliberately do not duplicate image paths, content references, or
+/// action trees. Keeping this compact keyed projection in the document makes
+/// an exact folder/person/tag address resolvable without walking every photo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetadataViewKind {
+    Folder,
+    Person,
+    Tag,
+}
+
+/// One exact metadata label resolved from the retained CRDT projection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MetadataView {
+    pub kind: MetadataViewKind,
+    pub label: String,
+    pub count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct MetadataIndexEntry {
+    label: String,
+    count: usize,
+}
+
 /// Structured library projection. The former `library` JSON scalar is read
 /// only long enough to migrate old documents; all new library writes use
 /// independently mergeable maps and lists below this key.
@@ -65,6 +92,13 @@ const LIBRARY_KEY: &str = "photos_library";
 /// two fields therefore merge independently without pretending that the four
 /// coordinates of a single crop can safely be composed.
 const EDITS_KEY: &str = "photos_edits";
+const METADATA_FOLDERS_KEY: &str = "metadata_folders";
+const METADATA_PEOPLE_KEY: &str = "metadata_people";
+const METADATA_TAGS_KEY: &str = "metadata_tags";
+
+fn metadata_resource_id(prefix: &str, label: &str) -> String {
+    format!("{prefix}{}", qdoc::blobstore::hash_bytes(label.as_bytes()))
+}
 
 impl PhotosDoc {
     /// True when the document has never been written to.
@@ -299,6 +333,54 @@ impl PhotosDoc {
         Some(album)
     }
 
+    /// Resolve a hashed metadata browse id from the compact keyed index.
+    ///
+    /// Unlike [`Self::library`], this never projects every photograph. The
+    /// index is derived on each authoritative library write, so deletion of
+    /// the final matching photograph removes the entry and stale exact ids
+    /// refuse rather than materialising an empty phantom view.
+    pub fn metadata_view(doc: &AutoCommit, id: &str) -> Option<MetadataView> {
+        let kinds = [
+            (
+                MetadataViewKind::Folder,
+                METADATA_FOLDERS_KEY,
+                "photos.folder:",
+            ),
+            (
+                MetadataViewKind::Person,
+                METADATA_PEOPLE_KEY,
+                "photos.person:",
+            ),
+            (MetadataViewKind::Tag, METADATA_TAGS_KEY, "photos.tag:"),
+        ];
+        for root in Self::library_roots(doc) {
+            for (kind, key, prefix) in kinds {
+                let Some(index) = Self::map_at(doc, &root, key) else {
+                    continue;
+                };
+                let Some(entry) = Self::conflicting_at::<MetadataIndexEntry>(doc, &index, id)
+                    .into_iter()
+                    .next()
+                else {
+                    continue;
+                };
+                if entry.label.trim().is_empty()
+                    || entry.label.chars().count() > 128
+                    || entry.count == 0
+                    || metadata_resource_id(prefix, &entry.label) != id
+                {
+                    continue;
+                }
+                return Some(MetadataView {
+                    kind,
+                    label: entry.label,
+                    count: entry.count,
+                });
+            }
+        }
+        None
+    }
+
     /// Apply a validated projection as granular record/field deltas. This is
     /// intentionally the compatibility seam used by existing canonical
     /// actions: they can keep their replayable pure model mutation while the
@@ -324,6 +406,18 @@ impl PhotosDoc {
     fn ensure_structured_library(doc: &mut AutoCommit) -> Option<ObjId> {
         let roots = Self::library_roots(doc);
         if let [root] = roots.as_slice() {
+            // Upgrade an existing structured library once. New documents
+            // create these maps below; old structured documents need the
+            // compact index populated before a stateless exact resource
+            // lookup can avoid the legacy whole-library fallback.
+            let metadata_index_missing =
+                [METADATA_FOLDERS_KEY, METADATA_PEOPLE_KEY, METADATA_TAGS_KEY]
+                    .into_iter()
+                    .any(|key| Self::map_at(doc, root, key).is_none());
+            if metadata_index_missing {
+                let library = Self::structured_library_at(doc, root).unwrap_or_default();
+                Self::sync_metadata_index(doc, root, &library);
+            }
             if Self::get_str(doc, "library").is_some() {
                 let _ = doc.delete(&ROOT, "library");
             }
@@ -351,6 +445,9 @@ impl PhotosDoc {
         let _ = Self::map_or_make(doc, &root, "albums");
         let _ = Self::map_or_make(doc, &root, "removed_photos");
         let _ = Self::map_or_make(doc, &root, "removed_albums");
+        let _ = Self::map_or_make(doc, &root, METADATA_FOLDERS_KEY);
+        let _ = Self::map_or_make(doc, &root, METADATA_PEOPLE_KEY);
+        let _ = Self::map_or_make(doc, &root, METADATA_TAGS_KEY);
         let _ = Self::list_or_make(doc, &root, "photo_order");
         let _ = Self::list_or_make(doc, &root, "album_order");
         if !library.photos.is_empty() || !library.albums.is_empty() {
@@ -737,6 +834,7 @@ impl PhotosDoc {
                 );
                 let _ = doc.insert(&photo_order, order_index, &photo.id);
             }
+            Self::sync_metadata_index(doc, root, after);
             return;
         }
         // Materialize lookup/order sets once. Bulk import and migration must
@@ -799,6 +897,63 @@ impl PhotosDoc {
         for album in &before.albums {
             if !after_album_ids.contains(album.id.as_str()) {
                 let _ = doc.put(&removed_albums, &album.id, true);
+            }
+        }
+        Self::sync_metadata_index(doc, root, after);
+    }
+
+    /// Update the compact exact-lookup projection after a library write.
+    /// This retains labels/counts only, never a second photo or resource tree.
+    fn sync_metadata_index(doc: &mut AutoCommit, root: &ObjId, library: &PhotoLibrary) {
+        let mut folders = std::collections::BTreeMap::<String, usize>::new();
+        let mut people = std::collections::BTreeMap::<String, usize>::new();
+        let mut tags = std::collections::BTreeMap::<String, usize>::new();
+        for photo in &library.photos {
+            if let Some(folder) = &photo.folder {
+                *folders.entry(folder.clone()).or_default() += 1;
+            }
+            for person in &photo.people {
+                *people.entry(person.clone()).or_default() += 1;
+            }
+            for tag in &photo.tags {
+                *tags.entry(tag.clone()).or_default() += 1;
+            }
+        }
+        Self::sync_metadata_kind(doc, root, METADATA_FOLDERS_KEY, "photos.folder:", folders);
+        Self::sync_metadata_kind(doc, root, METADATA_PEOPLE_KEY, "photos.person:", people);
+        Self::sync_metadata_kind(doc, root, METADATA_TAGS_KEY, "photos.tag:", tags);
+    }
+
+    fn sync_metadata_kind(
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        key: &str,
+        prefix: &str,
+        labels: std::collections::BTreeMap<String, usize>,
+    ) {
+        let Some(index) = Self::map_or_make(doc, root, key) else {
+            return;
+        };
+        let entries: std::collections::BTreeMap<_, _> = labels
+            .into_iter()
+            .map(|(label, count)| {
+                (
+                    metadata_resource_id(prefix, &label),
+                    MetadataIndexEntry { label, count },
+                )
+            })
+            .collect();
+        let stale: Vec<_> = doc
+            .keys(&index)
+            .filter(|id| !entries.contains_key(id))
+            .collect();
+        for id in stale {
+            let _ = doc.delete(&index, id);
+        }
+        for (id, entry) in entries {
+            if Self::conflicting_at::<MetadataIndexEntry>(doc, &index, &id).first() != Some(&entry)
+            {
+                Self::write_json_at(doc, &index, &id, &entry);
             }
         }
     }

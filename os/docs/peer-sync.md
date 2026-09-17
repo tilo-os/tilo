@@ -36,7 +36,7 @@ The identity files are created together by `shell --provision-identity`:
 ```text
 ~/.config/tilo/identity/primary.json
 /var/lib/tilo/user-identity/pubkey.bin
-/var/lib/tilo/device/keypair.bin
+/var/lib/tilo/device-private/keypair.bin
 /var/lib/tilo/device/cert.bin
 ```
 
@@ -49,7 +49,7 @@ derive the same Iroh endpoint id from that device key.
 
 ```bash
 journalctl --user -u graphical-session.target | grep -Ei 'iroh|gossip|workspace host'
-stat -c '%a %U:%G %n' /var/lib/tilo/device/keypair.bin
+stat -c '%a %U:%G %n' /var/lib/tilo/device-private/keypair.bin
 systemctl --user status tilo-identity.service
 systemctl --user status shell-peer-sync.service
 ```

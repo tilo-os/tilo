@@ -5,7 +5,7 @@
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::Path;
-use std::process::Command;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -410,13 +410,25 @@ impl JournalLoadError {
 /// Returns a safe classification when `journalctl` is unavailable, denied, or
 /// otherwise fails. It never returns the command's stderr.
 pub fn load_live(limit: usize) -> Result<Vec<LogEntry>, JournalLoadError> {
-    let output = Command::new("journalctl")
-        .args(["-o", "json", "--no-pager", "-n", &limit.to_string()])
-        .output();
-
-    let Ok(output) = output else {
-        return Err(JournalLoadError::Unavailable);
-    };
+    let limit_arg = limit.to_string();
+    let output_limit = limit
+        .saturating_mul(64 * 1024)
+        .clamp(1024 * 1024, 32 * 1024 * 1024);
+    let output = bounded_command::run(
+        "journalctl",
+        &["-o", "json", "--no-pager", "-n", &limit_arg],
+        None,
+        output_limit,
+        Duration::from_secs(5),
+    )
+    .map_err(|error| match error {
+        bounded_command::Error::Process(ref io_error)
+            if io_error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            JournalLoadError::Unavailable
+        }
+        _ => JournalLoadError::Failed,
+    })?;
     if !output.status.success() {
         // Do not relay stderr. Its wording is neither stable nor safe to
         // publish, but the common permission failure deserves a useful

@@ -1,0 +1,12 @@
+[Unit]
+Description=Start the collaborative filesystem outside the login critical path
+
+[Timer]
+# Avoid racing the greeter for cold executable/library pages. The path unit
+# still starts QuickFS immediately when OOBE creates a new device identity.
+OnBootSec=5s
+AccuracySec=1s
+Unit=fs.service
+
+[Install]
+WantedBy=timers.target

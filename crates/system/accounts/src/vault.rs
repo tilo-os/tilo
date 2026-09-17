@@ -18,9 +18,8 @@
 //! swallowed, so a read-only or missing config dir never crashes an app.
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -224,13 +223,14 @@ fn load_or_create_key(dir: &Path, custody: SecretCustody) -> Option<Zeroizing<[u
 }
 
 fn secret_service_available() -> bool {
-    Command::new("secret-tool")
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+    bounded_command::run(
+        "secret-tool",
+        &["--version"],
+        None,
+        256,
+        Duration::from_secs(2),
+    )
+    .is_ok_and(|output| output.status.success())
 }
 
 fn secret_service_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
@@ -284,17 +284,19 @@ fn secret_service_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
 }
 
 fn lookup_secret_service_key() -> Result<Option<Zeroizing<[u8; KEY_LEN]>>, String> {
-    let output = Command::new("secret-tool")
-        .args(["lookup", "application", "Tilo", "purpose", "account-vault"])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| format!("secret-tool could not start: {error}"))?;
+    let output = bounded_command::run(
+        "secret-tool",
+        &["lookup", "application", "Tilo", "purpose", "account-vault"],
+        None,
+        256,
+        Duration::from_secs(5),
+    )
+    .map_err(|error| format!("Secret Service lookup failed: {error}"))?;
     if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return if error.is_empty() {
+        return if output.stderr.is_empty() {
             Ok(None)
         } else {
-            Err(error)
+            Err("Secret Service refused or could not retrieve the vault key".to_string())
         };
     }
     let encoded = String::from_utf8(output.stdout)
@@ -307,33 +309,26 @@ fn lookup_secret_service_key() -> Result<Option<Zeroizing<[u8; KEY_LEN]>>, Strin
 }
 
 fn store_secret_service_key(key: &[u8; KEY_LEN]) -> Result<(), String> {
-    let mut child = Command::new("secret-tool")
-        .args([
+    let encoded = Zeroizing::new(encode_key(key));
+    let output = bounded_command::run(
+        "secret-tool",
+        &[
             "store",
             "--label=Tilo account credentials",
             "application",
             "Tilo",
             "purpose",
             "account-vault",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("secret-tool could not start: {error}"))?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| "secret-tool stdin unavailable".to_string())?
-        .write_all(encode_key(key).as_bytes())
-        .map_err(|error| format!("could not send key to Secret Service: {error}"))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("secret-tool wait failed: {error}"))?;
+        ],
+        Some(encoded.as_bytes()),
+        256,
+        Duration::from_secs(5),
+    )
+    .map_err(|error| format!("Secret Service store failed: {error}"))?;
     if output.status.success() {
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        Err("Secret Service refused or could not store the vault key".to_string())
     }
 }
 

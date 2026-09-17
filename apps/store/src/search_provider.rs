@@ -7,11 +7,11 @@
 //! is refused rather than navigating to a stale package identity.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use tilo_actions::{ActionAddress, ActionSpec, OperationKind, Resource};
 use ui::icons::Icon;
-use ui::search::{SearchCatalog, SearchPage, SearchProvider, SearchResult};
+use ui::search::{SearchCatalog, SearchCatalogError, SearchPage, SearchProvider, SearchResult};
 
 use crate::{StoreItem, StoreSource};
 
@@ -26,9 +26,16 @@ struct Row {
 
 #[derive(Default)]
 struct IndexState {
-    revision: Option<u64>,
+    revision: Option<[u8; 32]>,
+    /// The current immutable catalogue. A replacement is completely built
+    /// before this lock is held, then receives a successor generation and is
+    /// swapped with its resolver rows in one short critical section.
     catalog: Option<SearchCatalog>,
     rows: BTreeMap<String, Row>,
+    /// A failed rebuild deliberately withdraws the provider. Returning the
+    /// prior directory after a malformed or exhausted publication would make
+    /// agents act on a stale catalogue.
+    available: bool,
 }
 
 /// Store-owned retained search index. Replacing an unchanged worker snapshot
@@ -37,23 +44,111 @@ struct IndexState {
 #[derive(Clone, Default)]
 pub struct StoreSearchIndex {
     state: Arc<RwLock<IndexState>>,
+    /// Rebuilds may take linear time, and their publication order must match
+    /// authoritative worker order. This intentionally does not guard search
+    /// snapshots or resource resolution.
+    writer: Arc<Mutex<()>>,
 }
 
 impl StoreSearchIndex {
     /// Replace the durable catalogue projection after a worker snapshot.
     pub fn sync(&self, items: &[StoreItem]) {
+        self.rebuild_serialized(items, || {});
+    }
+
+    /// Build a complete replacement without the public provider lock, then
+    /// publish its catalogue and resolver rows together. The hook exists so
+    /// tests can pause precisely at that lock-free boundary.
+    fn rebuild_serialized(&self, items: &[StoreItem], before_publish: impl FnOnce()) {
+        let writer = self
+            .writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.rebuild_with_writer(items, before_publish);
+        drop(writer);
+    }
+
+    fn rebuild_with_writer(&self, items: &[StoreItem], before_publish: impl FnOnce()) {
         let revision = catalogue_revision(items);
         let state = self
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.revision == Some(revision) && state.catalog.is_some() {
+        if state.revision == Some(revision) && state.available {
             return;
         }
         drop(state);
 
+        let staged = match StagedCatalogue::build(items, revision) {
+            Ok(staged) => staged,
+            Err(error) => {
+                self.fail_closed(&error);
+                return;
+            }
+        };
+
+        before_publish();
+
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.revision == Some(revision) && state.available {
+            return;
+        }
+        let predecessor_generation = state
+            .catalog
+            .as_ref()
+            .map_or(0, |catalog| catalog.stats().generation);
+        match staged.catalog.advance_after(predecessor_generation) {
+            Ok(()) => {
+                state.revision = Some(staged.revision);
+                state.catalog = Some(staged.catalog);
+                state.rows = staged.rows;
+                state.available = true;
+            }
+            Err(error) => Self::fail_closed_locked(&mut state, &error),
+        }
+    }
+
+    fn fail_closed(&self, error: &SearchCatalogError) {
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::fail_closed_locked(&mut state, error);
+    }
+
+    fn fail_closed_locked(state: &mut IndexState, error: &SearchCatalogError) {
+        tracing::error!(%error, "withdrawing Store action directory after failed catalogue rebuild");
+        state.revision = None;
+        state.catalog = None;
+        state.rows.clear();
+        state.available = false;
+    }
+
+    #[must_use]
+    pub fn provider(&self) -> StoreSearchProvider {
+        StoreSearchProvider {
+            index: self.clone(),
+        }
+    }
+}
+
+/// A complete, validated replacement built away from the shared provider
+/// state. Its independent catalogue is made current only by
+/// [`StoreSearchIndex::sync`] after it receives the predecessor generation.
+struct StagedCatalogue {
+    revision: [u8; 32],
+    catalog: SearchCatalog,
+    rows: BTreeMap<String, Row>,
+}
+
+impl StagedCatalogue {
+    fn build(items: &[StoreItem], revision: [u8; 32]) -> Result<Self, SearchCatalogError> {
         let catalog = SearchCatalog::new("App Store");
         let mut rows = BTreeMap::new();
+        let mut catalogue_rows = Vec::with_capacity(items.len());
         for item in items {
             let row = Row {
                 resource_id: resource_id(item),
@@ -72,28 +167,17 @@ impl StoreSearchIndex {
             )
             .with_subtitle(&row.subtitle)
             .with_icon(Icon::LayoutGrid);
-            if catalog
-                .upsert(&row.resource_id, searchable_text(item), result)
-                .is_ok()
-            {
-                rows.insert(row.resource_id.clone(), row);
+            if rows.insert(row.resource_id.clone(), row.clone()).is_some() {
+                return Err(SearchCatalogError::DuplicateResourceId);
             }
+            catalogue_rows.push((row.resource_id.clone(), searchable_text(item), result));
         }
-
-        let mut state = self
-            .state
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.revision = Some(revision);
-        state.catalog = Some(catalog);
-        state.rows = rows;
-    }
-
-    #[must_use]
-    pub fn provider(&self) -> StoreSearchProvider {
-        StoreSearchProvider {
-            index: self.clone(),
-        }
+        catalog.replace_all(catalogue_rows)?;
+        Ok(Self {
+            revision,
+            catalog,
+            rows,
+        })
     }
 }
 
@@ -129,23 +213,33 @@ impl SearchProvider for StoreSearchProvider {
     }
 
     fn action_directory_generation(&self) -> Option<u64> {
-        self.index
+        let state = self
+            .index
             .state
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .as_ref()
-            .map(|catalog| catalog.stats().generation)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .available
+            .then(|| {
+                state
+                    .catalog
+                    .as_ref()
+                    .map(|catalog| catalog.stats().generation)
+            })
+            .flatten()
     }
 
     fn action_directory_cursor_is_current(&self, cursor: &ui::search::SearchCursor) -> bool {
-        self.index
+        let state = self
+            .index
             .state
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .as_ref()
-            .is_some_and(|catalog| catalog.cursor_is_current(cursor))
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.available
+            && state
+                .catalog
+                .as_ref()
+                .is_some_and(|catalog| catalog.cursor_is_current(cursor))
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
@@ -164,14 +258,26 @@ impl SearchProvider for StoreSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        let catalog = self
+        let state = self
             .index
             .state
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .clone()
-            .unwrap_or_else(|| SearchCatalog::new("App Store"));
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.available {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        }
+        let Some(catalog) = state.catalog.clone() else {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        };
+        drop(state);
         catalog.query_page(query, cursor, work_budget, result_limit)
     }
 
@@ -210,7 +316,7 @@ fn searchable_text(item: &StoreItem) -> String {
     )
 }
 
-fn catalogue_revision(items: &[StoreItem]) -> u64 {
+fn catalogue_revision(items: &[StoreItem]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     for item in items {
         hasher.update(item.id.as_bytes());
@@ -228,19 +334,14 @@ fn catalogue_revision(items: &[StoreItem]) -> u64 {
         hasher.update(format!("{:?}{:?}{:?}", item.source, item.trust, item.installed).as_bytes());
         hasher.update(&[0xff]);
     }
-    hasher
-        .finalize()
-        .as_bytes()
-        .iter()
-        .fold(0_u64, |revision, byte| {
-            revision.rotate_left(5) ^ u64::from(*byte)
-        })
+    *hasher.finalize().as_bytes()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{InstalledState, StoreItemVersion, StoreTrust};
+    use std::sync::mpsc;
 
     fn item(index: usize) -> StoreItem {
         StoreItem {
@@ -294,5 +395,104 @@ mod tests {
         let address = hit.action_address().unwrap();
         index.sync(&[]);
         assert!(provider.resolve_action_resource(&address).is_none());
+    }
+
+    #[test]
+    fn same_cardinality_replacement_invalidates_old_cursor() {
+        let index = StoreSearchIndex::default();
+        index.sync(&[item(1), item(2)]);
+        let provider = index.provider();
+        let cursor = provider
+            .search_page("", None, 1, 1)
+            .next
+            .expect("a two-row directory has a continuation");
+
+        index.sync(&[item(3), item(4)]);
+
+        assert_eq!(provider.search_limited("app 3", 1).len(), 1);
+        assert!(!provider.action_directory_cursor_is_current(&cursor));
+    }
+
+    #[test]
+    fn malformed_bulk_rebuild_withdraws_instead_of_partially_publishing() {
+        let index = StoreSearchIndex::default();
+        index.sync(&[item(9)]);
+        let provider = index.provider();
+        index.sync(&[item(10), item(10)]);
+
+        assert_eq!(provider.action_directory_generation(), None);
+        assert!(provider.search_limited("app", 10).is_empty());
+    }
+
+    #[test]
+    fn large_replacement_keeps_current_search_and_resolution_responsive_before_publish() {
+        let index = StoreSearchIndex::default();
+        index.sync(&[item(1)]);
+        let provider = index.provider();
+        let address = provider
+            .search_limited("app 1", 1)
+            .pop()
+            .and_then(|result| result.action_address())
+            .expect("initial Store row resolves canonically");
+        let items = std::iter::once(item(1))
+            .chain((2..20_000).map(item))
+            .collect::<Vec<_>>();
+        let worker_index = index;
+        let (staged, staged_receiver) = mpsc::channel();
+        let (continue_publish, continue_receiver) = mpsc::channel();
+        let replacement = std::thread::spawn(move || {
+            worker_index.rebuild_serialized(&items, || {
+                staged.send(()).expect("stage signal");
+                continue_receiver.recv().expect("publish release");
+            });
+        });
+
+        staged_receiver
+            .recv()
+            .expect("large replacement is staged before publication");
+        assert_eq!(provider.search_limited("app 1", 1).len(), 1);
+        assert!(provider.resolve_action_resource(&address).is_some());
+        continue_publish.send(()).expect("release publication");
+        replacement.join().expect("replacement worker");
+    }
+
+    #[test]
+    fn serialized_writers_cannot_publish_an_older_stage_after_a_newer_one() {
+        let index = StoreSearchIndex::default();
+        index.sync(&[item(1)]);
+        let older_index = index.clone();
+        let (older_staged, older_staged_receiver) = mpsc::channel();
+        let (release_older, release_older_receiver) = mpsc::channel();
+        let older = std::thread::spawn(move || {
+            older_index.rebuild_serialized(&[item(2)], || {
+                older_staged.send(()).expect("older stage signal");
+                release_older_receiver.recv().expect("older release");
+            });
+        });
+        older_staged_receiver
+            .recv()
+            .expect("older stage pauses before publication");
+        assert!(
+            index.writer.try_lock().is_err(),
+            "the serial writer lock covers the complete rebuild lifecycle"
+        );
+
+        let newer_index = index.clone();
+        let (newer_started, newer_started_receiver) = mpsc::channel();
+        let newer = std::thread::spawn(move || {
+            newer_started.send(()).expect("newer writer started");
+            newer_index.sync(&[item(3)]);
+        });
+        newer_started_receiver
+            .recv()
+            .expect("newer writer attempted publication");
+
+        release_older.send(()).expect("release older publication");
+        older.join().expect("older writer");
+        newer.join().expect("newer writer");
+
+        let provider = index.provider();
+        assert!(provider.search_limited("app 2", 10).is_empty());
+        assert_eq!(provider.search_limited("app 3", 10).len(), 1);
     }
 }

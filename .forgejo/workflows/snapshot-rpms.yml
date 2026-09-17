@@ -19,6 +19,7 @@ on:
       - os/external-assets/github-assets.tsv
       - os/dev/cache-github-assets.sh
       - os/dev/derive-rpm-package-set.py
+      - keys/cosign.pub
       - os/dev/promote-native-index.py
       - os/dev/install-cached-cosign.sh
       - os/Containerfile.host
@@ -33,6 +34,8 @@ concurrency:
 
 jobs:
   snapshot:
+    if: github.ref == 'refs/heads/main'
+    enable-openid-connect: true
     strategy:
       fail-fast: false
       matrix:
@@ -44,7 +47,7 @@ jobs:
             platform: linux/arm64
             runner: runner-arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 240
+    timeout-minutes: 170
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -132,12 +135,16 @@ jobs:
 
       - name: Sign and describe the native repository
         env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           CHILD_ARCH: ${{ matrix.arch }}
           CHILD_DIGEST: ${{ steps.rpms.outputs.digest }}
         run: |
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "code.sandbox.example/qos/rpms@${CHILD_DIGEST}"
+          set -euo pipefail
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+          esac
+          cosign sign --yes --key "$COSIGN_KEY_REF" "code.sandbox.example/qos/rpms@${CHILD_DIGEST}"
           mkdir -p native-child
           python3 - <<'PY'
           import json, os
@@ -157,6 +164,8 @@ jobs:
           if-no-files-found: error
 
   promote-snapshot:
+    if: github.ref == 'refs/heads/main'
+    enable-openid-connect: true
     timeout-minutes: 60
     needs: snapshot
     runs-on: runner
@@ -186,14 +195,98 @@ jobs:
           fi
       - name: Verify and promote the complete native index
         env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
         run: |
+          set -euo pipefail
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+          esac
           python3 os/dev/promote-native-index.py \
             --repository code.sandbox.example/qos/rpms --tag "$GITHUB_SHA" \
             --revision "$GITHUB_SHA" --descriptors native-children \
-            --signing-key env://COSIGN_PRIVATE_KEY --output rpms-index.txt
+            --signing-key "$COSIGN_KEY_REF" --output rpms-index.txt
           echo "RPMS_REF=$(cat rpms-index.txt)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up buildx for index inspection
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker-container
+
+      - name: Attest and verify the native snapshot index
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+        run: |
+          set -euo pipefail
+          ref="$(cat rpms-index.txt)"
+          platforms="$(docker buildx imagetools inspect --raw "$ref" | jq -c \
+            '[.manifests[].platform | {os,architecture}] | sort_by(.architecture)')"
+          expected='[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]'
+          [ "$platforms" = "$expected" ] || {
+            echo "::error::frozen RPM index does not contain exactly amd64 and arm64: $platforms"
+            exit 1
+          }
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+          esac
+          source os/base-snapshot.env
+          python3 os/dev/derive-rpm-package-set.py --arch x86_64 | sort -u > package-roots-amd64.txt
+          python3 os/dev/derive-rpm-package-set.py --arch aarch64 | sort -u > package-roots-arm64.txt
+          package_set_sha256="$(cat package-roots-amd64.txt package-roots-arm64.txt | sort -u | sha256sum | cut -d' ' -f1)"
+          package_amd64_sha256="$(sha256sum package-roots-amd64.txt | cut -d' ' -f1)"
+          package_arm64_sha256="$(sha256sum package-roots-arm64.txt | cut -d' ' -f1)"
+          digest="${ref##*@}"
+          jq -n --arg source "git+ssh://code.sandbox.example/qos/tilo@$GITHUB_SHA" \
+            --arg digest "$digest" --arg base "$BASE_REF" \
+            --arg package_amd64_sha256 "$package_amd64_sha256" --arg package_arm64_sha256 "$package_arm64_sha256" \
+            --arg package_set_sha256 "$package_set_sha256" '
+              {
+                buildDefinition: {
+                  buildType: "https://tilo.dev/buildtypes/frozen-rpm-index/v1",
+                  externalParameters: {
+                    architectures: ["amd64", "arm64"],
+                    packageSetSha256: $package_set_sha256,
+                    packageSetSha256ByArchitecture: {amd64: $package_amd64_sha256, arm64: $package_arm64_sha256}
+                  },
+                  internalParameters: {expectedReleaseDigest: $digest},
+                  resolvedDependencies: [{uri: $source}, {uri: $base}]
+                },
+                runDetails: {
+                  builder: {id: "https://code.sandbox.example/qos/forgejo/actions/rpm-snapshot-v1"},
+                  metadata: {invocationId: env.GITHUB_RUN_ID}
+                }
+              }
+            ' > rpm-provenance.json
+          cosign sign --yes --key "$COSIGN_KEY_REF" "$ref"
+          cosign attest --yes --key "$COSIGN_KEY_REF" --type slsaprovenance1 \
+            --predicate rpm-provenance.json "$ref"
+          cosign verify --key keys/cosign.pub "$ref" >/dev/null
+          provenance="$(cosign verify-attestation --key keys/cosign.pub \
+            --type slsaprovenance1 "$ref")"
+          printf '%s' "$provenance" | jq -e --arg digest "$digest" \
+            --arg base "$BASE_REF" --arg package_amd64_sha256 "$package_amd64_sha256" --arg package_arm64_sha256 "$package_arm64_sha256" \
+            --arg package_set_sha256 "$package_set_sha256" '
+              [.[].payload | @base64d | fromjson | .predicate]
+              | any(
+                  .buildDefinition.buildType == "https://tilo.dev/buildtypes/frozen-rpm-index/v1"
+                  and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
+                  and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
+                  and .buildDefinition.externalParameters.packageSetSha256ByArchitecture == {amd64: $package_amd64_sha256, arm64: $package_arm64_sha256}
+                  and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
+                  and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
+                )
+            ' >/dev/null
+          echo "::notice::Frozen RPM repo published. Set os/rpms-snapshot.env to: RPMS_REF=$ref"
+          {
+            echo "## Frozen RPM repo published"
+            echo ""
+            echo 'Commit this to `os/rpms-snapshot.env`:'
+            echo ""
+            echo '```'
+            echo "RPMS_REF=$ref"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit the frozen snapshot pin to the dispatched branch
         run: |

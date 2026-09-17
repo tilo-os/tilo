@@ -34,6 +34,7 @@ use crate::generation;
 use anyhow::{Context, Result, bail};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 /// One signed statement of "these are the measurements to expect".
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +51,7 @@ pub struct Prediction {
 ///
 /// `TPM2_VerifySignature` mints the ticket `TPM2_PolicyAuthorize` needs, but only if the
 /// signature is handed over as a TPM structure — `tpm2_verifysignature --format=rsassa` with
-/// the bare OpenSSL output instead verifies in software and writes no ticket, surfacing one
+/// bare external-tool output instead verifies in software and writes no ticket, surfacing one
 /// step later as a missing file rather than "the TPM was never asked".
 ///
 /// Layout: `sigAlg` = `TPM_ALG_RSASSA` (0x0014), `hash` = `TPM_ALG_SHA256` (0x000B), then a
@@ -402,34 +403,21 @@ pub fn seal_policy(
 ///
 /// # Errors
 ///
-/// Returns an error if signing with `openssl` fails, or if the signature file can't be read
-/// back.
+/// Returns an error if the private key cannot be read or parsed, or signing fails.
 pub fn sign_prediction(
-    runner: &dyn Runner,
-    ws: &Workspace,
+    _runner: &dyn Runner,
+    _ws: &Workspace,
     private_key_pem: &Path,
     approved_policy: &[u8],
     gen_num: u64,
 ) -> Result<Vec<u8>> {
     let mut message = approved_policy.to_vec();
     message.extend_from_slice(&generation::policy_ref(gen_num));
-    let msg = ws.put("tosign.bin", &message)?;
-    let sig = ws.path("prediction.sig");
-    require(
-        runner,
-        "openssl",
-        &argv![
-            "dgst",
-            "-sha256",
-            "-sign",
-            private_key_pem.as_os_str(),
-            "-out",
-            sig.as_os_str(),
-            msg.as_os_str(),
-        ],
-        "signing the PCR prediction",
-    )?;
-    std::fs::read(&sig).with_context(|| format!("reading {}", sig.display()))
+    let key = Zeroizing::new(
+        std::fs::read_to_string(private_key_pem)
+            .with_context(|| format!("reading {}", private_key_pem.display()))?,
+    );
+    tilo_crypto::sign_rsa_sha256(&key, &message).map_err(anyhow::Error::msg)
 }
 
 /// A policy session that has been driven to the seal policy, ready to authorise

@@ -45,6 +45,7 @@ zbus = { workspace = true, optional = true, default-features = true }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+bounded-command = { path = "../../crates/system/bounded-command" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["portal"] }

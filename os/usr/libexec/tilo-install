@@ -902,7 +902,7 @@ step "Preparing the '$USERNAME' account on the installed system"
 
 # SHA-512 crypt the password (no colons in a crypt(3) hash, so the
 # name:hash record below parses unambiguously).
-HASH="$(printf '%s\n' "$PASSWORD" | openssl passwd -6 -stdin)"
+HASH="$(printf '%s\n' "$PASSWORD" | tilo-crypto hash-password)"
 [ -n "$HASH" ] || die "failed to hash password"
 
 # Find the newly-installed root partition by probe-mounting each partition

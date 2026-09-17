@@ -47,6 +47,7 @@ use serde_json::{Map, Value};
 pub mod continuity;
 pub mod hardware;
 pub mod notification_policy;
+pub mod roaming_provenance;
 
 /// The file name under the Tilo config root.
 const FILE: &str = "settings.json";

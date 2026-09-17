@@ -462,6 +462,87 @@ struct InspectorRects {
     font_input: Option<Rect>,
 }
 
+/// Reusable horizontal geometry for every inspector section.
+#[derive(Clone, Copy)]
+struct InspectorColumns {
+    left: f64,
+    right: f64,
+    width: f64,
+}
+
+impl InspectorColumns {
+    fn new(inspector: Rect, padding: f64) -> Self {
+        let left = inspector.x0 + padding;
+        let right = inspector.x1 - padding;
+        Self {
+            left,
+            right,
+            width: right - left,
+        }
+    }
+}
+
+/// Framework event state shared by the small embedded-widget routers.
+///
+/// Keeping this boundary explicit prevents every router from mirroring the
+/// full [`Widget::handle_event`] signature and makes it clear which values are
+/// forwarded unchanged to child widgets.
+struct RoutedEvent<'a> {
+    event: &'a WindowEvent,
+    scale_factor: f64,
+    modifiers: Modifiers,
+    state: &'a mut AutoCommit,
+    path: &'a ObjId,
+    focus_target: &'a mut Option<NodeId>,
+    node_id: NodeId,
+    taffy: &'a TaffyTree<()>,
+}
+
+/// Text metrics and placement shared by caret hit-testing, selection geometry,
+/// and caret painting for one text box.
+#[derive(Clone, Copy)]
+struct TextBoxStyle {
+    rect: Rect,
+    font_px: f32,
+    weight: TextWeight,
+    italic: bool,
+    align: TextAlign,
+    center_vertically: bool,
+}
+
+impl TextBoxStyle {
+    fn for_element(element: &Element, rect: Rect, scale: f64) -> Self {
+        Self {
+            rect,
+            font_px: (element.font_size * scale).max(1.0) as f32,
+            weight: if element.bold {
+                TextWeight::Bold
+            } else {
+                TextWeight::Regular
+            },
+            italic: element.italic,
+            align: element.align,
+            center_vertically: true,
+        }
+    }
+}
+
+/// Mutable rendering resources forwarded together through editor paint layers.
+struct PaintContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+/// Normalized keyboard input used by the on-canvas text editor.
+struct EditingKey<'a> {
+    key: &'a Key,
+    text: Option<&'a str>,
+    modifiers: winit::keyboard::ModifiersState,
+    control: bool,
+}
+
 /// Default size of the fill colour-picker popover, in logical px.
 const FILL_PICKER_W: f64 = 260.0;
 const FILL_PICKER_H: f64 = 220.0;
@@ -2002,21 +2083,19 @@ impl SlidesApp {
         labels: &mut Vec<Label>,
     ) -> InspectorRects {
         let pad = 16.0;
-        let x0 = inspector.x0 + pad;
-        let x1 = inspector.x1 - pad;
-        let inner_w = x1 - x0;
+        let columns = InspectorColumns::new(inspector, pad);
         let y = inspector.y0 + pad;
 
         let (y, font_input_rect) = if let Some(el) = self.selected_element() {
-            self.build_inspector_element(el, x0, x1, inner_w, y, buttons, labels)
+            self.build_inspector_element(el, columns, y, buttons, labels)
         } else {
             (
-                self.build_inspector_slide_props(x0, x1, y, buttons, labels),
+                self.build_inspector_slide_props(columns.left, columns.right, y, buttons, labels),
                 None,
             )
         };
 
-        let nb = self.build_inspector_notes(inspector, x0, x1, pad, y, labels, buttons);
+        let nb = self.build_inspector_notes(inspector, columns, pad, y, labels, buttons);
 
         InspectorRects {
             notes: Some(nb),
@@ -2041,25 +2120,17 @@ impl SlidesApp {
     /// swatches, (text elements only) the TYPE row, and the arrange actions.
     /// Returns the y just past the arrange row and the font-size input's
     /// rect (`Some` only for a selected text element).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the inspector's shared column geometry plus the selected element and the two \
-                  output buffers every section pushes into; bundling them would only re-create \
-                  this argument list as a throwaway struct"
-    )]
     fn build_inspector_element(
         &self,
         el: &Element,
-        x0: f64,
-        x1: f64,
-        inner_w: f64,
+        columns: InspectorColumns,
         y: f64,
         buttons: &mut Vec<UiButton>,
         labels: &mut Vec<Label>,
     ) -> (f64, Option<Rect>) {
         let mut y = y;
         labels.push(Label {
-            pos: Point::new(x0, y),
+            pos: Point::new(columns.left, y),
             text: el.kind.label().to_uppercase(),
             font: 16.0,
             color: LabelColor::Primary,
@@ -2069,10 +2140,10 @@ impl SlidesApp {
 
         // Fill swatches (theme presets) plus a Custom… button that opens
         // the embeddable colour picker for an arbitrary fill.
-        Self::push_inspector_header(labels, x0, &mut y, "FILL");
-        y = self.swatch_grid(buttons, x0, inner_w, y, &FILL_ROLES, &el.fill, true);
+        Self::push_inspector_header(labels, columns.left, &mut y, "FILL");
+        y = self.swatch_grid(buttons, columns, y, &FILL_ROLES, &el.fill, true);
         y += 8.0;
-        let custom = Rect::new(x0, y, x1, y + 26.0);
+        let custom = Rect::new(columns.left, y, columns.right, y + 26.0);
         buttons.push(UiButton {
             rect: custom,
             kind: ButtonKind::Text {
@@ -2090,20 +2161,26 @@ impl SlidesApp {
         y += 26.0 + 10.0;
 
         // Stroke swatches.
-        Self::push_inspector_header(labels, x0, &mut y, "STROKE");
-        y = self.swatch_grid(buttons, x0, inner_w, y, &STROKE_ROLES, &el.stroke, false);
+        Self::push_inspector_header(labels, columns.left, &mut y, "STROKE");
+        y = self.swatch_grid(buttons, columns, y, &STROKE_ROLES, &el.stroke, false);
         y += 10.0;
 
         let font_input_rect = if el.kind == ElementKind::Text {
-            let (new_y, rect) =
-                Self::build_inspector_type_row(el, x0, x1, inner_w, y, buttons, labels);
+            let (new_y, rect) = Self::build_inspector_type_row(el, columns, y, buttons, labels);
             y = new_y;
             rect
         } else {
             None
         };
 
-        y = Self::build_inspector_arrange_row(x0, x1, inner_w, y, buttons, labels);
+        y = Self::build_inspector_arrange_row(
+            columns.left,
+            columns.right,
+            columns.width,
+            y,
+            buttons,
+            labels,
+        );
 
         (y, font_input_rect)
     }
@@ -2170,28 +2247,20 @@ impl SlidesApp {
     /// The TYPE row for a selected text element: the font-size input's
     /// reserved rect, bold/italic toggles, and an alignment segmented
     /// control. Returns the y just past it and the font-size input's rect.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the inspector's shared column geometry plus the selected element and the two \
-                  output buffers every section pushes into; bundling them would only re-create \
-                  this argument list as a throwaway struct"
-    )]
     fn build_inspector_type_row(
         el: &Element,
-        x0: f64,
-        x1: f64,
-        inner_w: f64,
+        columns: InspectorColumns,
         y: f64,
         buttons: &mut Vec<UiButton>,
         labels: &mut Vec<Label>,
     ) -> (f64, Option<Rect>) {
         let mut y = y;
-        Self::push_inspector_header(labels, x0, &mut y, "TYPE");
+        Self::push_inspector_header(labels, columns.left, &mut y, "TYPE");
         let bh = 30.0;
         // The font size is a click-to-type NumberInput (with ± steppers)
         // — the widget draws itself, so we only reserve its rect here.
-        let font_input_rect = Some(Rect::new(x0, y, x0 + 136.0, y + bh));
-        let bold = Rect::new(x1 - 36.0, y, x1, y + bh);
+        let font_input_rect = Some(Rect::new(columns.left, y, columns.left + 136.0, y + bh));
+        let bold = Rect::new(columns.right - 36.0, y, columns.right, y + bh);
         buttons.push(UiButton {
             rect: bold,
             kind: ButtonKind::Text {
@@ -2201,7 +2270,12 @@ impl SlidesApp {
             },
             hit: Hit::ToggleBold,
         });
-        let italic = Rect::new(x1 - 36.0 - 6.0 - 36.0, y, x1 - 36.0 - 6.0, y + bh);
+        let italic = Rect::new(
+            columns.right - 36.0 - 6.0 - 36.0,
+            y,
+            columns.right - 36.0 - 6.0,
+            y + bh,
+        );
         buttons.push(UiButton {
             rect: italic,
             kind: ButtonKind::Text {
@@ -2212,18 +2286,18 @@ impl SlidesApp {
             hit: Hit::ToggleItalic,
         });
         y += bh + 10.0;
-        Self::push_inspector_header(labels, x0, &mut y, "ALIGN");
+        Self::push_inspector_header(labels, columns.left, &mut y, "ALIGN");
         // A proper segmented control: left · center · right · justify,
         // the current alignment highlighted. Replaces the old single
         // button that only cycled through the options blind.
         let n = TextAlign::ALL.len();
-        let seg_w = inner_w / n as f64;
+        let seg_w = columns.width / n as f64;
         for (i, a) in TextAlign::ALL.iter().enumerate() {
-            let sx = x0 + i as f64 * seg_w;
+            let sx = columns.left + i as f64 * seg_w;
             let ex = if i + 1 == n {
-                x1
+                columns.right
             } else {
-                x0 + (i as f64 + 1.0) * seg_w
+                columns.left + (i as f64 + 1.0) * seg_w
             };
             let pos = if i == 0 {
                 SegPos::First
@@ -2302,17 +2376,10 @@ impl SlidesApp {
 
     /// Speaker notes box (always shown at the bottom of the inspector).
     /// Returns its rect.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the inspector's shared column geometry plus the two output buffers it pushes \
-                  into; bundling them would only re-create this argument list as a throwaway \
-                  struct"
-    )]
     fn build_inspector_notes(
         &self,
         inspector: Rect,
-        x0: f64,
-        x1: f64,
+        columns: InspectorColumns,
         pad: f64,
         y: f64,
         labels: &mut Vec<Label>,
@@ -2320,7 +2387,7 @@ impl SlidesApp {
     ) -> Rect {
         let notes_top = (y + 6.0).max(inspector.y1 - 188.0);
         labels.push(Label {
-            pos: Point::new(x0, notes_top),
+            pos: Point::new(columns.left, notes_top),
             text: if self.editing_notes {
                 "SPEAKER NOTES  (editing — Esc)"
             } else {
@@ -2331,7 +2398,12 @@ impl SlidesApp {
             color: LabelColor::Dim,
             weight: TextWeight::Semibold,
         });
-        let nb = Rect::new(x0, notes_top + 20.0, x1, inspector.y1 - pad);
+        let nb = Rect::new(
+            columns.left,
+            notes_top + 20.0,
+            columns.right,
+            inspector.y1 - pad,
+        );
         buttons.push(UiButton {
             rect: nb,
             kind: ButtonKind::Text {
@@ -2350,17 +2422,10 @@ impl SlidesApp {
                   other inspector layout helpers; converting to an associated function would \
                   read worse at every call site for no benefit"
     )]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one arg per independent swatch-grid input (geometry, the role list, the \
-                  active role, fill-vs-stroke); bundling them would only re-create this \
-                  argument list as a throwaway struct"
-    )]
     fn swatch_grid(
         &self,
         buttons: &mut Vec<UiButton>,
-        x0: f64,
-        inner_w: f64,
+        columns: InspectorColumns,
         mut y: f64,
         roles: &[&str],
         current: &str,
@@ -2368,12 +2433,12 @@ impl SlidesApp {
     ) -> f64 {
         let cols = 4.0;
         let gap = 8.0;
-        let sw = (inner_w - (cols - 1.0) * gap) / cols;
+        let sw = (columns.width - (cols - 1.0) * gap) / cols;
         let sh = 26.0;
         for (i, role) in roles.iter().enumerate() {
             let col = (i as f64) % cols;
             let row = ((i as f64) / cols).floor();
-            let x = x0 + col * (sw + gap);
+            let x = columns.left + col * (sw + gap);
             let yy = y + row * (sh + gap);
             buttons.push(UiButton {
                 rect: Rect::new(x, yy, x + sw, yy + sh),
@@ -3445,18 +3510,7 @@ impl SlidesApp {
     /// Route an event to the inline title [`TextInput`] while renaming. Returns
     /// `true` if the event was consumed. Enter / Esc commit; a press outside the
     /// field commits and falls through so the click still acts.
-    #[allow(clippy::too_many_arguments)]
-    fn route_title_edit(
-        &mut self,
-        event: &WindowEvent,
-        sf: f64,
-        mods: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn route_title_edit(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
         if !self.editing_title {
             return false;
         }
@@ -3464,9 +3518,12 @@ impl SlidesApp {
         let rect = self.title_input_rect(&chrome);
         self.title_input.apply_layout_external(rect);
 
-        match event {
+        match routed.event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / sf, position.y / sf);
+                self.last_mouse = Point::new(
+                    position.x / routed.scale_factor,
+                    position.y / routed.scale_factor,
+                );
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -3477,7 +3534,7 @@ impl SlidesApp {
                     },
                 ..
             } => {
-                self.commit_title_edit(state);
+                self.commit_title_edit(routed.state);
                 return true;
             }
             WindowEvent::MouseInput {
@@ -3486,27 +3543,27 @@ impl SlidesApp {
                 ..
             } if !rect.inflate(4.0, 8.0).contains(self.last_mouse) => {
                 // Click away commits, then falls through so the click still acts.
-                self.commit_title_edit(state);
+                self.commit_title_edit(routed.state);
                 return false;
             }
             _ => {}
         }
         let mut h = false;
         self.title_input.handle_event(
-            event,
-            sf,
-            &mods,
-            state,
-            path,
+            routed.event,
+            routed.scale_factor,
+            &routed.modifiers,
+            routed.state,
+            routed.path,
             &mut h,
-            focus_target,
-            node_id,
-            taffy,
+            routed.focus_target,
+            routed.node_id,
+            routed.taffy,
         );
         // Live-splice each edit into the CRDT title (the mirror is refreshed on
         // commit; while editing, the field is the source of truth).
         if let Some(t) = self.title_input.take_dirty() {
-            SlidesDoc::set_title(state, &t);
+            SlidesDoc::set_title(routed.state, &t);
             self.mark();
         }
         true
@@ -3515,18 +3572,7 @@ impl SlidesApp {
     /// Route the inspector notes box through its directly-bound multiline
     /// [`TextInput`]. Escape or a press outside ends editing; all editor events
     /// otherwise stay in the shared caret/selection/IME path.
-    #[allow(clippy::too_many_arguments)]
-    fn route_notes_edit(
-        &mut self,
-        event: &WindowEvent,
-        sf: f64,
-        mods: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn route_notes_edit(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
         if !self.editing_notes {
             return false;
         }
@@ -3535,9 +3581,12 @@ impl SlidesApp {
             return false;
         };
         self.notes_input.apply_layout_external(rect);
-        match event {
+        match routed.event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / sf, position.y / sf);
+                self.last_mouse = Point::new(
+                    position.x / routed.scale_factor,
+                    position.y / routed.scale_factor,
+                );
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -3563,19 +3612,19 @@ impl SlidesApp {
         }
         let mut input_handled = false;
         self.notes_input.handle_event(
-            event,
-            sf,
-            &mods,
-            state,
-            path,
+            routed.event,
+            routed.scale_factor,
+            &routed.modifiers,
+            routed.state,
+            routed.path,
             &mut input_handled,
-            focus_target,
-            node_id,
-            taffy,
+            routed.focus_target,
+            routed.node_id,
+            routed.taffy,
         );
         if self.notes_input.take_dirty().is_some() {
             self.mark();
-            self.reload(state);
+            self.reload(routed.state);
         }
         input_handled
     }
@@ -3771,7 +3820,15 @@ impl SlidesApp {
         tr.set_text_scale(1.0);
         self.resolve_text_pointer(tr, chrome);
 
-        self.draw_editor_panels_base(scene, t, theme, chrome, rail_overlay, insp_overlay, div);
+        {
+            let mut paint = PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            };
+            self.draw_editor_panels_base(&mut paint, chrome, rail_overlay, insp_overlay, div);
+        }
         self.draw_editor_canvas(scene, t, tr, theme, chrome, &pal);
         tr.set_text_scale(chrome_text_scale);
         self.draw_editor_base_chrome(scene, t, tr, theme, chrome, &pal);
@@ -3804,8 +3861,16 @@ impl SlidesApp {
             );
         }
 
-        self.draw_editor_rail(scene, t, tr, theme, chrome, &pal, rail_overlay, div);
-        self.draw_editor_inspector_layer(scene, t, tr, theme, chrome, &pal, insp_overlay, div);
+        {
+            let mut paint = PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            };
+            self.draw_editor_rail(&mut paint, chrome, &pal, rail_overlay, div);
+            self.draw_editor_inspector_layer(&mut paint, chrome, &pal, insp_overlay, div);
+        }
 
         // Toolbar overflow menu — painted last so it floats above all chrome.
         ToolbarTools::draw(scene, t, theme, &chrome.toolbar_tools, |scene, button| {
@@ -3816,42 +3881,39 @@ impl SlidesApp {
     /// Base-layer panel fills + divider lines (toolbar, rail, inspector).
     /// A docked panel is part of this base layer; an overlay flap is
     /// painted later, on top of the dimming scrim.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the two panel-overlay flags every layer \
-                  below also needs; bundling them would only re-create this argument list \
-                  as a throwaway struct"
-    )]
     fn draw_editor_panels_base(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         chrome: &Chrome,
         rail_overlay: bool,
         insp_overlay: bool,
         div: Color,
     ) {
-        let c = &theme.tokens.colors;
+        let c = &paint.theme.tokens.colors;
         // Panels (base layer). A docked panel is part of the base; an overlay
         // flap is painted later, on top of the dimming scrim.
-        chrome::fill_rect(scene, t, self.rect, c.surfaces.base);
+        chrome::fill_rect(paint.scene, paint.transform, self.rect, c.surfaces.base);
         if !rail_overlay {
-            chrome::fill_rect(scene, t, chrome.rail, c.surfaces.raised);
+            chrome::fill_rect(paint.scene, paint.transform, chrome.rail, c.surfaces.raised);
         }
         if !insp_overlay {
-            chrome::fill_rect(scene, t, chrome.inspector, c.surfaces.raised);
+            chrome::fill_rect(
+                paint.scene,
+                paint.transform,
+                chrome.inspector,
+                c.surfaces.raised,
+            );
         }
         chrome::fill_rect(
-            scene,
-            t,
+            paint.scene,
+            paint.transform,
             chrome.toolbar,
             mix_panel(c.surfaces.raised, c.surfaces.base),
         );
         // Divider lines.
         stroke_line(
-            scene,
-            t,
+            paint.scene,
+            paint.transform,
             chrome.toolbar.x0,
             chrome.toolbar.y1,
             chrome.toolbar.x1,
@@ -3860,8 +3922,8 @@ impl SlidesApp {
         );
         if !rail_overlay {
             stroke_line(
-                scene,
-                t,
+                paint.scene,
+                paint.transform,
                 chrome.rail.x1,
                 chrome.rail.y0,
                 chrome.rail.x1,
@@ -3871,8 +3933,8 @@ impl SlidesApp {
         }
         if !insp_overlay {
             stroke_line(
-                scene,
-                t,
+                paint.scene,
+                paint.transform,
                 chrome.inspector.x0,
                 chrome.inspector.y0,
                 chrome.inspector.x0,
@@ -3926,7 +3988,7 @@ impl SlidesApp {
             1.0,
         );
 
-        self.draw_editor_selection_chrome(scene, t, tr, chrome, pal);
+        self.draw_editor_selection_chrome(scene, t, tr, theme, chrome, pal);
         self.draw_editor_guides(scene, t, chrome, pal);
 
         // Caption under the slide.
@@ -3950,6 +4012,7 @@ impl SlidesApp {
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
         chrome: &Chrome,
         pal: &Palette,
     ) {
@@ -3970,8 +4033,14 @@ impl SlidesApp {
             1.5,
         );
         if self.editing_text {
-            self.draw_text_selection(scene, t, tr, pal, el, er, chrome.scale);
-            self.draw_text_caret(scene, t, tr, pal, el, er, chrome.scale);
+            let mut paint = PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            };
+            self.draw_text_selection(&mut paint, pal, el, er, chrome.scale);
+            self.draw_text_caret(&mut paint, pal, el, er, chrome.scale);
         } else {
             for (_, hr) in self.handles_of(chrome.slide_dest, chrome.scale, el) {
                 // The returned rect is the generous grab zone (±HANDLE);
@@ -4050,32 +4119,23 @@ impl SlidesApp {
     /// Rail group on top: panel fill (overlay only), then the fixed header
     /// and action buttons, then the scrolling thumbnail list clipped to its
     /// viewport so it can never bleed over the pinned Add/Dup/Del row.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the rail-specific overlay flag and divider \
-                  colour every sub-step needs; bundling them would only re-create this \
-                  argument list as a throwaway struct"
-    )]
     fn draw_editor_rail(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         chrome: &Chrome,
         pal: &Palette,
         rail_overlay: bool,
         div: Color,
     ) {
-        let c = &theme.tokens.colors;
+        let c = &paint.theme.tokens.colors;
         // Rail group on top: panel fill (overlay only), then the fixed header
         // + action buttons, then the scrolling thumbnail list clipped to its
         // viewport so it can never bleed over the pinned Add/Dup/Del row.
         if rail_overlay && chrome.reveal > 0.001 {
-            chrome::fill_rect(scene, t, chrome.rail, c.surfaces.raised);
+            chrome::fill_rect(paint.scene, paint.transform, chrome.rail, c.surfaces.raised);
             stroke_line(
-                scene,
-                t,
+                paint.scene,
+                paint.transform,
                 chrome.rail.x1,
                 chrome.rail.y0,
                 chrome.rail.x1,
@@ -4095,15 +4155,36 @@ impl SlidesApp {
             if Self::in_rail(chrome, b.rect.center())
                 && !drag_zone.is_some_and(|z| z.contains(b.rect.center()))
             {
-                self.draw_button(scene, t, tr, theme, pal, b);
+                self.draw_button(
+                    paint.scene,
+                    paint.transform,
+                    paint.text,
+                    paint.theme,
+                    pal,
+                    b,
+                );
             }
         }
         for l in &chrome.labels {
             if Self::in_rail(chrome, Point::new(l.pos.x, l.pos.y)) {
-                self.draw_label(scene, t, tr, theme, pal, l);
+                self.draw_label(
+                    paint.scene,
+                    paint.transform,
+                    paint.text,
+                    paint.theme,
+                    pal,
+                    l,
+                );
             }
         }
-        self.draw_editor_rail_thumbnails(scene, t, tr, theme, chrome, pal);
+        self.draw_editor_rail_thumbnails(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
+            chrome,
+            pal,
+        );
     }
 
     /// Scrolling thumbnail list — the shared `PageSidebar` paints the
@@ -4192,30 +4273,26 @@ impl SlidesApp {
 
     /// Inspector group on top: panel fill (overlay only), buttons, notes,
     /// labels.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the inspector-specific overlay flag and divider \
-                  colour every sub-step needs; bundling them would only re-create this \
-                  argument list as a throwaway struct"
-    )]
     fn draw_editor_inspector_layer(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         chrome: &Chrome,
         pal: &Palette,
         insp_overlay: bool,
         div: Color,
     ) {
-        let c = &theme.tokens.colors;
+        let c = &paint.theme.tokens.colors;
         // Inspector group on top: panel fill (overlay only), buttons, notes, labels.
         if insp_overlay && chrome.inspector_reveal > 0.001 {
-            chrome::fill_rect(scene, t, chrome.inspector, c.surfaces.raised);
+            chrome::fill_rect(
+                paint.scene,
+                paint.transform,
+                chrome.inspector,
+                c.surfaces.raised,
+            );
             stroke_line(
-                scene,
-                t,
+                paint.scene,
+                paint.transform,
                 chrome.inspector.x0,
                 chrome.inspector.y0,
                 chrome.inspector.x0,
@@ -4225,18 +4302,39 @@ impl SlidesApp {
         }
         for b in &chrome.buttons {
             if Self::in_inspector(chrome, b.rect.center()) {
-                self.draw_button(scene, t, tr, theme, pal, b);
+                self.draw_button(
+                    paint.scene,
+                    paint.transform,
+                    paint.text,
+                    paint.theme,
+                    pal,
+                    b,
+                );
             }
         }
         if let (Some(nb), Some(notes)) = (
             chrome.notes_box,
             self.slide().map(|slide| slide.notes.clone()),
         ) {
-            self.draw_notes(scene, t, tr, theme, nb, &notes);
+            self.draw_notes(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
+                nb,
+                &notes,
+            );
         }
         for l in &chrome.labels {
             if Self::in_inspector(chrome, Point::new(l.pos.x, l.pos.y)) {
-                self.draw_label(scene, t, tr, theme, pal, l);
+                self.draw_label(
+                    paint.scene,
+                    paint.transform,
+                    paint.text,
+                    paint.theme,
+                    pal,
+                    l,
+                );
             }
         }
     }
@@ -4377,49 +4475,66 @@ impl SlidesApp {
         b: &UiButton,
     ) {
         let c = &theme.tokens.colors;
+        let mut paint = PaintContext {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        };
         match &b.kind {
             ButtonKind::Text {
                 label,
                 active,
                 danger,
-            } => Self::draw_button_text(scene, t, tr, c, pal, b.rect, label, *active, *danger),
+            } => Self::draw_button_text(&mut paint, pal, b.rect, label, *active, *danger),
             ButtonKind::IconText {
                 icon,
                 label,
                 accent,
-            } => Self::draw_button_icon_text(scene, t, tr, c, pal, b.rect, *icon, label, *accent),
+            } => Self::draw_button_icon_text(&mut paint, pal, b.rect, *icon, label, *accent),
             ButtonKind::IconOnly { icon, active } => {
-                Self::draw_button_icon_only(scene, t, c, pal, b.rect, *icon, *active);
+                Self::draw_button_icon_only(
+                    paint.scene,
+                    paint.transform,
+                    c,
+                    pal,
+                    b.rect,
+                    *icon,
+                    *active,
+                );
             }
             ButtonKind::Swatch { role, selected } => {
-                Self::draw_button_swatch(scene, t, c, pal, b.rect, role, *selected);
+                Self::draw_button_swatch(
+                    paint.scene,
+                    paint.transform,
+                    c,
+                    pal,
+                    b.rect,
+                    role,
+                    *selected,
+                );
             }
             ButtonKind::Palette { kind, selected } => {
-                Self::draw_button_palette(scene, t, tr, theme, c, b.rect, *kind, *selected);
+                Self::draw_button_palette(&mut paint, b.rect, *kind, *selected);
             }
             ButtonKind::Segment { label, active, pos } => {
-                Self::draw_button_segment(scene, t, tr, c, pal, b.rect, label, *active, *pos);
+                Self::draw_button_segment(&mut paint, pal, b.rect, label, *active, *pos);
             }
-            ButtonKind::Hamburger => self.draw_button_hamburger(scene, t, c, pal, b.rect),
+            ButtonKind::Hamburger => {
+                self.draw_button_hamburger(paint.scene, paint.transform, c, pal, b.rect);
+            }
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one arg per independent ButtonKind::Text field plus the shared draw context; \
-                  bundling them would only re-create this argument list as a throwaway struct"
-    )]
     fn draw_button_text(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::Colors,
+        paint: &mut PaintContext<'_>,
         pal: &Palette,
         rect: Rect,
         label: &str,
         active: bool,
         danger: bool,
     ) {
+        let c = &paint.theme.tokens.colors;
         let (bg, fg) = if danger {
             (render::with_alpha(c.semantic.danger, 38), c.semantic.danger)
         } else if active {
@@ -4427,47 +4542,48 @@ impl SlidesApp {
         } else {
             (c.surfaces.base, c.text_primary)
         };
-        chrome::fill_rrect(scene, t, rect, 8.0, bg);
+        chrome::fill_rrect(paint.scene, paint.transform, rect, 8.0, bg);
         chrome::stroke_rrect(
-            scene,
-            t,
+            paint.scene,
+            paint.transform,
             rect,
             8.0,
             render::with_alpha(c.text_primary, 26),
             1.0,
         );
         if !label.is_empty() {
-            chrome::text_centered(scene, t, tr, label, rect, 13.0, fg, TextWeight::Semibold);
+            chrome::text_centered(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                label,
+                rect,
+                13.0,
+                fg,
+                TextWeight::Semibold,
+            );
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one arg per independent ButtonKind::IconText field plus the shared draw \
-                  context; bundling them would only re-create this argument list as a \
-                  throwaway struct"
-    )]
     fn draw_button_icon_text(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::Colors,
+        paint: &mut PaintContext<'_>,
         pal: &Palette,
         rect: Rect,
         icon: Icon,
         label: &str,
         accent: bool,
     ) {
+        let c = &paint.theme.tokens.colors;
         let (bg, fg) = if accent {
             (pal.accent, Color::WHITE)
         } else {
             (c.surfaces.base, c.text_primary)
         };
-        chrome::fill_rrect(scene, t, rect, 8.0, bg);
+        chrome::fill_rrect(paint.scene, paint.transform, rect, 8.0, bg);
         if !accent {
             chrome::stroke_rrect(
-                scene,
-                t,
+                paint.scene,
+                paint.transform,
                 rect,
                 8.0,
                 render::with_alpha(c.text_primary, 26),
@@ -4475,11 +4591,11 @@ impl SlidesApp {
             );
         }
         let ir = Rect::new(rect.x0 + 11.0, rect.y0 + 8.0, rect.x0 + 29.0, rect.y1 - 8.0);
-        draw_icon(scene, t, ir, icon, fg, 1.8);
+        draw_icon(paint.scene, paint.transform, ir, icon, fg, 1.8);
         chrome::text_vcenter(
-            scene,
-            t,
-            tr,
+            paint.scene,
+            paint.transform,
+            paint.text,
             label,
             rect,
             ir.x1 + 5.0,
@@ -4558,27 +4674,18 @@ impl SlidesApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one arg per independent ButtonKind::Palette field plus the shared draw \
-                  context; bundling them would only re-create this argument list as a \
-                  throwaway struct"
-    )]
     fn draw_button_palette(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::Colors,
+        paint: &mut PaintContext<'_>,
         rect: Rect,
         kind: PaletteKind,
         selected: bool,
     ) {
-        let col = Palette::resolve(kind, theme).accent;
-        chrome::fill_rrect(scene, t, rect, 8.0, c.surfaces.base);
+        let c = &paint.theme.tokens.colors;
+        let col = Palette::resolve(kind, paint.theme).accent;
+        chrome::fill_rrect(paint.scene, paint.transform, rect, 8.0, c.surfaces.base);
         chrome::stroke_rrect(
-            scene,
-            t,
+            paint.scene,
+            paint.transform,
             rect,
             8.0,
             if selected {
@@ -4594,17 +4701,23 @@ impl SlidesApp {
             rect.x0 + 20.0,
             rect.center().y + 6.0,
         );
-        chrome::fill_rrect(scene, t, dot, 6.0, col);
+        chrome::fill_rrect(paint.scene, paint.transform, dot, 6.0, col);
         if rect.width() > 40.0 {
             // Clip the name to the pill so a slight text-metric over-run can
             // never bleed onto the next pill. Pills are sized (see
             // `palette_pill_width`) so the full name fits, making this a
             // belt-and-suspenders guard, not a truncation.
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rect);
+            paint.scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                paint.transform,
+                &rect,
+            );
             chrome::text_vcenter(
-                scene,
-                t,
-                tr,
+                paint.scene,
+                paint.transform,
+                paint.text,
                 kind.label(),
                 rect,
                 dot.x1 + 6.0,
@@ -4612,27 +4725,19 @@ impl SlidesApp {
                 c.text_primary,
                 TextWeight::Semibold,
             );
-            scene.pop_layer();
+            paint.scene.pop_layer();
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one arg per independent ButtonKind::Segment field plus the shared draw \
-                  context; bundling them would only re-create this argument list as a \
-                  throwaway struct"
-    )]
     fn draw_button_segment(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::Colors,
+        paint: &mut PaintContext<'_>,
         pal: &Palette,
         rect: Rect,
         label: &str,
         active: bool,
         pos: SegPos,
     ) {
+        let c = &paint.theme.tokens.colors;
         let (bg, fg) = if active {
             (pal.accent, Color::WHITE)
         } else {
@@ -4649,15 +4754,26 @@ impl SlidesApp {
             }
             SegPos::Mid => vello::kurbo::RoundedRect::from_rect(rect, 0.0),
         };
-        scene.fill(Fill::NonZero, t, bg, None, &shape);
-        scene.stroke(
+        paint
+            .scene
+            .fill(Fill::NonZero, paint.transform, bg, None, &shape);
+        paint.scene.stroke(
             &Stroke::new(1.0),
-            t,
+            paint.transform,
             render::with_alpha(c.text_primary, 26),
             None,
             &shape,
         );
-        chrome::text_centered(scene, t, tr, label, rect, 12.5, fg, TextWeight::Semibold);
+        chrome::text_centered(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            label,
+            rect,
+            12.5,
+            fg,
+            TextWeight::Semibold,
+        );
     }
 
     fn draw_button_hamburger(
@@ -4689,32 +4805,16 @@ impl SlidesApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the element, its resolved destination rect and \
-                  scale; bundling them would only re-create this argument list as a throwaway \
-                  struct"
-    )]
     fn draw_text_caret(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
+        paint: &mut PaintContext<'_>,
         pal: &Palette,
         el: &Element,
         er: Rect,
         s: f64,
     ) {
-        let font_px = (el.font_size * s).max(1.0) as f32;
-        let weight = if el.bold {
-            TextWeight::Bold
-        } else {
-            TextWeight::Regular
-        };
-        self.draw_caret_in_box(
-            scene, t, tr, pal.accent, &el.text, self.caret, er, font_px, weight, el.italic,
-            el.align, true,
-        );
+        let style = TextBoxStyle::for_element(el, er, s);
+        self.draw_caret_in_box(paint, pal.accent, &el.text, self.caret, style);
     }
 
     /// Paint a vertical caret over one line of text inside `er`. The caret
@@ -4722,37 +4822,28 @@ impl SlidesApp {
     /// 1.25`, per-line `align` offset, optional vertical centering), so it lands
     /// correctly on centre- and right-aligned boxes — not just left-anchored
     /// ones. `caret` is a char index into `text`.
-    #[allow(clippy::too_many_arguments)]
     fn draw_caret_in_box(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
+        paint: &mut PaintContext<'_>,
         accent: Color,
         text: &str,
         caret: usize,
-        er: Rect,
-        font_px: f32,
-        weight: TextWeight,
-        italic: bool,
-        align: TextAlign,
-        center_v: bool,
+        style: TextBoxStyle,
     ) {
-        let (top, line_h) = self.caret_geometry(
-            tr, text, caret, er, font_px, weight, italic, align, center_v,
-        );
+        let (top, line_h) = self.caret_geometry(paint.text, text, caret, style);
         let bar = Line::new(
             Point::new(top.x, top.y + 2.0),
             Point::new(top.x, top.y + line_h - 2.0),
         );
-        scene.stroke(&Stroke::new(2.0), t, accent, None, &bar);
+        paint
+            .scene
+            .stroke(&Stroke::new(2.0), paint.transform, accent, None, &bar);
     }
 
     /// Pure geometry for [`Self::draw_caret_in_box`]: the caret bar's top point
     /// and the line height, tracking the same layout the painter uses (line
     /// height `font_px * 1.25`, per-line `align` offset, optional vertical
     /// centering). Split out so the placement can be asserted directly.
-    #[allow(clippy::too_many_arguments)]
     #[allow(
         clippy::unused_self,
         reason = "keeps the ergonomic self.caret_geometry(...) call site consistent with the \
@@ -4764,12 +4855,7 @@ impl SlidesApp {
         tr: &mut TextRenderer,
         text: &str,
         caret: usize,
-        er: Rect,
-        font_px: f32,
-        weight: TextWeight,
-        italic: bool,
-        align: TextAlign,
-        center_v: bool,
+        style: TextBoxStyle,
     ) -> (Point, f64) {
         let chars: Vec<char> = text.chars().collect();
         let caret = caret.min(chars.len());
@@ -4794,8 +4880,8 @@ impl SlidesApp {
             .collect();
         let prefix: String = chars.get(line_start..caret).unwrap_or(&[]).iter().collect();
 
-        let line_h = f64::from(font_px) * 1.25;
-        let wrap_w = (er.width() + 4.0).max(1.0) as f32;
+        let line_h = f64::from(style.font_px) * 1.25;
+        let wrap_w = (style.rect.width() + 4.0).max(1.0) as f32;
         // Total painted height (wrapped rows across explicit lines) mirrors
         // `render::draw_text_element`, so the caret shares its baselines.
         let rows: Vec<usize> = text
@@ -4804,28 +4890,49 @@ impl SlidesApp {
                 if l.is_empty() {
                     1
                 } else {
-                    let (_, h) = tr.measure_styled(l, font_px, Some(wrap_w), weight, italic, false);
+                    let (_, h) = tr.measure_styled(
+                        l,
+                        style.font_px,
+                        Some(wrap_w),
+                        style.weight,
+                        style.italic,
+                        false,
+                    );
                     ((f64::from(h) / line_h).round() as usize).max(1)
                 }
             })
             .collect();
         let total_h = rows.iter().sum::<usize>() as f64 * line_h;
-        let block_top = if center_v && total_h < er.height() {
-            er.y0 + (er.height() - total_h) / 2.0
+        let block_top = if style.center_vertically && total_h < style.rect.height() {
+            style.rect.y0 + (style.rect.height() - total_h) / 2.0
         } else {
-            er.y0
+            style.rect.y0
         };
         let rows_before: usize = rows.iter().take(li).sum();
         let cy = block_top + rows_before as f64 * line_h;
 
         // Horizontal: offset the line by its own width per its alignment (as the
         // painter does), then advance past the prefix to the caret.
-        let (lw, _) = tr.measure_styled(&cur_line, font_px, Some(wrap_w), weight, italic, false);
-        let (pw, _) = tr.measure_styled(&prefix, font_px, None, weight, italic, false);
-        let line_x = match align {
-            TextAlign::Left | TextAlign::Justify => er.x0,
-            TextAlign::Center => er.x0 + (er.width() - f64::from(lw)) / 2.0,
-            TextAlign::Right => er.x1 - f64::from(lw),
+        let (lw, _) = tr.measure_styled(
+            &cur_line,
+            style.font_px,
+            Some(wrap_w),
+            style.weight,
+            style.italic,
+            false,
+        );
+        let (pw, _) = tr.measure_styled(
+            &prefix,
+            style.font_px,
+            None,
+            style.weight,
+            style.italic,
+            false,
+        );
+        let line_x = match style.align {
+            TextAlign::Left | TextAlign::Justify => style.rect.x0,
+            TextAlign::Center => style.rect.x0 + (style.rect.width() - f64::from(lw)) / 2.0,
+            TextAlign::Right => style.rect.x1 - f64::from(lw),
         };
         let cx = line_x + f64::from(pw);
         (Point::new(cx, cy), line_h)
@@ -4835,25 +4942,18 @@ impl SlidesApp {
     /// nearest `p` in the same wrapped layout, for click-to-position and
     /// drag-select. Scans candidate carets and picks the closest, weighting a
     /// matching visual line over horizontal distance.
-    #[allow(clippy::too_many_arguments)]
     fn char_at_point_in_box(
         &self,
         tr: &mut TextRenderer,
         text: &str,
-        er: Rect,
-        font_px: f32,
-        weight: TextWeight,
-        italic: bool,
-        align: TextAlign,
-        center_v: bool,
+        style: TextBoxStyle,
         p: Point,
     ) -> usize {
         let len = text.chars().count();
         let mut best = 0usize;
         let mut best_d = f64::INFINITY;
         for i in 0..=len {
-            let (pt, line_h) =
-                self.caret_geometry(tr, text, i, er, font_px, weight, italic, align, center_v);
+            let (pt, line_h) = self.caret_geometry(tr, text, i, style);
             let dy = if p.y < pt.y {
                 pt.y - p.y
             } else if p.y > pt.y + line_h {
@@ -4875,19 +4975,13 @@ impl SlidesApp {
     /// Selection highlight rectangles for the char range `[min, max)` in `text`,
     /// tracking the same wrapped layout the caret + painter use. One rect per
     /// explicit line the selection covers.
-    #[allow(clippy::too_many_arguments)]
     fn selection_rects_in_box(
         &self,
         tr: &mut TextRenderer,
         text: &str,
         min: usize,
         max: usize,
-        er: Rect,
-        font_px: f32,
-        weight: TextWeight,
-        italic: bool,
-        align: TextAlign,
-        center_v: bool,
+        style: TextBoxStyle,
     ) -> Vec<Rect> {
         if min >= max {
             return Vec::new();
@@ -4911,14 +5005,12 @@ impl SlidesApp {
             }
             let a = a.min(le);
             let b = b.max(a).min(le);
-            let (pa, lh) =
-                self.caret_geometry(tr, text, a, er, font_px, weight, italic, align, center_v);
-            let (pb, _) =
-                self.caret_geometry(tr, text, b, er, font_px, weight, italic, align, center_v);
+            let (pa, lh) = self.caret_geometry(tr, text, a, style);
+            let (pb, _) = self.caret_geometry(tr, text, b, style);
             let x0 = pa.x.min(pb.x);
             let mut x1 = pa.x.max(pb.x);
             if covers_break {
-                x1 = x1.max(x0) + f64::from(font_px) * 0.35;
+                x1 = x1.max(x0) + f64::from(style.font_px) * 0.35;
             }
             if x1 - x0 < 1.5 {
                 x1 = x0 + 1.5;
@@ -4948,39 +5040,22 @@ impl SlidesApp {
             return;
         }
         let er = render::element_dest(chrome.slide_dest, chrome.scale, &el);
-        let font_px = (el.font_size * chrome.scale).max(1.0) as f32;
-        let weight = if el.bold {
-            TextWeight::Bold
-        } else {
-            TextWeight::Regular
-        };
+        let style = TextBoxStyle::for_element(&el, er, chrome.scale);
         if let Some(p) = self.select_word_click.take() {
-            let idx = self.char_at_point_in_box(
-                tr, &el.text, er, font_px, weight, el.italic, el.align, true, p,
-            );
+            let idx = self.char_at_point_in_box(tr, &el.text, style, p);
             let (a, b) = word_boundaries_chars(&el.text, idx);
             self.sel_anchor = a;
             self.caret = b;
         } else if let Some((p, extend)) = self.caret_click.take() {
-            let idx = self.char_at_point_in_box(
-                tr, &el.text, er, font_px, weight, el.italic, el.align, true, p,
-            );
+            let idx = self.char_at_point_in_box(tr, &el.text, style, p);
             self.place_caret(idx, extend);
         }
     }
 
     /// Paint the on-canvas text selection highlight for the editing element.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the shared draw context plus the element, its resolved destination rect and \
-                  scale; bundling them would only re-create this argument list as a throwaway \
-                  struct"
-    )]
     fn draw_text_selection(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
+        paint: &mut PaintContext<'_>,
         pal: &Palette,
         el: &Element,
         er: Rect,
@@ -4990,26 +5065,10 @@ impl SlidesApp {
         if sel.is_collapsed() {
             return;
         }
-        let font_px = (el.font_size * s).max(1.0) as f32;
-        let weight = if el.bold {
-            TextWeight::Bold
-        } else {
-            TextWeight::Regular
-        };
+        let style = TextBoxStyle::for_element(el, er, s);
         let col = render::with_alpha(pal.accent, 70);
-        for r in self.selection_rects_in_box(
-            tr,
-            &el.text,
-            sel.min(),
-            sel.max(),
-            er,
-            font_px,
-            weight,
-            el.italic,
-            el.align,
-            true,
-        ) {
-            chrome::fill_rrect(scene, t, r, 2.0, col);
+        for r in self.selection_rects_in_box(paint.text, &el.text, sel.min(), sel.max(), style) {
+            chrome::fill_rrect(paint.scene, paint.transform, r, 2.0, col);
         }
     }
 
@@ -5965,16 +6024,17 @@ impl Widget for SlidesApp {
         ) {
             self.io_toast = None;
         }
-        if self.route_notes_edit(
+        let mut routed = RoutedEvent {
             event,
             scale_factor,
-            *modifiers,
+            modifiers: *modifiers,
             state,
             path,
             focus_target,
             node_id,
             taffy,
-        ) {
+        };
+        if self.route_notes_edit(&mut routed) {
             *handled = true;
             return;
         }
@@ -5984,55 +6044,34 @@ impl Widget for SlidesApp {
             state: ElementState::Pressed,
             button: MouseButton::Right,
             ..
-        } = event
+        } = routed.event
         {
-            self.on_right_press(state, self.last_mouse, handled);
+            self.on_right_press(routed.state, self.last_mouse, handled);
             return;
         }
         // While a context menu is open it is modal: every other event goes to it.
-        if self.route_context_menu(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+        if self.route_context_menu(&mut routed) {
             *handled = true;
             return;
         }
         // The inline title editor owns input while renaming.
-        if self.route_title_edit(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+        if self.route_title_edit(&mut routed) {
             *handled = true;
             return;
         }
         // The inspector's embedded widgets (font-size field, fill picker) get
         // first refusal on events over them.
-        if self.route_inspector_widgets(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+        if self.route_inspector_widgets(&mut routed) {
             *handled = true;
             return;
         }
-        self.dispatch_unmodal_event(event, scale_factor, *modifiers, state, handled);
+        self.dispatch_unmodal_event(
+            routed.event,
+            routed.scale_factor,
+            routed.modifiers,
+            routed.state,
+            handled,
+        );
     }
 
     fn name(&self) -> &'static str {
@@ -7074,44 +7113,32 @@ impl SlidesApp {
 
     /// Forward an event to the open context menu and apply any chosen action.
     /// Returns `true` if a menu was open (and thus consumed the event).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors ui's own Widget::handle_event signature, which every embedded-widget \
-                  router in this file forwards verbatim"
-    )]
-    fn route_context_menu(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn route_context_menu(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
         if !self.ctx_menu.is_open() {
             return false;
         }
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+        if let WindowEvent::CursorMoved { position, .. } = routed.event {
+            self.last_mouse = Point::new(
+                position.x / routed.scale_factor,
+                position.y / routed.scale_factor,
+            );
         }
         let mut menu_handled = false;
         self.ctx_menu.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
+            routed.event,
+            routed.scale_factor,
+            &routed.modifiers,
+            routed.state,
+            routed.path,
             &mut menu_handled,
-            focus_target,
-            node_id,
-            taffy,
+            routed.focus_target,
+            routed.node_id,
+            routed.taffy,
         );
         if let Some(idx) = self.ctx_menu.take_selection()
             && let Some(Some(hit)) = self.ctx_hits.get(idx).cloned()
         {
-            self.apply_hit(state, hit);
+            self.apply_hit(routed.state, hit);
         }
         true
     }
@@ -7121,18 +7148,7 @@ impl SlidesApp {
     /// `true` when the event was consumed (so `handle_event` should stop).
     /// The picker popover is modal while open; the font field only claims
     /// presses on its own rect and keystrokes while focused.
-    #[allow(clippy::too_many_arguments)]
-    fn route_inspector_widgets(
-        &mut self,
-        event: &WindowEvent,
-        sf: f64,
-        mods: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn route_inspector_widgets(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
         if self.mode != Mode::Edit || self.drag.active() {
             return false;
         }
@@ -7146,51 +7162,30 @@ impl SlidesApp {
         self.position_inspector_widgets(&chrome);
 
         if self.fill_picker_open {
-            return self.route_fill_picker(
-                event,
-                sf,
-                mods,
-                state,
-                path,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            return self.route_fill_picker(routed);
         }
 
         if chrome.font_input_rect.is_none() {
             return false;
         }
-        self.route_font_input(event, sf, mods, state, path, focus_target, node_id, taffy)
+        self.route_font_input(routed)
     }
 
     /// The fill [`ColorPicker`] popover: modal while open, so a routed event
     /// is always consumed. A press outside its panel closes it instead of
     /// reaching the field.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors ui's own Widget::handle_event signature, which every embedded-widget \
-                  router in this file forwards verbatim"
-    )]
-    fn route_fill_picker(
-        &mut self,
-        event: &WindowEvent,
-        sf: f64,
-        mods: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(position.x / sf, position.y / sf);
+    fn route_fill_picker(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
+        if let WindowEvent::CursorMoved { position, .. } = routed.event {
+            self.last_mouse = Point::new(
+                position.x / routed.scale_factor,
+                position.y / routed.scale_factor,
+            );
         }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
-        } = event
+        } = routed.event
         {
             let panel = self.fill_picker.get_rect().inflate(12.0, 16.0);
             if !panel.contains(self.last_mouse) {
@@ -7201,27 +7196,27 @@ impl SlidesApp {
         }
         let mut h = false;
         self.fill_picker.handle_event(
-            event,
-            sf,
-            &mods,
-            state,
-            path,
+            routed.event,
+            routed.scale_factor,
+            &routed.modifiers,
+            routed.state,
+            routed.path,
             &mut h,
-            focus_target,
-            node_id,
-            taffy,
+            routed.focus_target,
+            routed.node_id,
+            routed.taffy,
         );
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
-        } = event
+        } = routed.event
             && self.fill_picker.get_rect().contains(self.last_mouse)
         {
             Widget::set_focus(&mut self.fill_picker, true);
         }
         if let Some(col) = self.fill_picker.take_changed() {
-            self.set_sel_str(state, "fill", &crate::model::color_to_hex(col));
+            self.set_sel_str(routed.state, "fill", &crate::model::color_to_hex(col));
         }
         true
     }
@@ -7230,39 +7225,27 @@ impl SlidesApp {
     /// consumed (canvas hover still wants it), a press on the field focuses
     /// and forwards it, a press elsewhere commits + blurs, and keystrokes
     /// while focused edit it (Esc commits + blurs).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors ui's own Widget::handle_event signature, which every embedded-widget \
-                  router in this file forwards verbatim"
-    )]
-    fn route_font_input(
-        &mut self,
-        event: &WindowEvent,
-        sf: f64,
-        mods: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        match event {
+    fn route_font_input(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
+        match routed.event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / sf, position.y / sf);
+                self.last_mouse = Point::new(
+                    position.x / routed.scale_factor,
+                    position.y / routed.scale_factor,
+                );
                 let mut h = false;
                 self.font_input.handle_event(
-                    event,
-                    sf,
-                    &mods,
-                    state,
-                    path,
+                    routed.event,
+                    routed.scale_factor,
+                    &routed.modifiers,
+                    routed.state,
+                    routed.path,
                     &mut h,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    routed.focus_target,
+                    routed.node_id,
+                    routed.taffy,
                 );
                 if let Some(v) = self.font_input.take_changed() {
-                    self.set_sel_f64(state, "font_size", v);
+                    self.set_sel_f64(routed.state, "font_size", v);
                 }
                 // Don't consume — canvas hover still wants the move.
                 false
@@ -7275,19 +7258,19 @@ impl SlidesApp {
                 if self.font_input.get_rect().contains(self.last_mouse) {
                     let mut h = false;
                     self.font_input.handle_event(
-                        event,
-                        sf,
-                        &mods,
-                        state,
-                        path,
+                        routed.event,
+                        routed.scale_factor,
+                        &routed.modifiers,
+                        routed.state,
+                        routed.path,
                         &mut h,
-                        focus_target,
-                        node_id,
-                        taffy,
+                        routed.focus_target,
+                        routed.node_id,
+                        routed.taffy,
                     );
                     Widget::set_focus(&mut self.font_input, true);
                     if let Some(v) = self.font_input.take_changed() {
-                        self.set_sel_f64(state, "font_size", v);
+                        self.set_sel_f64(routed.state, "font_size", v);
                     }
                     true
                 } else if self.font_input.is_focused() {
@@ -7295,37 +7278,23 @@ impl SlidesApp {
                     // press can still hit whatever it landed on.
                     Widget::set_focus(&mut self.font_input, false);
                     if let Some(v) = self.font_input.take_changed() {
-                        self.set_sel_f64(state, "font_size", v);
+                        self.set_sel_f64(routed.state, "font_size", v);
                     }
                     false
                 } else {
                     false
                 }
             }
-            WindowEvent::KeyboardInput { .. } if self.font_input.is_focused() => self
-                .route_font_input_key(event, sf, mods, state, path, focus_target, node_id, taffy),
+            WindowEvent::KeyboardInput { .. } if self.font_input.is_focused() => {
+                self.route_font_input_key(routed)
+            }
             _ => false,
         }
     }
 
     /// A keystroke while the font-size field is focused: Esc blurs it
     /// (committing any change); everything else edits it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors ui's own Widget::handle_event signature, which every embedded-widget \
-                  router in this file forwards verbatim"
-    )]
-    fn route_font_input_key(
-        &mut self,
-        event: &WindowEvent,
-        sf: f64,
-        mods: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn route_font_input_key(&mut self, routed: &mut RoutedEvent<'_>) -> bool {
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -7334,28 +7303,28 @@ impl SlidesApp {
                     ..
                 },
             ..
-        } = event
+        } = routed.event
         {
             Widget::set_focus(&mut self.font_input, false);
             if let Some(v) = self.font_input.take_changed() {
-                self.set_sel_f64(state, "font_size", v);
+                self.set_sel_f64(routed.state, "font_size", v);
             }
             return true;
         }
         let mut h = false;
         self.font_input.handle_event(
-            event,
-            sf,
-            &mods,
-            state,
-            path,
+            routed.event,
+            routed.scale_factor,
+            &routed.modifiers,
+            routed.state,
+            routed.path,
             &mut h,
-            focus_target,
-            node_id,
-            taffy,
+            routed.focus_target,
+            routed.node_id,
+            routed.taffy,
         );
         if let Some(v) = self.font_input.take_changed() {
-            self.set_sel_f64(state, "font_size", v);
+            self.set_sel_f64(routed.state, "font_size", v);
         }
         true
     }
@@ -7538,7 +7507,16 @@ impl SlidesApp {
         // for shortcuts the fields intentionally leave to the toolkit (notably
         // global undo/redo).
         if self.editing_text || self.editing_notes || self.editing_title {
-            self.on_key_editing_text(doc, key, text, mods, ctrl, handled);
+            self.on_key_editing_text(
+                doc,
+                &EditingKey {
+                    key,
+                    text,
+                    modifiers: mods,
+                    control: ctrl,
+                },
+                handled,
+            );
             return;
         }
 
@@ -7612,26 +7590,17 @@ impl SlidesApp {
     /// Keys while the on-canvas text box, speaker notes, or the deck-title
     /// rename is focused: caret/selection navigation first, then clipboard
     /// and character insertion.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one arg per independent piece of key-event state (the raw key, its text, \
-                  modifiers, the derived ctrl flag) plus the shared doc/handled outputs; \
-                  bundling them would only re-create this argument list as a throwaway struct"
-    )]
     fn on_key_editing_text(
         &mut self,
         doc: &mut AutoCommit,
-        key: &Key,
-        text: Option<&str>,
-        mods: winit::keyboard::ModifiersState,
-        ctrl: bool,
+        input: &EditingKey<'_>,
         handled: &mut bool,
     ) {
-        let shift = mods.shift_key();
-        if self.on_key_editing_nav(doc, key, ctrl, shift, handled) {
+        let shift = input.modifiers.shift_key();
+        if self.on_key_editing_nav(doc, input.key, input.control, shift, handled) {
             return;
         }
-        self.on_key_editing_insert(doc, key, text, ctrl, handled);
+        self.on_key_editing_insert(doc, input.key, input.text, input.control, handled);
     }
 
     /// Caret/selection navigation while editing text: Escape commits + exits,
@@ -8934,6 +8903,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn text_alignment_segments_fill_the_shared_inspector_columns() {
+        let (mut app, _doc, _id) = selected_text_app();
+        sized(&mut app, 1280.0, 800.0);
+        let chrome = app.compute_chrome();
+        let segments: Vec<Rect> = chrome
+            .buttons
+            .iter()
+            .filter_map(|button| {
+                matches!(button.kind, ButtonKind::Segment { .. }).then_some(button.rect)
+            })
+            .collect();
+
+        assert_eq!(segments.len(), TextAlign::ALL.len());
+        assert_eq!(segments[0].x0, chrome.inspector.x0 + 16.0);
+        assert_eq!(segments.last().unwrap().x1, chrome.inspector.x1 - 16.0);
+        let width = segments[0].width();
+        for pair in segments.windows(2) {
+            assert_eq!(pair[0].x1, pair[1].x0, "segments meet without gaps");
+            assert_eq!(pair[1].width(), width, "segments divide the row evenly");
+        }
+    }
+
     // --- selection handles clear content -----------------------------------
 
     #[test]
@@ -9860,18 +9852,15 @@ mod tests {
         let text = "Hello";
         let end = text.chars().count();
         let geo = |al: TextAlign, tr: &mut TextRenderer| {
-            app.caret_geometry(
-                tr,
-                text,
-                end,
-                er,
-                40.0,
-                TextWeight::Regular,
-                false,
-                al,
-                true,
-            )
-            .0
+            let style = TextBoxStyle {
+                rect: er,
+                font_px: 40.0,
+                weight: TextWeight::Regular,
+                italic: false,
+                align: al,
+                center_vertically: true,
+            };
+            app.caret_geometry(tr, text, end, style).0
         };
         let left = geo(TextAlign::Left, &mut tr);
         let center = geo(TextAlign::Center, &mut tr);

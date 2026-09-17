@@ -89,6 +89,8 @@ mod hdr_tonemap_shader;
 mod headless_examples_smoke;
 #[path = "hevc_hardware_encode.rs"]
 mod hevc_hardware_encode;
+#[path = "identity_startup.rs"]
+mod identity_startup;
 #[path = "interaction_test.rs"]
 mod interaction_test;
 #[path = "keyboard_focus_wire.rs"]

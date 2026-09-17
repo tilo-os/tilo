@@ -39,11 +39,11 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
-# Keep compression and the audited aws-lc transport backend, but do not compile
+# Keep compression and use the workspace's audited ring transport backend, but do not compile
 # russh's optional RustCrypto RSA signer: it remains vulnerable to the remotely
 # observable Marvin timing attack. Modern Ed25519/ECDSA keys and passwords stay
 # supported.
-russh = { version = "0.63.3", default-features = false, features = ["aws-lc-rs", "flate2"] }
+russh = { version = "0.63.3", default-features = false, features = ["ring", "flate2"] }
 tokio.workspace = true
 vte = "0.15.0"
 des = "0.8"

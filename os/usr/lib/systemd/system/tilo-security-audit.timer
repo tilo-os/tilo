@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Tilo security audit after background services settle
+
+[Timer]
+OnBootSec=15s
+OnUnitInactiveSec=1h
+AccuracySec=1m
+Unit=tilo-security-audit.service
+
+[Install]
+WantedBy=timers.target

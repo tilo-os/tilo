@@ -87,8 +87,11 @@ impl QsRefresh {
         }
     }
 
-    /// Feeds `needs_animation_frame` so a reading landing after the
-    /// open animation settles still reaches the screen.
+    /// Whether an OS read is outstanding. This is operational state, not an
+    /// animation signal: a slow or wedged daemon must never force the entire
+    /// desktop to repaint continuously while a worker waits for its bounded
+    /// timeout. The compositor's normal tick/keepalive drains completed
+    /// readings and their chrome revision bump schedules the visible frame.
     pub fn is_in_flight(&self) -> bool {
         !self.in_flight.is_empty()
     }
@@ -179,7 +182,7 @@ impl QsRefresh {
     /// Asserts the asynchrony itself without depending on which OS
     /// tools exist.
     #[cfg(test)]
-    fn kick_fast_with<F>(&mut self, work: F)
+    pub(crate) fn kick_fast_with<F>(&mut self, work: F)
     where
         F: FnOnce() -> QsReading + Send + 'static,
     {

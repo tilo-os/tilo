@@ -4,7 +4,6 @@ Documentation=file:///usr/share/doc/tilo/windows-vm.md
 # Fedora's split libvirt daemons own the qemu:///system and network sockets.
 After=virtqemud.service virtnetworkd.service
 Wants=virtqemud.socket virtnetworkd.socket
-Before=multi-user.target
 
 [Service]
 Type=oneshot
@@ -38,6 +37,3 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@mount @swap @reboot @raw-io @obsolete @cpu-emulation @module @clock @debug @pkey
 SystemCallErrorNumber=EPERM
-
-[Install]
-WantedBy=multi-user.target

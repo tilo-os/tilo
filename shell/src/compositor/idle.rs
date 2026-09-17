@@ -100,6 +100,14 @@ impl IdleConfig {
         self
     }
 
+    /// Override the automatic-lock timeout from Settings. `None` is the
+    /// persisted "Never" choice; explicit locking remains available.
+    #[must_use]
+    pub fn with_lock(mut self, lock: Option<Duration>) -> Self {
+        self.lock_timeout = lock;
+        self
+    }
+
     /// Pure helper for [`Self::from_env`] so tests can drive the parser with fixture strings without poking the real environment.
     ///
     /// `blank`/`lock`: unset or garbage → their secure defaults; `"0"` → explicitly disabled;
@@ -241,6 +249,15 @@ impl SessionManager {
     /// back.
     pub fn set_blank_timeout(&mut self, timeout: Option<Duration>) {
         self.config.blank_timeout = timeout;
+    }
+
+    /// Replace the live automatic-lock timeout without treating the policy
+    /// change as user activity. A shorter timeout can therefore lock on the
+    /// next tick when the current idle duration already exceeds it; `None`
+    /// (Settings' "Never") prevents future automatic locks while preserving
+    /// explicit and pre-sleep locking.
+    pub fn set_lock_timeout(&mut self, timeout: Option<Duration>) {
+        self.config.lock_timeout = timeout;
     }
 
     /// Un-latch a pending suspend the caller decided **not** to act on (typically an inhibitor
@@ -505,6 +522,29 @@ mod tests {
         let trans = s.tick(t0 + Duration::from_secs(600));
         assert_eq!(trans, vec![SessionTransition::Locked]);
         assert!(s.is_locked());
+    }
+
+    #[test]
+    fn live_lock_timeout_change_uses_current_idle_duration_and_never_disables_only_auto_lock() {
+        let t0 = Instant::now();
+        let mut s = SessionManager::new(cfg(None, Some(600)), t0);
+        assert!(s.tick(t0 + Duration::from_secs(400)).is_empty());
+
+        s.set_lock_timeout(Some(Duration::from_secs(300)));
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(400)),
+            vec![SessionTransition::Locked],
+            "a stricter live setting applies without pretending policy change is input"
+        );
+
+        let mut never = SessionManager::new(cfg(None, Some(60)), t0);
+        never.set_lock_timeout(None);
+        assert!(never.tick(t0 + Duration::from_secs(10_000)).is_empty());
+        assert_eq!(
+            never.request_lock(t0 + Duration::from_secs(10_001)),
+            vec![SessionTransition::Locked],
+            "Never disables only idle locking, not the explicit lock action"
+        );
     }
 
     #[test]

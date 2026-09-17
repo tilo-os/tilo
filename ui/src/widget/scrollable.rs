@@ -126,6 +126,11 @@ pub struct Scrollable {
     /// `mark_drawn`.
     scroll_dirty: bool,
     show_scrollbar: bool,
+    /// Whether an overflowing viewport itself participates in sequential
+    /// keyboard focus. Forms generally want Tab to enter their first control
+    /// directly; document viewers may keep the viewport stop for arrow/Page
+    /// navigation.
+    sequential_focus: bool,
     /// Lets `MouseInput::Pressed` hit-test the thumb/track without a prior
     /// hover edge.
     last_cursor: Point,
@@ -199,6 +204,7 @@ impl Scrollable {
             rect: Rect::ZERO,
             scroll_dirty: false,
             show_scrollbar: true,
+            sequential_focus: true,
             last_cursor: Point::ZERO,
             cursor_initialized: false,
             vbar: Scrollbar::vertical(),
@@ -240,6 +246,14 @@ impl Scrollable {
     #[must_use]
     pub fn with_scrollbar(mut self, show: bool) -> Self {
         self.show_scrollbar = show;
+        self
+    }
+
+    /// Keep scrolling, pointer bars, wheel input and descendant focus intact,
+    /// but skip the viewport itself in sequential Tab traversal.
+    #[must_use]
+    pub fn without_sequential_focus(mut self) -> Self {
+        self.sequential_focus = false;
         self
     }
 
@@ -1298,7 +1312,7 @@ impl Widget for Scrollable {
 
     /// Non-overflowing wrappers stay out of the tab order.
     fn is_focusable(&self) -> bool {
-        self.show_scrollbar && (self.vbar_active() || self.hbar_active())
+        self.sequential_focus && self.show_scrollbar && (self.vbar_active() || self.hbar_active())
     }
     fn set_focus(&mut self, focused: bool) {
         if self.focused != focused {
@@ -1395,6 +1409,33 @@ impl Widget for Scrollable {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+
+    fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
+        let Some(child) = &mut self.child else {
+            return false;
+        };
+        if !child.reveal_descendant(target) {
+            return false;
+        }
+        let rect = child.get_rect();
+        let viewport = self.content_viewport_rect();
+        let x = (rect.x0 - viewport.x0 + f64::from(self.offset_x)) as f32;
+        let y = (rect.y0 - viewport.y0 + f64::from(self.offset_y)) as f32;
+        // Keep enough surrounding context to identify a form control after
+        // keyboard traversal. Merely placing a focused field flush against
+        // the viewport edge can hide its label and the adjacent action,
+        // producing an apparently anonymous text box on compact setup pages.
+        // The margin is capped so very small viewports still prioritise the
+        // control itself.
+        let context = (self.effective_viewport_h() * 0.12).clamp(16.0, 56.0);
+        self.scroll_into_view(
+            (x - context).max(0.0),
+            (y - context).max(0.0),
+            rect.width() as f32 + context * 2.0,
+            rect.height() as f32 + context * 2.0,
+        );
+        true
     }
 
     /// The meaningful label belongs to whatever it wraps.
@@ -1545,6 +1586,36 @@ mod tests {
         fn get_rect(&self) -> Rect {
             self.rect
         }
+
+        fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
+            std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(self), target)
+        }
+    }
+
+    #[test]
+    fn focus_reveal_keeps_context_above_a_form_control_visible() {
+        let mut scroll = vertical(900.0).with_child(Box::new(EventSpy {
+            rect: Rect::new(12.0, 520.0, 188.0, 568.0),
+            pointer_events: Rc::default(),
+            draw_viewport: Rc::default(),
+            activations: Rc::default(),
+        }));
+        scroll.rect = Rect::new(0.0, 0.0, 200.0, 300.0);
+        let target = {
+            let child = scroll.child.as_deref_mut().expect("child");
+            std::ptr::from_ref::<dyn Widget>(child)
+        };
+
+        assert!(scroll.reveal_descendant(target));
+        assert!(
+            scroll.offset_y() <= 484.0,
+            "focus reveal should retain at least 36px of label/context above the field; offset={} ",
+            scroll.offset_y()
+        );
+        assert!(
+            scroll.offset_y() + 300.0 >= 604.0,
+            "the focused field plus context below must remain visible"
+        );
     }
 
     #[test]

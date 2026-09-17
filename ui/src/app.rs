@@ -361,6 +361,41 @@ const fn animation_pump_needed(needs_frame: bool, reduce_motion: bool) -> bool {
     needs_frame && !reduce_motion
 }
 
+/// How frequently an otherwise-idle app polls a connected collaboration
+/// transport. The shovel currently has no winit wake bridge, so `Wait`
+/// forever would strand inbound presence/document events; polling it at the
+/// display cadence, however, wakes every built-in app 60 times per second
+/// even when nothing changed. Ten hertz keeps remote state interactive while
+/// bounding idle CPU independently of the monitor refresh rate.
+const COLLAB_IDLE_POLL: Duration = Duration::from_millis(100);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdlePumpCadence {
+    Wait,
+    Deadline(Instant),
+}
+
+fn idle_pump_deadline(
+    now: Instant,
+    visual_work: bool,
+    collab_connected: bool,
+    scheduled_deadline: Option<Instant>,
+) -> IdlePumpCadence {
+    let periodic = if visual_work {
+        now.checked_add(Duration::from_nanos(16_666_667))
+            .unwrap_or(now)
+    } else if collab_connected {
+        now.checked_add(COLLAB_IDLE_POLL).unwrap_or(now)
+    } else if let Some(deadline) = scheduled_deadline {
+        return IdlePumpCadence::Deadline(deadline);
+    } else {
+        return IdlePumpCadence::Wait;
+    };
+    IdlePumpCadence::Deadline(
+        scheduled_deadline.map_or(periodic, |deadline| deadline.min(periodic)),
+    )
+}
+
 fn continuation_publication(
     app_id: String,
     metadata: Option<&crate::collaboration::ContinuationMetadata>,
@@ -379,7 +414,10 @@ fn continuation_publication(
 
 #[cfg(test)]
 mod animation_pump_tests {
-    use super::{animation_pump_needed, continuation_publication};
+    use super::{
+        COLLAB_IDLE_POLL, IdlePumpCadence, animation_pump_needed, continuation_publication,
+        idle_pump_deadline,
+    };
     use crate::collaboration::{CollabRequest, ContinuationMetadata};
 
     #[test]
@@ -387,6 +425,33 @@ mod animation_pump_tests {
         assert!(animation_pump_needed(true, false));
         assert!(!animation_pump_needed(true, true));
         assert!(!animation_pump_needed(false, false));
+    }
+
+    #[test]
+    fn connected_idle_collaboration_does_not_use_the_animation_cadence() {
+        let now = std::time::Instant::now();
+        assert_eq!(
+            idle_pump_deadline(now, false, true, None),
+            IdlePumpCadence::Deadline(now + COLLAB_IDLE_POLL)
+        );
+        assert_eq!(
+            idle_pump_deadline(now, false, false, None),
+            IdlePumpCadence::Wait
+        );
+        assert_eq!(
+            idle_pump_deadline(now, true, true, None),
+            IdlePumpCadence::Deadline(now + std::time::Duration::from_nanos(16_666_667))
+        );
+    }
+
+    #[test]
+    fn an_earlier_widget_deadline_wins_over_periodic_polling() {
+        let now = std::time::Instant::now();
+        let scheduled = now + std::time::Duration::from_millis(25);
+        assert_eq!(
+            idle_pump_deadline(now, false, true, Some(scheduled)),
+            IdlePumpCadence::Deadline(scheduled)
+        );
     }
 
     #[test]
@@ -5536,6 +5601,7 @@ impl App {
                 | CollabEvent::TaskRunCancellation { .. }
                 | CollabEvent::WorkspaceControl { .. }
                 | CollabEvent::RealtimeCommandResult { .. }
+                | CollabEvent::NearbyTransferCommandResult { .. }
                 | CollabEvent::Realtime(_) => {}
             }
         }
@@ -10043,39 +10109,34 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
 
-        // `Wait` sleeps until real input, zero CPU; escalate to a bounded
-        // ~60 Hz tick only while something no winit event surfaces on its
-        // own needs draining — a live collab socket, or a root still
-        // wanting another frame.
+        // `Wait` sleeps until real input. Visual work keeps a display-cadence
+        // pump; an otherwise-idle collaboration socket gets a slower bounded
+        // poll because its shovel does not yet own a winit wake proxy.
         let awaiting_floating_pixels = self
             .floating_windows
             .iter()
             .any(|surface| !surface.suspended && !surface.adopted);
-        let fast_pump = app.collab_manager.is_connected()
+        let visual_work =
             // A widget may keep reporting animation demand until it receives
             // another paint. Under reduced motion we intentionally suppress
             // that paint above, so counting the raw flag here would leave an
             // otherwise-idle app waking at 60 Hz forever.
-            || animation_pump_needed(needs_frame, app.theme.reduce_motion)
+            animation_pump_needed(needs_frame, app.theme.reduce_motion)
             || tooltip_pending
             || typing_active
             || awaiting_floating_pixels
             || awaiting_primary_first_present
             || scheduled_due;
-        match (fast_pump, scheduled_deadline) {
-            (true, _) => {
-                // `checked_add` is non-panicking at the end of Instant's range.
-                let next_tick = Instant::now()
-                    // 60 Hz is 16.666… ms. A 16 ms deadline wakes at 62.5 Hz
-                    // and creates needless CPU/GPU pressure on slow machines.
-                    .checked_add(Duration::from_nanos(16_666_667))
-                    .unwrap_or_else(Instant::now);
-                event_loop.set_control_flow(ControlFlow::WaitUntil(next_tick));
-            }
-            (false, Some(deadline)) => {
+        match idle_pump_deadline(
+            Instant::now(),
+            visual_work,
+            app.collab_manager.is_connected(),
+            scheduled_deadline,
+        ) {
+            IdlePumpCadence::Deadline(deadline) => {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             }
-            (false, None) => event_loop.set_control_flow(ControlFlow::Wait),
+            IdlePumpCadence::Wait => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 }

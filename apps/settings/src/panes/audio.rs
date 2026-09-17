@@ -47,7 +47,6 @@
 //   `audio.input_device`      — string, chosen source name (when >1 source)
 
 use std::collections::{HashMap, HashSet};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -165,14 +164,18 @@ impl InputControl for RealInput {
 /// Best-effort `wpctl` invocation. Returns the daemon's error string when
 /// the binary is missing or the call fails, mirroring `os_actions`.
 fn run_wpctl(args: &[&str]) -> Result<(), String> {
-    let out = Command::new("wpctl")
-        .args(args)
-        .output()
-        .map_err(|e| format!("wpctl not available: {e}"))?;
+    let out = bounded_command::run("wpctl", args, None, 1024 * 1024, Duration::from_secs(5))
+        .map_err(|error| format!("wpctl control failed: {error}"))?;
     if out.status.success() {
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        Err(String::from_utf8_lossy(&out.stderr)
+            .chars()
+            .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
+            .take(512)
+            .collect::<String>()
+            .trim()
+            .to_string())
     }
 }
 
@@ -300,7 +303,13 @@ pub fn parse_wpctl_status(stdout: &str) -> AudioDevices {
 /// when `wpctl` is missing or fails, so a non-Tilo host with no `PipeWire` shows
 /// no device pickers rather than fabricated devices.
 fn list_audio_devices() -> AudioDevices {
-    let Ok(out) = Command::new("wpctl").arg("status").output() else {
+    let Ok(out) = bounded_command::run(
+        "wpctl",
+        &["status"],
+        None,
+        1024 * 1024,
+        Duration::from_secs(5),
+    ) else {
         return AudioDevices::default();
     };
     if !out.status.success() {
@@ -341,10 +350,14 @@ impl DeviceControl for NoopDevice {
 /// slider rests where the mic actually is. Best-effort; `None` on any
 /// failure (no `wpctl`, parse error) so callers fall back to a default.
 fn get_source_volume() -> Option<f32> {
-    let out = Command::new("wpctl")
-        .args(["get-volume", "@DEFAULT_AUDIO_SOURCE@"])
-        .output()
-        .ok()?;
+    let out = bounded_command::run(
+        "wpctl",
+        &["get-volume", "@DEFAULT_AUDIO_SOURCE@"],
+        None,
+        1024 * 1024,
+        Duration::from_secs(5),
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }

@@ -11,6 +11,8 @@ SocketGroup=tilo-identity
 SocketMode=0660
 DirectoryMode=0750
 Accept=yes
+Backlog=16
+MaxConnections=16
 RemoveOnStop=yes
 
 [Install]

@@ -10,6 +10,7 @@ EXCLUDE_PACKAGES=" ${EXCLUDE_PACKAGES:-} "
 INCLUDE_PACKAGES=" ${INCLUDE_PACKAGES:-} "
 APP_FEATURES="${APP_FEATURES:-}"
 PROFILE="${PROFILE:-thin-app}"
+TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target}"
 
 packages=()
 features=()
@@ -48,4 +49,4 @@ cargo build --locked --profile "$PROFILE" --features "$feature_csv" \
     -p runtime-dylib "${packages[@]}"
 
 printf 'built %s thin qpkg apps with %s\n' \
-    "${#binary_crates[@]}" "$REPO/target/$PROFILE/libruntime_dylib.so"
+    "${#binary_crates[@]}" "$TARGET_DIR/$PROFILE/libruntime_dylib.so"

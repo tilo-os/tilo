@@ -15,6 +15,7 @@ use crate::app::ReportEnvelope;
 use crate::config::{RegistryConfig, load_registries};
 use crate::flathub_client::{Remote, installed_flatpaks};
 use crate::model::{ActionKind, StoreSource};
+use crate::search_provider::StoreSearchIndex;
 use crate::sources::{
     flathub_placeholder_to_item, flathub_record_to_item, installed_flatpak_to_item,
     installed_tilo_to_store_item, merge, tilo_to_store_item,
@@ -89,13 +90,13 @@ impl StoreWorker {
         clippy::expect_used,
         reason = "thread spawn failure means the OS is out of resources; there is no fallible path back through the root widget constructor to report it, and no live app to hand back without a worker"
     )]
-    pub fn spawn(opened_ref: Option<FlatpakRef>) -> Self {
+    pub fn spawn(opened_ref: Option<FlatpakRef>, search_index: StoreSearchIndex) -> Self {
         let (request_tx, request_rx) = mpsc::channel();
         let (snapshot_tx, snapshot_rx) = mpsc::channel();
         let pending = Arc::new(AtomicUsize::new(1));
         std::thread::Builder::new()
             .name("store-worker".into())
-            .spawn(move || run(&request_rx, &snapshot_tx, opened_ref))
+            .spawn(move || run(&request_rx, &snapshot_tx, opened_ref, search_index))
             .expect("spawn store worker");
         Self {
             requests: request_tx,
@@ -152,12 +153,17 @@ struct State {
     remotes: Vec<Remote>,
     searches: LruMap<String, Vec<StoreItem>>,
     details: LruMap<String, StoreItem>,
+    /// The current palette/action directory. Rebuilding it is linear in a
+    /// catalogue snapshot, so it belongs on this serialized worker rather
+    /// than in the UI's snapshot-drain loop.
+    search_index: StoreSearchIndex,
 }
 
 fn run(
     requests: &mpsc::Receiver<QueuedRequest>,
     snapshots: &mpsc::Sender<Snapshot>,
     opened_ref: Option<FlatpakRef>,
+    search_index: StoreSearchIndex,
 ) {
     let staging = crate::actions::qpkg_staging_dir()
         .unwrap_or_else(|| std::env::temp_dir().join("tilo-store-staged"));
@@ -175,6 +181,7 @@ fn run(
         remotes: Vec::new(),
         searches: LruMap::new(CACHE_CAP),
         details: LruMap::new(CACHE_CAP),
+        search_index,
     };
     refresh(&mut state);
     if !send(
@@ -649,6 +656,16 @@ fn refresh(state: &mut State) {
     );
     state.searches.clear();
     state.details.clear();
+    sync_authoritative_catalogue(state);
+}
+
+/// Publish the one authoritative catalogue directory. Presentation snapshots
+/// may contain a local filtered search result or a detail projection, neither
+/// of which is allowed to remove unrelated apps from Ctrl+K, agents, history,
+/// or resource resolution. This executes on the serialized worker directly
+/// after a true `base_items` refresh, never on the UI thread.
+fn sync_authoritative_catalogue(state: &State) {
+    state.search_index.sync(&state.base_items);
 }
 
 fn collect_items(
@@ -665,6 +682,7 @@ fn collect_items(
             id: package.app_id,
             version: package.version,
             pinned: package.pinned,
+            user_managed: package.user_managed,
             ..crate::installed::InstalledEntry::default()
         })
         .collect::<Vec<_>>();
@@ -778,6 +796,48 @@ impl<K: Clone + Eq + Hash, V> LruMap<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{InstalledState, StoreItemVersion, StoreTrust};
+    use ui::search::SearchProvider;
+
+    fn item(id: &str, name: &str) -> StoreItem {
+        StoreItem {
+            id: id.into(),
+            name: name.into(),
+            description: format!("{name} Store test row"),
+            categories: vec!["Utilities".into()],
+            icon_url: None,
+            screenshot_urls: Vec::new(),
+            homepage_url: None,
+            source_url: None,
+            install_ref_path: None,
+            source: StoreSource::Tilo {
+                registry_name: "main".into(),
+            },
+            trust: StoreTrust::PublisherSigned,
+            versions: vec![StoreItemVersion {
+                version: "1.0.0".into(),
+                released_at_unix: 0,
+                download_url: None,
+                root_hash_hex: None,
+                size_bytes: 0,
+            }],
+            publisher_pubkey_hex: None,
+            installed: InstalledState::Not,
+        }
+    }
+
+    fn state_with_items(items: Vec<StoreItem>, search_index: StoreSearchIndex) -> State {
+        State {
+            host: None,
+            opened_ref: None,
+            base_items: items,
+            installed: Vec::new(),
+            remotes: Vec::new(),
+            searches: LruMap::new(CACHE_CAP),
+            details: LruMap::new(CACHE_CAP),
+            search_index,
+        }
+    }
 
     #[test]
     fn lru_revisit_is_retained_and_oldest_is_evicted() {
@@ -792,12 +852,66 @@ mod tests {
 
     #[test]
     fn request_and_drain_are_non_blocking() {
-        let worker = StoreWorker::spawn(None);
+        let worker = StoreWorker::spawn(None, StoreSearchIndex::default());
         let started = std::time::Instant::now();
         assert!(worker.request(Request::Search("editor".into())));
         assert!(started.elapsed() < Duration::from_millis(50));
         let started = std::time::Instant::now();
         let _ = worker.try_snapshot();
         assert!(started.elapsed() < Duration::from_millis(20));
+    }
+
+    #[test]
+    fn filtered_snapshot_never_truncates_authoritative_action_directory() {
+        let search_index = StoreSearchIndex::default();
+        let state = state_with_items(
+            vec![
+                item("dev.example.alpha", "Alpha"),
+                item("dev.example.beta", "Beta"),
+            ],
+            search_index.clone(),
+        );
+        sync_authoritative_catalogue(&state);
+        let (snapshots, received) = mpsc::channel();
+
+        assert!(send_tracked(
+            &snapshots,
+            &state,
+            vec![item("dev.example.alpha", "Alpha")],
+            "1 result for Alpha.",
+            Some("Alpha".into()),
+            None,
+            None,
+            None,
+        ));
+        assert_eq!(received.recv().expect("filtered snapshot").items.len(), 1);
+
+        let provider = search_index.provider();
+        assert_eq!(provider.search_limited("Beta", 10).len(), 1);
+    }
+
+    #[test]
+    fn authoritative_catalogue_replacement_updates_and_removes_directory_rows() {
+        let search_index = StoreSearchIndex::default();
+        let mut state = state_with_items(
+            vec![
+                item("dev.example.alpha", "Alpha"),
+                item("dev.example.beta", "Beta"),
+            ],
+            search_index.clone(),
+        );
+        sync_authoritative_catalogue(&state);
+        let provider = search_index.provider();
+        let cursor = provider
+            .search_page("", None, 1, 1)
+            .next
+            .expect("two directory rows produce a continuation");
+
+        state.base_items = vec![item("dev.example.gamma", "Gamma")];
+        sync_authoritative_catalogue(&state);
+
+        assert!(provider.search_limited("Beta", 10).is_empty());
+        assert_eq!(provider.search_limited("Gamma", 10).len(), 1);
+        assert!(!provider.action_directory_cursor_is_current(&cursor));
     }
 }

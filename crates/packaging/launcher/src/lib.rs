@@ -51,6 +51,7 @@ pub mod landlock;
 pub mod landlock_shim;
 pub mod manifest;
 pub mod netgate;
+pub mod performance;
 pub mod profile;
 pub mod registry;
 #[cfg(target_os = "linux")]
