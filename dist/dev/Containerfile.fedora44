@@ -8,6 +8,7 @@ COPY install-build-deps.sh /usr/local/libexec/tilo-install-build-deps
 
 RUN /usr/local/libexec/tilo-install-build-deps fedora \
  && dnf install -y --setopt=install_weak_deps=False \
-      libavcodec-free-devel libavformat-free-devel sccache openssh-clients \
+      libavcodec-free-devel libavformat-free-devel libswscale-free-devel \
+      sccache openssh-clients \
  && dnf clean all \
  && rm -rf /var/cache/dnf /usr/local/libexec/tilo-install-build-deps

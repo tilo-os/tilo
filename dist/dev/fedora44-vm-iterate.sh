@@ -86,7 +86,15 @@ cmd_bootstrap() {
         test "$VERSION_ID" = 44
         command -v cargo
         command -v sccache
-        rpm -q libxkbcommon-devel capnproto libavcodec-free-devel >/dev/null
+        rpm -q libxkbcommon-devel capnproto libavcodec-free-devel \
+            libswscale-free-devel >/dev/null
+        # A persistent distrobox does not change when its source image tag is
+        # rebuilt.  Refresh the live development headers too; otherwise Cargo
+        # can retain generated libspa wrappers from an older Fedora 44 base
+        # PipeWire headers even after the prepared image has been updated.
+        sudo dnf upgrade -y --refresh pipewire-devel pipewire-libs >/dev/null
+        grep -Fq spa_buffer_has_meta_features \
+            /usr/include/spa-0.2/spa/buffer/buffer.h
         printf "Fedora %s development container ready\\n" "$VERSION_ID"'
     note "ready; target cache is $repo_root/$target_rel"
 }
@@ -94,11 +102,9 @@ cmd_bootstrap() {
 build_one() {
     local package=$1 args=()
     case "$package" in
-        # The VM lane deliberately omits default media features. They pull in
-        # FFmpeg ABI linkage unrelated to compositor UX that varies by Fedora.
-        shell) args=(-p shell --no-default-features --features dev-session) ;;
-        launcher) args=(-p launcher) ;;
-        qos-unlock-helper) args=(-p qos-unlock-helper) ;;
+        shell) args=(-p shell --bin shell --features dev-session) ;;
+        tilo-launcher) args=(-p launcher --bin tilo-launcher) ;;
+        tilo-unlock-helper) args=(-p tilo-unlock-helper --bin tilo-unlock-helper) ;;
         *) safe_name "$package"; args=(-p "$package") ;;
     esac
     # The lock prevents two commands from corrupting the one persistent Cargo
@@ -106,7 +112,23 @@ build_one() {
     local quoted
     printf -v quoted ' %q' "${args[@]}"
     container_run "set -euo pipefail
+        # Do not let distrobox's copied host environment attach this build to
+        # the host sccache server. That server executes C/C++ compiler calls in
+        # the host namespace, which can pair F44-generated PipeWire/SPA bindings
+        # with different host headers. The repository cargo shim uses this same
+        # dedicated port for the container route.
+        export SCCACHE_SERVER_PORT=4226
+        export SCCACHE_DIR=\"\$HOME/.cache/sccache-distrobox\"
         mkdir -p '$target_rel'
+        # This is a persistent, disposable build cache rather than source. The
+        # standard tag keeps backup/indexing tools from treating it as project
+        # content when a developer snapshots the checkout.
+        if [ ! -e '$target_rel/CACHEDIR.TAG' ]; then
+          printf '%s\\n' 'Signature: 8a477f597d28d172789f06886806bc55' \\
+            '# This file is a cache directory tag created by Tilo.' \\
+            '# For information about cache directory tags, see:' \\
+            '#       http://www.brynosaurus.com/cachedir/' > '$target_rel/CACHEDIR.TAG'
+        fi
         exec flock '$target_rel/.build.lock' env \\
           CARGO_TARGET_DIR='$target_rel' \\
           RUSTC_WRAPPER=sccache \\
@@ -120,8 +142,8 @@ cmd_build() {
     local package
     for package in "$@"; do
         if [[ $package == host ]]; then
-            build_one launcher
-            build_one qos-unlock-helper
+            build_one tilo-launcher
+            build_one tilo-unlock-helper
         else
             note "debug-building $package only"
             build_one "$package"
@@ -197,7 +219,7 @@ cmd_deploy() {
     (($#)) || set -- shell
     local package
     for package in "$@"; do
-        [[ $package != host ]] || die "deploy host as its concrete binaries: launcher qos-unlock-helper"
+        [[ $package != host ]] || die "deploy host as its concrete binaries: tilo-launcher tilo-unlock-helper"
         note "deploying $package into the disposable VM"
         deploy_one "$package"
     done
@@ -251,6 +273,10 @@ Usage:
 `bootstrap` creates a persistent Fedora 44 dependency container.  `cycle`
 uses debug builds only, deploys executable files into a disposable VM, then
 hands off to a normal UI logout/login so wrapper cleanup is exercised.
+
+The Fedora 44 lane uses its own container-local sccache server and cache
+directory. This is required: a copied host server could compile SPA/PipeWire C
+shims in the host's header namespace rather than Fedora 44's.
 EOF
 }
 

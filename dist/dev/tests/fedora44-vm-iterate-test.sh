@@ -42,6 +42,11 @@ case " $* " in
     ;;
 esac
 EOF
+cat >"$work/bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+printf 'sudo %s\n' "$*" >>"$FAST_LOOP_LOG"
+exit 0
+EOF
 cat >"$work/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 printf 'ssh %s\n' "$*" >>"$FAST_LOOP_LOG"
@@ -55,9 +60,21 @@ env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
     "$tool" build shell
 
 test -x "$repo_root/$target_rel/debug/shell"
+test -f "$repo_root/$target_rel/CACHEDIR.TAG"
+grep -Fqx 'Signature: 8a477f597d28d172789f06886806bc55' "$repo_root/$target_rel/CACHEDIR.TAG"
 grep -Fq -- '--features dev-session' "$log"
-grep -Fq -- '--no-default-features' "$log"
+grep -Fq -- '--bin shell' "$log"
+! grep -Fq -- '--no-default-features' "$log"
+grep -Fq 'SCCACHE_SERVER_PORT=4226' "$log"
+grep -Fq 'sccache-distrobox' "$log"
 ! grep -Eq -- '--release|--profile release|--default-features' "$log"
+
+: >"$log"
+env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
+    TILO_FEDORA44_CONTAINER=test-container TILO_FEDORA44_TARGET_REL="$target_rel" \
+    "$tool" build host
+grep -Fq -- '-p launcher --bin tilo-launcher' "$log"
+grep -Fq -- '-p tilo-unlock-helper --bin tilo-unlock-helper' "$log"
 
 : >"$log"
 env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
