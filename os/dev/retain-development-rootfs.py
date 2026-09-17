@@ -92,6 +92,16 @@ def verify_signature(raw, reference, handoff_digest):
         raise ValueError('rootfs signature does not bind the public handoff receipt')
 
 
+def verify_manifest(raw, image_id):
+    manifest = json.loads(raw, object_pairs_hook=source.trust.unique_object)
+    if (not isinstance(manifest, dict) or manifest.get('schemaVersion') != 2
+            or manifest.get('mediaType') != 'application/vnd.oci.image.manifest.v1+json'
+            or not isinstance(manifest.get('config'), dict)
+            or manifest['config'].get('digest') != image_id
+            or manifest['config'].get('mediaType') != 'application/vnd.oci.image.config.v1+json'):
+        raise ValueError('published manifest does not bind the validated local image configuration')
+
+
 def retain(args):
     if os.getuid() != 0 or platform.machine() != args.architecture:
         raise ValueError('rootfs retention requires already-root native Linux')
@@ -139,6 +149,10 @@ def retain(args):
         if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
             raise ValueError('registry publication returned an invalid manifest digest')
         reference = REPOSITORY + '@' + digest
+        # Fetch only immutable manifest metadata; no duplicate layer download.
+        # Podman resolves the digest reference over authenticated TLS.
+        verify_manifest(source.command(['podman', 'manifest', 'inspect', '--tls-verify=true',
+                                        reference], environment), image_id)
         source.command(['cosign', 'sign', '--yes', '--tlog-upload=false', '--key', str(key),
                         '--annotation', ANNOTATION + '=' + handoff_digest, reference], environment)
         verified = source.command(['cosign', 'verify', '--insecure-ignore-tlog=true',
