@@ -50,6 +50,7 @@ pub mod invite_mint;
 pub mod pair_device;
 pub mod recovery_share;
 pub mod recovery_verify;
+mod sheet;
 
 /// Disk-format record for a persisted identity.
 ///
@@ -2381,16 +2382,9 @@ impl LineEditState {
     }
 }
 
-/// Terminal "Done" success card; falls back to a generic message if
-/// the store has no record.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "the `transform * Affine::translate(..)` calls below compose 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
-)]
-#[allow(
-    clippy::similar_names,
-    reason = "cx/cy is the standard center-x/center-y coordinate naming convention; distinguishing them further would reduce clarity"
-)]
+/// Terminal "Done" success card, on the shared sheet: avatar disc and
+/// name on one row, the two closing lines under them. Falls back to a
+/// generic message if the store has no record.
 fn draw_done_card(
     store: &dyn IdentityStore,
     scene: &mut Scene,
@@ -2399,91 +2393,115 @@ fn draw_done_card(
     theme: &Theme,
     viewport: Rect,
 ) {
-    use vello::kurbo::{RoundedRect, Stroke};
+    use sheet::{Align, FORM_SHEET_WIDTH, Role, Rows, Sheet, SheetSpec, line_height, paint_text};
     use vello::peniko::{Color, Fill};
-    let backdrop = Color::from_rgba8(0, 0, 0, 180);
-    scene.fill(Fill::NonZero, transform, backdrop, None, &viewport);
-    let card_w = 480.0;
-    let card_h = 280.0;
-    let card_x = viewport.x0 + (viewport.width() - card_w) / 2.0;
-    let card_y = viewport.y0 + (viewport.height() - card_h) / 2.0;
-    let card = Rect::new(card_x, card_y, card_x + card_w, card_y + card_h);
-    let radius = 12.0;
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        theme.tokens.colors.surfaces.raised,
-        None,
-        &RoundedRect::from_rect(card, radius),
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        theme.tokens.colors.border_standard,
-        None,
-        &RoundedRect::from_rect(card, radius),
-    );
-    let pad = 32.0;
+
+    const TITLE: &str = "You're all set";
+    const SAVED: &str = "Your identity is saved. You can close this window.";
+    const NEXT: &str = "Start the desktop from a terminal to begin collaborating.";
+
     let (display_name, avatar) = match store.load() {
         Ok(Some(rec)) => (rec.display_name.clone(), rec.avatar_color),
         _ => ("Your identity".to_string(), [120, 120, 200]),
     };
-    let avatar_d = 56.0;
-    let avatar_cx = card.x0 + pad + avatar_d / 2.0;
-    let avatar_cy = card.y0 + pad + avatar_d / 2.0;
+    let signed_in = format!("Signed in as {display_name}");
+    let spec = SheetSpec {
+        title: TITLE,
+        max_width: FORM_SHEET_WIDTH,
+        actions: &[],
+    };
+    let sp = &theme.tokens.spacing;
+    // The avatar is one `s12` disc; the name row is as tall as the disc and
+    // the two closing captions sit one `s6` below it, `s1` apart.
+    let avatar_d = f64::from(sp.s12);
+    let caption_h = line_height(text_renderer, theme, Role::Caption);
+    let plan = |mut rows: Rows| {
+        let name_row = rows.row(avatar_d);
+        rows.gap(sp.s6);
+        let saved = rows.row(caption_h);
+        rows.gap(sp.s1);
+        let next = rows.row(caption_h);
+        (name_row, saved, next, rows.bottom())
+    };
+    let body_w = Sheet::body_width(viewport, spec.max_width, theme);
+    let (_, _, _, wanted) = plan(Rows::measuring(body_w));
+    let sheet = Sheet::layout(viewport, &spec, wanted, text_renderer, theme);
+    let (name_row, saved, next, _) = plan(Rows::new(sheet.body()));
+
+    sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+    let avatar_centre = (name_row.x0 + avatar_d / 2.0, name_row.center().y);
+    // A per-person colour is identity, not decoration (HIG §9.4), so it is
+    // the one fill here the theme does not own; its initial takes the ink
+    // that reads against it rather than an assumed white.
     let avatar_color = Color::from_rgb8(avatar[0], avatar[1], avatar[2]);
     scene.fill(
         Fill::NonZero,
         transform,
         avatar_color,
         None,
-        &vello::kurbo::Circle::new((avatar_cx, avatar_cy), avatar_d / 2.0),
+        &vello::kurbo::Circle::new(avatar_centre, avatar_d / 2.0),
     );
     let initial: String = display_name
         .chars()
         .next()
         .map(|c| c.to_uppercase().to_string())
         .unwrap_or_default();
-    let (iw, _) = text_renderer.measure(&initial, 28.0, None);
-    text_renderer.draw_text(
+    let disc = Rect::new(
+        name_row.x0,
+        name_row.y0,
+        name_row.x0 + avatar_d,
+        name_row.y1,
+    );
+    sheet::paint_text_in(
         scene,
+        transform,
+        text_renderer,
+        theme,
+        disc,
         &initial,
-        28.0,
-        Color::from_rgb8(255, 255, 255),
-        transform * Affine::translate((avatar_cx - f64::from(iw) / 2.0, avatar_cy - 16.0)),
-        None,
+        Role::Code,
+        theme.on_surface(avatar_color).ink,
+        Align::Center,
+        false,
     );
-    text_renderer.draw_text(
-        scene,
-        "You're all set",
-        22.0,
-        theme.tokens.colors.text_primary,
-        transform * Affine::translate((card.x0 + pad + avatar_d + 16.0, card.y0 + pad + 4.0)),
-        None,
+    let name_rect = Rect::new(
+        disc.x1 + f64::from(sp.s4),
+        name_row.y0,
+        name_row.x1,
+        name_row.y1,
     );
-    text_renderer.draw_text(
+    paint_text(
         scene,
-        &format!("Signed in as {display_name}"),
-        14.0,
-        theme.tokens.colors.text_dim,
-        transform * Affine::translate((card.x0 + pad + avatar_d + 16.0, card.y0 + pad + 32.0)),
-        None,
+        transform,
+        text_renderer,
+        theme,
+        name_rect,
+        &signed_in,
+        Role::Value,
+        Align::Start,
+        false,
     );
-    text_renderer.draw_text(
+    paint_text(
         scene,
-        "Your identity is saved. You can close this window.",
-        13.0,
-        theme.tokens.colors.text_dim,
-        transform * Affine::translate((card.x0 + pad, card.y0 + pad + avatar_d + 32.0)),
-        None,
+        transform,
+        text_renderer,
+        theme,
+        saved,
+        SAVED,
+        Role::Caption,
+        Align::Start,
+        false,
     );
-    text_renderer.draw_text(
+    paint_text(
         scene,
-        "Start the desktop from a terminal to begin collaborating.",
-        13.0,
-        theme.tokens.colors.text_dim,
-        transform * Affine::translate((card.x0 + pad, card.y0 + pad + avatar_d + 56.0)),
-        None,
+        transform,
+        text_renderer,
+        theme,
+        next,
+        NEXT,
+        Role::Caption,
+        Align::Start,
+        false,
     );
 }
 
@@ -2636,7 +2654,52 @@ impl IdentityFlow {
     }
 }
 
+impl IdentityFlow {
+    /// The screen currently shown, as a widget — `None` on the terminal
+    /// card, which the flow paints itself.
+    fn current_widget(&self) -> Option<&dyn Widget> {
+        Some(match self.current {
+            IdentityFlowScreen::CreateIdentity => &*self.create_identity,
+            IdentityFlowScreen::RecoveryShare => &*self.recovery_share,
+            IdentityFlowScreen::RecoveryVerify => &*self.recovery_verify,
+            IdentityFlowScreen::AddDeviceHost => &*self.add_device_host,
+            IdentityFlowScreen::PairDevice => &*self.pair_device,
+            IdentityFlowScreen::InviteMint => &*self.invite_mint,
+            IdentityFlowScreen::InviteAccept => &*self.invite_accept,
+            IdentityFlowScreen::Done => return None,
+        })
+    }
+
+    fn current_widget_mut(&mut self) -> Option<&mut (dyn Widget + '_)> {
+        Some(match self.current {
+            IdentityFlowScreen::CreateIdentity => &mut *self.create_identity,
+            IdentityFlowScreen::RecoveryShare => &mut *self.recovery_share,
+            IdentityFlowScreen::RecoveryVerify => &mut *self.recovery_verify,
+            IdentityFlowScreen::AddDeviceHost => &mut *self.add_device_host,
+            IdentityFlowScreen::PairDevice => &mut *self.pair_device,
+            IdentityFlowScreen::InviteMint => &mut *self.invite_mint,
+            IdentityFlowScreen::InviteAccept => &mut *self.invite_accept,
+            IdentityFlowScreen::Done => return None,
+        })
+    }
+}
+
 impl Widget for IdentityFlow {
+    /// The active screen is a child, so the headless driver, the inspector
+    /// and assistive technology can reach it by its `test_id`. Without this
+    /// the flow was a leaf and no screen was addressable at all.
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.current_widget().into_iter().collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.current_widget_mut().into_iter().collect()
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("identity_flow")
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         match self.current {
             IdentityFlowScreen::CreateIdentity => self.create_identity.sync(state, path),
@@ -2674,7 +2737,16 @@ impl Widget for IdentityFlow {
             IdentityFlowScreen::InviteAccept => {
                 self.invite_accept.build_layout(taffy, theme, node_map)
             }
-            IdentityFlowScreen::Done => taffy.leaf_node(Style::default()),
+            // The terminal card owns the viewport like every other screen;
+            // a default (zero-width) leaf centred it on the window's left
+            // edge, half off-screen.
+            IdentityFlowScreen::Done => taffy.leaf_node(Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..Default::default()
+            }),
         }
     }
 
