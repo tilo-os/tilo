@@ -239,13 +239,8 @@ pub fn run(_args: &[String]) {
 /// cannot construct. An unknown theme name is an error, never a silent dark
 /// shot: a capture that cannot observe its subject must fail.
 fn shot_theme() -> Theme {
-    let theme = match std::env::var("QOS_SHOTS_THEME") {
-        Ok(name) => Theme::named(&name).unwrap_or_else(|| {
-            eprintln!("ui-shots: unknown QOS_SHOTS_THEME `{name}`");
-            std::process::exit(2)
-        }),
-        Err(_) => Theme::dark(),
-    };
-    let scale = std::env::var("QOS_SHOTS_TEXT_SCALE").ok();
-    theme.with_text_scale(ui::launch::shot_text_scale(None, scale.as_deref()))
+    ui::launch::shot_theme_from_env().unwrap_or_else(|error| {
+        eprintln!("ui-shots: {error}");
+        std::process::exit(2)
+    })
 }
