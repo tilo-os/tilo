@@ -65,6 +65,7 @@ printf '%s\\n' "$TILO_TEST_ARCH"
         self.write("bin/podman", f"""\
 #!/bin/sh
 printf '%s\\0' "$@" > "$TILO_TEST_PODMAN_LOG"
+[ "$1" != --remote=false ] || shift
 [ "$1" = build ] || exit 72
 exit {BUILD_INTERCEPTED}
 """, executable=True)
@@ -93,6 +94,7 @@ exit {BUILD_INTERCEPTED}
         self.write("os/dev/development-trust.py", 'import json; print(json.dumps({"identities":{"registry-owner.pub":"' + 'a' * 64 + '"}}))\n')
         public = self.root / "public bundle"
         public.mkdir()
+        self.write('bin/id', '#!/bin/sh\nprintf "%s\\n" "${TILO_TEST_UID:-0}"\n', executable=True)
         self.write('.gitignore', 'podman-arguments\nscratch/\nos/output/\n__pycache__/\n')
         subprocess.run(['git', 'init', '-q', str(self.root)], env=self.env, check=True)
         self.commit_fixture()
@@ -100,6 +102,8 @@ exit {BUILD_INTERCEPTED}
                 "TILO_PUBLIC_TRUST_BUNDLE": str(public),
                 "TILO_PUBLIC_TRUST_MANIFEST_SHA256": "b" * 64,
                 "TILO_IMAGE": "localhost/tilo-development:fixture",
+                "TILO_PCR_PREDICTION_SIGNER": "/independent/fixture-signer",
+                "TILO_INSTALLER_SCRATCH": str(self.root / 'scratch'),
                 "TILO_TARGET_IMGREF": "127.0.0.1:5000/tilo-development/os:fixture"}
 
     def commit_fixture(self):
@@ -119,14 +123,61 @@ exit {BUILD_INTERCEPTED}
                                            env=self.env, text=True).strip()
         self.assertIn('org.opencontainers.image.revision=' + revision, args)
 
-    def test_development_stops_before_disk_imaging(self):
+    def development_pipeline_inputs(self):
         inputs = self.development_inputs()
-        self.write("bin/podman", "#!/bin/sh\n[ \"$1\" = build ] || exit 72\nexit 0\n", executable=True)
+        self.write("bin/podman", '''#!/bin/sh
+printf '%s\\0' "$@" >> "$TILO_TEST_PODMAN_LOG"
+[ "$1" != --remote=false ] || shift
+[ "$1" = build ] || exit 72
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --iidfile ]; then shift; printf '%s\\n' "sha256:''' + '1' * 64 + '''" > "$1"; fi
+  shift
+done
+''', executable=True)
+        self.write('os/dev/sign-development-rootfs.py', '''import json,os,sys
+assert sys.argv[sys.argv.index('--rootfs-id') + 1] == 'sha256:''' + '1' * 64 + ''''
+if os.environ.get('TILO_TEST_SIGNER_FAIL') == 'exit': raise SystemExit(81)
+identity = 'mutable:tag' if os.environ.get('TILO_TEST_SIGNER_FAIL') == 'identity' else 'sha256:''' + '2' * 64 + ''''
+print(json.dumps({'signed_rootfs_id': identity}))
+''')
         self.commit_fixture()
+        (self.root / 'scratch').mkdir()
+        return inputs
+
+    def test_development_stops_before_disk_imaging(self):
+        inputs = self.development_pipeline_inputs()
         result = self.run_builder(**inputs)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Development container staged", result.stderr)
         self.assertNotIn("2/2 disk image", result.stderr)
+        arguments = self.log.read_bytes().decode().split('\0')
+        self.assertIn('rootfs', arguments)
+        self.assertIn('final', arguments)
+        self.assertIn('rootfs=container-image://sha256:' + '2' * 64, arguments)
+        self.assertIn('--pull=never', arguments)
+
+    def test_development_signer_failure_never_enters_sealing(self):
+        inputs = self.development_pipeline_inputs()
+        for failure in ('exit', 'identity'):
+            with self.subTest(failure=failure):
+                result = self.run_builder(**(inputs | {'TILO_TEST_SIGNER_FAIL': failure}))
+                self.assertNotEqual(result.returncode, 0)
+                arguments = self.log.read_bytes().decode().split('\0')
+                self.assertEqual(arguments.count('build'), 1)
+                self.assertNotIn('final', arguments)
+                self.assertNotIn('Development container staged', result.stderr)
+
+    def test_development_requires_signer_before_build(self):
+        result = self.run_builder(**(self.development_inputs() | {'TILO_PCR_PREDICTION_SIGNER': ''}))
+        self.assertIn('independent EFI/PCR signer', result.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_development_rejects_rootless_or_remote_storage_before_build(self):
+        inputs = self.development_inputs()
+        for overrides in ({'TILO_TEST_UID': '1000'}, {'CONTAINER_HOST': 'ssh://remote'}):
+            result = self.run_builder(**(inputs | overrides))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(self.log.exists())
 
     def test_development_rejects_uncommitted_source_before_build(self):
         inputs = self.development_inputs()
