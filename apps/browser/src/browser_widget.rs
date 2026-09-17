@@ -98,6 +98,15 @@ pub(crate) const TOOLBAR_CONTROL_HEIGHT: f32 = 40.0;
 /// zoom readout — join the toolbar row.
 const DEVELOPER_CHROME_MIN_WIDTH: f64 = 1100.0;
 
+/// A labelled control's width: its explicit 1× width `base`, grown with the
+/// theme's `text_scale` so the label it carries fits its face — `Button`
+/// pins an explicit size, so a 2× label would otherwise paint past a 1×
+/// face. Icon-only controls keep their width: a glyph does not grow with
+/// the text. One rule for the toolbar, the find bar and the Library heading.
+pub(crate) fn labelled_width(base: f32, text_scale: f32) -> f32 {
+    base * text_scale.max(1.0)
+}
+
 /// The responsive tiers for a window `width`: `(compact, roomy)`. One rule for
 /// the retained layout pass and the one-frame capture seed.
 fn chrome_tiers(width: f64) -> (bool, bool) {
@@ -476,6 +485,15 @@ pub struct BrowserWidget {
     /// judged on the width the text leaves, so a 1200px window at 2× lays
     /// out as the 600px window it is to the eye.
     text_scale: f32,
+    /// The theme's standard gap at the last layout pass — what a `Row` puts
+    /// between the toolbar's controls — so the composition can reckon how
+    /// much width a run of commands takes.
+    chrome_gap: f32,
+    /// The site facts' label column, measured in `draw` from the widest
+    /// label at the label role's size at the current text scale and applied
+    /// on the next layout pass; `None` until the first frame with the panel
+    /// open, when the column falls back to two `s16` steps.
+    fact_label_w: Option<f32>,
     motion_reduced: bool,
     pending_controls: std::collections::VecDeque<ControlInvocation>,
 }
@@ -529,11 +547,9 @@ impl BrowserWidget {
         &self.session_url
     }
 
-    /// A labelled control's width: its explicit 1× width, grown with the
-    /// text scale so the label it carries fits its face. Icon-only controls
-    /// keep their width — a glyph does not grow with the text.
+    /// [`labelled_width`] at the theme's text scale from the last layout pass.
     fn labelled_width(&self, base: f32) -> f32 {
-        base * self.text_scale.max(1.0)
+        labelled_width(base, self.text_scale)
     }
 
     /// The window width the responsive tiers are judged on: the real width
@@ -829,6 +845,8 @@ impl BrowserWidget {
             compact_chrome: false,
             roomy_chrome: true,
             text_scale: 1.0,
+            chrome_gap: 0.0,
+            fact_label_w: None,
             motion_reduced: false,
             pending_controls: std::collections::VecDeque::new(),
         }
@@ -1669,11 +1687,16 @@ impl BrowserWidget {
         };
         let history_pause_btn = self.bind_button(
             Button::new("browser.history-pause", "", None)
-                // Pause, not a fourth shield: the row carried the same glyph
-                // for site information, protection, history pause and
-                // Private, so three icon-only controls were told apart by
-                // position alone.
-                .with_icon(Icon::Pause)
+                // Not a fourth shield: the row carried the same glyph for
+                // site information, protection, history pause and Private, so
+                // three icon-only controls were told apart by position alone.
+                // The glyph names the action the press performs, as the
+                // label does: pause while history records, play to resume.
+                .with_icon(if self.history_paused() {
+                    Icon::Play
+                } else {
+                    Icon::Pause
+                })
                 .with_accessible_name(history_pause_label)
                 .tooltip(history_pause_label)
                 .with_size(nav_btn.0, nav_btn.1),
@@ -1793,37 +1816,39 @@ impl BrowserWidget {
             )
         });
         // A download in progress adds its labelled status to the row. The
-        // developer commands yield that width, so the address field keeps
-        // its room while a render reports: with every 1200px command kept,
-        // the status left the field some 140px.
-        let developer_width = self.chrome_width()
-            - if download_status.is_some() {
-                f64::from(download_status_w)
-            } else {
-                0.0
-            };
+        // optional commands — the three with another route — yield to it
+        // first: they come back once the row has both the status and their
+        // own width to spare beyond the roomy breakpoint. With every 1200px
+        // command kept, the status left the address field some 140px. Find
+        // and the zoom readout stay with their tier whatever is downloading:
+        // a zoomed page must always say so.
+        let optional_w = 3.0 * f64::from(nav_btn.0 + self.chrome_gap);
+        let roomy = self.roomy_chrome
+            && (download_status.is_none()
+                || self.chrome_width() - f64::from(download_status_w) - optional_w
+                    >= ROOMY_CHROME_MIN_WIDTH);
         // On a phone-width window the disabled bookmark affordance was
         // consuming the only useful address-bar width. Bookmarks remain in
         // the Library/resource surface; keep the toolbar focused on finding
         // or entering a destination and recovering history.
-        if self.roomy_chrome {
+        if roomy {
             toolbar = toolbar.push(Box::new(bookmark_btn));
         }
         // Narrower chrome protects the address field first.  History capture
         // remains available from the History section itself, where the
         // longer privacy label is understandable and touch-sized, instead
         // of reducing an address/search field to an unusable sliver.
-        if self.roomy_chrome {
+        if roomy {
             toolbar = toolbar.push(Box::new(history_pause_btn));
         }
         toolbar = toolbar.push(Box::new(library_btn));
         if let Some(download_status) = download_status {
             toolbar = toolbar.push(Box::new(download_status));
         }
-        if self.roomy_chrome {
+        if roomy {
             toolbar = toolbar.push(Box::new(pip_btn));
         }
-        if !self.compact_chrome && developer_width >= DEVELOPER_CHROME_MIN_WIDTH {
+        if !self.compact_chrome && self.chrome_width() >= DEVELOPER_CHROME_MIN_WIDTH {
             let developer_engine = self.engine.clone();
             toolbar = toolbar.push(Box::new(
                 Button::new("browser.devtools", "DevTools", None)
@@ -3964,6 +3989,8 @@ impl Widget for BrowserWidget {
         // The tiers and the labelled widths follow the text scale, which is
         // only known here; the one-frame capture seed set them at 1×.
         self.text_scale = theme.text_scale;
+        self.chrome_gap = theme.gap_standard;
+        self.site.text_scale = theme.text_scale;
         if self.rect.width() > 0.0 {
             (self.compact_chrome, self.roomy_chrome) = chrome_tiers(self.chrome_width());
         }
@@ -4019,9 +4046,12 @@ impl Widget for BrowserWidget {
             let width = (self.rect.width() as f32 - 2.0 * gutter).clamp(240.0, 480.0);
             let height = (self.rect.height() as f32 - top - theme.tokens.spacing.s12)
                 .clamp(180.0, 510.0);
-            // The facts' label column: wide enough for the longest label
-            // ("Certificate expires") at the label step, in spacing steps.
-            let label_w = 2.0 * theme.tokens.spacing.s16;
+            // The facts' label column: the widest label measured in `draw`
+            // (see `fact_label_w`), or two `s16` steps until the first frame
+            // has measured it.
+            let label_w = self
+                .fact_label_w
+                .unwrap_or(2.0 * theme.tokens.spacing.s16);
             let mut panel = self.site.panel(width, height, label_w);
             let panel_node = panel.build_layout(taffy, theme, node_map);
             #[allow(
@@ -4094,6 +4124,29 @@ impl Widget for BrowserWidget {
         let scale = coefficients[0].hypot(coefficients[1]);
         if scale.is_finite() && scale > 0.0 {
             self.window_scale = scale as f32;
+        }
+        if self.site.open {
+            // The site facts' label column: the widest label at the label
+            // role's size at this text scale, measured here where the
+            // renderer is and applied on the next layout pass — a fixed
+            // column is wrong the moment the text scale or a permission's
+            // name changes.
+            let style = text_renderer
+                .renderer_input_style(&theme.tokens.typography.style(TextRole::Label));
+            let widest = self
+                .site
+                .fact_labels()
+                .iter()
+                .map(|label| text_renderer.measure_style(label, None, &style).0)
+                .fold(0.0_f32, f32::max);
+            let label_w = widest + theme.tokens.spacing.s2;
+            if self
+                .fact_label_w
+                .is_none_or(|current| (current - label_w).abs() > 0.5)
+            {
+                self.fact_label_w = Some(label_w);
+                self.structure_dirty = true;
+            }
         }
         if let Some(c) = &mut self.composed {
             c.draw(scene, transform, text_renderer, theme, presence);

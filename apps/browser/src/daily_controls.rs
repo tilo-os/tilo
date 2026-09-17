@@ -158,7 +158,7 @@ impl DailyControls {
         // bottom edge. The 32px face left a step down on either side of them.
         Button::new(id, label, None)
             .with_size(
-                72.0 * text_scale.max(1.0),
+                crate::browser_widget::labelled_width(72.0, text_scale),
                 crate::browser_widget::TOOLBAR_CONTROL_HEIGHT,
             )
             .on_effect(move || pending.set(Some(action)))

@@ -242,7 +242,7 @@ fn the_export_dialog_stacks_its_body_without_overlap_at_every_text_scale() {
             l.status.height() >= 2.0 * line_xs - 1e-6,
             "{what}: two failure lines fit the status slot"
         );
-        let notice = l.notice_top.expect("a notice was set");
+        let notice = l.notice_top;
         assert!(
             notice >= l.status.y1,
             "{what}: the notice sits under the status, not in it"
@@ -409,4 +409,136 @@ fn the_shortcut_sheet_rows_grow_with_the_text() {
             }
         }
     }
+}
+
+/// A window too short for the export dialog's natural stack gets a card the
+/// frame clamps to the window; the footer — size line, status slot, notice —
+/// stays on the card, anchored to the body's foot, and the option groups
+/// give up their gaps and height above it. The first version of this dialog
+/// clipped the footer away instead, so a failure reason disappeared exactly
+/// when the window was small.
+#[test]
+fn the_export_footer_stays_on_the_card_when_the_window_cannot_hold_the_dialog() {
+    for (w, h, scale) in [(1280.0, 720.0, 2.0), (1280.0, 440.0, 1.0)] {
+        let (mut tr, theme) = scaled(scale);
+        let mut app = app_sized(w, h);
+        app.show_export = true;
+        app.export_status = ExportStatus::Failed {
+            reason: "The selected encoder rejected the profile because the source contains \
+                     an unsupported colour space; choose a compatible profile or install an \
+                     encoder that supports this footage."
+                .into(),
+        };
+        app.export_notice = Some("Choosing where to save…".into());
+        let l = app.export_layout(&mut tr, &theme);
+        let what = format!("{w}x{h} @{scale}x");
+        let ty = l.type_sizes;
+        let (line_sm, line_xs) = (line(&mut tr, ty.sm), line(&mut tr, ty.xs));
+        let body = l.modal.body;
+        let card = l.modal.card;
+        assert!(
+            l.modal.body_overflows,
+            "{what}: the fixture is a window that cannot hold the natural stack"
+        );
+        // The footer is whole and on the card.
+        assert!(
+            l.info_top + line_sm <= l.status.y0 + 1e-6,
+            "{what}: the size line runs into the status slot"
+        );
+        assert!(
+            l.status.height() >= 2.0 * line_xs - 1e-6,
+            "{what}: two failure lines fit the status slot"
+        );
+        let notice = l.notice_top;
+        assert!(notice >= l.status.y1, "{what}: the notice sits under the status");
+        assert!(
+            notice + line_xs <= body.y1 + 1e-6,
+            "{what}: the notice ends inside the body ({} > {})",
+            notice + line_xs,
+            body.y1
+        );
+        assert!(
+            body.y1 <= l.cancel.y0 && l.cancel.y1 <= card.y1 && l.confirm.y1 <= card.y1,
+            "{what}: the actions sit on the card below the body"
+        );
+        // Nothing above it runs into it, and nothing overlaps.
+        let last = l.fps.last().expect("frame rates are offered").1;
+        assert!(
+            last.y1 <= l.info_top + 1e-6,
+            "{what}: the last option row ({}) runs into the size line ({})",
+            last.y1,
+            l.info_top
+        );
+        let mut y = l.filename_top + line_sm;
+        if let Some(mix) = l.mix_top {
+            assert!(mix >= y, "{what}: the mix line starts under the filename");
+            y = mix + line_xs;
+        }
+        for (caption, rects) in l.captions.iter().zip([
+            l.resolution.iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+            l.container.iter().map(|(_, r)| *r).collect(),
+            l.fps.iter().map(|(_, r)| *r).collect(),
+        ]) {
+            assert!(*caption >= y - 1e-6, "{what}: caption {caption} starts under {y}");
+            let first = rects.first().expect("a group offers options");
+            assert!(
+                caption + line_xs <= first.y0 + 1e-6,
+                "{what}: caption runs into its segments"
+            );
+            assert!(
+                first.height() >= line_sm + f64::from(theme.tokens.spacing.s1) - 1e-6,
+                "{what}: a segment {first:?} is shorter than its label"
+            );
+            y = first.y1;
+        }
+    }
+}
+
+/// On a window whose text-scaled width has no room for two columns the
+/// sheet lays one out — so every description keeps the width it needs to
+/// be read — and, when the table is taller than the body, the body scrolls
+/// rather than dropping rows.
+#[test]
+fn the_shortcut_sheet_falls_back_to_one_column_and_scrolls_at_large_text() {
+    let (mut tr, theme) = scaled(2.0);
+    let mut app = app_sized(800.0, 900.0);
+    app.show_help = true;
+    let l = app.help_layout(&mut tr, &theme);
+    let ty = l.type_sizes;
+    let columns: std::collections::BTreeSet<u64> =
+        l.groups.iter().map(|g| g.heading.x0.to_bits()).collect();
+    assert_eq!(columns.len(), 1, "an 800px window at 2x lays out one column");
+    let widest_description = SHORTCUTS
+        .iter()
+        .flat_map(|(_, rows)| rows.iter())
+        .map(|(_, what)| f64::from(tr.measure(what, ty.sm, None).0))
+        .fold(0.0, f64::max);
+    let row = l.groups[0].rows[0];
+    assert!(
+        row.width() - l.what_dx >= widest_description,
+        "the description column ({}) is narrower than the widest description ({widest_description})",
+        row.width() - l.what_dx
+    );
+    assert!(l.modal.body_overflows, "the table is taller than the window");
+    assert!(l.max_scroll > 0.0, "so the body scrolls");
+    let hint = l.footer_hint.expect("a scrolling body says so at its foot");
+    assert!(hint < l.modal.body.y1, "the hint sits inside the body");
+    // Scrolled to the end, the last row is inside the body, above the hint.
+    app.help_scroll = l.max_scroll;
+    let scrolled = app.help_layout(&mut tr, &theme);
+    let last = scrolled
+        .groups
+        .last()
+        .and_then(|g| g.rows.last())
+        .copied()
+        .expect("the table has rows");
+    assert!(
+        last.y1 <= hint + 1e-6,
+        "the last row ({}) is reachable above the hint ({hint})",
+        last.y1
+    );
+    assert!(
+        scrolled.hint_top < scrolled.modal.body.y0,
+        "the sheet's own hint line scrolled away with the rows"
+    );
 }
