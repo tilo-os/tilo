@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Build and cache only the pure native WPE stage, returning its local image ID.
+
+No development trust, generation or source-revision labels enter this build.
+The epoch belongs to this dependency artifact, not the enclosing OS release.
+Registry cache writers are trusted build inputs; never reuse production cache.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import subprocess
+import sys
+import tempfile
+
+ARCHITECTURES = {'x86_64': 'amd64', 'aarch64': 'arm64'}
+
+
+def validate(args):
+    if args.architecture not in ARCHITECTURES:
+        raise ValueError('unsupported WPE architecture')
+    if (not re.fullmatch(r'0|[1-9][0-9]{0,11}', args.epoch)
+            or int(args.epoch) > 253402300799):
+        raise ValueError('WPE epoch must be canonical Unix seconds through year 9999')
+    if not re.fullmatch(r'code\.podesta\.ai/qos/tilo-development-wpe-cache-(?:[a-z0-9-]+-)?'
+                        + re.escape(args.architecture), args.cache):
+        raise ValueError('WPE cache must be a dedicated development repository for this architecture')
+    for name in ('base', 'rpms', 'kernel', 'wpe'):
+        if not re.fullmatch(r'code\.podesta\.ai/qos/[a-z0-9-]+@sha256:[0-9a-f]{64}', getattr(args, name)):
+            raise ValueError(f'{name} must be an immutable input')
+    if not args.wpe.startswith('code.sandbox.example/qos/tilo-wpe-buildroot@'):
+        raise ValueError('WPE dependency input must be a pinned WPE buildroot')
+
+
+def build_command(args, iidfile):
+    validate(args)
+    return ['podman', '--remote=false', 'build', '--layers', '--skip-unused-stages=true',
+            '--network=none', '--cache-from', args.cache, '--cache-to', args.cache,
+            '--target', 'wpe-builder-1', '--iidfile', str(iidfile),
+            '--source-date-epoch', args.epoch, '--rewrite-timestamp',
+            '--build-context', f'github-assets={args.assets}',
+            '--build-arg', f'BASE_REF={args.base}', '--build-arg', f'RPMS_REF={args.rpms}',
+            '--build-arg', f'KERNEL_RPMS_REF={args.kernel}', '--build-arg', f'WPE_BUILDROOT_REF={args.wpe}',
+            '--build-arg', f'SOURCE_DATE_EPOCH={args.epoch}',
+            '--build-arg', 'WPE_BUILD_JOBS=2', '--build-arg', 'TILO_WITH_BROWSER=1',
+            '-f', str(args.repo / 'os/Containerfile'), str(args.repo)]
+
+
+def image_identity(raw, expected, architecture):
+    images = json.loads(raw)
+    if not isinstance(images, list) or len(images) != 1:
+        raise ValueError('expected one WPE stage image')
+    image = images[0]
+    if (not re.fullmatch(r'sha256:[0-9a-f]{64}', expected)
+            or image.get('Id', '').removeprefix('sha256:') != expected.removeprefix('sha256:')
+            or image.get('Architecture') != ARCHITECTURES[architecture] or image.get('Os') != 'linux'):
+        raise ValueError('WPE stage immutable identity or native architecture differs')
+    return expected
+
+
+def prepare(args):
+    validate(args)
+    if platform.system() != 'Linux' or platform.machine() != args.architecture or os.getuid() != 0:
+        raise ValueError('WPE stage preparation requires already-root native Linux')
+    if any(os.environ.get(name) for name in ('CONTAINER_HOST', 'CONTAINER_CONNECTION', 'CONTAINER_SSHKEY', 'DOCKER_HOST')):
+        raise ValueError('WPE stage cache requires local Podman storage')
+    # Preserve explicit local Podman storage/auth selection. No inherited build
+    # arguments are forwarded. Recipe and mounts determine the cache key.
+    environment = os.environ | {'SOURCE_DATE_EPOCH': args.epoch}
+    with tempfile.TemporaryDirectory(prefix='tilo-wpe-stage-') as temporary:
+        iidfile = Path(temporary) / 'image.id'
+        subprocess.run(build_command(args, iidfile), env=environment, check=True,
+                       stdout=sys.stderr)
+        identity = iidfile.read_text().strip()
+        raw = subprocess.check_output(['podman', '--remote=false', 'image', 'inspect', identity],
+                                      env=environment, stderr=subprocess.PIPE)
+        return image_identity(raw, identity, args.architecture)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ('architecture', 'epoch', 'cache', 'base', 'rpms', 'kernel', 'wpe'):
+        parser.add_argument('--' + name, required=True)
+    for name in ('repo', 'assets'):
+        parser.add_argument('--' + name, required=True, type=Path)
+    try:
+        print(prepare(parser.parse_args()))
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        parser.exit(1, f'WPE stage preparation failed: {error}\n')
+
+
+if __name__ == '__main__':
+    main()

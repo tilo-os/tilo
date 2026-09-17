@@ -22,6 +22,9 @@ on:
       - os/tests/test_development_loader.py
       - os/tests/development_stage_reuse.py
       - os/dev/sign-development-rootfs.py
+      - os/dev/prepare-wpe-stage.py
+      - os/tests/test_prepare_wpe_stage.py
+      - os/tests/wpe_stage_cache.py
       - os/dev/private_disk_image.py
       - os/tests/test_private_disk_image.py
       - os/Containerfile.development-loader
@@ -62,8 +65,8 @@ jobs:
           }
           trap cleanup EXIT
           mkdir "$context/dev"
-          cp os/dev/{verify-development-source.py,development_boot.py,development-trust.py,install-public-trust.py,hardware_profile.py,development-signer.py,setup-development-signer.py,verify-authenticode-envelope.py,verify-development-loader.py,sign-development-rootfs.py,private_disk_image.py} "$context/dev/"
-          cp os/tests/{development_source_registry.py,development_signer.py,test_development_signer.py,test_development_loader.py,test_development_boot.py,test_development_source.py,development_stage_reuse.py,development_rootfs.py,test_sign_development_rootfs.py,test_private_disk_image.py} "$context/"
+          cp os/dev/{verify-development-source.py,development_boot.py,development-trust.py,install-public-trust.py,hardware_profile.py,development-signer.py,setup-development-signer.py,verify-authenticode-envelope.py,verify-development-loader.py,sign-development-rootfs.py,private_disk_image.py,prepare-wpe-stage.py} "$context/dev/"
+          cp os/tests/{development_source_registry.py,development_signer.py,test_development_signer.py,test_development_loader.py,test_development_boot.py,test_development_source.py,development_stage_reuse.py,development_rootfs.py,test_sign_development_rootfs.py,test_private_disk_image.py,test_prepare_wpe_stage.py,wpe_stage_cache.py} "$context/"
           cp os/Containerfile.development-loader "$context/"
           cp "$(command -v cosign)" "$context/cosign"
           cp os/tests/Containerfile.development-source "$context/Containerfile"
