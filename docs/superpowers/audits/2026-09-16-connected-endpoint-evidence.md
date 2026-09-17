@@ -48,6 +48,14 @@ The fix build's Linux executable has SHA-256 `a7e24cfdd97904394850a43530c8c42b00
 
 Report, exact diff, review and final logs are retained under the local evidence directory as `task-2-ntfs-stage1-report.md`, `task-2-ntfs-stage1-review.diff`, `task-2-ntfs-stage1-review-report.md`, `task-2-ntfs-stage1-fix-1-review-report.md`, and `task-2-ntfs-stage1-evidence/`. These scoped results do not close the full-app integration blocker or any remaining installation/dual-boot gate.
 
+## Next read-session implementation
+
+A private NTFS3 read-only mount does not establish an immutable raw-read interval. At the inspected Linux source pin `238650ef6c7c7cca08e032527329424c9fbd70e5`, `FSCONFIG_CMD_CREATE_EXCL` prevents adopting an existing matching superblock, but does not prevent a later mount from sharing and reconfiguring that superblock. Private mount propagation and read-only mount flags do not prevent the shared superblock becoming writable. The inspected NTFS3 operations also lack the callbacks required by `FIFREEZE`. This is source evidence about that pin, not a certification of an installed kernel. Primary references: [filesystem creation](https://github.com/torvalds/linux/blob/238650ef6c7c7cca08e032527329424c9fbd70e5/fs/fsopen.c), [superblock reuse/reconfiguration](https://github.com/torvalds/linux/blob/238650ef6c7c7cca08e032527329424c9fbd70e5/fs/super.c), [NTFS3 operations](https://github.com/torvalds/linux/blob/238650ef6c7c7cca08e032527329424c9fbd70e5/fs/ntfs3/super.c), [freeze ioctl](https://github.com/torvalds/linux/blob/238650ef6c7c7cca08e032527329424c9fbd70e5/fs/ioctl.c).
+
+The next source stage therefore retains the exclusive block-device descriptor throughout an administratively authorized read session and performs no mount or freeze. Implementation is in progress: metadata-only native manifests, typed completeness validation, bounded 1 MiB content requests, authenticated local IPC and a context-owned endpoint read adapter. A real 12 MiB file fixture must verify streaming beyond the diagnostic metadata limit. The existing observation hashing budget remains explicit; this stage does not establish arbitrary-folder capacity, metadata round-trip fidelity, Copy UI integration or two-way writes.
+
+The exact implementation contract is retained locally in `task-2-ntfs-stage2-design.md` and `task-2-ntfs-stage2-brief.md`. No runtime or public capability claim follows from this design. The later write-session authority, atomicity, durability and Windows/Linux metadata preservation requirements remain unresolved delivery work.
+
 ## Outstanding delivery gates
 
 - The original endpoint adapter findings 1–4 are fixed and independently re-reviewed. The newer NTFS helper findings above are also source-fixed and independently re-reviewed; native acceptance remains open, and full Task 2 is unaccepted.
