@@ -6613,6 +6613,7 @@ name = "imager"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "bounded-command",
  "libc",
  "reqwest 0.12.28",
  "runtime-dylib",
