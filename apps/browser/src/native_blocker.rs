@@ -106,13 +106,29 @@ fn fetch_rules(
     }
     // No cache is replaced until the whole requested set downloaded correctly.
     if !downloads.is_empty() {
+        let _private_write = crate::storage::private_root_write_guard(directory)?;
         std::fs::create_dir_all(directory).map_err(|_| "Cannot save filter cache")?;
-    }
-    for (path, text) in &downloads {
+        for (path, text) in &downloads {
+            let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+            std::fs::write(&temporary, text)
+                .and_then(|()| std::fs::rename(&temporary, path))
+                .map_err(|_| "Cannot save filter cache")?;
+        }
+        let updated = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|duration| duration.as_secs());
+        let path = directory.join("native-filter-updated.json");
         let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-        std::fs::write(&temporary, text)
-            .and_then(|()| std::fs::rename(&temporary, path))
-            .map_err(|_| "Cannot save filter cache")?;
+        if std::fs::write(
+            &temporary,
+            serde_json::to_vec(&updated).unwrap_or_default(),
+        )
+        .is_ok()
+        {
+            let _ = std::fs::rename(&temporary, path);
+        }
+        let _ = std::fs::remove_file(temporary);
     }
     Ok((rules, !downloads.is_empty()))
 }
@@ -193,22 +209,6 @@ pub(crate) fn refresh(engine: &SharedEngine, force: bool) {
                             .duration_since(std::time::UNIX_EPOCH)
                             .ok()
                             .map(|d| d.as_secs());
-                        if let Some(path) = directory
-                            .as_ref()
-                            .map(|d| d.join("native-filter-updated.json"))
-                        {
-                            let temporary =
-                                path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
-                            if std::fs::write(
-                                &temporary,
-                                serde_json::to_vec(&status.updated).unwrap_or_default(),
-                            )
-                            .is_ok()
-                            {
-                                let _ = std::fs::rename(&temporary, path);
-                            }
-                            let _ = std::fs::remove_file(temporary);
-                        }
                     }
                     status.message = if downloaded {
                         "Filter lists updated"
@@ -251,6 +251,116 @@ pub(crate) fn start(engine: SharedEngine) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "child entry point for private refresh/root lifecycle regression"]
+    #[cfg(unix)]
+    fn private_refresh_does_not_recreate_root_after_helper_exit_child() {
+        use std::io::{Read, Write};
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::path::PathBuf::from(std::env::var_os("QOS_TEST_PRIVATE_ROOT").unwrap());
+        crate::storage::configure(root.to_str()).unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        let trigger = fixture.path().join("exit-helper");
+        let host = fixture.path().join("private-helper");
+        let ready = serde_json::to_vec(&serde_json::json!({
+            "event": "ready",
+            "cef_version": "152",
+            "chromium_version": "152"
+        }))
+        .unwrap();
+        let mut framed = Vec::with_capacity(ready.len() + 5);
+        framed.extend_from_slice(&u32::try_from(ready.len() + 1).unwrap().to_le_bytes());
+        framed.push(1);
+        framed.extend_from_slice(&ready);
+        let encoded: String = framed.iter().map(|byte| format!("\\{:03o}", byte)).collect();
+        std::fs::write(
+            &host,
+            format!(
+                "#!/bin/sh\nprintf '{encoded}'\nwhile [ ! -e '{}' ]; do sleep 0.01; done\nexit 9\n",
+                trigger.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let engine = ui::webview::chromium::ChromiumEngine::with_private_host(&host, &root)
+            .unwrap() as SharedEngine;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/filters", listener.local_addr().unwrap());
+        // SAFETY: this ignored child sets its private test environment before
+        // creating either the server thread or the refresh worker.
+        unsafe { std::env::set_var("QOS_BROWSER_FILTER_ENDPOINT", endpoint) };
+        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            for index in 0..crate::blocker::LISTS.len() {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let _ = stream.read(&mut request);
+                if index == 0 {
+                    accepted_tx.send(()).unwrap();
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap();
+                }
+                let body = b"||private-refresh.fixture^\n";
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(body).unwrap();
+            }
+        });
+
+        refresh(&engine, true);
+        accepted_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        std::fs::write(&trigger, b"exit").unwrap();
+        let removal_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while root.exists() && std::time::Instant::now() < removal_deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!root.exists(), "helper exit must remove the private root");
+        release_tx.send(()).unwrap();
+        let worker_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while status().busy && std::time::Instant::now() < worker_deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!status().busy, "delayed refresh worker did not finish");
+        server.join().unwrap();
+        assert!(
+            !root.exists(),
+            "completed refresh must not recreate a cleaned private root"
+        );
+        drop(engine);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn private_refresh_does_not_recreate_root_after_helper_exit() {
+        let root = crate::storage::allocate_private_root().unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "native_blocker::tests::private_refresh_does_not_recreate_root_after_helper_exit_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("QOS_TEST_PRIVATE_ROOT", &root)
+            .status()
+            .unwrap();
+        let remained = root.exists();
+        if remained {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        assert!(result.success());
+        assert!(!remained, "child left or recreated its private root");
+    }
 
     #[test]
     fn baseline_protection_exists_without_network_or_cache() {
