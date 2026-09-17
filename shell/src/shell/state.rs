@@ -1954,7 +1954,7 @@ impl Workspace {
             .find(|principal| !matches!(principal, Principal::Room(_)))
             .cloned()
             .ok_or(PermissionProfileMutationError::MissingPrincipal)?;
-        let capabilities = profile.assign_to(subject, grantor, expiry)?;
+        let capabilities = profile.assign_to(&subject, &grantor, expiry)?;
         Ok(capabilities
             .into_iter()
             .map(|capability| self.grant_capability(capability))
