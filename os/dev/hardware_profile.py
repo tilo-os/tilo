@@ -36,18 +36,27 @@ DEVELOPMENT_PATH = Path("usr/share/tilo/development-trust")
 DEVELOPMENT_ORIGIN = DEVELOPMENT_PATH / "origin.json"
 
 
-def development_target(value):
+def development_target(value, architecture=None):
     """One explicitly selected development repository, never production."""
-    match = re.fullmatch(r"([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::([0-9]{1,5}))?/tilo-development/os(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value or "")
+    match = re.fullmatch(r"([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::([0-9]{1,5}))?/(tilo-development/os|qos/tilo-development)(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value or "")
     if not match:
-        raise ValueError("development origin must explicitly name HOST[:PORT]/tilo-development/os:TAG or @sha256:DIGEST")
-    host, port = match.groups()
-    if host in ("code.podesta.ai", "localhost") or ".." in host or any(not part or part.startswith('-') or part.endswith('-') for part in host.split('.')):
+        raise ValueError("development origin must name an approved development repository with an explicit tag or digest")
+    host, port, path, selector = match.groups()
+    if architecture is not None and architecture not in ARCH_CONFIG:
+        raise ValueError("unsupported development image architecture")
+    retained = host == "code.podesta.ai" and port is None and path == "qos/tilo-development"
+    if (host == "code.podesta.ai" or path == "qos/tilo-development") and not retained:
+        raise ValueError("retained development repository must use its exact HTTPS registry identity")
+    if host == "localhost" or ".." in host or any(not part or part.startswith('-') or part.endswith('-') for part in host.split('.')):
         raise ValueError("development registry host is invalid or a production alias")
+    if retained and selector.startswith(':'):
+        tag_architecture = re.fullmatch(r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*-)?(x86_64|aarch64)", selector[1:])
+        if tag_architecture is None or (architecture is not None and tag_architecture[1] != architecture):
+            raise ValueError("retained development update tag must identify the matching native architecture")
     if port and (not 1 <= int(port) <= 65535 or str(int(port)) != port):
         raise ValueError("development registry port must be canonical and valid")
     registry = host + (":" + port if port else "")
-    return {"target_update_ref": value, "repository": registry + "/tilo-development/os",
+    return {"target_update_ref": value, "repository": registry + "/" + path,
             "registry": registry, "tls_required": host != "127.0.0.1"}
 
 
@@ -142,6 +151,8 @@ def read_profile(root):
     if data["architecture"] != definition["architecture"]:
         raise ValueError("hardware profile requires a matching native image architecture")
     validate_target_imgref(data["target_update_ref"], root=root)
+    if development_origin(root) is not None:
+        development_target(data["target_update_ref"], data["architecture"])
     return data
 
 
@@ -242,7 +253,7 @@ def main():
             if not manifest.is_file() or manifest.stat().st_size == 0:
                 raise ValueError(f"stage the {name} firmware manifest first")
         if development_build:
-            development_target(target_update_ref)
+            development_target(target_update_ref, architecture)
         else:
             validate_target_imgref(target_update_ref)
     except (OSError, ValueError, TypeError) as error:
