@@ -1,6 +1,9 @@
 import argparse
 import importlib.util
 import json
+import io
+import subprocess
+from unittest.mock import patch
 from pathlib import Path
 import unittest
 
@@ -20,13 +23,52 @@ class WpeStageTests(unittest.TestCase):
                b'/usr/bin/ld: cannot find -lExample\n'
                b'file.cpp:(.text): undefined reference to missing_symbol\n'
                b'authorization bearer PRIVATE\n')
-        lines = wpe.compiler_failure_lines(raw)
+        lines = wpe.compiler_failure_lines(io.BytesIO(raw))
         self.assertIn('Source/file.cpp:4:2: error: missing symbol', lines)
         self.assertIn('  Missing required package Example', lines)
         self.assertIn('../meson.build:23:0: ERROR: Missing package', lines)
         self.assertIn('/usr/bin/ld: cannot find -lExample', lines)
         self.assertIn('file.cpp:(.text): undefined reference to missing_symbol', lines)
         self.assertNotIn('PRIVATE', '\n'.join(lines))
+
+    def test_streamed_diagnostics_bound_reads_and_keep_driver_fatal_errors(self):
+        class BoundedStream(io.BytesIO):
+            def read(self, *args):
+                raise AssertionError('whole-file read forbidden')
+            def readline(self, limit=-1):
+                self.assert_limit(limit)
+                return super().readline(limit)
+            @staticmethod
+            def assert_limit(limit):
+                if not 0 < limit <= 4097:
+                    raise AssertionError('unbounded line read')
+        driver = b'c++: fatal error: Killed signal terminated program cc1plus\n'
+        raw = BoundedStream(b'x' * 100000 + b'\n' + driver * 100)
+        lines = wpe.compiler_failure_lines(raw)
+        self.assertEqual(len(lines), 80)
+        self.assertTrue(all(line == driver.decode().strip() for line in lines))
+
+    def test_prepare_spools_private_stderr_and_removes_it_on_failure(self):
+        paths = []
+        def failed_build(argv, **kwargs):
+            stream = kwargs['stderr']
+            self.assertNotEqual(stream, subprocess.PIPE)
+            paths.append(Path(stream.name))
+            stream.write(b'auth token PRIVATE\ncc: fatal error: compiler stopped\n')
+            raise subprocess.CalledProcessError(1, argv)
+        public = io.StringIO()
+        with patch.object(wpe.platform, 'system', return_value='Linux'), \
+             patch.object(wpe.platform, 'machine', return_value='x86_64'), \
+             patch.object(wpe.os, 'getuid', return_value=0), \
+             patch.dict(wpe.os.environ, {}, clear=True), \
+             patch.object(wpe.subprocess, 'run', side_effect=failed_build), \
+             patch.object(wpe.sys, 'stderr', public):
+            with self.assertRaises(subprocess.CalledProcessError):
+                wpe.prepare(self.args)
+        self.assertIn('cc: fatal error: compiler stopped', public.getvalue())
+        self.assertNotIn('PRIVATE', public.getvalue())
+        self.assertEqual(len(paths), 1)
+        self.assertFalse(paths[0].exists())
 
     def setUp(self):
         self.args = argparse.Namespace(architecture='x86_64', epoch='0',
