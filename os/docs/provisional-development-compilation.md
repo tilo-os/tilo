@@ -1,4 +1,4 @@
-# Full provisional development compilation
+# Retained development compilation
 
 `development-compile.yml` is a manual, feature-branch-only x86-64 job. Its default
 `cache-only` mode tests remote compiler-cache access and stops before creating
@@ -27,9 +27,15 @@ be measured.
 
 Build logs report individual phase durations and compiler-cache statistics,
 including on failure. Missing Rust outputs fail with their names instead of
-triggering another complete compile. A separate raw-rootfs handoff allows
-retention before signing and sealing, but publication is not yet enabled in
-this workflow. Do not count a local raw image as a retained artifact.
+triggering another complete compile. The full-build path stops at the raw-rootfs
+handoff and retains it before signing and sealing. Run 7025 passed the native
+registry, signature and historical-layer audit fixtures on both architectures.
+Each real build must independently pass the scoped layer audit before publishing
+to `code.sandbox.example/qos/tilo-development-rootfs`. Publication uses registry layer
+deduplication instead of creating a second on-disk image archive. The audit scans
+all historical layers for the supplied private material and PEM private keys;
+it is not a universal secret detector. `retained-rootfs.json` binds the exact
+registry digest to the independently validated build handoff.
 
 The 170-minute full-build timeout is a ceiling inside the existing runner limit,
 not a measured build duration. No measured ten-hour build justifies increasing
@@ -65,9 +71,9 @@ a measured peak or proof that the build fits. The workflow wrapper and any
 other nested containers share that outer budget. Memory receipts record the
 tools container's actual cgroup limit and peak for subsequent sizing decisions.
 
-This is compilation evidence, **not an installation image**. The local container
-still has a provisional composefs seal. The job creates no disk, performs no VM
-acceptance, publishes no image and allocates no production release generation.
+This is compilation evidence, **not an installation image**. The retained rootfs
+is unsealed. The job creates no disk, performs no VM acceptance and allocates no
+production release generation.
 
 The disposable Kata guest runs rootful Podman on a private Docker volume and
 requires at least 80 GiB free backing storage after tooling setup. A tools image inherits the tested
@@ -77,18 +83,20 @@ execution is mandatory. No host disk, TPM or firmware interface is supplied.
 
 Every run generates independent EFI/PCR, Cosign and Ed25519 registry-owner
 identities outside the checkout. The private keys are used only inside that
-disposable container. Existing registry authentication permits input pulls;
+disposable container. Existing registry authentication permits input pulls and
+development quarantine publication;
 production signing material is not supplied. Cleanup removes the container and
 its private storage. The artifact contains only public trust and input/tool/
-workspace/result receipts. A missing result receipt means compilation did not
-finish successfully. Final inspection mounts the immutable local image, checks
-embedded trust/origin/generation, verifies the original and signed EFI loader
-against the independent public certificate, and records installed RPM versions.
-CI logs retain build diagnostics.
+workspace/result, layer-audit and retention receipts. A missing result receipt
+means the complete workflow did not finish successfully; check the retention
+receipt before rebuilding, because publication may already have succeeded.
+Retention mounts the immutable raw image and checks embedded trust, origin,
+generation and the kernel/initramfs pair. Loader signing and final sealing are
+later completion steps. CI logs retain build diagnostics.
 
 Before compilation, the pinned base's `bootc install to-disk --help` and bootc/
 bootctl versions are captured in `base-installation-tooling.json`. The completed
-image is probed by immutable image ID in `final-installation-tooling.json`.
+raw image is probed by immutable image ID in `raw-installation-tooling.json`.
 These read-only containers have no network, extra devices or host mounts and
 drop all capabilities. Advertised flags help prepare the next disk test; their
 presence does not prove signature-policy enforcement or successful installation.

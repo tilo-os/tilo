@@ -4,9 +4,9 @@
 The default cache-only mode creates no signing identity or OS image. Full-build
 requires an explicit mode, immutable WPE input and development generation.
 
-The resulting local container has a provisional composefs seal. It is never
-published, exported or installed; only public trust and build receipts leave
-the guest. Private identities belong to this run and cannot sign future updates.
+Full-build retains the unsealed raw rootfs in the development quarantine registry
+after auditing its layers. It is not installable. Private identities belong to
+this run; completing the image requires rebinding trust before signing and sealing.
 
 The cache probe proves remote access from the tools container, not hits inside
 every nested build. Actual build statistics remain authoritative. Pinned
@@ -359,6 +359,7 @@ def build_environment(wpe, generation, revision, manifest, signer, cache):
                TILO_WPE_BUILD_CACHE_REF='code.sandbox.example/qos/tilo-development-wpe-cache-x86_64',
                TILO_WPE_SOURCE_DATE_EPOCH='0',
                TILO_RAW_ROOTFS_RECEIPT=str(EVIDENCE / 'raw-rootfs.json'),
+               TILO_RAW_ROOTFS_ONLY='1',
                TILO_SKIP_BUILD='0', TILO_HARDWARE_PROFILE='generic',
                TILO_BUILD_ARGS='--build-arg TILO_PREBUILT_APPS=0 --build-arg TILO_PREBUILT_DESKTOP=0 --build-arg TILO_CARGO_BUILD_JOBS=2 --build-arg TILO_REQUIRE_COMPILER_CACHE=1')
     for name, value in cache.items():
@@ -371,8 +372,8 @@ def build_environment(wpe, generation, revision, manifest, signer, cache):
 def retain_compilation(revision, generation, epoch, target, manifest):
     """Audit and retain one immutable raw build before its guest is destroyed.
 
-    This helper does not enable retention in the workflow. Native archive and
-    registry proofs must pass before the full-build path opts into raw-only mode.
+    Native archive, registry and signature proofs passed on both architectures
+    in run 7025. The actual build still must pass its own scoped layer audit.
     """
     spec = importlib.util.spec_from_file_location('compile_retention', REPO / 'os/dev/retain-development-rootfs.py')
     retention = importlib.util.module_from_spec(spec)
@@ -440,7 +441,7 @@ def main(argv=None):
         return
     Path('/work/tmp').mkdir()
     pins = pinned_inputs()
-    write_receipt('inputs.json', {'purpose': 'provisional-full-source-compilation',
+    write_receipt('inputs.json', {'purpose': 'retained-full-source-compilation',
         'installable': False, 'revision': args.revision, 'architecture': 'x86_64',
         'generation': args.generation, 'wpe_candidate': args.wpe, 'builder': BUILDER,
         'pins': pins, 'browser': True, 'prebuilt_apps': False, 'prebuilt_desktop': False})
@@ -484,14 +485,17 @@ def main(argv=None):
         '--output', str(PRIVATE / 'public')))
     shutil.copytree(PRIVATE / 'public', EVIDENCE / 'public-trust')
     env = build_environment(args.wpe, args.generation, args.revision, trust['manifest_sha256'], signer['signer'], cache)
+    epoch = int(run('git', 'show', '-s', '--format=%ct', args.revision))
+    env['SOURCE_DATE_EPOCH'] = str(epoch)
     compile_with_capacity_watchdog(env)
-    inspection = inspect_compilation(env['TILO_IMAGE'], args.revision, args.generation,
-        env['TILO_TARGET_IMGREF'], trust['manifest_sha256'], trust['identities']['efi-signing.crt'])
-    write_receipt('final-installation-tooling.json', installation_tooling(inspection['image_id']))
-    write_receipt('result.json', {'status': 'provisional-compilation-complete',
-        'installable': False, 'published': False, 'disk_created': False,
-        'reason': 'provisional composefs seal; ephemeral trust; disk/VM acceptance not performed',
-        **inspection, 'revision': args.revision, 'generation': args.generation,
+    retained = retain_compilation(args.revision, args.generation, epoch,
+        env['TILO_TARGET_IMGREF'], trust['manifest_sha256'])
+    write_receipt('raw-installation-tooling.json', installation_tooling(retained['handoff']['raw_rootfs_id']))
+    write_receipt('result.json', {'status': 'raw-compilation-retained',
+        'installable': False, 'published': True, 'sealed': False, 'disk_created': False,
+        'reason': 'raw compilation; ephemeral trust must be rebound; disk/VM acceptance not performed',
+        'retained_image': retained['image'], 'handoff_sha256': retained['handoff_sha256'],
+        'revision': args.revision, 'generation': args.generation,
         'public_manifest_sha256': trust['manifest_sha256'],
         'containerfile_sha256': hashlib.sha256((REPO / 'os/Containerfile').read_bytes()).hexdigest()})
 

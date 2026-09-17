@@ -1,4 +1,4 @@
-name: Development / cache proof and provisional OS compilation
+name: Development / cache proof and retained OS compilation
 
 on:
   workflow_dispatch:
@@ -48,6 +48,7 @@ jobs:
           set -euo pipefail
           bash os/dev/assert-native-arch.sh x86_64
           python3 os/tests/test_development_compile.py
+          python3 os/tests/test_compile_retention.py
           python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("compile", "os/dev/compile-development-os.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_inputs(os.environ["WPE_CANDIDATE"], os.environ["TEST_GENERATION"], os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"], os.environ["COMPILE_MODE"])'
           bash os/dev/install-cached-cosign.sh
       - name: Authenticate input pulls
@@ -71,7 +72,7 @@ jobs:
           mkdir "$evidence"
           cleanup() {
             # Export an explicit public allowlist, never the private workspace.
-            for file in inputs.json tools.json workspace.json result.json raw-rootfs.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json cache-configuration.json base-installation-tooling.json final-installation-tooling.json; do
+            for file in inputs.json tools.json workspace.json result.json raw-rootfs.json raw-rootfs-audit.json retained-rootfs.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json cache-configuration.json base-installation-tooling.json raw-installation-tooling.json; do
               docker cp "$name:/evidence/$file" "$evidence/$file" >/dev/null 2>&1 || true
             done
             mkdir -p "$evidence/public-trust"
