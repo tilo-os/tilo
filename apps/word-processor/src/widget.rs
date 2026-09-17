@@ -5751,6 +5751,34 @@ impl WordProcessorWidget {
         })
     }
 
+    fn recovery_access_node(&self) -> Option<A11yTreeNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        if !self.recovery.is_active() {
+            return None;
+        }
+        let children = self
+            .recovery
+            .semantic_controls()
+            .into_iter()
+            .map(|control| {
+                A11yTreeNode::leaf(
+                    AccessNode::new(Role::Button)
+                        .with_name(control.label)
+                        .with_bounds(control.rect)
+                        .with_action_target(format!("word-processor.recovery:{}", control.id))
+                        .with_state(AccessState {
+                            focusable: true,
+                            ..Default::default()
+                        }),
+                )
+            })
+            .collect();
+        Some(A11yTreeNode {
+            node: AccessNode::new(Role::Group).with_name(t("recovery-banner")),
+            children,
+        })
+    }
+
     /// Expose the selected image's placement choices from the exact hit list
     /// painted by the inspector. The full names/descriptions avoid making the
     /// compact visual labels the only cue for screen-reader and tooltip users.
@@ -5836,6 +5864,9 @@ impl WordProcessorWidget {
 
         if let Some(toolbar) = self.toolbar_access_node() {
             children.push(toolbar);
+        }
+        if let Some(recovery) = self.recovery_access_node() {
+            children.push(recovery);
         }
         if let Some(find) = self.find_access_node() {
             children.push(find);
@@ -6187,18 +6218,15 @@ impl WordProcessorWidget {
         let recovery_h = self.recovery.height();
         if recovery_h > 0.0 {
             let rbar = Rect::new(canvas_left, tb_bottom, canvas_right, tb_bottom + recovery_h);
-            let cc = self.chrome;
             self.recovery.draw(
                 scene,
                 transform,
                 text_renderer,
+                theme,
                 RecoveryPalette {
-                    border: cc.border,
-                    chip: cc.chip,
-                    text: cc.text,
-                    on_accent: cc.on_accent,
-                    accent: theme.accent_primary,
-                    notice: with_alpha(theme.accent_primary, 0x22),
+                    border: theme.tokens.colors.semantic.warning,
+                    text: theme.tokens.colors.text_primary,
+                    notice: theme.tokens.colors.surfaces.raised,
                 },
                 rbar,
             );
@@ -8430,15 +8458,7 @@ impl WordProcessorWidget {
         // Crash-recovery banner (just under the toolbar): a click on
         // Restore / Discard resolves the offer before any other hit-test.
         if let Some(decision) = self.recovery.handle_click(self.pointer) {
-            if let RecoveryDecision::Restore(markdown) = decision {
-                self.replace_body_via_action(state, &String::from_utf8_lossy(&markdown));
-                self.refresh_blocks(state);
-                self.layout_cache.clear();
-                self.spell_cache.clear();
-                self.modified = true;
-                self.needs_commit = true;
-            }
-            self.dirty = true;
+            self.apply_recovery_decision(state, decision);
             *handled = true;
             return true;
         }
@@ -8480,6 +8500,18 @@ impl WordProcessorWidget {
             return true;
         }
         false
+    }
+
+    fn apply_recovery_decision(&mut self, state: &mut AutoCommit, decision: RecoveryDecision) {
+        if let RecoveryDecision::Restore(markdown) = decision {
+            self.replace_body_via_action(state, &String::from_utf8_lossy(&markdown));
+            self.refresh_blocks(state);
+            self.layout_cache.clear();
+            self.spell_cache.clear();
+            self.modified = true;
+            self.needs_commit = true;
+        }
+        self.dirty = true;
     }
 
     /// The Find bar's fields, the ruler band, the toolbar (zoom stepper +
@@ -9949,6 +9981,10 @@ impl Widget for WordProcessorWidget {
         let Some(target) = key_path.last().copied() else {
             return false;
         };
+        if let Some(decision) = self.recovery.activate_semantic(target) {
+            self.apply_recovery_decision(state, decision);
+            return true;
+        }
         if let Some(effect) = self.find.activate_semantic(target, &self.blocks) {
             self.apply_find_effect_mut(state, effect);
             self.dirty = true;
@@ -13426,6 +13462,10 @@ mod tests {
         );
         wp.open_compact_swatch_palette(PaletteKind::Text);
         let expected_clear_bounds = wp.compact_swatch_palette.clear_rect();
+        assert!(
+            expected_clear_bounds.width() >= 32.0 && expected_clear_bounds.height() >= 32.0,
+            "the shared Clear face meets the minimum pointer target"
+        );
         press_named(&mut wp, &mut state, NamedKey::Tab);
         assert_compact_clear_footer(&wp, &t("picker-text-color"), expected_clear_bounds, true);
         press_named(&mut wp, &mut state, NamedKey::Space);
@@ -16681,6 +16721,7 @@ mod tests {
             .recovery
             .restore_button_rect()
             .expect("Restore button is drawn");
+        assert!(rrect.width() >= 32.0 && rrect.height() >= 32.0);
         left_click(
             &mut wp,
             &mut state,
@@ -16725,14 +16766,15 @@ mod tests {
             .recovery
             .discard_button_rect()
             .expect("Discard button is drawn");
-        left_click(
+        assert!(drect.width() >= 32.0 && drect.height() >= 32.0);
+        let root = state.root.clone();
+        assert!(Widget::perform_action_at(
             &mut wp,
-            &mut state,
-            Point::new(
-                f64::midpoint(drect.x0, drect.x1),
-                f64::midpoint(drect.y0, drect.y1),
-            ),
-        );
+            &ui::a11y::Action::Activate,
+            &[ui::a11y::hash_key(&"word-processor.recovery:discard")],
+            &mut state.doc,
+            &root,
+        ));
 
         assert!(!wp.recovery.is_active(), "Discard dismisses the banner");
         assert!(!rp.exists(), "Discard deletes the recovery file");
@@ -18450,7 +18492,11 @@ mod tests {
         name: &str,
     ) {
         use ui::offscreen::OffscreenRenderer;
-        let theme = Theme::dark();
+        let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
+            Some("light") => Theme::light(),
+            Some("high-contrast") => Theme::high_contrast(),
+            _ => Theme::dark(),
+        };
         let presence = PresenceCtx::empty();
         let permission = PermissionContext::permissive();
         let mut tr = TextRenderer::new();
@@ -18686,6 +18732,34 @@ mod tests {
             &dir,
             "responsive-760-highlight-palette",
         );
+
+        // Crash recovery shares the same responsive chrome and must remain
+        // readable beside its full-size shared actions in every OS theme.
+        wp.compact_swatch_palette.close();
+        let recovery_dir = temp_dir("visual-recovery");
+        let _ = std::fs::remove_dir_all(&recovery_dir);
+        wp.set_recovery_dir(recovery_dir.clone());
+        let recovery_path = wp.recovery_path();
+        std::fs::create_dir_all(recovery_path.parent().unwrap()).unwrap();
+        std::fs::write(&recovery_path, b"Unsaved visual review content").unwrap();
+        assert!(wp.check_for_recovery());
+        render_review_png(
+            &mut wp,
+            &mut state,
+            1280,
+            800,
+            &dir,
+            "responsive-1280-recovery",
+        );
+        render_review_png(
+            &mut wp,
+            &mut state,
+            760,
+            800,
+            &dir,
+            "responsive-760-recovery",
+        );
+        let _ = std::fs::remove_dir_all(recovery_dir);
     }
 }
 

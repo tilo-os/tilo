@@ -49,6 +49,7 @@ use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::{Button, ButtonFace, ButtonStyle};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PendingIo {
@@ -139,7 +140,7 @@ struct Document {
 
 /// A toolbar button's logical action, resolved by hit-testing the cached
 /// per-frame button rectangles.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TbAction {
     PrevDoc,
     NextDoc,
@@ -157,6 +158,74 @@ enum TbAction {
     ShowPreview,
     /// Compact layout: open/close the overflow menu.
     ToggleMenu,
+}
+
+impl TbAction {
+    fn accessible_name(self) -> &'static str {
+        match self {
+            Self::PrevDoc => "Previous document",
+            Self::NextDoc => "Next document",
+            Self::Compile => "Compile document",
+            Self::Save => "Save document",
+            Self::Open => "Open document",
+            Self::ExportPdf => "Export PDF",
+            Self::ZoomOut => "Zoom out",
+            Self::ZoomIn => "Zoom in",
+            Self::Fit => "Fit preview to width",
+            Self::ToggleProblems => "Toggle problems panel",
+            Self::ShowEditor => "Show source editor",
+            Self::ShowPreview => "Show document preview",
+            Self::ToggleMenu => "More editor actions",
+        }
+    }
+
+    fn target(self) -> &'static str {
+        match self {
+            Self::PrevDoc => "typst.toolbar.previous-document",
+            Self::NextDoc => "typst.toolbar.next-document",
+            Self::Compile => "typst.toolbar.compile",
+            Self::Save => "typst.toolbar.save",
+            Self::Open => "typst.toolbar.open",
+            Self::ExportPdf => "typst.toolbar.export-pdf",
+            Self::ZoomOut => "typst.toolbar.zoom-out",
+            Self::ZoomIn => "typst.toolbar.zoom-in",
+            Self::Fit => "typst.toolbar.fit",
+            Self::ToggleProblems => "typst.toolbar.problems",
+            Self::ShowEditor => "typst.toolbar.show-editor",
+            Self::ShowPreview => "typst.toolbar.show-preview",
+            Self::ToggleMenu => "typst.toolbar.more",
+        }
+    }
+
+    fn from_target(target: &str) -> Option<Self> {
+        [
+            Self::PrevDoc,
+            Self::NextDoc,
+            Self::Compile,
+            Self::Save,
+            Self::Open,
+            Self::ExportPdf,
+            Self::ZoomOut,
+            Self::ZoomIn,
+            Self::Fit,
+            Self::ToggleProblems,
+            Self::ShowEditor,
+            Self::ShowPreview,
+            Self::ToggleMenu,
+        ]
+        .into_iter()
+        .find(|action| action.target() == target)
+    }
+
+    fn is_active(self, app: &TypstApp) -> bool {
+        match self {
+            Self::ToggleProblems => app.show_diagnostics,
+            Self::ShowEditor => matches!(app.compact_view, CompactPane::Editor),
+            Self::ShowPreview => matches!(app.compact_view, CompactPane::Preview),
+            Self::ToggleMenu => app.menu_open,
+            _ => false,
+        }
+    }
 }
 
 #[allow(
@@ -260,6 +329,9 @@ pub struct TypstApp {
     dirty: bool,
     /// Cached toolbar hit regions from the last draw.
     toolbar_hits: Vec<(TbAction, Rect)>,
+    /// Toolbar action held by the primary pointer until release. Shared button
+    /// faces use it for pressed feedback without creating a second hit path.
+    pressed_toolbar: Option<TbAction>,
     /// Cached overflow-menu hit regions from the last draw (compact layout).
     menu_hits: Vec<(TbAction, Rect)>,
     flash: Option<(String, Instant)>,
@@ -392,6 +464,7 @@ impl TypstApp {
             divider_hover: false,
             dirty: true,
             toolbar_hits: Vec::new(),
+            pressed_toolbar: None,
             menu_hits: Vec::new(),
             flash: None,
             status_bubble_left: ui::StatusBubble::new(),
@@ -1084,36 +1157,30 @@ impl TypstApp {
         action: TbAction,
         active: bool,
     ) {
-        let c = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(rect, 7.0);
-        let bg = if active {
-            theme.accent_primary
+        let style = if active {
+            ButtonStyle::Primary
         } else {
-            c.lift(0.35)
+            ButtonStyle::Neutral
         };
-        scene.fill(Fill::NonZero, t, bg, None, &shape);
-        if !active {
-            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
-        }
-        let fg = if active { Color::WHITE } else { c.text_primary };
-        let (tw, _) = tr.measure_weighted(label, PILL_FONT, None, TextWeight::Medium);
-        let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
-        let ty = rect.y0 + (rect.height() - Self::scaled_pill_font_height(tr) * 1.25) / 2.0;
-        tr.draw_text_weighted(
+        Button::paint(
             scene,
-            label,
-            PILL_FONT,
-            fg,
-            t * Affine::translate((tx, ty)),
-            None,
-            TextWeight::Medium,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(rect, label)
+                .style(style)
+                .radius(7.0)
+                .text_size(PILL_FONT)
+                .hovered(rect.contains(self.mouse))
+                .pressed(self.pressed_toolbar == Some(action))
+                .accessible_name(action.accessible_name()),
         );
         self.toolbar_hits.push((action, rect));
     }
 
     fn pill_width(tr: &mut TextRenderer, label: &str) -> f64 {
         let (tw, _) = tr.measure_weighted(label, PILL_FONT, None, TextWeight::Medium);
-        f64::from(tw) + 22.0
+        (f64::from(tw) + 22.0).max(44.0)
     }
 
     fn draw_toolbar(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -1229,7 +1296,7 @@ impl TypstApp {
         // Right edge, inward: overflow kebab, then a problems badge but only
         // when there's actually something to show (an empty badge is noise).
         let mut rx = tb.x1 - 12.0;
-        let kebab_w = 30.0;
+        let kebab_w = 44.0;
         let kr = Rect::new(rx - kebab_w, y, rx, y + self.pill_height());
         self.paint_pill(
             scene,
@@ -1256,9 +1323,10 @@ impl TypstApp {
         let _ = rx;
     }
 
-    /// Draw the `‹ [name] ›` document switcher starting at `x`. `max_chip` caps
-    /// the name chip width (the name is elided to fit). Returns the x just past
-    /// the group.
+    /// Draw the `‹ [name] ›` document switcher starting at `x`. `max_chip` is
+    /// the complete group budget (the name is elided and arrows disappear when
+    /// that is the only overlap-free compact presentation). Returns the x just
+    /// past the group.
     #[allow(clippy::too_many_arguments)]
     fn draw_doc_switcher(
         &mut self,
@@ -1274,9 +1342,20 @@ impl TypstApp {
         let c = &theme.tokens.colors;
         let mut x = x;
         let multi = self.documents.len() > 1;
+        // `max_chip` is the complete switcher budget in compact layouts. Two
+        // touch-safe arrows need 100 px including gaps; below that budget the
+        // current document remains visible and cycling stays available from
+        // the overflow menu/keyboard shortcuts without overlapping the view
+        // switch.
+        let show_arrows = multi && max_chip >= 156.0;
+        let name_budget = if show_arrows {
+            (max_chip - 100.0).max(44.0)
+        } else {
+            max_chip
+        };
 
         let prev_w = Self::pill_width(tr, "‹");
-        if multi {
+        if show_arrows {
             self.paint_pill(
                 scene,
                 t,
@@ -1300,9 +1379,9 @@ impl TypstApp {
             name
         };
         // Elide to fit the cap.
-        let label = elide_to_width(tr, &base, max_chip - 24.0);
+        let label = elide_to_width(tr, &base, name_budget - 24.0);
         let (lw, _) = tr.measure_weighted(&label, PILL_FONT, None, TextWeight::Semibold);
-        let chip_w = (f64::from(lw) + 24.0).min(max_chip);
+        let chip_w = (f64::from(lw) + 24.0).min(name_budget);
         let chip = Rect::new(x, y, x + chip_w, y + self.pill_height());
         scene.fill(
             Fill::NonZero,
@@ -1325,7 +1404,7 @@ impl TypstApp {
         );
         x += chip_w + 6.0;
 
-        if multi {
+        if show_arrows {
             let next_w = Self::pill_width(tr, "›");
             self.paint_pill(
                 scene,
@@ -1352,7 +1431,6 @@ impl TypstApp {
         theme: &Theme,
         y: f64,
     ) -> Rect {
-        let c = &theme.tokens.colors;
         let tb = self.toolbar_rect;
         let seg_edit = "Edit";
         let seg_prev = "Preview";
@@ -1363,20 +1441,6 @@ impl TypstApp {
         let total = ew + pw;
         let x0 = (tb.x0 + tb.width() * 0.5 - total * 0.5).round();
         let outer = Rect::new(x0, y, x0 + total, y + self.pill_height());
-        scene.fill(
-            Fill::NonZero,
-            t,
-            c.lift(0.35),
-            None,
-            &RoundedRect::from_rect(outer, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            c.border_standard,
-            None,
-            &RoundedRect::from_rect(outer, 8.0),
-        );
 
         let edit_active = matches!(self.compact_view, CompactPane::Editor);
         // Edit segment.
@@ -1465,23 +1529,22 @@ impl TypstApp {
         action: TbAction,
         active: bool,
     ) {
-        let c = &theme.tokens.colors;
-        if active {
-            let shape = RoundedRect::from_rect(rect.inflate(-2.0, -2.0), 6.0);
-            scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
-        }
-        let fg = if active { Color::WHITE } else { c.text_primary };
-        let (tw, _) = tr.measure_weighted(label, PILL_FONT, None, TextWeight::Medium);
-        let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
-        let ty = rect.y0 + (rect.height() - f64::from(PILL_FONT) * 1.25) / 2.0;
-        tr.draw_text_weighted(
+        Button::paint(
             scene,
-            label,
-            PILL_FONT,
-            fg,
-            t * Affine::translate((tx, ty)),
-            None,
-            TextWeight::Medium,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(rect.inflate(-1.0, 0.0), label)
+                .style(if active {
+                    ButtonStyle::Primary
+                } else {
+                    ButtonStyle::Neutral
+                })
+                .radius(7.0)
+                .text_size(PILL_FONT)
+                .hovered(rect.contains(self.mouse))
+                .pressed(self.pressed_toolbar == Some(action))
+                .accessible_name(action.accessible_name()),
         );
         self.toolbar_hits.push((action, rect));
     }
@@ -2132,12 +2195,32 @@ impl Widget for TypstApp {
             })
             .with_semantic_key("typst.preview")
             .with_hashed_key("typst.preview");
+        let toolbar = AccessNode::new(Role::Group)
+            .with_name("Document toolbar")
+            .with_semantic_key("typst.toolbar")
+            .with_hashed_key("typst.toolbar")
+            .with_children(
+                self.toolbar_hits
+                    .iter()
+                    .map(|(action, rect)| {
+                        AccessNode::new(Role::Button)
+                            .with_name(action.accessible_name())
+                            .with_action_target(action.target())
+                            .with_bounds(*rect)
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .selected(action.is_active(self)),
+                            )
+                    })
+                    .collect(),
+            );
         Some(
             AccessNode::new(Role::Document)
                 .with_name("Typst editor")
                 .with_description("Editable Typst source with a live document preview")
                 .with_state(AccessState::new().focusable(true))
-                .with_children(vec![source, preview]),
+                .with_children(vec![toolbar, source, preview]),
         )
     }
 
@@ -2148,6 +2231,13 @@ impl Widget for TypstApp {
         doc: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        if let Some(toolbar_action) = TbAction::from_target(target) {
+            if matches!(action, ui::a11y::Action::Activate) {
+                self.do_action(toolbar_action, doc);
+                return true;
+            }
+            return matches!(action, ui::a11y::Action::Focus);
+        }
         if target != "typst.source" {
             return false;
         }
@@ -2364,6 +2454,7 @@ impl TypstApp {
                 self.dragging_divider = false;
                 self.dragging_editor = false;
                 self.dragging_preview = false;
+                self.pressed_toolbar = None;
                 self.editor.on_mouse_up();
                 self.preview.on_mouse_up();
                 self.dirty = true;
@@ -2491,6 +2582,7 @@ impl TypstApp {
         }
         if self.toolbar_rect.contains(p) {
             if let Some(a) = self.hit_toolbar(p) {
+                self.pressed_toolbar = Some(a);
                 self.do_action(a, doc);
             }
             *handled = true;
@@ -3251,18 +3343,49 @@ mod tests {
     fn accessibility_exposes_source_and_preview_state() {
         use ui::widget::Widget as _;
 
-        let (app, _doc) = fresh();
+        let (mut app, _doc) = fresh();
+        app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+        render_once(&mut app);
         let tree = app.accessibility().expect("Typst semantics");
         assert_eq!(tree.role, ui::a11y::Role::Document);
-        assert_eq!(tree.children[0].role, ui::a11y::Role::MultilineTextInput);
-        assert_eq!(tree.children[1].role, ui::a11y::Role::Canvas);
+        assert_eq!(tree.children[0].role, ui::a11y::Role::Group);
+        assert_eq!(tree.children[1].role, ui::a11y::Role::MultilineTextInput);
+        assert_eq!(tree.children[2].role, ui::a11y::Role::Canvas);
         assert!(
-            tree.children[1]
+            tree.children[2]
                 .value
                 .as_deref()
                 .is_some_and(|value| value.contains("Page"))
         );
         assert!(tree.children.iter().all(|node| node.semantic_key.is_some()));
+        assert!(tree.children[0].children.iter().any(|node| {
+            node.name.as_deref() == Some("Zoom out")
+                && node.action_target.as_deref() == Some("typst.toolbar.zoom-out")
+        }));
+    }
+
+    #[test]
+    fn compact_toolbar_faces_are_touch_safe_and_do_not_overlap() {
+        let (mut app, _doc) = fresh();
+        app.layout_in(Rect::new(0.0, 0.0, 390.0, 844.0));
+        render_once(&mut app);
+        assert!(app.compact);
+        for (index, (_, rect)) in app.toolbar_hits.iter().enumerate() {
+            assert!(
+                rect.width() >= 44.0,
+                "toolbar target {index} is too narrow: {rect:?}"
+            );
+            assert!(
+                rect.height() >= 44.0,
+                "toolbar target {index} is too short: {rect:?}"
+            );
+            for (_, other) in app.toolbar_hits.iter().skip(index + 1) {
+                assert!(
+                    rect.intersect(*other).area() == 0.0,
+                    "toolbar targets overlap: {rect:?} and {other:?}"
+                );
+            }
+        }
     }
 
     #[test]

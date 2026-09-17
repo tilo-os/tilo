@@ -10,7 +10,7 @@ use taffy::{NodeId, TaffyTree};
 use ui::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{ColorSwatchPicker, Widget};
+use ui::widget::{Button, ButtonFace, ButtonStyle, ColorSwatchPicker, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
@@ -21,7 +21,7 @@ use crate::num;
 
 const WIDTH: f64 = 190.0;
 const HEADER_H: f64 = 31.0;
-const FOOTER_H: f64 = 29.0;
+const FOOTER_H: f64 = 43.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PaletteKind {
@@ -258,37 +258,17 @@ impl CompactSwatchPalette {
             transform * Affine::translate((self.rect.x0 + 10.0, self.rect.y0 + 8.0)),
             None,
         );
-        let clear = vello::kurbo::RoundedRect::from_rect(self.clear_rect, 5.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &clear,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &clear,
-        );
-        if self.clear_focused {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(2.0),
-                transform,
-                theme.tokens.colors.border_focus,
-                None,
-                &clear,
-            );
-        }
-        text.draw_text(
+        Button::paint(
             scene,
-            &self.clear_label,
-            11.5,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((self.clear_rect.x0 + 8.0, self.clear_rect.y0 + 3.5)),
-            Some(num::f32_of_f64(self.clear_rect.width() - 16.0)),
+            transform,
+            text,
+            theme,
+            &ButtonFace::new(self.clear_rect, &self.clear_label)
+                .style(ButtonStyle::Neutral)
+                .accessible_name(&self.clear_label)
+                .text_size(12.0)
+                .hovered(self.clear_rect.contains(self.pointer))
+                .focused(self.clear_focused),
         );
         picker.draw(scene, transform, text, theme, presence);
     }

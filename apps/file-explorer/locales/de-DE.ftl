@@ -347,6 +347,7 @@ files-load-error-detail = { $error } · { $path }
 files-a11y-load-error = Ordner konnte nicht geladen werden: { $error }. Erneut versuchen ist verfügbar
 files-a11y-panel-details = { $title }. { $summary }. { $details }. Zum Schließen Escape drücken
 files-a11y-dialog-close = { $summary }. Zum Schließen Escape drücken
+files-close = Schließen
 files-a11y-activity = Dateiaktivität
 files-a11y-current-folder = Aktueller Ordner: { $path }
 files-a11y-places = Orte

@@ -29,8 +29,8 @@ use ui::tilo_actions::{
 };
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
-    Button, Column, EmptyState, NavShell, ScrollAxis, Scrollable, ShellMode, Spacer, Spinner, Text,
-    TextInput, Widget,
+    Button, ButtonFace, Column, EmptyState, ModalDialog, NavShell, ScrollAxis, Scrollable,
+    ShellMode, Spacer, Spinner, Text, TextInput, Widget,
 };
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
@@ -3629,6 +3629,36 @@ impl FileExplorerWidget {
         });
     }
 
+    /// Deterministic visual-review fixture for the shared destructive dialog.
+    #[doc(hidden)]
+    pub fn debug_open_destructive_demo(&mut self) {
+        self.show_collab_panel(CollabPanel {
+            title: t("files-empty-trash-title"),
+            summary: t_args("files-empty-trash-summary", &[arg("count", 3_i64)]),
+            lines: vec![t("files-permanent-delete-loss")],
+            action: Some(CollabPanelAction::EmptyTrash),
+            history: None,
+        });
+    }
+
+    /// Deterministic visual-review fixture for a safe merge proposal.
+    #[doc(hidden)]
+    pub fn debug_open_safe_merge_demo(&mut self) {
+        self.show_collab_panel(CollabPanel {
+            title: t_args(
+                "files-merge-review-title",
+                &[arg("name", "Launch brief.md")],
+            ),
+            summary: t("files-merge-review-safe"),
+            lines: vec![t("files-merge-apply-safe-detail")],
+            action: Some(CollabPanelAction::ApplySafeMerge {
+                conflict_id: uuid::Uuid::from_u128(41),
+                version_id: collab_types::FileVersionId(uuid::Uuid::from_u128(42)),
+            }),
+            history: None,
+        });
+    }
+
     fn primary_path(&self) -> Option<PathBuf> {
         let disp = self.displayed_entries();
         self.selection
@@ -4009,7 +4039,10 @@ impl FileExplorerWidget {
             .collab_panel
             .as_ref()
             .map_or(1, |panel| panel.lines.len().clamp(1, 14));
-        let width = self.rect.width().clamp(320.0, 680.0) - 32.0;
+        // Generic confirmations follow the shared ModalDialog width cap. The
+        // old 648px desktop card left one sentence and one action stranded in
+        // a wide, empty sheet; history keeps its larger workspace above.
+        let width = self.rect.width().clamp(320.0, 512.0) - 32.0;
         let action_height = if self
             .collab_panel
             .as_ref()
@@ -4036,6 +4069,16 @@ impl FileExplorerWidget {
             panel.x1 - 24.0,
             panel.y1 - 14.0,
         ))
+    }
+
+    fn collab_panel_close_rect(&self) -> vello::kurbo::Rect {
+        let panel = self.collab_panel_rect();
+        vello::kurbo::Rect::new(
+            panel.x1 - 50.0,
+            panel.y0 + 8.0,
+            panel.x1 - 10.0,
+            panel.y0 + 48.0,
+        )
     }
 
     fn history_timeline_rect(&self) -> Option<vello::kurbo::Rect> {
@@ -4404,43 +4447,29 @@ impl FileExplorerWidget {
             |rect: vello::kurbo::Rect,
              label: String,
              emphasized: bool,
+             disabled: bool,
              scene: &mut vello::Scene,
              text_renderer: &mut ui::text_render::TextRenderer| {
-                let color = if emphasized {
-                    accent
+                let face = if emphasized {
+                    ButtonFace::new(rect, &label).primary()
                 } else {
-                    theme.tokens.colors.text_dim
+                    ButtonFace::new(rect, &label)
                 };
-                let shape = RoundedRect::from_rect(rect, 8.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    color.with_alpha_factor(if emphasized { 0.16 } else { 0.08 }),
-                    None,
-                    &shape,
-                );
-                scene.stroke(&Stroke::new(1.0), transform, color, None, &shape);
-                let (width, _) = text_renderer.measure(
-                    &label,
-                    theme.tokens.typography.scale.sm,
-                    Some((rect.width() - 16.0) as f32),
-                );
-                text_renderer.draw_text(
+                Button::paint(
                     scene,
-                    &label,
-                    theme.tokens.typography.scale.sm,
-                    color,
-                    transform
-                        * Affine::translate((
-                            rect.x0 + (rect.width() - f64::from(width)) / 2.0,
-                            rect.y0 + 9.0,
-                        )),
-                    Some((rect.width() - 16.0) as f32),
+                    transform,
+                    text_renderer,
+                    theme,
+                    &face
+                        .text_size(theme.tokens.typography.scale.sm)
+                        .hovered(rect.contains(self.last_cursor))
+                        .disabled(disabled),
                 );
             };
         draw_button(
             activity_button,
             t("files-history-show-activity"),
+            false,
             false,
             scene,
             text_renderer,
@@ -4452,6 +4481,7 @@ impl FileExplorerWidget {
             } else {
                 t("files-history-compare")
             },
+            false,
             false,
             scene,
             text_renderer,
@@ -4465,6 +4495,7 @@ impl FileExplorerWidget {
             restore_button,
             restore_label,
             !history.selected_is_current(),
+            history.selected_is_current(),
             scene,
             text_renderer,
         );
@@ -4474,50 +4505,30 @@ impl FileExplorerWidget {
     // targets derived from the same bounded panel state.
     #[allow(clippy::too_many_lines)]
     fn draw_collab_panel(
-        &self,
+        &mut self,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
         text_renderer: &mut ui::text_render::TextRenderer,
         theme: &ui::Theme,
     ) {
-        use ui::ColorCompat;
-        use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
+        use vello::kurbo::{Affine, Rect};
         use vello::peniko::Fill;
-        let Some(panel) = &self.collab_panel else {
+        let Some(panel) = self.collab_panel.clone() else {
             return;
         };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base.with_alpha_factor(0.72),
-            None,
-            &self.rect,
-        );
         let rect = self.collab_panel_rect();
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
+        let mut dialog = ModalDialog::new(panel.title.clone(), Spacer::new())
+            .open(true)
+            .with_max_size(rect.width(), rect.height());
+        dialog.layout_in(self.rect, theme, text_renderer);
+        dialog.draw(
+            scene,
             transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &shape,
+            text_renderer,
+            theme,
+            &ui::presence::PresenceCtx::empty(),
         );
         let x = rect.x0 + 24.0;
-        text_renderer.draw_text(
-            scene,
-            &panel.title,
-            theme.tokens.typography.scale.lg,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((x, rect.y0 + 23.0)),
-            Some((rect.width() - 80.0) as f32),
-        );
         text_renderer.draw_text(
             scene,
             &panel.summary,
@@ -4527,20 +4538,19 @@ impl FileExplorerWidget {
             Some((rect.width() - 48.0) as f32),
         );
         if panel.history.is_some() {
-            self.draw_history_panel_content(scene, transform, text_renderer, theme, panel);
-            let close_rect = Rect::new(
-                rect.x1 - 42.0,
-                rect.y0 + 12.0,
-                rect.x1 - 14.0,
-                rect.y0 + 40.0,
-            );
-            ui::icons::draw_icon(
+            self.draw_history_panel_content(scene, transform, text_renderer, theme, &panel);
+            let close_rect = self.collab_panel_close_rect();
+            let close_label = t("files-close");
+            Button::paint(
                 scene,
                 transform,
-                close_rect,
-                ui::icons::Icon::X,
-                theme.tokens.colors.text_dim,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                text_renderer,
+                theme,
+                &ButtonFace::new(close_rect, "")
+                    .ghost()
+                    .icon(ui::icons::Icon::X)
+                    .accessible_name(&close_label)
+                    .hovered(close_rect.contains(self.last_cursor)),
             );
             return;
         }
@@ -4570,56 +4580,34 @@ impl FileExplorerWidget {
         if let Some(action_rect) = self.collab_panel_action_rect()
             && let Some(label) = self.collab_panel_action_label()
         {
-            let action_color = match panel.action.as_ref() {
-                Some(CollabPanelAction::ApplySafeMerge { .. }) => accent,
-                _ => theme.tokens.colors.semantic.danger,
+            let face = match panel.action.as_ref() {
+                Some(CollabPanelAction::ApplySafeMerge { .. }) => {
+                    ButtonFace::new(action_rect, &label).primary()
+                }
+                _ => ButtonFace::new(action_rect, &label).danger(),
             };
-            let action_shape = RoundedRect::from_rect(action_rect, 8.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                action_color.with_alpha_factor(0.14),
-                None,
-                &action_shape,
-            );
-            scene.stroke(
-                &Stroke::new(1.5),
-                transform,
-                action_color,
-                None,
-                &action_shape,
-            );
-            let (label_width, _) = text_renderer.measure(
-                &label,
-                theme.tokens.typography.scale.sm,
-                Some((action_rect.width() - 24.0) as f32),
-            );
-            text_renderer.draw_text(
+            Button::paint(
                 scene,
-                &label,
-                theme.tokens.typography.scale.sm,
-                action_color,
-                transform
-                    * Affine::translate((
-                        action_rect.x0 + (action_rect.width() - f64::from(label_width)) / 2.0,
-                        action_rect.y0 + 9.0,
-                    )),
-                Some((action_rect.width() - 24.0) as f32),
+                transform,
+                text_renderer,
+                theme,
+                &face
+                    .text_size(theme.tokens.typography.scale.sm)
+                    .hovered(action_rect.contains(self.last_cursor)),
             );
         }
-        let close_rect = Rect::new(
-            rect.x1 - 42.0,
-            rect.y0 + 12.0,
-            rect.x1 - 14.0,
-            rect.y0 + 40.0,
-        );
-        ui::icons::draw_icon(
+        let close_rect = self.collab_panel_close_rect();
+        let close_label = t("files-close");
+        Button::paint(
             scene,
             transform,
-            close_rect,
-            ui::icons::Icon::X,
-            theme.tokens.colors.text_dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            text_renderer,
+            theme,
+            &ButtonFace::new(close_rect, "")
+                .ghost()
+                .icon(ui::icons::Icon::X)
+                .accessible_name(&close_label)
+                .hovered(close_rect.contains(self.last_cursor)),
         );
     }
 
@@ -8657,12 +8645,7 @@ impl Widget for FileExplorerWidget {
                     ..
                 } => {
                     let rect = self.collab_panel_rect();
-                    let close_rect = vello::kurbo::Rect::new(
-                        rect.x1 - 48.0,
-                        rect.y0 + 6.0,
-                        rect.x1 - 8.0,
-                        rect.y0 + 46.0,
-                    );
+                    let close_rect = self.collab_panel_close_rect();
                     !rect.contains(self.last_cursor) || close_rect.contains(self.last_cursor)
                 }
                 _ => false,
@@ -12754,6 +12737,26 @@ mod accessibility_tests {
                 .unwrap()
                 .as_deref(),
             Some(b"evict-destructive".as_slice())
+        );
+    }
+
+    #[test]
+    fn collaboration_dialog_controls_keep_accessible_hit_targets_at_phone_width() {
+        let (_home, mut widget) = empty_widget();
+        widget.rect = vello::kurbo::Rect::new(0.0, 0.0, 390.0, 844.0);
+        widget.debug_open_destructive_demo();
+
+        let panel = widget.collab_panel_rect();
+        let close = widget.collab_panel_close_rect();
+        let action = widget
+            .collab_panel_action_rect()
+            .expect("destructive dialog has an affirmative action");
+        assert!(panel.contains(close.center()));
+        assert_eq!((close.width(), close.height()), (40.0, 40.0));
+        assert!(action.height() >= 36.0);
+        assert_eq!(
+            widget.collab_panel_action_command(),
+            Some(FileCommand::ConfirmEmptyTrash)
         );
     }
 }

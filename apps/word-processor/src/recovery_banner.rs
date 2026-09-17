@@ -11,15 +11,16 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 
 use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::{Button, ButtonFace, ButtonStyle};
 
 use crate::i18n::t;
-use crate::num;
 
 /// Write a recovery copy after this many document-modifying edits.
 pub(crate) const AUTOSAVE_EDIT_THRESHOLD: u32 = 24;
 
 /// Height reserved for the recovery banner while an offer is active.
-pub(crate) const BANNER_HEIGHT: f64 = 40.0;
+pub(crate) const BANNER_HEIGHT: f64 = 48.0;
 
 #[derive(Clone, Debug)]
 struct RecoveryOffer {
@@ -31,6 +32,12 @@ struct RecoveryOffer {
 enum RecoveryAction {
     Restore,
     Discard,
+}
+
+pub(crate) struct RecoverySemanticControl {
+    pub id: &'static str,
+    pub label: String,
+    pub rect: Rect,
 }
 
 /// Result of a click claimed by the banner.
@@ -45,10 +52,7 @@ pub(crate) enum RecoveryDecision {
 #[derive(Clone, Copy)]
 pub(crate) struct RecoveryPalette {
     pub(crate) border: Color,
-    pub(crate) chip: Color,
     pub(crate) text: Color,
-    pub(crate) on_accent: Color,
-    pub(crate) accent: Color,
     pub(crate) notice: Color,
 }
 
@@ -62,6 +66,39 @@ pub(crate) struct RecoveryBanner {
 }
 
 impl RecoveryBanner {
+    fn action_id(action: RecoveryAction) -> &'static str {
+        match action {
+            RecoveryAction::Restore => "restore",
+            RecoveryAction::Discard => "discard",
+        }
+    }
+
+    fn action_label(action: RecoveryAction) -> String {
+        match action {
+            RecoveryAction::Restore => t("recovery-restore"),
+            RecoveryAction::Discard => t("recovery-discard"),
+        }
+    }
+
+    pub(crate) fn semantic_controls(&self) -> Vec<RecoverySemanticControl> {
+        self.buttons
+            .iter()
+            .map(|(action, rect)| RecoverySemanticControl {
+                id: Self::action_id(*action),
+                label: Self::action_label(*action),
+                rect: *rect,
+            })
+            .collect()
+    }
+
+    pub(crate) fn activate_semantic(&mut self, target: u64) -> Option<RecoveryDecision> {
+        let point = self.buttons.iter().find_map(|(action, rect)| {
+            let id = format!("word-processor.recovery:{}", Self::action_id(*action));
+            (ui::a11y::hash_key(&id) == target).then_some(rect.center())
+        })?;
+        self.handle_click(point)
+    }
+
     pub(crate) fn is_active(&self) -> bool {
         self.offer.is_some()
     }
@@ -170,6 +207,7 @@ impl RecoveryBanner {
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
         palette: RecoveryPalette,
         bar: Rect,
     ) {
@@ -200,28 +238,20 @@ impl RecoveryBanner {
             (RecoveryAction::Restore, t("recovery-restore"), 80.0, true),
         ] {
             x -= width;
-            let rect = Rect::new(x, cy - 13.0, x + width, cy + 13.0);
-            let (background, foreground) = if primary {
-                (palette.accent, palette.on_accent)
-            } else {
-                (palette.chip, palette.text)
-            };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                background,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(rect, 6.0),
-            );
-            let tx =
-                rect.x0 + (width - num::f64_of_usize(label.chars().count()) * 7.4).max(6.0) / 2.0;
-            tr.draw_text(
+            let rect = Rect::new(x, cy - 18.0, x + width, cy + 18.0);
+            Button::paint(
                 scene,
-                &label,
-                13.0,
-                foreground,
-                transform * Affine::translate((tx, cy - 8.0)),
-                None,
+                transform,
+                tr,
+                theme,
+                &ButtonFace::new(rect, &label)
+                    .style(if primary {
+                        ButtonStyle::Primary
+                    } else {
+                        ButtonStyle::Neutral
+                    })
+                    .accessible_name(&label)
+                    .text_size(13.0),
             );
             self.buttons.push((action, rect));
             x -= 8.0;

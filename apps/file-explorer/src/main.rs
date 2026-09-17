@@ -819,6 +819,12 @@ fn apply_post_layout_scenario(
         Some("history") => {
             widget.debug_open_history_demo();
         }
+        Some("destructive-confirm") => {
+            widget.debug_open_destructive_demo();
+        }
+        Some("safe-merge") => {
+            widget.debug_open_safe_merge_demo();
+        }
         Some("properties") => {
             widget.debug_open_properties();
         }

@@ -348,6 +348,7 @@ files-load-error-detail = { $error } · { $path }
 files-a11y-load-error = Could not load folder: { $error }. Try Again is available
 files-a11y-panel-details = { $title }. { $summary }. { $details }. Press Escape to close
 files-a11y-dialog-close = { $summary }. Press Escape to close
+files-close = Close
 files-a11y-activity = Files activity
 files-a11y-current-folder = Current folder: { $path }
 files-a11y-places = Places
