@@ -64,7 +64,18 @@ for arch in x86_64 aarch64; do
     --output "$assets/installer-signatures/$(basename "$artifact").asc" "$artifact"
 done
 catalog="$assets/catalog/tilo-installer-catalog-v1.json"
-printf '{"schema":1}\n' >"$catalog"
+python3 - "$assets" "$catalog" <<'PY'
+import hashlib, json, pathlib, sys
+root, destination = map(pathlib.Path, sys.argv[1:])
+releases = []
+for arch in ("x86_64", "aarch64"):
+    path = root / f"installer-{arch}/tilo-installer-linux-{arch}.img.zst"
+    releases.append({"arch":arch,"hardware_profile":"generic",
+        "url":f"https://code.sandbox.example/tilo/releases/releases/download/imager-v1.2.3/{path.name}",
+        "archive_sha256":hashlib.sha256(path.read_bytes()).hexdigest(),
+        "archive_size":path.stat().st_size,"image_sha256":"b"*64,"image_size":1024})
+destination.write_text(json.dumps({"schema":1,"tag":"imager-v1.2.3","releases":releases}))
+PY
 (cd "$assets/catalog" && sha256sum "$(basename "$catalog")" \
   >"$(basename "$catalog").sha256")
 TILO_LINUX_SIGNING_KEY="$fingerprint" \
@@ -81,6 +92,77 @@ printf '%s\n' "$fingerprint" >"$assets/release-key/tilo-release-key.fingerprint"
 
 TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
   | grep -Fq 'verified 9 Linux and installer artifacts'
+
+# Upgrade the actual signed release fixture to a schema-2 board catalog.
+cp "$catalog" "$work/v1.json"
+mv "$catalog" "$assets/catalog/tilo-installer-catalog-v2.json"
+rm "$assets/catalog/tilo-installer-catalog-v1.json.sha256"
+find "$assets/installer-signatures" -type f -name '*.asc' -delete
+catalog="$assets/catalog/tilo-installer-catalog-v2.json"
+board="$assets/installer-aarch64/tilo-installer-linux-aarch64-lenovo-83ed.img.zst"
+printf 'Lenovo installer fixture\n' >"$board"
+(cd "$(dirname "$board")" && sha256sum "$(basename "$board")" >"$(basename "$board").sha256")
+python3 - "$catalog" "$board" <<'PY'
+import hashlib, json, pathlib, sys
+catalog, board = map(pathlib.Path, sys.argv[1:])
+data=json.loads(catalog.read_text()); data["schema"]=2
+entry=dict(data["releases"][1]); entry.update(hardware_profile="lenovo-83ed",
+    url=f"https://code.sandbox.example/tilo/releases/releases/download/imager-v1.2.3/{board.name}",
+    archive_sha256=hashlib.sha256(board.read_bytes()).hexdigest(), archive_size=board.stat().st_size)
+data["releases"].append(entry); catalog.write_text(json.dumps(data))
+PY
+(cd "$(dirname "$catalog")" && sha256sum "$(basename "$catalog")" >"$(basename "$catalog").sha256")
+for arch in x86_64 aarch64; do
+  TILO_LINUX_SIGNING_KEY="$fingerprint" TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" \
+    bash "$repo/apps/imager/packaging/sign-installer-release.sh" \
+      "$assets/catalog" "$assets" "$arch" "$assets/installer-signatures"
+done
+TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
+  | grep -Fq 'verified 10 Linux and installer artifacts'
+printf 'ok    v1 and v2 releases authenticate every generic and board medium\n'
+expect_rejected() {
+  local label="$1" message="$2"
+  if TILO_LINUX_EXPECTED_FINGERPRINT="$fingerprint" "$verify" "$assets" \
+      >"$work/reject.out" 2>"$work/reject.err"; then
+    printf '%s unexpectedly passed\n' "$label" >&2; exit 1
+  fi
+  if [ -n "$message" ]; then grep -Fq "$message" "$work/reject.err"; fi
+}
+mv "$board" "$work/absent-medium"
+expect_rejected 'absent board medium' 'expected exactly one regular catalog medium'
+mv "$work/absent-medium" "$board"
+board_sig="$assets/installer-signatures/$(basename "$board").asc"
+mv "$board_sig" "$work/unsigned-medium.asc"
+expect_rejected 'unsigned board medium' 'expected exactly one'
+mv "$work/unsigned-medium.asc" "$board_sig"
+cp "$work/v1.json" "$assets/catalog/tilo-installer-catalog-v1.json"
+expect_rejected 'ambiguous catalog versions' 'expected exactly one installer catalog'
+rm "$assets/catalog/tilo-installer-catalog-v1.json"
+mv "$catalog" "$assets/catalog/tilo-installer-catalog-v1.json"
+expect_rejected 'wrong catalog filename' 'filename does not match its schema'
+mv "$assets/catalog/tilo-installer-catalog-v1.json" "$catalog"
+catalog_sig="$assets/installer-signatures/$(basename "$catalog").asc"
+mv "$catalog_sig" "$work/unsigned-catalog.asc"
+expect_rejected 'unsigned catalog' 'expected exactly one'
+mv "$work/unsigned-catalog.asc" "$catalog_sig"
+cp "$catalog" "$work/valid-catalog"
+python3 - "$catalog" <<'PY'
+import json, pathlib, sys
+path=pathlib.Path(sys.argv[1]); data=json.loads(path.read_text())
+data["tag"]="imager-v1.2.4"; path.write_text(json.dumps(data))
+PY
+(cd "$(dirname "$catalog")" && sha256sum "$(basename "$catalog")" >"$(basename "$catalog").sha256")
+expect_rejected 'tampered signed catalog with updated checksum' ''
+cp "$work/valid-catalog" "$catalog"
+(cd "$(dirname "$catalog")" && sha256sum "$(basename "$catalog")" >"$(basename "$catalog").sha256")
+# An updated standalone checksum cannot substitute bytes bound by the signed catalog.
+cp "$board" "$work/valid-board"
+printf 'board substitution\n' >"$board"
+(cd "$(dirname "$board")" && sha256sum "$(basename "$board")" >"$(basename "$board").sha256")
+expect_rejected 'catalog media substitution' 'catalog archive'
+cp "$work/valid-board" "$board"
+(cd "$(dirname "$board")" && sha256sum "$(basename "$board")" >"$(basename "$board").sha256")
+printf 'ok    absent, unsigned, ambiguous, mismatched and substituted board releases fail closed\n'
 
 wrong="${fingerprint%?}0"
 [ "$wrong" != "$fingerprint" ] || wrong="${fingerprint%?}1"
