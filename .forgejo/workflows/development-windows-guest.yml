@@ -49,6 +49,9 @@ jobs:
         run: |
           bash os/dev/assert-native-arch.sh x86_64
           python3 os/dev/run-development-windows-guest.py --validate-only
+          python3 os/tests/test_development_windows_guest.py
+          python3 os/tests/test_development_wine_repository.py
+          python3 os/tests/test_fetch_windows_guest_assets.py
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: code.sandbox.example
