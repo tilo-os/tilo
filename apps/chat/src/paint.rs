@@ -113,7 +113,10 @@ pub fn hline(scene: &mut Scene, tf: Affine, x0: f64, x1: f64, y: f64, color: Col
 
 /// Draw text with its top-left corner at `(x, y)`. Returns the measured
 /// `(width, height)` so callers can advance the layout cursor.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "leaf text adapter mirrors independently variable TextRenderer inputs; its broad call surface benefits from keeping typography visible at each paint site"
+)]
 pub fn text(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -143,7 +146,10 @@ pub fn text(
 }
 
 /// Convenience: regular-weight single-line text, no wrap.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "regular-weight leaf adapter keeps the independently variable text, size, colour, and position visible at each paint site"
+)]
 pub fn label(
     scene: &mut Scene,
     tr: &mut TextRenderer,
