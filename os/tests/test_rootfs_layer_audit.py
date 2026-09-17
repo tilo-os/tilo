@@ -23,7 +23,7 @@ def tar(entries, format=tarfile.PAX_FORMAT):
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode='w', format=format) as archive:
         for name, value in entries:
-            member = tarfile.TarInfo(name)
+            member = name if isinstance(name, tarfile.TarInfo) else tarfile.TarInfo(name)
             member.size = len(value)
             archive.addfile(member, io.BytesIO(value))
     return output.getvalue()
@@ -43,6 +43,46 @@ def docker(layers, extra=None, config_change=None):
 
 
 class LayerAuditTests(unittest.TestCase):
+    def podman_archive(self, target=None, alias_name=None, duplicate=False, manifest_alias=False, wrong_digest=False):
+        layer = tar([('private', SECRET)])
+        original, image = docker([layer])
+        canonical = hashlib.sha256(layer).hexdigest() + '.tar'
+        if wrong_digest:
+            canonical = 'f' * 64 + '.tar'
+        with tarfile.open(fileobj=io.BytesIO(original)) as archive:
+            config = archive.extractfile(image[7:] + '.json').read()
+        alias = tarfile.TarInfo(alias_name or 'a' * 64 + '/layer.tar')
+        alias.type = tarfile.SYMTYPE
+        alias.linkname = target if target is not None else '../' + canonical
+        entries = [(canonical, layer), (alias, b'')]
+        if duplicate:
+            other = tarfile.TarInfo('b' * 64 + '/layer.tar')
+            other.type, other.linkname = alias.type, alias.linkname
+            entries.append((other, b''))
+        manifest = [{'Config': image[7:] + '.json', 'Layers': [alias.name if manifest_alias else canonical]}]
+        entries.extend([(image[7:] + '.json', config), ('manifest.json', json.dumps(manifest).encode())])
+        return tar(entries), image
+
+    def test_podman_canonical_layers_and_legacy_aliases_scan_actual_bytes(self):
+        for manifest_alias in (False, True):
+            stream, image = self.podman_archive(manifest_alias=manifest_alias)
+            result = audit.audit_stream(io.BytesIO(stream), image, [SECRET])
+            self.assertEqual(result['status'], 'rejected-private-material')
+            self.assertEqual(len(result['layers']), 1)
+            self.assertEqual(result['layers'][0]['findings'], ['provided-private-material'])
+
+    def test_podman_aliases_reject_escape_unknown_duplicate_and_digest_mismatch(self):
+        for options in ({'target': '../../' + 'a' * 64 + '.tar'},
+                        {'target': '../' + 'a' * 64 + '.tar'},
+                        {'target': '/absolute.tar'},
+                        {'target': '../x/layer.tar'},
+                        {'alias_name': 'unexpected-link'},
+                        {'duplicate': True}, {'wrong_digest': True}):
+            with self.subTest(options=options):
+                stream, image = self.podman_archive(**options)
+                with self.assertRaises(audit.AuditError):
+                    audit.audit_stream(io.BytesIO(stream), image, [SECRET])
+
     def test_create_then_delete_secret_is_detected_in_earlier_layer(self):
         stream, image = docker([tar([('private.key', SECRET)]), tar([('.wh.private.key', b'')])])
         result = audit.audit_stream(io.BytesIO(stream), image, [SECRET])

@@ -126,6 +126,7 @@ def walk_tar(stream, visit, max_entries):
         size = number(header[124:136])
         kind = header[156:157]
         name = header[:100].split(b'\0', 1)[0]
+        link = header[157:257].split(b'\0', 1)[0]
         if header[257:263] in (b'ustar\x00', b'ustar '):
             prefix = header[345:500].split(b'\0', 1)[0]
             if prefix:
@@ -141,6 +142,8 @@ def walk_tar(stream, visit, max_entries):
                     raise AuditError('global path/size metadata unsupported')
             elif kind == b'L':
                 pending[b'path'] = data.rstrip(b'\0')
+            elif kind == b'K':
+                pending[b'linkpath'] = data.rstrip(b'\0')
         else:
             if b'size' in pending:
                 try:
@@ -150,11 +153,12 @@ def walk_tar(stream, visit, max_entries):
             if not 0 <= size <= MAX_BYTES:
                 raise AuditError('tar entry exceeds byte limit')
             name = safe_name(pending.get(b'path', name))
+            link = pending.get(b'linkpath', link)
             pending = {}
             if kind not in (b'\0', b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7'):
                 raise AuditError('unsupported tar entry type')
             data = Reader(stream, size)
-            visit(name, kind, size, data)
+            visit(name, kind, size, data, link)
             consume(data)
             if data.remaining:
                 raise AuditError('truncated tar entry')
@@ -183,12 +187,12 @@ def audit_stream(stream, image_id, private_values=(), max_bytes=MAX_BYTES):
     private_values = tuple(dict.fromkeys(
         variant for value in private_values for variant in (value, value.rstrip(b'\r\n'))
         if len(variant) >= 16))
-    layers, metadata, names = {}, {}, set()
+    layers, metadata, names, aliases = {}, {}, set(), {}
     metadata_findings = set()
     metadata_bytes = 0
     total = Reader(stream, max_bytes)
 
-    def visit(name, kind, size, content):
+    def visit(name, kind, size, content, link):
         nonlocal metadata_bytes
         if name in names:
             raise AuditError('duplicate archive entry')
@@ -197,15 +201,30 @@ def audit_stream(stream, image_id, private_values=(), max_bytes=MAX_BYTES):
             if size:
                 raise AuditError('invalid archive directory')
             return
-        if kind not in (b'0', b'\0'):
-            raise AuditError('Docker archive must contain regular files only')
-        if name.endswith('/layer.tar'):
+        if kind == b'2':
+            # containers/image emits legacy layer.tar aliases alongside the
+            # canonical digest.tar payload. Validate metadata only; never follow
+            # or extract links, and never permit alias chains or forward links.
+            if (size or not re.fullmatch(r'[0-9a-f]{64}/layer[.]tar', name)
+                    or not re.fullmatch(rb'[.][.]/[0-9a-f]{64}[.]tar', link)):
+                raise AuditError('invalid legacy layer alias')
+            target = link[3:].decode('ascii')
+            if target not in layers or target in aliases.values():
+                raise AuditError('unknown or ambiguous legacy layer alias')
+            aliases[name] = target
+            return
+        if kind not in (b'0', b'\0') or link:
+            raise AuditError('unexpected Docker archive entry type')
+        canonical_layer = re.fullmatch(r'[0-9a-f]{64}[.]tar', name)
+        if name.endswith('/layer.tar') or canonical_layer:
             if len(layers) >= MAX_LAYERS:
                 raise AuditError('too many layers')
             layer = Reader(content, size, tuple(private_values), hashing=True)
             walk_tar(layer, lambda *args: None, 1000000)
             if layer.remaining:
                 raise AuditError('truncated layer')
+            if canonical_layer and layer.digest.hexdigest() != name[:-4]:
+                raise AuditError('layer filename differs from content digest')
             layers[name] = {'diff_id': 'sha256:' + layer.digest.hexdigest(),
                             'bytes_scanned': layer.bytes_read, 'findings': sorted(layer.findings)}
         else:
@@ -235,7 +254,10 @@ def audit_stream(stream, image_id, private_values=(), max_bytes=MAX_BYTES):
             raise AuditError('archive configuration differs from requested image ID')
         config = json.loads(config_bytes, object_pairs_hook=unique)
         ordered = manifest['Layers']
-        if (not isinstance(ordered, list) or not ordered or len(ordered) != len(set(ordered))
+        if not isinstance(ordered, list) or not all(isinstance(name, str) for name in ordered):
+            raise AuditError('invalid manifest layer list')
+        ordered = [aliases.get(name, name) for name in ordered]
+        if (not ordered or len(ordered) != len(set(ordered))
                 or set(ordered) != set(layers) or config['rootfs']['type'] != 'layers'
                 or config['rootfs']['diff_ids'] != [layers[name]['diff_id'] for name in ordered]):
             raise AuditError('manifest/configuration/layer identity mismatch')
