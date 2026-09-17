@@ -423,7 +423,7 @@ pub(crate) fn capture_resource(it: &CaptureItem) -> Resource {
 )]
 pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut navigation = Resource::new("camera", "camera", "Camera");
-    for screen in [Screen::Camera, Screen::Scanner, Screen::Settings] {
+    for screen in Screen::ALL {
         if let Ok(spec) = ActionSpec::operation(
             format!("open-{}", screen.as_str()),
             format!("Open {}", screen.label()),
