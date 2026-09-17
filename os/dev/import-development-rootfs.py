@@ -19,6 +19,7 @@ spec = importlib.util.spec_from_file_location('import_retention', Path(__file__)
 retention = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(retention)
 rootfs, source, hardware = retention.rootfs, retention.source, retention.hardware
+TOOL_PATH = '/usr/local/bin:/usr/bin:/bin'
 
 
 def retained_identity(receipt, args):
@@ -92,7 +93,7 @@ def verified_rootfs(args):
         reference, image_id = retained_identity(receipt, args)
         bundle = scratch / 'public'
         public_snapshot(args.public_bundle, bundle, args.manifest_sha256)
-        environment = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'}
+        environment = {'PATH': TOOL_PATH, 'LANG': 'C.UTF-8'}
         environment.update({name: os.environ[name] for name in rootfs.LOCAL_STORAGE_ENVIRONMENT if name in os.environ})
         if os.environ.get('REGISTRY_AUTH_FILE'):
             auth = scratch / 'config.json'
