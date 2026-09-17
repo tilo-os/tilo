@@ -25,6 +25,8 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
@@ -551,7 +553,8 @@ impl LspClient {
         }
         let root_uri = path_to_uri(root);
 
-        let mut child = Command::new(&prog)
+        let mut command = Command::new(&prog);
+        command
             .args(&args)
             // Run the server *in* the project, so anything it resolves
             // relatively (rustfmt.toml, .cargo/config.toml) resolves the way
@@ -559,15 +562,19 @@ impl LspClient {
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    format!("{prog} not found on PATH — install it for live diagnostics")
-                } else {
-                    format!("failed to launch {prog}: {e}")
-                }
-            })?;
+            .stderr(Stdio::null());
+        // Language servers routinely start indexers and compiler helpers.
+        // Own the complete tree so closing a project cannot strand those
+        // descendants in the user's session.
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command.spawn().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                format!("{prog} not found on PATH — install it for live diagnostics")
+            } else {
+                format!("failed to launch {prog}: {e}")
+            }
+        })?;
 
         let stdin = child
             .stdin
@@ -888,7 +895,16 @@ fn send_initialize_handshake(client: &mut LspClient, root: &Path, root_uri: &str
 
 impl Drop for LspClient {
     fn drop(&mut self) {
-        // Best-effort shutdown so we don't leak a server process.
+        #[cfg(unix)]
+        if let Ok(pid) = i32::try_from(self.child.id())
+            && let Some(group) = pid.checked_neg()
+        {
+            // SAFETY: `start` placed the child in its own pid-named process
+            // group, so the negative pid targets only this LSP process tree.
+            unsafe { libc::kill(group, libc::SIGKILL) };
+        }
+        // Also kill the direct child for non-Unix platforms and as a fallback
+        // if process-group signalling failed, then always reap it.
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
