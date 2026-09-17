@@ -184,7 +184,7 @@ mod tests {
         );
     }
 
-    /// `nir` matches nothing else about the tab, isolating a body-only match.
+    /// `tilo` matches nothing else about the tab, isolating a body-only match.
     #[test]
     fn finds_a_word_that_only_appears_in_the_body_the_app_wrote() {
         let handle = tree_with_note_tab(7, "Notes");
@@ -199,7 +199,7 @@ mod tests {
         );
         let provider = NotesProvider::new();
         let out = provider.query(SearchContext {
-            needle: "nir",
+            needle: "tilo",
             wanted: &[ResourceKind::Note],
             chrome: &chrome_st,
             doc: &doc,
