@@ -68,6 +68,7 @@ pub mod flathub_client;
 pub mod flatpakref;
 pub mod images;
 pub mod installed;
+pub mod live;
 pub mod model;
 pub mod moderation_client;
 pub mod registry_client;
@@ -82,3 +83,10 @@ pub use flatpakref::FlatpakRef;
 pub use model::{
     ActionKind, InstalledState, SourceFilter, StoreItem, StoreItemVersion, StoreSource, StoreTrust,
 };
+
+/// Build the standard worker-backed Store root used by the desktop and SDK
+/// harnesses. The binary's deep-link route calls the same live host with its
+/// additional launch context.
+pub fn app_root() -> Box<dyn ui::widget::Widget> {
+    live::app_root()
+}
