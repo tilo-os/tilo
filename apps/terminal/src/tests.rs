@@ -522,8 +522,14 @@ fn exited_pty_publishes_a_persistent_disconnected_accessibility_state() {
     use portable_pty::CommandBuilder;
     use ui::widget::Widget;
 
-    let mut widget = TerminalWidget::spawn_command(CommandBuilder::new("/bin/true"))
-        .expect("spawn short-lived pty command");
+    // `portable-pty` spawns the literal path, and macOS ships `true` only at
+    // `/usr/bin/true` (no `/bin/true`), so the spawn used to fail with ENOENT
+    // before the assertion on the development hosts. `/bin/sh` is the one
+    // path POSIX guarantees everywhere this suite runs.
+    let mut exit_now = CommandBuilder::new("/bin/sh");
+    exit_now.args(["-c", "exit 0"]);
+    let mut widget =
+        TerminalWidget::spawn_command(exit_now).expect("spawn short-lived pty command");
     let mut doc = AutoCommit::new();
     for _ in 0..20 {
         widget.sync(&mut doc, &ROOT);

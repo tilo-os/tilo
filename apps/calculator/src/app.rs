@@ -1202,7 +1202,7 @@ impl Widget for CalculatorApp {
         draw::fill_rect(scene, t, self.area, c.surfaces.base);
         // Size the topbar controls from the labels as this frame paints them
         // (the screens below set the same paint scale before their own text).
-        draw::set_text_scale(theme.text_scale);
+        draw::set_text_scale(draw::paint_scale(tr, theme));
         if self.measure_topbar_labels(tr) {
             self.relayout();
         }
