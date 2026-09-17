@@ -443,6 +443,39 @@ impl ProjectionOverlay {
         host_rect: Rect,
         open: bool,
     ) -> bool {
+        // Theme type tokens already carry the user's text scale, and this
+        // sheet lays out and paints with those resolved sizes; the renderer
+        // must not scale them a second time (HIG §7a), so it is reset for
+        // the pass exactly as the lens pass resets it, and restored after.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
+        let changed = self.draw_at_theme_scale(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            host_rect,
+            open,
+        );
+        text_renderer.set_text_scale(renderer_scale);
+        changed
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "draw context passes through unchanged"
+    )]
+    fn draw_at_theme_scale(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        host_rect: Rect,
+        open: bool,
+    ) -> bool {
         self.host_rect = host_rect;
         let changed = self.controller.poll();
         if open && !self.was_open {
@@ -592,10 +625,11 @@ impl ProjectionOverlay {
         let card = RoundedRect::from_rect(r, radius);
         ui::chrome::shell::panel_shadow(scene, transform, r, radius, theme, 1.0);
         scene.fill(Fill::NonZero, transform, panel_surface(theme), None, &card);
+        // Panel edge derived against the ground (HIG §9.5), not declared.
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            ui::chrome::shell::panel_border(theme),
             None,
             &card,
         );
@@ -747,28 +781,13 @@ impl ProjectionOverlay {
             None,
         );
         let toggle = Rect::new(r.x1 - 58.0, r.y0 + 170.0, r.x1 - 20.0, r.y0 + 192.0);
-        scene.fill(
-            Fill::NonZero,
+        // The shared switch (HIG §9.9): track, knob and their palette come
+        // from `Toggle`, not a hand-rolled accent fill over a ramp slot.
+        ui::widget::Toggle::paint(
+            scene,
             transform,
-            if self.controller.options.audio {
-                colors.accent[5]
-            } else {
-                colors.neutral[3]
-            },
-            None,
-            &RoundedRect::from_rect(toggle, 11.0),
-        );
-        let knob_x = if self.controller.options.audio {
-            toggle.x1 - 11.0
-        } else {
-            toggle.x0 + 11.0
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.text_primary,
-            None,
-            &vello::kurbo::Circle::new(Point::new(knob_x, toggle.center().y), 8.0),
+            theme,
+            &ui::widget::ToggleFace::new(toggle, self.controller.options.audio),
         );
     }
 
