@@ -5,8 +5,12 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+[features]
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
 ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 fs = { path = "../../fs" }
 tilo-actions = { path = "../../crates/collab/actions" }
 atomic-file = { path = "../../crates/system/atomic-file" }

@@ -1,3 +1,6 @@
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};

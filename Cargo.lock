@@ -12708,6 +12708,7 @@ dependencies = [
  "dirs 6.0.0",
  "fs",
  "iroh-blobs",
+ "runtime-dylib",
  "tilo-actions",
  "tilo-app",
  "serde",
