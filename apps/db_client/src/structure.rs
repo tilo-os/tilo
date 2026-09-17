@@ -261,12 +261,15 @@ fn panel_header(
     let hr = Rect::new(area.x0, y, area.x1, y + HEADER_H);
     scene.fill(Fill::NonZero, t, p.header_bg, None, &hr);
     for (h, x) in columns {
+        // Centre each heading on the band from its measured line height so
+        // the header row and the cells below share one alignment rule.
+        let (_, hh) = tr.measure(h, 11.5, None);
         tr.draw_text(
             scene,
             h,
             11.5,
             theme.text_primary,
-            t * Affine::translate((x + 6.0, y + 7.0)),
+            t * Affine::translate((x + 6.0, y + (HEADER_H - f64::from(hh)) / 2.0)),
             None,
         );
     }
@@ -290,12 +293,13 @@ fn cell(
     x: f64,
     y: f64,
 ) {
+    let (_, th) = tr.measure(text, 12.5, None);
     tr.draw_text(
         scene,
         text,
         12.5,
         color,
-        t * Affine::translate((x + 6.0, y + 6.0)),
+        t * Affine::translate((x + 6.0, y + (ROW_H - f64::from(th)) / 2.0)),
         None,
     );
 }
