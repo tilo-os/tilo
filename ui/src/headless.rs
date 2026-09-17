@@ -3991,12 +3991,11 @@ mod tests {
         );
         let initial = crate::InteractionEnvironment {
             keyboard_family: crate::interaction::KeyboardFamily::Apple,
-            available: crate::interaction::InputAvailability {
-                keyboard: true,
-                pointer: true,
-                touch: true,
-                controller: true,
-            },
+            available: crate::interaction::InputAvailability::NONE
+                .with(crate::interaction::InputDevice::Keyboard)
+                .with(crate::interaction::InputDevice::Pointer)
+                .with(crate::interaction::InputDevice::Touch)
+                .with(crate::interaction::InputDevice::Controller),
             ..crate::InteractionEnvironment::default()
         };
         driver.set_interaction_environment(initial);
