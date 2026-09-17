@@ -20872,7 +20872,7 @@ mod overlay_event_absorb_tests {
         {
             let (w, height) = tr.measure(kind.label(), size, None);
             assert!(
-                f64::from(w) + CHIP_PAD_PX / 2.0 <= rect.width(),
+                f64::from(w) + f64::from(theme.tokens.spacing.s3) / 2.0 <= rect.width(),
                 "{} needs readable width: {:?}",
                 kind.label(),
                 rect
