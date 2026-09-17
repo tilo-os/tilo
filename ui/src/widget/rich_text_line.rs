@@ -87,6 +87,8 @@ pub struct RichTextLine {
     wrap: bool,
     /// Kept sorted by `range.start`.
     marks: Vec<MarkSpan>,
+    /// Formatting-only edits must notify the owning document just like typing.
+    marks_dirty: bool,
     /// Drained once `handle_event` observes a text-input edit.
     pending_marks: Vec<Mark>,
     /// Snapshot used to detect splice direction + length so `marks` stays
@@ -112,6 +114,7 @@ impl RichTextLine {
             font_size: DEFAULT_FONT_SIZE,
             wrap: false,
             marks: Vec::new(),
+            marks_dirty: false,
             pending_marks: Vec::new(),
             prev_text: String::new(),
             prev_cursor: 0,
@@ -220,13 +223,19 @@ impl RichTextLine {
         self.inner.set_cursor_pos(s.len());
         // Doesn't preserve prior marks; parents re-seed via `set_marks`.
         self.marks.clear();
+        self.marks_dirty = false;
         self.pending_marks.clear();
         self.prev_text = s.to_string();
         self.prev_cursor = s.len();
     }
 
     pub fn take_dirty(&mut self) -> Option<String> {
-        self.inner.take_dirty()
+        let text = self.inner.take_dirty();
+        if std::mem::take(&mut self.marks_dirty) {
+            Some(text.unwrap_or_else(|| self.inner.value().to_owned()))
+        } else {
+            text
+        }
     }
 
     pub fn is_focused(&self) -> bool {
@@ -299,6 +308,7 @@ impl RichTextLine {
     pub fn toggle_mark(&mut self, mark: Mark) {
         if let Some((s, e)) = self.inner.selection_range_public() {
             marks::toggle_mark_range(&mut self.marks, s..e, mark);
+            self.marks_dirty = true;
         } else {
             // Pushing the same mark twice cancels it (Notion-style).
             if let Some(idx) = self.pending_marks.iter().position(|m| m.same_kind(&mark)) {
@@ -1313,6 +1323,22 @@ mod tests {
         assert_eq!(l.pending_marks(), &[Mark::Bold]);
         l.toggle_mark(Mark::Bold);
         assert!(l.pending_marks().is_empty());
+    }
+
+    #[test]
+    fn selected_formatting_reports_one_edit_without_changing_text() {
+        let mut line = RichTextLine::new().with_text("hello");
+        line.inner_mut().set_selection(0, 5);
+        line.toggle_mark(Mark::Bold);
+        assert_eq!(line.take_dirty().as_deref(), Some("hello"));
+        assert!(line.take_dirty().is_none());
+        assert_eq!(line.marks(), &[MarkSpan::new(0..5, Mark::Bold)]);
+        line.toggle_mark(Mark::Italic);
+        line.set_text("replacement");
+        assert!(
+            line.take_dirty().is_none(),
+            "programmatic replacement discards the old edit"
+        );
     }
 
     #[test]

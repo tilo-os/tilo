@@ -6719,22 +6719,32 @@ impl App {
     #[doc(hidden)]
     pub fn rebuild_structure(&mut self) {
         let _entry = self.enter_wake_scope();
+        // A reported mutation can already have invalidated old widget pointers.
+        let topology_changed = self.structure_dirty || self.root_widget.take_structure_dirty();
         // Node ids below are about to be invalidated.
         let (prev_focus_idx, prev_focus_state, focus_reset) = if self.autofocus_on_structure_change
         {
             let idx = self
                 .focused_node
                 .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-            let state = self.focused_node.and_then(|id| {
-                self.inspect_node(id, |widget| widget.get_state())
-                    .ok()
-                    .flatten()
-            });
+            let state = if topology_changed {
+                None
+            } else {
+                self.focused_node.and_then(|id| {
+                    self.inspect_node(id, |widget| widget.get_state())
+                        .ok()
+                        .flatten()
+                })
+            };
             (idx, state, self.root_widget.take_focus_reset())
         } else {
             (None, None, false)
         };
 
+        // NodeId values can be reused by the new tree. Clear the old handle
+        // without dispatching through its potentially invalid pointer, so a
+        // replacement control at the same id still receives set_focus(true).
+        self.focused_node = None;
         self.taffy = TaffyTree::new();
         self.component_close_reports
             .extend(self.root_widget.take_component_close_reports());
@@ -7575,19 +7585,25 @@ fn run_layout_pass(
     if !app.layout_dirty && !viewport_changed {
         return Some((false, 0, 0));
     }
-    let must_compute = structure_rebuilt
-        || app.structure_dirty
-        || viewport_changed
-        || scroll_opt_disabled()
-        || app.root_widget.layout_needs_measure();
     let mut t_compute_us = 0u128;
     let mut t_apply_us = 0u128;
     let mut current_root = root_node;
     let mut recomposed = false;
     let view = app.root_widget.view_state();
-    // SAFETY: the admitted maps belong to App's exclusively owned tree.
-    let focus =
-        unsafe { CompositionFocus::capture(app.focused_node, &app.node_map, &app.bindings) };
+    // A pending structural rebuild means the old map may already contain
+    // removed controls. Capture only from an admitted, unchanged topology.
+    app.structure_dirty |= app.root_widget.take_structure_dirty();
+    let focus = if app.structure_dirty {
+        CompositionFocus::capture_live(app.root_widget.as_ref())
+    } else {
+        // SAFETY: the admitted maps belong to App's unchanged exclusive tree.
+        unsafe { CompositionFocus::capture(app.focused_node, &app.node_map, &app.bindings) }
+    };
+    let must_compute = structure_rebuilt
+        || app.structure_dirty
+        || viewport_changed
+        || scroll_opt_disabled()
+        || app.root_widget.layout_needs_measure();
     let result = settle_widget_composition(viewport_changed, |rebuild| {
         if rebuild || app.structure_dirty {
             recomposed = true;
@@ -12273,12 +12289,12 @@ mod action_palette_tests {
         ));
         app.open_action_palette();
         app.action_palette.as_mut().unwrap().set_query("restricted");
-        // A query advances one provider page immediately; the second provider
-        // is intentionally deferred to the next redraw so no keystroke scans
-        // every source on the UI thread. Mirror that host frame here before
-        // asserting on the lazy provider's row.
+        // A query advances one provider page immediately. Advance the lazy
+        // app provider and the host's open-resource provider on separate frames.
         let progress = app.action_palette.as_mut().unwrap().advance_search_page();
-        assert!(!progress.pending, "both tiny providers are now exhausted");
+        assert!(progress.pending, "the host provider still has a page");
+        let progress = app.action_palette.as_mut().unwrap().advance_search_page();
+        assert!(!progress.pending, "all three providers are now exhausted");
         assert_eq!(
             app.action_palette().unwrap().result_labels(),
             vec!["Restricted lazy action"]

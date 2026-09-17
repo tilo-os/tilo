@@ -331,7 +331,7 @@ impl MainPanel {
         if crate::doc::NotesDoc::page_blocks_list(doc, page).as_ref() != Some(&blocks) {
             return Err("block list does not belong to the requested page".into());
         }
-        let mut editor = BlockEditor::new();
+        let mut editor = notes_editor();
         editor.set_local_author(self.local_author.clone());
         editor
             .bind_existing_blocks(doc, blocks)
