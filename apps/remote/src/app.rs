@@ -2081,6 +2081,25 @@ struct EventRouteCtx<'a> {
     taffy: &'a TaffyTree<()>,
 }
 
+/// Shared resources passed through custom-painted screen layers.
+struct PaintContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+/// Paint resources plus the invariant card geometry used by every form row.
+struct FormPaintContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+    presence: &'a PresenceCtx,
+    card_x: f64,
+    card_width: f64,
+}
+
 // ===========================================================================
 // Widget impl
 // ===========================================================================
@@ -2708,15 +2727,15 @@ impl Widget for RemoteApp {
             Screen::List => {
                 self.draw_list(scene, transform, text_renderer, theme, presence, content);
             }
-            Screen::Form { editing } => self.draw_form(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-                content,
-                editing,
-            ),
+            Screen::Form { editing } => {
+                let mut paint = PaintContext {
+                    scene,
+                    transform,
+                    text: text_renderer,
+                    theme,
+                };
+                self.draw_form(&mut paint, presence, content, editing);
+            }
             Screen::Session { id } => self.draw_session(
                 scene,
                 transform,
@@ -4253,10 +4272,12 @@ impl RemoteApp {
             header.y1 + 40.0,
         );
         self.draw_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintContext {
+                scene,
+                transform,
+                text: text_renderer,
+                theme,
+            },
             presence,
             search,
             Field::Search,
@@ -4735,17 +4756,17 @@ impl RemoteApp {
     /// Draw a text field: the app paints the box and the focus ring, the
     /// shared [`TextInput`] paints the text, placeholder, selection and caret
     /// inside it — and owns every editing behaviour that goes with them.
-    #[allow(clippy::too_many_arguments)]
     fn draw_field(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         presence: &PresenceCtx,
         rect: Rect,
         field: Field,
     ) {
+        let scene = &mut *paint.scene;
+        let text_renderer = &mut *paint.text;
+        let transform = paint.transform;
+        let theme = paint.theme;
         let tokens = &theme.tokens;
         let focused = self.focus == Some(field);
         let rr = RoundedRect::from_rect(rect, 8.0);
@@ -4778,28 +4799,19 @@ impl RemoteApp {
     /// Draw the add/edit form. Split into one helper per card section — each
     /// threads the running layout cursor `y` through and hands back where the
     /// next section starts, exactly as the inline version did.
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "matches ui's draw dispatch shape (scene/transform/text_renderer/theme) \
-                  plus this screen's own presence/content/editing state"
-    )]
     fn draw_form(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         presence: &PresenceCtx,
         content: Rect,
         editing: Option<ConnectionId>,
     ) {
         let pad = 24.0;
         Self::draw_form_header(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
             content,
             pad,
             editing,
@@ -4810,59 +4822,23 @@ impl RemoteApp {
         let card_x = content.x0 + (content.width() - card_w) / 2.0;
         let y = content.y0 + HEADER_H + 8.0;
 
-        let y =
-            self.draw_form_kind_selector(scene, transform, text_renderer, theme, card_x, card_w, y);
-        let y = self.draw_form_legacy_transport_notice(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            card_x,
-            card_w,
-            y,
-        );
-        let y =
-            self.draw_form_tilo_picker(scene, transform, text_renderer, theme, card_x, card_w, y);
-        let y = self.draw_form_name_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+        let mut form = FormPaintContext {
+            scene: paint.scene,
+            transform: paint.transform,
+            text: paint.text,
+            theme: paint.theme,
             presence,
             card_x,
-            card_w,
-            y,
-        );
-        let y = self.draw_form_host_port_row(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            card_x,
-            card_w,
-            y,
-        );
-        let y = self.draw_form_user_auth_row(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            card_x,
-            card_w,
-            y,
-        );
-        self.draw_form_footer(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            card_x,
-            card_w,
-            y,
-            editing,
-        );
+            card_width: card_w,
+        };
+
+        let y = self.draw_form_kind_selector(&mut form, y);
+        let y = self.draw_form_legacy_transport_notice(&mut form, y);
+        let y = self.draw_form_tilo_picker(&mut form, y);
+        let y = self.draw_form_name_field(&mut form, y);
+        let y = self.draw_form_host_port_row(&mut form, y);
+        let y = self.draw_form_user_auth_row(&mut form, y);
+        self.draw_form_footer(&mut form, y, editing);
     }
 
     /// `draw_form`'s title, centered above the card.
@@ -4892,23 +4868,13 @@ impl RemoteApp {
     }
 
     /// `draw_form`'s protocol kind selector (segmented control).
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width) and running layout cursor `y` through the shaped \
-                  protocol-kind row"
-    )]
-    fn draw_form_kind_selector(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_kind_selector(&mut self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let mut y = Self::draw_form_label(
             scene,
             transform,
@@ -4928,17 +4894,7 @@ impl RemoteApp {
                 y + 40.0,
             );
             let active = self.draft.kind == k;
-            self.draw_segment(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                seg,
-                k.tag(),
-                active,
-                i == 0,
-                i.saturating_add(1) == kinds.len(),
-            );
+            self.draw_segment(scene, transform, text_renderer, theme, seg, k.tag(), active);
             self.push_hit(seg, Action::SetKind(k));
         }
         y += 56.0;
@@ -4948,23 +4904,16 @@ impl RemoteApp {
     /// Legacy RDP profiles are deliberately editable rather than discarded.
     /// Make their migration path explicit: the selector offers only real
     /// backends, so choosing SSH, VNC, or Tilo replaces the unavailable kind.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "this small drawing section receives the same scene/render context and geometry cursor as the adjacent form sections"
-    )]
-    fn draw_form_legacy_transport_notice(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_legacy_transport_notice(&self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
         if self.draft.kind != ConnectionKind::Rdp {
             return y;
         }
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let tokens = &theme.tokens;
         let note = Rect::new(card_x, y, card_x + card_w, y + 54.0);
         scene.fill(
@@ -5003,22 +4952,13 @@ impl RemoteApp {
 
     /// `draw_form`'s Tilo device picker — a no-op (returns `y` unchanged) for
     /// any other protocol kind.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width) and running layout cursor `y` through the \
-                  discovered-devices list"
-    )]
-    fn draw_form_tilo_picker(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_tilo_picker(&mut self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let tokens = &theme.tokens;
         let mut y = y;
         if self.draft.kind == ConnectionKind::Tilo {
@@ -5094,31 +5034,24 @@ impl RemoteApp {
     }
 
     /// `draw_form`'s Name field.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width) and running layout cursor `y` through the Name field"
-    )]
-    fn draw_form_name_field(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_name_field(&mut self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let mut y =
             Self::draw_form_label(scene, transform, text_renderer, theme, card_x, y, "Name");
         let name = Rect::new(card_x, y, card_x + card_w, y + 40.0);
         self.draw_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
+            &mut PaintContext {
+                scene: &mut *ctx.scene,
+                transform: ctx.transform,
+                text: &mut *ctx.text,
+                theme: ctx.theme,
+            },
+            ctx.presence,
             name,
             Field::Name,
         );
@@ -5128,22 +5061,13 @@ impl RemoteApp {
     }
 
     /// `draw_form`'s Host + Port row (Port hidden for Tilo).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width) and running layout cursor `y` through the Host/Port row"
-    )]
-    fn draw_form_host_port_row(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_host_port_row(&mut self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let host_label = if self.draft.kind == ConnectionKind::Tilo {
             "Device node"
         } else {
@@ -5162,11 +5086,13 @@ impl RemoteApp {
         let host_w = if tilo { card_w } else { card_w - 130.0 };
         let host = Rect::new(card_x, y, card_x + host_w, y + 40.0);
         self.draw_field(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
+            &mut PaintContext {
+                scene: &mut *ctx.scene,
+                transform: ctx.transform,
+                text: &mut *ctx.text,
+                theme: ctx.theme,
+            },
+            ctx.presence,
             host,
             Field::Host,
         );
@@ -5174,11 +5100,13 @@ impl RemoteApp {
         if !tilo {
             let port = Rect::new(card_x + host_w + 12.0, y, card_x + card_w, y + 40.0);
             self.draw_field(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
+                &mut PaintContext {
+                    scene: &mut *ctx.scene,
+                    transform: ctx.transform,
+                    text: &mut *ctx.text,
+                    theme: ctx.theme,
+                },
+                ctx.presence,
                 port,
                 Field::Port,
             );
@@ -5191,23 +5119,16 @@ impl RemoteApp {
     /// `draw_form`'s User + Group row for non-Tilo kinds, or the implicit-auth
     /// info card for Tilo.
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width) and running layout cursor `y` through the User/Group \
-                  row and auth method selector"
+        reason = "the non-Tilo field row and its authentication selector form one conditional layout section"
     )]
-    fn draw_form_user_auth_row(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        card_x: f64,
-        card_w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_form_user_auth_row(&mut self, ctx: &mut FormPaintContext<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let tokens = &theme.tokens;
         let tilo = self.draft.kind == ConnectionKind::Tilo;
         let mut y = y;
@@ -5250,15 +5171,19 @@ impl RemoteApp {
                 y,
                 if has_user { "User" } else { "Group" },
             );
+            let _ = scene;
+            let _ = text_renderer;
             if has_user {
                 let half = (card_w - 12.0) / 2.0;
                 let user = Rect::new(card_x, y, card_x + half, y + 40.0);
                 self.draw_field(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    presence,
+                    &mut PaintContext {
+                        scene: &mut *ctx.scene,
+                        transform: ctx.transform,
+                        text: &mut *ctx.text,
+                        theme: ctx.theme,
+                    },
+                    ctx.presence,
                     user,
                     Field::User,
                 );
@@ -5270,11 +5195,13 @@ impl RemoteApp {
                 Rect::new(card_x, y, card_x + card_w, y + 40.0)
             };
             self.draw_field(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
+                &mut PaintContext {
+                    scene: &mut *ctx.scene,
+                    transform: ctx.transform,
+                    text: &mut *ctx.text,
+                    theme: ctx.theme,
+                },
+                ctx.presence,
                 group,
                 Field::Group,
             );
@@ -5282,6 +5209,8 @@ impl RemoteApp {
             y += 56.0;
 
             // -- Auth method selector --
+            let scene = &mut *ctx.scene;
+            let text_renderer = &mut *ctx.text;
             y = Self::draw_form_label(
                 scene,
                 transform,
@@ -5309,8 +5238,6 @@ impl RemoteApp {
                     seg,
                     a.label(),
                     active,
-                    i == 0,
-                    i.saturating_add(1) == auth_methods.len(),
                 );
                 self.push_hit(seg, Action::SetAuth(a));
             }
@@ -5321,23 +5248,18 @@ impl RemoteApp {
 
     /// `draw_form`'s tail: validation messages, Save + Cancel, and (edit mode
     /// only) the Delete button.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_form section threading the shared card geometry \
-                  (x/width), the settled layout cursor `y`, and the editing id \
-                  through the closing validation/action row"
-    )]
     fn draw_form_footer(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        card_x: f64,
-        card_w: f64,
+        ctx: &mut FormPaintContext<'_>,
         y: f64,
         editing: Option<ConnectionId>,
     ) {
+        let scene = &mut *ctx.scene;
+        let text_renderer = &mut *ctx.text;
+        let transform = ctx.transform;
+        let theme = ctx.theme;
+        let card_x = ctx.card_x;
+        let card_w = ctx.card_width;
         let tokens = &theme.tokens;
 
         // -- Validation messages --
@@ -5446,7 +5368,6 @@ impl RemoteApp {
     }
 
     /// Draw one segment of a segmented control.
-    #[allow(clippy::too_many_arguments)]
     fn draw_segment(
         &self,
         scene: &mut Scene,
@@ -5456,8 +5377,6 @@ impl RemoteApp {
         rect: Rect,
         label: &str,
         active: bool,
-        _first: bool,
-        _last: bool,
     ) {
         let tokens = &theme.tokens;
         let hovered = rect.contains(self.pointer);
@@ -6549,6 +6468,40 @@ mod tests {
             } else {
                 assert_ne!(connection.port, 0, "network transports need a port");
             }
+        }
+    }
+
+    #[test]
+    fn protocol_segments_share_one_gapless_form_card_row() {
+        let mut app = RemoteApp::new();
+        lay_out(&mut app, 1280.0, 800.0);
+        app.apply(Action::NewConnection, &mut doc());
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        Widget::draw(
+            &mut app,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+
+        let segments: Vec<Rect> = app
+            .hits
+            .iter()
+            .filter_map(|hit| matches!(hit.action, Action::SetKind(_)).then_some(hit.rect))
+            .collect();
+        assert_eq!(segments.len(), ConnectionKind::available_to_create().len());
+        let width = segments[0].width();
+        for pair in segments.windows(2) {
+            assert_eq!(pair[0].x1, pair[1].x0, "protocol segments meet exactly");
+            assert!(
+                (pair[1].width() - width).abs() < 0.001,
+                "the card row divides evenly"
+            );
+            assert_eq!(pair[0].y0, pair[1].y0);
+            assert_eq!(pair[0].y1, pair[1].y1);
         }
     }
 
