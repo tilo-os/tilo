@@ -66,6 +66,10 @@ extern crate runtime_dylib;
 /// offscreen layout for a scenario, or writing its PNG to disk.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(target_os = "linux")]
+    if let Some(code) = imager::setup::migration_native::maybe_run_command(&args)? {
+        std::process::exit(code);
+    }
     if let Some(code) = imager::setup::desktop_worker::maybe_run_desktop_helper(&args)? {
         std::process::exit(code);
     }
