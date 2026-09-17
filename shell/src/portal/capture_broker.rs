@@ -581,6 +581,21 @@ impl CaptureBroker {
         self.revoke_one(lease_id, CaptureRevocation::Released)
     }
 
+    /// Revoke an exact set of unconsumed authorizations minted by one failed
+    /// higher-level transaction. Foreign/replayed identifiers are ignored so
+    /// rollback cannot disturb another broker instance.
+    pub fn revoke_authorizations(&mut self, ids: &[CaptureAuthorizationId]) -> usize {
+        ids.iter()
+            .filter(|id| id.broker == self.instance)
+            .filter(|id| self.authorizations.remove(id).is_some())
+            .count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_authorization_count(&self) -> usize {
+        self.authorizations.len()
+    }
+
     /// Revoke only the authorizations and leases for one exact verified
     /// realtime session, leaving other calls by the same app untouched.
     pub fn session_ended(&mut self, binding: &CaptureSessionBinding) {
@@ -810,6 +825,9 @@ mod tests {
             .unwrap();
         assert_eq!(ids.len(), 2);
         assert_eq!(broker.authorizations.len(), 2);
+        assert_eq!(broker.revoke_authorizations(&ids), 2);
+        assert!(broker.authorizations.is_empty());
+        assert_eq!(broker.revoke_authorizations(&ids), 0);
     }
 
     #[test]
