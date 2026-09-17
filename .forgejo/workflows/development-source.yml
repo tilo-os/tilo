@@ -49,7 +49,7 @@ jobs:
           cp os/tests/development_source_registry.py "$context/"
           cp "$(command -v cosign)" "$context/cosign"
           cp os/tests/Containerfile.development-source "$context/Containerfile"
-          docker build --tag "$image" "$context"
+          docker build --file "$context/Containerfile" --tag "$image" "$context"
           # Nested Podman mounts only inside this disposable CI container.
           # No host directories or credentials are mounted.
           docker run --rm --privileged --tmpfs /tmp --tmpfs /run "$image"
