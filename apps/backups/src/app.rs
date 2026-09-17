@@ -35,7 +35,8 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
-    Button, ButtonFace, SegmentedFace, SidebarDrawer, Toggle, ToggleFace, ToggleGroup, Widget,
+    Button, ButtonFace, ModalAction, ModalFrame, ModalSpec, SegmentedFace, SidebarDrawer, Toggle,
+    ToggleFace, ToggleGroup, Widget,
 };
 use ui::{card_column_width, card_columns};
 
@@ -47,6 +48,11 @@ use crate::model::{
 };
 use crate::paint;
 
+// Fixed bands are the 1× *floors* of renderer-measured values: the top bar and
+// its tabs (`chrome_metrics`), the timeline's day header / snapshot row /
+// expanded detail (`draw_timeline_list`). At 1× the measured value equals the
+// constant; the band only grows once the accessibility text scale makes its
+// labels taller than the band was drawn for.
 const BAR_H: f64 = 52.0;
 const PAD: f64 = 20.0;
 const RAIL_W: f64 = 256.0;
@@ -61,7 +67,9 @@ const DAY_H: f64 = 30.0;
 const LIVE_VIEWS: [View; 3] = [View::Timeline, View::Sources, View::Destinations];
 
 /// Below this window width the Timeline source rail overlays (a summoned
-/// drawer) instead of docking beside the snapshot list.
+/// drawer) instead of docking beside the snapshot list. Both breakpoints are
+/// scaled by the text scale: an 800px window at 2× carries what a 400px
+/// window carries at 1×, so it takes the compact chrome.
 const RAIL_BREAKPOINT: f64 = 820.0;
 /// Below this width the top-bar chrome compacts (icon-only primary action,
 /// tighter tabs) and multi-column tile/card grids drop toward a single column.
@@ -155,6 +163,10 @@ pub struct BackupsApp {
     timeline_scroll: f64,
     timeline_view: Rect,
     timeline_content_h: f64,
+    /// Top-bar band and tab height as the last frame measured them
+    /// (`chrome_metrics`); `BAR_H` / `TAB_H` floors.
+    bar_h: f64,
+    tab_h: f64,
     policy_focus: usize,
     toast: Option<(String, ToastKind, Instant)>,
     seeded: bool,
@@ -238,6 +250,8 @@ impl BackupsApp {
             timeline_scroll: 0.0,
             timeline_view: Rect::ZERO,
             timeline_content_h: 0.0,
+            bar_h: BAR_H,
+            tab_h: TAB_H,
             policy_focus: 0,
             toast: None,
             seeded: false,
@@ -597,6 +611,21 @@ impl BackupsApp {
         self.catalog.sources.is_empty() && self.catalog.destinations.is_empty()
     }
 
+    /// Text scale the renderer is painting at; every breakpoint and fixed
+    /// band is scaled by it.
+    fn text_scale(tr: &TextRenderer) -> f64 {
+        f64::from(tr.text_scale())
+    }
+
+    /// Measure the top-bar chrome: the tab height carries its 13.5px label
+    /// plus the pill inset, the bar carries the tabs. Exactly `TAB_H` /
+    /// `BAR_H` at 1×.
+    fn chrome_metrics(&mut self, tr: &mut TextRenderer) {
+        let (_, label_h) = tr.measure("Hg", 13.5, None);
+        self.tab_h = TAB_H.max(f64::from(label_h) + 12.0);
+        self.bar_h = BAR_H.max(self.tab_h + 18.0);
+    }
+
     fn render(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.hits.clear();
         let c = &theme.tokens.colors;
@@ -604,12 +633,18 @@ impl BackupsApp {
         // Window background.
         paint::fill_rect(scene, t, self.rect, c.surfaces.base);
 
+        // Bands and breakpoints follow the text scale before anything is
+        // placed off them.
+        self.chrome_metrics(tr);
+        self.drawer
+            .set_breakpoint(RAIL_BREAKPOINT * Self::text_scale(tr));
+
         // Content spans to the window bottom; the tally lives in the floating
         // status bubble, not a permanent bottom strip.
         let progress_h = if self.job_status.is_some() { 42.0 } else { 0.0 };
         let content = Rect::new(
             self.rect.x0 + PAD,
-            self.rect.y0 + BAR_H + 14.0 + progress_h,
+            self.rect.y0 + self.bar_h + 14.0 + progress_h,
             self.rect.x1 - PAD,
             self.rect.y1 - 12.0,
         );
@@ -683,9 +718,9 @@ impl BackupsApp {
         let c = &theme.tokens.colors;
         let rect = Rect::new(
             self.rect.x0 + PAD,
-            self.rect.y0 + BAR_H + 8.0,
+            self.rect.y0 + self.bar_h + 8.0,
             self.rect.x1 - PAD,
-            self.rect.y0 + BAR_H + 42.0,
+            self.rect.y0 + self.bar_h + 42.0,
         );
         paint::fill_rrect(scene, t, rect, 8.0, c.surfaces.raised);
         paint::text(
@@ -732,7 +767,7 @@ impl BackupsApp {
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + BAR_H,
+            self.rect.y0 + self.bar_h,
         );
         paint::fill_rect(scene, t, bar, c.neutral[0]);
         paint::hline(
@@ -745,20 +780,22 @@ impl BackupsApp {
             1.0,
         );
 
-        let cy = bar.y0 + BAR_H / 2.0;
-        let narrow = self.rect.width() < NARROW_BREAKPOINT;
+        let cy = bar.y0 + self.bar_h / 2.0;
+        let narrow = self.rect.width() < NARROW_BREAKPOINT * Self::text_scale(tr);
 
         let brand_right = self.draw_top_bar_left_cluster(scene, tr, theme, t, bar, cy, narrow);
         // The primary action compacts to an icon below the narrow breakpoint
         // (as the breakpoint contract promises); with the full label the tab
         // strip's minimum width overran the band and the last tab painted
-        // underneath the button at phone widths.
+        // underneath the button at phone widths. The wide face is sized from
+        // its label so it never clips at a larger text scale.
         let action_w = if self.is_empty() {
             0.0
         } else if narrow {
-            TAB_H
+            self.tab_h
         } else {
-            114.0
+            let (bw, _) = tr.measure("Backing up…", 14.0, None);
+            114.0_f64.max(f64::from(bw) + 28.0)
         };
         let action_gap = if self.is_empty() { 0.0 } else { 8.0 };
         self.draw_top_bar_tabs(
@@ -879,9 +916,9 @@ impl BackupsApp {
         let seg_x0 = (band_x0 + ((band_x1 - band_x0) - seg_total) / 2.0).max(band_x0);
         let seg = Rect::new(
             seg_x0,
-            cy - TAB_H / 2.0,
+            cy - self.tab_h / 2.0,
             seg_x0 + seg_total,
-            cy + TAB_H / 2.0,
+            cy + self.tab_h / 2.0,
         );
         paint::fill_rrect(scene, t, seg, 9.0, c.surfaces.raised);
         paint::stroke_rrect(
@@ -899,8 +936,12 @@ impl BackupsApp {
         // owns; the pill fill + selection palette come from the shared control.
         let narrow_tabs = tab_w < 96.0;
         let fs = if narrow_tabs { 12.0_f32 } else { 13.5 };
+        // A label that still does not fit its tab (340px windows, or a
+        // larger text scale) elides against the pill's inner width rather
+        // than clipping mid-glyph against its neighbour.
+        let label_max_w = (tab_w - 8.0 - 8.0).max(8.0) as f32;
         let mut pill_rects: Vec<Rect> = Vec::with_capacity(views.len());
-        let mut labels: Vec<&str> = Vec::with_capacity(views.len());
+        let mut labels: Vec<String> = Vec::with_capacity(views.len());
         for (i, v) in views.iter().enumerate() {
             let tab = Rect::new(
                 seg.x0 + i as f64 * tab_w,
@@ -914,7 +955,7 @@ impl BackupsApp {
                 tab.x1 - 4.0,
                 tab.y1 - 4.0,
             ));
-            labels.push(if narrow_tabs {
+            let label = if narrow_tabs {
                 match v {
                     View::Timeline => "Timeline",
                     View::Sources => "Sources",
@@ -923,9 +964,11 @@ impl BackupsApp {
                 }
             } else {
                 v.title()
-            });
+            };
+            labels.push(tr.elide_to_width(label, fs, label_max_w));
             self.hits.push((tab, Hit::Tab(*v)));
         }
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
         let selected = views.iter().position(|v| self.ui.view == *v).unwrap_or(0);
         let hovered = views.iter().position(|v| self.hover == Some(Hit::Tab(*v)));
         ToggleGroup::paint(
@@ -1126,10 +1169,13 @@ impl BackupsApp {
         );
 
         // Summary stat tiles — reflow from four abreast down to a 2×2 grid so
-        // they never crush at narrow widths.
-        let cols = card_columns(main.width(), 156.0, 12.0).clamp(1, 4);
+        // they never crush at narrow widths; the minimum tile width and the
+        // tile band follow the text scale (label line + value line, 82px at 1×).
+        let cols = card_columns(main.width(), 156.0 * Self::text_scale(tr), 12.0).clamp(1, 4);
         let rows = 4usize.div_ceil(cols);
-        let tile_h = 82.0;
+        let (_, label_h) = tr.measure("Hg", 11.5, None);
+        let (_, value_h) = tr.measure_weighted("Hg", 22.0, None, TextWeight::Bold);
+        let tile_h = 82.0_f64.max(14.0 + f64::from(label_h) + 7.625 + f64::from(value_h) + 18.5);
         let tile_block_h = rows as f64 * tile_h + (rows as f64 - 1.0) * 12.0;
         let tiles = Rect::new(main.x0, main.y0, main.x1, main.y0 + tile_block_h);
         self.draw_summary_tiles(scene, t, tr, theme, tiles, cols);
@@ -1184,7 +1230,8 @@ impl BackupsApp {
             hy + (title_h - f64::from(sort_h)) / 2.0,
         );
 
-        let list = Rect::new(main.x0, hy + 26.0, main.x1, main.y1);
+        // The list starts under the title's measured line (26px at 1×).
+        let list = Rect::new(main.x0, hy + title_h + 7.25, main.x1, main.y1);
         self.draw_timeline_list(scene, t, tr, theme, list);
     }
 
@@ -1582,16 +1629,25 @@ impl BackupsApp {
                 tile.x0 + 16.0,
                 tile.y0 + 14.0,
             );
+            // The value follows the label's measured line (36px at 1×) and
+            // elides against the tile instead of running out of it.
             let vsize = if value.len() > 11 { 17.0 } else { 22.0 };
+            let (_, label_h) = tr.measure("Hg", 11.5, None);
+            let shown = tr.elide_to_width_weighted(
+                value,
+                vsize,
+                (tile.width() - 32.0).max(0.0) as f32,
+                TextWeight::Bold,
+            );
             paint::text_bold(
                 scene,
                 tr,
                 t,
-                value,
+                &shown,
                 vsize,
                 c.text_primary,
                 tile.x0 + 16.0,
-                tile.y0 + 36.0,
+                tile.y0 + 14.0 + f64::from(label_h) + 7.625,
             );
         }
     }
@@ -1616,17 +1672,32 @@ impl BackupsApp {
             .collect();
         let show_source = self.ui.sel_source.is_none();
 
+        // Row bands follow the measured type (`ROW_H` / `DAY_H` / `DETAIL_H`
+        // are their 1× floors): a snapshot row carries its size + meta stack,
+        // a day header its bold label, the detail its two metadata lines.
+        let line = |tr: &mut TextRenderer, size: f32| f64::from(tr.measure("Hg", size, None).1);
+        let (h12, h11_5, h13, h10_5, h12b) = (
+            line(tr, 12.0),
+            line(tr, 11.5),
+            line(tr, 13.0),
+            line(tr, 10.5),
+            f64::from(tr.measure_weighted("Hg", 12.0, None, TextWeight::Bold).1),
+        );
+        let row_h = ROW_H.max(h13 + h10_5 - 1.0 + 16.0);
+        let day_h = DAY_H.max(h12b + 15.0);
+        let detail_h = DETAIL_H.max(12.0 + h12 + 6.0 + h11_5 + 12.0);
+
         // First measure total content height (so we can clamp scroll).
         let mut content_h = 0.0;
         let mut last_day: Option<u32> = None;
         for s in &snaps {
             if last_day != Some(s.day) {
-                content_h += DAY_H;
+                content_h += day_h;
                 last_day = Some(s.day);
             }
-            content_h += ROW_H + 4.0;
+            content_h += row_h + 4.0;
             if self.ui.sel_snapshot.as_deref() == Some(s.id.as_str()) {
-                content_h += DETAIL_H;
+                content_h += detail_h;
             }
         }
         self.timeline_content_h = content_h;
@@ -1639,8 +1710,10 @@ impl BackupsApp {
         last_day = None;
         for s in &snaps {
             if last_day != Some(s.day) {
-                // Day header.
-                if y + DAY_H > list.y0 && y < list.y1 {
+                // Day header: the label is centred in its band and the rule
+                // runs along the label's own centre line.
+                if y + day_h > list.y0 && y < list.y1 {
+                    let label_top = y + (day_h - h12b) / 2.0;
                     paint::text_bold(
                         scene,
                         tr,
@@ -1649,36 +1722,41 @@ impl BackupsApp {
                         12.0,
                         c.text_dim,
                         list.x0 + 2.0,
-                        y + 8.0,
+                        label_top,
                     );
-                    let label_w = 96.0;
+                    let (label_w, _) = tr.measure_weighted(
+                        &Catalog::day_label(s.day),
+                        12.0,
+                        None,
+                        TextWeight::Bold,
+                    );
                     paint::hline(
                         scene,
                         t,
-                        list.x0 + label_w,
+                        list.x0 + 2.0 + f64::from(label_w) + 12.0,
                         list.x1,
-                        y + 14.0,
+                        y + day_h / 2.0,
                         ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
                         1.0,
                     );
                 }
-                y += DAY_H;
+                y += day_h;
                 last_day = Some(s.day);
             }
             let selected = self.ui.sel_snapshot.as_deref() == Some(s.id.as_str());
-            let row = Rect::new(list.x0, y, list.x1, y + ROW_H);
+            let row = Rect::new(list.x0, y, list.x1, y + row_h);
             let visible = row.y1 > list.y0 && row.y0 < list.y1;
             if visible {
                 self.draw_snapshot_row(scene, t, tr, theme, row, s, selected, show_source);
                 self.hits.push((row, Hit::Snap(s.id.clone())));
             }
-            y += ROW_H + 4.0;
+            y += row_h + 4.0;
             if selected {
-                let det = Rect::new(list.x0, y - 2.0, list.x1, y - 2.0 + DETAIL_H);
+                let det = Rect::new(list.x0, y - 2.0, list.x1, y - 2.0 + detail_h);
                 if det.y1 > list.y0 && det.y0 < list.y1 {
                     self.draw_snapshot_detail(scene, t, tr, theme, det, s);
                 }
-                y += DETAIL_H;
+                y += detail_h;
             }
         }
         scene.pop_layer();
@@ -1734,7 +1812,7 @@ impl BackupsApp {
                 c.surfaces.raised.with_alpha_factor(0.55),
             );
         }
-        let cy = row.y0 + ROW_H / 2.0;
+        let cy = f64::midpoint(row.y0, row.y1);
         // Status dot.
         paint::dot(
             scene,
@@ -1743,7 +1821,8 @@ impl BackupsApp {
             4.0,
             Self::status_color(theme, s.status),
         );
-        // Time.
+        // Time (bold), centred on the row from its measured bold line.
+        let (time_w, time_h) = tr.measure_weighted(&s.time, 14.0, None, TextWeight::Bold);
         paint::text_bold(
             scene,
             tr,
@@ -1752,42 +1831,56 @@ impl BackupsApp {
             14.0,
             c.text_primary,
             row.x0 + 30.0,
-            cy - 8.0,
+            cy - f64::from(time_h) / 2.0,
         );
-        // Type + retention pills.
-        let mut px = row.x0 + 92.0;
+        // Type + retention pills follow the measured time label (the 92px
+        // column at 1×; wider once the time is). The `Auto` pill takes a
+        // dim-ink wash like the `Manual` pill takes an accent one, so it reads
+        // as a pill on the light theme too (a surface lift was invisible there).
+        let mut px = (row.x0 + 92.0).max(row.x0 + 30.0 + f64::from(time_w) + 12.0);
         let (tfg, tbg) = match s.kind {
             SnapType::Manual => (
                 theme.accent_primary,
                 theme.accent_primary.with_alpha_factor(0.18),
             ),
-            SnapType::Auto => (c.text_dim, c.lift(0.72)),
+            SnapType::Auto => (c.text_dim, c.text_dim.with_alpha_factor(0.18)),
         };
         px += paint::pill(scene, tr, t, px, cy, s.kind.label(), 11.0, tfg, tbg) + 6.0;
         let rc = Self::retention_color(theme, s.retention);
         px += paint::tag_pill(scene, tr, t, px, cy, s.retention.label(), 11.0, rc) + 8.0;
-        // Source path (only in "all" mode).
-        if show_source && let Some(src) = self.catalog.source(&s.source_id) {
-            paint::text(scene, tr, t, &src.path, 12.0, c.text_dim, px, cy - 7.0);
-        }
-        // Right side: files changed, delta, total.
+        // Right side: total over "+delta · files", the two-line stack centred
+        // on the row (its line boxes overlap by 1px, as at 1×) instead of the
+        // meta line crowding the row's bottom edge. Measured first so the
+        // source path can stop where the stack begins.
         let total_x = row.x1 - 16.0;
-        paint::text_right(
-            scene,
-            tr,
-            t,
-            &ui::format::bytes(s.size_bytes),
-            13.0,
-            c.text_primary,
-            total_x,
-            cy - 8.0,
-        );
+        let total = ui::format::bytes(s.size_bytes);
         let meta = format!(
             "+{} · {} files",
             ui::format::bytes(s.delta_bytes),
             s.files_changed
         );
-        paint::text_right(scene, tr, t, &meta, 10.5, c.text_dim, total_x, cy + 7.0);
+        let (size_w, size_h) = tr.measure(&total, 13.0, None);
+        let (meta_w, meta_h) = tr.measure(&meta, 10.5, None);
+        let stack_x0 = total_x - f64::from(size_w.max(meta_w));
+        // Source path (only in "all" mode), elided against the right stack.
+        if show_source && let Some(src) = self.catalog.source(&s.source_id) {
+            let path_max_w = (stack_x0 - 12.0 - px).max(24.0) as f32;
+            let shown = tr.elide_to_width(&src.path, 12.0, path_max_w);
+            paint::text_vc(scene, tr, t, &shown, 12.0, c.text_dim, px, row.y0, row.height());
+        }
+        let stack_h = f64::from(size_h) + f64::from(meta_h) - 1.0;
+        let size_top = cy - stack_h / 2.0;
+        paint::text_right(scene, tr, t, &total, 13.0, c.text_primary, total_x, size_top);
+        paint::text_right(
+            scene,
+            tr,
+            t,
+            &meta,
+            10.5,
+            c.text_dim,
+            total_x,
+            size_top + f64::from(size_h) - 1.0,
+        );
     }
 
     fn draw_snapshot_detail(
@@ -1810,20 +1903,27 @@ impl BackupsApp {
         let dest = self.catalog.destination(&s.dest_id);
         let dest_name = dest.map(|found| found.name.clone()).unwrap_or_default();
         let dest_kind = dest.map_or("", |found| found.kind.label());
-        let verify = Rect::new(
-            detail_rect.x1 - 188.0,
-            detail_rect.y0 + 25.0,
-            detail_rect.x1 - 104.0,
-            detail_rect.y1 - 8.0,
-        );
+        // Buttons are sized from their labels (the shared face paints at the
+        // 14px base size) so `Restore…` never clips at a larger text scale.
+        let (restore_w, _) = tr.measure("Restore…", 14.0, None);
+        let (verify_w, _) = tr.measure("Verify", 14.0, None);
+        let restore_w = 88.0_f64.max(f64::from(restore_w) + 28.0);
+        let verify_w = 84.0_f64.max(f64::from(verify_w) + 28.0);
         let restore = Rect::new(
-            detail_rect.x1 - 96.0,
+            detail_rect.x1 - 8.0 - restore_w,
             detail_rect.y0 + 25.0,
             detail_rect.x1 - 8.0,
             detail_rect.y1 - 8.0,
         );
+        let verify = Rect::new(
+            restore.x0 - 8.0 - verify_w,
+            detail_rect.y0 + 25.0,
+            restore.x0 - 8.0,
+            detail_rect.y1 - 8.0,
+        );
         // The metadata lines stop where the action buttons begin; at phone
-        // widths the second line otherwise ran underneath Verify.
+        // widths the second line otherwise ran underneath Verify. The second
+        // line follows the first's measured height.
         let text_x = detail_rect.x0 + 16.0;
         let text_max_w = ((verify.x0 - 12.0) - text_x).max(40.0) as f32;
         let stored = tr.elide_to_width(
@@ -1831,6 +1931,7 @@ impl BackupsApp {
             12.0,
             text_max_w,
         );
+        let (_, stored_h) = tr.measure("Hg", 12.0, None);
         paint::text(
             scene,
             tr,
@@ -1864,7 +1965,7 @@ impl BackupsApp {
             11.5,
             c.text_dim,
             text_x,
-            detail_rect.y0 + 33.0,
+            detail_rect.y0 + 12.0 + f64::from(stored_h) + 6.0,
         );
         Button::paint(
             scene,
@@ -3387,129 +3488,108 @@ impl BackupsApp {
         let Some(snap) = snap else { return };
         let src = self.catalog.source(&snap.source_id);
 
-        let (m, narrow_modal) =
-            Self::draw_restore_modal_frame(scene, t, tr, theme, self.rect, &snap, src);
-        let (contents, safety) = Self::draw_restore_modal_layout(m, narrow_modal);
-        Self::draw_restore_contents(scene, t, tr, theme, contents, &snap);
-        Self::draw_restore_safety(scene, t, tr, theme, safety, &snap);
-        self.draw_restore_footer_buttons(scene, t, tr, theme, m);
-    }
-
-    /// The modal's scrim, card frame, and title/subtitle. Returns the modal
-    /// rect and whether it's in the narrow (stacked) layout. Split out of
-    /// [`Self::draw_restore_modal`] to keep it under the line budget.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_restore_modal_frame(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        window: Rect,
-        snap: &Snapshot,
-        src: Option<&Source>,
-    ) -> (Rect, bool) {
-        let c = &theme.tokens.colors;
-        paint::fill_rect(scene, t, window, c.surfaces.overlay);
-        // Clamp the modal to the window so it never overflows a small screen.
-        // When it's too narrow for two columns it stacks, and needs more height
-        // so the options don't crowd the footer buttons.
-        let modal_w = 760.0_f64.min(window.width() - 40.0).max(300.0);
-        let narrow_modal = modal_w < 620.0;
-        let target_h: f64 = if narrow_modal { 620.0 } else { 460.0 };
-        let modal_h = target_h.min(window.height() - 40.0).max(300.0);
-        let m = Rect::new(
-            window.center().x - modal_w / 2.0,
-            window.center().y - modal_h / 2.0,
-            window.center().x + modal_w / 2.0,
-            window.center().y + modal_h / 2.0,
-        );
-        paint::card(
-            scene,
-            t,
-            m,
-            18.0,
-            c.surfaces.raised,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
-        );
-
-        let inner_w = (m.width() - 48.0).max(0.0) as f32;
-        if narrow_modal {
+        // The shared modal chrome (scrim, card, title row, action row) frames
+        // the sheet; the app paints only its body. The width the sheet used
+        // to size itself (760, or the window less its margin) still decides
+        // whether the body stacks.
+        let narrow_modal = 760.0_f64.min(self.rect.width() - 40.0) < 620.0;
+        let title = if narrow_modal {
             // A long local path or localized date must not squeeze a recovery
-            // warning off a phone-sized sheet. Keep the narrow heading short,
-            // put the bounded provenance beneath it, then reserve a separate
-            // safety line for the operation's real contract.
-            paint::text_bold(
-                scene,
-                tr,
-                t,
-                "Restore snapshot",
-                15.0,
-                c.text_primary,
-                m.x0 + 24.0,
-                m.y0 + 16.0,
-            );
-            let metadata = Self::narrow_restore_metadata(src, snap);
-            let metadata = tr.elide_to_width(&metadata, 11.5, inner_w);
-            let contract = tr.elide_to_width(
-                "Complete snapshot · choose a new or empty folder",
-                11.5,
-                inner_w,
-            );
-            paint::text(
-                scene,
-                tr,
-                t,
-                &metadata,
-                11.5,
-                c.text_dim,
-                m.x0 + 24.0,
-                m.y0 + 37.0,
-            );
-            paint::text(
-                scene,
-                tr,
-                t,
-                &contract,
-                11.5,
-                c.text_dim,
-                m.x0 + 24.0,
-                m.y0 + 55.0,
-            );
+            // warning off a phone-sized sheet: the short heading here, the
+            // bounded provenance and the contract as body lines.
+            "Restore snapshot".to_string()
         } else {
-            let title = format!(
+            format!(
                 "Restore  ·  {}  @  {} {}",
                 src.map_or("Unknown source", |source| source.path.as_str()),
                 Catalog::day_label(snap.day),
                 snap.time
-            );
-            let title = tr.elide_to_width_weighted(&title, 17.0, inner_w, TextWeight::Bold);
-            paint::text_bold(
-                scene,
-                tr,
-                t,
-                &title,
-                17.0,
-                c.text_primary,
-                m.x0 + 24.0,
-                m.y0 + 20.0,
-            );
-            let detail = tr.elide_to_width(
-                "Recover the complete snapshot into a new or empty folder. Existing files are never replaced.",
-                12.0,
-                inner_w,
-            );
-            paint::text(
-                scene,
-                tr,
-                t,
-                &detail,
-                12.0,
-                c.text_dim,
-                m.x0 + 24.0,
-                m.y0 + 46.0,
-            );
+            )
+        };
+        let intro: Vec<String> = if narrow_modal {
+            vec![
+                Self::narrow_restore_metadata(src, &snap),
+                "Complete snapshot · choose a new or empty folder".to_string(),
+            ]
+        } else {
+            vec![
+                "Recover the complete snapshot into a new or empty folder. Existing files are never replaced."
+                    .to_string(),
+            ]
+        };
+        let actions = [
+            ModalAction::secondary("Cancel").hovered(self.hover == Some(Hit::RestoreCancel)),
+            ModalAction::primary("Choose empty folder…")
+                .hovered(self.hover == Some(Hit::RestoreConfirm)),
+        ];
+        // Cancel (and Escape) is the visible way out. The frame's own close
+        // control would be a second cancel the sheet's two-control contract
+        // does not want, and a stray backdrop click must not dismiss a
+        // recovery sheet — the scrim still swallows it (`hit_at`).
+        let spec = ModalSpec::new(&title)
+            .actions(&actions)
+            .body_height(if narrow_modal { 500.0 } else { 350.0 })
+            .max_width(760.0)
+            .closable(false)
+            .dismiss_on_scrim(false);
+        let layout = ModalFrame::layout(self.rect, &spec, tr, theme);
+        ModalFrame::paint_backdrop(scene, t, tr, theme, &layout, &spec);
+
+        let (contents, safety) =
+            Self::draw_restore_intro(scene, t, tr, theme, layout.body, narrow_modal, &intro);
+        Self::draw_restore_contents(scene, t, tr, theme, contents, &snap);
+        Self::draw_restore_safety(scene, t, tr, theme, safety, &snap);
+        ModalFrame::paint_actions(scene, t, tr, theme, &layout, &spec);
+
+        // The hit rects are the frame's own action rects, in authored order,
+        // so a press lands exactly where the face was painted.
+        if let [cancel, confirm] = layout.actions.as_slice() {
+            self.hits.push((*confirm, Hit::RestoreConfirm));
+            self.hits.push((*cancel, Hit::RestoreCancel));
         }
-        (m, narrow_modal)
+    }
+
+    /// The body's intro lines (the recovery contract, or the provenance +
+    /// contract when stacked) under the frame's title row, then the split of
+    /// the remaining body into the contents preview and the safety summary:
+    /// side by side when wide, stacked when the sheet is too narrow for two
+    /// readable columns.
+    fn draw_restore_intro(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        body: Rect,
+        narrow_modal: bool,
+        intro: &[String],
+    ) -> (Rect, Rect) {
+        let (_, dim) = ModalFrame::ink(theme);
+        let size = if narrow_modal { 11.5 } else { 12.0 };
+        let (_, line_h) = tr.measure("Hg", size, None);
+        let line_h = f64::from(line_h);
+        let mut y = body.y0;
+        for line in intro {
+            let shown = tr.elide_to_width(line, size, body.width() as f32);
+            paint::text(scene, tr, t, &shown, size, dim, body.x0, y);
+            y += line_h + 3.0;
+        }
+        let body_y = y + 11.0;
+        let body_bottom = body.y1;
+        if narrow_modal {
+            // Give the safety summary enough height for its four factual rows
+            // and the estimate line, so nothing overlaps.
+            let mid = body_y + (body_bottom - body_y) * 0.46;
+            (
+                Rect::new(body.x0, body_y, body.x1, mid - 8.0),
+                Rect::new(body.x0, mid + 10.0, body.x1, body_bottom),
+            )
+        } else {
+            let split = body.x0 + body.width() * 0.58;
+            (
+                Rect::new(body.x0, body_y, split - 12.0, body_bottom),
+                Rect::new(split + 12.0, body_y, body.x1, body_bottom),
+            )
+        }
     }
 
     /// Phone-width provenance deliberately uses a source kind, never an
@@ -3522,30 +3602,6 @@ impl BackupsApp {
             Catalog::day_label(snap.day),
             snap.time
         )
-    }
-
-    /// Split the modal body into the contents preview and safety summary: side
-    /// by side when wide, stacked when the modal is too narrow for two readable
-    /// columns. Split out of
-    /// [`Self::draw_restore_modal`] to keep it under the line budget.
-    fn draw_restore_modal_layout(m: Rect, narrow_modal: bool) -> (Rect, Rect) {
-        let body_y = m.y0 + if narrow_modal { 92.0 } else { 74.0 };
-        let body_bottom = m.y1 - 76.0;
-        if narrow_modal {
-            // Give the safety summary enough height for its four factual rows
-            // and the estimate line, so nothing overlaps.
-            let mid = body_y + (body_bottom - body_y) * 0.46;
-            (
-                Rect::new(m.x0 + 24.0, body_y, m.x1 - 24.0, mid - 8.0),
-                Rect::new(m.x0 + 24.0, mid + 10.0, m.x1 - 24.0, body_bottom),
-            )
-        } else {
-            let split = m.x0 + m.width() * 0.58;
-            (
-                Rect::new(m.x0 + 24.0, body_y, split - 12.0, body_bottom),
-                Rect::new(split + 12.0, body_y, m.x1 - 24.0, body_bottom),
-            )
-        }
     }
 
     /// A non-interactive contents preview. The restore engine currently
@@ -3580,9 +3636,13 @@ impl BackupsApp {
             tree.y0 + 10.0,
         );
 
+        // Rows carry their 12.5px name (30px at 1×) and start under the
+        // caption's measured line.
         let files = &snap.files;
-        let row_h = 30.0;
-        let ty0 = tree.y0 + 30.0;
+        let (_, name_h) = tr.measure("Hg", 12.5, None);
+        let (_, caption_h) = tr.measure("Hg", 11.0, None);
+        let row_h = 30.0_f64.max(f64::from(name_h) + 12.0);
+        let ty0 = tree.y0 + 10.0 + f64::from(caption_h) + 6.25;
         // No indexer yet on the live app: a real snapshot without an indexed
         // listing shows an honest empty state rather than fabricated files.
         if files.is_empty() {
@@ -3695,16 +3755,23 @@ impl BackupsApp {
             "Never replaces existing files",
             "Verifies every restored file",
         ];
+        // Facts start under the heading's measured line and step by their own
+        // (28px at 1×); the bullet rides each fact's centre.
+        let (_, head_h) = tr.measure_weighted("Hg", 13.5, None, TextWeight::Bold);
+        let (_, fact_h) = tr.measure("Hg", 12.5, None);
+        let facts_top = opt.y0 + 8.0 + f64::from(head_h) + 13.0;
+        let pitch = 28.0_f64.max(f64::from(fact_h) + 12.0);
         for (i, fact) in facts.iter().enumerate() {
-            let oy = opt.y0 + 38.0 + i as f64 * 28.0;
+            let oy = facts_top + i as f64 * pitch;
             paint::dot(
                 scene,
                 t,
-                Point::new(opt.x0 + 5.0, oy + 7.0),
+                Point::new(opt.x0 + 5.0, oy + f64::from(fact_h) / 2.0),
                 2.5,
                 theme.accent_primary,
             );
-            paint::text(scene, tr, t, fact, 12.5, c.text_primary, opt.x0 + 16.0, oy);
+            let shown = tr.elide_to_width(fact, 12.5, (opt.width() - 16.0).max(0.0) as f32);
+            paint::text(scene, tr, t, &shown, 12.5, c.text_primary, opt.x0 + 16.0, oy);
         }
         // Size summary.
         paint::hline(
@@ -3736,46 +3803,6 @@ impl BackupsApp {
             opt.x1,
             opt.y1 - 32.0,
         );
-    }
-
-    /// Footer Restore/Cancel buttons. Split out of [`Self::draw_restore_modal`]
-    /// to keep it under the line budget.
-    fn draw_restore_footer_buttons(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        m: Rect,
-    ) {
-        let by = m.y1 - 56.0;
-        let bh = 38.0;
-        let confirm = Rect::new(m.x1 - 24.0 - 192.0, by, m.x1 - 24.0, by + bh);
-        Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &ButtonFace::new(confirm, "Choose empty folder…")
-                .primary()
-                .radius(9.0)
-                .weight(TextWeight::Regular)
-                .hovered(self.hover == Some(Hit::RestoreConfirm)),
-        );
-        self.hits.push((confirm, Hit::RestoreConfirm));
-
-        let cancel = Rect::new(confirm.x0 - 12.0 - 110.0, by, confirm.x0 - 12.0, by + bh);
-        Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &ButtonFace::new(cancel, "Cancel")
-                .radius(9.0)
-                .weight(TextWeight::Regular)
-                .hovered(self.hover == Some(Hit::RestoreCancel)),
-        );
-        self.hits.push((cancel, Hit::RestoreCancel));
     }
 
     fn draw_toast(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -3959,11 +3986,20 @@ impl BackupsApp {
 
     fn hit_at(&self, p: Point) -> Option<Hit> {
         // Last pushed wins (topmost), so iterate in reverse.
-        self.hits
+        let hit = self
+            .hits
             .iter()
             .rev()
             .find(|(r, _)| r.contains(p))
-            .map(|(_, h)| h.clone())
+            .map(|(_, h)| h.clone());
+        // A modal is modal: while the restore sheet is open only its own
+        // controls are reachable, so a press on the scrim can neither select
+        // a snapshot behind it nor switch views.
+        if self.ui.restore_open && !matches!(hit, Some(Hit::RestoreConfirm | Hit::RestoreCancel))
+        {
+            return None;
+        }
+        hit
     }
 
     fn dispatch(&mut self, hit: Hit, doc: &mut AutoCommit, root: &ObjId) {
@@ -4198,6 +4234,10 @@ impl Widget for BackupsApp {
             } => {
                 if let Some(hit) = self.hit_at(self.last_mouse) {
                     self.dispatch(hit, state, path);
+                    *handled = true;
+                } else if self.ui.restore_open {
+                    // The sheet's scrim swallows the press; nothing behind a
+                    // modal may activate.
                     *handled = true;
                 }
             }
@@ -4848,6 +4888,70 @@ mod tests {
             &f.state.root,
         ));
         assert_eq!(f.view(), View::Destinations);
+    }
+
+    /// Snapshot rows, day headers and the expanded detail keep their 1× bands
+    /// exactly and grow with the text scale, and the hit rect of every row is
+    /// the rect it was painted at: consecutive rows never overlap.
+    #[test]
+    fn timeline_rows_follow_the_text_scale_without_overlapping() {
+        let rows_of = |f: &Frame| -> Vec<Rect> {
+            let mut rows: Vec<Rect> = f
+                .app
+                .hits
+                .iter()
+                .filter_map(|(r, h)| matches!(h, Hit::Snap(_)).then_some(*r))
+                .collect();
+            rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+            rows
+        };
+        let mut f = Frame::demo_sized(1280.0, 800.0);
+        let one = rows_of(&f);
+        assert!(one.len() > 3, "the demo timeline paints several rows");
+        assert!(one.iter().all(|r| (r.height() - ROW_H).abs() < 1e-6));
+        assert!((f.app.bar_h - BAR_H).abs() < 1e-6 && (f.app.tab_h - TAB_H).abs() < 1e-6);
+
+        f.tr.set_text_scale(2.0);
+        f.draw();
+        let two = rows_of(&f);
+        let (_, h13) = f.tr.measure("Hg", 13.0, None);
+        let (_, h10_5) = f.tr.measure("Hg", 10.5, None);
+        let want = ROW_H.max(f64::from(h13) + f64::from(h10_5) - 1.0 + 16.0);
+        assert!(want > ROW_H, "2× type needs more than the 1× row");
+        assert!(two.iter().all(|r| (r.height() - want).abs() < 1e-6));
+        for pair in two.windows(2) {
+            assert!(pair[1].y0 >= pair[0].y1, "rows never overlap at 2×");
+        }
+        assert!(f.app.bar_h > BAR_H && f.app.tab_h > TAB_H);
+        // The first row starts under the (taller) top bar and content chrome.
+        assert!(two[0].y0 >= f.app.bar_h + 14.0);
+    }
+
+    /// The restore sheet is framed by the shared modal chrome: its two
+    /// controls sit on one action line inside the window, and while it is
+    /// open nothing behind the scrim can activate.
+    #[test]
+    fn restore_sheet_uses_the_shared_modal_frame_and_swallows_the_scrim() {
+        let mut f = Frame::demo();
+        f.click_hit(|hit| matches!(hit, Hit::RestoreOpen));
+        assert!(f.app.ui.restore_open);
+        let confirm = f.rect_of(|hit| matches!(hit, Hit::RestoreConfirm));
+        let cancel = f.rect_of(|hit| matches!(hit, Hit::RestoreCancel));
+        assert!((confirm.y0 - cancel.y0).abs() < 1e-6 && (confirm.y1 - cancel.y1).abs() < 1e-6);
+        assert!(cancel.x1 <= confirm.x0, "Cancel leads the primary action");
+        assert!(f.app.rect.contains(confirm.center()) && f.app.rect.contains(cancel.center()));
+        assert!(confirm.height() >= 32.0, "actions are real buttons, not badges");
+
+        // A press on a view tab behind the scrim is swallowed.
+        let tab = f.rect_of(|hit| matches!(hit, Hit::Tab(View::Sources)));
+        let before = f.view();
+        f.click(tab.center());
+        assert_eq!(f.view(), before, "the scrim swallows presses behind the sheet");
+        assert!(f.app.ui.restore_open, "a scrim press does not dismiss a recovery sheet");
+
+        // Cancel is still the visible way out.
+        f.click(cancel.center());
+        assert!(!f.app.ui.restore_open);
     }
 
     #[test]
