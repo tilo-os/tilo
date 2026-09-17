@@ -122,6 +122,7 @@ def replace(image_root, *, disposable, old_bundle, old_manifest, old_target,
                 if hashlib.file_digest(stream, 'sha256').hexdigest() != digest:
                     raise ValueError('preserved raw bytes changed')
         return {'schema': 1, 'purpose': 'development-public-trust-replacement',
+                'pending_marker_sha256': hashlib.sha256(pending.read_bytes()).hexdigest(),
                 'old_manifest_sha256': old_manifest, 'new_manifest_sha256': new_manifest,
                 'target_update_ref': new_target, 'kernel_version': kver, 'generation': generation,
                 'installable': False, 'initramfs_regenerated': False,
