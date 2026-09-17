@@ -62,7 +62,7 @@ pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
-Scratchpad, Files, Word Processor and Terminal have been built and run on Windows. Other apps
+Scratchpad, Files, Word Processor, Terminal and PDF Viewer have been built and run on Windows. Other apps
 are still being ported; a
 workspace-wide build currently includes Linux services and is not a Windows
 application build command.
@@ -158,6 +158,24 @@ commands and fails if its completion output is not observed.
 ```powershell
 cargo test --locked -p terminal --all-targets -- --test-threads=1
 ```
+
+PDF Viewer and Files use a shared PDFium DLL for page rendering and PDF thumbnails.
+The app installer downloads the pinned `chromium/8057` Windows runtime, verifies
+its published SHA-256 digest, and installs `pdfium.dll` beside the executables in
+`%LOCALAPPDATA%/Tilo/Applications`, including its licenses. To install the runtime
+separately or reuse an already downloaded archive:
+
+```powershell
+./tools/install-windows-pdfium.ps1
+./tools/install-windows-pdfium.ps1 -ArchivePath C:/Downloads/pdfium-win-arm64.tgz
+$env:TILO_PDFIUM_LIB = "$env:LOCALAPPDATA/Tilo/Applications/pdfium.dll"
+$env:TILO_REQUIRE_PDFIUM = '1'
+cargo test --locked -p pdf-viewer --all-targets -- --test-threads=1
+```
+
+The library override is for development binaries outside the installation directory;
+installed apps discover their adjacent DLL automatically. Requiring PDFium during
+tests prevents a missing renderer from leaving backend tests unverified.
 
 For smaller local development artifacts, set `CARGO_PROFILE_DEV_DEBUG=0` and
 `CARGO_PROFILE_TEST_DEBUG=0` in the PowerShell environment before building. Do not

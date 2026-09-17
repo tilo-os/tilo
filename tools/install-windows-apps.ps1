@@ -2,8 +2,8 @@
 # Cap'n Proto and the pinned Rust/MSVC toolchain must be available on PATH.
 [CmdletBinding()]
 param(
-    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal')]
-    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal'),
+    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer')]
+    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer'),
     [ValidateSet('dev', 'release')]
     [string]$Profile = 'dev'
 )
@@ -48,12 +48,16 @@ $menuDirectory = Join-Path ([Environment]::GetFolderPath('Programs')) 'Tilo'
 New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $menuDirectory -Force | Out-Null
 $shortcutShell = New-Object -ComObject WScript.Shell
+if ('pdf-viewer' -in $applications -or 'file-explorer' -in $applications) {
+    & (Join-Path $PSScriptRoot 'install-windows-pdfium.ps1')
+}
 foreach ($application in $applications) {
     $destination = Join-Path $installDirectory "$application.exe"
     Copy-Item -LiteralPath $executables[$application] -Destination $destination -Force
     $title = switch ($application) {
         'file-explorer' { 'Files' }
         'word-processor' { 'Word Processor' }
+        'pdf-viewer' { 'PDF Viewer' }
         default { (Get-Culture).TextInfo.ToTitleCase($application) }
     }
     $shortcutPath = Join-Path $menuDirectory "$title.lnk"
