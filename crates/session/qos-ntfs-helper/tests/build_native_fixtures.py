@@ -25,6 +25,8 @@ large = out/'large.img'; shutil.copyfile(clean, large)
 content.write_bytes(b''.join(bytes((j+block)%256 for j in range(256)) * 4096 for block in range(12))); run(src/'ntfsprogs/ntfscp', large, content, '/large.bin')
 content.write_bytes(bytes(range(251))*17); run(src/'ntfsprogs/ntfscp', large, content, '/tail.bin')
 content.write_bytes(b''); run(src/'ntfsprogs/ntfscp', large, content, '/empty.bin')
+run(exe, large, 'cancellation')
+content.write_bytes(b'final chunk'); run(src/'ntfsprogs/ntfscp', large, content, '/cancel/last.bin')
 for name, data in [('zero-hiber',bytes(4096)), ('hiber',b'hibr'+bytes(4092)), ('nonzero-hiber',bytes(4095)+b'x'), ('short-hiber',bytes(32))]:
     dest=out/(name+'.img'); shutil.copyfile(clean,dest)
     content.write_bytes(data); run(src/'ntfsprogs/ntfscp',dest,content,'/hiberfil.sys')

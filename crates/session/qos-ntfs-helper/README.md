@@ -289,3 +289,27 @@ pending entries, full native hash, candidate-name keys and refusal before a writ
 trial. Deploy/run it as the selected UID. All Linux session/alias/credential/death/
 detach/endpoint execution, all Windows runtime evidence and public capability
 promotion remain UNRUN/open. Cross-linking these entrypoints is not native proof.
+
+Stage 2 fix-round fixtures also require the generated `cancel/last.bin` subtree.
+Its selected-root manifest has exactly one readable file, ensuring cancellation
+at the last chunk cannot be caught by an unrelated later entry-loop check.
+`endpoint-cancel-last-chunk` and `endpoint-cancel-postflight` modes require
+QOS_NTFS_NATIVE_ENDPOINT_TEST naming the cross-linked actual endpoint test binary.
+The coordinator first proves the subtree's native content/hash/postflight, then
+stops the target native worker at fork and signals a test-only inherited control
+socket. The endpoint fixture flips its supplied AtomicBool and acknowledges it
+before the worker resumes; it asserts an unavailable empty tree and an unusable
+client session. These are actual endpoint/client tests, without a fake authority
+constructor. They remain UNRUN until the disposable Linux runner is authorized.
+The positive Rust client prerequisite additionally runs under the selected nonroot
+credentials and proves O_RDONLY cannot open the exact root-owned 0711 session
+parent before exercising the client's search-only O_PATH pins.
+
+`tests/test_stage_install.py` extracts two generated staging bundles, compares
+reproducibility and ownership/modes, verifies both standalone pinned manifests,
+resolves their dependencies offline and builds the extracted helper. Set
+QOS_NTFS_STAGING_BINARY to an existing cross-linked Linux ELF and CARGO_TARGET_DIR
+to an isolated output; existing cross-build variables can also select Linux.
+It never installs the archive or fetches dependencies. The helper stays at
+`source/` and its parser-free source dependency is shipped at sibling
+`qos-ntfs-protocol/`, matching the path dependency in the standalone manifest.
