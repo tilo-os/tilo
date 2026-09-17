@@ -561,6 +561,39 @@ pub fn card(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, fill:
     );
 }
 
+/// [`card`] for a translucent `fill` (an accent wash, a hover tint): the
+/// edge derives from what the eye sees — `fill` composited over `ground` —
+/// not from the wash's own RGB. A 16 % accent wash on a light panel is
+/// still a light surface and wants a dark hairline; judged by the accent
+/// alone it would get a white one and vanish.
+pub fn card_on(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    radius: f64,
+    fill: Color,
+    ground: Color,
+) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let seen = crate::tokens::colors::composite(fill, ground);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        fill,
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        edge_on(seen),
+        None,
+        &edge_outline(rect, radius),
+    );
+}
+
 /// A 1 px separator between rows inside a surface: derived against
 /// `surface`, inset `inset` from both ends (HIG §9.5: `spacing.s3`, never
 /// full-bleed into a corner radius), centred on `y`.
@@ -628,6 +661,28 @@ mod tests {
         // A mid grey moves plenty at alpha 26: the ladder must not over-darken it.
         let grey = Color::from_rgb8(0x80, 0x80, 0x80);
         assert_eq!(edge_on(grey), Colors::hairline_on(grey, EDGE_ALPHA_STEPS[0]));
+    }
+
+    #[test]
+    fn a_translucent_wash_takes_its_edge_from_the_composited_surface() {
+        // A 16 % accent wash over the light panel is still a light surface.
+        for theme in [Theme::light(), Theme::dark()] {
+            let ground = theme.tokens.colors.surfaces.raised;
+            let wash = theme.accent_primary.with_alpha(0.16);
+            let seen = crate::tokens::colors::composite(wash, ground);
+            let derived = edge_on(seen);
+            assert!(
+                edge_delta(derived, seen) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                "card_on edge must register on the seen surface"
+            );
+            // Judged by the wash's own RGB the hairline can flip polarity and
+            // stop registering on the surface the eye sees.
+            let naive = edge_on(wash);
+            assert!(
+                edge_delta(derived, seen) >= edge_delta(naive, seen),
+                "composited derivation must never register worse than the naive one"
+            );
+        }
     }
 
     #[test]
