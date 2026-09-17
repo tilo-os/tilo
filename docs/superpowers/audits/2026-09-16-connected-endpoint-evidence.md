@@ -27,12 +27,31 @@ Fix verification: 42 host tests passed; strict production lint passed for host, 
 
 A subsequent full-workspace integration check, `cargo +1.97.1 check -p imager --tests --offline`, exited 101 before reaching Imager. Five errors in concurrently modified `ui/src/render_thread.rs` refer to missing `Observer::log_native_config`, `log_native_worker`, and `log_native_present` methods. Retained log: `task-2-fix-1-full-imager-check.log`. The narrow endpoint checks therefore must not be presented as a verified complete app build. Shared UI changes were left intact.
 
+## NTFS inspection source candidate — September 17
+
+Commit `b19cb7be0b5ba00013333c29b0ceaa685c04abcf` adds the standalone `qos-ntfs-helper` package. It contains a pinned native NTFS reader, an administrative Linux block-device claim and child-isolation boundary, actual-image fixtures, and install staging. It does not implement mounting, synchronization writes, or Imager/service integration and does not enable Connected capabilities.
+
+The retained final run has 17 host native-image tests and one host caller-refusal test passing. All 18 generated fixture images match their recorded full hashes and sizes. Host/Linux focused all-target lint, Linux ARM64 executable/test cross-linking, and Windows all-target compilation passed. The Windows check establishes that the Unix helper does not force Unix build dependencies onto Windows; the helper is unsupported there. The host refusal test reaches the non-Linux branch and does not prove production Linux request validation.
+
+The final cross-linked Linux executable has SHA-256 `3cc9e47e2eaf397c44c35b8a0719c100bf28e851742cc33a97bfa12f0b2a4a40`; it has not been executed on Linux. A prior failed cross-build produced an empty archive because host Apple ranlib processed Linux objects. Explicit target ranlib plus positive native-symbol validation corrected that packaging failure. macOS rejects the configured address-space limit, so its uninstalled diagnostic runner explicitly reports the limit unenforced. Linux retains the mandatory limit; host test success is not Linux sandbox evidence.
+
+Independent review returned **Needs fixes**, with four required findings:
+
+1. Partition discovery requires a `slaves` sysfs directory that belongs to whole disks, preventing supported partition selection.
+2. The pinned NTFS library can select a valid restart page despite another malformed page; the wrapper can incorrectly report clean under the stricter admission contract.
+3. The source archive checksum uses a Python assertion that disappears under interpreter optimization.
+4. The required runnable detach/replacement invalidation scenario is absent.
+
+Fix round 1 is in progress. The candidate is not source-approved. Native Linux inventory-to-inspection success, exclusive claims, child isolation, resource limits, replacement, watchdog and automounter cases remain unproved; native Windows session and filesystem behavior also remain unproved. Existing loop fixtures cannot validate the helper's physical-partition inventory route. The native coordinator must use a separately authorized disposable disk presenting supported hardware identity.
+
+Report, exact diff, review and final logs are retained under the local evidence directory as `task-2-ntfs-stage1-report.md`, `task-2-ntfs-stage1-review.diff`, `task-2-ntfs-stage1-review-report.md`, and `task-2-ntfs-stage1-evidence/`. These scoped results do not close the full-app integration blocker or any remaining installation/dual-boot gate.
+
 ## Outstanding delivery gates
 
-- Source findings 1–4 are fixed and independently re-reviewed; full Task 2 remains unaccepted because the native implementation/evidence gates below are outstanding.
+- The original endpoint adapter findings 1–4 are fixed and independently re-reviewed. The newer NTFS helper findings above remain open, and full Task 2 is unaccepted.
 - Re-run final source on ext4, XFS and Btrfs, retaining complete outputs.
 - Execute read-only, duplicate-volume, mount replacement, reconnect, concurrent-writer and resource-limit fixtures. Prepared controller scripts have only local syntax checks.
-- Implement Linux-side access to retained Windows NTFS folders, including native persistent identity, health/hibernation refusal and metadata handling. This is missing implementation, not merely missing tests.
+- Fix and review the NTFS inspection candidate, establish its native runtime guarantees, and complete Linux-side access to retained Windows folders. Mount/transaction lifecycle and integration remain missing implementation, not merely missing tests.
 - Execute Windows native NTFS cases, including locks, placeholders, reparse points, hard links, directory streams and ACL policies; establish actual write/persistence support.
 - Complete durable connection storage, transaction execution, conflict/recovery behavior and shipped UI/service integration with native evidence. A final observation sweep is not an atomic filesystem snapshot; transaction-time preimage validation remains required.
 - Complete separate Desktop installed lifecycle and Full OS internal staging/dual-boot gates. Production catalogs remain disabled pending authentic signed artifacts and supported native configurations.
