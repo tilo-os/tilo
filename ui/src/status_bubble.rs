@@ -122,10 +122,15 @@ impl StatusBubble {
 /// through [`crate::text_metrics::renderer_type_size`] — never a raw
 /// `theme.tokens.typography.scale.*` value, which paints 4× at 200 %.
 pub fn pill_size(text: &str, tr: &mut TextRenderer, text_size: f32, control: f64) -> (f64, f64) {
-    let (tw, _) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
+    let (tw, th) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
     let pad_x = 14.0;
     let w = f64::from(tw) + 2.0 * pad_x + 2.0 * control;
-    let h = (f64::from(text_size) + 16.0).max(30.0);
+    // The 1× design height, lifted when the measured line box (which the
+    // renderer scales) needs more room than 30 px leaves: a 12 px label
+    // shapes a ~15 px line at 1× and stays 30; at 2× the 30 px line gets 42.
+    let h = (f64::from(text_size) + 16.0)
+        .max(30.0)
+        .max(f64::from(th) + 12.0);
     (w, h)
 }
 

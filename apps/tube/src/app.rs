@@ -26,7 +26,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{ActionEmitter, NavSplit, SplitMode, VideoPlayer, Widget};
+use ui::widget::{ActionEmitter, AuthoredExtent, NavSplit, SplitMode, VideoPlayer, Widget};
 
 use crate::action::{self, Action, ActionBus, SettingFlag};
 use crate::api::{Request, Update, Worker};
@@ -107,6 +107,14 @@ pub struct TubeApp {
     /// wrong — a wide window re-seeds its rail open on the next frame instead
     /// of being stuck on the unknown-width default.
     built_overlay: Option<bool>,
+    /// `NAV_BREAKPOINT` as the live split resolves it under the theme the
+    /// tree was last built with (`AuthoredExtent::text`, HIG §9.6). The app's
+    /// own narrow/wide decisions compare against this, never the constant,
+    /// so they agree with the split at every text scale.
+    nav_breakpoint: f64,
+    /// `screens::NAV_RAIL_W` resolved like the split's icon sidebar
+    /// (`AuthoredExtent::icon`: follows `ui_scale`, not the text scale).
+    nav_rail_w: f64,
 
     /// Whether this instance should reach out to the live data backend. Set by
     /// [`TubeApp::online`] — the live binary turns it on; the `--shots` /
@@ -212,6 +220,8 @@ impl TubeApp {
             force_sidebar_open_shot: false,
             last_nav_overlay: None,
             built_overlay: None,
+            nav_breakpoint: NAV_BREAKPOINT,
+            nav_rail_w: screens::NAV_RAIL_W,
             online: false,
             kicked_off: false,
             playing_id: None,
@@ -545,7 +555,7 @@ impl TubeApp {
     pub fn with_device_sync_shot(mut self) -> Self {
         self.model.route = Route::Settings;
         self.device_sync = crate::sync::DeviceSync::visual_sample();
-        let y = if self.rect.width() < NAV_BREAKPOINT {
+        let y = if self.rect.width() < self.nav_breakpoint {
             1_330.0
         } else {
             930.0
@@ -820,7 +830,7 @@ impl TubeApp {
         )
         .with_mode(SplitMode::Adaptive)
         .with_breakpoint(NAV_BREAKPOINT)
-        .with_sidebar_width(screens::NAV_RAIL_W);
+        .with_icon_sidebar_width(screens::NAV_RAIL_W);
 
         // Seed the freshly-built split's open state deterministically. The
         // split is recreated each time the tree is rebuilt (navigation), and
@@ -868,7 +878,7 @@ impl TubeApp {
         // flap open over the content. A real width self-corrects on its first
         // laid-out frame: a wide window rebuilds once the true width lands (see
         // `built_overlay` in `apply_layout`).
-        w <= 0.0 || w < NAV_BREAKPOINT
+        w <= 0.0 || w < self.nav_breakpoint
     }
 
     /// Logical width available to the screen content, i.e. the split's content
@@ -881,7 +891,7 @@ impl TubeApp {
         if self.nav_is_overlay() {
             w
         } else if self.sidebar_currently_open() {
-            (w - screens::NAV_RAIL_W).max(0.0)
+            (w - self.nav_rail_w).max(0.0)
         } else {
             w
         }
@@ -2084,6 +2094,11 @@ impl Widget for TubeApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.refresh_watch_control_bindings();
+        // Resolve the split's authored breakpoint and rail width under this
+        // theme before judging narrow/wide, so the seed below and the split
+        // built from it read the same numbers.
+        self.nav_breakpoint = AuthoredExtent::text(NAV_BREAKPOINT).resolve(theme);
+        self.nav_rail_w = AuthoredExtent::icon(screens::NAV_RAIL_W).resolve(theme);
         // Remember which layout resolution this tree was seeded with, so a
         // later `apply_layout` at the true width can detect a wrong seed (the
         // first build runs before any width is known) and rebuild once.
