@@ -7430,12 +7430,6 @@ fn draw_count_badge(
     center_text(scene, tr, &s, 11.0, c.neutral[9], r, t);
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(
-    clippy::many_single_char_names,
-    reason = "t is the paint transform, x/y/w are the field's position/width, and c is \
-              the theme's colour set — conventional short names for this draw step"
-)]
 pub(crate) fn draw_download(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     // Down-arrow into a tray.
     stroke_line(
