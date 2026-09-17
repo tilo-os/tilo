@@ -62,7 +62,8 @@ pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
-Scratchpad and Files have been built and run on Windows. Other apps are still being ported; a
+Scratchpad, Files and Word Processor have been built and run on Windows. Other apps
+are still being ported; a
 workspace-wide build currently includes Linux services and is not a Windows
 application build command.
 
@@ -134,6 +135,16 @@ filesystem access:
 ```powershell
 cargo test --locked -p file-explorer --lib -- --test-threads=1
 cargo test --locked -p file-explorer --test it -- --test-threads=1
+```
+
+Word Processor uses `%LOCALAPPDATA%/tilo/word-processor/recovery` for crash recovery
+unless `TILO_WP_RECOVERY_DIR` is explicitly set. Its recovery key stays stable
+when a new file is first saved and Windows starts returning a canonical verbatim
+path. Native tests cover editing, DOCX/ODT/HTML round trips, PDF/RTF/EPUB export,
+recovery cleanup and merging independently edited documents:
+
+```powershell
+cargo test --locked -p word-processor --all-targets -- --test-threads=1
 ```
 
 For smaller local development artifacts, set `CARGO_PROFILE_DEV_DEBUG=0` and
