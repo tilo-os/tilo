@@ -689,26 +689,16 @@ impl ResourceProvider for PhotosResources {
         if let Some(album) = PhotosDoc::album(doc, id) {
             return Some(album_resource(&album));
         }
-        let library = PhotosDoc::library(doc);
-        metadata_label_counts(&library)
-            .0
-            .into_iter()
-            .find(|(folder, _)| folder_resource_id(folder) == id)
-            .map(|(folder, count)| folder_resource(&folder, count))
-            .or_else(|| {
-                metadata_label_counts(&library)
-                    .1
-                    .into_iter()
-                    .find(|(person, _)| person_resource_id(person) == id)
-                    .map(|(person, count)| person_resource(&person, count))
-            })
-            .or_else(|| {
-                metadata_label_counts(&library)
-                    .2
-                    .into_iter()
-                    .find(|(tag, _)| tag_resource_id(tag) == id)
-                    .map(|(tag, count)| tag_resource(&tag, count))
-            })
+        // Exact metadata ids are opaque collision-resistant hashes, so do
+        // not attempt to recover them by scanning every photo. The document
+        // retains a small label/count projection keyed by these ids; it is
+        // updated with the authoritative library write and removes stale
+        // labels when their final photo disappears.
+        PhotosDoc::metadata_view(doc, id).map(|view| match view.kind {
+            crate::doc::MetadataViewKind::Folder => folder_resource(&view.label, view.count),
+            crate::doc::MetadataViewKind::Person => person_resource(&view.label, view.count),
+            crate::doc::MetadataViewKind::Tag => tag_resource(&view.label, view.count),
+        })
     }
 }
 
@@ -1657,7 +1647,7 @@ mod tests {
 
         let before = PhotosDoc::library(&doc);
         PhotosAction::SetMetadata {
-            photo_id,
+            photo_id: photo_id.clone(),
             folder: Some(" ".into()),
             people: vec!["same".into(), "same".into()],
             tags: Vec::new(),
@@ -1666,6 +1656,29 @@ mod tests {
         .apply(&mut doc)
         .expect_err("malformed metadata must be refused, not normalized");
         assert_eq!(PhotosDoc::library(&doc), before);
+
+        // Exact virtual ids use the compact keyed projection, not a fallback
+        // scan of every photo. Removing the final metadata values removes
+        // their index rows too, so a stale agent/history address refuses.
+        PhotosAction::SetMetadata {
+            photo_id,
+            folder: None,
+            people: Vec::new(),
+            tags: Vec::new(),
+            captured_at: None,
+        }
+        .apply(&mut doc)
+        .expect("clearing valid metadata applies");
+        for id in [
+            folder_resource_id("2026 travels"),
+            person_resource_id("München-夏"),
+            tag_resource_id("harbour"),
+        ] {
+            assert!(
+                PhotosResources.resource(&doc, &id).is_none(),
+                "stale metadata id {id} must not materialize"
+            );
+        }
     }
 
     /// Enumerating must be a pure read. If listing what is on offer could
