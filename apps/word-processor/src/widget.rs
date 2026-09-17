@@ -3655,6 +3655,12 @@ struct EditorEventCtx<'a> {
     taffy: &'a TaffyTree<()>,
 }
 
+struct UtilityBarsGeometry {
+    left: f64,
+    right: f64,
+    top: f64,
+}
+
 impl WordProcessorWidget {
     /// Toggle a layout-edit mode from a chip click.
     fn toggle_layout_mode(&mut self, mode: LayoutMode) {
@@ -6089,9 +6095,11 @@ impl WordProcessorWidget {
             transform,
             text_renderer,
             theme,
-            canvas_left,
-            canvas_right,
-            full.y0 + tb_h,
+            UtilityBarsGeometry {
+                left: canvas_left,
+                right: canvas_right,
+                top: full.y0 + tb_h,
+            },
         );
         // Reserve the horizontal ruler band (when on) out of the canvas top, below
         // the find bar. It is drawn with the *unscaled* `transform` so it stays a
@@ -6183,17 +6191,19 @@ impl WordProcessorWidget {
     /// the Find bar (when open), stacked directly under the toolbar at
     /// `tb_bottom`. Returns `(recovery_h, find_h)` — the heights the caller
     /// reserves out of the canvas top.
-    #[allow(clippy::too_many_arguments)]
     fn draw_recovery_and_find_bars(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        canvas_left: f64,
-        canvas_right: f64,
-        tb_bottom: f64,
+        geometry: UtilityBarsGeometry,
     ) -> (f64, f64) {
+        let UtilityBarsGeometry {
+            left: canvas_left,
+            right: canvas_right,
+            top: tb_bottom,
+        } = geometry;
         let recovery_h = self.recovery.height();
         if recovery_h > 0.0 {
             let rbar = Rect::new(canvas_left, tb_bottom, canvas_right, tb_bottom + recovery_h);
