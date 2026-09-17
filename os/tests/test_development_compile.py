@@ -40,6 +40,7 @@ class CompileBoundaries(unittest.TestCase):
             for variable, filename in driver.CACHE_CREDENTIALS.items():
                 self.assertEqual((directory / filename).read_text(), credentials[variable])
             env = driver.build_environment(WPE, '7', REVISION, 'c' * 64, '/signer', CACHE)
+            self.assertIn('--build-arg TILO_REQUIRE_COMPILER_CACHE=1', env['TILO_BUILD_ARGS'])
             for variable, value in credentials.items():
                 self.assertNotIn(variable, env)
                 self.assertNotIn(value, repr(env))
