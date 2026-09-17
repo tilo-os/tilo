@@ -93,6 +93,7 @@ pub mod remote_audio;
 pub mod remote_capture_adapter;
 pub mod remote_capture_device;
 pub mod remote_capture_runtime;
+pub mod remote_capture_source;
 pub mod remote_cursors;
 pub mod render;
 pub mod room_activity;
