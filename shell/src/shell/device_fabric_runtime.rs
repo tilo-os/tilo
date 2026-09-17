@@ -3058,6 +3058,7 @@ pub fn request_nearby_drop(
     if bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES {
         return Err("file changed while being read".into());
     }
+    let total_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     let request = network.send_personal_fabric_action(
         target,
         PersonalFabricAction::NearbyDrop {
@@ -3072,14 +3073,9 @@ pub fn request_nearby_drop(
         {
             state.pending.remove(&oldest);
         }
-        state.pending.insert(
-            request,
-            (
-                target.clone(),
-                file_name.clone(),
-                u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-            ),
-        );
+        state
+            .pending
+            .insert(request, (target.clone(), file_name.clone(), total_bytes));
         state.events.push_back(NearbyDropEvent::Sending {
             file_name,
             peer: target.clone(),
