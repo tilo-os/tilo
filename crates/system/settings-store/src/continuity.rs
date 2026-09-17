@@ -140,6 +140,7 @@ policies! {
         "qos.continuity.file_transfer",
         "qos.continuity.realtime_sessions",
         "qos.continuity.typed_gamepad",
+        "qos.continuity.app_continuations",
     ],
     Secret => [
         "qos.agent_providers.api_key",
@@ -225,6 +226,7 @@ mod tests {
             "qos.input.pen_output",
             "qos.continuity.clipboard",
             "qos.continuity.typed_gamepad",
+            "qos.continuity.app_continuations",
             "qos.continuity.audit",
         ] {
             assert!(classify(key).is_some(), "{key} must be reviewed");
@@ -244,6 +246,7 @@ mod tests {
             "qos.continuity.file_transfer",
             "qos.continuity.realtime_sessions",
             "qos.continuity.typed_gamepad",
+            "qos.continuity.app_continuations",
         ] {
             assert_eq!(classify(key), Some(ContinuityClass::DeviceLocal), "{key}");
         }
