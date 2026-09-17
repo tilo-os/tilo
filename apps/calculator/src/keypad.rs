@@ -319,7 +319,7 @@ impl CalcScreen {
         model: &CalcModel,
         area: Rect,
     ) {
-        draw::set_text_scale(theme.text_scale);
+        draw::set_text_scale(draw::paint_scale(tr, theme));
         // Advance the drawer's eased reveal once per frame (draw path only) so
         // the docked column / overlay flap slides instead of snapping.
         self.drawer.tick(theme.reduce_motion);

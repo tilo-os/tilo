@@ -21,8 +21,31 @@ pub fn set_text_scale(scale: f32) {
     TEXT_SCALE.with(|current| current.set(scale.clamp(0.5, 4.0)));
 }
 
+/// The multiplier this module must apply itself: the theme's accessibility
+/// text scale minus whatever the shared renderer already applies to every
+/// size-based `measure`/`draw_text` call. On the live desktop the renderer
+/// carries the full scale, so this is 1.0; a headless renderer left at 1×
+/// makes it the theme's scale. Either way a 14 px label paints at 28 px at
+/// 200 % — never 56 px.
+pub fn paint_scale(tr: &TextRenderer, theme: &ui::theme::Theme) -> f32 {
+    let renderer = tr.text_scale();
+    if renderer.is_finite() && renderer > f32::EPSILON {
+        theme.text_scale / renderer
+    } else {
+        theme.text_scale
+    }
+}
+
 fn scaled_size(size: f32) -> f32 {
     TEXT_SCALE.with(|scale| size * scale.get())
+}
+
+/// Measured line box of one line of `text` at `size` through this module's
+/// paint scale and the renderer's own — the height `text_in` centres on and
+/// stacked labels step by.
+pub fn line_box(tr: &mut TextRenderer, size: f32) -> f64 {
+    let (_, h) = tr.measure("0", scaled_size(size), None);
+    f64::from(h)
 }
 
 /// Horizontal text alignment for [`text_in`].
@@ -82,8 +105,10 @@ pub fn text_in(
         return;
     }
     let size = scaled_size(size);
-    let (w, _h) = tr.measure_weighted(text, size, None, weight);
-    let line_h = f64::from(size) * 1.25;
+    // Centre on the measured line box, not `size × 1.25`: the renderer may
+    // still apply its own accessibility scale on top of `size`.
+    let (w, h) = tr.measure_weighted(text, size, None, weight);
+    let line_h = f64::from(h);
     let x = match align {
         Align::Left => rect.x0,
         Align::Center => rect.center().x - f64::from(w) / 2.0,
