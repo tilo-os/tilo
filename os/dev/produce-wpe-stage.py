@@ -79,9 +79,11 @@ def compiler_diagnostics(path):
     keep = []
     timings = []
     # Build logs may be large. Stream and retain only a bounded diagnostic tail.
-    with path.open('r', errors='replace') as stream:
-        for line in stream:
-            text = line.rstrip()[:4096]
+    spec = importlib.util.spec_from_file_location('wpe_diagnostics', REPO / 'os/dev/prepare-wpe-stage.py')
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    with path.open('rb') as stream:
+        for text in helper.bounded_lines(stream):
             timing = re.search(r'TILO_BUILD_TIMING phase=wpe elapsed_seconds=([0-9]+) exit_code=([0-9]+)', text)
             if timing:
                 timings.append({'phase': 'wpe', 'elapsed_seconds': int(timing[1]), 'exit_code': int(timing[2])})
@@ -90,6 +92,7 @@ def compiler_diagnostics(path):
                     or re.search(r'meson\.build:[0-9]+:[0-9]+: ERROR:', text)
                     or re.search(r'(?:^|/)ld(?:\.lld|\.bfd)?:.*(?:undefined reference|cannot find)', text)
                     or re.search(r'\.(?:c|cc|cpp|cxx):.*undefined reference', text)
+                    or re.search(r'^(?:/[^\s]+/)?(?:gcc|g\+\+|cc|c\+\+): fatal error:', text)
                     or text.startswith(('ninja: error:', 'ninja: build stopped:', 'FAILED: wpewebkit compile',
                                         'TILO_WPE_COMPILER_DIAGNOSTIC ', 'collect2: error: ld returned'))):
                 keep.append(text)
@@ -202,6 +205,7 @@ def main():
                        'REGISTRY_AUTH_FILE': str(auth)}
         with tempfile.TemporaryDirectory(prefix='tilo-wpe-producer-', dir='/work') as temporary:
             private = Path(temporary)
+            environment['TMPDIR'] = str(private)
             deadline = started + DEADLINE_SECONDS
             phase('assets', ['bash', 'os/dev/cache-github-assets.sh', *archives], environment,
                   private, deadline, measurements)
