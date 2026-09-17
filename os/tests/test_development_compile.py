@@ -100,7 +100,8 @@ class CompileBoundaries(unittest.TestCase):
             self.assertEqual(selected['KERNEL_RPMS_REF'], kernel)
             self.assertEqual(selected['RPMS_REF'], rpms)
         driver.validate_inputs(WPE, '7', REVISION, 'refs/heads/codex/test',
-                               architecture='aarch64', kernel_candidate=kernel)
+                               architecture='aarch64', kernel_candidate=kernel,
+                               fex_payload_candidate=WPE, windows_guest_candidate=WPE)
         for bad in ('latest', kernel.replace('@sha256:', ':sha256-'), kernel + ';false'):
             with self.assertRaises(ValueError):
                 driver.validate_inputs(WPE, '7', REVISION, 'refs/heads/codex/test',
@@ -112,6 +113,38 @@ class CompileBoundaries(unittest.TestCase):
         self.assertEqual(env['RPMS_REF'], rpms)
         self.assertEqual(env['TILO_HARDWARE_PROFILE'], 'generic')
         self.assertEqual(driver.LOADER_NAMES['aarch64'], 'systemd-bootaa64.efi')
+
+    def test_arm_full_build_requires_both_explicit_compatibility_input_references(self):
+        payload = 'code.podesta.ai/qos/development-payload@sha256:' + '1' * 64
+        guest = 'code.podesta.ai/qos/development-guest@sha256:' + '2' * 64
+        inputs = dict(wpe=WPE, generation='7', revision=REVISION, branch='refs/heads/codex/test',
+                      architecture='aarch64', kernel_candidate=WPE,
+                      fex_payload_candidate=payload, windows_guest_candidate=guest)
+        driver.validate_inputs(**inputs)
+        for field in ('fex_payload_candidate', 'windows_guest_candidate'):
+            for invalid in ('', 'code.podesta.ai/qos/example:latest',
+                            'foreign.example/qos/example@sha256:' + '1' * 64,
+                            'code.podesta.ai/other/example@sha256:' + '1' * 64,
+                            payload + ';false'):
+                with self.subTest(field=field, invalid=invalid), self.assertRaises(ValueError):
+                    driver.validate_inputs(**(inputs | {field: invalid}))
+        adopted = inputs | dict(wpe='', wpe_adoption_receipt='/work/adoption.json',
+                                wpe_adoption_sha256='d' * 64)
+        driver.validate_inputs(**adopted)
+        with patch.dict(os.environ, {'FEX_PAYLOAD_REF': 'untrusted:latest',
+                                      'WINDOWS_GUEST_REF': 'untrusted:latest'}):
+            default = driver.build_environment(WPE, '7', REVISION, 'c' * 64, '/signer', CACHE)
+            self.assertNotIn('FEX_PAYLOAD_REF', default)
+            self.assertNotIn('WINDOWS_GUEST_REF', default)
+            env = driver.build_environment('', '7', REVISION, 'c' * 64, '/signer', CACHE,
+                'aarch64', adoption_sha256='d' * 64, fex_payload_candidate=payload,
+                windows_guest_candidate=guest)
+        self.assertEqual(env['FEX_PAYLOAD_REF'], payload)
+        self.assertEqual(env['WINDOWS_GUEST_REF'], guest)
+        self.assertEqual(env['TILO_WPE_ADOPTION_SHA256'], 'd' * 64)
+        driver.validate_inputs(WPE, '7', REVISION, 'refs/heads/codex/test')
+        driver.validate_inputs('', '', REVISION, 'refs/heads/codex/test',
+                               mode='cache-only', architecture='aarch64')
 
     def test_native_config_checks_reject_wrong_architecture_and_os(self):
         for architecture, config, accepted in (
