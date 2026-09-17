@@ -55,6 +55,7 @@ pub mod curve;
 pub mod doc;
 pub mod export;
 pub mod gpu;
+pub(crate) mod layout;
 pub mod media;
 pub mod model;
 pub mod param;
