@@ -8,5 +8,6 @@
   "version": "11.0",
   "release": "3.fc44",
   "build_dist": ".fc44.tilo_traditional1",
-  "build_release": "3.fc44.tilo_traditional1"
+  "build_release": "3.fc44.tilo_traditional1",
+  "build_spec_sha256": "9285cf70e217bf57d8da3fdc18f3ec2f4e29820b25d2c540b2f473cad5b46b7f"
 }

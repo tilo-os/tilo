@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Behavioral tests for source identity and paired Wine loader contracts."""
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -21,6 +22,24 @@ def layout(arch):
 
 
 class ContractTests(unittest.TestCase):
+    def test_spec_correction_requires_both_exact_hashes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            original, derived = [Path(temporary) / name for name in ('original', 'derived')]
+            data = b'%files twain\n' + C.TWAIN_FILES + b'twaindsm.dll\nsane.ds\nsane.so\n'
+            original.write_bytes(data)
+            fixed = data.replace(C.TWAIN_FILES, C.TWAIN_FILES_FIXED)
+            pin = {'spec_sha256': C.sha(original),
+                   'build_spec_sha256': hashlib.sha256(fixed).hexdigest()}
+            C.prepare_spec(original, derived, pin)
+            self.assertEqual(derived.read_bytes(), fixed)
+            derived.unlink()
+            with self.assertRaisesRegex(ValueError, 'derived Wine spec'):
+                C.prepare_spec(original, derived, dict(pin, build_spec_sha256='0' * 64))
+            self.assertFalse(derived.exists())
+            original.write_bytes(data + b'unexpected change')
+            with self.assertRaisesRegex(ValueError, 'input identity'):
+                C.prepare_spec(original, derived, pin)
+
     def test_dist_macro_produces_distinct_release_and_tracks_epoch(self):
         pin = json.loads((Path(__file__).resolve().parents[1] / 'dev/wine-source.json').read_text())
         identity = C.build_identity(pin)
@@ -122,6 +141,21 @@ class MockContractTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(value) if isinstance(value, dict) else value)
         self.write = write
+        upstream = b'%files twain\n' + C.TWAIN_FILES + b'twaindsm.dll\n'
+        derived = upstream.replace(C.TWAIN_FILES, C.TWAIN_FILES_FIXED)
+        self.pin['spec_sha256'] = hashlib.sha256(upstream).hexdigest()
+        self.pin['build_spec_sha256'] = hashlib.sha256(derived).hexdigest()
+        write(self.bundle, 'build-source/upstream.spec', upstream.decode())
+        write(self.bundle, 'build-source/wine.spec', derived.decode())
+        srpm_name = C.build_identity(self.pin)['source_rpm']
+        write(self.bundle, 'build-source/' + srpm_name, 'derived source')
+        write(self.bundle, 'build-source/derivation.json', {
+            'schema': 1, 'correction': 'wine11-twain-32-i386-file-list',
+            'upstream_srpm_sha256': self.pin['sha256'],
+            'upstream_spec_sha256': self.pin['spec_sha256'],
+            'build_spec_sha256': self.pin['build_spec_sha256'],
+            'source_rpm': srpm_name,
+            'source_rpm_sha256': C.sha(self.bundle / 'build-source' / srpm_name)})
         write(self.bundle, 'source/' + self.pin['filename'], 'source')
         write(self.bundle, 'source/fedora-44.asc', 'key')
         write(self.bundle, 'source/download.log', 'source acquisition evidence')
@@ -158,6 +192,7 @@ class MockContractTests(unittest.TestCase):
             return '\t'.join(['wine-core', self.pin['version'], self.pin['build_release'],
                               'x86_64', C.build_identity(self.pin)['source_rpm'], 'LGPL'])
         for mocked in (patch.object(C, 'source', return_value='signature verified'),
+                       patch.object(C, 'verify_srpm_spec'),
                        patch.object(C, 'run', side_effect=query),
                        patch.object(C, 'rpm_loader_identity', return_value={'elf_class': 2, 'elf_machine': 62})):
             mocked.start()
@@ -165,6 +200,25 @@ class MockContractTests(unittest.TestCase):
 
     def import_output(self):
         C.import_mock('x86_64', self.pin, self.raw, self.bundle, self.out, self.ref)
+
+    def test_prepared_source_rejects_changed_spec_and_source_bytes(self):
+        prepared = self.bundle / 'build-source'
+        C.verify_prepared_source(prepared, self.pin)
+        for name in ('upstream.spec', 'wine.spec', C.build_identity(self.pin)['source_rpm']):
+            path = prepared / name
+            original = path.read_bytes()
+            path.write_bytes(original + b'changed')
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'input identity'):
+                C.verify_prepared_source(prepared, self.pin)
+            path.write_bytes(original)
+
+    def test_prepared_source_rejects_false_upstream_binding(self):
+        path = self.bundle / 'build-source/derivation.json'
+        record = json.loads(path.read_text())
+        record['upstream_srpm_sha256'] = '0' * 64
+        path.write_text(json.dumps(record))
+        with self.assertRaisesRegex(ValueError, 'derivation identity'):
+            C.verify_prepared_source(path.parent, self.pin)
 
     def test_import_preserves_logs_and_sources_without_fake_buildroot(self):
         self.import_output()
