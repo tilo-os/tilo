@@ -1583,7 +1583,7 @@ impl OnboardingView {
                 .push(actions(vec![Box::new(backup_button)])),
         ));
 
-        let page = Column::new()
+        let mut page = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(if compact {

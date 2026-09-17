@@ -2602,6 +2602,34 @@ impl ShellOverlayHost {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_fixture_content(content: Box<dyn Widget>) -> Self {
+        let mut host = Self::new(content);
+        let mut search_registry = crate::shell::search::SearchRegistry::new();
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::NotesProvider::new(),
+        ));
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::EditorProvider::new(),
+        ));
+        let records = crate::shell::search::providers::RecordsProvider::new();
+        host.room_records = records.index();
+        search_registry.register(std::rc::Rc::new(records));
+        host.search_registry = search_registry;
+        host.shortcut_config = settings_store::hardware::ShortcutConfig::default();
+        host.qs_root = QuickSettingsRoot::with_config(
+            settings_store::hardware::QuickSettingsConfig::default(),
+        );
+        host.qs_refresh = crate::shell::qs_refresh::QsRefresh::without_os_reads();
+        host.qs_actions = Box::new(crate::shell::qs_actions::UnavailableQsActions);
+        host.room_activity =
+            crate::shell::room_activity::RoomActivityPane::with_local_user("shell-fixture".into());
+        host.projection_overlay = ProjectionOverlay::from_controller(
+            crate::shell::projection::ProjectionController::unavailable(),
+        );
+        host
+    }
+
     /// Gate this host behind the shell-owned identity ceremony.
     ///
     /// This lives on the compositor root rather than in a pre-session winit
@@ -6987,6 +7015,14 @@ impl ShellOverlayHost {
     /// the palette scene without a synthetic Ctrl+K.
     pub fn set_palette_visible(&mut self, v: bool) {
         self.palette_visible = v;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_provider_ids(&self) -> Vec<&str> {
+        self.search_registry
+            .providers_iter()
+            .map(crate::shell::search::SearchProvider::id)
+            .collect()
     }
 
     /// The room record index the records provider reads and writes.
