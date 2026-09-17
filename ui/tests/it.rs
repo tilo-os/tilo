@@ -51,6 +51,8 @@ mod dnd_test;
 mod f1_spacing_token_audit;
 #[path = "f2_control_row_alignment.rs"]
 mod f2_control_row_alignment;
+#[path = "f3_composition_fixtures.rs"]
+mod f3_composition_fixtures;
 #[path = "file_picker_render_test.rs"]
 mod file_picker_render_test;
 #[path = "filled_control_labels_are_readable.rs"]

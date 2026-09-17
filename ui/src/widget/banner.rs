@@ -27,6 +27,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::data_table::renderer_type_size;
 
 const PAD_X: f64 = 14.0;
 const PAD_Y: f64 = 12.0;
@@ -90,13 +91,14 @@ fn paint_banner(
     icon.draw_with_stroke(scene, transform, icon_rect, accent, 1.6);
 
     let text_x = icon_rect.x1 + GAP;
-    let title_size = theme.tokens.typography.scale.base;
-    let msg_size = theme.tokens.typography.scale.sm;
-    let total_text_h = if message.is_some() {
-        f64::from(title_size) + 4.0 + f64::from(msg_size)
-    } else {
-        f64::from(title_size)
-    };
+    let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
+    let msg_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+    let gap = f64::from(theme.tokens.spacing.s1);
+    // The title/message block is measured as drawn and centred on the banner,
+    // so it shares the icon's and dismiss glyph's centre line.
+    let (_, title_h) = text_renderer.measure(title, title_size, None);
+    let msg_h = message.map(|msg| f64::from(text_renderer.measure(msg, msg_size, None).1));
+    let total_text_h = f64::from(title_h) + msg_h.map_or(0.0, |h| gap + h);
     let mut ty = rect.center().y - total_text_h / 2.0;
     #[allow(
         clippy::arithmetic_side_effects,
@@ -112,7 +114,7 @@ fn paint_banner(
         title_transform,
         None,
     );
-    ty += f64::from(title_size) + 4.0;
+    ty += f64::from(title_h) + gap;
     if let Some(msg) = message {
         #[allow(
             clippy::arithmetic_side_effects,
@@ -299,7 +301,7 @@ impl Banner {
         let title_h = f64::from(theme.tokens.typography.scale.base);
         let mut h = title_h;
         if self.message.is_some() {
-            h += 4.0 + f64::from(theme.tokens.typography.scale.sm);
+            h += f64::from(theme.tokens.spacing.s1) + f64::from(theme.tokens.typography.scale.sm);
         }
         (h + PAD_Y * 2.0).max(44.0)
     }

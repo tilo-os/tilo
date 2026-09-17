@@ -30,6 +30,7 @@ use crate::theme::Theme;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::data_table::renderer_type_size;
 
 const PAD: f64 = 8.0; // card inner padding
 const ROW_INSET: f64 = 8.0; // rows inset from the card edge
@@ -328,9 +329,9 @@ impl SearchResultsView {
             text_x += ICON_COL;
         }
 
-        let has_sub = result.subtitle.is_some();
-        let title_size = theme.tokens.typography.scale.base;
-        let sub_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        let tokens = &theme.tokens;
+        let title_size = renderer_type_size(tr, tokens.typography.scale.base);
+        let sub_size = renderer_type_size(tr, tokens.typography.scale.sm);
         // Clamped to >= 0.0 above; a row's text width is a small on-screen
         // pixel span, well inside `f32`'s exact-integer range.
         #[allow(
@@ -339,11 +340,18 @@ impl SearchResultsView {
         )]
         let text_w = (row.rect.x1 - text_x - ROW_TEXT_X).max(0.0) as f32;
 
-        let title_y = if has_sub {
-            row.rect.y0 + 8.0
-        } else {
-            row.rect.y0 + (row.rect.height() - f64::from(title_size)) / 2.0
-        };
+        // Title and subtitle are measured with the width they are drawn at and
+        // centred as one block, so the icon (centred on the row) sits on the
+        // block's centre line whether or not a subtitle is present.
+        let (_, title_h) =
+            tr.measure_weighted(&result.title, title_size, Some(text_w), TextWeight::Medium);
+        let gap = f64::from(tokens.spacing.s1);
+        let sub_h = result
+            .subtitle
+            .as_deref()
+            .map(|sub| f64::from(tr.measure(sub, sub_size, Some(text_w)).1));
+        let block_h = f64::from(title_h) + sub_h.map_or(0.0, |h| gap + h);
+        let title_y = row.rect.y0 + ((row.rect.height() - block_h) / 2.0).max(0.0);
         tr.draw_text_weighted(
             scene,
             &result.title,
@@ -360,7 +368,7 @@ impl SearchResultsView {
 
         // Subtitle (dim; on a selected row it stays readable on the fill).
         if let Some(sub) = &result.subtitle {
-            let sy = row.rect.y1 - f64::from(sub_size) - 9.0;
+            let sy = title_y + f64::from(title_h) + gap;
             let sub_col = if selected {
                 selected_ink
             } else {
@@ -384,8 +392,7 @@ impl SearchResultsView {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let _ = scene;
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let (tw, th) = tr.measure(&self.empty_text, size, None);
         let cx = self.rect.center().x - f64::from(tw) / 2.0;
         let cy = self.rect.center().y - f64::from(th) / 2.0;
@@ -478,16 +485,21 @@ impl Widget for SearchResultsView {
 
         let plan = self.plan();
         // Section headers: dim, uppercase, with a trailing count.
-        let header_size = (theme.tokens.typography.scale.xs).max(10.0);
+        let header_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+        let header_inset = f64::from(theme.tokens.spacing.s1);
         for (hrect, kind, count) in &plan.headers {
             let label = kind.to_uppercase();
-            let hy = hrect.y1 - f64::from(header_size) - 6.0;
+            // The caption sits on the band's bottom edge, one small step above
+            // its rows, by its measured line box rather than its font size.
+            let (_, label_h) =
+                text_renderer.measure_weighted(&label, header_size, None, TextWeight::Semibold);
+            let hy = hrect.y1 - f64::from(label_h) - header_inset;
             text_renderer.draw_text_weighted(
                 scene,
                 &label,
                 header_size,
                 theme.tokens.colors.text_dim,
-                compose(transform, Affine::translate((hrect.x0 + 4.0, hy))),
+                compose(transform, Affine::translate((hrect.x0 + header_inset, hy))),
                 None,
                 TextWeight::Semibold,
             );
@@ -500,7 +512,7 @@ impl Widget for SearchResultsView {
                 theme.tokens.colors.text_dim,
                 compose(
                     transform,
-                    Affine::translate((hrect.x1 - f64::from(cw) - 4.0, hy)),
+                    Affine::translate((hrect.x1 - f64::from(cw) - header_inset, hy)),
                 ),
                 None,
             );

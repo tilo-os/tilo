@@ -36,10 +36,6 @@ fn usize_to_f64(n: usize) -> f64 {
 pub const DEFAULT_CARD_MIN_WIDTH: f64 = 260.0;
 /// Default fixed row height (logical px) of a [`CardGrid`] cell.
 pub const DEFAULT_CARD_HEIGHT: f64 = 160.0;
-/// Gap (logical px) between a card's title and its body.
-const CARD_TITLE_GAP: f32 = 12.0;
-/// Title text size (logical px) — the group heading.
-const CARD_TITLE_SIZE: f32 = 15.0;
 
 // ---------------------------------------------------------------------------
 // Pure reflow geometry — shared by CardGrid and immediate-mode callers.
@@ -114,10 +110,14 @@ impl Card {
 }
 
 /// The title sits *inside* the surface, above the body, so the group reads
-/// as one cohesive card.
+/// as one cohesive card. It is a `Title`-role heading, so it sits on the theme
+/// type scale and follows the accessibility text scale like the body; the
+/// title/body gap is the Column's default `theme.gap_standard`.
 fn surface(title: Option<String>, action: Option<Element>, body: Element) -> Element {
     let inner: Element = if let Some(title) = title {
-        let mut title_row = Row::new().push(Box::new(Text::new(&title).with_size(CARD_TITLE_SIZE)));
+        let mut title_row = Row::new().push(Box::new(
+            Text::new(&title).with_role(crate::tokens::TextRole::Title),
+        ));
         if let Some(action) = action {
             title_row = title_row.push(Box::new(Spacer::new())).push(action);
         }
@@ -125,7 +125,6 @@ fn surface(title: Option<String>, action: Option<Element>, body: Element) -> Ele
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_gap(CARD_TITLE_GAP)
                 .push(Box::new(title_row))
                 .push(body),
         )
@@ -914,7 +913,39 @@ mod tests {
         let column = surface.children()[0];
         let title = column.children()[0].get_rect();
         let body = column.children()[1].get_rect();
-        assert_eq!(body.y0 - title.y1, f64::from(CARD_TITLE_GAP));
+        assert_eq!(body.y0 - title.y1, f64::from(Theme::dark().gap_standard));
+    }
+
+    #[test]
+    fn titled_card_title_is_a_title_role_heading_that_follows_the_text_scale() {
+        fn first_text(node: &crate::headless::InspectionNode) -> Option<[f64; 4]> {
+            if node.widget == "Text" {
+                return Some(node.rect);
+            }
+            node.children.iter().find_map(first_text)
+        }
+        let title_height = |scale: f32| {
+            let harness = crate::headless::FrameHarness::new_with_theme(
+                crate::State::new(),
+                Box::new(Card::titled("Group", Box::new(Text::new("body")))),
+                (400, 200),
+                Theme::dark().with_text_scale(scale),
+            );
+            first_text(&harness.inspection().root).expect("card title text")[3]
+        };
+        let theme = Theme::dark();
+        let typography = &theme.tokens.typography;
+        let expected = f64::from(typography.scale.lg * typography.line_height_tight);
+        let base = title_height(1.0);
+        assert!(
+            (base - expected).abs() < 1.0,
+            "title line box {base} must come from the Title role ({expected})"
+        );
+        let large = title_height(2.0);
+        assert!(
+            (large - base * 2.0).abs() < 1.5,
+            "title {base} -> {large} must follow the theme text scale"
+        );
     }
 
     fn lay_out_card_mut(c: &mut Card) -> Rect {

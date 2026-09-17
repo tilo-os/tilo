@@ -28,6 +28,7 @@ use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
 };
+use crate::widget::data_table::{centered_text_top, renderer_type_size};
 use crate::widget::{Element, TaffyTreeExt, Widget};
 
 pub type NodeId = u64;
@@ -2132,7 +2133,10 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     ) {
         self.request_visible_rows();
         let tokens = &theme.tokens;
-        let text_size = tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        // Every label and disclosure glyph is one line of this style, so one
+        // measured line box centres every row identically.
+        let (_, line_h) = text_renderer.measure("\u{25B6}", text_size, None);
         let indent_px = f64::from(tokens.spacing.s4);
         let accent = tokens.colors.accent[ACCENT_PRIMARY_IDX];
         let now = Instant::now();
@@ -2218,7 +2222,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             let depth_px = idx_to_f64(depth) * indent_px;
             let glyph_x = self.rect.x0 + depth_px;
             let label_x = glyph_x + DISCLOSURE_WIDTH;
-            let text_y = y0 + (row_height - f64::from(text_size)) / 2.0;
+            let text_y = centered_text_top(y0, row_height, line_h);
 
             if is_branch {
                 let TreeRowKey::Node(id) = key else {
@@ -2303,7 +2307,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 );
             }
             let glyph_x = self.rect.x0 + idx_to_f64(payload.depth) * indent_px;
-            let text_y = y0 + (visual.geometry.height - f64::from(text_size)) / 2.0;
+            let text_y = centered_text_top(y0, visual.geometry.height, line_h);
             if payload.is_branch {
                 let glyph = if payload.expanded { "▼" } else { "▶" };
                 #[allow(
