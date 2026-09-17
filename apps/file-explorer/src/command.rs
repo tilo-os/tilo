@@ -93,11 +93,11 @@ pub enum FileCommand {
     ExtractCurrentArchive,
     CompressSelection,
     /// Ask the host for the current certified-device picker. The eventual
-    /// target remains an exact shell-issued device identity.
+    /// target remains an exact, short-lived shell-issued capability.
     OpenNearbySend,
     /// Send the single revalidated selection to one exact certified device.
     SendNearby {
-        device: [u8; 32],
+        target: ui::collaboration::NearbyTargetHandle,
     },
     /// Resolve an incoming Nearby Send offer locally; consent is never inferred
     /// from device certification or from merely opening Files.

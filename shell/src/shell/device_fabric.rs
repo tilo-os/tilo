@@ -2466,6 +2466,7 @@ mod tests {
                         room_id: "call".into(),
                         semantic_position: None,
                         media_bits: 1,
+                        controls: crate::shell::realtime_session::RealtimeControlState::default(),
                         expires_unix_ms: 20_000,
                     },
                 },
@@ -2608,6 +2609,7 @@ mod tests {
             room_id: "call-7".into(),
             semantic_position: Some("stage".into()),
             media_bits: 1,
+            controls: crate::shell::realtime_session::RealtimeControlState::default(),
             expires_unix_ms: 20_000,
         };
         let envelope = PersonalFabricActionEnvelope {
