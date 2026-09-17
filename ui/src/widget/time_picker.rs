@@ -526,9 +526,15 @@ impl Widget for TimePicker {
                 1 => TimeCell::Minutes,
                 _ => TimeCell::Seconds,
             };
-            if self.is_focused && self.focused_cell == Some(cell_kind) {
-                scene.stroke(&Stroke::new(2.0), transform, colors.border_focus, None, &bg);
-            }
+            // Each value cell is a Control: a rest edge derived from its
+            // surface (HIG §9.5); the focused cell keeps `border_focus`.
+            let outline = crate::surface::edge_outline(value_rect, radius);
+            let (width, color) = if self.is_focused && self.focused_cell == Some(cell_kind) {
+                (2.0, colors.border_focus)
+            } else {
+                (1.0, crate::surface::edge_on(colors.surfaces.raised))
+            };
+            scene.stroke(&Stroke::new(width), transform, color, None, &outline);
 
             let label = format!("{value:02}");
             let (w, h) = text_renderer.measure(&label, text_size, None);
