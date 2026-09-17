@@ -480,3 +480,39 @@ three-binary RPM's runtime evidence does not apply to it. Login-hint recovery
 for all-Later choices or interrupted completion acknowledgement remains a
 tracked minor finding for final component review. Production catalogs remain
 empty pending genuine authenticated releases and their required runtime proof.
+
+## Four-binary package and native launch regression
+
+The first four-binary Fedora ARM64 package built and passed extracted payload,
+ELF dependency and importer startup checks. Its SHA-256 is
+`b7ca017b3b6527fadf7791a774717464b1b4af6b19f6a073176a50dc5bd33818`.
+After a disposable-VM snapshot, the older qOS test package alone was removed
+with dependency autoremove disabled. The real transaction-core fixture then
+installed the new package and passed verification. Existing desktop/default
+files and signing keys remained unchanged, and `rpm -V qos-session` passed.
+This is a local unsigned fixture, not authenticated release availability.
+
+Installed shell SHA-256 was
+`aac3ff153b54b7ee984832ba4e8357167d5160b9f4ff0444b969e082e7e406fd`;
+installed importer SHA-256 was
+`4c2b71978066e4c99a59f1819414f696c42960f16092c60485ea6bb99ad45aad`.
+A restricted ordinary-user test adapter seeded synthetic Documents as Copy and
+Pictures as Later through the real selection/capture/persistence APIs. Actual
+GDM login rendered identity setup without launching the importer beforehand.
+The UI subsequently advanced during external input-control interruptions, so
+this run does not establish that the test runner completed the identity
+ceremony. The live readiness service reported ready and saved choices remained
+pending, but no importer launched.
+
+That run exposed an integration defect: continuation queued a `.desktop`
+filename, while the host-app registry strips that suffix from its IDs. Commit
+`40466cf53` fixes the request through the existing host-app activation path.
+A real scanner regression reproduced the exact mismatch before the change;
+all three native continuation tests passed afterward, including the readiness
+and launch-once tests. Independent review approved the narrow fix.
+
+The package hash above predates that correction. A rebuilt package and a fresh
+installed-session launch/import/return test remain required. Launch must not
+start copying; destination review may create an AwaitingReview record, and
+publication requires explicit Copy. No successful automatic import is claimed
+from this incomplete native run.
