@@ -98,6 +98,7 @@ pub mod search;
 pub mod session_audio_policy;
 pub mod session_policy;
 pub mod sidebar_wheel_disc;
+pub mod spatial_calibration;
 pub mod split_row;
 pub mod state;
 pub mod status;
