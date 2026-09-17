@@ -2461,7 +2461,7 @@ mod tests {
                 ViewMode::Grid => v.cell_rect(v.columns),
             };
             assert!(
-                first_partial.y0 < viewport.y1 && first_partial.y1 > viewport.y1,
+                (first_partial.y0..first_partial.y1).contains(&viewport.y1),
                 "fixture has a partially visible {mode:?} item: {first_partial:?}"
             );
             assert!(

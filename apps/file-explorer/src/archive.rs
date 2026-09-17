@@ -588,9 +588,9 @@ mod tests {
 
     #[test]
     fn zip_unix_modes_classify_links_before_materialization() {
-        assert!(zip_mode_is_symlink(Some(0o120777)));
-        assert!(!zip_mode_is_symlink(Some(0o100644)));
-        assert!(!zip_mode_is_symlink(Some(0o040755)));
+        assert!(zip_mode_is_symlink(Some(0o120_777)));
+        assert!(!zip_mode_is_symlink(Some(0o100_644)));
+        assert!(!zip_mode_is_symlink(Some(0o040_755)));
         assert!(!zip_mode_is_symlink(None));
     }
 }
