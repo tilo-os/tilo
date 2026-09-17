@@ -234,8 +234,9 @@ impl AccountList {
         let ring_center_x = actions_x0 - 16.0 - m.ring_r;
         let identity_h = m.issuer_h + m.gap + m.label_h;
         let (avatar_cy, code_cy) = if m.stacked {
+            let band = stacked_identity_band(identity_h, m.avatar_r, m.gap);
             (
-                r.y0 + STACKED_TOP + identity_h / 2.0,
+                r.y0 + STACKED_TOP + band / 2.0,
                 r.y0 + m.code_top + m.code_h / 2.0,
             )
         } else {
@@ -243,8 +244,8 @@ impl AccountList {
         };
         let ring_center = Point::new(ring_center_x, code_cy);
         let code_right = ring_center_x - m.ring_r - 18.0;
-        let avatar_c = Point::new(r.x0 + 18.0 + AVATAR_R, avatar_cy);
-        let text_x = avatar_c.x + AVATAR_R + 16.0;
+        let avatar_c = Point::new(r.x0 + 18.0 + m.avatar_r, avatar_cy);
+        let text_x = avatar_c.x + m.avatar_r + 16.0;
         RowLayout {
             actions_x0,
             actions_x1,
@@ -304,17 +305,20 @@ impl AccountList {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         center: Point,
+        radius: f64,
         account: &Account,
     ) {
         // The account's colour is user-assignable, so it's kept; the disc +
         // centred monogram are painted by the shared toolkit avatar so the
-        // shape/placement match every other app's roster.
+        // shape/placement match every other app's roster. `radius` is the
+        // row's measured `avatar_r`, scaled with the text so the monogram
+        // (0.4× the disc, through the renderer) stays inside the disc.
         let color = account_color(theme, account.color);
         let rect = Rect::new(
-            center.x - AVATAR_R,
-            center.y - AVATAR_R,
-            center.x + AVATAR_R,
-            center.y + AVATAR_R,
+            center.x - radius,
+            center.y - radius,
+            center.x + radius,
+            center.y + radius,
         );
         Avatar::draw_at(
             scene,
@@ -425,7 +429,15 @@ impl AccountList {
         );
 
         // Avatar.
-        Self::draw_avatar(scene, transform, text_renderer, theme, l.avatar_c, &account);
+        Self::draw_avatar(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            l.avatar_c,
+            m.avatar_r,
+            &account,
+        );
 
         // Issuer + label, vertically centred as a block on the avatar. The
         // available text width shrinks with the row so a narrow window
@@ -616,6 +628,15 @@ struct RowLayout {
     text_x: f64,
 }
 
+/// Height of a stacked row's identity band: the issuer + label block, or the
+/// avatar disc less the one-`gap` overhang it is allowed on each side (the
+/// 1× disc is 48 px on a 40 px block, and that reads fine because glyph ink
+/// sits inside its line box). Shared by `RowMetrics::measure` and
+/// `row_layout` so the code line and the avatar centre agree.
+fn stacked_identity_band(identity_h: f64, avatar_r: f64, gap: f64) -> f64 {
+    identity_h.max(2.0 * avatar_r - 2.0 * gap)
+}
+
 /// Row geometry derived from the measured text, refreshed on every paint and
 /// read by hit-testing and the accessibility bounds, so the rows the pointer
 /// targets are the rows that were painted at the current text scale.
@@ -633,6 +654,10 @@ struct RowMetrics {
     /// Radius of the countdown ring; grows with the text scale so its
     /// seconds label stays inside it.
     ring_r: f64,
+    /// Radius of the initials avatar. The shared `Avatar::draw_at` sizes the
+    /// monogram at 0.4× the disc through the renderer, which applies the text
+    /// scale, so the disc follows the same scale to keep the initials inside.
+    avatar_r: f64,
     /// Width of the copy target left of the code.
     copy_zone_w: f64,
     /// Stacked rows only: top of the code line, relative to the row's top.
@@ -656,6 +681,7 @@ impl RowMetrics {
             gap,
             code_h: if stacked { 30.0 } else { 37.5 },
             ring_r: RING_R,
+            avatar_r: AVATAR_R,
             copy_zone_w: COPY_ZONE_W,
             code_top: STACKED_TOP + issuer_h + gap + label_h + gap,
         }
@@ -673,13 +699,15 @@ impl RowMetrics {
                 .1,
         );
         let label_h = f64::from(tr.measure("Ag", LABEL_SIZE, None).1);
-        let ring_r = RING_R * f64::from(theme.text_scale).max(1.0);
+        let text_scale = f64::from(theme.text_scale).max(1.0);
+        let ring_r = RING_R * text_scale;
+        let avatar_r = AVATAR_R * text_scale;
         let (wide_code_w, wide_code_h) =
             tr.measure_styled(CODE_PROBE, CODE_SIZE, None, TextWeight::Bold, false, true);
         let wide_code_w = f64::from(wide_code_w);
         let copy_zone_w = (wide_code_w + 2.0 * f64::from(sp.s6)).max(COPY_ZONE_W);
         let needed = 18.0
-            + 2.0 * AVATAR_R
+            + 2.0 * avatar_r
             + 16.0
             + MIN_IDENTITY_W
             + copy_zone_w
@@ -699,7 +727,12 @@ impl RowMetrics {
                 true,
             );
             let code_h = f64::from(code_h);
-            let code_top = STACKED_TOP + issuer_h + gap + label_h + gap;
+            // The identity band is the text block, or the avatar disc less
+            // the one-`gap` overhang it already has at 1× (a 48 px disc on a
+            // 40 px block), whichever is taller — so at 1× nothing moves and
+            // a scaled disc still never reaches the code line.
+            let identity_band = stacked_identity_band(issuer_h + gap + label_h, avatar_r, gap);
+            let code_top = STACKED_TOP + identity_band + gap;
             let code_cy = code_top + code_h / 2.0;
             let row_h = (code_cy + (code_h / 2.0).max(ring_r) + f64::from(sp.s2))
                 .max(NARROW_ROW_HEIGHT);
@@ -711,6 +744,7 @@ impl RowMetrics {
                 gap,
                 code_h,
                 ring_r,
+                avatar_r,
                 copy_zone_w,
                 code_top,
             }
@@ -718,6 +752,7 @@ impl RowMetrics {
             let identity_h = issuer_h + gap + label_h;
             let row_h = (identity_h + 2.0 * ROW_PAD_V)
                 .max(2.0 * ring_r + 2.0 * f64::from(sp.s3))
+                .max(2.0 * avatar_r + 2.0 * f64::from(sp.s3))
                 .max(ROW_HEIGHT);
             Self {
                 stacked: false,
@@ -727,6 +762,7 @@ impl RowMetrics {
                 gap,
                 code_h: f64::from(wide_code_h),
                 ring_r,
+                avatar_r,
                 copy_zone_w,
                 code_top: 0.0,
             }
@@ -904,6 +940,17 @@ mod tests {
         l.set_viewport(Rect::new(0.0, 0.0, 600.0, 800.0));
         l.set_accounts(demo_accounts());
         l
+    }
+
+    #[test]
+    fn the_stacked_identity_band_is_unchanged_at_one_x_and_grows_with_the_disc() {
+        // 1×: a 48 px disc on a 40.25 px block keeps the block's height (the
+        // disc's one-`gap` overhang per side is the accepted 1× look).
+        assert_eq!(stacked_identity_band(40.25, AVATAR_R, 4.0), 40.25);
+        // 2×: the 96 px disc now decides, so the code line lands under it.
+        assert_eq!(stacked_identity_band(80.5, 2.0 * AVATAR_R, 4.0), 88.0);
+        // The pre-paint rules carry the 1× radius.
+        assert_eq!(RowMetrics::fallback(300.0).avatar_r, AVATAR_R);
     }
 
     #[test]
