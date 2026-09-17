@@ -494,25 +494,15 @@ pub fn pill(
 /// black needs more alpha for the same visible step.
 pub const EDGE_ALPHA_STEPS: &[u8] = &[26, 40, 56, 72, 92];
 
-/// Composite `over` (with its alpha) onto an opaque `ground`.
-fn blend_over(over: Color, ground: Color) -> Color {
-    let a = over.components[3];
-    let o = over.components;
-    let g = ground.components;
-    Color::new([
-        o[0] * a + g[0] * (1.0 - a),
-        o[1] * a + g[1] * (1.0 - a),
-        o[2] * a + g[2] * (1.0 - a),
-        1.0,
-    ])
-}
-
 /// How far `edge` moves `surface` once painted on it, in relative-luminance
-/// units — the measurement HIG §9.5 asks every chrome border to pass.
+/// units — the measurement HIG §9.5 asks every chrome border to pass. Uses
+/// the same compositor as `Colors::hairline_on` / `lift_target` /
+/// `window_edge`, so one rounding model decides "visible" everywhere.
 #[must_use]
 pub fn edge_delta(edge: Color, surface: Color) -> f64 {
     use crate::a11y::relative_luminance;
-    (relative_luminance(blend_over(edge, surface)) - relative_luminance(surface)).abs()
+    let painted = crate::tokens::colors::composite(edge, surface);
+    (relative_luminance(painted) - relative_luminance(surface)).abs()
 }
 
 /// The derived 1 px rest edge of a control, card or row: a hairline

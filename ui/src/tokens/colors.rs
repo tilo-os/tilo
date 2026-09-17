@@ -37,7 +37,7 @@ fn with_a(c: Color, a: u8) -> Color {
 /// Composites `over` onto an opaque `ground`: a token's own RGBA says
 /// nothing about how it reads (`white/20` differs over black vs white), so
 /// every derivation below measures the composite, never the token.
-fn composite(over: Color, ground: Color) -> Color {
+pub(crate) fn composite(over: Color, ground: Color) -> Color {
     let a = f32::from(over.a()) / 255.0;
     #[allow(
         clippy::cast_possible_truncation,

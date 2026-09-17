@@ -33,9 +33,9 @@ pub const HAIRLINE_ALPHA: u8 = 26;
 pub const PANEL_BORDER_ALPHA: u8 = 92;
 
 /// Smallest relative-luminance gap for a panel to read as its own surface
-/// rather than a slightly different patch of the desktop. Matches the
-/// toolkit's hairline threshold.
-const PANEL_MIN_DELTA: f64 = 0.02;
+/// rather than a slightly different patch of the desktop — the toolkit's
+/// hairline threshold, spelled once.
+const PANEL_MIN_DELTA: f64 = crate::tokens::colors::HAIRLINE_MIN_DELTA;
 
 /// Alphas [`panel_ground`] tries, ascending, when the declared overlay
 /// tier is swallowed by a ground the surface sits on — a ladder rather

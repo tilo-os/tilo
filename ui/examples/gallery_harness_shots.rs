@@ -8,7 +8,8 @@
 //! Out:  `$GALLERY_HARNESS_OUT` or the first argument (default
 //!       `/tmp/gallery_harness`) — `gallery-dark.png`, `gallery-light.png`,
 //!       `gallery-dark.inspection.json`, `gallery-light.inspection.json`.
-//! Scale: `GALLERY_HARNESS_TEXT_SCALE=2` renders the large-text variant.
+//! Scale: `QOS_SHOTS_TEXT_SCALE=2` renders the large-text variant (the same
+//! switch every other capture honours).
 
 use std::path::PathBuf;
 
@@ -33,11 +34,8 @@ pub fn run(args: &[String]) {
         eprintln!("gallery_harness: cannot create {}: {error}", out.display());
         std::process::exit(2);
     }
-    let text_scale = std::env::var("GALLERY_HARNESS_TEXT_SCALE")
-        .ok()
-        .and_then(|value| value.trim().parse::<f32>().ok())
-        .filter(|scale| scale.is_finite() && *scale > 0.0)
-        .unwrap_or(1.0);
+    let environment_scale = std::env::var("QOS_SHOTS_TEXT_SCALE").ok();
+    let text_scale = ui::launch::shot_text_scale(None, environment_scale.as_deref());
 
     for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         let theme = theme.with_text_scale(text_scale).with_reduce_motion(true);
