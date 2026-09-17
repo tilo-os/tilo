@@ -4,7 +4,8 @@ COPY cosign /usr/local/bin/cosign
 COPY dev/ /fixture/os/dev/
 COPY development_source_registry.py /fixture/os/tests/development_source_registry.py
 COPY development_signer.py /fixture/os/tests/development_signer.py
+COPY test_development_signer.py /fixture/os/tests/test_development_signer.py
 # A private VFS store avoids overlay-on-overlay assumptions in disposable CI.
 RUN printf '[storage]\ndriver="vfs"\ngraphroot="/var/lib/containers/storage"\nrunroot="/run/containers/storage"\n' > /etc/containers/storage.conf && \
     printf '[engine]\ncgroup_manager="cgroupfs"\nevents_logger="file"\n' > /etc/containers/containers.conf
-ENTRYPOINT ["/bin/bash", "-euc", "python3 /fixture/os/tests/development_signer.py; python3 /fixture/os/tests/development_source_registry.py"]
+ENTRYPOINT ["/bin/bash", "-euc", "python3 /fixture/os/tests/test_development_signer.py; python3 /fixture/os/tests/development_signer.py; python3 /fixture/os/tests/development_source_registry.py"]

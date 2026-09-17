@@ -222,7 +222,10 @@ Set `TILO_PCR_PREDICTION_SIGNER` to the installed `signer` path and independentl
 record its returned `efi_certificate_sha256` as
 `TILO_EFI_SIGNING_CERT_SHA256`. The provider accepts the three existing signer
 operations, rejects redirected inputs and unsafe private-key permissions, and
-creates outputs exclusively. The existing image-sealing caller must still
+creates outputs exclusively in a root-owned, owner-only directory (such as the
+existing caller's private `mktemp` work directory). Output traversal rejects
+links; failed operations remove only their own output inode through the held
+directory descriptor. The existing image-sealing caller must still
 verify the signatures, certificate fingerprint and unchanged Authenticode
 payload. No operation enrolls firmware keys or makes the development certificate
 trusted by physical hardware.
