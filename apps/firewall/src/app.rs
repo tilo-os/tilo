@@ -2513,8 +2513,10 @@ impl FirewallApp {
             card.y0 + 14.0,
             260.0,
         );
-        let title_w = paint::text_width(tr, self.selected_zone.name(), 22.0);
+        let (title_w, title_h) = tr.measure(self.selected_zone.name(), 22.0, None);
         if self.selected_zone == self.config.default_zone {
+            // The chip rides the title's measured centre line rather than a
+            // nominal offset, so it stays beside the name at every text scale.
             let _ = paint::chip(
                 tr,
                 scene,
@@ -2523,8 +2525,8 @@ impl FirewallApp {
                 9.0,
                 Color::WHITE,
                 theme.accent_primary,
-                inset_x + title_w + 12.0,
-                card.y0 + 26.0,
+                inset_x + f64::from(title_w) + 12.0,
+                card.y0 + 14.0 + f64::from(title_h) / 2.0,
                 7.0,
                 16.0,
                 8.0,
@@ -2667,13 +2669,17 @@ impl FirewallApp {
         x: f64,
         y_center: f64,
     ) -> f64 {
-        let cap_w = paint::text_width(tr, caption, 9.0);
-        let val_w = paint::text_width(tr, value, 13.0);
-        let inner = cap_w.max(val_w);
+        let (cap_w, cap_h) = tr.measure(caption, 9.0, None);
+        let (val_w, val_h) = tr.measure(value, 13.0, None);
+        let inner = f64::from(cap_w.max(val_w));
         let w = inner + 20.0;
         let h = 40.0;
         let rect = Rect::new(x, y_center - h / 2.0, x + w, y_center + h / 2.0);
         paint::fill_rrect(scene, t, rect, 8.0, theme.tokens.colors.neutral[1]);
+        // Centre the caption/value stack in the chip so the top and bottom
+        // paddings match instead of the value crowding the lower edge.
+        let stack_h = f64::from(cap_h) + f64::from(val_h);
+        let cap_top = rect.y0 + (h - stack_h) / 2.0;
         paint::label(
             tr,
             scene,
@@ -2682,7 +2688,7 @@ impl FirewallApp {
             9.0,
             theme.text_dim,
             x + 10.0,
-            rect.y0 + 6.0,
+            cap_top,
             inner + 2.0,
         );
         paint::label(
@@ -2693,7 +2699,7 @@ impl FirewallApp {
             13.0,
             value_color,
             x + 10.0,
-            rect.y0 + 19.0,
+            cap_top + f64::from(cap_h),
             inner + 2.0,
         );
         w
@@ -2719,24 +2725,24 @@ impl FirewallApp {
                 return;
             }
         }
-        paint::label_v(
-            tr,
-            scene,
-            t,
-            "Rules",
-            15.0,
-            theme.text_primary,
-            if l.content_seg.is_empty() {
-                l.summary.x0
-            } else {
-                l.content_seg
-                    .last()
-                    .map_or(l.summary.x0, |rect| rect.x1 + 10.0)
-            },
-            y0,
-            first_seg.height(),
-            120.0,
-        );
+        // The section caption is only painted when nothing else names the
+        // section: with the Rules/Services route visible its selected segment
+        // already reads "Rules", and a second copy collided with the filter
+        // control at phone widths.
+        if l.content_seg.is_empty() {
+            paint::label_v(
+                tr,
+                scene,
+                t,
+                "Rules",
+                15.0,
+                theme.text_primary,
+                l.summary.x0,
+                y0,
+                first_seg.height(),
+                120.0,
+            );
+        }
         let labels = [
             Filter::All.label(),
             Filter::Allow.label(),
@@ -2818,7 +2824,7 @@ impl FirewallApp {
                 "No rules match this filter.",
                 13.0,
                 theme.text_dim,
-                cols.0,
+                cols.text,
                 table.y0 + 44.0,
                 300.0,
             );
@@ -2845,20 +2851,23 @@ impl FirewallApp {
         theme: &Theme,
         l: &Layout,
         table: Rect,
-        cols: (f64, f64, f64, f64, f64),
+        cols: RuleColumns,
     ) {
-        let (cx_target, cx_proto, cx_action, cx_source, cx_ctrl) = cols;
-        let hy = table.y0 + 8.0;
+        // Captions sit in the 30px band above the separator, centred on the
+        // same measured line the rows use, and start at the row text column
+        // (not at the status dot) so they line up with what they label.
+        let hy0 = table.y0;
+        let hh = 30.0;
         let hc = theme.text_dim;
         if l.narrow {
-            paint::label(tr, scene, t, "RULE", 10.0, hc, cx_target, hy, 200.0);
-            paint::label(tr, scene, t, "ON", 10.0, hc, cx_ctrl, hy, 60.0);
+            paint::label_v(tr, scene, t, "RULE", 10.0, hc, cols.text, hy0, hh, 200.0);
+            paint::label_v(tr, scene, t, "ON", 10.0, hc, cols.ctrl, hy0, hh, 60.0);
         } else {
-            paint::label(tr, scene, t, "TARGET", 10.0, hc, cx_target, hy, 200.0);
-            paint::label(tr, scene, t, "PROTO", 10.0, hc, cx_proto, hy, 80.0);
-            paint::label(tr, scene, t, "ACTION", 10.0, hc, cx_action, hy, 80.0);
-            paint::label(tr, scene, t, "SOURCE", 10.0, hc, cx_source, hy, 160.0);
-            paint::label(tr, scene, t, "ON", 10.0, hc, cx_ctrl, hy, 60.0);
+            paint::label_v(tr, scene, t, "TARGET", 10.0, hc, cols.text, hy0, hh, 200.0);
+            paint::label_v(tr, scene, t, "PROTO", 10.0, hc, cols.proto, hy0, hh, 80.0);
+            paint::label_v(tr, scene, t, "ACTION", 10.0, hc, cols.action, hy0, hh, 80.0);
+            paint::label_v(tr, scene, t, "SOURCE", 10.0, hc, cols.source, hy0, hh, 160.0);
+            paint::label_v(tr, scene, t, "ON", 10.0, hc, cols.ctrl, hy0, hh, 60.0);
         }
         paint::hline(
             scene,
@@ -2886,7 +2895,7 @@ impl FirewallApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         l: &Layout,
-        cols: (f64, f64, f64, f64, f64),
+        cols: RuleColumns,
         row: &RuleRow,
         rule: &Rule,
     ) {
@@ -2899,7 +2908,7 @@ impl FirewallApp {
         let src = rule.source_label();
 
         if l.narrow {
-            Self::draw_table_row_narrow(scene, t, tr, cols.0, row, rule, &style, src);
+            Self::draw_table_row_narrow(scene, t, tr, cols, row, rule, &style, src);
         } else {
             Self::draw_table_row_wide(scene, t, tr, cols, row, rule, &style, src);
         }
@@ -2926,7 +2935,7 @@ impl FirewallApp {
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
-        cx_target: f64,
+        cols: RuleColumns,
         row: &RuleRow,
         rule: &Rule,
         style: &RowStyle,
@@ -2936,7 +2945,7 @@ impl FirewallApp {
         paint::dot(
             scene,
             t,
-            Point::new(cx_target + 4.0, dot_y),
+            Point::new(cols.dot, dot_y),
             3.0,
             if style.dim {
                 alpha(style.dot_color, 120)
@@ -2944,7 +2953,7 @@ impl FirewallApp {
                 style.dot_color
             },
         );
-        let label_max = row.toggle.x0 - (cx_target + 14.0) - 60.0;
+        let label_max = row.toggle.x0 - cols.text - 60.0;
         paint::label(
             tr,
             scene,
@@ -2952,7 +2961,7 @@ impl FirewallApp {
             &rule.matcher.label(),
             14.0,
             style.primary,
-            cx_target + 14.0,
+            cols.text,
             row.rect.y0 + 10.0,
             label_max.max(40.0),
         );
@@ -2984,7 +2993,7 @@ impl FirewallApp {
             &sub,
             12.0,
             style.secondary,
-            cx_target + 14.0,
+            cols.text,
             row.rect.y0 + 32.0,
             row.rect.width() - 30.0,
         );
@@ -3001,18 +3010,25 @@ impl FirewallApp {
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
-        cols: (f64, f64, f64, f64, f64),
+        cols: RuleColumns,
         row: &RuleRow,
         rule: &Rule,
         style: &RowStyle,
         src: &str,
     ) {
-        let (cx_target, cx_proto, cx_action, cx_source, cx_ctrl) = cols;
+        let RuleColumns {
+            dot: cx_dot,
+            text: cx_text,
+            proto: cx_proto,
+            action: cx_action,
+            source: cx_source,
+            ctrl: cx_ctrl,
+        } = cols;
         let cy = f64::midpoint(row.rect.y0, row.rect.y1);
         paint::dot(
             scene,
             t,
-            Point::new(cx_target + 4.0, cy),
+            Point::new(cx_dot, cy),
             3.0,
             if style.dim {
                 alpha(style.dot_color, 120)
@@ -3027,10 +3043,10 @@ impl FirewallApp {
             &rule.matcher.label(),
             14.0,
             style.primary,
-            cx_target + 14.0,
+            cx_text,
             row.rect.y0,
             row.rect.height(),
-            cx_proto - cx_target - 18.0,
+            cx_proto - cx_text - 4.0,
         );
         paint::label_v(
             tr,
@@ -3167,7 +3183,11 @@ impl FirewallApp {
             .config
             .zone(self.selected_zone)
             .map_or(0, |z| z.services.len());
-        paint::label(
+        // Caption and count share one centre line inside the header band
+        // above the first row (48px docked, 38px in the compact route; the
+        // same offsets `layout_center` uses for `svc_top`).
+        let header_h = if l.compact_services { 38.0 } else { 48.0 };
+        paint::label_v(
             tr,
             scene,
             t,
@@ -3175,7 +3195,8 @@ impl FirewallApp {
             11.0,
             theme.text_dim,
             panel.x0 + 16.0,
-            panel.y0 + 14.0,
+            panel.y0,
+            header_h,
             120.0,
         );
         paint::label_right_v(
@@ -3186,8 +3207,8 @@ impl FirewallApp {
             11.0,
             theme.accent_primary,
             panel.x1 - 16.0,
-            panel.y0 - 2.0,
-            32.0,
+            panel.y0,
+            header_h,
         );
 
         let Some(z) = self.config.zone(self.selected_zone) else {
@@ -3459,17 +3480,38 @@ impl FirewallApp {
     }
 }
 
+/// Column x positions of the rules table. The header captions and every row
+/// read the same struct, so a caption always starts over the text it
+/// describes: `dot` is the status-marker centre and `text` is where the
+/// target label begins after it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RuleColumns {
+    dot: f64,
+    text: f64,
+    proto: f64,
+    action: f64,
+    source: f64,
+    ctrl: f64,
+}
+
+/// Distance from the table's inner edge to the target text: room for the
+/// 3px status dot at `+4` plus a gap. Deliberately off the spacing scale so
+/// the dot reads as a bullet, not a column.
+const RULE_TEXT_INSET: f64 = 14.0;
+
 /// Resolve the rule-table column x positions from the table rect.
-fn rule_columns(table: Rect) -> (f64, f64, f64, f64, f64) {
+fn rule_columns(table: Rect) -> RuleColumns {
     let inner_x0 = table.x0 + 12.0;
     let inner_x1 = table.x1 - 12.0;
     let avail = inner_x1 - inner_x0;
-    let cx_target = inner_x0;
-    let cx_proto = inner_x0 + 0.30 * avail;
-    let cx_action = inner_x0 + 0.42 * avail;
-    let cx_source = inner_x0 + 0.56 * avail;
-    let cx_ctrl = inner_x1 - 92.0;
-    (cx_target, cx_proto, cx_action, cx_source, cx_ctrl)
+    RuleColumns {
+        dot: inner_x0 + 4.0,
+        text: inner_x0 + RULE_TEXT_INSET,
+        proto: inner_x0 + 0.30 * avail,
+        action: inner_x0 + 0.42 * avail,
+        source: inner_x0 + 0.56 * avail,
+        ctrl: inner_x1 - 92.0,
+    }
 }
 
 fn target_color(theme: &Theme, target: Target) -> Color {
@@ -3590,6 +3632,34 @@ mod tests {
     fn relayout_produces_all_nine_zone_rows() {
         let a = app_with_rect();
         assert_eq!(a.layout.zone_rows.len(), 9);
+    }
+
+    /// The header captions and the rows read one `RuleColumns`; this pins the
+    /// two places that can still drift: the `ON` caption over the toggles the
+    /// layout actually built, and the target caption starting at the text
+    /// column rather than under the status dot.
+    #[test]
+    fn table_header_columns_follow_the_built_rows() {
+        for width in [1200.0, 480.0] {
+            let mut app = FirewallApp::new_demo();
+            app.rect = Rect::new(0.0, 0.0, width, 800.0);
+            app.relayout();
+            let l = &app.layout;
+            let cols = rule_columns(l.table);
+            let first = l.rule_rows.first().expect("demo zone has rules");
+            assert!(
+                (cols.ctrl - first.toggle.x0).abs() < 1e-6,
+                "ON caption must start over the row toggles at width {width}"
+            );
+            assert!(
+                cols.text > cols.dot,
+                "target caption sits after the status dot, over the row text"
+            );
+            assert!(
+                first.rect.x0 <= cols.dot && cols.text < cols.proto,
+                "columns stay inside the row at width {width}"
+            );
+        }
     }
 
     #[test]

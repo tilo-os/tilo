@@ -28,6 +28,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -50,6 +51,9 @@ const BAR_H: f64 = 52.0;
 const PAD: f64 = 20.0;
 const RAIL_W: f64 = 256.0;
 const TAB_W: f64 = 132.0;
+/// Smallest usable view tab; the strip shrinks to the band it is given down
+/// to this target width instead of overrunning the primary action.
+const MIN_TAB_W: f64 = 44.0;
 const TAB_H: f64 = 34.0;
 const ROW_H: f64 = 46.0;
 const DETAIL_H: f64 = 70.0;
@@ -745,7 +749,18 @@ impl BackupsApp {
         let narrow = self.rect.width() < NARROW_BREAKPOINT;
 
         let brand_right = self.draw_top_bar_left_cluster(scene, tr, theme, t, bar, cy, narrow);
-        let action_width = if self.is_empty() { 0.0 } else { 122.0 };
+        // The primary action compacts to an icon below the narrow breakpoint
+        // (as the breakpoint contract promises); with the full label the tab
+        // strip's minimum width overran the band and the last tab painted
+        // underneath the button at phone widths.
+        let action_w = if self.is_empty() {
+            0.0
+        } else if narrow {
+            TAB_H
+        } else {
+            114.0
+        };
+        let action_gap = if self.is_empty() { 0.0 } else { 8.0 };
         self.draw_top_bar_tabs(
             scene,
             tr,
@@ -753,29 +768,31 @@ impl BackupsApp {
             t,
             cy,
             brand_right,
-            bar.x1 - PAD - action_width,
+            bar.x1 - PAD - action_w - action_gap,
         );
         if !self.is_empty() {
-            let rect = Rect::new(bar.x1 - PAD - 114.0, cy - 17.0, bar.x1 - PAD, cy + 17.0);
+            let rect = Rect::new(bar.x1 - PAD - action_w, cy - 17.0, bar.x1 - PAD, cy + 17.0);
+            let busy = self.job.is_some() || self.job_status.is_some();
+            let label = if busy { "Backing up…" } else { "Back up now" };
+            let face = if narrow {
+                ButtonFace::new(rect, "")
+                    .icon(Icon::Archive)
+                    .accessible_name(label)
+            } else {
+                ButtonFace::new(rect, label)
+            };
             Button::paint(
                 scene,
                 t,
                 tr,
                 theme,
-                &ButtonFace::new(
-                    rect,
-                    if self.job.is_some() || self.job_status.is_some() {
-                        "Backing up…"
-                    } else {
-                        "Back up now"
-                    },
-                )
-                .primary()
-                .radius(9.0)
-                .disabled(self.job.is_some() || self.job_status.is_some())
-                .hovered(self.hover == Some(Hit::BackupNow)),
+                &face
+                    .primary()
+                    .radius(9.0)
+                    .disabled(busy)
+                    .hovered(self.hover == Some(Hit::BackupNow)),
             );
-            if self.job.is_none() && self.job_status.is_none() {
+            if !busy {
                 self.hits.push((rect, Hit::BackupNow));
             }
         }
@@ -854,7 +871,10 @@ impl BackupsApp {
             &View::ALL
         };
         let n = views.len() as f64;
-        let tab_w = ((band_x1 - band_x0) / n).clamp(58.0, TAB_W);
+        // The band decides the tab width: never wider than `TAB_W`, never
+        // below a usable target, and never a fixed floor that could overrun
+        // the band into the primary action.
+        let tab_w = ((band_x1 - band_x0) / n).clamp(MIN_TAB_W, TAB_W);
         let seg_total = tab_w * n;
         let seg_x0 = (band_x0 + ((band_x1 - band_x0) - seg_total) / 2.0).max(band_x0);
         let seg = Rect::new(
@@ -1135,8 +1155,13 @@ impl BackupsApp {
             main.x0,
             hy,
         );
-        let (title_w, _) = tr.measure("Snapshot timeline", 15.0, None);
-        paint::text(
+        // Measure the title at the weight it is painted with; a regular-weight
+        // measurement under-reads the bold run and the scope crowded it. The
+        // scope and sort note then share the title's measured centre line.
+        let (title_w, title_h) =
+            tr.measure_weighted("Snapshot timeline", 15.0, None, TextWeight::Bold);
+        let title_h = f64::from(title_h);
+        paint::text_vc(
             scene,
             tr,
             t,
@@ -1144,17 +1169,19 @@ impl BackupsApp {
             12.5,
             theme.accent_primary,
             main.x0 + f64::from(title_w) + 14.0,
-            hy + 1.0,
+            hy,
+            title_h,
         );
-        paint::text_right(
+        let (sort_w, sort_h) = tr.measure("newest first", 11.5, None);
+        paint::text(
             scene,
             tr,
             t,
             "newest first",
             11.5,
             c.text_dim,
-            main.x1,
-            hy + 2.0,
+            main.x1 - f64::from(sort_w),
+            hy + (title_h - f64::from(sort_h)) / 2.0,
         );
 
         let list = Rect::new(main.x0, hy + 26.0, main.x1, main.y1);
@@ -1783,37 +1810,6 @@ impl BackupsApp {
         let dest = self.catalog.destination(&s.dest_id);
         let dest_name = dest.map(|found| found.name.clone()).unwrap_or_default();
         let dest_kind = dest.map_or("", |found| found.kind.label());
-        paint::text(
-            scene,
-            tr,
-            t,
-            &format!("Stored on {dest_name}  ·  {dest_kind}"),
-            12.0,
-            c.text_dim,
-            detail_rect.x0 + 16.0,
-            detail_rect.y0 + 12.0,
-        );
-        let enc = if dest.is_some_and(|found| found.encrypted) {
-            "encrypted"
-        } else {
-            "plaintext"
-        };
-        paint::text(
-            scene,
-            tr,
-            t,
-            &format!(
-                "{} files · {} changed · {}",
-                s.files_changed,
-                ui::format::bytes(s.delta_bytes),
-                enc
-            ),
-            11.5,
-            c.text_dim,
-            detail_rect.x0 + 16.0,
-            detail_rect.y0 + 33.0,
-        );
-
         let verify = Rect::new(
             detail_rect.x1 - 188.0,
             detail_rect.y0 + 25.0,
@@ -1825,6 +1821,50 @@ impl BackupsApp {
             detail_rect.y0 + 25.0,
             detail_rect.x1 - 8.0,
             detail_rect.y1 - 8.0,
+        );
+        // The metadata lines stop where the action buttons begin; at phone
+        // widths the second line otherwise ran underneath Verify.
+        let text_x = detail_rect.x0 + 16.0;
+        let text_max_w = ((verify.x0 - 12.0) - text_x).max(40.0) as f32;
+        let stored = tr.elide_to_width(
+            &format!("Stored on {dest_name}  ·  {dest_kind}"),
+            12.0,
+            text_max_w,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            &stored,
+            12.0,
+            c.text_dim,
+            text_x,
+            detail_rect.y0 + 12.0,
+        );
+        let enc = if dest.is_some_and(|found| found.encrypted) {
+            "encrypted"
+        } else {
+            "plaintext"
+        };
+        let meta = tr.elide_to_width(
+            &format!(
+                "{} files · {} changed · {}",
+                s.files_changed,
+                ui::format::bytes(s.delta_bytes),
+                enc
+            ),
+            11.5,
+            text_max_w,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            &meta,
+            11.5,
+            c.text_dim,
+            text_x,
+            detail_rect.y0 + 33.0,
         );
         Button::paint(
             scene,
@@ -4623,10 +4663,14 @@ mod tests {
     #[allow(dead_code)]
     impl Frame {
         fn demo() -> Self {
+            Self::demo_sized(1280.0, 800.0)
+        }
+
+        fn demo_sized(width: f64, height: f64) -> Self {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let node = taffy.new_leaf(Style::default()).unwrap();
             let mut app = BackupsApp::new_demo();
-            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.rect = Rect::new(0.0, 0.0, width, height);
             let mut f = Self {
                 app,
                 state: ui::State::new(),
@@ -4719,6 +4763,43 @@ mod tests {
 
         fn view(&self) -> View {
             self.app.ui.view
+        }
+    }
+
+    /// At phone width the four view tabs and the primary action share a 390px
+    /// bar. Every tab must stay a distinct, reachable target that ends before
+    /// the action begins; with the full-width label the Schedules tab used to
+    /// be painted underneath "Back up now".
+    #[test]
+    fn phone_width_keeps_every_tab_clear_of_the_primary_action() {
+        for width in [390.0, 340.0] {
+            let f = Frame::demo_sized(width, 844.0);
+            let action = f.rect_of(|h| matches!(h, Hit::BackupNow));
+            let tabs: Vec<Rect> = View::ALL
+                .iter()
+                .map(|v| f.rect_of(|h| matches!(h, Hit::Tab(t) if t == v)))
+                .collect();
+            assert_eq!(tabs.len(), 4);
+            for (i, tab) in tabs.iter().enumerate() {
+                assert!(
+                    tab.x1 <= action.x0,
+                    "tab {i} ({tab:?}) must end before the action ({action:?}) at {width}"
+                );
+                assert!(
+                    tab.width() >= MIN_TAB_W,
+                    "tab {i} keeps a usable target width at {width}"
+                );
+                for other in &tabs[i + 1..] {
+                    assert!(
+                        tab.intersect(*other).is_zero_area(),
+                        "tabs are pairwise disjoint"
+                    );
+                }
+            }
+            assert!(
+                action.x1 <= f.app.rect.x1 - PAD + 0.5,
+                "action stays inside the bar gutter at {width}"
+            );
         }
     }
 

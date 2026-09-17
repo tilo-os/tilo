@@ -154,13 +154,19 @@ pub fn text_vc(
     y0: f64,
     h: f64,
 ) {
-    let ty = y0 + (h - f64::from(size)) / 2.0;
+    let (_, th) = tr.measure(s, size, None);
+    let ty = y0 + (h - f64::from(th)) / 2.0;
     tr.draw_text(scene, s, size, color, t * Affine::translate((x, ty)), None);
 }
 
+/// Vertical padding a pill adds around its measured label. Both pill styles
+/// share it so a type pill and a retention tag on one row have one height.
+const PILL_PAD_Y: f64 = 3.0;
+
 /// Draw a pill (rounded chip) with a centred label. Returns the pill width so
 /// callers can lay out chips left-to-right. The pill is vertically centred on
-/// `cy` with a fixed height derived from `size`.
+/// `cy`; its height comes from the label the renderer will paint, so it grows
+/// with the accessibility text scale instead of clipping the glyphs.
 #[allow(clippy::too_many_arguments)] // one arg per independent knob; see `text` above.
 pub fn pill(
     scene: &mut Scene,
@@ -173,13 +179,13 @@ pub fn pill(
     fg: Color,
     bg: Color,
 ) -> f64 {
-    let (tw, _) = tr.measure(label, size, None);
+    let (tw, th) = tr.measure(label, size, None);
     let pad = 8.0;
-    let h = f64::from(size) + 8.0;
+    let h = f64::from(th) + PILL_PAD_Y * 2.0;
     let w = f64::from(tw) + pad * 2.0;
     let rect = Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0);
     fill_rrect(scene, t, rect, h / 2.0, bg);
-    let ty = rect.y0 + (h - f64::from(size)) / 2.0;
+    let ty = rect.y0 + PILL_PAD_Y;
     tr.draw_text(
         scene,
         label,
@@ -204,14 +210,14 @@ pub fn tag_pill(
     size: f32,
     accent: Color,
 ) -> f64 {
-    let (tw, _) = tr.measure(label, size, None);
+    let (tw, th) = tr.measure(label, size, None);
     let pad = 8.0;
-    let h = f64::from(size) + 7.0;
+    let h = f64::from(th) + PILL_PAD_Y * 2.0;
     let w = f64::from(tw) + pad * 2.0;
     let rect = Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0);
     fill_rrect(scene, t, rect, h / 2.0, accent.with_alpha_factor(0.18));
     stroke_rrect(scene, t, rect, h / 2.0, accent.with_alpha_factor(0.55), 1.0);
-    let ty = rect.y0 + (h - f64::from(size)) / 2.0;
+    let ty = rect.y0 + PILL_PAD_Y;
     tr.draw_text(
         scene,
         label,
