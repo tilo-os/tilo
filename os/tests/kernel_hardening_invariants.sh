@@ -60,6 +60,9 @@ for required in \
   CONFIG_DEVPORT=n \
   CONFIG_X86_MSR=n \
   CONFIG_X86_CPUID=n \
+  CONFIG_IA32_EMULATION=y \
+  CONFIG_X86_X32_ABI=n \
+  CONFIG_USELIB=n \
   CONFIG_COREDUMP=n \
   CONFIG_FW_LOADER_USER_HELPER=n \
   CONFIG_FW_LOADER_USER_HELPER_FALLBACK=n \
@@ -141,8 +144,9 @@ for required in \
 done
 [ "$fail" -ne 0 ] || ok 'required kernel self-protection options are pinned'
 
-grep -Fq 'DEVPORT|X86_CPUID|' "$repo/os/kernel/Containerfile" \
-  && grep -Fq 'X86_MSR|X86_USER_SHADOW_STACK' "$repo/os/kernel/Containerfile" \
+grep -Fq 'DEVPORT|IA32_EMULATION|USELIB|X86_CPUID|' "$repo/os/kernel/Containerfile" \
+  && grep -Fq 'X86_MSR|X86_USER_SHADOW_STACK|X86_KERNEL_IBT|X86_X32_ABI|' \
+    "$repo/os/kernel/Containerfile" \
   && grep -Fq 'RANDOMIZE_MEMORY|SCHED_MC_PRIO' "$repo/os/kernel/Containerfile" \
   || bad 'ARM64 kernel preparation does not remove the x86-only memory randomizer'
 grep -Fq 'CONFIG_RANDOMIZE_BASE=y CONFIG_RANDOMIZE_MEMORY=y' \
@@ -152,6 +156,10 @@ grep -Fq "'# CONFIG_DEVPORT is not set' '# CONFIG_X86_MSR is not set'" \
   "$repo/os/kernel/Containerfile" \
   && grep -Fq "'# CONFIG_X86_CPUID is not set'" "$repo/os/kernel/Containerfile" \
   || bad 'x86 kernel build does not verify removal of raw CPU and I/O devices'
+grep -Fq "CONFIG_IA32_EMULATION=y '# CONFIG_X86_X32_ABI is not set'" \
+  "$repo/os/kernel/Containerfile" \
+  && grep -Fq "'# CONFIG_USELIB is not set'" "$repo/os/kernel/Containerfile" \
+  || bad 'x86 kernel does not preserve i686 while rejecting obsolete ABIs'
 
 for live_absence in DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER \
   FW_LOADER_USER_HELPER_FALLBACK TLS CRYPTO_USER_API; do
