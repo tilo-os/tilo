@@ -13,6 +13,7 @@ fn accepts_only_bounded_visible_input() {
     for raw in [
         r#"{"op":"observe"}"#,
         r#"{"op":"click","x":12,"y":34}"#,
+        r#"{"op":"context_click","x":12,"y":34}"#,
         r#"{"op":"key","key":"a","modifiers":["ctrl"]}"#,
         r#"{"op":"type","text":"Evidence"}"#,
         r#"{"op":"wheel","x":12,"y":34,"dx":0,"dy":300}"#,
@@ -31,6 +32,7 @@ fn rejects_malformed_nonfinite_outside_and_semantic_commands() {
         r#"{"op":"click","x":-1,"y":0}"#,
         r#"{"op":"click","x":1280,"y":0}"#,
         r#"{"op":"click","x":0,"y":800}"#,
+        r#"{"op":"context_click","x":1280,"y":10}"#,
         r#"{"op":"observe","extra":true}"#,
         r#"{"op":"click_named","target":"Files"}"#,
         r#"{"op":"key","key":"Frob","modifiers":[]}"#,
