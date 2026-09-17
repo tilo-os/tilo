@@ -1,6 +1,0 @@
-{
-  "graphics_provider_v0": {
-    "root": "/opt/qos/x86",
-    "architectures": ["x86_64-linux-gnu", "i386-linux-gnu"]
-  }
-}

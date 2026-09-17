@@ -30,7 +30,7 @@ import time
 DEFAULT_TIMEOUT = 120.0
 
 # systemd colours its console output, so the bytes on the wire for a status line
-# are `Reached target \x1b[0;1;39mqos-repair.target\x1b[0m - …`. A pattern written
+# are `Reached target \x1b[0;1;39mtilo-repair.target\x1b[0m - …`. A pattern written
 # the way the line reads on screen never matches that, and the failure looks like
 # the guest never got there. The log keeps the raw bytes; matching happens against
 # a stripped copy.

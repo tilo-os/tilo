@@ -1,6 +1,6 @@
 //! Real-time road-traffic overlay — the data model.
 //!
-//! qOS's traffic layer is, by design, a *crowdsourced, peer-shared* layer over
+//! Tilo's traffic layer is, by design, a *crowdsourced, peer-shared* layer over
 //! OSM (see `plan/product.md`): devices report the speed they observe on a road
 //! and the network aggregates those into a live congestion picture. There is no
 //! turnkey free real-time-traffic feed to wire, so the live app ships the

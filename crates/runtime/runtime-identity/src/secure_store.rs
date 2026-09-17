@@ -23,7 +23,7 @@ const MAX_IDENTITY_SECRET_BYTES: u64 = 128 * 1024 + 16;
 
 use crate::{KeyProtection, SecretReference};
 
-const PURPOSE_ATTRIBUTE: &str = "qos-identity-signing-v1";
+const PURPOSE_ATTRIBUTE: &str = "tilo-identity-signing-v1";
 
 fn validate_software_locator(locator: &str) -> io::Result<()> {
     if locator.len() == 64 && locator.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -82,10 +82,10 @@ impl SecretProvider for SecretServiceProvider {
         let mut child = Command::new("secret-tool")
             .args([
                 "store",
-                "--label=qOS identity signing key",
-                "qos-purpose",
+                "--label=Tilo identity signing key",
+                "tilo-purpose",
                 PURPOSE_ATTRIBUTE,
-                "qos-identity-key",
+                "tilo-identity-key",
                 locator,
             ])
             .stdin(Stdio::piped())
@@ -112,9 +112,9 @@ impl SecretProvider for SecretServiceProvider {
         let output = Command::new("secret-tool")
             .args([
                 "lookup",
-                "qos-purpose",
+                "tilo-purpose",
                 PURPOSE_ATTRIBUTE,
-                "qos-identity-key",
+                "tilo-identity-key",
                 locator,
             ])
             .stdin(Stdio::null())
@@ -140,9 +140,9 @@ impl SecretProvider for SecretServiceProvider {
         let status = Command::new("secret-tool")
             .args([
                 "clear",
-                "qos-purpose",
+                "tilo-purpose",
                 PURPOSE_ATTRIBUTE,
-                "qos-identity-key",
+                "tilo-identity-key",
                 locator,
             ])
             .stdin(Stdio::null())

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Run genuine PE DLL-load fixtures through qOS's managed Wine32/Wine64.
+"""Run genuine PE DLL-load fixtures through Tilo's managed Wine32/Wine64.
 
 Run in the same disposable, offline/capability-dropped ARM container as the
 managed Wine smoke test, with the verified guest rootfs/resource mounts. The
 helper must provision DXVK; this driver never copies DLLs or sets overrides.
-Provide a dedicated writable, empty /run/qos mount. Prefixes remain there as
+Provide a dedicated writable, empty /run/tilo mount. Prefixes remain there as
 capsule/prefix-win32 and capsule/prefix-win64 for inspection. A timed-out prefix
 stays at capsule/prefix until the enclosing disposable container is torn down.
 Passing proves native DLL loading and export lookup, not GPU rendering.
@@ -55,7 +55,7 @@ def assess(output, bits, prefix, dxvk, prefix_bits=None):
     lines = [line.strip() for line in output.splitlines()]
     results = []
     for dll, export in EXPORTS.items():
-        module_prefix = f"QOS_DXVK_MODULE_{bits} {dll} "
+        module_prefix = f"TILO_DXVK_MODULE_{bits} {dll} "
         module_paths = [line[len(module_prefix):] for line in lines if line.startswith(module_prefix)]
         module_path = module_paths[0] if len(module_paths) == 1 else ""
         directories = "syswow64" if prefix_bits == 64 and bits == 32 else "system32"
@@ -67,24 +67,24 @@ def assess(output, bits, prefix, dxvk, prefix_bits=None):
         hashes_match = bool(selected and selected.is_file() and source.is_file()
                             and digest(selected) == digest(source))
         results.append({"dll": dll, "export": export, "module_path": module_path,
-                        "export_found": f"QOS_DXVK_EXPORT_{bits} {dll} {export}" in lines,
+                        "export_found": f"TILO_DXVK_EXPORT_{bits} {dll} {export}" in lines,
                         "native_load_logged": native, "payload_hash_matches": hashes_match})
-    passed = f"QOS_DXVK_LOAD_PASS_{bits}" in lines and all(
+    passed = f"TILO_DXVK_LOAD_PASS_{bits}" in lines and all(
         entry["export_found"] and entry["native_load_logged"] and entry["payload_hash_matches"]
         for entry in results)
     return passed, results
 
 
-def prepare_capsule_root(run_qos):
+def prepare_capsule_root(run_tilo):
     """Require dedicated empty state; never remove or reuse another test's paths."""
-    run_qos = Path(run_qos)
-    if run_qos.is_symlink() or (run_qos.exists() and not run_qos.is_dir()):
-        raise ValueError("/run/qos must be a real, dedicated directory")
-    if run_qos.exists() and any(run_qos.iterdir()):
-        raise ValueError("/run/qos must be empty; existing state is preserved")
-    run_qos.mkdir(exist_ok=True)
-    (run_qos / "capsule").mkdir()
-    return run_qos / "capsule/prefix"
+    run_tilo = Path(run_tilo)
+    if run_tilo.is_symlink() or (run_tilo.exists() and not run_tilo.is_dir()):
+        raise ValueError("/run/tilo must be a real, dedicated directory")
+    if run_tilo.exists() and any(run_tilo.iterdir()):
+        raise ValueError("/run/tilo must be empty; existing state is preserved")
+    run_tilo.mkdir(exist_ok=True)
+    (run_tilo / "capsule").mkdir()
+    return run_tilo / "capsule/prefix"
 
 
 def create_prefix(prefix, fixture):
@@ -94,7 +94,7 @@ def create_prefix(prefix, fixture):
     # Production CapsuleStore creates this mapping too. Precreating drive_c
     # without it prevents Wine from supplying its usual new-prefix C: mapping.
     (prefix / "dosdevices/c:").symlink_to("../drive_c", target_is_directory=True)
-    shutil.copyfile(fixture, prefix / "drive_c/qos-dxvk-load.exe")
+    shutil.copyfile(fixture, prefix / "drive_c/tilo-dxvk-load.exe")
 
 
 def run_cases(helper, fixtures, dxvk, output_dir, prefix):
@@ -104,7 +104,7 @@ def run_cases(helper, fixtures, dxvk, output_dir, prefix):
         create_prefix(prefix, fixtures[prefix_bits])
         group_results = []
         timed_out = False
-        with tempfile.TemporaryDirectory(prefix=f"qos-dxvk-load-{prefix_bits}-") as temporary:
+        with tempfile.TemporaryDirectory(prefix=f"tilo-dxvk-load-{prefix_bits}-") as temporary:
             home = Path(temporary)
             environment = os.environ | {
                 "HOME": str(home), "XDG_RUNTIME_DIR": str(home),
@@ -115,11 +115,11 @@ def run_cases(helper, fixtures, dxvk, output_dir, prefix):
             for bits in pe_widths:
                 # Only the test executable changes. The managed helper owns all
                 # prefix initialization, DLL provisioning and native overrides.
-                shutil.copyfile(fixtures[bits], prefix / "drive_c/qos-dxvk-load.exe")
+                shutil.copyfile(fixtures[bits], prefix / "drive_c/tilo-dxvk-load.exe")
                 case = f"wine{prefix_bits}-pe{bits}"
                 try:
                     process = subprocess.run(
-                        [str(helper), f"wine{prefix_bits}", r"C:\qos-dxvk-load.exe"],
+                        [str(helper), f"wine{prefix_bits}", r"C:\tilo-dxvk-load.exe"],
                         env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT, timeout=240, text=True, errors="replace")
                     output, code = process.stdout, process.returncode
@@ -158,7 +158,7 @@ def main():
     parser.add_argument("--helper", required=True, type=Path)
     parser.add_argument("--exe32", required=True, type=Path)
     parser.add_argument("--exe64", required=True, type=Path)
-    parser.add_argument("--dxvk", type=Path, default=Path("/opt/qos/x86/usr/share/qos/dxvk"))
+    parser.add_argument("--dxvk", type=Path, default=Path("/opt/tilo/x86/usr/share/tilo/dxvk"))
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
     helper = args.helper.resolve(strict=True)
@@ -167,7 +167,7 @@ def main():
     if any(args.output_dir.iterdir()):
         parser.error("output directory must be empty")
     try:
-        prefix = prepare_capsule_root(Path("/run/qos"))
+        prefix = prepare_capsule_root(Path("/run/tilo"))
     except (ValueError, OSError) as error:
         parser.error(str(error))
     return run_cases(helper, fixtures, args.dxvk, args.output_dir, prefix)

@@ -79,7 +79,7 @@ pub mod offscreen {
                 // `render_png` returns so the metric captures the
                 // vello pipeline compile too (they only fire on the
                 // first render_to_texture call).
-                qos_startup_metrics::mark("first-paint");
+                tilo_startup_metrics::mark("first-paint");
                 self.first_paint_seen = true;
             }
             println!("  wrote {}", path.display());
@@ -150,7 +150,7 @@ pub mod offscreen {
                 // Mark AFTER render_png returns so the metric captures
                 // vello's ~30-pipeline cold compile, not just the
                 // CPU-side scene build.
-                qos_startup_metrics::mark("first-paint");
+                tilo_startup_metrics::mark("first-paint");
                 first_paint_seen = true;
             }
             println!("  wrote {}", path.display());
@@ -355,7 +355,7 @@ pub mod recording {
 pub mod window {
     use super::{NullSink, Scenario, ShellDriver, scenario};
 
-    use shell::shell::{build_nirios_root, persist, sync_tab_presence_from_tree};
+    use shell::shell::{build_tilo_root, persist, sync_tab_presence_from_tree};
     use ui::presence::PresenceKey;
     use ui::{App, State};
 
@@ -402,7 +402,7 @@ pub mod window {
             eprintln!("shots: {}", n.one_line());
         }
         let state = State::new();
-        let root = build_nirios_root(&tree);
+        let root = build_tilo_root(&tree);
         let mut app = App::new(state, root);
         sync_tab_presence_from_tree(&tree, app.presence_ctx_mut());
         // The room, not the local workspace id: the id is a per-machine

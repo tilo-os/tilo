@@ -3,9 +3,15 @@
 # cross-platform Imager can expand and write byte-for-byte.
 set -euo pipefail
 
-release_tag="${QOS_INSTALLER_RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
-version="${QOS_INSTALLER_VERSION:-${release_tag#imager-v}}"
-channel="${QOS_INSTALLER_CHANNEL:-stable}"
+release_tag="${TILO_INSTALLER_RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
+release_repository="${TILO_RELEASE_REPOSITORY:-tilo/releases}"
+release_server="${GITHUB_SERVER_URL:-https://code.sandbox.example}"
+[[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
+[[ "$release_server" =~ ^https://[^/]+$ ]] \
+  || { printf 'release server must be an HTTPS origin\n' >&2; exit 2; }
+version="${TILO_INSTALLER_VERSION:-${release_tag#imager-v}}"
+channel="${TILO_INSTALLER_CHANNEL:-stable}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || { printf 'installer version must be MAJOR.MINOR.PATCH\n' >&2; exit 2; }
 case "$channel" in
@@ -14,8 +20,8 @@ case "$channel" in
       || { printf 'stable installer tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
     ;;
   rehearsal)
-    [ -n "${QOS_INSTALLER_RELEASE_TAG:-}" ] \
-      && [ -n "${QOS_INSTALLER_VERSION:-}" ] \
+    [ -n "${TILO_INSTALLER_RELEASE_TAG:-}" ] \
+      && [ -n "${TILO_INSTALLER_VERSION:-}" ] \
       && [[ "$release_tag" =~ ^rehearsal-[0-9a-fA-F]{40}$ ]] \
       || { printf 'rehearsal media require an explicit source-bound tag and version\n' >&2; exit 2; }
     ;;
@@ -24,8 +30,8 @@ esac
 
 input="${1:?usage: package-install-medium.sh INSTALLER.qcow2 ARCH [OUT]}"
 arch="${2:?missing architecture}"
-out="${3:-dist/qos-installer}"
-profile="${QOS_HARDWARE_PROFILE:-generic}"
+out="${3:-dist/tilo-installer}"
+profile="${TILO_HARDWARE_PROFILE:-generic}"
 case "$arch" in x86_64|aarch64) ;; *) printf 'unsupported architecture: %s\n' "$arch" >&2; exit 2 ;; esac
 command -v qemu-img >/dev/null
 command -v zstd >/dev/null
@@ -36,7 +42,7 @@ provenance="$(python3 "$(dirname "${BASH_SOURCE[0]}")/media-provenance.py" valid
 mkdir -p "$out"
 suffix=""
 [ "$profile" = generic ] || suffix="-$profile"
-base="qos-installer-linux-${arch}${suffix}.img"
+base="tilo-installer-linux-${arch}${suffix}.img"
 raw="$out/$base"
 archive="$raw.zst"
 qemu-img convert -p -f qcow2 -O raw "$input" "$raw"
@@ -49,13 +55,13 @@ archive_size="$(stat -c %s "$archive")"
 rm -f "$raw"
 
 jq -n \
-  --arg name 'qOS' \
+  --arg name 'Tilo' \
   --arg version "$version" \
   --arg channel "$channel" \
   --arg arch "$arch" \
   --arg hardware_profile "$profile" \
   --argjson provenance "$provenance" \
-  --arg url "https://code.sandbox.example/qos/qos/releases/download/${release_tag}/$(basename "$archive")" \
+  --arg url "${release_server}/${release_repository}/releases/download/${release_tag}/$(basename "$archive")" \
   --arg archive_sha256 "$archive_sha256" \
   --argjson archive_size "$archive_size" \
   --arg image_sha256 "$image_sha256" \

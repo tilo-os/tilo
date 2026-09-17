@@ -3,11 +3,13 @@
 //! best matches surface regardless of which provider produced them.
 
 use super::provider::{SearchProvider, SearchResult, fuzzy_score};
+use std::collections::HashSet;
 
 /// Weight applied to a provider's own [`SearchResult::score`] bias relative
 /// to the registry's query-match bonus: high enough that a pinned result
 /// leads for a weak query, low enough that an exact title match still wins.
 const PROVIDER_BIAS_WEIGHT: i32 = 4;
+const MAX_PROVIDER_MERGE_RESULTS: usize = 256;
 
 /// A ranked bucket of results that share a [`SearchResult::kind`]. The results
 /// overlay renders one section per group, headed by `kind`.
@@ -86,12 +88,59 @@ impl SearchRegistry {
     /// The provider's bias plus the query-match bonus against the title
     /// (falling back to the subtitle).
     fn rank_key(query: &str, r: &SearchResult) -> i32 {
-        let bonus = fuzzy_score(query, &r.title)
-            .or_else(|| r.subtitle.as_deref().and_then(|s| fuzzy_score(query, s)))
+        let query = query.trim().to_lowercase();
+        let title = r.title.to_lowercase();
+        let lexical = if query.is_empty() {
+            0
+        } else if title == query {
+            2_000
+        } else if title.starts_with(&query) {
+            1_200
+        } else if title
+            .split(|character: char| !character.is_alphanumeric())
+            .any(|word| word.starts_with(&query))
+        {
+            800
+        } else if title.contains(&query) {
+            500
+        } else {
+            r.subtitle.as_deref().map_or(0, |subtitle| {
+                let subtitle = subtitle.to_lowercase();
+                if subtitle == query {
+                    350
+                } else if subtitle.contains(&query) {
+                    200
+                } else {
+                    0
+                }
+            })
+        };
+        let bonus = fuzzy_score(&query, &r.title)
+            .or_else(|| r.subtitle.as_deref().and_then(|s| fuzzy_score(&query, s)))
             .unwrap_or(0);
         r.score
             .saturating_mul(PROVIDER_BIAS_WEIGHT)
+            .saturating_add(lexical)
             .saturating_add(bonus)
+    }
+
+    fn dedupe_key(result: &SearchResult) -> String {
+        result.action_address().map_or_else(
+            || format!("legacy\0{}\0{}", result.kind, result.action_id),
+            |address| format!("action\0{}", address.encode()),
+        )
+    }
+
+    fn rank_and_dedupe(
+        query: &str,
+        mut results: Vec<SearchResult>,
+        limit: usize,
+    ) -> Vec<SearchResult> {
+        results.sort_by(|a, b| Self::rank_key(query, b).cmp(&Self::rank_key(query, a)));
+        let mut seen = HashSet::new();
+        results.retain(|result| seen.insert(Self::dedupe_key(result)));
+        results.truncate(limit);
+        results
     }
 
     /// Sorted by descending [`rank_key`](Self::rank_key); ties keep provider
@@ -101,8 +150,25 @@ impl SearchRegistry {
         for provider in &self.providers {
             all.extend(provider.search(query));
         }
-        all.sort_by(|a, b| Self::rank_key(query, b).cmp(&Self::rank_key(query, a)));
-        all
+        Self::rank_and_dedupe(query, all, usize::MAX)
+    }
+
+    /// Bounded cross-provider merge for interactive global search. Providers
+    /// stop materialising once their share is full, canonical action aliases
+    /// collapse to one row, and only the best `limit` hits survive.
+    pub fn query_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let provider_limit = limit
+            .saturating_mul(4)
+            .min(MAX_PROVIDER_MERGE_RESULTS)
+            .max(limit.min(MAX_PROVIDER_MERGE_RESULTS));
+        let mut all = Vec::new();
+        for provider in &self.providers {
+            all.extend(provider.search_limited(query, provider_limit));
+        }
+        Self::rank_and_dedupe(query, all, limit)
     }
 
     /// Groups appear in the order their **best** result ranks; within a
@@ -126,7 +192,29 @@ impl SearchRegistry {
     /// Caps each group to `per_group_cap` results, so no single busy provider
     /// floods the overlay. `0` means uncapped.
     pub fn query_grouped_capped(&self, query: &str, per_group_cap: usize) -> Vec<SearchGroup> {
-        let mut groups = self.query_grouped(query);
+        let merge_limit = if per_group_cap == 0 {
+            usize::MAX
+        } else {
+            per_group_cap
+                .saturating_mul(self.providers.len().max(1))
+                .saturating_mul(4)
+        };
+        let ranked = if merge_limit == usize::MAX {
+            self.query(query)
+        } else {
+            self.query_limited(query, merge_limit)
+        };
+        let mut groups: Vec<SearchGroup> = Vec::new();
+        for result in ranked {
+            if let Some(group) = groups.iter_mut().find(|group| group.kind == result.kind) {
+                group.results.push(result);
+            } else {
+                groups.push(SearchGroup {
+                    kind: result.kind.clone(),
+                    results: vec![result],
+                });
+            }
+        }
         if per_group_cap > 0 {
             for g in &mut groups {
                 g.results.truncate(per_group_cap);
@@ -188,6 +276,65 @@ mod tests {
         });
         let out = reg.query("zed");
         assert_eq!(out[0].action_id, "c:z", "the biased result leads");
+    }
+
+    #[test]
+    fn exact_title_beats_provider_bias_and_subtitle_only_matches() {
+        let mut reg = SearchRegistry::new();
+        reg.register_fn("Files", |_q| {
+            vec![
+                r("Files", "Draft", "f:1")
+                    .with_subtitle("Quarterly calculator notes")
+                    .with_score(20),
+                r("Apps", "Calculator", "a:1"),
+            ]
+        });
+        assert_eq!(reg.query("calculator")[0].title, "Calculator");
+    }
+
+    #[test]
+    fn canonical_action_aliases_collapse_across_providers() {
+        let address = tilo_actions::ActionAddress::new("notes.note:1", "open");
+        let mut reg = SearchRegistry::new();
+        let first = SearchResult::for_action("Notes", "Launch brief", &address);
+        let second = SearchResult::for_action("Recent", "Launch brief", &address);
+        reg.register_fn("Notes", move |_q| vec![first.clone()]);
+        reg.register_fn("Recent", move |_q| vec![second.clone()]);
+        let results = reg.query("launch");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].action_address(), Some(address));
+    }
+
+    #[test]
+    fn limited_query_pushes_a_materialisation_budget_into_each_provider() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct Bounded {
+            observed: Rc<Cell<usize>>,
+        }
+        impl SearchProvider for Bounded {
+            fn name(&self) -> &str {
+                "Bounded"
+            }
+            fn search(&self, _query: &str) -> Vec<SearchResult> {
+                panic!("interactive bounded merge must not call unbounded search")
+            }
+            fn search_limited(&self, _query: &str, limit: usize) -> Vec<SearchResult> {
+                self.observed.set(limit);
+                (0..limit)
+                    .map(|index| r("Rows", &format!("row {index}"), &format!("row:{index}")))
+                    .collect()
+            }
+        }
+
+        let observed = Rc::new(Cell::new(0));
+        let mut reg = SearchRegistry::new();
+        reg.register(Box::new(Bounded {
+            observed: observed.clone(),
+        }));
+        assert_eq!(reg.query_limited("row", 3).len(), 3);
+        assert_eq!(observed.get(), 12);
     }
 
     #[test]

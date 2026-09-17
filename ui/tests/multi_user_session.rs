@@ -9,6 +9,7 @@
 )]
 
 use crate::support::{MemoryRelay, document_mutation, headless_app, pump};
+use std::time::SystemTime;
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::permissions::{Actor, AppKind, PermissionContext, PermissionScope, Role, UserId, Verb};
 use ui::presence::{PathSegment, PresenceKey};
@@ -20,9 +21,7 @@ fn memory_relay_fans_out_presence_updates_to_both_peers() {
     let alice = relay.attach("alice");
     let bob = relay.attach("bob");
 
-    alice.send(CollabRequest::DocumentIncremental {
-        data: vec![1, 2, 3],
-    });
+    alice.send(CollabRequest::document_incremental(vec![1, 2, 3]));
 
     relay.drain_peer_outbox(&alice);
     pump(&mut relay);
@@ -141,6 +140,44 @@ fn app_broadcast_presence_completes_loop_to_remote_peer() {
 }
 
 #[test]
+fn status_crosses_the_same_authenticated_room_presence_path() {
+    let mut relay = MemoryRelay::new();
+    let alice_peer = relay.attach("alice");
+    let bob_peer = relay.attach("bob");
+    let (mut alice_app, _) = headless_app("alice", alice_peer.clone());
+    let (mut bob_app, _) = headless_app("bob", bob_peer.clone());
+    let room = PresenceKey::Workspace {
+        id: "finance-room".into(),
+    };
+    let status = ui::LiveStatus {
+        text: "Reconciling forecast against actuals".into(),
+        origin: ui::StatusOrigin::Inferred {
+            generator: "local".into(),
+        },
+        updated_at: SystemTime::now(),
+    };
+    assert!(alice_app.broadcast_status(room.clone(), Some(&status)));
+    alice_peer.send(CollabRequest::Presence {
+        key: room,
+        payload: PresencePayload::Status {
+            text: status.text,
+            automatic: true,
+        },
+    });
+    relay.drain_peer_outbox(&alice_peer);
+    pump(&mut relay);
+    for event in bob_peer.poll() {
+        bob_app.apply_collab_event_for_test(event);
+    }
+    let received = bob_app
+        .presence_ctx()
+        .status_for(&UserId("alice".into()), SystemTime::now())
+        .expect("remote status reaches the room presence context");
+    assert_eq!(received.text, "Reconciling forecast against actuals");
+    assert!(matches!(received.origin, ui::StatusOrigin::Inferred { .. }));
+}
+
+#[test]
 fn two_apps_sync_presence_caret_via_memory_relay() {
     let mut relay = MemoryRelay::new();
     let alice_peer = relay.attach("alice");
@@ -153,7 +190,7 @@ fn two_apps_sync_presence_caret_via_memory_relay() {
         path: vec![PathSegment::Field("body".into())],
     };
 
-    alice_peer.send(CollabRequest::DocumentIncremental { data: vec![] });
+    alice_peer.send(CollabRequest::document_incremental(vec![]));
     relay.drain_peer_outbox(&alice_peer);
     pump(&mut relay);
 
@@ -326,7 +363,7 @@ fn crdt_incremental_deltas_replay_on_remote_peer() {
         "save_incremental must emit non-empty bytes after a mutation"
     );
 
-    alice_peer.send(CollabRequest::DocumentIncremental { data: delta });
+    alice_peer.send(CollabRequest::document_incremental(delta));
     relay.drain_peer_outbox(&alice_peer);
     pump(&mut relay);
 

@@ -1,7 +1,5 @@
 //! An inline-editable label: reads as static text until the caller puts it
-//! into edit mode, then becomes a real [`TextInput`] — every affordance the
-//! toolkit's text field already has, for free, instead of a hand-rolled
-//! buffer.
+//! into edit mode, then becomes a real [`TextInput`].
 //!
 //! An edit ends one of three ways, matching native inline rename: **Enter**
 //! commits; **focus loss / a click outside the field** blur-commits — a

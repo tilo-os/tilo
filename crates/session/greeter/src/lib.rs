@@ -1,4 +1,4 @@
-//! qOS graphical greeter — library root.
+//! Tilo graphical greeter — library root.
 //!
 //! The greeter is a thin `ui`-toolkit app that runs inside `cage` (a
 //! kiosk wlroots compositor) at the greetd login VT. On an unambiguous

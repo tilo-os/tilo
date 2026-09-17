@@ -1,4 +1,4 @@
-//! `qos-agent` — a participant without a window.
+//! `tilo-agent` — a participant without a window.
 //!
 //! The agent joins a word-processor document the way a second copy of the
 //! app would: it connects to the compositor's collaboration broker,

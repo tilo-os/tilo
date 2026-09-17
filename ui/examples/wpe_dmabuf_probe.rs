@@ -7,7 +7,7 @@
 //! the browser's zero-copy path relies on.
 //!
 //! Run:
-//!   QOS_WEBVIEW_DMABUF=1 QOS_WEBVIEW_DRM_NODE=/dev/dri/renderD128 \
+//!   TILO_WEBVIEW_DMABUF=1 TILO_WEBVIEW_DRM_NODE=/dev/dri/renderD128 \
 //!   GALLIUM_DRIVER=radeonsi AMD_DEBUG=nodcc,notiling \
 //!   cargo run -p ui --example ui-wpe --features webview-wpe --release -- wpe_dmabuf_probe
 

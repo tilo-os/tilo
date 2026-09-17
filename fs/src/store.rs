@@ -36,9 +36,9 @@ use crate::namespace::{LiveRecordBlobRoots, LiveRecordBlobScanError, Namespace};
 pub const MAX_BLOB_LOOKUP_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BLOB_LOOKUP_CHUNKS_PER_RECORD: usize = 100_000;
 
-const OWNED_BLOB_TAG_PREFIX: &str = "qos/blob/v1/";
-const OWNED_TAG_MIGRATION_MARKER: &str = ".qos-owned-blob-tags-v1";
-const OWNED_TAG_MIGRATION_MARKER_CONTENTS: &[u8] = b"qos-owned-blob-tags-v1\n";
+const OWNED_BLOB_TAG_PREFIX: &str = "tilo/blob/v1/";
+const OWNED_TAG_MIGRATION_MARKER: &str = ".tilo-owned-blob-tags-v1";
+const OWNED_TAG_MIGRATION_MARKER_CONTENTS: &[u8] = b"tilo-owned-blob-tags-v1\n";
 
 /// Persistent stores sweep unreferenced blobs periodically. Explicit eviction
 /// does not wait for this interval; callers observe the queue to learn when a
@@ -656,7 +656,7 @@ impl ContentStore {
     }
 
     /// Freshly authorize a queued request and make exactly its approved blobs
-    /// collectible by releasing Quickdesktop-owned named tags.
+    /// collectible by releasing Tilo-owned named tags.
     ///
     /// The caller must keep `registry` and `catalog` stable for this complete
     /// call, as required by [`EvictionQueue::authorize_backend_gc`]. Other

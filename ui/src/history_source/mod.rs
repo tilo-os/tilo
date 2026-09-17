@@ -192,10 +192,10 @@ impl HistorySource {
             let context = v
                 .message
                 .as_deref()
-                .and_then(qos_actions::ActionContext::from_change_message);
+                .and_then(tilo_actions::ActionContext::from_change_message);
             let summary = context
                 .as_ref()
-                .and_then(qos_actions::ActionContext::summary)
+                .and_then(tilo_actions::ActionContext::summary)
                 .unwrap_or(structural_summary);
 
             out.push(HistoryEntry {

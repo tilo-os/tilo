@@ -404,7 +404,7 @@ fn product_apps_use_the_shared_responsive_launcher() {
         .flatten()
     {
         let app = entry.path();
-        if !app.join("qos-app.toml").is_file() {
+        if !app.join("tilo-app.toml").is_file() {
             continue;
         }
         let main = app.join("src/main.rs");

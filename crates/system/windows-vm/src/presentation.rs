@@ -1,7 +1,7 @@
 //! Explicit presentation choices for the singleton Windows appliance.
 //!
 //! RAIL is a property of the guest RDP server *and* the local RDP client
-//! surface.  It is not something qOS can manufacture by passing `/app` to an
+//! surface.  It is not something Tilo can manufacture by passing `/app` to an
 //! arbitrary viewer.  Keeping this decision as a small typed value prevents a
 //! failed RAIL connection from silently turning into a full desktop.
 
@@ -10,19 +10,19 @@ use std::fmt;
 /// The only normal application presentation modes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplicationPresentation {
-    /// `FreeRDP`'s upstream RAIL client, when qOS has a RAIL-capable local
+    /// `FreeRDP`'s upstream RAIL client, when Tilo has a RAIL-capable local
     /// surface (for example an Xwayland bridge or a future native adapter).
     NativeRail,
     /// A guest-focused SPICE surface. The guest helper starts/focuses the
     /// selected application before the viewer is attached. This is a whole
     /// guest surface (with the requested app focused), not seamless windows;
-    /// it does not expose a qOS-wide desktop route.
+    /// it does not expose a Tilo-wide desktop route.
     AppFocusedSpice,
 }
 
 impl ApplicationPresentation {
     /// Selects a normal application surface from capabilities that have been
-    /// probed by qOS.  The fallback is explicit and deterministic.
+    /// probed by Tilo.  The fallback is explicit and deterministic.
     #[must_use]
     pub fn select(has_rail_surface: bool) -> Self {
         if has_rail_surface {

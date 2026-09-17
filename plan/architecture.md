@@ -1,8 +1,8 @@
-# qOS Architecture
+# Tilo Architecture
 
 ## Overview
 
-qOS (codename **nirios**) is a collaborative Linux OS built on Fedora Bootc. See `README.md` in this directory for the resource/action model the rest follows from. Users organize application windows into **workspaces** (`Workspace → Strip → WindowGroup → Tab`): each workspace holds vertically-stacked strips of horizontally-scrollable window-groups (Niri-inspired), and workspaces are switched via a wheel disc. Users can invite peers P2P to join individual workspaces, where native and legacy apps are streamed with near-native fidelity. Every workspace runs apps inside its own Bubblewrap sandbox with explicit capability grants.
+Tilo (codename **tilo**) is a collaborative Linux OS built on Fedora Bootc. See `README.md` in this directory for the resource/action model the rest follows from. Users organize application windows into **workspaces** (`Workspace → Strip → WindowGroup → Tab`): each workspace holds vertically-stacked strips of horizontally-scrollable window-groups (Niri-inspired), and workspaces are switched via a wheel disc. Users can invite peers P2P to join individual workspaces, where native and legacy apps are streamed with near-native fidelity. Every workspace runs apps inside its own Bubblewrap sandbox with explicit capability grants.
 
 ## System Stack
 
@@ -28,7 +28,7 @@ qOS (codename **nirios**) is a collaborative Linux OS built on Fedora Bootc. See
 │  │  └───────────┘ └──────────┘ └───────────────────┘  │ │
 │  │  ┌───────────┐ ┌──────────┐ ┌───────────────────┐  │ │
 │  │  │  openh264 │ │ PipeWire │ │   Control socket  │  │ │
-│  │  │ (peer enc)│ │(screencst)│ │ (QOS_TEST_CONTROL)│  │ │
+│  │  │ (peer enc)│ │(screencst)│ │ (TILO_TEST_CONTROL)│  │ │
 │  │  └───────────┘ └──────────┘ └───────────────────┘  │ │
 │  └──────────────────────────────────────────────────── │ │
 │                                                          │
@@ -54,7 +54,7 @@ qOS (codename **nirios**) is a collaborative Linux OS built on Fedora Bootc. See
 - See `plan/os-layer.md`.
 
 ### 2. Compositor (`shell`)
-- Smithay-based Wayland **server** (since the Phase 1-7 rewrite). Hosts foreign Wayland clients and adopts them as tabs in the active strip via `app-id` matching.
+- Smithay-based Wayland **server**. Hosts foreign Wayland clients and adopts them as tabs in the active strip via `app-id` matching.
 - Two modes selected at boot: `--mode hosted` (smithay-backed Wayland session running as a client of a parent display server, for dev) and `--mode native` (default — smithay running on bare hardware via `--backend drm` or in winit for development).
 - Backends are a trait (`compositor::backend::Backend`); current implementations are `winit` and `drm` (libseat + libinput + udev + GBM).
 - Per-frame paint uses `vello` over `wgpu`. Shell chrome (top bar, wheel disc, command palette, modals) and foreign-surface buffers compose in the same `vello::Scene`.
@@ -93,7 +93,7 @@ Local mutation → WorkspaceTree write (cache + automerge AutoCommit)
   → WorkspaceTree::apply_changes → rebuild_cache_from_doc → re-render
 ```
 
-### Foreign-surface streaming (peer-sync Phase 4)
+### Foreign-surface streaming
 ```
 Owner: surface commit → damage hint → openh264 encode (30 fps cap)
   → NeighbourMsg::SurfaceFrame published on workspace topic
@@ -141,14 +141,14 @@ Three layers cover different parts of the stack:
 
 1. **In-process driver** (`shell/src/bin/shots/`) — `ShellDriver` builds the same widget tree the live binary builds, runs the same paint pass, and exposes a `widget_registry: HashMap<String, Rect>` that walks the live tree via `Widget::test_id(&self) -> Option<&str>` (from `ui::widget::Widget`). Path-fallback (`Parent/Child[index]`) works without opt-in. Used by >100 tests in `shell/tests/*` and by `cargo run --bin shots`.
 2. **Offscreen / recording renderer** — `cargo run --bin shots -- --mode offscreen --out target/<dir>` writes PNGs per scenario; `--mode recording --out target/<file>.h264` writes a real H.264 video. Output is identical to the live binary's rendering. **Never** screenshot the user's running session — use the offscreen path.
-3. **Control socket** (spec at `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`) — when the compositor boots with `QOS_TEST_CONTROL=<sock>` set, it binds an extra unix socket alongside the wayland one. Newline-delimited JSON commands inject through `smithay::input::Seat::input` so they go through real focus rules. Lives in `shell/src/compositor/test_control.rs`. Phase 1 (pure-logic dispatcher + `list_targets` + `click_at`) has landed; later phases (drag, key, type, snapshot, state_dump, CLI wrapper, `tests/support/live_compositor.rs`) are tracked in the spec.
+3. **Control socket** — when the compositor boots with `TILO_TEST_CONTROL=<sock>` set, it binds an extra Unix socket alongside the Wayland one. `tilo-control` uses its newline-delimited JSON protocol to list and activate semantic targets, inject pointer and keyboard input through the real seat, inspect state, and capture snapshots. The implementation lives in `shell/src/compositor/test_control.rs`; integration coverage is in `shell/tests/control_socket_test.rs`.
 
 The control socket is the out-of-process path for covering the seat layer, frame-pacing regressions, and focus-stealing behaviour the in-process driver can't reproduce.
 
 ## Project directory structure (Cargo workspace / monorepo)
 
 ```
-quickdesktop/                            # workspace root
+tilo/                            # workspace root
 ├── plan/                                # this directory — design intent
 ├── docs/                                # architecture + testing + superpowers plans/specs
 ├── ui/                                  # UI toolkit
@@ -160,14 +160,14 @@ quickdesktop/                            # workspace root
 │       ├── sandbox/                     # bwrap profile, seccomp blob, spawn
 │       ├── portal/                      # FileChooser, ScreenCast, Camera D-Bus backends
 │       ├── network/                     # Iroh actor, identity, hub, replica, encoder, invite
-│       └── bin/{shots,qos-control}/  # e2e harness + control-socket CLI
+│       └── bin/{shots,tilo-control}/  # e2e harness + control-socket CLI
 ├── fs/                                  # FUSE3 driver
 ├── apps/{terminal,file-explorer,browser,…}/  # native apps
 ├── crates/<domain>/                     # supporting libraries (collab, doc, runtime, packaging, …)
 └── os/                                  # Containerfile + systemd units
 ```
 
-Everything lives in this one repository — see `CLAUDE.md` for the monorepo workflow.
+Everything lives in this one repository — see `AGENTS.md` for the monorepo workflow.
 
 ## Key spatial concepts
 

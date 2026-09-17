@@ -7,9 +7,9 @@ ARG BASE_REF
 ARG LIBVIRT_BUILDROOT_REF=libvirt-buildroot
 FROM ${BASE_REF} AS libvirt-source
 COPY os/external-assets/github-assets.tsv /tmp/external-assets.tsv
-RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+RUN --mount=type=bind,from=github-assets,source=/,target=/tilo-assets,ro \
     set -eu; \
-    cd /qos-assets; \
+    cd /tilo-assets; \
     awk -F '\t' '$2 == "libvirt-12.7.0.tar.xz" { print $1 "  " $2; found++ } END { if (found != 1) exit 1 }' \
       /tmp/external-assets.tsv > /tmp/libvirt.sha256; \
     sha256sum --check --strict /tmp/libvirt.sha256; \
@@ -21,9 +21,9 @@ RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
 FROM libvirt-source AS libvirt-buildroot
 RUN dnf install -y dnf5-plugins rpm-build createrepo_c glibc-langpack-en \
  && dnf builddep -y /work/rpmbuild/SPECS/libvirt.spec \
- && install -d /usr/lib/qos \
+ && install -d /usr/lib/tilo \
  && rpm -qa --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' \
-      | LC_ALL=C sort > /usr/lib/qos/libvirt-buildroot-packages.txt \
+      | LC_ALL=C sort > /usr/lib/tilo/libvirt-buildroot-packages.txt \
  && dnf clean all
 
 FROM ${LIBVIRT_BUILDROOT_REF} AS libvirt-build
@@ -47,10 +47,10 @@ RUN set -eu; \
     test -n "$(find /repo -name "libvirt-libs-*.$native_arch.rpm" -print -quit)"; \
     rpm -K /repo/*.rpm; \
     createrepo_c --quiet /repo; \
-    cp /work/source.sha256 /repo/qos-libvirt-source.sha256; \
-    cp /work/rpmbuild/SPECS/libvirt.spec /repo/qos-libvirt-upstream.spec; \
+    cp /work/source.sha256 /repo/tilo-libvirt-source.sha256; \
+    cp /work/rpmbuild/SPECS/libvirt.spec /repo/tilo-libvirt-upstream.spec; \
     rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE} %{ARCH}\n' /repo/*.rpm \
-      | LC_ALL=C sort > /repo/qos-libvirt-packages.txt; \
+      | LC_ALL=C sort > /repo/tilo-libvirt-packages.txt; \
     rm -rf /work/rpmbuild/BUILD
 
 FROM scratch

@@ -2490,7 +2490,7 @@ fn read_or_migrate_block_id(
 /// their action handler persists the ID atomically with the first operation.
 #[must_use]
 pub fn legacy_block_id(list: &ObjId, index: usize, kind: &str, text: &str) -> String {
-    let seed = format!("quickdesktop:block:v1:{list:?}:{index}:{kind}:{text}");
+    let seed = format!("tilo:block:v1:{list:?}:{index}:{kind}:{text}");
     deterministic_block_uuid(&seed).to_string()
 }
 

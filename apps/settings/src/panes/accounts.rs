@@ -73,7 +73,7 @@ fn account_action_button(
     resource_id: String,
     resource_label: String,
     action_id: &str,
-    kind: qos_actions::OperationKind,
+    kind: tilo_actions::OperationKind,
     operation: crate::actions::AccountOperation,
     destructive: bool,
 ) -> Button {
@@ -542,7 +542,7 @@ impl AccountsPane {
             crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
             "External Accounts".into(),
             "add-mail",
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             crate::actions::AccountOperation::Add {
                 kind: "mail".into(),
             },
@@ -563,7 +563,7 @@ impl AccountsPane {
                 crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
                 "External Accounts".into(),
                 &format!("add-{}", kind.slug()),
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::AccountOperation::Add {
                     kind: kind.slug().into(),
                 },
@@ -665,7 +665,7 @@ impl AccountsPane {
                         account_resource.clone(),
                         view.label.clone(),
                         "edit",
-                        qos_actions::OperationKind::View,
+                        tilo_actions::OperationKind::View,
                         crate::actions::AccountOperation::Edit {
                             id: view.id.clone(),
                         },
@@ -681,7 +681,7 @@ impl AccountsPane {
                         account_resource.clone(),
                         view.label.clone(),
                         "reauthenticate",
-                        qos_actions::OperationKind::View,
+                        tilo_actions::OperationKind::View,
                         crate::actions::AccountOperation::Reauthenticate {
                             id: view.id.clone(),
                         },
@@ -702,7 +702,7 @@ impl AccountsPane {
                         account_resource.clone(),
                         view.label.clone(),
                         "test",
-                        qos_actions::OperationKind::Effect,
+                        tilo_actions::OperationKind::Effect,
                         crate::actions::AccountOperation::Test {
                             id: view.id.clone(),
                         },
@@ -718,7 +718,7 @@ impl AccountsPane {
                         account_resource,
                         view.label.clone(),
                         "remove",
-                        qos_actions::OperationKind::Effect,
+                        tilo_actions::OperationKind::Effect,
                         crate::actions::AccountOperation::Remove {
                             id: view.id.clone(),
                         },
@@ -799,7 +799,7 @@ impl AccountsPane {
                 crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
                 "External Accounts".into(),
                 "save-form",
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::AccountOperation::SubmitForm,
                 false,
             )))
@@ -809,7 +809,7 @@ impl AccountsPane {
                 crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
                 "External Accounts".into(),
                 "cancel-form",
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::AccountOperation::CancelForm,
                 false,
             )))
@@ -878,7 +878,7 @@ impl AccountsPane {
                     crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
                     "External Accounts".into(),
                     "save-reauthentication",
-                    qos_actions::OperationKind::Effect,
+                    tilo_actions::OperationKind::Effect,
                     crate::actions::AccountOperation::SubmitReauthentication,
                     false,
                 )))
@@ -889,7 +889,7 @@ impl AccountsPane {
                     crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
                     "External Accounts".into(),
                     "cancel-reauthentication",
-                    qos_actions::OperationKind::View,
+                    tilo_actions::OperationKind::View,
                     crate::actions::AccountOperation::CancelReauthentication,
                     false,
                 )))
@@ -1101,7 +1101,7 @@ impl AccountsPane {
                 }
             }
             let _ = crate::accounts::finish_account_mutation();
-            warn!(target: "qos::settings", op = "account_store_save", error = %e, "failed to persist account metadata");
+            warn!(target: "tilo::settings", op = "account_store_save", error = %e, "failed to persist account metadata");
             return Err(format!("could not persist account: {e}"));
         }
         finish_or_recover("account save")

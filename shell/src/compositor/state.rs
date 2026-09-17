@@ -93,16 +93,16 @@ use crate::wayland::color_management::ColorManagerState;
 
 use crate::shell::state::WorkspaceTree;
 use smithay::backend::input::KeyState;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use vello::kurbo::Rect;
 
-/// Stable identity from `apps/osk/qos-app.toml`. It is necessary but never
+/// Stable identity from `apps/osk/tilo-app.toml`. It is necessary but never
 /// sufficient for promotion: the connection must also be accepted on the
 /// compositor's private OSK socket.
-pub const OSK_APP_ID: &str = "dev.qos.osk";
+pub const OSK_APP_ID: &str = "dev.tilo.osk";
 
 /// A deliberately narrow app-id convention for the clean, audience-facing
-/// side of a presentation.  It is a normal xdg toplevel, but qOS owns its
+/// side of a presentation.  It is a normal xdg toplevel, but Tilo owns its
 /// placement so it cannot collapse the presenter's workspace group.
 pub const OUTPUT_PRESENTATION_APP_ID_SUFFIX: &str = ".audience";
 
@@ -343,7 +343,7 @@ fn dismiss_floating_entries(
 
 /// Read the persisted `HiDPI` display scale from the shared settings store.
 ///
-/// The Settings app writes `~/.config/qos/settings.json` with a
+/// The Settings app writes `~/.config/tilo/settings.json` with a
 /// `"display"` object carrying a `"scale"` number (1.0=100%, …); the
 /// compositor reads the same file via `settings_store`, resolving the same
 /// XDG rule the apps use. Any read/parse failure or out-of-range value falls back to `1.0`.
@@ -442,6 +442,146 @@ struct HostLaunchActivation {
 /// The compositor's process-wide state.
 ///
 /// The single value the calloop event loop hands to every callback, so every Wayland global gets unsynchronised mutable access without `Rc`/`Arc` plumbing.
+#[derive(Debug, Default)]
+struct PersonalFabricInputHolders {
+    keys: HashMap<crate::shell::personal_continuity::DeviceId, HashSet<u32>>,
+    key_counts: HashMap<u32, usize>,
+    buttons: HashMap<crate::shell::personal_continuity::DeviceId, HashSet<u32>>,
+    button_counts: HashMap<u32, usize>,
+}
+
+impl PersonalFabricInputHolders {
+    fn transition(
+        holders: &mut HashMap<crate::shell::personal_continuity::DeviceId, HashSet<u32>>,
+        counts: &mut HashMap<u32, usize>,
+        controller: &crate::shell::personal_continuity::DeviceId,
+        code: u32,
+        pressed: bool,
+    ) -> bool {
+        if pressed {
+            let held = holders.entry(controller.clone()).or_default();
+            if !held.insert(code) {
+                return false;
+            }
+            let count = counts.entry(code).or_default();
+            *count = count.saturating_add(1);
+            *count == 1
+        } else {
+            let empty = {
+                let Some(held) = holders.get_mut(controller) else {
+                    return false;
+                };
+                if !held.remove(&code) {
+                    return false;
+                }
+                held.is_empty()
+            };
+            if empty {
+                holders.remove(controller);
+            }
+            let Some(count) = counts.get_mut(&code) else {
+                return false;
+            };
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.remove(&code);
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    fn key_transition(
+        &mut self,
+        controller: &crate::shell::personal_continuity::DeviceId,
+        keycode: u32,
+        pressed: bool,
+    ) -> bool {
+        Self::transition(
+            &mut self.keys,
+            &mut self.key_counts,
+            controller,
+            keycode,
+            pressed,
+        )
+    }
+
+    fn button_transition(
+        &mut self,
+        controller: &crate::shell::personal_continuity::DeviceId,
+        button: u32,
+        pressed: bool,
+    ) -> bool {
+        Self::transition(
+            &mut self.buttons,
+            &mut self.button_counts,
+            controller,
+            button,
+            pressed,
+        )
+    }
+
+    fn release_controller(
+        &mut self,
+        controller: &crate::shell::personal_continuity::DeviceId,
+    ) -> (Vec<u32>, Vec<u32>) {
+        let mut keys = self
+            .keys
+            .get(controller)
+            .map(|held| held.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut buttons = self
+            .buttons
+            .get(controller)
+            .map(|held| held.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        keys.sort_unstable();
+        buttons.sort_unstable();
+        let keys = keys
+            .into_iter()
+            .filter(|key| self.key_transition(controller, *key, false))
+            .collect();
+        let buttons = buttons
+            .into_iter()
+            .filter(|button| self.button_transition(controller, *button, false))
+            .collect();
+        self.keys.remove(controller);
+        self.buttons.remove(controller);
+        (keys, buttons)
+    }
+
+    fn controllers(&self) -> Vec<crate::shell::personal_continuity::DeviceId> {
+        let mut controllers = self
+            .keys
+            .keys()
+            .chain(self.buttons.keys())
+            .cloned()
+            .collect::<Vec<_>>();
+        controllers.sort();
+        controllers.dedup();
+        controllers
+    }
+}
+
+#[cfg(test)]
+mod personal_fabric_input_holder_tests {
+    use super::PersonalFabricInputHolders;
+    use crate::shell::personal_continuity::DeviceId;
+
+    #[test]
+    fn cleanup_releases_only_the_final_controller_holding_an_input() {
+        let first = DeviceId::new("first").unwrap();
+        let second = DeviceId::new("second").unwrap();
+        let mut held = PersonalFabricInputHolders::default();
+        assert!(held.key_transition(&first, 42, true));
+        assert!(!held.key_transition(&second, 42, true));
+        assert!(held.button_transition(&first, 0x110, true));
+        assert_eq!(held.release_controller(&first), (Vec::new(), vec![0x110]));
+        assert_eq!(held.release_controller(&second), (vec![42], Vec::new()));
+    }
+}
+
 pub struct State {
     /// Calloop loop handle — for registering input devices, session signals, libinput sources, etc.
     pub loop_handle: LoopHandle<'static, Self>,
@@ -551,6 +691,7 @@ pub struct State {
     /// keyboard/text-input focus. See
     /// [`crate::compositor::remote_seat::RemoteSeats`].
     pub remote_seats: RemoteSeats,
+    personal_fabric_input: PersonalFabricInputHolders,
     /// Every live client surface, keyed by the stable collaboration id.
     /// Native output bookkeeping uses this to emit `wl_surface.enter`, and
     /// remote pointer motion uses it to resolve the real focus surface.
@@ -886,14 +1027,14 @@ impl State {
         let (dmabuf_device, dmabuf_global) = Self::init_dmabuf(&display_handle, &mut dmabuf_state);
 
         // Register a real seat with a pointer device for `apply_remote_input` to inject into; name matches the wayland.rs sibling for consistency.
-        let mut seat = seat_state.new_wl_seat(&display_handle, "quick-desktop");
+        let mut seat = seat_state.new_wl_seat(&display_handle, "tilo-desktop");
         seat.add_pointer();
         let initial_keyboard_index = Self::init_seat_keyboard(&mut seat);
         // A touchscreen can't reach a client without this — chrome uses the synthesised pointer stream, but real multi-touch needs `wl_touch`.
         seat.add_touch();
         // Text fields are public; the input method and virtual keyboard are
         // not. Sandboxed apps only see the public Wayland socket. Even a
-        // process spoofing `dev.qos.osk` there cannot bind either privileged
+        // process spoofing `dev.tilo.osk` there cannot bind either privileged
         // global: authorization is immutable per-connection state set by the
         // dedicated socket acceptor.
         let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
@@ -953,6 +1094,7 @@ impl State {
             activation_serials: VecDeque::new(),
             start_time: std::time::Instant::now(),
             remote_seats: RemoteSeats::new(),
+            personal_fabric_input: PersonalFabricInputHolders::default(),
             surface_handles: HashMap::new(),
             active_sessions: HashMap::new(),
             legacy_stream_publisher: None,
@@ -1863,6 +2005,8 @@ impl State {
         self.remote_input_firewall.engage_kill_switch();
         let revoked = self.share_registry.revoke_all_input();
 
+        let personal_controllers = self.release_all_personal_fabric_input();
+
         // Release keys before dropping attribution. Otherwise a peer which
         // vanished while holding a modifier could leave the app-facing seat
         // stuck after the emergency stop.
@@ -1892,6 +2036,7 @@ impl State {
         tracing::warn!(
             target: "shell::compositor::state",
             revoked,
+            personal_controllers,
             "remote-input kill switch engaged; shares and streams terminated"
         );
         revoked
@@ -1941,6 +2086,139 @@ impl State {
                 }
             }
         }
+    }
+
+    /// Inject one event that already passed the personal-fabric identity and
+    /// lease gate. Unlike an app portal session, cross-device control must
+    /// still yield to lock, the kill switch, and recent physical input on the
+    /// target device.
+    pub fn apply_personal_fabric_input(
+        &mut self,
+        controller: &crate::shell::personal_continuity::DeviceId,
+        event: crate::shell::device_fabric::FabricInputEvent,
+    ) -> bool {
+        let is_release = matches!(
+            event,
+            crate::shell::device_fabric::FabricInputEvent::PointerButton { pressed: false, .. }
+                | crate::shell::device_fabric::FabricInputEvent::Key { pressed: false, .. }
+        );
+        if !is_release
+            && let Some(reason) = self
+                .remote_input_firewall
+                .host_override(std::time::Instant::now())
+        {
+            tracing::debug!(?reason, "personal-fabric input yielded to local control");
+            return false;
+        }
+        let action = match event {
+            crate::shell::device_fabric::FabricInputEvent::PointerMotion { x, y } => {
+                RemoteAction::PointerMotionAbsolute {
+                    stream: 0,
+                    x: f64::from(x),
+                    y: f64::from(y),
+                }
+            }
+            crate::shell::device_fabric::FabricInputEvent::PointerButton { button, pressed } => {
+                if !self
+                    .personal_fabric_input
+                    .button_transition(controller, button, pressed)
+                {
+                    return false;
+                }
+                RemoteAction::PointerButton {
+                    button: i32::try_from(button).unwrap_or(i32::MAX),
+                    pressed,
+                }
+            }
+            crate::shell::device_fabric::FabricInputEvent::Scroll {
+                horizontal,
+                vertical,
+            } => RemoteAction::PointerAxis {
+                dx: f64::from(horizontal),
+                dy: f64::from(vertical),
+            },
+            crate::shell::device_fabric::FabricInputEvent::Key {
+                keycode, pressed, ..
+            } => {
+                if !self
+                    .personal_fabric_input
+                    .key_transition(controller, keycode, pressed)
+                {
+                    return false;
+                }
+                RemoteAction::KeyboardKeycode {
+                    keycode: i32::try_from(keycode).unwrap_or(i32::MAX),
+                    pressed,
+                }
+            }
+        };
+        let applied = self.apply_remote_desktop_action(action);
+        if !applied {
+            match event {
+                crate::shell::device_fabric::FabricInputEvent::PointerButton {
+                    button,
+                    pressed: true,
+                } => {
+                    let _ = self
+                        .personal_fabric_input
+                        .button_transition(controller, button, false);
+                }
+                crate::shell::device_fabric::FabricInputEvent::Key {
+                    keycode,
+                    pressed: true,
+                    ..
+                } => {
+                    let _ = self
+                        .personal_fabric_input
+                        .key_transition(controller, keycode, false);
+                }
+                crate::shell::device_fabric::FabricInputEvent::PointerMotion { .. }
+                | crate::shell::device_fabric::FabricInputEvent::PointerButton {
+                    pressed: false,
+                    ..
+                }
+                | crate::shell::device_fabric::FabricInputEvent::Scroll { .. }
+                | crate::shell::device_fabric::FabricInputEvent::Key { pressed: false, .. } => {}
+            }
+        }
+        applied
+    }
+
+    /// Release every key/button actually attributed to one personal-fabric
+    /// controller. Cleanup bypasses host overrides because withholding an up
+    /// edge after lock, revocation, or disconnect would leave the local seat
+    /// in a stuck state.
+    pub fn release_personal_fabric_input(
+        &mut self,
+        controller: &crate::shell::personal_continuity::DeviceId,
+    ) -> bool {
+        let (keys, buttons) = self.personal_fabric_input.release_controller(controller);
+        let mut released = false;
+        for keycode in keys {
+            let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+            let serial = self.next_serial();
+            released |= self.inject_seat_key(keycode, false, serial, time);
+        }
+        for button in buttons {
+            let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+            let serial = self.next_serial();
+            released |= self.remote_pointer_button(
+                i32::try_from(button).unwrap_or(i32::MAX),
+                false,
+                serial,
+                time,
+            );
+        }
+        released
+    }
+
+    pub fn release_all_personal_fabric_input(&mut self) -> usize {
+        let controllers = self.personal_fabric_input.controllers();
+        let count = controllers.len();
+        for controller in controllers {
+            let _ = self.release_personal_fabric_input(&controller);
+        }
+        count
     }
 
     fn remote_pointer_motion_absolute(
@@ -2742,13 +3020,13 @@ fn floating_capability_token(app_id: &str) -> Option<&str> {
 }
 
 /// Map the client-bound `wl_output` object back to the stable backend id.
-/// `OutputGlobals` names its Smithay outputs `qOS-<OutputId>`; parsing only
+/// `OutputGlobals` names its Smithay outputs `Tilo-<OutputId>`; parsing only
 /// that compositor-owned prefix rejects arbitrary/foreign output objects.
 fn requested_output_id(output: Option<&WlOutput>) -> Option<crate::compositor::backend::OutputId> {
     let output = SmithayOutput::from_resource(output?)?;
     output
         .name()
-        .strip_prefix("qOS-")?
+        .strip_prefix("Tilo-")?
         .parse::<u32>()
         .ok()
         .map(crate::compositor::backend::OutputId)
@@ -3058,7 +3336,7 @@ impl State {
     }
 
     /// Expire compositor-created launch tokens even when no subsequent launch
-    /// occurs. Smithay owns the protocol store; qOS owns the placement
+    /// occurs. Smithay owns the protocol store; Tilo owns the placement
     /// metadata and retires both together after the same bounded age.
     pub(crate) fn expire_host_launch_activations(&mut self) {
         let now = std::time::Instant::now();
@@ -3602,7 +3880,7 @@ impl XdgShellHandler for State {
     }
 }
 
-/// Who draws the frame around a toplevel. On qOS, the compositor —
+/// Who draws the frame around a toplevel. On Tilo, the compositor —
 /// always, and to every client that asks.
 ///
 /// States the shell's model, not a preference: a window lives in a
@@ -3782,7 +4060,7 @@ delegate_ext_data_control!(State);
 // `ext_session_lock_v1`: a client can lock the session; while locked the
 // compositor hides all normal client surfaces + routes input only to the
 // lock surface (enforced by the native run loop, which owns the
-// authoritative lock + overlay). qOS renders its own lock UI rather than a
+// authoritative lock + overlay). Tilo renders its own lock UI rather than a
 // client lock surface, so the handler bridges protocol lock/unlock into that one lock state via [`SessionLockHooks`].
 impl SessionLockHandler for State {
     fn lock_state(&mut self) -> &mut SessionLockManagerState {
@@ -3801,7 +4079,7 @@ impl SessionLockHandler for State {
     }
 
     fn new_surface(&mut self, surface: LockSurface, _output: WlOutput) {
-        // qOS renders its own lock overlay, so a client lock surface is accepted (no error/hang) but not composited; configured to the output size.
+        // Tilo renders its own lock overlay, so a client lock surface is accepted (no error/hang) but not composited; configured to the output size.
         let (w, h) = self.output_size;
         if w > 0 && h > 0 {
             // Already checked positive above, so this never hits the fallback in practice.
@@ -4065,7 +4343,7 @@ mod osk_identity_tests {
     fn only_private_socket_plus_exact_app_id_is_trusted() {
         assert!(osk_identity_is_trusted(Some(OSK_APP_ID), true));
         assert!(!osk_identity_is_trusted(Some(OSK_APP_ID), false));
-        assert!(!osk_identity_is_trusted(Some("dev.qos.lookalike"), true));
+        assert!(!osk_identity_is_trusted(Some("dev.tilo.lookalike"), true));
         assert!(!osk_identity_is_trusted(None, true));
     }
 
@@ -4079,16 +4357,16 @@ mod osk_identity_tests {
     fn launcher_attribution_overrides_missing_app_id_and_rejects_spoofing() {
         let room = crate::shell::state::RoomId::new();
         let client = ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
-            package_id: "dev.qos.notes".into(),
+            package_id: "dev.tilo.notes".into(),
             workspace_id: Some(room.to_string()),
             confined: true,
         });
         assert_eq!(
             authenticated_toplevel_identity(Some(&client), None),
-            Ok((Some("dev.qos.notes".into()), Some(room)))
+            Ok((Some("dev.tilo.notes".into()), Some(room)))
         );
         assert!(
-            authenticated_toplevel_identity(Some(&client), Some("dev.qos.file-explorer".into()))
+            authenticated_toplevel_identity(Some(&client), Some("dev.tilo.file-explorer".into()))
                 .is_err()
         );
     }
@@ -4097,7 +4375,7 @@ mod osk_identity_tests {
     fn stale_workspace_attribution_fails_closed_but_host_clients_remain_compatible() {
         let attributed =
             ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
-                package_id: "dev.qos.notes".into(),
+                package_id: "dev.tilo.notes".into(),
                 workspace_id: Some("not-a-room".into()),
                 confined: true,
             });
@@ -4135,10 +4413,10 @@ mod osk_identity_tests {
             None
         );
         assert_eq!(
-            floating_capability_token("dev.qos.shell-float.predictable"),
+            floating_capability_token("dev.tilo.shell-float.predictable"),
             None
         );
-        assert_eq!(floating_capability_token("dev.qos.chat"), None);
+        assert_eq!(floating_capability_token("dev.tilo.chat"), None);
     }
 }
 
@@ -4152,7 +4430,7 @@ mod floating_lifecycle_tests {
             token: "5e8f16a2a2e24bf7ad86758f2f28e316".into(),
             connection: 7,
             public_id: "maps-navigation:active".into(),
-            app_id: "dev.qos.maps".into(),
+            app_id: "dev.tilo.maps".into(),
             content_rect: vello::kurbo::Rect::new(100.0, 80.0, 420.0, 260.0),
             rect: vello::kurbo::Rect::new(92.0, 72.0, 428.0, 268.0),
             transfer_frame: None,
@@ -4343,29 +4621,29 @@ mod tick_hook_tests {
 
     #[test]
     fn audience_identity_is_narrow_and_does_not_match_the_presenter() {
-        assert!(is_output_presentation_app_id("dev.qos.slides.audience"));
-        assert!(!is_output_presentation_app_id("dev.qos.slides"));
+        assert!(is_output_presentation_app_id("dev.tilo.slides.audience"));
+        assert!(!is_output_presentation_app_id("dev.tilo.slides"));
         assert!(!is_output_presentation_app_id(".audience"));
     }
 
     #[test]
     fn audience_role_requires_an_exact_same_client_presenter() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        tab_binding::adopt_toplevel(&mut tree, (9_u64 << 32) | 1, Some("dev.qos.slides".into()));
+        tab_binding::adopt_toplevel(&mut tree, (9_u64 << 32) | 1, Some("dev.tilo.slides".into()));
         assert!(output_presentation_owner_is_live(
             &tree,
             (9_u64 << 32) | 2,
-            "dev.qos.slides.audience"
+            "dev.tilo.slides.audience"
         ));
         assert!(!output_presentation_owner_is_live(
             &tree,
             (10_u64 << 32) | 2,
-            "dev.qos.slides.audience"
+            "dev.tilo.slides.audience"
         ));
         assert!(!output_presentation_owner_is_live(
             &tree,
             (9_u64 << 32) | 2,
-            "dev.qos.evil.audience"
+            "dev.tilo.evil.audience"
         ));
     }
 
@@ -4383,7 +4661,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: 77,
-                app_id: "dev.qos.slides.audience".into(),
+                app_id: "dev.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(2),
                 rect: Rect::ZERO,
             });
@@ -4407,7 +4685,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: 88,
-                app_id: "dev.qos.slides.audience".into(),
+                app_id: "dev.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(2),
                 rect: Rect::new(100.0, 0.0, 200.0, 100.0),
             });
@@ -4429,7 +4707,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: id,
-                app_id: "dev.qos.slides.audience".into(),
+                app_id: "dev.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(2),
                 rect: Rect::new(100.0, 0.0, 200.0, 100.0),
             });
@@ -4443,7 +4721,7 @@ mod tick_hook_tests {
         state.set_output_layout(&[out(2, (0, 0), (1920, 1080), 1.0)]);
         assert!(!state.promote_output_presentation_toplevel(
             (44_u64 << 32) | 2,
-            "dev.qos.evil.audience".into()
+            "dev.tilo.evil.audience".into()
         ));
         assert!(state.output_presentation_surfaces.is_empty());
     }
@@ -4455,7 +4733,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: (8_u64 << 32) | 5,
-                app_id: "dev.qos.slides.audience".into(),
+                app_id: "dev.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(2),
                 rect: Rect::new(1280.0, 0.0, 1920.0, 720.0),
             });
@@ -4480,7 +4758,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: live,
-                app_id: "dev.qos.slides.audience".into(),
+                app_id: "dev.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(2),
                 rect: Rect::new(1280.0, 0.0, 1920.0, 720.0),
             });
@@ -4488,7 +4766,7 @@ mod tick_hook_tests {
             .output_presentation_surfaces
             .push(OutputPresentationSurface {
                 surface_id: live + 1,
-                app_id: "dev.qos.slides.audience".into(),
+                app_id: "dev.tilo.slides.audience".into(),
                 output: crate::compositor::backend::OutputId(3),
                 rect: Rect::new(1920.0, 0.0, 2560.0, 720.0),
             });

@@ -75,7 +75,7 @@ pub fn main() {
     // zero-copy dmabuf path (opt-in) keeps hardware. Overridable by setting
     // the var yourself. wgpu (the chrome) uses Vulkan, so it's unaffected.
     #[cfg(feature = "wpe")]
-    if std::env::var_os("QOS_WEBVIEW_DMABUF").is_none()
+    if std::env::var_os("TILO_WEBVIEW_DMABUF").is_none()
         && std::env::var_os("LIBGL_ALWAYS_SOFTWARE").is_none()
     {
         // Safe: called at the very top of `main`, before any thread (or the
@@ -84,7 +84,7 @@ pub fn main() {
     }
 
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.qos.browser", browser_root)
+        &LaunchSpec::new_with_args("dev.tilo.browser", browser_root)
             .shot_handler(render_shot)
             .allowed_live_options(&[
                 "--shots-live",
@@ -143,10 +143,10 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
     let engine = widget.engine_handle();
 
     // Zero-copy GPU compositing: when the WebView engine exports dmabuf
-    // frames (QOS_WEBVIEW_DMABUF=1), install a render-thread hook that
+    // frames (TILO_WEBVIEW_DMABUF=1), install a render-thread hook that
     // blits the imported texture over the content rect. A no-op otherwise.
     #[cfg(feature = "wpe")]
-    if std::env::var_os("QOS_WEBVIEW_DMABUF").is_some() {
+    if std::env::var_os("TILO_WEBVIEW_DMABUF").is_some() {
         ui::render_thread::set_frame_post_processor(Box::new(
             browser::compositor::WebViewCompositor::new(
                 engine.clone(),
@@ -155,7 +155,7 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
         ));
     }
 
-    let (state, autosave) = ui::persist::open("dev.qos.browser");
+    let (state, autosave) = ui::persist::open("dev.tilo.browser");
     let mut app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
     browser::actions::register(app.action_registry_mut());
     // Wake the (otherwise event-driven) winit loop whenever the engine
@@ -171,7 +171,7 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
 
 #[allow(
     clippy::too_many_lines,
-    reason = "The explicit visual-audit command routing keeps each deterministic state discoverable."
+    reason = "the deterministic screenshot command routing is kept together"
 )]
 fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
     if let Some(out) = args.value("--shots-live") {
@@ -333,8 +333,8 @@ fn render_overlay_shot(
     let mut widget = BrowserWidget::new_headless();
     widget.debug_force_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/qos/qos".into(),
-            title: "qOS on code.sandbox.example".into(),
+            url: "https://github.com/tilo/tilo".into(),
+            title: "Tilo on code.sandbox.example".into(),
             last_visit: 3,
             visit_count: 12,
         },
@@ -369,8 +369,8 @@ fn render_suggestions_shot(out: &std::path::Path, text_scale: Option<f32>) {
     let mut overlay = AddressSuggestions::new();
     overlay.set_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/qos/qos".into(),
-            title: "qOS — code.sandbox.example".into(),
+            url: "https://github.com/tilo/tilo".into(),
+            title: "Tilo — code.sandbox.example".into(),
             last_visit: 3,
             visit_count: 12,
         },
@@ -407,12 +407,12 @@ fn render_suggestions_shot(out: &std::path::Path, text_scale: Option<f32>) {
     println!("browser: wrote suggestions shot to {}", out.display());
 }
 
-/// `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+/// `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
 /// theme-driven chrome can be proven across palettes; defaults to dark.
-/// `QOS_SHOTS_REDUCE_MOTION=1` drives a deterministic review override; the
+/// `TILO_SHOTS_REDUCE_MOTION=1` drives a deterministic review override; the
 /// live accessibility preferences are honoured too.
 fn shot_theme(text_scale: Option<f32>) -> Theme {
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
@@ -429,9 +429,9 @@ fn shot_theme(text_scale: Option<f32>) -> Theme {
 
 fn shot_motion_reduced() -> bool {
     [
-        "QOS_SHOTS_REDUCE_MOTION",
-        "QOS_A11Y_REDUCE_MOTION",
-        "QOS_REDUCE_MOTION",
+        "TILO_SHOTS_REDUCE_MOTION",
+        "TILO_A11Y_REDUCE_MOTION",
+        "TILO_REDUCE_MOTION",
     ]
     .into_iter()
     .filter_map(|key| std::env::var(key).ok())
@@ -471,7 +471,7 @@ fn render_live_shot_to_png(
     use ui::webview::{SharedEngine, WebViewCommand};
 
     // Dev environments (containers) can't nest WebKit's bubblewrap
-    // sandbox; on qOS the cluster sandbox is the outer boundary anyway.
+    // sandbox; on Tilo the cluster sandbox is the outer boundary anyway.
     unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
 
     let engine: SharedEngine = ui::webview::wpe::WpeEngine::new()

@@ -3,7 +3,7 @@
 //!
 //! Every credential an [`crate::Account`] needs is a long-lived bearer secret, sealed with
 //! **XChaCha20-Poly1305** (192-bit-nonce AEAD, audited `RustCrypto` stack) under a 256-bit key,
-//! stored as `vault.enc` under `$XDG_CONFIG_HOME/qos/accounts/vault/`. A fresh random nonce
+//! stored as `vault.enc` under `$XDG_CONFIG_HOME/tilo/accounts/vault/`. A fresh random nonce
 //! is drawn per write, so re-saving an unchanged vault still produces distinct ciphertext and
 //! no nonce is ever reused — the same pattern the authenticator (totp) vault uses.
 //!
@@ -57,7 +57,7 @@ impl Secret {
 
 /// Magic + format byte prefixing every sealed vault, so a stray file or a
 /// format bump is detected before bytes are handed to the AEAD.
-const SEAL_MAGIC: &[u8; 4] = b"QASV"; // qOS Accounts Secret Vault
+const SEAL_MAGIC: &[u8; 4] = b"QASV"; // Tilo Accounts Secret Vault
 const SEAL_FORMAT: u8 = 1;
 
 /// XChaCha20-Poly1305 nonce width (192-bit / 24-byte extended nonce).
@@ -69,7 +69,7 @@ const KEY_LEN: usize = 32;
 /// [`SecretVault::open`]; mutations are staged and written by [`SecretVault::save`].
 #[derive(Debug)]
 pub struct SecretVault {
-    /// The vault directory (`.../qos/accounts/vault`).
+    /// The vault directory (`.../tilo/accounts/vault`).
     dir: PathBuf,
     /// Secrets keyed by the account id string.
     entries: BTreeMap<String, Secret>,
@@ -83,7 +83,7 @@ pub enum SecretCustody {
 }
 
 impl SecretVault {
-    /// Open the vault at the default location (`$XDG_CONFIG_HOME/qos/accounts/vault`). An empty
+    /// Open the vault at the default location (`$XDG_CONFIG_HOME/tilo/accounts/vault`). An empty
     /// vault when nothing is stored or the config root can't be resolved — never an error.
     pub fn open() -> Self {
         match crate::config_root() {
@@ -134,6 +134,17 @@ impl SecretVault {
     /// Fetch the secret for `id`, if the vault holds one.
     pub fn get(&self, id: &AccountId) -> Option<Secret> {
         self.entries.get(id.as_str()).cloned()
+    }
+
+    /// Internal snapshot used by the typed stores layered over this encrypted
+    /// container. Kept crate-private so applications cannot enumerate account
+    /// credentials by bypassing their broker.
+    pub(crate) fn entries_with_prefix(&self, prefix: &str) -> Vec<(String, Secret)> {
+        self.entries
+            .iter()
+            .filter(|(id, _)| id.starts_with(prefix))
+            .map(|(id, secret)| (id.clone(), secret.clone()))
+            .collect()
     }
 
     /// Remove the secret for `id`, returning whether one existed. In-memory until [`Self::save`].
@@ -274,7 +285,7 @@ fn secret_service_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
 
 fn lookup_secret_service_key() -> Result<Option<Zeroizing<[u8; KEY_LEN]>>, String> {
     let output = Command::new("secret-tool")
-        .args(["lookup", "application", "qOS", "purpose", "account-vault"])
+        .args(["lookup", "application", "Tilo", "purpose", "account-vault"])
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("secret-tool could not start: {error}"))?;
@@ -299,9 +310,9 @@ fn store_secret_service_key(key: &[u8; KEY_LEN]) -> Result<(), String> {
     let mut child = Command::new("secret-tool")
         .args([
             "store",
-            "--label=qOS account credentials",
+            "--label=Tilo account credentials",
             "application",
-            "qOS",
+            "Tilo",
             "purpose",
             "account-vault",
         ])
@@ -452,7 +463,7 @@ mod tests {
     use super::*;
 
     fn temp_root() -> PathBuf {
-        std::env::temp_dir().join(format!("qos-accounts-vault-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("tilo-accounts-vault-{}", uuid::Uuid::new_v4()))
     }
 
     #[test]

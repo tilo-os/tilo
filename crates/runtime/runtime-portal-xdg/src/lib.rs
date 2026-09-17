@@ -1,7 +1,7 @@
 //! `runtime-portal-xdg` — idiomatic Rust wrapper around the freedesktop XDG
 //! portals (via `ashpd`).
 //!
-//! qOS apps run inside a launcher-managed sandbox where the D-Bus session
+//! Tilo apps run inside a launcher-managed sandbox where the D-Bus session
 //! bus is proxied in only when the manifest's `[sandbox.portals]` declares
 //! an intent — this crate is the client surface for those apps.
 //!
@@ -329,7 +329,7 @@ impl Notification {
             n = n.body(b);
         }
         let effective_id = if id.is_empty() {
-            format!("qos-{}", monotonic_id())
+            format!("tilo-{}", monotonic_id())
         } else {
             id.to_string()
         };
@@ -460,7 +460,7 @@ mod tests {
         unsafe {
             std::env::set_var(
                 "DBUS_SESSION_BUS_ADDRESS",
-                "unix:path=/definitely/does/not/exist/qos-portal-test",
+                "unix:path=/definitely/does/not/exist/tilo-portal-test",
             );
         }
         assert!(!is_portal_available());
@@ -499,7 +499,7 @@ mod tests {
         unsafe {
             std::env::set_var(
                 "DBUS_SESSION_BUS_ADDRESS",
-                "unix:path=/definitely/does/not/exist/qos-portal-test-bogus",
+                "unix:path=/definitely/does/not/exist/tilo-portal-test-bogus",
             );
         }
         // Connection attempt will fail. Every portal reports NotAvailable.

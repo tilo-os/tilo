@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Test qOS's native FEX supervisor in a disposable Linux container.
+"""Test Tilo's native FEX supervisor in a disposable Linux container.
 
-Provide an init process, native FEX, a verified guest rootfs at /opt/qos/x86,
+Provide an init process, native FEX, a verified guest rootfs at /opt/tilo/x86,
 and Wine's guest resource directories at their native paths. Keep networking
 disabled, capabilities dropped, and the normal container seccomp filter.
-No externally started FEXServer is used: qOS must manage each invocation.
-Provide a writable, empty /run/qos mount for the fixed private prefix. The
+No externally started FEXServer is used: Tilo must manage each invocation.
+Provide a writable, empty /run/tilo mount for the fixed private prefix. The
 verified guest rootfs must contain the separate upstream DXVK payload and its
 build metadata. Completed test prefixes remain in this disposable container.
 """
@@ -29,7 +29,7 @@ def main():
     if any(args.output_dir.iterdir()):
         parser.error("output directory must be empty")
     results = []
-    prefix = Path("/run/qos/capsule/prefix")
+    prefix = Path("/run/tilo/capsule/prefix")
     prefix.parent.mkdir(parents=True, exist_ok=True)
     for name in ("prefix", "prefix-win32", "prefix-win64"):
         if (prefix.parent / name).exists() or (prefix.parent / name).is_symlink():
@@ -39,13 +39,13 @@ def main():
         (prefix / "drive_c").mkdir()
         (prefix / "dosdevices").mkdir()
         (prefix / "dosdevices/c:").symlink_to("../drive_c", target_is_directory=True)
-        with tempfile.TemporaryDirectory(prefix="qos-managed-fex-") as home:
+        with tempfile.TemporaryDirectory(prefix="tilo-managed-fex-") as home:
             environment = os.environ | {
                 "HOME": home, "XDG_RUNTIME_DIR": home,
                 "WINEPREFIX": str(prefix), "WINEARCH": f"win{bits}",
                 "WINEDEBUG": "-all",
             }
-            marker = f"QOS_MANAGED_FEX_PASS_{bits}"
+            marker = f"TILO_MANAGED_FEX_PASS_{bits}"
             cases = [("console", f"echo {marker}", 0), ("status", "exit /b 23", 23)]
             for name, command, expected in cases:
                 try:
@@ -71,7 +71,7 @@ def main():
                 dxvk_ok = True
                 for source_arch, destination in mappings:
                     for interface in ("d3d8", "d3d9", "d3d10core", "d3d11", "dxgi"):
-                        source = Path("/opt/qos/x86/usr/share/qos/dxvk") / source_arch / f"{interface}.dll"
+                        source = Path("/opt/tilo/x86/usr/share/tilo/dxvk") / source_arch / f"{interface}.dll"
                         installed = prefix / "drive_c/windows" / destination / f"{interface}.dll"
                         dxvk_ok = dxvk_ok and installed.is_file() and not installed.is_symlink()
                         if dxvk_ok:

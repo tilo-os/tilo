@@ -116,6 +116,7 @@ impl AgendaView {
         let end = anchor + Duration::days(DAYS_SHOWN);
         let x0 = area.x0 + 24.0;
         let show_location = area.width() >= 520.0;
+        let scale = f64::from(theme.text_scale).max(1.0);
         let mut y = area.y0 + 18.0 - f64::from(self.scroll.offset_y());
         let mut drew_any = false;
 
@@ -141,8 +142,10 @@ impl AgendaView {
             }
             drew_any = true;
 
-            draw_day_heading(scene, transform, text, theme, area, x0, y, day, today);
-            y += 26.0;
+            draw_day_heading(
+                scene, transform, text, theme, area, x0, y, day, today, scale,
+            );
+            y += 30.0 * scale;
 
             for event in events {
                 draw_event_row(
@@ -157,17 +160,18 @@ impl AgendaView {
                     pointer,
                     event,
                     &mut hits,
+                    scale,
                 );
-                y += 32.0;
+                y += 38.0 * scale;
             }
 
             for task in tasks {
                 draw_task_row(
-                    scene, transform, text, theme, area, x0, y, pointer, task, &mut hits,
+                    scene, transform, text, theme, area, x0, y, pointer, task, &mut hits, scale,
                 );
-                y += 32.0;
+                y += 38.0 * scale;
             }
-            y += 12.0;
+            y += 16.0 * scale;
             day += Duration::days(1);
         }
 
@@ -218,9 +222,10 @@ fn draw_day_heading(
     y: f64,
     day: NaiveDate,
     today: NaiveDate,
+    scale: f64,
 ) {
     let colors = &theme.tokens.colors;
-    if y + 24.0 > area.y0 && y < area.y1 {
+    if y + 28.0 * scale > area.y0 && y < area.y1 {
         let heading_color = if day == today {
             colors.accent[5]
         } else {
@@ -239,7 +244,7 @@ fn draw_day_heading(
             &date::fmt_day_long(day),
             12.0,
             colors.text_dim,
-            transform * Affine::translate((x0 + 120.0, y + 2.0)),
+            transform * Affine::translate((x0 + 120.0 * scale, y + 2.0 * scale)),
             None,
         );
     }
@@ -261,9 +266,10 @@ fn draw_event_row(
     pointer: Point,
     event: &crate::model::Event,
     hits: &mut Vec<(Rect, AgendaAction)>,
+    scale: f64,
 ) {
     let colors = &theme.tokens.colors;
-    let row = Rect::new(x0, y, area.x1 - 24.0, y + 30.0);
+    let row = Rect::new(x0, y, area.x1 - 24.0, y + 34.0 * scale);
     if row.y1 > area.y0 && row.y0 < area.y1 {
         if row.contains(pointer) {
             fill_round(scene, transform, colors.lift(0.35), row, 6.0);
@@ -272,7 +278,12 @@ fn draw_event_row(
             scene,
             transform,
             event.color.color(theme),
-            Rect::new(row.x0, row.y0 + 4.0, row.x0 + 4.0, row.y1 - 4.0),
+            Rect::new(
+                row.x0,
+                row.y0 + 4.0 * scale,
+                row.x0 + 4.0 * scale,
+                row.y1 - 4.0 * scale,
+            ),
             2.0,
         );
         let time = if event.all_day {
@@ -285,7 +296,7 @@ fn draw_event_row(
             &time,
             12.0,
             colors.text_dim,
-            transform * Affine::translate((row.x0 + 16.0, y + 7.0)),
+            transform * Affine::translate((row.x0 + 16.0 * scale, y + 7.0 * scale)),
             None,
         );
         let title_max = if show_location && !event.location.is_empty() {
@@ -298,7 +309,7 @@ fn draw_event_row(
             &event.title,
             13.0,
             colors.neutral[9],
-            transform * Affine::translate((row.x0 + 90.0, y + 7.0)),
+            transform * Affine::translate((row.x0 + 90.0 * scale, y + 7.0 * scale)),
             Some(title_max.max(40.0) as f32),
         );
         if show_location && !event.location.is_empty() {
@@ -332,9 +343,10 @@ fn draw_task_row(
     pointer: Point,
     task: &crate::model::Task,
     hits: &mut Vec<(Rect, AgendaAction)>,
+    scale: f64,
 ) {
     let colors = &theme.tokens.colors;
-    let row = Rect::new(x0, y, area.x1 - 24.0, y + 30.0);
+    let row = Rect::new(x0, y, area.x1 - 24.0, y + 34.0 * scale);
     if row.y1 > area.y0 && row.y0 < area.y1 {
         if row.contains(pointer) {
             fill_round(scene, transform, colors.lift(0.35), row, 6.0);
@@ -343,10 +355,10 @@ fn draw_task_row(
             hits.push((hit, AgendaAction::OpenTask(task.id)));
         }
         let checkbox = Rect::new(
-            row.x0 + 8.0,
-            row.center().y - 8.0,
-            row.x0 + 24.0,
-            row.center().y + 8.0,
+            row.x0 + 8.0 * scale,
+            row.center().y - 8.0 * scale,
+            row.x0 + 24.0 * scale,
+            row.center().y + 8.0 * scale,
         );
         draw_checkbox(scene, transform, theme, checkbox, task.done);
         let label_color = if task.done {
@@ -354,16 +366,19 @@ fn draw_task_row(
         } else {
             colors.neutral[9]
         };
-        let label_x0 = row.x0 + 34.0;
+        let label_x0 = row.x0 + 34.0 * scale;
         text.draw_text(
             scene,
             &task.title,
-            13.0,
+            // Keep one readable, clipped line at high text scales. Wrapping
+            // task labels inside a fixed-height agenda row makes the next
+            // checkbox overlap and breaks both hit targets and scanning.
+            11.0,
             label_color,
-            transform * Affine::translate((label_x0, y + 7.0)),
+            transform * Affine::translate((label_x0, y + 7.0 * scale)),
             Some((row.width() - 160.0).max(40.0) as f32),
         );
-        let label_width = f64::from(text.measure(&task.title, 13.0, None).0);
+        let label_width = f64::from(text.measure(&task.title, 11.0, None).0);
         if task.done {
             stroke_line(
                 scene,

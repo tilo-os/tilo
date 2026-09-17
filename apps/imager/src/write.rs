@@ -46,7 +46,7 @@ pub const CHUNK: usize = 4 * 1024 * 1024;
 /// Linux, macOS and Windows and lets the live medium read it before touching
 /// any target disk.
 pub const PROFILE_BLOCK_SIZE: usize = 64 * 1024;
-pub const PROFILE_MAGIC: &str = "QOS_INSTALL_PROFILE_V1";
+pub const PROFILE_MAGIC: &str = "TILO_INSTALL_PROFILE_V1";
 
 /// Outcome of asking to start a job.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,7 +63,7 @@ pub enum JobStart {
     /// Refused — the image is larger than the target drive.
     TooSmall,
     /// Refused because desktop imaging is restricted to external media. The
-    /// booted qOS installer owns internal-disk and dual-boot installation.
+    /// booted Tilo installer owns internal-disk and dual-boot installation.
     UnsafeTarget,
     /// Refused before any I/O because an installable image's embedded profile
     /// would be rejected by the live installer.
@@ -93,7 +93,7 @@ impl WriteBackend {
     /// helper, while tests and shots remain disabled.
     pub fn system() -> Self {
         if cfg!(all(target_os = "linux", feature = "flatpak-media-writer"))
-            && std::env::var("QOS_IMAGER_FLATPAK").as_deref() == Ok("1")
+            && std::env::var("TILO_IMAGER_FLATPAK").as_deref() == Ok("1")
         {
             WriteBackend::Udisks2
         } else if allow_write() {
@@ -118,17 +118,17 @@ impl WriteBackend {
 /// Whether the running process has a real raw-media write path.
 ///
 /// The live application normally returns `true` because it authenticates a
-/// narrow privileged helper at write time. `QOS_IMAGER_ALLOW_WRITE` is only
+/// narrow privileged helper at write time. `TILO_IMAGER_ALLOW_WRITE` is only
 /// the explicit diagnostic opt-in for writing directly in this process.
 pub fn write_available() -> bool {
     WriteBackend::system().is_available()
 }
 
-/// The env allow-gate. `QOS_IMAGER_ALLOW_WRITE=1` is the single switch that
+/// The env allow-gate. `TILO_IMAGER_ALLOW_WRITE=1` is the single switch that
 /// lets a real block-device write happen; unset (the default) keeps every
-/// path unavailable. Modelled on the VPN app's `QOS_VPN_ALLOW_EXEC`.
+/// path unavailable. Modelled on the VPN app's `TILO_VPN_ALLOW_EXEC`.
 pub fn allow_write() -> bool {
-    std::env::var("QOS_IMAGER_ALLOW_WRITE").as_deref() == Ok("1")
+    std::env::var("TILO_IMAGER_ALLOW_WRITE").as_deref() == Ok("1")
 }
 
 /// A validated request to write `source` to `target` using `action`
@@ -388,7 +388,7 @@ fn try_lock_file(path: &Path) -> io::Result<TargetWriteLock> {
         {
             Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
-                "another qOS Imager helper is already using this drive",
+                "another Tilo Imager helper is already using this drive",
             ))
         } else {
             Err(error)
@@ -402,9 +402,9 @@ fn acquire_target_write_lock(target: &TargetDrive) -> io::Result<TargetWriteLock
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     #[cfg(target_os = "linux")]
-    let directory = Path::new("/run/lock/qos-imager");
+    let directory = Path::new("/run/lock/tilo-imager");
     #[cfg(not(target_os = "linux"))]
-    let directory = Path::new("/var/run/qos-imager");
+    let directory = Path::new("/var/run/tilo-imager");
 
     if !directory.exists() {
         std::fs::create_dir(directory)?;
@@ -417,7 +417,7 @@ fn acquire_target_write_lock(target: &TargetDrive) -> io::Result<TargetWriteLock
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "the privileged qOS Imager lock directory is not root-owned and private",
+            "the privileged Tilo Imager lock directory is not root-owned and private",
         ));
     }
     try_lock_file(&directory.join(target_lock_name(target)))
@@ -453,7 +453,7 @@ unsafe extern "system" {
 #[cfg(target_os = "windows")]
 fn acquire_target_write_lock(target: &TargetDrive) -> io::Result<TargetWriteLock> {
     const ERROR_ALREADY_EXISTS: u32 = 183;
-    let name = format!("Global\\qOS-Imager-target-{}", target_lock_name(target));
+    let name = format!("Global\\Tilo-Imager-target-{}", target_lock_name(target));
     let wide = name
         .encode_utf16()
         .chain(std::iter::once(0))
@@ -468,7 +468,7 @@ fn acquire_target_write_lock(target: &TargetDrive) -> io::Result<TargetWriteLock
         }
         return Err(io::Error::new(
             io::ErrorKind::WouldBlock,
-            "another qOS Imager helper is already using this drive",
+            "another Tilo Imager helper is already using this drive",
         ));
     }
     Ok(TargetWriteLock(handle))
@@ -1246,7 +1246,7 @@ fn run_udisks_job(
     result
 }
 
-const WRITE_HELPER_ARG: &str = "--qos-write-helper";
+const WRITE_HELPER_ARG: &str = "--tilo-write-helper";
 
 // `Start-Process` flattens its `ArgumentList` into a native command line. A
 // literal double quote must therefore surround each path so spaces remain in
@@ -1254,7 +1254,7 @@ const WRITE_HELPER_ARG: &str = "--qos-write-helper";
 // single-quoted `'"'` is exactly one double-quote character; `\"` would be a
 // backslash followed by a quote and would not group the path.
 #[cfg(any(test, target_os = "windows"))]
-const WINDOWS_ELEVATION_SCRIPT: &str = r#"$p = Start-Process -FilePath $args[0] -Verb RunAs -Wait -PassThru -ArgumentList @('--qos-write-helper', ('"' + $args[1] + '"'), ('"' + $args[2] + '"'), $args[3], ('"' + $args[4] + '"')); exit $p.ExitCode"#;
+const WINDOWS_ELEVATION_SCRIPT: &str = r#"$p = Start-Process -FilePath $args[0] -Verb RunAs -Wait -PassThru -ArgumentList @('--tilo-write-helper', ('"' + $args[1] + '"'), ('"' + $args[2] + '"'), $args[3], ('"' + $args[4] + '"')); exit $p.ExitCode"#;
 
 /// Execute the privileged helper mode when `args` requests it. This is called
 /// before the windowing runtime is initialized.
@@ -1345,7 +1345,7 @@ fn validate_helper_paths(request: &Path, progress: &Path, cancel: &Path) -> io::
         || !request_parent
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("qos-imager-write-"))
+            .is_some_and(|name| name.starts_with("tilo-imager-write-"))
     {
         return Err(io::Error::other(
             "write helper paths are outside its private job directory",
@@ -1383,7 +1383,7 @@ fn run_privileged_helper(
     tx: &Sender<Progress>,
 ) -> io::Result<()> {
     let work = tempfile::Builder::new()
-        .prefix("qos-imager-write-")
+        .prefix("tilo-imager-write-")
         .tempdir()?;
     let request_path = work.path().join("request.json");
     let progress_path = work.path().join("progress.jsonl");
@@ -1412,7 +1412,7 @@ fn run_privileged_helper(
 
 fn helper_executable() -> io::Result<std::path::PathBuf> {
     #[cfg(target_os = "linux")]
-    if let Some(appimage) = std::env::var_os("QOS_IMAGER_APPIMAGE") {
+    if let Some(appimage) = std::env::var_os("TILO_IMAGER_APPIMAGE") {
         let path = std::path::PathBuf::from(appimage);
         if path.is_absolute() && path.is_file() {
             return Ok(path);
@@ -1577,7 +1577,7 @@ fn elevated_helper_command(
     cancel: &Path,
 ) -> io::Result<Command> {
     const SCRIPT: &str = r#"on run argv
-set helperCommand to quoted form of item 1 of argv & " --qos-write-helper " & quoted form of item 2 of argv & " " & quoted form of item 3 of argv & " " & quoted form of item 4 of argv & " " & quoted form of item 5 of argv
+set helperCommand to quoted form of item 1 of argv & " --tilo-write-helper " & quoted form of item 2 of argv & " " & quoted form of item 3 of argv & " " & quoted form of item 4 of argv & " " & quoted form of item 5 of argv
 do shell script helperCommand with administrator privileges
 end run"#;
     let mut command = Command::new("osascript");
@@ -1872,7 +1872,7 @@ mod tests {
     fn default_backend_is_disabled_without_gate() {
         let _g = ENV_LOCK.lock().unwrap();
         // No opt-in env var set → unavailable, never a fake success.
-        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
         unsafe { std::env::remove_var("IMAGER_LIVE") };
         assert_eq!(WriteBackend::system(), WriteBackend::Disabled);
         assert!(!allow_write());
@@ -1882,7 +1882,7 @@ mod tests {
     #[cfg(feature = "host-media-writer")]
     fn packaged_host_build_enables_the_short_lived_helper_without_an_environment_flag() {
         let _g = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
         unsafe { std::env::remove_var("IMAGER_LIVE") };
         assert_eq!(WriteBackend::system(), WriteBackend::PrivilegedHelper);
         assert!(write_available());
@@ -1891,7 +1891,7 @@ mod tests {
     #[test]
     fn live_ui_uses_short_lived_privileged_helper() {
         let _g = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
         unsafe { std::env::set_var("IMAGER_LIVE", "1") };
         assert_eq!(WriteBackend::system(), WriteBackend::PrivilegedHelper);
         assert!(write_available());
@@ -1902,12 +1902,12 @@ mod tests {
     #[test]
     fn flatpak_selects_udisks_without_enabling_direct_device_writes() {
         let _g = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
         unsafe { std::env::remove_var("IMAGER_LIVE") };
-        unsafe { std::env::set_var("QOS_IMAGER_FLATPAK", "1") };
+        unsafe { std::env::set_var("TILO_IMAGER_FLATPAK", "1") };
         assert_eq!(WriteBackend::system(), WriteBackend::Udisks2);
         assert!(!allow_write(), "the sandbox never gains direct /dev access");
-        unsafe { std::env::remove_var("QOS_IMAGER_FLATPAK") };
+        unsafe { std::env::remove_var("TILO_IMAGER_FLATPAK") };
     }
 
     #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
@@ -1937,10 +1937,10 @@ mod tests {
         // The real block-device backend is chosen ONLY when the operator opts
         // in explicitly; flipping the gate is the single switch between the
         // disabled path and the real device write.
-        unsafe { std::env::set_var("QOS_IMAGER_ALLOW_WRITE", "1") };
+        unsafe { std::env::set_var("TILO_IMAGER_ALLOW_WRITE", "1") };
         assert!(allow_write());
         assert_eq!(WriteBackend::system(), WriteBackend::System);
-        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
         let expected = if cfg!(feature = "host-media-writer") {
             WriteBackend::PrivilegedHelper
         } else {
@@ -1964,7 +1964,7 @@ mod tests {
     #[test]
     fn helper_rejects_a_request_changed_after_authorization() {
         let work = tempfile::Builder::new()
-            .prefix("qos-imager-write-")
+            .prefix("tilo-imager-write-")
             .tempdir()
             .unwrap();
         let request_path = work.path().join("request.json");
@@ -1988,7 +1988,7 @@ mod tests {
     #[test]
     fn helper_never_follows_or_overwrites_a_planted_progress_path() {
         let work = tempfile::Builder::new()
-            .prefix("qos-imager-write-")
+            .prefix("tilo-imager-write-")
             .tempdir()
             .unwrap();
         let progress_path = work.path().join("progress.jsonl");
@@ -2001,7 +2001,7 @@ mod tests {
     #[test]
     fn cancellation_marker_is_separate_from_digest_bound_request() {
         let work = tempfile::Builder::new()
-            .prefix("qos-imager-write-")
+            .prefix("tilo-imager-write-")
             .tempdir()
             .unwrap();
         let request_path = work.path().join("request.json");
@@ -2026,7 +2026,7 @@ mod tests {
     #[test]
     fn failed_cancellation_delivery_remains_retryable() {
         let work = tempfile::tempdir().unwrap();
-        let job_dir = work.path().join("qos-imager-write-retry");
+        let job_dir = work.path().join("tilo-imager-write-retry");
         let cancel_path = job_dir.join("cancel");
         let control = JobControl::new();
         control.cancel();
@@ -2069,7 +2069,7 @@ mod tests {
     #[test]
     fn helper_rejects_cancellation_marker_outside_private_job_directory() {
         let work = tempfile::Builder::new()
-            .prefix("qos-imager-write-")
+            .prefix("tilo-imager-write-")
             .tempdir()
             .unwrap();
         let outside = tempfile::tempdir().unwrap();
@@ -2094,7 +2094,7 @@ mod tests {
     #[test]
     fn linux_elevates_only_the_hidden_helper_mode() {
         let command = elevated_helper_command(
-            Path::new("/opt/qos-imager-bin"),
+            Path::new("/opt/tilo-imager-bin"),
             Path::new("/tmp/request"),
             Path::new("/tmp/progress"),
             &"a".repeat(64),
@@ -2103,7 +2103,7 @@ mod tests {
         .unwrap();
         assert_eq!(command.get_program(), "pkexec");
         let args: Vec<_> = command.get_args().collect();
-        assert_eq!(args[0], "/opt/qos-imager-bin");
+        assert_eq!(args[0], "/opt/tilo-imager-bin");
         assert_eq!(args[1], WRITE_HELPER_ARG);
         assert_eq!(args.len(), 6);
     }
@@ -2234,11 +2234,11 @@ mod tests {
         write_profile_block(&media, PROFILE_BLOCK_SIZE as u64 * 2, &profile).unwrap();
 
         let extractor = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../os/usr/libexec/qos-installer-profile-extract");
+            .join("../../os/usr/libexec/tilo-installer-profile-extract");
         let status = std::process::Command::new(extractor)
-            .env("QOS_INSTALLER_PROFILE_DEVICE", &media)
-            .env("QOS_INSTALLER_PROFILE_ALLOW_FILE", "1")
-            .env("QOS_INSTALLER_PROFILE_OUT_DIR", &out)
+            .env("TILO_INSTALLER_PROFILE_DEVICE", &media)
+            .env("TILO_INSTALLER_PROFILE_ALLOW_FILE", "1")
+            .env("TILO_INSTALLER_PROFILE_OUT_DIR", &out)
             .status()
             .unwrap();
         assert!(status.success());
@@ -2260,7 +2260,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         // Validation remains pure, but the live start refuses rather than
         // reporting synthetic progress and success.
-        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
         unsafe { std::env::remove_var("IMAGER_LIVE") };
         let r = req();
         assert_eq!(begin_job(&r, "sdb"), JobStart::Started);
@@ -2379,6 +2379,7 @@ mod tests {
         request.source.size = data.len() as u64;
         request.source.identity = SourceIdentity::from_file(source.as_file());
         request.source.installable = true;
+        request.source.expected_sha256 = None;
         request.target.size = target_size;
 
         let mut phases = Vec::new();
@@ -2476,7 +2477,7 @@ mod tests {
     #[test]
     fn target_revalidation_failure_still_reports_an_actionable_terminal_event() {
         let mut request = req();
-        request.target.name = "qos-test-device-that-cannot-exist".into();
+        request.target.name = "tilo-test-device-that-cannot-exist".into();
         let mut updates = Vec::new();
 
         let result = run_system_job(&request, &|| false, |progress| updates.push(progress));

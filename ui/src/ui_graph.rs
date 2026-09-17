@@ -24,7 +24,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-pub use qos_ui_graph::{
+pub use tilo_ui_graph::{
     UI_GRAPH_VERSION, UiButtonStyle, UiDocument, UiGraphError, UiNavigation, UiNode, UiTextRole,
     UiTextSource,
 };
@@ -120,7 +120,7 @@ impl From<UiTextRole> for TextRole {
     }
 }
 
-/// Compile a validated serialized graph into ordinary qOS widgets.
+/// Compile a validated serialized graph into ordinary Tilo widgets.
 pub trait UiDocumentExt {
     /// Build the retained widget subtree represented by this graph.
     ///

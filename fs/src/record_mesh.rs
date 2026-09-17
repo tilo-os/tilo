@@ -17,7 +17,7 @@ use crate::record_repository::{
     RecordRepository, RecordRepositoryKey, RecordStreamCursor, RecordStreamKey,
 };
 
-pub const QOS_FS_RECORD_MESH_ALPN: &[u8] = b"qos-fs-record-mesh/2";
+pub const TILO_FS_RECORD_MESH_ALPN: &[u8] = b"tilo-fs-record-mesh/2";
 pub const RECORD_MESH_PROTOCOL_VERSION: u16 = 2;
 pub const MAX_RECORD_MESH_FRAME_BYTES: usize = 256 * 1024;
 pub const MAX_RECORD_MESH_INVENTORY_PAGE_STREAMS: usize = 256;

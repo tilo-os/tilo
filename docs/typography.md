@@ -1,6 +1,6 @@
 # Typography
 
-qOS text has one central rule: measurement and painting must use the same
+Tilo text has one central rule: measurement and painting must use the same
 `TextStyle`. A style contains the font size, line-height multiplier, weight,
 italic state, and family. Passing one value through the whole layout pipeline
 prevents wrapping, clipping, and baseline drift.

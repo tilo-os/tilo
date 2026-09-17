@@ -1,4 +1,4 @@
-//! The spreadsheet grid — a hand-rolled view that paints A1 headers, a
+//! The spreadsheet grid — a direct-painted view with A1 headers, a
 //! scrollable cell matrix, selection (single + range), an in-cell editor,
 //! and column/row resize handles directly into the Vello scene.
 //!

@@ -18,7 +18,7 @@ use crate::widget::history::HistoryAuthor;
 use crate::widget::{ActivityTimeline, HistoryFilter};
 
 /// A fixed clock so date-range assertions are deterministic.
-const T0: i64 = 1_780_000_000; // 2026-06-08T…, comfortably in the qOS era.
+const T0: i64 = 1_780_000_000; // 2026-06-08T…, comfortably in the Tilo era.
 const HOUR: i64 = 3_600;
 
 fn at(secs: i64) -> SystemTime {
@@ -562,13 +562,13 @@ fn semantic_action_context_becomes_the_row_summary_and_browse_metadata() {
     };
     let block = dm.insert_block(None, "paragraph");
     dm.splice_text(&block, 0, 0, "launch");
-    let context = qos_actions::ActionContext::for_resource(
+    let context = tilo_actions::ActionContext::for_resource(
         "Edit",
         "notes.note:launch",
         "notes.note",
         "Launch brief",
     )
-    .with_app("org.qos.Notes", "Notes")
+    .with_app("org.tilo.Notes", "Notes")
     .with_purpose("Prepare the launch brief")
     .with_group("issue:42", "Launch brief", "issue");
     doc.commit_with(

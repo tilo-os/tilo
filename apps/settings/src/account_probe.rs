@@ -178,24 +178,24 @@ impl LiveAccountTester {
         }
         let user = Self::imap_quote(username.trim())?;
         let password = Self::imap_quote(secret.password.trim())?;
-        write!(stream, "qos1 LOGIN \"{user}\" \"{password}\"\r\n")
+        write!(stream, "tilo1 LOGIN \"{user}\" \"{password}\"\r\n")
             .map_err(|_| "could not send the IMAP login".to_string())?;
         stream
             .flush()
             .map_err(|_| "could not send the IMAP login".to_string())?;
         let login = Self::read_imap_response(
             &mut stream,
-            Some("qos1"),
+            Some("tilo1"),
             std::time::Instant::now() + Self::NETWORK_TIMEOUT,
         )?;
         let accepted = login.lines().any(|line| {
             line.get(..7)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("qos1 OK"))
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("tilo1 OK"))
         });
         if !accepted {
             return Err("IMAP server rejected the saved credential".into());
         }
-        let _ = stream.write_all(b"qos2 LOGOUT\r\n");
+        let _ = stream.write_all(b"tilo2 LOGOUT\r\n");
         Ok("IMAP sign-in succeeded".into())
     }
 
@@ -278,14 +278,14 @@ mod tests {
 
     #[test]
     fn imap_response_requires_the_expected_tag() {
-        let mut response = &b"* CAPABILITY IMAP4rev1\r\nqos1 OK logged in\r\n"[..];
+        let mut response = &b"* CAPABILITY IMAP4rev1\r\ntilo1 OK logged in\r\n"[..];
         let parsed = LiveAccountTester::read_imap_response(
             &mut response,
-            Some("qos1"),
+            Some("tilo1"),
             std::time::Instant::now() + Duration::from_secs(1),
         )
         .expect("tagged completion");
-        assert!(parsed.contains("qos1 OK"));
+        assert!(parsed.contains("tilo1 OK"));
     }
 
     #[test]
@@ -321,11 +321,11 @@ mod tests {
                 let mut reader = BufReader::new(&mut stream);
                 reader.read_line(&mut login).expect("login command");
             }
-            assert!(login.starts_with("qos1 LOGIN "));
+            assert!(login.starts_with("tilo1 LOGIN "));
             assert!(login.contains("\"ada@example.test\""));
             assert!(login.contains("\"app-password\""));
             stream
-                .write_all(b"qos1 OK LOGIN completed\r\n")
+                .write_all(b"tilo1 OK LOGIN completed\r\n")
                 .expect("login response");
             stream.flush().expect("login flush");
         });

@@ -11,14 +11,14 @@ echo "=== QuickFS OS-Level Verification System ==="
 
 # 2. Build test container image
 echo "--- Building Test Container Image ---"
-podman build -t localhost/qos-test:latest -f "$SCRIPT_DIR/Containerfile.test" "$SCRIPT_DIR"
+podman build -t localhost/tilo-test:latest -f "$SCRIPT_DIR/Containerfile.test" "$SCRIPT_DIR"
 
 # 3. Build Test QCOW2
 echo "--- Building Test QCOW2 disk image ---"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/account.env"
-"$SCRIPT_DIR/dev/disk-image.sh" localhost/qos-test:latest \
-    "$SCRIPT_DIR/output-test/qcow2" --user "$QOS_ACCOUNT"
+"$SCRIPT_DIR/dev/disk-image.sh" localhost/tilo-test:latest \
+    "$SCRIPT_DIR/output-test/qcow2" --user "$TILO_ACCOUNT"
 
 echo "=== Test Image Build Complete ==="
 echo "Test QCOW2 image: $SCRIPT_DIR/output-test/qcow2/disk.qcow2"

@@ -1,18 +1,9 @@
 //! The toolkit's Undo / Redo control.
 //!
-//! Every app has undo — [`State`](crate::state::State) records it and Ctrl+Z
-//! drives it — but until this widget none could *show* it, because a
-//! [`Widget`](crate::widget::Widget) receives only `&mut AutoCommit` and so
-//! could not ask whether there was anything to undo. Apps compensated by
-//! printing the shortcut, which teaches nothing to someone who does not already
-//! know it and offers nothing at all to a pointer- or screen-reader-driven user.
-//!
-//! `UndoButton` closes that. It reads the host-published
-//! [`UndoStatus`](crate::undo::UndoStatus), paints enabled only when the verb is
-//! genuinely available, tells assistive technology the same truth, and — on
-//! activation — asks the host to perform the verb through the very method
-//! Ctrl+Z uses. It is one widget so that every app's Undo looks, reads and
-//! behaves identically rather than each drawing its own.
+//! `UndoButton` reads the host-published [`UndoStatus`](crate::undo::UndoStatus),
+//! exposes the same availability to assistive technology, and asks the host to
+//! perform the verb through the same path as Ctrl+Z. It provides a discoverable
+//! pointer and screen-reader control for Undo and Redo.
 //!
 //! ```ignore
 //! // In a toolbar row:

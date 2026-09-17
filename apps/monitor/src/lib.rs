@@ -1,4 +1,4 @@
-//! Monitor — a CRDT-native graphical activity monitor for qOS, built on
+//! Monitor — a CRDT-native graphical activity monitor for Tilo, built on
 //! the `ui` toolkit.
 //!
 //! Two tabs (Processes / Resources) present live system stats as content —

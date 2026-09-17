@@ -1,11 +1,11 @@
 # Headless e2e examples
 
-Copy-pastable scripts that drive the nirios compositor headlessly via the `QOS_TEST_CONTROL` unix socket. Use these as starting points when writing automation for AI agents, regression tests, or interactive exploration.
+Copy-pastable scripts that drive the tilo compositor headlessly via the `TILO_TEST_CONTROL` unix socket. Use these as starting points when writing automation for AI agents, regression tests, or interactive exploration.
 
 **All examples assume the compositor is running headlessly.** Start it once with:
 
 ```bash
-./scripts/headless-examples/spawn-headless.sh /tmp/nirios.sock
+./scripts/headless-examples/spawn-headless.sh /tmp/tilo.sock
 ```
 
 The script spawns `shell --backend headless`, waits for the socket, prints `READY <socket>` to stdout when usable. Tear down with `kill` (or use `Ctrl+C` if you ran it in the foreground).
@@ -13,7 +13,7 @@ The script spawns `shell --backend headless`, waits for the socket, prints `READ
 For background lifetime management:
 
 ```bash
-./scripts/headless-examples/spawn-headless.sh /tmp/nirios.sock &
+./scripts/headless-examples/spawn-headless.sh /tmp/tilo.sock &
 COMP_PID=$!
 trap "kill $COMP_PID" EXIT
 # ... your commands ...
@@ -21,7 +21,7 @@ trap "kill $COMP_PID" EXIT
 
 ## Examples
 
-Each script takes the socket path as its first argument (default `/tmp/nirios.sock`).
+Each script takes the socket path as its first argument (default `/tmp/tilo.sock`).
 
 | Script | What it shows |
 |---|---|
@@ -30,28 +30,28 @@ Each script takes the socket path as its first argument (default `/tmp/nirios.so
 | `keyboard-flow.py` | Ctrl+K opens the palette, type text, snapshot. |
 | `drag-demo.py` | Press-then-drag a tab handle between two coordinates. |
 | `full-loop.py` | Spawn → list → click → key → drag → snapshot → tear down (single file; the most copy-pastable). |
-| `qos_client.py` | Library with `NiriosClient` class; `from qos_client import NiriosClient`. Higher-level than the raw socket calls below. |
-| `library-demo.py` | Same flow as `full-loop.py` but via `NiriosClient` — shows the library's API. |
+| `tilo_client.py` | Library with `TiloClient` class; `from tilo_client import TiloClient`. Higher-level than the raw socket calls below. |
+| `library-demo.py` | Same flow as `full-loop.py` but via `TiloClient` — shows the library's API. |
 
 Each script is < 50 lines of Python, no external deps (stdlib `socket` + `json` only).
 
-## Easier than this: the `qos-control` CLI
+## Easier than this: the `tilo-control` CLI
 
-If you don't need the Python scripts, the `qos-control` binary wraps the JSON protocol:
+If you don't need the Python scripts, the `tilo-control` binary wraps the JSON protocol:
 
 ```bash
-cargo build -p shell --bin qos-control
+cargo build -p shell --bin tilo-control
 
-qos-control list-targets                  # one row per addressable widget
-qos-control click add_workspace           # click named
-qos-control snapshot /tmp/out.png         # write PNG
-qos-control state-dump --pretty           # WorkspaceTree + Chrome as JSON
-qos-control type "hello world"            # type text
-qos-control key Enter                     # named key OR single char
-qos-control modifiers ctrl,shift          # set modifier mask (empty arg clears)
+tilo-control list-targets                  # one row per addressable widget
+tilo-control click add_workspace           # click named
+tilo-control snapshot /tmp/out.png         # write PNG
+tilo-control state-dump --pretty           # WorkspaceTree + Chrome as JSON
+tilo-control type "hello world"            # type text
+tilo-control key Enter                     # named key OR single char
+tilo-control modifiers ctrl,shift          # set modifier mask (empty arg clears)
 ```
 
-Default socket: `$QOS_TEST_CONTROL` else `/tmp/nirios.sock`. Errors exit non-zero with the structured `code: message` on stderr. Reach for the Python scripts only when you need to compose multiple calls or scrape responses.
+Default socket: `$TILO_TEST_CONTROL` else `/tmp/tilo.sock`. Errors exit non-zero with the structured `code: message` on stderr. Reach for the Python scripts only when you need to compose multiple calls or scrape responses.
 
 ## Wire protocol cheat-sheet
 
@@ -90,7 +90,6 @@ The control socket is for **ad-hoc, programmatic, headless** drives — primaril
 
 ## Further reading
 
-- `docs/headless-testing.md` — full overview of the three e2e layers (shots / socket / headless backend)
-- `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md` — design rationale + spec
+- `docs/headless-testing.md` — the maintained overview and protocol guide for the three e2e layers (shots / socket / headless backend)
 - `shell/src/compositor/test_control.rs` — the protocol's source of truth (every command + response variant lives in the `Command` and `Response` enums)
 - `shell/src/bin/shots/scenario.rs` — pre-written scenarios that exercise the same code paths in-process

@@ -338,7 +338,7 @@ fn always_survives_a_restart_and_session_does_not() {
     {
         let ws = tree.workspaces.iter_mut().find(|w| w.id == id).unwrap();
         ws.grant_app(
-            "org.qos.Ebook",
+            "org.tilo.Ebook",
             &Capability::Filesystem {
                 path: "/var/workspace/books".into(),
                 mode: FsMode::Read,
@@ -346,19 +346,19 @@ fn always_survives_a_restart_and_session_does_not() {
             },
         );
         ws.grant_app(
-            "org.qos.Ebook",
+            "org.tilo.Ebook",
             &Capability::Camera {
                 scope: GRANT_SESSION,
             },
         );
         ws.grant_app(
-            "org.qos.Ebook",
+            "org.tilo.Ebook",
             &Capability::Microphone { scope: GRANT_ONCE },
         );
     }
 
     let ws = ws_of(&tree, id);
-    let app = ws.actor_for_app("org.qos.Ebook");
+    let app = ws.actor_for_app("org.tilo.Ebook");
     assert!(ws.allows(
         &app,
         &ResourceRef::FsPath("/var/workspace/books/dune.epub".into()),
@@ -371,7 +371,7 @@ fn always_survives_a_restart_and_session_does_not() {
     let reloaded = persist::load_tree_from(&path).expect("load");
 
     let ws = ws_of(&reloaded, id);
-    let app = ws.actor_for_app("org.qos.Ebook");
+    let app = ws.actor_for_app("org.tilo.Ebook");
     assert!(
         ws.allows(
             &app,
@@ -463,20 +463,20 @@ fn re_granting_never_shortens_an_existing_grant() {
     let ws = tree.workspaces.iter_mut().find(|w| w.id == id).unwrap();
 
     ws.grant_app(
-        "org.qos.Meet",
+        "org.tilo.Meet",
         &Capability::Camera {
             scope: GRANT_ALWAYS,
         },
     );
-    ws.grant_app("org.qos.Meet", &Capability::Camera { scope: GRANT_ONCE });
+    ws.grant_app("org.tilo.Meet", &Capability::Camera { scope: GRANT_ONCE });
     ws.grant_app(
-        "org.qos.Meet",
+        "org.tilo.Meet",
         &Capability::Camera {
             scope: GRANT_SESSION,
         },
     );
 
-    let live: Vec<&CapOverride> = ws.app_capabilities("org.qos.Meet");
+    let live: Vec<&CapOverride> = ws.app_capabilities("org.tilo.Meet");
     assert_eq!(live.len(), 1, "re-granting merges rather than stacking");
     assert_eq!(
         live[0].expiry, GRANT_ALWAYS,
@@ -490,7 +490,7 @@ fn re_granting_never_shortens_an_existing_grant() {
     let reloaded = persist::load_tree_from(&path).expect("load");
     assert!(
         ws_of(&reloaded, id).allows(
-            &ws_of(&reloaded, id).actor_for_app("org.qos.Meet"),
+            &ws_of(&reloaded, id).actor_for_app("org.tilo.Meet"),
             &ResourceRef::Device("camera".into()),
             Verb::Read
         ),
@@ -506,7 +506,7 @@ fn an_expired_capability_stops_working_without_being_revoked() {
         id,
         &ALICE.to_string(),
         CapOverride::grant(
-            Subject::app("org.qos.Ebook"),
+            Subject::app("org.tilo.Ebook"),
             Scope::FsPath("/var/workspace/books".into()),
             Verb::Read,
         )
@@ -517,7 +517,7 @@ fn an_expired_capability_stops_working_without_being_revoked() {
     let ws = ws_of(&tree, id);
     assert!(
         !ws.allows(
-            &ws.actor_for_app("org.qos.Ebook"),
+            &ws.actor_for_app("org.tilo.Ebook"),
             &ResourceRef::FsPath("/var/workspace/books/dune.epub".into()),
             Verb::Read
         ),
@@ -534,7 +534,7 @@ fn the_portal_denies_an_app_a_path_it_was_never_granted() {
     let mut ws = Workspace::new(WorkspaceId::new(), "Home");
     ws.set_owner(ALICE);
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
-    let caller = PortalCaller::new(ws_id, "org.qos.Ebook");
+    let caller = PortalCaller::new(ws_id, "org.tilo.Ebook");
 
     // Nothing granted yet: every lookup and every check denies.
     assert_eq!(
@@ -594,7 +594,7 @@ fn the_portal_denies_an_app_a_path_it_was_never_granted() {
         "a read grant is not a write grant"
     );
 
-    let other = PortalCaller::new(ws_id, "org.qos.Files");
+    let other = PortalCaller::new(ws_id, "org.tilo.Files");
     assert!(
         !store.permits(
             &other,
@@ -612,7 +612,7 @@ fn a_network_allowlist_is_actually_a_list() {
     {
         let ws = tree.workspaces.iter_mut().find(|w| w.id == id).unwrap();
         ws.grant_app(
-            "org.qos.Browser",
+            "org.tilo.Browser",
             &Capability::Network {
                 hosts: Some(vec!["docs.example.com".into()]),
                 scope: GRANT_ALWAYS,
@@ -620,7 +620,7 @@ fn a_network_allowlist_is_actually_a_list() {
         );
     }
     let ws = ws_of(&tree, id);
-    let app = ws.actor_for_app("org.qos.Browser");
+    let app = ws.actor_for_app("org.tilo.Browser");
 
     assert!(
         ws.allows(

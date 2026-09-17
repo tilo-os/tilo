@@ -1,8 +1,7 @@
 //! `MainPanel` — the right-hand pane that renders the currently
 //! selected page.
 //!
-//! Phase 1 showed only the page's title. Phase 2 replaces that with
-//! a [`BlockEditor`] over the page body. The panel owns:
+//! The panel owns:
 //!
 //! - the currently displayed page's id (or `None` if nothing's
 //!   selected),
@@ -229,10 +228,8 @@ impl MainPanel {
     /// Load a page into the panel. The body is parsed and handed to
     /// a fresh `BlockEditor`. The previous editor's state (focus,
     /// caret) is discarded — switching pages is a hard cut.
-    ///
-    /// Phase 4: the parse path goes through `notes::markdown` so the
-    /// inline-mark grammar is the canonical one (the widget's own
-    /// `BlockEditor::from_markdown` doesn't see inline marks).
+    /// Parsing goes through `notes::markdown`, which owns the inline-mark
+    /// grammar that `BlockEditor::from_markdown` does not handle.
     pub fn load_page(&mut self, id: PageId, title: &str, body: String) {
         self.page_id = Some(id);
         self.empty_action_focused = false;
@@ -423,23 +420,53 @@ impl MainPanel {
     /// The parser mints stable UUIDs once here; the resulting action can be
     /// replayed identically on every peer without the editor touching Automerge.
     pub fn seed_block_ops(body: &str) -> Vec<BlockEditOp> {
-        let specs = crate::markdown::parse(body);
+        Self::seed_block_ops_with_marks(body, |_| None).0
+    }
+
+    /// Produce the complete initial collaborative representation of a Markdown
+    /// page: UUID-addressed block inserts plus its non-empty native mark
+    /// snapshots. A caller supplies title-to-id resolution so `[[Page]]`
+    /// marks point at real stable resources before the payload is dispatched.
+    ///
+    /// Keeping the two action payloads together prevents a new or duplicated
+    /// page from becoming a metadata-only remote placeholder until someone
+    /// happens to open it locally.
+    pub fn seed_block_ops_with_marks<F>(
+        body: &str,
+        resolver: F,
+    ) -> (
+        Vec<BlockEditOp>,
+        Vec<(String, Vec<crate::actions::InlineMarkSpan>)>,
+    )
+    where
+        F: FnMut(&str) -> Option<PageId>,
+    {
+        let mut specs = crate::markdown::parse(body);
+        crate::markdown::resolve_link_ids(&mut specs, resolver);
         let blocks = crate::markdown::specs_to_blocks(&specs);
         let mut after = None;
-        blocks
-            .into_iter()
-            .map(|block| {
-                let id = block.id.clone();
-                let op = BlockEditOp::Insert {
-                    block_id: id.clone(),
-                    after: after.clone(),
-                    kind: block_kind_wire(&block.kind),
-                    text: block.text().to_string(),
-                };
-                after = Some(id);
-                op
-            })
-            .collect()
+        let mut ops = Vec::with_capacity(blocks.len());
+        let mut marks = Vec::new();
+        for block in blocks {
+            let id = block.id.clone();
+            let block_marks = block
+                .line
+                .marks()
+                .iter()
+                .map(crate::actions::InlineMarkSpan::from_ui)
+                .collect::<Vec<_>>();
+            ops.push(BlockEditOp::Insert {
+                block_id: id.clone(),
+                after: after.clone(),
+                kind: block_kind_wire(&block.kind),
+                text: block.text().to_string(),
+            });
+            if !block_marks.is_empty() {
+                marks.push((id.clone(), block_marks));
+            }
+            after = Some(id);
+        }
+        (ops, marks)
     }
 
     /// Drain local editor changes for the app's canonical action dispatcher.
@@ -505,10 +532,8 @@ impl MainPanel {
     /// Re-serialise the editor's content into the cached `body` and
     /// return a clone for persistence. Called by the app's tick when
     /// `editor_is_dirty()` came back true.
-    ///
-    /// Phase 4: serialisation goes through `notes::markdown` so
-    /// inline marks survive the round-trip. The editor's own
-    /// `to_markdown` only emits plain-text bodies.
+    /// Serialization goes through `notes::markdown` so inline marks survive;
+    /// the editor's own `to_markdown` only emits plain text.
     pub fn take_body_snapshot(&mut self) -> String {
         let specs = crate::markdown::blocks_to_specs(self.editor.blocks());
         let md = crate::markdown::serialize(&specs);

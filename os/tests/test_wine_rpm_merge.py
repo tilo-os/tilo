@@ -18,12 +18,12 @@ sys.path.pop(0)
 
 
 def header(**changes):
-    values = {'Name': 'wine-common', 'Version': '11.0', 'Release': '3.fc44.qos_traditional1',
+    values = {'Name': 'wine-common', 'Version': '11.0', 'Release': '3.fc44.tilo_traditional1',
               'Arch': 'noarch', 'Basenames': 'file', 'Dirnames': '/usr/share/wine/',
               'Dirindexes': '0', 'Filedigests': 'abc',
               'Filemodes': '33188', 'Fileusername': 'root', 'Fileflags': '2',
               'Prein': 'echo preserve-script', 'Requirename': 'wine-core',
-              'Requireversion': '11.0-3.fc44.qos_traditional1', 'Triggername': 'wine',
+              'Requireversion': '11.0-3.fc44.tilo_traditional1', 'Triggername': 'wine',
               'Buildhost': 'builder-a', 'Buildtime': '1234', 'Payloadcompressor': 'zstd'}
     values.update(changes)
     root = ET.Element('rpmHeader')
@@ -35,7 +35,7 @@ def header(**changes):
 
 def package(arch):
     return {'identity': ['wine-common' if arch == 'noarch' else 'wine-core', '11.0',
-                         '3.fc44.qos_traditional1', arch, 'wine.src.rpm', 'LGPL'],
+                         '3.fc44.tilo_traditional1', arch, 'wine.src.rpm', 'LGPL'],
             'sha256': arch, 'size': 1}
 
 

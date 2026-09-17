@@ -1,4 +1,4 @@
-# What qOS is
+# What Tilo is
 
 Collaborating with people and with AI agents is one problem: both need permissions you
 can reason about, visibility into who did what, and the ability to revert it.
@@ -64,8 +64,6 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `agents.md` | agent identity, access, tasks, providers, local models and MCP |
 | `../docs/system-extensions-and-local-models.md` | optional runtime/driver packs and one-click local inference |
 | `distribution.md` | how software, settings and content reach a machine |
-| `accounts.md` | identity |
 | `language-checking.md` | spelling, grammar, text actions |
 | `os-layer.md` | image, boot, system services |
 | `product.md` | who it is for |
-| `roadmap.md` | order of work |

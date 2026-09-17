@@ -27,7 +27,7 @@
 
 use std::collections::HashMap;
 
-use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
@@ -122,7 +122,7 @@ fn lit(host: &mut ShellOverlayHost, strips: [StripId; 2]) -> Vec<(StripId, Group
 #[test]
 fn the_tree_s_active_group_is_the_one_that_reports_focus() {
     let (t, s_a, s_b) = tree();
-    let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&t);
+    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&t);
     tick(&mut host);
 
     assert_eq!(
@@ -135,7 +135,7 @@ fn the_tree_s_active_group_is_the_one_that_reports_focus() {
 #[test]
 fn moving_the_pointer_to_a_sibling_moves_the_light() {
     let (t, s_a, s_b) = tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&t);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&t);
     tick(&mut host);
     assert_eq!(
         lit(&mut host, [s_a, s_b]),
@@ -160,7 +160,7 @@ fn moving_the_pointer_to_a_sibling_moves_the_light() {
 fn moving_the_pointer_to_another_strip_moves_the_light() {
     let (t, s_a, s_b) = tree();
     let ws_id = t.active;
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&t);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&t);
     tick(&mut host);
     assert_eq!(
         lit(&mut host, [s_a, s_b]),
@@ -188,7 +188,7 @@ fn a_strip_with_no_recorded_pointer_still_lights_a_window() {
     // boot, or a strip never clicked into); resolution must fall back rather
     // than leave the strip dark.
     t.active_group.remove(&s_a);
-    let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&t);
+    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&t);
     tick(&mut host);
 
     assert_eq!(
@@ -208,7 +208,7 @@ fn a_workspace_with_one_window_lights_nothing() {
         ws.strips.retain(|s| s.id == s_a);
         ws.strips[0].window_groups.retain(|g| g.id == G_A1);
     }
-    let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&t);
+    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&t);
     tick(&mut host);
 
     assert_eq!(
@@ -228,7 +228,7 @@ fn a_second_window_anywhere_in_the_workspace_turns_the_marker_on() {
         let ws = &mut t.workspaces[0];
         ws.strips[0].window_groups.retain(|g| g.id == G_A1);
     }
-    let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&t);
+    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&t);
     tick(&mut host);
 
     assert_eq!(

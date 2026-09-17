@@ -64,9 +64,9 @@ PY
 timeout 180 "$qemu" -machine "$machine" -cpu max -accel tcg -smp 2 -m 1024 \
     -nographic -no-reboot -nic none -kernel "$out/Image" -initrd "$out/initramfs.cpio.gz" \
     -append "console=$console rdinit=/init panic=1" > "$out/serial.log" 2>&1
-grep -F "QOS_KERNEL_USERSPACE_OK release=$release machine=$(uname -m)" "$out/serial.log"
-grep -F 'QOS_MODULE_SIGNATURE_ENFORCEMENT_OK' "$out/serial.log"
-if grep -Eq 'QOS_.*FAILED|Kernel panic' "$out/serial.log"; then
+grep -F "TILO_KERNEL_USERSPACE_OK release=$release machine=$(uname -m)" "$out/serial.log"
+grep -F 'TILO_MODULE_SIGNATURE_ENFORCEMENT_OK' "$out/serial.log"
+if grep -Eq 'TILO_.*FAILED|Kernel panic' "$out/serial.log"; then
     echo 'kernel acceptance failed; inspect serial.log' >&2
     exit 1
 fi

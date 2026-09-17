@@ -44,7 +44,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "qOS collaborative filesystem", long_about = None)]
+#[command(author, version, about = "Tilo collaborative filesystem", long_about = None)]
 struct Cli {
     /// Deterministic owner-only clock used by release tests. The file contains
     /// canonical decimal Unix milliseconds and is re-read for every decision.
@@ -94,8 +94,8 @@ mod share_mount_tests {
     #[test]
     fn stdin_share_link_is_trimmed_and_strictly_bounded() {
         assert_eq!(
-            parse_share_uri_input(b"qos-file://v2/example#secret\n".to_vec(), 64).unwrap(),
-            "qos-file://v2/example#secret"
+            parse_share_uri_input(b"tilo-file://v2/example#secret\n".to_vec(), 64).unwrap(),
+            "tilo-file://v2/example#secret"
         );
         assert!(parse_share_uri_input(vec![b'x'; 65], 64).is_err());
         assert!(parse_share_uri_input(b"\r\n".to_vec(), 64).is_err());
@@ -127,11 +127,11 @@ mod share_mount_tests {
             "fs",
             "recipient-service",
             "--socket",
-            "/run/user/1000/qos/services/qos-fs.sock",
+            "/run/user/1000/tilo/services/tilo-fs.sock",
             "--mounts-root",
             "/home/alice/Shared",
             "--cache-root",
-            "/home/alice/.cache/qos/received-files",
+            "/home/alice/.cache/tilo/received-files",
         ])
         .unwrap();
         assert!(matches!(cli.command, Command::RecipientService { .. }));
@@ -141,7 +141,7 @@ mod share_mount_tests {
     #[tokio::test]
     async fn recipient_service_replaces_only_a_verified_stale_socket() {
         let temp = tempfile::tempdir().unwrap();
-        let socket = temp.path().join("qos-fs.sock");
+        let socket = temp.path().join("tilo-fs.sock");
         drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
         let listener = bind_recipient_service_socket(&socket).unwrap();
         drop(listener);
@@ -356,7 +356,7 @@ enum Command {
         /// Where to mount the read-only shared record.
         #[arg(short, long)]
         mount_point: PathBuf,
-        /// V2 qos-file URI. The fragment contains a bearer secret; prefer
+        /// V2 tilo-file URI. The fragment contains a bearer secret; prefer
         /// launching this through Files rather than shell history.
         #[arg(
             short,
@@ -385,7 +385,7 @@ enum Command {
     },
     /// Run the per-user recipient-share service used by sandboxed Files.
     RecipientService {
-        /// Launcher service socket (`%t/qos/services/qos-fs.sock`).
+        /// Launcher service socket (`%t/tilo/services/tilo-fs.sock`).
         #[arg(long)]
         socket: PathBuf,
         /// Private root containing isolated read-only received mounts.
@@ -404,7 +404,7 @@ enum Command {
         #[arg(long)]
         config: PathBuf,
     },
-    /// Export the one-file home-peer bundle for an always-on qOS host.
+    /// Export the one-file home-peer bundle for an always-on Tilo host.
     ExportHomePeer {
         /// Cache directory of the workspace currently served by this device.
         #[arg(long)]
@@ -416,10 +416,10 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
         /// Persistent cache directory on the home peer.
-        #[arg(long, default_value = "/var/lib/qos/full-replica")]
+        #[arg(long, default_value = "/var/lib/tilo/full-replica")]
         replica_cache_dir: PathBuf,
-        /// Atomic readiness proof read by qos-relay.
-        #[arg(long, default_value = "/var/lib/qos/full-replica/status.json")]
+        /// Atomic readiness proof read by tilo-relay.
+        #[arg(long, default_value = "/var/lib/tilo/full-replica/status.json")]
         status_file: PathBuf,
         /// Additional capability principals held by the host identity.
         #[arg(long = "principal")]
@@ -550,7 +550,7 @@ async fn publish_authority(cache_dir: PathBuf, acl: PathBuf) -> Result<()> {
     let ticket = Ticket::decode(&std::fs::read_to_string(workspace_ticket_path(&cache_dir))?)?;
     let capabilities = serde_json::from_slice(&std::fs::read(&acl)?)?;
     let paths = identity_paths();
-    let governor = qos_user_identity::persist::read_signing_key(&paths.user_privkey)?;
+    let governor = tilo_user_identity::persist::read_signing_key(&paths.user_privkey)?;
     let socket = local_authority_socket_path(ticket.workspace_id());
     let current = local_authority_request(
         &socket,
@@ -953,7 +953,7 @@ fn persisted_remote_workspace_ticket(cache_dir: Option<&Path>) -> Result<Option<
 }
 
 fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
-    let hash = blake3::derive_key("qos-personal-continuity-v1\0", user_public_key);
+    let hash = blake3::derive_key("tilo-personal-continuity-v1\0", user_public_key);
     let mut first8 = [0_u8; 8];
     first8.copy_from_slice(&hash[..8]);
     let id = u64::from_le_bytes(first8);
@@ -990,7 +990,7 @@ fn export_home_peer(
         serde_json::from_str(&capability_json).context("capability list is not valid JSON")?;
     let capabilities = serde_json::from_str(&capability_json)?;
     let paths = identity_paths();
-    let governor = qos_user_identity::persist::read_signing_key(&paths.user_privkey)
+    let governor = tilo_user_identity::persist::read_signing_key(&paths.user_privkey)
         .context("read workspace governor key")?;
     relay_workspace_ids.push(personal_continuity_workspace_id(
         &governor.verifying_key().to_bytes(),
@@ -2254,7 +2254,7 @@ async fn recipient_service(
         Arc::clone(&inbox),
     )?;
     let inbox_router = iroh::protocol::Router::builder(inbox_endpoint.clone())
-        .accept(fs::QOS_FS_NAMED_SHARE_INBOX_ALPN, inbox_protocol)
+        .accept(fs::TILO_FS_NAMED_SHARE_INBOX_ALPN, inbox_protocol)
         .spawn();
     let subscriptions = Arc::new(RecordSubscriptionStore::open(
         cache_root.join("record-subscriptions.json"),
@@ -2904,7 +2904,7 @@ async fn run_mount(
     // Durable pins become an active residency promise only after the live ACL
     // is attached, so inherited folder hydration cannot cross the mount view.
     let fs = fs.with_pinned_hydration();
-    // Host-side thumbnails: generate previews as metadata, served via the `user.qos.thumb` xattr.
+    // Host-side thumbnails: generate previews as metadata, served via the `user.tilo.thumb` xattr.
     let fs = match thumb_dir {
         Some(dir) => match fs::ThumbProvider::open(&dir) {
             Ok(provider) => fs.with_thumbs(provider),
@@ -2955,11 +2955,11 @@ async fn run_mount(
     if read_only {
         config.mount_options.push(MountOption::RO);
     }
-    // The installed service uses auto-unmount and the system-wide qOS mount
+    // The installed service uses auto-unmount and the system-wide Tilo mount
     // policy. The mandatory process harness runs all peers under one test UID
     // and opts into the kernel's owner-only mode, which does not require
     // mutating host `/etc/fuse.conf`.
-    if std::env::var_os("QOS_FS_FUSE_OWNER_ONLY").is_some() {
+    if std::env::var_os("TILO_FS_FUSE_OWNER_ONLY").is_some() {
         config.acl = SessionACL::Owner;
     } else {
         config.acl = SessionACL::All;
@@ -3205,7 +3205,7 @@ mod tests {
         };
         assert_eq!(
             acl.acl.as_deref(),
-            Some(Path::new("/var/lib/qos/fs-capabilities.json")),
+            Some(Path::new("/var/lib/tilo/fs-capabilities.json")),
             "fs.service must pass --acl or the shipped mount enforces nothing"
         );
         assert!(
@@ -3224,16 +3224,16 @@ mod tests {
     // tmpfiles.d must place the file the unit names, or the mount is fail-closed-refused on every fresh boot.
     #[test]
     fn tmpfiles_seeds_the_capability_list_the_service_names() {
-        let conf = std::fs::read_to_string(os_file("os/usr/lib/tmpfiles.d/qos.conf"))
+        let conf = std::fs::read_to_string(os_file("os/usr/lib/tmpfiles.d/tilo.conf"))
             .expect("the shipped tmpfiles snippet must exist");
         let seeding = conf
             .lines()
-            .find(|l| l.starts_with("C ") && l.contains("/var/lib/qos/fs-capabilities.json"))
+            .find(|l| l.starts_with("C ") && l.contains("/var/lib/tilo/fs-capabilities.json"))
             .unwrap_or_else(|| {
-                panic!("no tmpfiles line creates /var/lib/qos/fs-capabilities.json:\n{conf}")
+                panic!("no tmpfiles line creates /var/lib/tilo/fs-capabilities.json:\n{conf}")
             });
         assert!(
-            seeding.contains("/usr/share/qos/fs-capabilities.json"),
+            seeding.contains("/usr/share/tilo/fs-capabilities.json"),
             "the seed must come from the shipped default: {seeding}"
         );
 
@@ -3241,9 +3241,10 @@ mod tests {
         let containerfile = std::fs::read_to_string(os_file("os/Containerfile"))
             .expect("the production Containerfile must exist");
         assert!(
-            containerfile.lines().any(
-                |l| l.starts_with("COPY ") && l.contains("/usr/share/qos/fs-capabilities.json")
-            ),
+            containerfile
+                .lines()
+                .any(|l| l.starts_with("COPY ")
+                    && l.contains("/usr/share/tilo/fs-capabilities.json")),
             "os/Containerfile must ship the default capability list that tmpfiles.d seeds from"
         );
     }
@@ -3253,7 +3254,7 @@ mod tests {
     fn the_shipped_default_list_grants_the_local_session_its_workspace() {
         use fs::Access;
 
-        let path = os_file("os/usr/share/qos/fs-capabilities.json");
+        let path = os_file("os/usr/share/tilo/fs-capabilities.json");
         let identity: IdentityKey = [0x5A; 32]; // stands in for the per-start node key
         let file = CapabilityFile::load(
             &path,
@@ -3323,7 +3324,7 @@ mod tests {
     // Asking for enforcement and not getting it must never be silent.
     #[test]
     fn a_missing_capability_file_refuses_the_mount() {
-        let args = acl_args_from(&["--acl", "/nonexistent/qos-caps-does-not-exist.json"]);
+        let args = acl_args_from(&["--acl", "/nonexistent/tilo-caps-does-not-exist.json"]);
         let err = resolve_acl(&args, NODE_KEY)
             .expect_err("a missing capability list must abort the mount, not fall back");
         assert!(
@@ -3418,8 +3419,8 @@ mod tests {
             Principal::Room("team".into())
         );
         assert_eq!(
-            parse_principal("app:org.qos.files").unwrap(),
-            Principal::App("org.qos.files".into())
+            parse_principal("app:org.tilo.files").unwrap(),
+            Principal::App("org.tilo.files".into())
         );
         assert!(parse_principal("wizard:merlin").is_err());
         assert!(parse_principal("noseparator").is_err());

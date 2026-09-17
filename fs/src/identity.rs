@@ -9,14 +9,14 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use qos_user_identity::{
+use thiserror::Error;
+use tilo_user_identity::{
     DeviceCert, DeviceCertError, DeviceKeyOutcome, IdentityPaths, PersistError, RevocationEntry,
     RevocationError, RevocationList, load_or_create_device_key, verify_device_cert_at,
 };
-use thiserror::Error;
 
-/// Overrides the identity root (`/var/lib/qos`) — two mounts acting as two devices point this at two roots; tests use a tempdir.
-pub const IDENTITY_ROOT_ENV: &str = "QOS_IDENTITY_ROOT";
+/// Overrides the identity root (`/var/lib/tilo`) — two mounts acting as two devices point this at two roots; tests use a tempdir.
+pub const IDENTITY_ROOT_ENV: &str = "TILO_IDENTITY_ROOT";
 
 /// Verified revocations cached beside the user's public identity.
 pub fn revocation_list_path(paths: &IdentityPaths) -> PathBuf {
@@ -145,7 +145,7 @@ pub fn load_workspace_share_issuer(
     if !credentials.cert.capabilities.can_own_workspaces {
         return Ok(None);
     }
-    let issuer = match qos_user_identity::persist::read_signing_key(&paths.user_privkey) {
+    let issuer = match tilo_user_identity::persist::read_signing_key(&paths.user_privkey) {
         Ok(issuer) => issuer,
         Err(PersistError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(None);
@@ -264,7 +264,7 @@ pub fn load_certified_mount_identity(
     now_ns: u64,
 ) -> std::result::Result<CertifiedMountIdentity, CertifiedIdentityError> {
     let mount = load_mount_identity(paths).map_err(CertifiedIdentityError::DeviceKey)?;
-    let cert = qos_user_identity::persist::read_device_cert(&paths.device_cert)?;
+    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)?;
     verify_device_cert_at(&cert, now_ns)?;
     if cert.issued_at_ns > now_ns {
         return Err(CertifiedIdentityError::CertificateNotYetValid);
@@ -282,7 +282,7 @@ pub fn load_certified_mount_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_user_identity::{
+    use tilo_user_identity::{
         DeviceCapabilities, adopt_device_key, persist::write_device_cert, sign_device_cert,
     };
 
@@ -514,7 +514,7 @@ mod tests {
                 .is_none(),
             "a secondary device must not fall back to its device key"
         );
-        qos_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
+        tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
         let issuer = load_workspace_share_issuer(&paths, &certified.credentials)
             .unwrap()
             .unwrap();
@@ -524,7 +524,7 @@ mod tests {
         );
 
         let unrelated = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
-        qos_user_identity::persist::write_signing_key(&paths.user_privkey, &unrelated).unwrap();
+        tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &unrelated).unwrap();
         assert!(matches!(
             load_workspace_share_issuer(&paths, &certified.credentials),
             Err(WorkspaceShareIssuerError::RootKeyMismatch)
@@ -541,7 +541,7 @@ mod tests {
         cert.capabilities.can_own_workspaces = false;
         sign_device_cert(&mut cert, &root).unwrap();
         write_device_cert(&paths.device_cert, &cert).unwrap();
-        qos_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
+        tilo_user_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
         let certified = load_certified_mount_identity(&paths, NOW_NS).unwrap();
         assert!(
             load_workspace_share_issuer(&paths, &certified.credentials)

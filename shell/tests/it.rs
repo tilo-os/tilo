@@ -99,8 +99,6 @@ mod leak_probe;
 mod lock_screen_visual;
 #[path = "maximize_persist_wireup_test.rs"]
 mod maximize_persist_wireup_test;
-#[path = "nirios_e2e_test.rs"]
-mod nirios_e2e_test;
 #[path = "nvenc_hardware_encode.rs"]
 mod nvenc_hardware_encode;
 #[path = "onboarding_visual.rs"]
@@ -149,6 +147,8 @@ mod strip_navigation;
 mod surface_substream_e2e;
 #[path = "system_monitor_test.rs"]
 mod system_monitor_test;
+#[path = "tilo_e2e_test.rs"]
+mod tilo_e2e_test;
 #[path = "two_netns_share.rs"]
 mod two_netns_share;
 #[path = "vaapi_hardware_encode.rs"]

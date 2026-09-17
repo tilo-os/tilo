@@ -142,7 +142,7 @@ pub fn default_known_hosts_path() -> Result<PathBuf, String> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
         .ok_or_else(|| "no private state directory is available for SSH host trust".to_string())?;
-    let directory = state.join("qos").join("remote");
+    let directory = state.join("tilo").join("remote");
     ensure_private_directory(&directory)?;
     let path = directory.join("known-hosts.json");
     validate_private_store_path(&path)?;
@@ -697,7 +697,7 @@ mod tests {
 
     fn test_known_hosts_path() -> PathBuf {
         let directory =
-            std::env::temp_dir().join(format!("qos-remote-known-hosts-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("tilo-remote-known-hosts-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&directory).unwrap();
         #[cfg(unix)]
         {
@@ -829,7 +829,7 @@ mod tests {
             session: &mut Session,
         ) -> Result<(), Self::Error> {
             session.channel_success(channel)?;
-            session.data(channel, b"qos-remote ready\r\n".to_vec())?;
+            session.data(channel, b"tilo-remote ready\r\n".to_vec())?;
             Ok(())
         }
 
@@ -934,7 +934,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
                     .iter()
                     .map(|c| c.ch)
                     .collect::<String>()
-                    .contains("qos-remote ready")
+                    .contains("tilo-remote ready")
             }) {
                 saw_banner = true;
                 break;

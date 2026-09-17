@@ -3,11 +3,11 @@
 //!
 //! # Why this is shared
 //!
-//! Per the qOS HIG an app must **never draw its own file picker and never key
+//! Per the Tilo HIG an app must **never draw its own file picker and never key
 //! open/save off an environment variable**: it goes through the portal so the
 //! *host desktop* provides the chooser — on GNOME the user sees GNOME's file
-//! dialog; on qOS the compositor implements the portal backend and renders
-//! qOS's picker. That picker is also where the per-workspace sandbox
+//! dialog; on Tilo the compositor implements the portal backend and renders
+//! Tilo's picker. That picker is also where the per-workspace sandbox
 //! file-access prompt lives, which makes this module **the file-access
 //! security boundary**. A per-app copy of it is not merely duplicated code: it
 //! is a second, independently-drifting definition of which URIs are allowed to
@@ -108,7 +108,7 @@ impl LaunchRequest {
         Self {
             path: path.into(),
             kind: LaunchKind::Open,
-            thread_name: "qos-portal-open-path".into(),
+            thread_name: "tilo-portal-open-path".into(),
         }
     }
 
@@ -116,7 +116,7 @@ impl LaunchRequest {
         Self {
             path: path.into(),
             kind: LaunchKind::Reveal,
-            thread_name: "qos-portal-reveal-path".into(),
+            thread_name: "tilo-portal-reveal-path".into(),
         }
     }
 
@@ -298,7 +298,7 @@ impl PickRequest {
         Self {
             title: title.to_string(),
             accept_label: accept_label.to_string(),
-            thread_name: "qos-portal".to_string(),
+            thread_name: "tilo-portal".to_string(),
             filters: Vec::new(),
             kind,
         }
@@ -568,7 +568,7 @@ fn open_regular_file(path: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
-/// qOS targets Unix, where `O_NOFOLLOW` is available. Keep non-Unix builds
+/// Tilo targets Unix, where `O_NOFOLLOW` is available. Keep non-Unix builds
 /// compiling with the same descriptor type check; platform-specific safe-open
 /// flags belong in their platform implementation when one is supported.
 #[cfg(all(any(feature = "portal", test), not(unix)))]

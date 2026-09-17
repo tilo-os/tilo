@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch exactly one qOS Imager job on a disposable Linux or macOS host.
+# Launch exactly one Tilo Imager job on a disposable Linux or macOS host.
 # Install this file and forgejo-runner root-owned on the golden image; do not
 # execute the copy from a workflow checkout.
 set -euo pipefail
@@ -12,9 +12,9 @@ token_file="${3:-}"
   exit 2
 }
 
-runner="${QOS_FORGEJO_RUNNER:-/usr/local/bin/forgejo-runner}"
-server="${QOS_FORGEJO_URL:-https://code.sandbox.example}"
-max_wait="${QOS_RUNNER_MAX_WAIT_SECONDS:-21600}"
+runner="${TILO_FORGEJO_RUNNER:-/usr/local/bin/forgejo-runner}"
+server="${TILO_FORGEJO_URL:-https://code.sandbox.example}"
+max_wait="${TILO_RUNNER_MAX_WAIT_SECONDS:-21600}"
 
 stat_owner_mode() {
   if stat -c '%u %a' "$1" >/dev/null 2>&1; then
@@ -162,7 +162,7 @@ trap 'exit 129' HUP
 [ "$uuid_file" != "$token_file" ] || { printf 'UUID and token paths must differ\n' >&2; exit 1; }
 case "$server" in
   https://code.sandbox.example|https://code.sandbox.example/) ;;
-  *) printf 'Forgejo URL must be the pinned qOS origin\n' >&2; exit 1 ;;
+  *) printf 'Forgejo URL must be the pinned Tilo origin\n' >&2; exit 1 ;;
 esac
 [[ "$max_wait" =~ ^[1-9][0-9]{0,5}$ ]] && [ "$max_wait" -le 86400 ] || {
   printf 'runner wait timeout must be between 1 and 86400 seconds\n' >&2

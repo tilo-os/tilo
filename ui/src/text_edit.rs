@@ -7,9 +7,8 @@
 //! [`Edit`] to its CRDT (`AutoCommit::splice_text`, char-addressed) and feeds the
 //! resulting text back in.
 //!
-//! This is the reusable caret core the WYSIWYG [`RichTextEditor`] is built on;
-//! the simple [`TextInput`] keeps its own equivalent inline logic for now, and a
-//! later change can route it through here too. Vertical (Up/Down) motion needs
+//! This is the reusable caret core the WYSIWYG [`RichTextEditor`] uses;
+//! [`TextInput`] keeps equivalent inline logic. Vertical (Up/Down) motion needs
 //! laid-out line geometry, so it lives in the widget — the core owns everything
 //! horizontal and range-wise, which is exactly what unit tests can pin without a
 //! GPU.

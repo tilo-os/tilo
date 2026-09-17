@@ -50,7 +50,7 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     results = []
 
-    with tempfile.TemporaryDirectory(prefix="qos-fex-wine-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="tilo-fex-wine-") as temporary:
         environment = os.environ.copy()
         environment.update(
             HOME=temporary, XDG_RUNTIME_DIR=temporary, FEX_ROOTFS=str(rootfs),
@@ -79,7 +79,7 @@ def main():
                         [str(fex), f"/usr/bin/wine{bits}", "--version"], guest, 30,
                         args.output_dir / f"wine{bits}-version.log",
                     )
-                    marker = f"QOS_WINE_CONSOLE_PASS_{bits}"
+                    marker = f"TILO_WINE_CONSOLE_PASS_{bits}"
                     status, timed_out, output = run(
                         [str(fex), f"/usr/bin/wine{bits}", "cmd.exe", "/c", f"echo {marker}"],
                         guest, args.timeout, args.output_dir / f"wine{bits}-console.log",

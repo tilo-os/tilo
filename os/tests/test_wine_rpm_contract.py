@@ -24,7 +24,7 @@ class ContractTests(unittest.TestCase):
     def test_dist_macro_produces_distinct_release_and_tracks_epoch(self):
         pin = json.loads((Path(__file__).resolve().parents[1] / 'dev/wine-source.json').read_text())
         identity = C.build_identity(pin)
-        self.assertEqual(identity['release'], '3.fc44.qos_traditional1')
+        self.assertEqual(identity['release'], '3.fc44.tilo_traditional1')
         self.assertNotEqual(identity['release'], pin['release'])
         pin['source_date_epoch'] += 1
         self.assertEqual(C.build_identity(pin)['source_date_epoch'], pin['source_date_epoch'])

@@ -21,7 +21,7 @@ use ui::collaboration::PresencePayload;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource, RetryPolicy};
+use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource, RetryPolicy};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{
     DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
@@ -123,15 +123,13 @@ impl Selection {
 /// Open a URL from an OSC 8 hyperlink click. Best-effort: spawns the OS opener
 /// (`xdg-open`) detached and never blocks or panics — a missing opener or a
 /// malformed URL is silently ignored, exactly like the clipboard helpers.
-/// Only `http(s)`, `file`, and `mailto` schemes are launched so a hostile
-/// program can't smuggle a `javascript:`/`data:` URI (or a shell argument)
-/// into the opener.
+/// Only plain public `http(s)` targets are launched. In particular, terminal
+/// output never gets to turn an OSC 8 link into access to a local `file:` URL,
+/// a `mailto:` draft, credentials in an authority, or a query/fragment that
+/// might contain a bearer token. A user can still select and copy any text the
+/// process printed; the opener is deliberately the narrower, explicit effect.
 pub(crate) fn open_url(url: &str) {
-    let ok = url.starts_with("http://")
-        || url.starts_with("https://")
-        || url.starts_with("file://")
-        || url.starts_with("mailto:");
-    if !ok {
+    if !is_public_web_link(url) {
         return;
     }
     let _ = std::process::Command::new("xdg-open")
@@ -140,6 +138,41 @@ pub(crate) fn open_url(url: &str) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+}
+
+/// An OSC 8 target that is safe to publish to the action directory and hand to
+/// the external opener. This intentionally accepts a small URL subset instead
+/// of attempting to parse and redact arbitrary process-provided metadata: a
+/// redaction mistake would disclose a secret in a resource payload.
+pub(crate) fn is_public_web_link(url: &str) -> bool {
+    let Some(authority_and_path) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    if authority_and_path.is_empty()
+        || authority_and_path.contains(['?', '#', '@', '\\'])
+        || authority_and_path
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return false;
+    }
+    // An authority is required. A slash is optional (for example
+    // `https://tilo.example`), but a path cannot be mistaken for one.
+    authority_and_path
+        .split_once('/')
+        .map_or(!authority_and_path.is_empty(), |(authority, _)| {
+            !authority.is_empty()
+        })
+}
+
+/// Prompted resource input is text, not an escape hatch for arbitrary terminal
+/// control bytes. This keeps the typed `send` promise truthful and lets `run`
+/// guarantee precisely one appended Enter.
+fn is_reviewable_terminal_text(value: &str) -> bool {
+    !value.chars().any(|ch| ch.is_control() && ch != '\t')
 }
 
 /// Convert an OSC metadata field into a compact, single-line label. OSC is
@@ -779,6 +812,13 @@ impl TerminalWidget {
             .lock()
             .map_or("Session ended — input unavailable", |message| *message)
     }
+
+    /// A compact visual lifecycle state. The detailed transport cause stays in
+    /// the accessible description/live region, where it is neither clipped at
+    /// 200% text scale nor mistaken for a recoverable command prompt.
+    pub(crate) const fn disconnected_badge_label() -> &'static str {
+        "Session ended"
+    }
     /// Current window title (OSC 0/2), defaulting to "Terminal". Host/test
     /// accessor — also what `AppWidget::app_title` returns.
     pub fn title(&self) -> &str {
@@ -843,7 +883,10 @@ impl TerminalWidget {
             for attr in row {
                 if attr.link_id != 0
                     && seen.insert(attr.link_id)
-                    && self.links.contains_key(&attr.link_id)
+                    && self
+                        .links
+                        .get(&attr.link_id)
+                        .is_some_and(|url| is_public_web_link(url))
                 {
                     ids.push(attr.link_id);
                     if ids.len() >= MAX_VISIBLE_RESOURCE_LINKS {
@@ -1899,6 +1942,11 @@ impl Widget for TerminalWidget {
                         MAX_RESOURCE_SEND_BYTES / 1024
                     ));
                 }
+                if !is_reviewable_terminal_text(&value) {
+                    return Err(
+                        "text to send may not contain terminal control characters".to_string()
+                    );
+                }
                 self.try_write_input(value.as_bytes())?;
             }
             "terminal.run" => {
@@ -1913,6 +1961,12 @@ impl Widget for TerminalWidget {
                         "command exceeds the {} KiB reviewed-command limit",
                         MAX_RESOURCE_SEND_BYTES / 1024
                     ));
+                }
+                if !is_reviewable_terminal_text(&value) {
+                    return Err(
+                        "command must be one line and may not contain terminal control characters"
+                            .to_string(),
+                    );
                 }
                 let mut command = value.into_bytes();
                 command.push(b'\r');
@@ -1937,12 +1991,9 @@ impl Widget for TerminalWidget {
                     return Ok(false);
                 }
                 if safe_osc_text(value.as_bytes(), MAX_OSC_LINK_BYTES).is_none()
-                    || !(value.starts_with("http://")
-                        || value.starts_with("https://")
-                        || value.starts_with("file://")
-                        || value.starts_with("mailto:"))
+                    || !is_public_web_link(&value)
                 {
-                    return Err("link target is not a supported safe URL".to_string());
+                    return Err("link target is not a safe public web URL".to_string());
                 }
                 open_url(&value);
             }
@@ -2135,8 +2186,6 @@ impl Widget for TerminalWidget {
         // grid origin is single-sourced. `set_geometry` and hit-testing read the
         // cached metrics — neither sees a `Theme` — mirroring `last_padding_x`.
         self.refresh_chrome_metrics(theme);
-        self.grid_rect = self.grid_content_rect(self.rect);
-        let grid_rect = self.grid_rect;
 
         // The terminal body fills the whole widget in the theme's terminal
         // background (a deliberate deep surface, not an accidental void). No
@@ -2160,6 +2209,15 @@ impl Widget for TerminalWidget {
             text_renderer.measure_font(" ", font_size, None, TextWeight::Regular, false, &mono);
         self.char_w = f64::from(w).max(1.0);
         self.char_h = (f64::from(font_size) * 1.25f64).ceil().max(1.0);
+
+        // `measure` happens before we can resolve the theme's actual
+        // monospace face. Reconcile the PTY geometry after that exact
+        // measurement as well: at 200% text scale a fallback/default advance
+        // can be much narrower than the rendered mono advance, otherwise the
+        // process sees more columns than fit on screen and its right side is
+        // silently clipped. This is a no-op on steady frames.
+        self.set_geometry(self.rect);
+        let grid_rect = self.grid_rect;
 
         let visible_rows = (grid_rect.height() / self.char_h).floor() as usize;
         let max_top = self.grid.len().saturating_sub(visible_rows);
@@ -3588,7 +3646,7 @@ impl TerminalWidget {
             2.0,
         );
 
-        let label = "qOS Terminal";
+        let label = "Tilo Terminal";
         let size = theme.tokens.typography.scale.lg;
         let (lw, _) = tr.measure(label, size, None);
         tr.draw_text_weighted(
@@ -3616,12 +3674,21 @@ impl TerminalWidget {
         if !self.is_disconnected() || self.grid_rect.width() <= 0.0 {
             return;
         }
-        let label = self.disconnected_message();
+        let label = Self::disconnected_badge_label();
         let size = theme.tokens.typography.scale.sm;
-        let (label_w, _) = tr.measure(label, size, None);
         let pad = f64::from(theme.tokens.spacing.s2);
         let height = f64::from(size) * 1.7;
-        let width = (f64::from(label_w) + pad * 2.0).min(self.grid_rect.width());
+        // Reuse the renderer's shared elision behaviour instead of letting a
+        // lifecycle message run under the scrollbar or off a narrow / 200%
+        // text-scale surface. The complete state remains in accessibility;
+        // this is only the one-line visual badge.
+        let label = tr.elide_to_width(
+            label,
+            size,
+            (self.grid_rect.width() - pad * 4.0).max(0.0) as f32,
+        );
+        let (label_w, _) = tr.measure(&label, size, None);
+        let width = (f64::from(label_w) + pad * 2.0).min(self.grid_rect.width() - pad);
         let rect = Rect::new(
             self.grid_rect.x0 + pad,
             self.grid_rect.y1 - height - pad,
@@ -3638,7 +3705,7 @@ impl TerminalWidget {
         );
         tr.draw_text_weighted(
             scene,
-            label,
+            &label,
             size,
             theme.text_primary,
             transform * Affine::translate((rect.x0 + pad, rect.y0 + f64::from(size) * 0.25)),
@@ -3676,7 +3743,7 @@ impl TerminalWidget {
 
     /// The buffer-absolute word span containing `pos`, using the toolkit's
     /// shared `word_boundaries` walker over the row's reconstructed text so
-    /// terminal word selection matches every other qOS text surface. Returns
+    /// terminal word selection matches every other Tilo text surface. Returns
     /// `(start, end)` as `GridPos`es on the same row, `end` exclusive.
     fn word_span_at(&self, pos: GridPos) -> (GridPos, GridPos) {
         let line = self.grid.get(pos.row).map_or("", String::as_str);
@@ -3924,32 +3991,29 @@ impl TerminalWidget {
             menu.push(MenuItem::action("Select all output", || {}));
         }
         menu.push(MenuItem::action("Clear screen", || {}));
-        menu.push(MenuItem::separator());
-        menu.push(MenuItem::action(
-            if self.select_to_copy {
-                "Copy on select: On"
-            } else {
-                "Copy on select: Off"
-            },
-            || {},
-        ));
+        // This preference is useful secondary chrome, but never at the cost
+        // of an unreachable context menu. A 160px-high embedded/narrow pane
+        // can fit the copy/paste/selection/process essentials, not another
+        // row plus separator; its keyboard shortcut and desktop-sized menu
+        // still expose the toggle.
+        if self.rect.height() >= 180.0 {
+            menu.push(MenuItem::separator());
+            menu.push(MenuItem::action(
+                if self.select_to_copy {
+                    "Copy on select: On"
+                } else {
+                    "Copy on select: Off"
+                },
+                || {},
+            ));
+        }
+        // Keep the shared popup aware of the terminal's real viewport. The
+        // popup refreshes its geometry when the current theme applies an
+        // accessibility text scale during draw; without this viewport it can
+        // grow past a narrow pane's edge after that refresh.
+        menu.set_viewport(Some(self.rect));
         let p = self.last_cursor_pos;
         menu.open_at([p.x as f32, p.y as f32]);
-        // `ContextMenu` owns its chrome, while the terminal owns the available
-        // viewport. Re-anchor after the menu computes its intrinsic bounds so
-        // a right-click at the narrow/desktop edge still exposes every action.
-        if self.rect.width() > 0.0 && self.rect.height() > 0.0 {
-            let bounds = Widget::get_rect(&menu);
-            let x = p.x.clamp(
-                self.rect.x0,
-                (self.rect.x1 - bounds.width()).max(self.rect.x0),
-            );
-            let y = p.y.clamp(
-                self.rect.y0,
-                (self.rect.y1 - bounds.height()).max(self.rect.y0),
-            );
-            menu.open_at([x as f32, y as f32]);
-        }
         self.context_menu = menu;
     }
 
@@ -4064,7 +4128,7 @@ impl TerminalWidget {
         let mod_param = Self::key_mod_param(shift, alt, ctrl);
 
         // GUI-terminal quality-of-life bindings that map to established shell
-        // editing bytes rather than inventing a qOS-only protocol.
+        // editing bytes rather than inventing a Tilo-only protocol.
         if matches!(key, Key::Named(NamedKey::Backspace)) {
             if ctrl && !alt {
                 return Some(vec![0x17]); // ^W: erase previous word
@@ -4278,8 +4342,8 @@ pub struct PrintBuf {
 }
 
 /// Name this emulator reports for itself in the XTVERSION reply
-/// (`CSI > 0 q` → `DCS > | qos-terminal(<version>) ST`).
-pub const TERMINAL_NAME: &str = "qos-terminal";
+/// (`CSI > 0 q` → `DCS > | tilo-terminal(<version>) ST`).
+pub const TERMINAL_NAME: &str = "tilo-terminal";
 
 /// Numeric build version reported in the Secondary Device Attributes (DA2)
 /// reply `CSI > 1 ; Pv ; 0 c`. Encoded `major*10000 + minor*100 + patch` so a
@@ -5382,7 +5446,7 @@ impl TerminalPerformer<'_> {
         }
     }
 
-    /// XTVERSION reply — DCS `> | qos-terminal(<version>) ST`.
+    /// XTVERSION reply — DCS `> | tilo-terminal(<version>) ST`.
     fn reply_xtversion(&mut self) {
         self.respond(
             format!(
@@ -5665,7 +5729,7 @@ pub struct TerminalBackend {
 impl TerminalBackend {
     /// Open a PTY running a shell.
     ///
-    /// **Not `$SHELL` directly.** Inside a qOS app sandbox there is no `/bin`
+    /// **Not `$SHELL` directly.** Inside a Tilo app sandbox there is no `/bin`
     /// at all: `launcher::profile` binds the loader, fonts, `/sys` and the CA
     /// bundle, and deliberately binds no executable directory — so `exec`ing
     /// `$SHELL` fails with `ENOENT`, and would still leave `vim` and `less`
@@ -5680,32 +5744,32 @@ impl TerminalBackend {
     /// Three routes, and the order is the trust boundary. The route is chosen by
     /// [`confinement_route`] from a capability probe, not by trying each in turn
     /// and hoping — so a machine that cannot host a guest is never handed one to
-    /// fail in, and confinement is never silently downgraded on qOS.
+    /// fail in, and confinement is never silently downgraded on Tilo.
     ///
     /// 1. **The service socket.** A sandboxed app cannot build a namespace —
     ///    its seccomp filter denies `unshare` and `mount`. So it asks the
     ///    session's supervisor and receives a pty master over `SCM_RIGHTS`.
-    ///    This is the production path inside qOS, and it is **mandatory when
+    ///    This is the production path inside Tilo, and it is **mandatory when
     ///    available**: if the launcher opened the service descriptor, we use it
     ///    and *fail closed* on any handshake error rather than falling through
-    ///    to an unconfined shell. That is what makes the qOS path non-optional —
+    ///    to an unconfined shell. That is what makes the Tilo path non-optional —
     ///    nothing an app controls (its own environment) can select best-effort
     ///    while the supervisor is reachable.
     /// 2. **Spawning the runtime.** An unconfined host that can genuinely build
     ///    the namespace a guest needs (unprivileged user namespaces enabled, not
     ///    already behind a seccomp filter) *and* has the runtime installed — a
     ///    development tree, mostly. The terminal starts a guest itself so that
-    ///    session is confined the same way qOS confines it.
-    /// 3. **`$SHELL` (best-effort).** No qOS confinement is available on this
+    ///    session is confined the same way Tilo confines it.
+    /// 3. **`$SHELL` (best-effort).** No Tilo confinement is available on this
     ///    machine: a plain distribution, or a build of the terminal running
-    ///    outside qOS. Start the user's login shell directly so normal work
+    ///    outside Tilo. Start the user's login shell directly so normal work
     ///    still functions. The child inherits whatever ambient sandbox the
     ///    process already has, so it runs truly unconfined only on a truly
     ///    unconfined host — and this route is unreachable whenever route 1 is.
     ///
     /// The two kernel-feature probes ([`seccomp_filtered`],
     /// [`unprivileged_userns_enabled`]) are the robust discriminator between "I
-    /// am a confined qOS app" and "I am on a normal host": a seccomp filter
+    /// am a confined Tilo app" and "I am on a normal host": a seccomp filter
     /// cannot be removed once installed, so an attacker inside the sandbox
     /// cannot flip route 2 on to escape, and cannot reach an *escalated*
     /// best-effort shell — route 3's child is still bounded by the launcher's
@@ -5728,9 +5792,9 @@ impl TerminalBackend {
             }
             ConfineRoute::BestEffort => {
                 // A single quiet line, not a wall of errors: this is the normal,
-                // expected state off qOS.
+                // expected state off Tilo.
                 tracing::info!(
-                    "terminal: qOS app confinement is not available here; \
+                    "terminal: Tilo app confinement is not available here; \
                      starting your login shell directly"
                 );
                 let shell = resolve_login_shell();
@@ -5775,7 +5839,7 @@ impl TerminalBackend {
 
 /// The environment variable the launcher sets when it has opened the `ush`
 /// service socket on this app's behalf, per `[sandbox.services]`.
-pub const USH_SERVICE_FD_ENV: &str = "QOS_SVC_USH_FD";
+pub const USH_SERVICE_FD_ENV: &str = "TILO_SVC_USH_FD";
 
 /// Which way the terminal will obtain its shell, decided by capability probe.
 ///
@@ -5784,35 +5848,35 @@ pub const USH_SERVICE_FD_ENV: &str = "QOS_SVC_USH_FD";
 /// [`confinement_route`] and [`TerminalBackend::new`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum ConfineRoute {
-    /// The supervisor service is reachable — the qOS production path. Mandatory
+    /// The supervisor service is reachable — the Tilo production path. Mandatory
     /// when chosen: the caller must not fall back to an unconfined shell if the
     /// handshake fails.
     Service,
     /// This unconfined host can build a guest itself and has the runtime at the
     /// given path.
     SelfHosted(std::path::PathBuf),
-    /// No qOS confinement is available; start `$SHELL` directly.
+    /// No Tilo confinement is available; start `$SHELL` directly.
     BestEffort,
 }
 
 /// Choose how to obtain the shell from a capability probe, security-first.
 ///
-/// The ordering encodes the invariant "on qOS, always confine; off qOS, best
-/// effort — and best-effort can never be forced on qOS":
+/// The ordering encodes the invariant "on Tilo, always confine; off Tilo, best
+/// effort — and best-effort can never be forced on Tilo":
 ///
 /// 1. If the launcher handed us a live supervisor descriptor, take it. This is
-///    the only signal that positively identifies "confined qOS app with a
+///    the only signal that positively identifies "confined Tilo app with a
 ///    supervisor", and it wins unconditionally.
 /// 2. Otherwise self-host *only* when we could actually succeed: the kernel
 ///    lets this process build a user namespace (so we are not behind a seccomp
 ///    filter that would deny `unshare`, and unprivileged userns are enabled)
 ///    and the runtime binary exists. Gating on the probe — rather than
-///    launching `qos-ush` and letting it fail — is what removes the wall of
+///    launching `tilo-ush` and letting it fail — is what removes the wall of
 ///    `bwrap`/mount errors on a machine that could never host a guest.
 /// 3. Otherwise there is no confinement to be had here; best-effort.
 ///
 /// The security argument for (1)+(2): a seccomp filter cannot be lifted once
-/// installed, so on qOS an app cannot clear it to unlock route 2, and clearing
+/// installed, so on Tilo an app cannot clear it to unlock route 2, and clearing
 /// the service env var only drops it to route 3 — whose shell is still bounded
 /// by the launcher's seccomp + namespace + bind mounts. Best-effort therefore
 /// never grants more than the ambient sandbox already allows.
@@ -5854,7 +5918,7 @@ pub fn decide_route(
 ///
 /// An env var alone is not enough: the descriptor slot must actually be open,
 /// so a stale or spoofed number pointing at nothing does not select the service
-/// path (it falls through to the probe below and, off qOS, to best-effort).
+/// path (it falls through to the probe below and, off Tilo, to best-effort).
 pub(crate) fn ush_service_fd() -> Option<i32> {
     let raw: i32 = std::env::var(USH_SERVICE_FD_ENV).ok()?.parse().ok()?;
     if raw < 0 {
@@ -5878,7 +5942,7 @@ fn can_build_namespace() -> bool {
     !seccomp_filtered() && unprivileged_userns_enabled() && bwrap_present()
 }
 
-/// True if a seccomp filter is installed on this process — i.e. the qOS launcher
+/// True if a seccomp filter is installed on this process — i.e. the Tilo launcher
 /// (or any foreign sandbox) is confining our syscalls.
 ///
 /// Read from `/proc/self/status` (`Seccomp:` ≥ 2 is "filter mode"). A filter
@@ -5926,23 +5990,23 @@ fn bwrap_present() -> bool {
 
 /// Where the runtime binary is when the terminal has to start one itself.
 ///
-/// `$QOS_USH_BIN` first so a development tree can point at `target/debug`,
+/// `$TILO_USH_BIN` first so a development tree can point at `target/debug`,
 /// then the installed location, then `PATH`. Absent from all three means this
 /// machine has no runtime and the caller falls back to `$SHELL`.
 pub fn ush_binary() -> Option<std::path::PathBuf> {
-    if let Some(explicit) = std::env::var_os("QOS_USH_BIN") {
+    if let Some(explicit) = std::env::var_os("TILO_USH_BIN") {
         let path = std::path::PathBuf::from(explicit);
         if path.exists() {
             return Some(path);
         }
     }
-    let installed = std::path::PathBuf::from("/usr/libexec/qos-ush");
+    let installed = std::path::PathBuf::from("/usr/libexec/tilo-ush");
     if installed.exists() {
         return Some(installed);
     }
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
-        .map(|dir| dir.join("qos-ush"))
+        .map(|dir| dir.join("tilo-ush"))
         .find(|candidate| candidate.exists())
 }
 
@@ -5958,7 +6022,7 @@ fn ush_service_backend() -> Result<TerminalBackend, Box<dyn std::error::Error>> 
 
     let raw: RawFd = std::env::var(USH_SERVICE_FD_ENV)?.parse()?;
     // SAFETY: the launcher passed this descriptor as a connected socket and
-    // documents it in `QOS_SVC_<NAME>_FD`. `from_raw_fd` takes ownership, which
+    // documents it in `TILO_SVC_<NAME>_FD`. `from_raw_fd` takes ownership, which
     // is correct — nothing else in this process refers to it.
     let stream = unsafe { UnixStream::from_raw_fd(raw) };
     let mut request = serde_json::to_vec(&serde_json::json!({
@@ -6083,7 +6147,7 @@ impl TerminalWidget {
 
         let reader = std::sync::Arc::new(std::sync::Mutex::new(backend.reader));
         let reader_result = std::thread::Builder::new()
-            .name("qos-terminal-pty-reader".to_string())
+            .name("tilo-terminal-pty-reader".to_string())
             .spawn(move || {
                 let mut buf = [0u8; 8192];
                 loop {

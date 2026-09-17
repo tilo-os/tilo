@@ -29,9 +29,9 @@ while [ "$#" -gt 0 ]; do
 done
 [ -f "$medium" ] || { printf 'installer medium not found: %s\n' "$medium" >&2; exit 1; }
 if [ "$software_tpm" -eq 1 ]; then
-  case "${QOS_SECBOOT_KEYS:-none}" in
+  case "${TILO_SECBOOT_KEYS:-none}" in
     none|persist|microsoft)
-      printf '%s\n' 'software-TPM cycle requires QOS_SECBOOT_KEYS=/path/to/pre-enrolled-vars with the qOS release certificate in db; setup mode and the Microsoft-only store do not trust the owner-signed UKI' >&2
+      printf '%s\n' 'software-TPM cycle requires TILO_SECBOOT_KEYS=/path/to/pre-enrolled-vars with the Tilo release certificate in db; setup mode and the Microsoft-only store do not trust the owner-signed UKI' >&2
       exit 2
       ;;
   esac
@@ -40,27 +40,27 @@ command -v tesseract >/dev/null 2>&1 \
   || { printf 'tesseract is required for framebuffer verification\n' >&2; exit 1; }
 
 out="${out:-$PWD/installer-cycle-artifacts}"
-export QOS_VM_CYCLE="${QOS_VM_CYCLE:-installer-cycle-$$}"
-storage="${QOS_INSTALLER_CYCLE_STORAGE:-$(dirname "$out")/.$(basename "$out")-storage-$QOS_VM_CYCLE}"
-run="${QOS_RUN:-${XDG_RUNTIME_DIR:-/tmp}/qos-vm-$QOS_VM_CYCLE}"
-cycle_dir="$storage/vm-cycles/$QOS_VM_CYCLE"
+export TILO_VM_CYCLE="${TILO_VM_CYCLE:-installer-cycle-$$}"
+storage="${TILO_INSTALLER_CYCLE_STORAGE:-$(dirname "$out")/.$(basename "$out")-storage-$TILO_VM_CYCLE}"
+run="${TILO_RUN:-${XDG_RUNTIME_DIR:-/tmp}/tilo-vm-$TILO_VM_CYCLE}"
+cycle_dir="$storage/vm-cycles/$TILO_VM_CYCLE"
 mkdir -p "$out" "$storage"
 
-export QOS_INSTALLER_OUTPUT="$storage"
-export QOS_RUN="$run"
-export QOS_INSTALLER_DISK="$medium"
-export QOS_INSTALLER_WORK_DISK="$cycle_dir/installer-work.qcow2"
-export QOS_TARGET_DISK="$cycle_dir/target.qcow2"
-export QOS_TARGET_SIZE="${QOS_TARGET_SIZE:-40G}"
-export QOS_USER="${QOS_INSTALLER_CYCLE_USER:-cycleuser}"
+export TILO_INSTALLER_OUTPUT="$storage"
+export TILO_RUN="$run"
+export TILO_INSTALLER_DISK="$medium"
+export TILO_INSTALLER_WORK_DISK="$cycle_dir/installer-work.qcow2"
+export TILO_TARGET_DISK="$cycle_dir/target.qcow2"
+export TILO_TARGET_SIZE="${TILO_TARGET_SIZE:-40G}"
+export TILO_USER="${TILO_INSTALLER_CYCLE_USER:-cycleuser}"
 if [ "$software_tpm" -eq 1 ]; then
-  export QOS_PASS="${QOS_INSTALLER_CYCLE_PIN:-804927}"
+  export TILO_PASS="${TILO_INSTALLER_CYCLE_PIN:-804927}"
   unlock=software-tpm-pin
 else
-  export QOS_PASS="${QOS_INSTALLER_CYCLE_PASSPHRASE:-cycle-passphrase-2026}"
+  export TILO_PASS="${TILO_INSTALLER_CYCLE_PASSPHRASE:-cycle-passphrase-2026}"
   unlock=no-tpm-passphrase
 fi
-export QOS_BOOT_WAIT_ATTEMPTS="${QOS_BOOT_WAIT_ATTEMPTS:-600}"
+export TILO_BOOT_WAIT_ATTEMPTS="${TILO_BOOT_WAIT_ATTEMPTS:-600}"
 
 phase=installer
 copy_evidence() {
@@ -81,7 +81,7 @@ scrub_artifact_secrets() {
   local file leaked=0
   while IFS= read -r -d '' file; do
     if LC_ALL=C grep -aEqi \
-      '::qos-recovery-key::|RECOVERY KEY.*(write|save|off-device)|[bcdfghjkmnpqrstvwxyz]{8}(-[bcdfghjkmnpqrstvwxyz]{8}){7}' \
+      '::tilo-recovery-key::|RECOVERY KEY.*(write|save|off-device)|[bcdfghjkmnpqrstvwxyz]{8}(-[bcdfghjkmnpqrstvwxyz]{8}){7}' \
       "$file"; then
       : > "$file"
       leaked=1
@@ -96,7 +96,7 @@ scrub_artifact_secrets() {
 # Prove the upload boundary itself rejects both the backend marker and the
 # recovery-key shape before any VM work begins. The canary and redaction notice
 # are removed after the expected rejection; a broken scrubber aborts the gate.
-printf '%s\n%s\n' '::qos-recovery-key::artifact-canary' \
+printf '%s\n%s\n' '::tilo-recovery-key::artifact-canary' \
   'bbbbbbbb-cccccccc-dddddddd-ffffffff-gggggggg-hhhhhhhh-jjjjjjjj-kkkkkkkk' \
   > "$out/.artifact-secret-canary.txt"
 if scrub_artifact_secrets; then
@@ -112,8 +112,8 @@ cleanup() {
   rm -f -- "$run/private-observe.png" "$run/private-observe.ppm"
   copy_evidence "$phase" || true
   "$vm" stop >/dev/null 2>&1 || true
-  if command -v qemu-img >/dev/null 2>&1 && [ -f "$QOS_TARGET_DISK" ]; then
-    qemu-img info "$QOS_TARGET_DISK" > "$out/target-qemu-img-info.txt" 2>&1 || true
+  if command -v qemu-img >/dev/null 2>&1 && [ -f "$TILO_TARGET_DISK" ]; then
+    qemu-img info "$TILO_TARGET_DISK" > "$out/target-qemu-img-info.txt" 2>&1 || true
   fi
   printf '%s\n' "$rc" > "$out/exit-status.txt"
   scrub_artifact_secrets || rc=1
@@ -141,7 +141,7 @@ label: gpt
 start=2048, size=4194304, type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, uuid=10000000-0000-4000-8000-000000000001, name="shared EFI"
 start=4196352, size=1048576, type=ebd0a0a2-b9e5-4433-87c0-68b6b72699c7, uuid=20000000-0000-4000-8000-000000000002, name="Windows sentinel"
 start=5244928, size=1048576, type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=30000000-0000-4000-8000-000000000003, name="Linux sentinel"
-start=6293504, size=77590000, type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=40000000-0000-4000-8000-000000000004, name="qOS prepared root"
+start=6293504, size=77590000, type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=40000000-0000-4000-8000-000000000004, name="Tilo prepared root"
 EOF
   else
     esp_size=512M windows_offset=513 linux_offset=1025
@@ -157,7 +157,7 @@ EOF
   truncate -s "$esp_size" "$esp"; mkfs.vfat -n SHARED-EFI "$esp" >/dev/null
   mmd -i "$esp" ::/EFI ::/EFI/Microsoft ::/EFI/Microsoft/Boot ::/EFI/Fedora
   printf 'windows-loader-sentinel\n' > "$cycle_dir/bootmgfw.efi"
-  case "$QOS_VM_ARCH" in x86_64) linux_loader=shimx64.efi;; aarch64) linux_loader=shimaa64.efi;; esac
+  case "$TILO_VM_ARCH" in x86_64) linux_loader=shimx64.efi;; aarch64) linux_loader=shimaa64.efi;; esac
   printf 'linux-loader-sentinel\n' > "$cycle_dir/$linux_loader"
   mcopy -i "$esp" "$cycle_dir/bootmgfw.efi" ::/EFI/Microsoft/Boot/bootmgfw.efi
   mcopy -i "$esp" "$cycle_dir/$linux_loader" "::/EFI/Fedora/$linux_loader"
@@ -175,7 +175,7 @@ EOF
   dd if="$esp" of="$raw" bs=1M seek=1 conv=notrunc,sparse status=none
   dd if="$windows" of="$raw" bs=1M seek="$windows_offset" conv=notrunc,sparse status=none
   dd if="$linux" of="$raw" bs=1M seek="$linux_offset" conv=notrunc,sparse status=none
-  qemu-img convert -f raw -O qcow2 "$raw" "$QOS_TARGET_DISK"
+  qemu-img convert -f raw -O qcow2 "$raw" "$TILO_TARGET_DISK"
   rm -f -- "$raw" "$esp" "$windows" "$linux" "$cycle_dir/bootmgfw.efi" \
     "$cycle_dir/$linux_loader" "$cycle_dir/windows-sentinel.txt" "$cycle_dir/linux-sentinel.txt"
 }
@@ -183,7 +183,7 @@ EOF
 verify_alongside_target() {
   local raw="$cycle_dir/installed-alongside.raw" actual linux_loader systemd_loader
   local windows_offset linux_offset
-  qemu-img convert -f qcow2 -O raw "$QOS_TARGET_DISK" "$raw"
+  qemu-img convert -f qcow2 -O raw "$TILO_TARGET_DISK" "$raw"
   windows_offset="$(cat "$cycle_dir/windows.offset-mib")"
   linux_offset="$(cat "$cycle_dir/linux.offset-mib")"
   actual="$(dd if="$raw" bs=1M skip="$windows_offset" count=512 status=none | sha256sum | awk '{print $1}')"
@@ -192,7 +192,7 @@ verify_alongside_target() {
   actual="$(dd if="$raw" bs=1M skip="$linux_offset" count=512 status=none | sha256sum | awk '{print $1}')"
   [ "$actual" = "$(cat "$cycle_dir/linux.before.sha256")" ] \
     || die "Linux filesystem bytes changed during alongside install"
-  case "$QOS_VM_ARCH" in
+  case "$TILO_VM_ARCH" in
     x86_64) linux_loader=shimx64.efi; systemd_loader=systemd-bootx64.efi;;
     aarch64) linux_loader=shimaa64.efi; systemd_loader=systemd-bootaa64.efi;;
   esac
@@ -220,10 +220,10 @@ assert len(parts) == len(expected)
 for part, (uuid, start, size) in zip(parts, expected):
     assert part["uuid"].lower() == uuid and part["start"] * sector == start and part["size"] * sector == size
 PY
-    MTOOLS_SKIP_CHECK=1 mtype -i "$raw@@1048576" ::/loader/entries/qos-windows.conf \
+    MTOOLS_SKIP_CHECK=1 mtype -i "$raw@@1048576" ::/loader/entries/tilo-windows.conf \
       | grep -Fqx 'efi /EFI/Microsoft/Boot/bootmgfw.efi' \
       || die "Windows chainloader entry has the wrong EFI target"
-    MTOOLS_SKIP_CHECK=1 mtype -i "$raw@@1048576" ::/loader/entries/qos-linux-fedora.conf \
+    MTOOLS_SKIP_CHECK=1 mtype -i "$raw@@1048576" ::/loader/entries/tilo-linux-fedora.conf \
       | grep -Fqx "efi /EFI/Fedora/$linux_loader" \
       || die "Linux chainloader entry has the wrong EFI target"
     printf 'boot_entries=windows,linux-fedora\n' > "$out/alongside-boot-behavior.txt"
@@ -255,14 +255,14 @@ assert efi["uuid"].lower() not in {p[0] for p in expected} and root["uuid"].lowe
 assert efi["uuid"].lower() != root["uuid"].lower()
 PY
     MTOOLS_SKIP_CHECK=1 mattrib -i "$raw@@$((1537 * 1024 * 1024))" ::/loader/loader.conf >/dev/null \
-      || die "guided qOS EFI partition has no systemd-boot loader configuration"
+      || die "guided Tilo EFI partition has no systemd-boot loader configuration"
     MTOOLS_SKIP_CHECK=1 mattrib -i "$raw@@$((1537 * 1024 * 1024))" "::/EFI/systemd/$systemd_loader" >/dev/null \
-      || die "guided qOS EFI partition has no architecture-matched systemd-boot binary"
-    if MTOOLS_SKIP_CHECK=1 mdir -i "$raw@@$((1537 * 1024 * 1024))" ::/loader/entries/qos-windows.conf >/dev/null 2>&1 \
-      || MTOOLS_SKIP_CHECK=1 mdir -i "$raw@@$((1537 * 1024 * 1024))" ::/loader/entries/qos-linux-fedora.conf >/dev/null 2>&1; then
-      die "guided qOS EFI partition contains an invalid cross-ESP chainloader shortcut"
+      || die "guided Tilo EFI partition has no architecture-matched systemd-boot binary"
+    if MTOOLS_SKIP_CHECK=1 mdir -i "$raw@@$((1537 * 1024 * 1024))" ::/loader/entries/tilo-windows.conf >/dev/null 2>&1 \
+      || MTOOLS_SKIP_CHECK=1 mdir -i "$raw@@$((1537 * 1024 * 1024))" ::/loader/entries/tilo-linux-fedora.conf >/dev/null 2>&1; then
+      die "guided Tilo EFI partition contains an invalid cross-ESP chainloader shortcut"
     fi
-    printf 'boot_entries=firmware-preserved;dedicated_qos_esp_start_mib=1537;dedicated_qos_root_start_mib=3585\n' \
+    printf 'boot_entries=firmware-preserved;dedicated_tilo_esp_start_mib=1537;dedicated_tilo_root_start_mib=3585\n' \
       > "$out/alongside-boot-behavior.txt"
   fi
   printf 'mode=%s\nwindows_partition_sha256=%s\nlinux_partition_sha256=%s\nwindows_loader_sha256=%s\nlinux_loader_sha256=%s\n' \
@@ -341,8 +341,8 @@ qemu-img convert -f qcow2 -O raw "$medium" "$profiled_raw"
 truncate -s "+$((64 * 1024))" "$profiled_raw"
 cargo run -q -p imager --locked --example embed-profile -- \
   --target "$profiled_raw" \
-  --hostname cycle-qos \
-  --username "$QOS_USER" \
+  --hostname cycle-tilo \
+  --username "$TILO_USER" \
   --full-name 'Cycle User' \
   --locale en_US.UTF-8 \
   --keyboard us \
@@ -352,9 +352,9 @@ qemu-img convert -f raw -O qcow2 "$profiled_raw" "$profiled_medium"
 rm -f -- "$profiled_raw"
 [ "$(sha256sum "$medium" | awk '{print $1}')" = "$source_hash_before" ] \
   || die "customization modified the released installer medium"
-export QOS_INSTALLER_DISK="$profiled_medium"
-printf 'medium=%s\ncustomized_medium=%s\narchitecture=%s\nuser=%s\nhostname=cycle-qos\nunlock=%s\ninstall_mode=%s\nstorage=%s\n' \
-  "$medium" "$profiled_medium" "$QOS_VM_ARCH" "$QOS_USER" "$unlock" "$install_mode" "$storage" \
+export TILO_INSTALLER_DISK="$profiled_medium"
+printf 'medium=%s\ncustomized_medium=%s\narchitecture=%s\nuser=%s\nhostname=cycle-tilo\nunlock=%s\ninstall_mode=%s\nstorage=%s\n' \
+  "$medium" "$profiled_medium" "$TILO_VM_ARCH" "$TILO_USER" "$unlock" "$install_mode" "$storage" \
   > "$out/scenario.txt"
 
 if [ "$software_tpm" -eq 1 ]; then
@@ -362,7 +362,7 @@ if [ "$software_tpm" -eq 1 ]; then
 else
   "$vm" boot-installer --gl --no-tpm
 fi
-wait_screen 01-disk 'Install[[:space:]]+qOS' 120 5 \
+wait_screen 01-disk 'Install[[:space:]]+Tilo' 120 5 \
   || die "profiled live installer did not start at Disk"
 grep -Eqi 'setup choices are ready' "$out/01-disk.txt" \
   || die "live installer did not acknowledge the embedded setup profile"
@@ -376,7 +376,7 @@ sleep 2
 "$vm" keys tab ret
 wait_screen 02-account 'Create[[:space:]]+your[[:space:]]+account' 60 3 \
   || die "installer did not select the blank target"
-grep -Fqi -- "$QOS_USER" "$out/02-account.txt" \
+grep -Fqi -- "$TILO_USER" "$out/02-account.txt" \
   || die "embedded username did not reach the account screen"
 if [ "$software_tpm" -eq 1 ]; then
   grep -Eqi 'TPM-protected[[:space:]]+startup[[:space:]]+PIN' "$out/02-account.txt" \
@@ -384,13 +384,13 @@ if [ "$software_tpm" -eq 1 ]; then
 fi
 
 "$vm" keys tab
-"$vm" type "$QOS_PASS"
+"$vm" type "$TILO_PASS"
 "$vm" keys tab
-"$vm" type "$QOS_PASS"
+"$vm" type "$TILO_PASS"
 "$vm" keys tab tab ret
 wait_screen 03-review 'Review[[:space:]]+your[[:space:]]+choices' 60 3 \
   || die "installer rejected the configured startup secret"
-grep -Eqi 'cycle.?qos' "$out/03-review.txt" \
+grep -Eqi 'cycle.?tilo' "$out/03-review.txt" \
   || die "Review did not show the configured hostname"
 
 # Exact destructive confirmation -> recovery-key promise -> Begin Install.
@@ -404,8 +404,8 @@ confirmation=/dev/vdb
 # The production Finish title is the completion oracle. Its screen also holds
 # the one-time recovery key, so OCR is memory-only and its framebuffer is
 # deleted immediately rather than copied into the artifact directory.
-max_wait="${QOS_INSTALLER_CYCLE_MAX_INSTALL_SECONDS:-3600}"
-wait_private_screen 'qOS[[:space:]]+is[[:space:]]+installed|Installation[[:space:]]+complete' \
+max_wait="${TILO_INSTALLER_CYCLE_MAX_INSTALL_SECONDS:-3600}"
+wait_private_screen 'Tilo[[:space:]]+is[[:space:]]+installed|Installation[[:space:]]+complete' \
   "$((max_wait / 5))" 5 || die "installer did not reach its Finish screen"
 
 # Completion explicitly focuses the first recovery action. Copy the key into
@@ -445,7 +445,7 @@ for attempt in $(seq 1 60); do
   fi
   "$vm" status | grep -q '^running' || die "installed target exited before unlock"
   if [ "$attempt" -ge 2 ]; then
-    "$vm" type "$QOS_PASS"
+    "$vm" type "$TILO_PASS"
     "$vm" keys ret
   fi
   sleep 10
@@ -454,16 +454,16 @@ done
 
 # Successful graphical authentication proves the installer-created account and
 # its password hash. A fresh account must then enter trusted compositor OOBE.
-"$vm" login --passcode-only "$QOS_PASS"
+"$vm" login --passcode-only "$TILO_PASS"
 wait_screen 08-oobe-intro 'Create[[:space:]]+your[[:space:]]+local' 120 5 \
-  || die "first graphical login did not enter qOS identity setup"
+  || die "first graphical login did not enter Tilo identity setup"
 
 # Use the real first-use flow: Create identity -> acknowledge no recovery ->
 # Create. OCR of the backup screen is the barrier for the async mint.
 "$vm" keys tab ret
 sleep 2
 "$vm" keys spc tab tab ret
-wait_screen 09-oobe-backup 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+qOS[[:space:]]+identity' 120 2 \
+wait_screen 09-oobe-backup 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+Tilo[[:space:]]+identity' 120 2 \
   || die "OOBE did not create the local/device identity chain"
 
 # A fresh identity must either save and verify its encrypted recovery material
@@ -500,7 +500,7 @@ sleep 8
 # or privileged observer is introduced for the test.
 "$vm" type hostname
 "$vm" keys ret
-wait_screen 15-desktop-config 'cycle.?qos' 60 2 \
+wait_screen 15-desktop-config 'cycle.?tilo' 60 2 \
   || die "desktop terminal did not report the installed hostname"
 
 copy_evidence target

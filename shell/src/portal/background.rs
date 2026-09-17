@@ -1,9 +1,9 @@
-//! `org.freedesktop.impl.portal.Background` backed by qOS's launcher.
+//! `org.freedesktop.impl.portal.Background` backed by Tilo's launcher.
 //!
 //! The portal never executes the `commandline` supplied by an application.
 //! A successful autostart change is delegated to the signed package launcher,
 //! which resolves the authenticated application id to its installed desktop
-//! entry. This preserves qOS's app/workspace isolation and avoids a second,
+//! entry. This preserves Tilo's app/workspace isolation and avoids a second,
 //! unsafe autostart mechanism.
 
 use std::collections::{BTreeSet, HashMap};
@@ -51,7 +51,7 @@ pub enum BackgroundConsent {
     Deny,
 }
 
-/// qOS-owned boundary for background UI and package-registered autostart.
+/// Tilo-owned boundary for background UI and package-registered autostart.
 ///
 /// `set_autostart` must only create/remove an entry for the signed package
 /// identified by `app_id`; it intentionally receives no executable path or
@@ -95,10 +95,10 @@ impl BackgroundService for UnavailableBackgroundService {
         _: BackgroundConsentRequest,
         _: oneshot::Sender<PortalResult<BackgroundConsent>>,
     ) -> PortalResult<()> {
-        PortalResult::Unavailable("qOS background-permission chrome is not attached".into())
+        PortalResult::Unavailable("Tilo background-permission chrome is not attached".into())
     }
     fn set_autostart(&self, _: &str, _: bool) -> PortalResult<bool> {
-        PortalResult::Unavailable("qOS package launcher is not attached".into())
+        PortalResult::Unavailable("Tilo package launcher is not attached".into())
     }
 }
 
@@ -108,7 +108,7 @@ struct AutostartFile {
     packages: BTreeSet<String>,
 }
 
-/// qOS's production Background adapter.  Consent is shown through the shell
+/// Tilo's production Background adapter.  Consent is shown through the shell
 /// review queue and autostart state is a private durable list of installed GUI
 /// package ids. On session restore the compositor calls
 /// [`Self::launch_enabled_in_workspace`], which re-validates each package and
@@ -168,7 +168,7 @@ impl ShellBackgroundService {
 
     /// Launch the persisted entries once at desktop-session startup. The
     /// atomic guard prevents a D-Bus activation/retry from spawning another
-    /// copy in the same qOS process; each package is still validated by the
+    /// copy in the same Tilo process; each package is still validated by the
     /// launcher at the point of launch.
     pub fn launch_at_session_start(&self, tree: &crate::shell::state::WorkspaceTreeHandle) {
         if self.startup_launched.swap(true, Ordering::AcqRel) {
@@ -318,7 +318,7 @@ pub struct BackgroundBackend {
 }
 
 impl BackgroundBackend {
-    /// Creates a backend that denies requests until qOS's launcher/chrome
+    /// Creates a backend that denies requests until Tilo's launcher/chrome
     /// service is wired using [`Self::with_service`].
     pub fn new(ctx: PortalContext) -> Self {
         Self::with_lifecycle(ctx, PortalLifecycle::new())
@@ -532,7 +532,7 @@ impl BackgroundBackend {
         }
     }
 
-    /// Deprecated upstream API. qOS accepts it only after a background grant,
+    /// Deprecated upstream API. Tilo accepts it only after a background grant,
     /// and passes solely the verified package id to the launcher. The argv is
     /// parsed only for size/control-character limits then discarded.
     async fn enable_autostart(
@@ -647,7 +647,7 @@ fn default_path() -> PathBuf {
         // A missing private state/runtime directory must make persistence
         // fail; shared /tmp would let another user pre-seed portal state.
         .unwrap_or_else(|| PathBuf::from("/dev/null"))
-        .join("qos/portal/background-autostart.json")
+        .join("tilo/portal/background-autostart.json")
 }
 
 #[cfg(test)]

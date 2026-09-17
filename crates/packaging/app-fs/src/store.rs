@@ -1,6 +1,6 @@
 //! Content-addressed blob store with **range reads** as the primitive.
 //!
-//! Unlike `qos-pkg::BlobStore`'s whole-blob `get`/`put` (packing needs
+//! Unlike `tilo-pkg::BlobStore`'s whole-blob `get`/`put` (packing needs
 //! the whole bundle in hand), the mount layer serves small windows
 //! (often one 4 KiB page) into multi-hundred-MB blobs, and the whole
 //! point of the mount is to avoid pulling unrequested bytes. So it
@@ -177,7 +177,7 @@ impl DiskBlobStore {
 
     /// Write `bytes` under their BLAKE3 hash; returns the hash. Exposed
     /// for tests and one-off ingest — production packers go through
-    /// `qos-pkg`, which lays out a directory the same way.
+    /// `tilo-pkg`, which lays out a directory the same way.
     ///
     /// # Errors
     ///

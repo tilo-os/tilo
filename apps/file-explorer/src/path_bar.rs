@@ -2,7 +2,7 @@
 //! manager. It has two modes:
 //!
 //! * **Breadcrumb** (default): the clickable path trail (`Home › Projects ›
-//!   qos`). Clicking an ancestor navigates to it.
+//!   tilo`). Clicking an ancestor navigates to it.
 //! * **Editable** (Finder/Nautilus location bar): clicking the current
 //!   location — or the empty trail area, or pressing Ctrl+L — turns the trail
 //!   into a real editable text field. As you type, **path completions appear in

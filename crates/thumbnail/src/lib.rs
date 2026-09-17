@@ -1,4 +1,4 @@
-//! qOS's one shared thumbnail system: generate a small, good-looking, type-
+//! Tilo's one shared thumbnail system: generate a small, good-looking, type-
 //! telling preview for a file, cache it content-addressed, and hand it out
 //! off-thread.
 //!
@@ -12,7 +12,7 @@
 //!    stay light; images and EPUB covers are always-on pure Rust.
 //! 2. **Cache** ([`ThumbCache`]) — content-addressed (BLAKE3 → PNG) on disk so
 //!    it survives a restart, fronted by a bounded in-memory LRU. Keyed by the
-//!    same hash the qOS filesystem addresses content by, so previews dedup
+//!    same hash the Tilo filesystem addresses content by, so previews dedup
 //!    across paths and peers and invalidate for free when a file changes.
 //! 3. **Service** ([`ThumbnailService`]) — an off-thread worker pool: request a
 //!    preview, get a placeholder now and the real image on a later frame; a big

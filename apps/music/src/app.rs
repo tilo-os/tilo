@@ -266,6 +266,13 @@ struct Hit {
     action: Action,
 }
 
+#[derive(Clone, Debug)]
+struct PendingMediaHandoff {
+    uri: String,
+    position_ms: u64,
+    resume_playing: bool,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool tracks an independent, unrelated concern (backend readiness, one-time \
@@ -347,11 +354,11 @@ pub struct MusicApp {
     active_resolve_request: Option<u64>,
     /// The lifecycle invocation waiting for one exact stream-resolution id.
     /// This never represents ordinary in-window playback actions.
-    resource_stream_invocation: Option<(qos_actions::InvocationId, u64, u64, Instant)>,
+    resource_stream_invocation: Option<(tilo_actions::InvocationId, u64, u64, Instant)>,
     /// Terminal updates are retained per invocation until the host consumes
     /// them. A new operation must never overwrite an earlier terminal result
     /// just because the host polls on a later frame.
-    resource_stream_results: Vec<qos_actions::InvocationUpdate>,
+    resource_stream_results: Vec<tilo_actions::InvocationUpdate>,
     active_search_request: Option<u64>,
     active_search_more: HashMap<String, u64>,
     /// `(query, reason)` for the current live-search failure. Kept separate
@@ -370,6 +377,10 @@ pub struct MusicApp {
     /// Last player state published to MPRIS, so `publish_mpris` only pushes real
     /// changes (the handle itself also dedups).
     mpris_last: Option<PlayerSnapshot>,
+    /// App-native playback identity advertised privately to the shell. Music
+    /// hands over a stable track resource, never its signed decoder URL.
+    handoff: media::handoff::AppPlaybackHandle,
+    pending_media_handoff: Option<PendingMediaHandoff>,
 
     /// A playlist-cover file-portal pick in flight: the receiver the frame loop
     /// drains, plus the playlist it targets. `None` when no picker is open.
@@ -461,6 +472,10 @@ pub struct MusicApp {
     /// Self-routing right-click context menu (the `ui` primitive, driven
     /// imperatively: opened at the cursor, drawn last, polled via a sink).
     context: ContextMenu,
+    /// The scale from the most recently rendered system theme. Context menus
+    /// are rebuilt on demand, so retaining this lets their first pointer or
+    /// keyboard event use the same enlarged geometry the next frame paints.
+    context_text_scale: f32,
     /// The action each open menu row maps to. Parallel to `context.items()`;
     /// drained when a selection lands so the host performs the CRDT mutation
     /// the `Arc<Fn>` callback model can't express.
@@ -571,17 +586,17 @@ pub struct MusicApp {
     downloads: HashMap<String, crate::audio::OfflineDownload>,
     offline_resolves: HashMap<u64, String>,
     offline_invocation: Option<(
-        qos_actions::InvocationId,
+        tilo_actions::InvocationId,
         std::collections::BTreeSet<String>,
     )>,
-    offline_results: Vec<qos_actions::InvocationUpdate>,
+    offline_results: Vec<tilo_actions::InvocationUpdate>,
     offline_errors: HashMap<String, String>,
 
     /// Framework-owned action dispatch: brackets the undo boundary (the same undo
     /// path the Ctrl+K palette takes), encodes and dispatches each on-screen
     /// affordance's [`crate::actions`] action, and remembers the last one so a
     /// test can prove a button and the Ctrl+K
-    /// [`ActionSpec`](qos_actions::ActionSpec) build the byte-identical action.
+    /// [`ActionSpec`](tilo_actions::ActionSpec) build the byte-identical action.
     actions: ui::ActionHost,
 }
 
@@ -653,9 +668,9 @@ impl MusicApp {
     )]
     fn new_with_device_profile(load_device_profile: bool) -> Self {
         // Optional initial-view override, used by `--shots` to capture
-        // screens other than Home (e.g. `QOS_MUSIC_VIEW=album:al_glasslight`).
+        // screens other than Home (e.g. `TILO_MUSIC_VIEW=album:al_glasslight`).
         let (view, query) = Self::parse_initial_view();
-        // A preset search query (`QOS_MUSIC_VIEW=search:…`) arms the debounce so
+        // A preset search query (`TILO_MUSIC_VIEW=search:…`) arms the debounce so
         // the live-shot loop dispatches it after the usual idle beat.
         let preset_search_at = (!query.is_empty()).then(Instant::now);
         let mut search_input = TextInput::local()
@@ -717,6 +732,8 @@ impl MusicApp {
             playback_error: None,
             mpris: MprisHandle::disabled(),
             mpris_last: None,
+            handoff: media::handoff::AppPlaybackHandle::new(),
+            pending_media_handoff: None,
             cover_pick: None,
             cover_pick_for: None,
             cover_embed: None,
@@ -756,6 +773,7 @@ impl MusicApp {
             dirty: true,
             toast: None,
             context: ContextMenu::new(),
+            context_text_scale: 1.0,
             menu_actions: Vec::new(),
             pending: Arc::new(AtomicI64::new(-1)),
             ctx_track: None,
@@ -921,7 +939,7 @@ impl MusicApp {
     }
 
     fn parse_initial_view() -> (View, String) {
-        let Ok(raw) = std::env::var("QOS_MUSIC_VIEW") else {
+        let Ok(raw) = std::env::var("TILO_MUSIC_VIEW") else {
             return (View::Home, String::new());
         };
         let v = match raw.as_str() {
@@ -1162,7 +1180,7 @@ impl MusicApp {
 
     /// Dispatch one [`MusicAction`](crate::actions::MusicAction) — the single
     /// CRDT-mutation path shared with the Ctrl+K palette. The action is applied
-    /// through the qOS action executor (a pinned actor + committed change, so it
+    /// through the Tilo action executor (a pinned actor + committed change, so it
     /// replays byte-identically on peers), exactly as the palette does. The
     /// document heads captured just before the first action of the event are
     /// stashed so the host records **one** undo boundary bracketing it
@@ -1452,6 +1470,24 @@ impl MusicApp {
         self.mpris_last = Some(snap);
     }
 
+    /// Stage an authenticated shell handoff. It is applied after the shared
+    /// library has loaded, so the stable track id must resolve on this device
+    /// before Music advertises acceptance back to the source.
+    #[must_use]
+    pub fn with_media_handoff(
+        mut self,
+        uri: String,
+        position_ms: u64,
+        resume_playing: bool,
+    ) -> Self {
+        self.pending_media_handoff = Some(PendingMediaHandoff {
+            uri,
+            position_ms,
+            resume_playing,
+        });
+        self
+    }
+
     /// Build the MPRIS snapshot from the current playback + library state.
     fn mpris_snapshot(&self) -> PlayerSnapshot {
         let status = match &self.pb.current {
@@ -1495,6 +1531,68 @@ impl MusicApp {
         }
         let snap = self.mpris_snapshot();
         self.mpris.publish(&snap);
+    }
+
+    fn publish_handoff(&self) {
+        let Some(track_id) = self.pb.current.as_deref() else {
+            self.handoff.clear();
+            return;
+        };
+        let Some(track) = self.lib.track(track_id) else {
+            self.handoff.clear();
+            return;
+        };
+        let uri = crate::search_type::SearchHit::track_link(track_id);
+        self.handoff.publish(media::handoff::AppPlayback {
+            resource_uri: &uri,
+            title: &track.title,
+            position_ms: self.playhead_ms.max(0.0) as u64,
+            duration_ms: Some(track.duration_ms()),
+            playing: self.pb.playing,
+            has_video: false,
+            // A handoff is acknowledged only after this device actually has
+            // a decoder source. Merely resolving the synced id is not enough.
+            audible: self.pb.volume > 0 && self.audio.has_stream(),
+            controller_bus_name: Some(crate::mpris::BUS_NAME),
+        });
+    }
+
+    fn apply_pending_media_handoff(&mut self, state: &mut AutoCommit) {
+        let Some(pending) = self.pending_media_handoff.take() else {
+            return;
+        };
+        let Some(crate::search_type::DeepLink::Track(track_id)) =
+            crate::search_type::DeepLink::parse(&pending.uri)
+        else {
+            return;
+        };
+        if !self.lib.tracks.contains_key(&track_id) {
+            // The room document may still be hydrating. Keep the exact request
+            // pending; without a published session the source cannot receive a
+            // false acknowledgement.
+            self.pending_media_handoff = Some(pending);
+            return;
+        }
+        self.dispatch(
+            Action::Play {
+                queue: vec![track_id].into(),
+                index: 0,
+            },
+            state,
+        );
+        let duration = self.current_duration_ms();
+        let position_ms = if duration == 0 {
+            pending.position_ms
+        } else {
+            pending.position_ms.min(duration)
+        };
+        self.playhead_ms = position_ms as f64;
+        self.pb.position_ms = position_ms;
+        self.pb.playing = pending.resume_playing;
+        if !pending.resume_playing {
+            self.audio.pause();
+        }
+        self.persist_playback(state);
     }
 
     /// Drain external MPRIS control commands (media keys, the desktop media
@@ -2688,18 +2786,18 @@ impl MusicApp {
         if error.is_some() || empty {
             self.offline_invocation = None;
             let update = match error {
-                Some(message) => qos_actions::InvocationUpdate::Failed {
+                Some(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "music.offline_download_failed".into(),
                         message,
                         details: Some(serde_json::json!({"track_id": track_id})),
                         retryable: true,
                     },
                 },
-                None => qos_actions::InvocationUpdate::Succeeded {
+                None => tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput {
+                    output: tilo_actions::ActionOutput {
                         value: Some(serde_json::json!({"state":"cached"})),
                         resources: Vec::new(),
                     },
@@ -2714,7 +2812,7 @@ impl MusicApp {
     /// every stream intent through the same state machine.
     pub(crate) fn begin_resource_stream_invocation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         request_id: u64,
     ) {
         self.resource_stream_invocation = Some((
@@ -2737,9 +2835,9 @@ impl MusicApp {
     ) {
         if let Some((invocation, _, _, _)) = self.resource_stream_invocation.take() {
             self.resource_stream_results
-                .push(qos_actions::InvocationUpdate::Failed {
+                .push(tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: code.into(),
                         message: message.into(),
                         details,
@@ -3128,6 +3226,9 @@ impl MusicApp {
             // direct googlevideo URL if the proxy yields no bytes.
             self.audio
                 .load_with_fallback(&stream.url, stream.fallback_url.as_deref());
+            if self.playhead_ms > 0.0 {
+                self.audio.seek_ms(self.playhead_ms as u64);
+            }
             if self.pb.playing {
                 self.audio.play();
             }
@@ -3141,9 +3242,9 @@ impl MusicApp {
                 return;
             };
             self.resource_stream_results
-                .push(qos_actions::InvocationUpdate::Succeeded {
+                .push(tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput {
+                    output: tilo_actions::ActionOutput {
                         // This build has no audio backend.  Resolution means a
                         // stream URL was obtained; it must not claim playback
                         // has started when it cannot render any audio.
@@ -3164,9 +3265,9 @@ impl MusicApp {
         {
             self.resource_stream_invocation = None;
             self.resource_stream_results
-                .push(qos_actions::InvocationUpdate::Succeeded {
+                .push(tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput {
+                    output: tilo_actions::ActionOutput {
                         value: Some(serde_json::json!({ "state": "playing" })),
                         resources: Vec::new(),
                     },
@@ -4169,7 +4270,7 @@ impl MusicApp {
                 // a Ctrl+K result takes after its canonical resource action
                 // resolves at the authority door.
                 let _ = self.invoke_resource_operation(
-                    qos_actions::OperationKind::View,
+                    tilo_actions::OperationKind::View,
                     crate::actions::MUSIC_OPERATION_TYPE,
                     &payload,
                     &AutoCommit::new(),
@@ -4248,8 +4349,15 @@ impl MusicApp {
             Action::ToggleLike(track),
         );
 
-        let p = self.clamp_menu_origin(self.mouse);
-        self.context.open_at([p.x as f32, p.y as f32]);
+        // ContextMenu owns placement: it flips above the anchor when
+        // appropriate, clamps to the app viewport, and scrolls internally if
+        // the complete action list cannot fit. Keeping geometry in the shared
+        // primitive gives an immediately correct hit target at the current
+        // text scale, before the next draw pass.
+        self.context.set_text_scale(self.context_text_scale);
+        self.context.set_viewport(Some(self.rect));
+        self.context
+            .open_at([self.mouse.x as f32, self.mouse.y as f32]);
         self.layout_context_menu();
         self.dirty = true;
     }
@@ -4284,21 +4392,12 @@ impl MusicApp {
             );
         }
 
-        let p = self.clamp_menu_origin(self.mouse);
-        self.context.open_at([p.x as f32, p.y as f32]);
+        self.context.set_text_scale(self.context_text_scale);
+        self.context.set_viewport(Some(self.rect));
+        self.context
+            .open_at([self.mouse.x as f32, self.mouse.y as f32]);
         self.layout_context_menu();
         self.dirty = true;
-    }
-
-    /// Nudge a menu anchor so the menu stays within the app rect. The menu is
-    /// `MENU_WIDTH` (220) wide; height grows with the item count.
-    fn clamp_menu_origin(&self, p: Point) -> Point {
-        let menu_w = 220.0;
-        let rows = self.menu_actions.len() as f64;
-        let menu_h = rows * 28.0 + 24.0;
-        let x = p.x.min(self.rect.x1 - menu_w - 8.0).max(self.rect.x0 + 8.0);
-        let y = p.y.min(self.rect.y1 - menu_h - 8.0).max(self.rect.y0 + 8.0);
-        Point::new(x, y)
     }
 
     /// Run the context menu's own layout pass against a throwaway taffy tree
@@ -4306,7 +4405,7 @@ impl MusicApp {
     fn layout_context_menu(&mut self) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let theme = Theme::dark();
+        let theme = Theme::dark().with_text_scale(self.context_text_scale);
         let node = self.context.build_layout(&mut taffy, &theme, &mut node_map);
         let _ = taffy.compute_layout(
             node,
@@ -4316,6 +4415,14 @@ impl MusicApp {
             },
         );
         self.context.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    /// Keep the imperatively owned shared menu aligned with the current
+    /// system accessibility geometry even while it is closed.
+    fn sync_context_menu_geometry(&mut self, theme: &Theme) {
+        self.context_text_scale = theme.text_scale;
+        self.context.set_text_scale(self.context_text_scale);
+        self.context.set_viewport(Some(self.rect));
     }
 
     /// Drain a context-menu selection (set by a row callback) and dispatch the
@@ -4475,13 +4582,13 @@ impl MusicApp {
     /// Memoised local-library search: recomputes only when the query changes,
     /// so typing doesn't re-scan the whole catalog every frame.
     fn local_search_cached(&mut self, q: &str) -> SearchResults {
-        // `QOS_MUSIC_NOCACHE=1` forces the pre-memoisation behaviour (re-scan
+        // `TILO_MUSIC_NOCACHE=1` forces the pre-memoisation behaviour (re-scan
         // every frame) so the search-cache win can be measured head-to-head.
         // Read once (not per frame).
         use std::sync::OnceLock;
         static NOCACHE: OnceLock<bool> = OnceLock::new();
         let nocache = *NOCACHE
-            .get_or_init(|| std::env::var("QOS_MUSIC_NOCACHE").is_ok_and(|v| !v.is_empty()));
+            .get_or_init(|| std::env::var("TILO_MUSIC_NOCACHE").is_ok_and(|v| !v.is_empty()));
         if !nocache
             && let Some((cached_q, res)) = &self.search_cache
             && cached_q == q
@@ -4809,7 +4916,7 @@ fn image_fetcher() -> ui::Fetcher {
         let client = CLIENT.get_or_init(|| {
             reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(12))
-                .user_agent("Mozilla/5.0 (qOS Music)")
+                .user_agent("Mozilla/5.0 (Tilo Music)")
                 .build()
                 .unwrap_or_default()
         });
@@ -4864,13 +4971,13 @@ mod tests {
     }
 
     #[test]
-    fn shot_constructor_never_reads_qos_music_profile() {
+    fn shot_constructor_never_reads_tilo_music_profile() {
         let _lock = PROFILE_ENV_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap();
         let path = std::env::temp_dir().join(format!(
-            "qos-music-shot-profile-{}-{}.json",
+            "tilo-music-shot-profile-{}-{}.json",
             std::process::id(),
             Instant::now().elapsed().as_nanos()
         ));
@@ -4883,17 +4990,17 @@ mod tests {
             .insert("sentinel-track".into(), CacheState::Cached);
         crate::storage::save_device_profile_to(&path, &profile).unwrap();
 
-        let old = std::env::var_os("QOS_MUSIC_PROFILE");
+        let old = std::env::var_os("TILO_MUSIC_PROFILE");
         // SAFETY: this test serializes its own environment mutation and restores
         // the prior value before returning.
-        unsafe { std::env::set_var("QOS_MUSIC_PROFILE", &path) };
+        unsafe { std::env::set_var("TILO_MUSIC_PROFILE", &path) };
         let app = MusicApp::new_for_shot();
         if let Some(value) = old {
             // SAFETY: restore the exact process environment value we replaced.
-            unsafe { std::env::set_var("QOS_MUSIC_PROFILE", value) };
+            unsafe { std::env::set_var("TILO_MUSIC_PROFILE", value) };
         } else {
             // SAFETY: remove only the temporary test override above.
-            unsafe { std::env::remove_var("QOS_MUSIC_PROFILE") };
+            unsafe { std::env::remove_var("TILO_MUSIC_PROFILE") };
         }
         let _ = std::fs::remove_file(path);
 
@@ -4971,6 +5078,35 @@ mod tests {
             !receiver.pb.playing,
             "continuation restore must never autoplay"
         );
+    }
+
+    #[test]
+    fn media_handoff_resolves_synced_track_and_restores_transport() {
+        let (mut app, mut doc) = app_with_doc();
+        app.pending_media_handoff = Some(PendingMediaHandoff {
+            uri: crate::search_type::SearchHit::track_link("tk_g1"),
+            position_ms: 12_345,
+            resume_playing: true,
+        });
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.pb.current.as_deref(), Some("tk_g1"));
+        assert_eq!(app.pb.position_ms, 12_345);
+        assert_eq!(app.playhead_ms, 12_345.0);
+        assert!(app.pb.playing);
+        assert!(app.pending_media_handoff.is_none());
+    }
+
+    #[test]
+    fn media_handoff_waits_for_its_synced_resource() {
+        let mut app = MusicApp::new_for_shot().with_media_handoff(
+            crate::search_type::SearchHit::track_link("not-hydrated-yet"),
+            42,
+            true,
+        );
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.pb.current.is_none());
+        assert!(app.pending_media_handoff.is_some());
     }
 
     #[test]
@@ -5559,7 +5695,7 @@ mod tests {
         .unwrap();
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &keep,
                 &doc,
@@ -5587,7 +5723,7 @@ mod tests {
         .unwrap();
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &keep,
                 &doc,
@@ -5602,7 +5738,7 @@ mod tests {
         .unwrap();
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &evict,
                 &doc,
@@ -5619,8 +5755,10 @@ mod tests {
     #[test]
     fn verified_media_cache_reopens_after_restart_without_a_resolver() {
         let (mut app, _doc) = app_with_doc();
-        let root =
-            std::env::temp_dir().join(format!("qos-music-offline-playback-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "tilo-music-offline-playback-{}",
+            std::process::id()
+        ));
         app.media_cache_root = root.clone();
         app.media_cache
             .install_bytes(&root, "tk_g1", b"durable media bytes", 1024)
@@ -5908,6 +6046,26 @@ mod tests {
     }
 
     #[test]
+    fn context_menu_uses_shared_viewport_and_current_large_text_geometry() {
+        use ui::widget::Widget as _;
+
+        let (mut app, _doc) = app_with_doc();
+        // A short, narrow 200%-scale viewport is the hostile case: the
+        // contextual action list cannot fit above or below its anchor. The
+        // shared menu must own one in-viewport, internally scrollable surface
+        // instead of Music's former guessed clamp.
+        app.rect = Rect::new(0.0, 0.0, 390.0, 320.0);
+        app.context_text_scale = 2.0;
+        app.mouse = Point::new(382.0, 304.0);
+        app.open_track_menu("tk_g2".into(), None, None);
+
+        let rect = app.context.get_rect();
+        assert!(rect.x0 >= app.rect.x0 && rect.x1 <= app.rect.x1);
+        assert!(rect.y0 >= app.rect.y0 && rect.y1 <= app.rect.y1);
+        assert_eq!(rect, app.rect, "oversized menu scrolls within the viewport");
+    }
+
+    #[test]
     fn menu_add_to_queue_grows_the_queue() {
         let (mut app, mut doc) = app_with_doc();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -6183,7 +6341,7 @@ mod tests {
                 .expect("each searchable Music entity has its canonical hit");
             let address = hit.action_address().expect("canonical search address");
             assert!(
-                qos_actions::door::resolve(&resources, &address).is_some(),
+                tilo_actions::door::resolve(&resources, &address).is_some(),
                 "{address:?} resolves against the live Music resource tree"
             );
         }
@@ -6201,9 +6359,9 @@ mod tests {
         palette.activate_selected();
         let operation = palette.take_operation().expect("play action queued");
         assert!(palette.take_navigation().is_none());
-        assert_eq!(operation.kind, qos_actions::OperationKind::Effect);
+        assert_eq!(operation.kind, tilo_actions::OperationKind::Effect);
         let heads = doc.get_heads();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         assert_eq!(
             Widget::start_resource_operation(
                 &mut app,
@@ -6241,7 +6399,7 @@ mod tests {
         palette.set_cursor(row);
         palette.activate_selected();
         let operation = palette.take_operation().expect("artist view queued");
-        assert_eq!(operation.kind, qos_actions::OperationKind::View);
+        assert_eq!(operation.kind, tilo_actions::OperationKind::View);
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
@@ -6274,11 +6432,11 @@ mod tests {
         let payload =
             serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
         let before = app.next_request_id;
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         assert_eq!(
             app.start_resource_operation(
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -6305,11 +6463,11 @@ mod tests {
         playback.playing = true;
         let payload =
             serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         assert_eq!(
             app.start_resource_operation(
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -6324,8 +6482,8 @@ mod tests {
                 .unwrap();
         assert!(
             app.start_resource_operation(
-                qos_actions::InvocationId::new(),
-                qos_actions::OperationKind::Effect,
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &competing,
                 &doc,
@@ -6343,7 +6501,7 @@ mod tests {
         app.apply_resolve_failure("tk_g1", request_id, "backend unavailable");
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Failed { .. })
+            Some(tilo_actions::InvocationUpdate::Failed { .. })
         ));
     }
 
@@ -6357,10 +6515,10 @@ mod tests {
         playback.playing = true;
         let payload =
             serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.start_resource_operation(
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::MUSIC_OPERATION_TYPE,
             &payload,
             &doc,
@@ -6375,7 +6533,7 @@ mod tests {
             app.active_resolve_request, None,
             "timeout retires request authority"
         );
-        let Some(qos_actions::InvocationUpdate::Failed { error, .. }) =
+        let Some(tilo_actions::InvocationUpdate::Failed { error, .. }) =
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
         else {
             panic!("timeout must settle the accepted operation");
@@ -6421,10 +6579,10 @@ mod tests {
         playback.playing = true;
         let payload =
             serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.start_resource_operation(
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::MUSIC_OPERATION_TYPE,
             &payload,
             &doc,
@@ -6457,7 +6615,7 @@ mod tests {
             },
         );
         assert_eq!(app.active_resolve_request, Some(second_request));
-        let Some(qos_actions::InvocationUpdate::Failed { error, .. }) =
+        let Some(tilo_actions::InvocationUpdate::Failed { error, .. }) =
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
         else {
             panic!("local supersession must settle the old host operation");
@@ -6480,11 +6638,11 @@ mod tests {
         playback.playing = true;
         let payload =
             serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let _ = app
             .start_resource_operation(
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -6526,7 +6684,7 @@ mod tests {
             .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
             .expect("rendered PCM settles the audio invocation as playing");
 
-        let qos_actions::InvocationUpdate::Succeeded { output, .. } = update else {
+        let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
             panic!("the bound resolver completion must succeed");
         };
         #[cfg(not(feature = "audio"))]
@@ -6622,7 +6780,7 @@ mod tests {
         let track = playlist.track_ids.first().expect("seed membership").clone();
         let resource_id = crate::actions::playlist_track_resource_id(&playlist.id, &track);
         let resource =
-            <MusicApp as qos_actions::ResourceProvider>::resource(&app, &doc, &resource_id)
+            <MusicApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &resource_id)
                 .expect("membership resolves lazily");
         assert!(
             resource
@@ -6638,7 +6796,7 @@ mod tests {
         let payload = serde_json::to_vec(&operation).expect("operation encodes");
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -6659,7 +6817,7 @@ mod tests {
         app.reload_library(&mut doc);
         let error = app
             .invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -6674,7 +6832,7 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         let resource_id = crate::actions::view_resource_id("downloads");
         let resource =
-            <MusicApp as qos_actions::ResourceProvider>::resource(&app, &doc, &resource_id)
+            <MusicApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &resource_id)
                 .expect("published destination resolves at the authority door");
         let open = resource
             .actions
@@ -6682,13 +6840,13 @@ mod tests {
             .find(|action| action.id == "open")
             .expect("view resource exposes open");
         let operation = match &open.input {
-            qos_actions::ActionInput::Immediate(operation) => operation,
-            qos_actions::ActionInput::Prompted { .. } => panic!("open destination is immediate"),
+            tilo_actions::ActionInput::Immediate(operation) => operation,
+            tilo_actions::ActionInput::Prompted { .. } => panic!("open destination is immediate"),
         };
         let heads = doc.get_heads();
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 &operation.type_id,
                 &operation.payload,
                 &doc,
@@ -6705,7 +6863,7 @@ mod tests {
         .expect("operation encodes");
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &forged,
                 &doc,
@@ -7066,7 +7224,7 @@ mod tests {
     /// the SABR-truncated direct URL, which genuinely cannot play past ~1 minute.
     #[cfg(all(feature = "live", feature = "audio"))]
     fn ytdlp_present() -> bool {
-        let bin = std::env::var("QOS_MUSIC_YTDLP")
+        let bin = std::env::var("TILO_MUSIC_YTDLP")
             .ok()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "yt-dlp".to_string());

@@ -37,7 +37,7 @@ capacity when they are affected without creating an always-on third compile.
 ## Cache layers
 
 - sccache stores compiler outputs in the repository-scoped S3 prefix
-  `quickdesktop/v1/`. This is the main cross-runner Rust cache. The builder
+  `tilo/v1/`. This is the main cross-runner Rust cache. The builder
   workflow proves a cold write and a warm read in separate containers against
   an isolated canary prefix whenever the image changes.
 - `actions/cache` stores only Cargo registry indexes, crate archives, and Git

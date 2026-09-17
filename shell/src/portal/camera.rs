@@ -115,7 +115,7 @@ impl AccessBackend {
     }
 }
 
-/// The fixed security meaning of `impl.portal.Access` in qOS. Human-facing
+/// The fixed security meaning of `impl.portal.Access` in Tilo. Human-facing
 /// title/subtitle/body strings are presentation only and cannot affect policy.
 pub(super) fn camera_capability() -> (CapabilityKind, Capability) {
     (

@@ -55,7 +55,7 @@ runtime. It executes the shipped `fs` command surface and a display-independent
 Files frame during the image build. Version-tag and manual image builds also
 boot the installed bootc disk, log into a real user session, and require a real
 FUSE workspace plus active identity and recipient services and their live Unix
-socket. The VM uses its graphical/virgl configuration, requires the qOS shell's
+socket. The VM uses its graphical/virgl configuration, requires the Tilo shell's
 published Wayland socket, and launches the integrity-verified Files package
 payload that the installed registry resolves. It must observe that payload's
 Files activity, Breadcrumbs and Places nodes over the live AT-SPI bus. Missing
@@ -108,8 +108,7 @@ read. Missing, replaced, permission-weakened or malformed runtime state maps to
 the fail-closed maximum timestamp. Exact-share source-loss, process and semantic
 forward/backward clock boundaries, concurrent remote
 structural conflicts and forced-partition multi-writer coverage are enforced
-as mandatory release tests. The row-by-row status and direct evidence live in
-[collaborative-files-completion-audit.md](collaborative-files-completion-audit.md).
+as mandatory release tests.
 
 The mandatory CI contract runs two partition layers. The state-machine matrix
 uses no timing sleeps: two writers edit independently, atomically persist and
@@ -174,12 +173,12 @@ Process-wide wall-clock injection is covered by the shipped-daemon exact-share
 gate as well as explicit grant/receipt decision-layer inputs. The
 installed-OS contract is now a release-tag gate, but no run of that new gate is
 recorded in this checkout, so this document does not claim installed boot
-evidence yet. The shipped greetd entries now run `qos-session`, which hosts the
+evidence yet. The shipped greetd entries now run `tilo-session`, which hosts the
 existing no-recovery identity ceremony in a temporary single-client Cage
 session when needed, verifies the personal root, persisted root/device secrets
 and signed certificate without mutation, and only then activates
 `graphical-session-pre.target` and `graphical-session.target` through a
-qOS-owned user target. Failed or cancelled enrollment never reaches the
+Tilo-owned user target. Failed or cancelled enrollment never reaches the
 desktop, while exit and termination release the target cleanly. The release VM
 drives that real keyboard-accessible ceremony rather than installing a test
 identity behind the product's back. The real-FUSE CI
@@ -247,7 +246,7 @@ proven in the actual Forgejo runner environment.
   delete/rename and POSIX replacement/victim-move races in both merge orders,
   then proves stable-record source preservation, exact projections, durable
   restart and idempotent repair replay.
-- `QOS_FS_PERF_GATE=1 cargo test -p fs --test performance_gate -- --nocapture
+- `TILO_FS_PERF_GATE=1 cargo test -p fs --test performance_gate -- --nocapture
   --test-threads=1`: 1 enabled performance gate passed in the debug test
   profile. Measured production paths were 94.084 ms for cold namespace
   deserialization plus a 1,000-entry listing (2 s SLO), 344.790 ms for eight
@@ -400,8 +399,8 @@ proven in the actual Forgejo runner environment.
   predictive open-to-sibling hydration, and Files interactions against a live
   collaborative mount.
 - Security, migration/corruption, accessibility, localization, performance and
-  installed-OS smoke gates are green. The completion audit must link every bullet
-  above to direct evidence.
+  installed-OS smoke gates are green. Each release gate must link its claims to
+  direct executable evidence.
 
 ## Delivery order
 

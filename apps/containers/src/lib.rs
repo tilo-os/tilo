@@ -1,4 +1,4 @@
-//! Containers — a rootless-podman container & distrobox manager for qOS.
+//! Containers — a rootless-podman container & distrobox manager for Tilo.
 //!
 //! The app projects the local container engine (containers, images,
 //! distroboxes) into a CRDT-native surface built on the `ui` toolkit:

@@ -19,8 +19,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc, Value, transaction::Transactable};
-use qos_actions::EncodedAction;
 use taffy::{NodeId, TaffyTree};
+use tilo_actions::EncodedAction;
 use tracing::warn;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, Toggle, Widget};
@@ -91,7 +91,7 @@ pub(crate) fn resource_notification_apps(prefs: &NotificationPrefs) -> Vec<(Stri
         .collect()
 }
 
-/// Merge the qOS registry with the system's freedesktop application catalog.
+/// Merge the Tilo registry with the system's freedesktop application catalog.
 /// A host app's desktop-file id and a Flatpak's `X-Flatpak` id are the same
 /// stable identities the notification service verifies from launch/cgroup
 /// metadata; display names are presentation only.
@@ -274,7 +274,7 @@ impl NotificationsPane {
 
     /// Dispatch one [`SettingsAction`] — the single CRDT-mutation path shared
     /// with the Ctrl+K palette. The framework [`ActionHost`](ui::ActionHost)
-    /// brackets the undo boundary and applies the action through the qOS executor
+    /// brackets the undo boundary and applies the action through the Tilo executor
     /// (a pinned actor + committed change, so it replays byte-identically on
     /// peers).
     ///
@@ -287,7 +287,7 @@ impl NotificationsPane {
             state,
             SETTINGS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Settings", "Settings", action),
         );
     }
 
@@ -623,7 +623,7 @@ impl NotificationsPane {
             card(
                 "Applications",
                 rows(vec![caption(
-                    "Rules use verified qOS, system, or Flatpak identities — never the name an application writes into a notification.",
+                    "Rules use verified Tilo, system, or Flatpak identities — never the name an application writes into a notification.",
                 )]),
             )
         }
@@ -658,7 +658,7 @@ impl NotificationsPane {
         let mut p = SystemPrefs::load();
         p.notifications = self.prefs.clone();
         if let Err(e) = p.save() {
-            warn!(target: "qos::settings", op = "notifications_save", error = %e, "failed to persist notification prefs");
+            warn!(target: "tilo::settings", op = "notifications_save", error = %e, "failed to persist notification prefs");
         }
     }
 
@@ -1120,8 +1120,8 @@ mod tests {
             .unwrap();
         let dnd_spec = notif.actions.iter().find(|a| a.id == "dnd").unwrap();
         let from_spec = match &dnd_spec.input {
-            qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-            qos_actions::ActionInput::Prompted { .. } => {
+            tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => {
                 panic!("the DND flip is an immediate action")
             }
         };

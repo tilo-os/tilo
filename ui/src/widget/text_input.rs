@@ -31,7 +31,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::BlendMode;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 use zeroize::Zeroize;
 
@@ -170,6 +170,10 @@ pub struct TextInput {
     selection_anchor: Option<usize>,
     /// Forces `wants_pointer_capture` so a drag past the rect edge keeps updating.
     is_dragging: bool,
+    /// Exclusive finger ownership for native touch selection. Mouse state is
+    /// deliberately separate so a secondary finger cannot steal or complete
+    /// an in-progress selection gesture.
+    active_touch: Option<u64>,
     drag_unit: DragUnit,
     /// Anchor span snapped to `drag_unit` boundaries; the drag extends from
     /// whichever end is "opposite" the current pointer.
@@ -220,6 +224,10 @@ pub struct TextInput {
     scroll_x: f64,
     last_edit_time: Option<Instant>,
     font_size_override: Option<f32>,
+    /// The text scale used for the most recent paint. Code gutter geometry is
+    /// derived from the same scale as its shaped line-number text so it never
+    /// intrudes into the viewport at accessibility sizes.
+    gutter_text_scale: f64,
     /// Renders without the rounded-rect chrome, for block-editor cells that
     /// should read as document copy, not a form field.
     plain: bool,
@@ -355,6 +363,7 @@ impl TextInput {
             caret_affinity: TextAffinity::Before,
             selection_anchor: None,
             is_dragging: false,
+            active_touch: None,
             drag_unit: DragUnit::Char,
             drag_anchor_span: (0, 0),
             last_click_time: None,
@@ -381,6 +390,7 @@ impl TextInput {
             path_was_present: false,
             external_buffer: None,
             font_size_override: None,
+            gutter_text_scale: 1.0,
             plain: false,
             bound_text: None,
             local_author: None,
@@ -903,7 +913,7 @@ impl TextInput {
     /// Route committed keyboard, paste, IME, and accessibility edits through
     /// an exported action with the complete current string as input.
     #[must_use]
-    pub fn on_action(mut self, binding: qos_actions::ActionBinding<String>) -> Self {
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
         self.on_change = None;
         self
@@ -1672,6 +1682,21 @@ impl TextInput {
         }
     }
 
+    /// The shaped code paragraph applies `Theme::text_scale` directly because
+    /// it bypasses [`TextRenderer`]. Gutter labels go through `TextRenderer`,
+    /// which applies that scale itself. Convert the paragraph style back to
+    /// its unscaled form so a 200% line number is measured and painted once,
+    /// not twice (which would push two-digit labels beyond the left edge).
+    fn gutter_number_style(style: &TextStyle, theme: &Theme) -> TextStyle {
+        let mut gutter = style.clone();
+        let scale = theme.text_scale;
+        if (scale - 1.0).abs() > f32::EPSILON {
+            gutter.size /= scale;
+            gutter.letter_spacing /= scale;
+        }
+        gutter
+    }
+
     #[allow(clippy::too_many_arguments, reason = "internal draw-pass helper")]
     fn draw_gutter_line_numbers(
         &self,
@@ -1699,7 +1724,9 @@ impl TextInput {
             )]
             let origin = transform
                 * Affine::translate((
-                    self.rect.x0 + gutter_width - GUTTER_PAD_R - f64::from(width),
+                    self.rect.x0 + gutter_width
+                        - GUTTER_PAD_R * self.gutter_text_scale
+                        - f64::from(width),
                     self.single_origin.y + f64::from(top),
                 ));
             let color = if line == current_line {
@@ -1832,7 +1859,7 @@ impl TextInput {
             transform,
             tr,
             theme,
-            &style,
+            &Self::gutter_number_style(&style, theme),
             caret_byte,
             gutter_width,
         );
@@ -1981,7 +2008,7 @@ impl TextInput {
         }
         for (ry, num, current) in gutter_nums {
             let w = f64::from(self.measure_str(tr, num, size).0);
-            let x = self.rect.x0 + gutter_w - GUTTER_PAD_R - w;
+            let x = self.rect.x0 + gutter_w - GUTTER_PAD_R * self.gutter_text_scale - w;
             #[allow(
                 clippy::arithmetic_side_effects,
                 reason = "Affine transform composition over f64 screen coordinates"
@@ -2361,8 +2388,9 @@ impl TextInput {
             n /= 10;
         }
         let digits = digits.max(2);
-        let adv = f64::from(self.effective_font_size()) * GUTTER_DIGIT_RATIO;
-        GUTTER_PAD_L + f64::from(digits) * adv + GUTTER_PAD_R
+        let scale = self.gutter_text_scale;
+        let adv = f64::from(self.effective_font_size()) * scale * GUTTER_DIGIT_RATIO;
+        GUTTER_PAD_L * scale + f64::from(digits) * adv + GUTTER_PAD_R * scale
     }
 
     fn ml_left(&self) -> f64 {
@@ -3524,6 +3552,10 @@ impl Widget for TextInput {
         available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
+        // Taffy measures before painting. Retain the renderer scale here too,
+        // so a freshly opened editor reserves its full accessibility gutter
+        // on the very first layout rather than correcting on frame two.
+        self.gutter_text_scale = f64::from(text_renderer.text_scale());
         if !self.multiline {
             self.model_layout_dirty = false;
             return taffy::Size::ZERO;
@@ -3552,6 +3584,7 @@ impl Widget for TextInput {
         _presence: &crate::presence::PresenceCtx,
     ) {
         self.last_caret_width = theme.caret_width;
+        self.gutter_text_scale = f64::from(theme.text_scale);
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         if !self.plain {
             self.draw_field_chrome(scene, transform, theme, &shape);
@@ -3687,6 +3720,9 @@ impl Widget for TextInput {
             } if self.is_hovered && !self.effectively_disabled() => {
                 self.handle_middle_click(state, root, focus_target, node_id, handled);
             }
+            WindowEvent::Touch(touch) => {
+                self.handle_touch_event(touch, scale_factor, focus_target, node_id, handled);
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -3722,13 +3758,13 @@ impl Widget for TextInput {
         "TextInput"
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
 
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         if let Some(action) = &mut self.action {
             action.refresh_availability(allowed);
@@ -4874,6 +4910,51 @@ impl TextInput {
             }
             "v" => {
                 self.do_paste(state, obj_id);
+                *handled = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_touch_event(
+        &mut self,
+        touch: &winit::event::Touch,
+        scale_factor: f64,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        handled: &mut bool,
+    ) {
+        let point = Point::new(
+            touch.location.x / scale_factor,
+            touch.location.y / scale_factor,
+        );
+        match touch.phase {
+            TouchPhase::Started if self.active_touch.is_none() && self.rect.contains(point) => {
+                self.active_touch = Some(touch.id);
+                self.last_mouse_pos = point;
+                self.is_hovered = true;
+                self.handle_left_press(Modifiers::default(), focus_target, node_id, handled);
+            }
+            TouchPhase::Moved if self.active_touch == Some(touch.id) => {
+                self.handle_cursor_moved(touch.location, scale_factor, handled);
+                // Movement that leaves the field can retain the same resolved
+                // cursor, but the owned gesture is consumed until release.
+                *handled = true;
+            }
+            TouchPhase::Ended if self.active_touch == Some(touch.id) => {
+                self.active_touch = None;
+                self.is_dragging = false;
+                self.is_hovered = self.rect.contains(point);
+                *handled = true;
+            }
+            TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
+                self.active_touch = None;
+                self.is_dragging = false;
+                *handled = true;
+            }
+            _ if self.active_touch.is_some() => {
+                // A secondary finger cannot leak to a control below while
+                // this field owns the selection gesture.
                 *handled = true;
             }
             _ => {}
@@ -6603,6 +6684,16 @@ mod tests {
         (taffy, node)
     }
 
+    fn touch(phase: TouchPhase, id: u64, point: Point) -> WindowEvent {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: unsafe { std::mem::zeroed() },
+            phase,
+            location: winit::dpi::PhysicalPosition::new(point.x, point.y),
+            force: None,
+            id,
+        })
+    }
+
     /// Uses a throwaway taffy node — the input embeds no children.
     fn drive(ti: &mut TextInput, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
         let mut handled = false;
@@ -6620,6 +6711,75 @@ mod tests {
             &taffy,
         );
         handled
+    }
+
+    #[test]
+    fn touch_places_caret_drags_selection_and_releases_ownership() {
+        let mut input = TextInput::local().with_initial_value("abcdef");
+        input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 44.0));
+        draw_to_populate(&mut input);
+        let mut doc = AutoCommit::new();
+        let start = Point::new(x_for_byte(&input, 1), 22.0);
+        let end = Point::new(x_for_byte(&input, 5), 22.0);
+
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &touch(TouchPhase::Started, 7, start),
+            Modifiers::default()
+        ));
+        assert_eq!(input.active_touch, Some(7));
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &touch(TouchPhase::Moved, 7, end),
+            Modifiers::default()
+        ));
+        assert_eq!(input.selection_range(), Some((1, 5)));
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &touch(TouchPhase::Ended, 7, end),
+            Modifiers::default()
+        ));
+        assert_eq!(input.active_touch, None);
+        assert!(!input.is_dragging);
+    }
+
+    #[test]
+    fn secondary_touch_cannot_steal_text_selection() {
+        let mut input = TextInput::local().with_initial_value("abcdef");
+        input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 44.0));
+        draw_to_populate(&mut input);
+        let mut doc = AutoCommit::new();
+        let point = Point::new(x_for_byte(&input, 2), 22.0);
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &touch(TouchPhase::Started, 7, point),
+            Modifiers::default()
+        ));
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &touch(TouchPhase::Started, 8, point),
+            Modifiers::default()
+        ));
+        assert_eq!(input.active_touch, Some(7));
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &touch(TouchPhase::Ended, 8, point),
+            Modifiers::default()
+        ));
+        assert_eq!(input.active_touch, Some(7));
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &touch(TouchPhase::Cancelled, 7, point),
+            Modifiers::default()
+        ));
+        assert_eq!(input.active_touch, None);
     }
 
     #[test]
@@ -6691,6 +6851,50 @@ mod tests {
             large_height >= normal_height * 1.9,
             "editor paragraph geometry scales with the theme ({large_height} vs {normal_height})"
         );
+    }
+
+    #[test]
+    fn code_gutter_reserves_space_for_scaled_line_numbers() {
+        let source = (1..=12)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut normal = TextInput::local()
+            .multiline(true)
+            .with_mono()
+            .with_gutter(true)
+            .with_initial_value(&source);
+        normal.apply_layout_external(Rect::new(0.0, 0.0, 420.0, 300.0));
+        draw_with_theme(&mut normal, &Theme::dark());
+        let normal_gutter = normal.gutter_width();
+
+        let mut large = TextInput::local()
+            .multiline(true)
+            .with_mono()
+            .with_gutter(true)
+            .with_initial_value(&source);
+        large.apply_layout_external(Rect::new(0.0, 0.0, 420.0, 300.0));
+        let large_theme = Theme::dark().with_text_scale(2.0);
+        draw_with_theme(&mut large, &large_theme);
+
+        assert!(
+            large.gutter_width() >= normal_gutter * 1.9,
+            "gutter follows line-number text scale ({} vs {normal_gutter})",
+            large.gutter_width()
+        );
+        assert!(
+            large.caret_rect(&large_theme, 0).x0 > large.rect.x0 + large.gutter_width(),
+            "the first code glyph stays to the right of the scaled gutter"
+        );
+    }
+
+    #[test]
+    fn code_gutter_numbers_do_not_apply_accessibility_scale_twice() {
+        let paragraph_style = TextStyle::new(26.0).with_letter_spacing(0.4);
+        let number_style =
+            TextInput::gutter_number_style(&paragraph_style, &Theme::dark().with_text_scale(2.0));
+        assert_eq!(number_style.size, 13.0);
+        assert_eq!(number_style.letter_spacing, 0.2);
     }
 
     /// Mirrors the handler's own `padding_x = 10.0`; assumes `scroll_x == 0`.
@@ -7609,7 +7813,7 @@ mod tests {
         assert!(input.is_disabled());
         Widget::refresh_control_action_availability(
             &mut input,
-            &std::collections::HashSet::from([qos_actions::ActionAddress::new(
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                 "test:control",
                 "set",
             )]),

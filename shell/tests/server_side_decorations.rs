@@ -1,6 +1,6 @@
 //! Who draws the title bar.
 //!
-//! qOS draws window chrome itself, so an app that draws its own draws a
+//! Tilo draws window chrome itself, so an app that draws its own draws a
 //! second one inside the first; `xdg_decoration` is the wire mechanism
 //! for saying so. Not only cosmetic: a client that keeps a title bar
 //! keeps it out of the size the compositor gave it — configured 670x668
@@ -301,6 +301,6 @@ fn a_client_that_asks_to_decorate_itself_is_still_given_server_side() {
     assert!(
         !modes.contains(&zxdg_toplevel_decoration_v1::Mode::ClientSide),
         "the compositor agreed to client-side decoration; got {modes:?}. \
-         qOS owns window chrome, so the answer to this request is no."
+         Tilo owns window chrome, so the answer to this request is no."
     );
 }

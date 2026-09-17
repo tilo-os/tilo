@@ -86,8 +86,8 @@ class Session:
         self.socket = os.path.join(self.dir, "control.sock")
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.socket,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_TEST_CONTROL": self.socket,
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
             "XDG_STATE_HOME": os.path.join(self.dir, "state"),
@@ -97,12 +97,12 @@ class Session:
             # off, and the only visible symptom is that `peer.invite` is
             # never exported — which reads as a capability refusal rather
             # than a missing prerequisite.
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
             # Distinct identities. Without this every session falls back to
             # $USER and all of them are the same person, which would make
             # any claim about "someone else's session" meaningless.
-            "QOS_USER_ID": name,
-            "NIRIOS_HEADLESS_SIZE": "1280x800",
+            "TILO_USER_ID": name,
+            "TILO_HEADLESS_SIZE": "1280x800",
         }
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
@@ -318,7 +318,7 @@ def main() -> int:
         print("      run: cargo build -p shell --bin shell", file=sys.stderr)
         return 1
 
-    root = tempfile.mkdtemp(prefix="qos-room-index-")
+    root = tempfile.mkdtemp(prefix="tilo-room-index-")
     shared = os.path.join(root, "documents")
     os.makedirs(shared, exist_ok=True)
     sessions: list[Session] = []

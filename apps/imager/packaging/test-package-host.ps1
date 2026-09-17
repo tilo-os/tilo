@@ -1,9 +1,9 @@
 # Run from the repository root. Exercises the real packager without compiling,
 # signing, publishing, or touching any disk image.
 $ErrorActionPreference = "Stop"
-$OutputPath = Join-Path ([System.IO.Path]::GetTempPath()) "qos-imager-package-test-$([guid]::NewGuid())"
+$OutputPath = Join-Path ([System.IO.Path]::GetTempPath()) "tilo-imager-package-test-$([guid]::NewGuid())"
 $SavedSigning = @{}
-$SigningVariables = @("QOS_REQUIRE_SIGNING", "QOS_WINDOWS_CERT_PFX", "QOS_WINDOWS_SIGNER")
+$SigningVariables = @("TILO_REQUIRE_SIGNING", "TILO_WINDOWS_CERT_PFX", "TILO_WINDOWS_SIGNER")
 foreach ($Name in $SigningVariables) {
     $SavedSigning[$Name] = [Environment]::GetEnvironmentVariable($Name, "Process")
     [Environment]::SetEnvironmentVariable($Name, $null, "Process")
@@ -23,7 +23,7 @@ try {
     } catch {
         $Failure = $_
     }
-    if (-not $Failure -or $Failure.Exception.Message -ne "qOS Imager build failed for $Architecture-pc-windows-msvc") {
+    if (-not $Failure -or $Failure.Exception.Message -ne "Tilo Imager build failed for $Architecture-pc-windows-msvc") {
         throw "The packager must report the failed build before copying or signing any binary."
     }
     $TargetIndex = $BuildArguments.IndexOf("--target")

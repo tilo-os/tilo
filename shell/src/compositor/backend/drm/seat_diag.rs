@@ -191,7 +191,7 @@ impl SeatFailure {
             }
             SeatFailureKind::SeatAlreadyHeld => {
                 "Stop the compositor that is already running on this seat, or switch to a free \
-                 virtual terminal (Ctrl+Alt+F3) and start qOS there. To develop inside the \
+                 virtual terminal (Ctrl+Alt+F3) and start Tilo there. To develop inside the \
                  running session instead, use `--backend winit`."
             }
             SeatFailureKind::NoSeatBackend => {
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn no_session_id_wins_even_when_a_compositor_is_running() {
-        // Running qOS from a terminal emulator inside GNOME *and* outside
+        // Running Tilo from a terminal emulator inside GNOME *and* outside
         // a logind session (a container, say). "You are not in a session"
         // is the actionable half; "something else holds the seat" would
         // send the operator to kill a compositor that is not the problem.

@@ -8,11 +8,10 @@
 //!   and the local mic / deafen / audio-only toggles. (Who is *in* the call
 //!   is shared truth in the CRDT — see [`crate::doc`] — but how this peer
 //!   lays out the overlay is local.)
-//! * [`CallPermissions`] — a clean hook for gating call actions (join,
-//!   share mic/camera, screen-share). A real OS permission system is being
-//!   built separately; until it lands this defaults to allow-all via
-//!   [`AllowAll`], and the call code asks the seam before every action so
-//!   wiring in the real checker later is a one-line swap.
+//! * [`CallPermissions`] — a small policy seam for isolated call-state tests
+//!   and embedding. Chat's live UI uses [`crate::permissions::ChatPermissions`]
+//!   from the host-provided permission context; this module does not grant
+//!   access or implement an ACL.
 //! * [`SoundEngine`] — short join/leave cues, played through `GStreamer` when
 //!   the `live-media` build feature and an audio sink are available, and a
 //!   silent no-op otherwise (so `--shots` and headless CI never need an
@@ -51,19 +50,19 @@ impl CallAction {
 
 /// The permission seam for call actions.
 ///
-/// This is intentionally NOT coupled to `ui::permissions` or the in-progress
-/// `permissions` crate — it's a minimal local trait so the call layer has a
-/// single, obvious place to consult before a privileged action. Swap the
-/// default [`AllowAll`] for a real implementation once the OS permission
-/// service exists; nothing else in the call code changes.
+/// This is intentionally small and does not represent an authentication,
+/// encryption, or access-control system. The app binds its real controls to
+/// [`crate::permissions::ChatPermissions`]; callers that use this seam remain
+/// responsible for supplying their own policy.
 pub trait CallPermissions {
-    /// Whether `action` is allowed right now. Default-allow implementations
-    /// return `true`; a real one would consult the cluster's grant policy.
+    /// Whether `action` is allowed right now according to this caller-owned
+    /// policy. Implementations may return `true`; that is not a security
+    /// guarantee and must not be presented as one.
     fn allows(&self, action: CallAction) -> bool;
 }
 
-/// Default-allow permission policy used until the real OS permission service
-/// is wired in. Every action is granted.
+/// Test/example policy that grants every action. It is never an authorization
+/// decision for Chat's live UI.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AllowAll;
 
@@ -201,7 +200,7 @@ impl CallState {
                 title: "Active call".into(),
                 role: ui::floating_surface::FloatingRole::ActiveCall,
                 source: ui::floating_surface::FloatingSource::AppElement {
-                    app_id: "dev.qos.chat".into(),
+                    app_id: "dev.tilo.chat".into(),
                     element_id: format!("active-call:{}", self.channel),
                     region: source_region,
                 },
@@ -327,7 +326,7 @@ mod tests {
         assert_eq!(
             request.source,
             ui::floating_surface::FloatingSource::AppElement {
-                app_id: "dev.qos.chat".into(),
+                app_id: "dev.tilo.chat".into(),
                 element_id: "active-call:c_huddle".into(),
                 region,
             }

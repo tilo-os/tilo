@@ -97,7 +97,7 @@ pub struct PresentPipe {
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 impl PresentPipe {
-    /// Move `presenter` onto a dedicated thread named `qos-present` (identifiable in `perf`/`top` output and backtraces).
+    /// Move `presenter` onto a dedicated thread named `tilo-present` (identifiable in `perf`/`top` output and backtraces).
     ///
     /// `on_retire` fires on the render thread each time a frame finishes presenting, so the loop can
     /// wake up — without it, a parked loop sleeps out the whole frame interval even though capacity
@@ -112,7 +112,7 @@ impl PresentPipe {
         let finished = Arc::new(AtomicBool::new(false));
         let thread_finished = finished.clone();
         let spawned = std::thread::Builder::new()
-            .name("qos-present".to_string())
+            .name("tilo-present".to_string())
             .spawn(move || {
                 // Flag completion however this thread leaves (normal return or unwind), so `shutdown` never waits on a thread that's already gone.
                 let _done = FinishedOnDrop(thread_finished);
@@ -147,7 +147,7 @@ impl PresentPipe {
                 tracing::error!(
                     target: "shell::compositor::present",
                     error = %e,
-                    "could not start the qos-present render thread; presentation stays unavailable"
+                    "could not start the tilo-present render thread; presentation stays unavailable"
                 );
                 finished.store(true, Ordering::Release);
                 None
@@ -266,7 +266,7 @@ impl PresentPipe {
         while !self.finished.load(Ordering::Acquire) {
             if Instant::now() >= deadline {
                 eprintln!(
-                    "nirios compositor: render thread did not stop within {grace:?}; \
+                    "tilo compositor: render thread did not stop within {grace:?}; \
                      detaching it rather than blocking shutdown"
                 );
                 return;

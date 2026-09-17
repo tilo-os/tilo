@@ -1,0 +1,66 @@
+# Mail — Tilo application manifest.
+#
+# IMAP/SMTP against user-configured servers (feature `live`), so the
+# host set is user data — `mode = "host"`. Shares the account store
+# and credential vault with Settings; those two are the only apps that
+# get the vault. Links open through the host opener.
+#
+
+
+[package]
+id       = "dev.tilo.mail"
+name     = "Mail"
+category = "Office"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+    "net",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "host"
+
+[sandbox.portals]
+file-chooser = "via-host"
+open-uri = "via-host"
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+spellcheck = "optional@1"
+
+[entrypoint]
+bin             = "bin/mail"
+type            = "gui"
+splash-segments = ["bin/mail[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = [
+    "message/rfc822",
+]
+ext  = [
+    "eml",
+]

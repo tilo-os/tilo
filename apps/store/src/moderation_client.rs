@@ -309,12 +309,12 @@ mod tests {
     #[test]
     fn request_id_is_stable_but_body_and_time_bound() {
         assert_eq!(
-            report_request_id("dev.qos.notes", "evidence", 10, &[1; 16]),
-            report_request_id("dev.qos.notes", "evidence", 10, &[1; 16])
+            report_request_id("dev.tilo.notes", "evidence", 10, &[1; 16]),
+            report_request_id("dev.tilo.notes", "evidence", 10, &[1; 16])
         );
         assert_ne!(
-            report_request_id("dev.qos.notes", "evidence", 10, &[1; 16]),
-            report_request_id("dev.qos.notes", "different", 10, &[1; 16])
+            report_request_id("dev.tilo.notes", "evidence", 10, &[1; 16]),
+            report_request_id("dev.tilo.notes", "different", 10, &[1; 16])
         );
     }
 
@@ -327,7 +327,7 @@ mod tests {
             20,
             ModerationActorRole::Reporter,
             ModerationMutation::FileReport {
-                package_id: "dev.qos.notes".into(),
+                package_id: "dev.tilo.notes".into(),
                 category: "policy".into(),
                 summary: "misleading listing".into(),
                 evidence_digest_hex: "aa".repeat(32),
@@ -335,14 +335,14 @@ mod tests {
             &key,
         )
         .unwrap();
-        let short_hash = blake3::hash(b"dev.qos.notes:request-one")
+        let short_hash = blake3::hash(b"dev.tilo.notes:request-one")
             .to_hex()
             .chars()
             .take(24)
             .collect::<String>();
         let mut case = ModerationCase {
             case_id: format!("case-{short_hash}"),
-            package_id: "dev.qos.notes".into(),
+            package_id: "dev.tilo.notes".into(),
             publisher_pubkey_hex: "bb".repeat(32),
             status: registry_types::ModerationCaseStatus::Open,
             opened_at_unix: 11,

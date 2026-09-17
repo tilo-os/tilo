@@ -376,7 +376,7 @@ mod tests {
         ));
 
         let mut wrong_manifest = entry.clone();
-        wrong_manifest.package_id = "dev.qos.other".into();
+        wrong_manifest.package_id = "dev.tilo.other".into();
         assert!(matches!(
             inspect_bytes(&wrong_manifest, &wrong_manifest.versions[0], &bytes),
             Err(BundleReviewError::ManifestMismatch { .. })
@@ -392,7 +392,7 @@ mod tests {
         let manifest = Manifest::from_toml_str(&format!(
             r#"
 [package]
-id = "dev.qos.editor"
+id = "dev.tilo.editor"
 version = "1.0.0"
 kind = "app"
 
@@ -402,7 +402,7 @@ signature = ""
 
 [sandbox]
 namespaces = ["user"]
-seccomp = "qos-default"
+seccomp = "tilo-default"
 landlock = "strict"
 
 [sandbox.net]
@@ -421,7 +421,7 @@ type = "gui"
 
     fn sample_entry(url: &str) -> RegistryEntry {
         RegistryEntry {
-            package_id: "dev.qos.editor".into(),
+            package_id: "dev.tilo.editor".into(),
             name: "Editor".into(),
             description: "Text editor".into(),
             categories: vec!["Productivity".into()],

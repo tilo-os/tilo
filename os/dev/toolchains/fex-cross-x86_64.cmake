@@ -1,5 +1,5 @@
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
 set(CMAKE_C_COMPILER_TARGET x86_64-linux-gnu)
 set(CMAKE_CXX_COMPILER_TARGET x86_64-linux-gnu)
-set(QOS_FEX_LIBDIR lib64)
+set(TILO_FEX_LIBDIR lib64)
 include(${CMAKE_CURRENT_LIST_DIR}/fex-cross-common.cmake)

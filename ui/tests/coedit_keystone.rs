@@ -312,7 +312,7 @@ fn peer_edit_converges_and_each_renders_the_shared_state_locally() {
 
     // Late-join handshake: A ships a full snapshot, B adopts it. This is
     // exactly the document snapshot path the App drives on join.
-    a.send(CollabRequest::DocumentSnapshot { data: a_doc.save() });
+    a.send(CollabRequest::document_snapshot(a_doc.save()));
     let _ = a_doc.save_incremental(); // re-baseline incremental after full save
 
     let mut b_doc = AutoCommit::new();
@@ -341,7 +341,7 @@ fn peer_edit_converges_and_each_renders_the_shared_state_locally() {
     a_doc.splice_text(&a_text, 4, 0, "-EDIT").unwrap();
     let delta = a_doc.save_incremental();
     assert!(!delta.is_empty(), "the edit must produce a delta");
-    a.send(CollabRequest::DocumentIncremental { data: delta });
+    a.send(CollabRequest::document_incremental(delta));
 
     let got = poll_until(&mut b, |ev| match ev.document_mutation()? {
         Ok(collab_types::DocumentMutation::Incremental(data)) => Some(data),

@@ -18,7 +18,7 @@ use thiserror::Error;
 use crate::NamedShareEnvelopeV1;
 use crate::{RecordSubscription, RecordSubscriptionKey};
 
-pub const RECIPIENT_MOUNT_READY_LINE: &str = "QOS_RECIPIENT_MOUNT_READY_V1";
+pub const RECIPIENT_MOUNT_READY_LINE: &str = "TILO_RECIPIENT_MOUNT_READY_V1";
 const RECIPIENT_MOUNT_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_RECIPIENT_CHILD_STDOUT_BYTES: u64 = 64 * 1024;
 

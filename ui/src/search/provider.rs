@@ -32,8 +32,8 @@ pub const DEFAULT_SEARCH_CANDIDATE_LIMIT: usize = 256;
 /// receive an empty page for longer input and can refine it normally.
 pub const MAX_SEARCH_QUERY_SCALARS: usize = 1_024;
 const SEARCH_GRAM_WIDTH: usize = 4;
-use qos_actions::ActionAddress;
 use std::borrow::Borrow;
+use tilo_actions::ActionAddress;
 
 /// A compact, reusable exact substring index for app search providers.
 ///
@@ -957,7 +957,7 @@ fn index_tokens(normalized: &str) -> Vec<String> {
 
 /// Marks an `action_id` as a framework-owned canonical activation. The tag
 /// keeps arbitrary legacy ids from becoming actions merely because they happen
-/// to contain qos-actions' wire separator.
+/// to contain tilo-actions' wire separator.
 const ACTION_ADDRESS_PREFIX: &str = "\u{1}action\u{1f}";
 
 /// One typed hit produced by a [`SearchProvider`].
@@ -1071,6 +1071,117 @@ impl SearchResult {
     }
 }
 
+/// Automatic bounded search over the resources an app currently has open.
+///
+/// Apps still provide explicit [`SearchProvider`]s for large or closed
+/// collections (all mail, every file, every contact). This provider closes the
+/// baseline gap: a live resource published by any app is findable by its label,
+/// kind, or stable id even when the app has no bespoke content index. One canonical
+/// representative action activates the resource; the palette continues to
+/// list every action separately from the same fresh authority tree.
+#[derive(Clone)]
+pub struct OpenResourceSearch {
+    catalog: SearchCatalog,
+    resources: Arc<BTreeMap<String, tilo_actions::Resource>>,
+}
+
+impl OpenResourceSearch {
+    #[must_use]
+    pub fn new(resources: &[tilo_actions::Resource]) -> Self {
+        fn collect(
+            resource: &tilo_actions::Resource,
+            resources: &mut BTreeMap<String, tilo_actions::Resource>,
+        ) {
+            resources
+                .entry(resource.id.as_str().to_string())
+                .or_insert_with(|| resource.clone());
+            for child in &resource.children {
+                collect(child, resources);
+            }
+        }
+
+        let mut indexed = BTreeMap::new();
+        for resource in resources {
+            collect(resource, &mut indexed);
+        }
+        let catalog = SearchCatalog::new("Open resources");
+        catalog
+            .replace_all(indexed.values().filter_map(|resource| {
+                let action = resource
+                    .actions
+                    .iter()
+                    .find(|action| action.kind == tilo_actions::OperationKind::View)
+                    .or_else(|| resource.actions.first())?;
+                let address = ActionAddress::new(resource.id.as_str(), &action.id);
+                Some((
+                    resource.id.as_str().to_string(),
+                    format!(
+                        "{} {} {}",
+                        resource.label,
+                        resource.kind,
+                        resource.id.as_str()
+                    ),
+                    SearchResult::for_action("Resources", resource.label.clone(), address)
+                        .with_subtitle(format!("{} · {}", action.label, resource.kind)),
+                ))
+            }))
+            .expect("open resources have unique ids and canonical action addresses");
+        Self {
+            catalog,
+            resources: Arc::new(indexed),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_storage_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.resources, &other.resources)
+    }
+}
+
+impl SearchProvider for OpenResourceSearch {
+    fn name(&self) -> &str {
+        "Open resources"
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.catalog
+            .query_page(
+                query,
+                None,
+                DEFAULT_SEARCH_CANDIDATE_LIMIT,
+                limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+            )
+            .results
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
+        self.resources
+            .get(&address.resource)
+            .filter(|resource| {
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == address.action)
+            })
+            .cloned()
+    }
+}
+
 /// A source of search results — implemented by an app for each searchable
 /// *type* it exposes (its contacts, its open files, its commands, …).
 ///
@@ -1149,7 +1260,7 @@ pub trait SearchProvider {
 
     /// Lazily resolve a canonical search address that is intentionally absent
     /// from the small open-resource snapshot.
-    fn resolve_action_resource(&self, _address: &ActionAddress) -> Option<qos_actions::Resource> {
+    fn resolve_action_resource(&self, _address: &ActionAddress) -> Option<tilo_actions::Resource> {
         None
     }
 }
@@ -1272,6 +1383,77 @@ pub fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_resource_search_indexes_nested_resources_and_prefers_view_actions() {
+        let nested = tilo_actions::Resource::new("note:launch", "notes.note", "Launch plan")
+            .with_action(
+                tilo_actions::ActionSpec::operation(
+                    "delete",
+                    "Delete note",
+                    tilo_actions::OperationKind::Effect,
+                    "test.note",
+                    &serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .with_action(
+                tilo_actions::ActionSpec::operation(
+                    "open",
+                    "Open note",
+                    tilo_actions::OperationKind::View,
+                    "test.note",
+                    &serde_json::json!({}),
+                )
+                .unwrap(),
+            );
+        let root =
+            tilo_actions::Resource::new("notes", "notes.collection", "Notes").with_child(nested);
+        let provider = OpenResourceSearch::new(&[root]);
+
+        let hit = provider
+            .search("launch")
+            .pop()
+            .expect("resource is findable");
+        let address = hit.action_address().expect("canonical activation");
+        assert_eq!(address, ActionAddress::new("note:launch", "open"));
+        assert_eq!(
+            provider
+                .resolve_action_resource(&address)
+                .expect("fresh authority resource")
+                .label,
+            "Launch plan"
+        );
+        assert_eq!(provider.action_directory_generation(), None);
+    }
+
+    #[test]
+    fn open_resource_search_pages_with_hard_budgets() {
+        let resources = (0..20)
+            .map(|index| {
+                tilo_actions::Resource::new(
+                    format!("item:{index}"),
+                    "test.item",
+                    format!("Item {index}"),
+                )
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "open",
+                        "Open",
+                        tilo_actions::OperationKind::View,
+                        "test.item",
+                        &serde_json::json!({}),
+                    )
+                    .unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let provider = OpenResourceSearch::new(&resources);
+        let page = provider.search_page("", None, 3, 2);
+        assert!(page.inspected <= 3);
+        assert!(page.results.len() <= 2);
+        assert!(page.next.is_some());
+    }
 
     #[test]
     fn empty_query_matches_everything() {

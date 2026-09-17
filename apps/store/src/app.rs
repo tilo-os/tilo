@@ -6,17 +6,17 @@
 //! ┌ Store header (search box + refresh)  ─────────────────────────┐
 //! │ [    Search…                       ] [ Refresh ]              │
 //! ├───────────────────────────────────────────────────────────────┤
-//! │ [ All | qOS | Flatpak | Installed ]      ← filter chip row    │
+//! │ [ All | Tilo | Flatpak | Installed ]      ← filter chip row    │
 //! ├───────────────────────────────────────────────────────────────┤
 //! │ Categories: [ All | Games | Productivity | System | Utils ]   │
 //! ├───────────────────────────────────────────────────────────────┤
 //! │  ┌───────────────────────────────────────────────────────┐    │
-//! │  │  [icon]  Notes                v0.1.0 · qOS main [Add] │    │
+//! │  │  [icon]  Notes                v0.1.0 · Tilo main [Add] │    │
 //! │  │  [ ⎔  ]  A CRDT notes app                             │    │
 //! │  └───────────────────────────────────────────────────────┘    │
 //! │  ... more cards, spanning to the window bottom ...            │
 //! │                                    ╭─────────────────────────╮ │
-//! │                                    │ Installing dev.qos.notes…│ │  ← transient bubble
+//! │                                    │ Installing dev.tilo.notes…│ │  ← transient bubble
 //! └────────────────────────────────────╰─────────────────────────╯─┘
 //! ```
 //!
@@ -39,7 +39,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Politeness, Role};
-use ui::qos_actions::{
+use ui::tilo_actions::{
     ActionAddress, ActionArgs, ActionBinding, ActionContract, ActionParam, ActionSpec,
     Availability, ConfirmationPolicy, ControlInvocation, EncodedAction, ExecutionLocus,
     ExecutionMode, OperationKind, ParamType, Resource, ResultSpec, RetryPolicy, RiskLevel,
@@ -176,7 +176,7 @@ fn short_publisher(item: &StoreItem) -> String {
     item.publisher_pubkey_hex.as_deref().map_or_else(
         || match item.source {
             crate::StoreSource::Flathub => "Flathub / upstream metadata".into(),
-            crate::StoreSource::Qos { .. } => "Not disclosed".into(),
+            crate::StoreSource::Tilo { .. } => "Not disclosed".into(),
         },
         |key| {
             let prefix = key.chars().take(12).collect::<String>();
@@ -185,15 +185,25 @@ fn short_publisher(item: &StoreItem) -> String {
     )
 }
 
-/// Human-facing device state must distinguish qOS's content-addressed,
+fn full_publisher(item: &StoreItem) -> String {
+    item.publisher_pubkey_hex.as_deref().map_or_else(
+        || match item.source {
+            crate::StoreSource::Flathub => "Flathub / upstream metadata".into(),
+            crate::StoreSource::Tilo { .. } => "Not disclosed".into(),
+        },
+        |key| format!("ed25519:{key}"),
+    )
+}
+
+/// Human-facing device state must distinguish Tilo's content-addressed,
 /// fetch-on-open cache from a conventional Flatpak installation.
 fn device_state_label(item: &StoreItem) -> String {
     match (&item.source, &item.installed) {
-        (crate::StoreSource::Qos { .. }, crate::InstalledState::Not) => {
+        (crate::StoreSource::Tilo { .. }, crate::InstalledState::Not) => {
             "Available on demand · fetched when opened\nNot kept on this device".into()
         }
         (
-            crate::StoreSource::Qos { .. },
+            crate::StoreSource::Tilo { .. },
             crate::InstalledState::Installed {
                 version,
                 available,
@@ -283,6 +293,20 @@ fn visible_operation_status(status: &str) -> String {
     visible
 }
 
+/// Name the result region for what it actually contains.  A responsive
+/// large-text layout may choose one catalogue list instead of availability
+/// shelves, but that must not turn an untouched catalogue into “Search
+/// results” for sighted or screen-reader users.
+fn catalogue_region_heading(grouped_by_availability: bool, query: &str) -> &'static str {
+    if grouped_by_availability {
+        "Browse apps"
+    } else if query.trim().is_empty() {
+        "All apps"
+    } else {
+        "Search results"
+    }
+}
+
 fn report_note_key(app_id: &str) -> String {
     format!("{REPORT_NOTE_KEY_PREFIX}{app_id}")
 }
@@ -340,7 +364,7 @@ fn bounded_detail_card(
 
 fn report_envelope(report: &ReportRecord, item: Option<&StoreItem>, note: &str) -> ReportEnvelope {
     ReportEnvelope {
-        format: "qos.store.report-envelope.v1".into(),
+        format: "tilo.store.report-envelope.v1".into(),
         app_id: report.app_id.clone(),
         status: report.status.clone(),
         publisher_fingerprint: item.and_then(|item| item.publisher_pubkey_hex.clone()),
@@ -495,7 +519,7 @@ fn store_app_resource(item: &StoreItem, flatpak_available: bool) -> Resource {
         add_store_item_action(
             &mut resource,
             // Keep the published action address identical to the serialized
-            // action code. In particular, a Flatpak removal is not the qOS
+            // action code. In particular, a Flatpak removal is not the Tilo
             // `remove` operation: using a generic id here made the card's
             // typed binding point at an action that the live resource tree
             // did not publish, so the host quite correctly rejected it.
@@ -520,7 +544,7 @@ fn store_app_resource(item: &StoreItem, flatpak_available: bool) -> Resource {
     }
     let review_label = match item.trust {
         crate::StoreTrust::PublisherSigned => "Signature verified · no independent review",
-        crate::StoreTrust::Flathub => "Flathub distribution · no qOS review",
+        crate::StoreTrust::Flathub => "Flathub distribution · no Tilo review",
     };
     resource.children.push(Resource::new(
         format!("app:{}:review", item.id),
@@ -781,7 +805,7 @@ pub struct StoreApp {
     /// Retained global-search projection. It is rebuilt only after a changed
     /// worker snapshot and resolves palette addresses against live rows.
     search_index: crate::search_provider::StoreSearchIndex,
-    /// Active source-side filter (`All | qOS | Flatpak | Installed`). Kept
+    /// Active source-side filter (`All | Tilo | Flatpak | Installed`). Kept
     /// locally: browsing one catalogue must not navigate collaborators.
     active_filter: SourceFilter,
     /// Active category or `None` for "all categories".
@@ -826,10 +850,10 @@ pub struct StoreApp {
     /// Root of the built layout so events can be routed to the
     /// composed sub-tree.
     root: Option<Box<dyn Widget>>,
-    pending_lifecycle_actions: Vec<(String, ActionKind, qos_actions::InvocationId)>,
-    pending_lifecycle_refresh: Option<qos_actions::InvocationId>,
-    pending_lifecycle_remote: Vec<(RemoteIntent, qos_actions::InvocationId)>,
-    completed_invocations: Vec<qos_actions::InvocationUpdate>,
+    pending_lifecycle_actions: Vec<(String, ActionKind, tilo_actions::InvocationId)>,
+    pending_lifecycle_refresh: Option<tilo_actions::InvocationId>,
+    pending_lifecycle_remote: Vec<(RemoteIntent, tilo_actions::InvocationId)>,
+    completed_invocations: Vec<tilo_actions::InvocationUpdate>,
     pending_search: Option<String>,
     pending_detail: Option<String>,
     remotes: Vec<crate::flathub_client::Remote>,
@@ -843,11 +867,11 @@ pub struct StoreApp {
     report_notes: HashMap<String, String>,
     pending_control_invocation: Option<ControlInvocation>,
     report_export: Option<(
-        qos_actions::InvocationId,
+        tilo_actions::InvocationId,
         ui::portal::PortalChannel,
         Vec<u8>,
     )>,
-    pending_moderation: Vec<(ModerationIntent, qos_actions::InvocationId)>,
+    pending_moderation: Vec<(ModerationIntent, tilo_actions::InvocationId)>,
     /// List position survives the composed widget tree being rebuilt after a
     /// filter, search result, or catalogue update.
     scroll_offset: Rc<Cell<(f32, f32)>>,
@@ -941,36 +965,36 @@ impl StoreApp {
 
     pub fn take_lifecycle_actions(
         &mut self,
-    ) -> Vec<(String, ActionKind, qos_actions::InvocationId)> {
+    ) -> Vec<(String, ActionKind, tilo_actions::InvocationId)> {
         std::mem::take(&mut self.pending_lifecycle_actions)
     }
 
-    pub fn take_lifecycle_refresh(&mut self) -> Option<qos_actions::InvocationId> {
+    pub fn take_lifecycle_refresh(&mut self) -> Option<tilo_actions::InvocationId> {
         self.pending_lifecycle_refresh.take()
     }
 
-    pub fn take_lifecycle_remote(&mut self) -> Vec<(RemoteIntent, qos_actions::InvocationId)> {
+    pub fn take_lifecycle_remote(&mut self) -> Vec<(RemoteIntent, tilo_actions::InvocationId)> {
         std::mem::take(&mut self.pending_lifecycle_remote)
     }
 
     pub fn complete_lifecycle_invocation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         error: Option<String>,
     ) {
         self.completed_invocations.push(match error {
-            Some(message) => qos_actions::InvocationUpdate::Failed {
+            Some(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "store.operation_failed".into(),
                     message,
                     details: None,
                     retryable: false,
                 },
             },
-            None => qos_actions::InvocationUpdate::Succeeded {
+            None => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             },
         });
     }
@@ -989,7 +1013,7 @@ impl StoreApp {
 
     pub fn take_moderation_requests(
         &mut self,
-    ) -> Vec<(ModerationIntent, qos_actions::InvocationId)> {
+    ) -> Vec<(ModerationIntent, tilo_actions::InvocationId)> {
         std::mem::take(&mut self.pending_moderation)
     }
 
@@ -1036,7 +1060,7 @@ impl StoreApp {
         self.structure_dirty = true;
     }
 
-    /// Open a stable catalogue identity supplied by the shell's `qos-store:`
+    /// Open a stable catalogue identity supplied by the shell's `tilo-store:`
     /// URI route. This is deliberately presentation-only: the user still
     /// sees provenance and chooses the current, revalidated install action.
     pub fn open_catalogue_item(&mut self, id: String) {
@@ -1049,8 +1073,8 @@ impl StoreApp {
     pub fn show_safety_for_shot(&mut self) {
         self.safety_open = true;
         self.reports.push(ReportRecord {
-            id: "report:dev.qos.notes".into(),
-            app_id: "dev.qos.notes".into(),
+            id: "report:dev.tilo.notes".into(),
+            app_id: "dev.tilo.notes".into(),
             status: "Draft · not submitted".into(),
         });
         self.structure_dirty = true;
@@ -1058,7 +1082,7 @@ impl StoreApp {
 
     pub fn show_moderation_case_for_shot(&mut self, status: &str) {
         self.show_safety_for_shot();
-        self.report_notes.insert("dev.qos.notes".into(), "The app contacted a third-party host while its offline mode was enabled. The exported trace contains the exact destination and time.".into());
+        self.report_notes.insert("dev.tilo.notes".into(), "The app contacted a third-party host while its offline mode was enabled. The exported trace contains the exact destination and time.".into());
         if let Some(report) = self.reports.first_mut() {
             report.id = "case-8d10fce04f126f0c2f293c16".into();
             report.status = status.into();
@@ -1310,25 +1334,6 @@ impl StoreApp {
         if !self.remotes_open && !self.safety_open && self.focused_detail.is_none() {
             column = column.push(self.centered_content(header));
             if self.desktop_browse_layout() {
-                let browse = Box::new(
-                    Container::new()
-                        .with_width(220.0)
-                        .with_background()
-                        .with_child(self.build_browse_rail(theme)),
-                );
-                let results = Box::new(
-                    Container::new()
-                        .with_width(900.0)
-                        .with_no_padding()
-                        .with_child(content),
-                );
-                let body = Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .with_fill_remaining_height()
-                        .push(browse)
-                        .push(results),
-                );
                 column = column.push(Box::new(
                     Scrollable::new(ScrollAxis::Vertical)
                         .fill_parent_height()
@@ -1340,7 +1345,7 @@ impl StoreApp {
                                     Container::new()
                                         .with_width(1120.0)
                                         .with_no_padding()
-                                        .with_child(body),
+                                        .with_child(content),
                                 ))
                                 .push(Box::new(Spacer::new())),
                         )),
@@ -1452,7 +1457,7 @@ impl StoreApp {
             .items
             .iter()
             .map(|item| match &item.source {
-                StoreSource::Qos { .. } => "qOS catalogue",
+                StoreSource::Tilo { .. } => "Tilo catalogue",
                 StoreSource::Flathub => "Flathub",
             })
             .collect::<std::collections::BTreeSet<_>>()
@@ -1509,7 +1514,7 @@ impl StoreApp {
     )]
     fn build_desktop_detail(&self, item: &StoreItem, theme: &Theme) -> Box<dyn Widget> {
         let source = match &item.source {
-            StoreSource::Qos { registry_name } => format!("qOS · {registry_name}"),
+            StoreSource::Tilo { registry_name } => format!("Tilo · {registry_name}"),
             StoreSource::Flathub => "Flatpak · Flathub".to_string(),
         };
         let trust_label = match item.trust {
@@ -1572,131 +1577,12 @@ impl StoreApp {
         if let Some(binding) = navigation_binding("show-catalogue", "Back to apps", "catalogue") {
             back = back.on_action(binding);
         }
-        let identity = Row::new()
-            .no_wrap()
-            .push(Box::new(crate::widgets::Artwork::new(
-                self.images.clone(),
-                item.icon_url.as_deref(),
-                &item.name,
-                72.0,
-                72.0,
-            )))
-            .push(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(3.0)
-                    .push(Box::new(
-                        Text::new(&item.name)
-                            .with_scaled_size(32.0)
-                            .with_weight(TextWeight::Semibold)
-                            .with_heading_level(1),
-                    ))
-                    .push(Box::new(
-                        Text::new(&source)
-                            .with_scaled_size(13.0)
-                            .with_color(theme.text_dim),
-                    ))
-                    .push(Box::new(
-                        Text::new(trust_label)
-                            .with_scaled_size(12.0)
-                            .with_color(theme.text_tertiary),
-                    )),
-            ));
-        let mut about = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(14.0)
-            // Keep later copy below the complete artwork rather than the
-            // shorter text stack reported by the Row's intrinsic pass.
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_height(112.0)
-                    .with_child(Box::new(identity)),
-            ))
-            .push(Box::new(
-                Text::new(&item.description).with_scaled_size(17.0),
-            ))
-            .push(Box::new(
-                Text::new("About this app")
-                    .with_scaled_size(20.0)
-                    .with_weight(TextWeight::Semibold)
-                    .with_heading_level(2),
-            ))
-            .push(Box::new(
-                Text::new(&format!(
-                    "Publisher {} · Categories {}",
-                    short_publisher(item),
-                    item.categories.join(", ")
-                ))
-                .with_scaled_size(14.0)
-                .with_color(theme.text_dim),
-            ))
-            .push(Box::new(
-                Text::new(&format!("App ID · {}", item.id))
-                    .with_scaled_size(12.0)
-                    .with_color(theme.text_tertiary),
-            ))
-            .push(Box::new(
-                Text::new("Release details")
-                    .with_scaled_size(18.0)
-                    .with_weight(TextWeight::Semibold)
-                    .with_heading_level(2),
-            ))
-            .push(Box::new(
-                Text::new(&package)
-                    .with_scaled_size(13.0)
-                    .with_color(theme.text_dim),
-            ));
-        let links: Vec<String> = [
-            item.homepage_url
-                .as_deref()
-                .map(|url| format!("Homepage · {url}")),
-            item.source_url
-                .as_deref()
-                .map(|url| format!("Source · {url}")),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        if !links.is_empty() {
-            about = about.push(detail_section("Project links", links, theme, false, true));
-        }
-        let about = bounded_detail_card(Box::new(about), false, true);
-        let device = bounded_detail_card(
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(10.0)
-                    .push(Box::new(
-                        Text::new("On this device")
-                            .with_scaled_size(18.0)
-                            .with_weight(TextWeight::Semibold)
-                            .with_heading_level(2),
-                    ))
-                    .push(Box::new(
-                        Text::new(&installed)
-                            .with_scaled_size(13.0)
-                            .with_color(theme.text_dim),
-                    ))
-                    .push(Box::new(
-                        Text::new(&package)
-                            .with_scaled_size(13.0)
-                            .with_color(theme.text_dim),
-                    ))
-                    .push(Box::new(device_actions)),
-            ),
-            false,
-            true,
-        );
         let trust_explanation = match item.trust {
             crate::StoreTrust::PublisherSigned => {
                 "Identity and package integrity are verified. This is not an independent quality review."
             }
             crate::StoreTrust::Flathub => {
-                "This app is distributed by Flathub. qOS has not independently reviewed it."
+                "This app is distributed by Flathub. Tilo has not independently reviewed it."
             }
         };
         let mut report = ui::widget::Button::new(
@@ -1723,18 +1609,126 @@ impl StoreApp {
         ) {
             moderation = moderation.on_action(binding);
         }
-        let trust = bounded_detail_card(
+        let hero = bounded_detail_card(
+            Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_height(112.0)
+                    .with_child(Box::new(
+                        Row::new()
+                            .no_wrap()
+                            .push(Box::new(crate::widgets::Artwork::new(
+                                self.images.clone(),
+                                item.icon_url.as_deref(),
+                                &item.name,
+                                88.0,
+                                88.0,
+                            )))
+                            .push(Box::new(Container::new().with_no_padding().with_width(8.0)))
+                            .push(Box::new(
+                                Container::new()
+                                    .with_no_padding()
+                                    .with_flex_grow()
+                                    .with_child(Box::new(
+                                        Column::new()
+                                            .with_no_padding()
+                                            .with_intrinsic_height()
+                                            .with_gap(5.0)
+                                            .push(Box::new(
+                                                Text::new(&item.name)
+                                                    .with_scaled_size(32.0)
+                                                    .with_weight(TextWeight::Semibold)
+                                                    .with_heading_level(1),
+                                            ))
+                                            .push(Box::new(
+                                                Text::new(&format!("{source} · {trust_label}"))
+                                                    .with_scaled_size(13.0)
+                                                    .with_color(theme.text_dim),
+                                            ))
+                                            .push(Box::new(
+                                                Text::new(&item.description).with_scaled_size(17.0),
+                                            )),
+                                    )),
+                            ))
+                            .push(Box::new(
+                                Container::new()
+                                    .with_width(220.0)
+                                    .with_no_padding()
+                                    .with_child(Box::new(device_actions)),
+                            )),
+                    )),
+            ),
+            false,
+            true,
+        );
+        let mut facts = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(9.0)
+            .push(Box::new(
+                Text::new("App details")
+                    .with_scaled_size(20.0)
+                    .with_weight(TextWeight::Semibold)
+                    .with_heading_level(2),
+            ))
+            .push(Box::new(Text::new(&package).with_scaled_size(14.0)))
+            .push(Box::new(
+                Text::new(&format!("Categories · {}", item.categories.join(", ")))
+                    .with_scaled_size(13.0)
+                    .with_color(theme.text_dim),
+            ))
+            .push(Box::new(
+                Text::new(&format!("App ID · {}", item.id))
+                    .with_scaled_size(12.0)
+                    .with_color(theme.text_tertiary),
+            ));
+        if let Some(key) = item.publisher_pubkey_hex.as_deref() {
+            let full_key = format!("ed25519:{key}");
+            let clipboard_key = full_key.clone();
+            let key_button = ui::widget::Button::new(
+                &format!("store.publisher.copy.{}", item.id),
+                &format!("Publisher · {}", short_publisher(item)),
+                None,
+            )
+            .ghost()
+            .fit_content(40.0)
+            .with_accessible_name(&format!("Copy full publisher key {full_key}"))
+            .tooltip(format!("Copy full publisher key {full_key}"))
+            .on_effect(move || {
+                if let Some(clipboard) = ui::clipboard::clipboard_backend() {
+                    let _ = clipboard
+                        .set_text(ui::clipboard::ClipboardTarget::Clipboard, &clipboard_key);
+                }
+            });
+            facts = facts.push(Box::new(key_button));
+        } else {
+            facts = facts.push(Box::new(
+                Text::new(&format!("Publisher · {}", full_publisher(item)))
+                    .with_scaled_size(13.0)
+                    .with_color(theme.text_dim),
+            ));
+        }
+        if item.homepage_url.is_some() || item.source_url.is_some() {
+            facts = facts.push(Box::new(
+                Text::new("Project links are available through the app resource.")
+                    .with_scaled_size(12.0)
+                    .with_color(theme.text_dim),
+            ));
+        }
+        let facts = bounded_detail_card(Box::new(facts), false, true);
+        let assurance = bounded_detail_card(
             Box::new(
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .with_gap(10.0)
+                    .with_gap(9.0)
                     .push(Box::new(
-                        Text::new("Trust at a glance")
-                            .with_scaled_size(18.0)
+                        Text::new("Device & trust")
+                            .with_scaled_size(20.0)
                             .with_weight(TextWeight::Semibold)
                             .with_heading_level(2),
                     ))
+                    .push(Box::new(Text::new(&installed).with_scaled_size(14.0)))
                     .push(Box::new(
                         Text::new(trust_label)
                             .with_scaled_size(13.0)
@@ -1745,8 +1739,12 @@ impl StoreApp {
                             .with_scaled_size(13.0)
                             .with_color(theme.text_dim),
                     ))
-                    .push(Box::new(report))
-                    .push(Box::new(moderation)),
+                    .push(Box::new(
+                        Row::new()
+                            .no_wrap()
+                            .push(Box::new(report))
+                            .push(Box::new(moderation)),
+                    )),
             ),
             false,
             true,
@@ -1756,27 +1754,21 @@ impl StoreApp {
             .with_intrinsic_height()
             .with_gap(16.0)
             .push(Box::new(back))
+            .push(hero)
             .push(Box::new(
                 Row::new()
                     .no_wrap()
                     .push(Box::new(
                         Container::new()
-                            .with_width(720.0)
+                            .with_width(552.0)
                             .with_no_padding()
-                            .with_child(about),
+                            .with_child(facts),
                     ))
                     .push(Box::new(
                         Container::new()
-                            .with_width(360.0)
+                            .with_width(552.0)
                             .with_no_padding()
-                            .with_child(Box::new(
-                                Column::new()
-                                    .with_no_padding()
-                                    .with_intrinsic_height()
-                                    .with_gap(16.0)
-                                    .push(device)
-                                    .push(trust),
-                            )),
+                            .with_child(assurance),
                     )),
             ));
         Box::new(
@@ -1808,12 +1800,12 @@ impl StoreApp {
             return Some(self.build_desktop_detail(item, theme));
         }
         let source = match &item.source {
-            crate::StoreSource::Qos { registry_name } => format!("qOS · {registry_name}"),
+            crate::StoreSource::Tilo { registry_name } => format!("Tilo · {registry_name}"),
             crate::StoreSource::Flathub => "Flatpak · Flathub".to_string(),
         };
         let locally_retained = matches!(
             &item.source,
-            crate::StoreSource::Qos { registry_name } if registry_name == "Installed on this device"
+            crate::StoreSource::Tilo { registry_name } if registry_name == "Installed on this device"
         );
         let trust_summary = if locally_retained {
             "Verified when installed. Current registry metadata is unavailable, so update availability is unknown."
@@ -1823,7 +1815,7 @@ impl StoreApp {
                     "Publisher identity and package integrity are verified. This is not an independent quality review."
                 }
                 crate::StoreTrust::Flathub => {
-                    "Distributed by Flathub. qOS has not independently reviewed this app."
+                    "Distributed by Flathub. Tilo has not independently reviewed this app."
                 }
             }
         };
@@ -2312,18 +2304,21 @@ impl StoreApp {
             .push(Box::new(
                 Container::new().with_no_padding().with_height(6.0),
             ))
-            .push(Box::new(Text::new("Trust & moderation").with_scaled_size(
-                if self.readable_type_layout() {
-                    21.0
-                } else {
-                    24.0
-                },
-            )))
+            .push(Box::new(
+                Text::new("Trust & moderation")
+                    .with_scaled_size(if self.readable_type_layout() {
+                        21.0
+                    } else {
+                        24.0
+                    })
+                    .with_weight(TextWeight::Semibold)
+                    .with_heading_level(1),
+            ))
             .push(Box::new(
                 Container::new().with_no_padding().with_height(6.0),
             ))
             .push(Box::new(
-                Text::new("Signed reports, accountable decisions and publisher appeals")
+                Text::new("Report concerns, follow signed decisions, and appeal as a publisher.")
                     .with_scaled_size(14.0)
                     .with_color(theme.text_dim),
             ));
@@ -2338,9 +2333,9 @@ impl StoreApp {
                     Container::new().with_no_padding().with_height(6.0),
                 ))
                 .push(Box::new(Text::new(if self.readable_type_layout() {
-                    "Drafts stay collaborative. Submit sends a bounded signed report; Export keeps a local evidence copy."
+                    "Drafts sync with collaborators. Submit signs the report; Export keeps a local copy."
                 } else {
-                    "Saved collaboratively in this Store document. Submit sends the bounded note digest and summary to the app's registry; Export keeps a local evidence copy."
+                    "Drafts sync with collaborators. Submission is signed; evidence export stays local."
                 }).with_scaled_size(11.0).with_color(theme.text_dim)))
                 .push(Box::new(
                     Container::new().with_no_padding().with_height(6.0),
@@ -2367,7 +2362,7 @@ impl StoreApp {
                     "Save a bounded JSON evidence envelope through the system file picker",
                 ))];
                 if let Some(item) = item
-                    && let StoreSource::Qos { registry_name } = &item.source
+                    && let StoreSource::Tilo { registry_name } = &item.source
                 {
                     if report.id.starts_with("case-") {
                         for (action, label, type_id, reason) in [
@@ -2423,26 +2418,47 @@ impl StoreApp {
                     }
                     Box::new(row)
                 };
+                let report_title = if report.id.starts_with("case-") {
+                    "Moderation case"
+                } else {
+                    "Report draft"
+                };
                 let report_card = Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
                     .with_gap(8.0)
-                    .push(Box::new(Text::new(&report.app_id).with_scaled_size(16.0)))
                     .push(Box::new(
-                        Text::new(&report.status)
+                        Text::new(report_title)
+                            .with_scaled_size(20.0)
+                            .with_weight(TextWeight::Semibold)
+                            .with_heading_level(2),
+                    ))
+                    .push(Box::new(
+                        Text::new(&report.app_id)
+                            .with_scaled_size(15.0)
+                            .with_weight(TextWeight::Semibold),
+                    ))
+                    .push(Box::new(
+                        Text::new(&format!("Status · {}", report.status))
                             .with_scaled_size(13.0)
                             .with_color(theme.text_dim),
                     ))
                     .push(Box::new(
-                        Text::new("Concern and supporting evidence")
-                            .with_scaled_size(13.0)
+                        Text::new("What happened?")
+                            .with_scaled_size(15.0)
                             .with_weight(TextWeight::Semibold),
+                    ))
+                    .push(Box::new(
+                        Text::new("Describe observable behavior and evidence another reviewer can verify.")
+                            .with_scaled_size(12.0)
+                            .with_color(theme.text_dim),
                     ))
                     .push(Box::new(
                         TextInput::new(vec![])
                             .with_id(&format!("store.report.note.{}", report.app_id))
                             .with_on_change_path(&report_note_key(&report.app_id))
-                            .with_placeholder("What happened, and what evidence can verify it?"),
+                            .with_accessible_name("Concern and supporting evidence")
+                            .with_placeholder("Describe what happened"),
                     ))
                     .push(actions);
                 column = column.push(bounded_detail_card(
@@ -2452,21 +2468,88 @@ impl StoreApp {
                 ));
             }
         }
-        column = column
-            .push(detail_section("How reports and appeals work", [
-                "Reports are signed by your workspace identity. Publisher replies and appeals must match the package publisher key; reviewer decisions must match the pinned registry owner.".into(),
-                "Drafts stay collaborative. A submission receipt does not replace the last verified status: status changes appear only after the Store verifies the complete event chain against an owner-signed snapshot. Offline or refused requests remain drafts and can be retried.".into(),
-            ], theme, self.compact_layout(), self.roomy_desktop()))
-            .push(detail_section("Verified identity & integrity", [
-                "qOS packages are bound to a publisher key, app id, version, exact size and content hash. A pinned registry owner controls which publishers may list apps.".into(),
-            ], theme, self.compact_layout(), self.roomy_desktop()))
-            .push(detail_section("Review is a separate claim", [
-                "A valid package signature does not mean an app is useful, private or honest. Moderation decisions are separately signed; the Store never invents a review badge.".into(),
-                "Public moderation events form a numbered signed hash chain. The Store derives case status itself, checks publisher and reviewer authorization, and requires the final head committed by the registry owner's current snapshot.".into(),
-            ], theme, self.compact_layout(), self.roomy_desktop()))
-            .push(detail_section("Publishing guidelines", [
-                "Listings must accurately describe behavior, identify paid or remote-service dependencies, request only necessary permissions, preserve user data during updates, provide an accessible UI, and avoid impersonation, manipulation and undisclosed tracking.".into(),
-            ], theme, self.compact_layout(), self.roomy_desktop()));
+        let lifecycle = detail_section(
+            "Report lifecycle",
+            [
+                "1. Draft with collaborators; avoid secrets.".into(),
+                "2. Submit a bounded report signed by your workspace identity.".into(),
+                "3. Retry safely if the registry is offline or refuses it.".into(),
+            ],
+            theme,
+            self.compact_layout(),
+            self.roomy_desktop(),
+        );
+        let decisions = detail_section(
+            "Decision integrity",
+            [
+                "Publisher replies and appeals must match the package publisher key.".into(),
+                "Status changes appear only after the complete signed decision chain verifies."
+                    .into(),
+            ],
+            theme,
+            self.compact_layout(),
+            self.roomy_desktop(),
+        );
+        let verification = detail_section(
+            "What verification means",
+            [
+                "Package identity, version, size and content hash are bound to the publisher signature.".into(),
+                "A valid signature is not an independent quality or privacy review.".into(),
+            ],
+            theme,
+            self.compact_layout(),
+            self.roomy_desktop(),
+        );
+        let publishing = detail_section(
+            "Publishing baseline",
+            [
+                "Describe behavior, costs and remote services honestly.".into(),
+                "Request only needed permissions; preserve user data; provide an accessible UI."
+                    .into(),
+                "No impersonation, manipulation or undisclosed tracking.".into(),
+            ],
+            theme,
+            self.compact_layout(),
+            self.roomy_desktop(),
+        );
+        if self.roomy_desktop() && !self.readable_type_layout() {
+            column = column.push(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .push(Box::new(
+                        Container::new()
+                            .with_width(552.0)
+                            .with_no_padding()
+                            .with_child(Box::new(
+                                Column::new()
+                                    .with_no_padding()
+                                    .with_intrinsic_height()
+                                    .with_gap(12.0)
+                                    .push(lifecycle)
+                                    .push(verification),
+                            )),
+                    ))
+                    .push(Box::new(
+                        Container::new()
+                            .with_width(552.0)
+                            .with_no_padding()
+                            .with_child(Box::new(
+                                Column::new()
+                                    .with_no_padding()
+                                    .with_intrinsic_height()
+                                    .with_gap(12.0)
+                                    .push(decisions)
+                                    .push(publishing),
+                            )),
+                    )),
+            ));
+        } else {
+            column = column
+                .push(lifecycle)
+                .push(decisions)
+                .push(verification)
+                .push(publishing);
+        }
         Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
@@ -2672,74 +2755,6 @@ impl StoreApp {
         )
     }
 
-    fn build_browse_rail(&self, theme: &Theme) -> Box<dyn Widget> {
-        let installed = self
-            .items
-            .iter()
-            .filter(|item| item.installed.is_installed())
-            .count();
-        let mut rail = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(8.0)
-            .push(Box::new(
-                Text::new("Browse")
-                    .with_scaled_size(20.0)
-                    .with_weight(TextWeight::Semibold)
-                    .with_heading_level(2),
-            ))
-            .push(Box::new(
-                Text::new(&format!("{} apps · {installed} ready", self.items.len()))
-                    .with_scaled_size(12.0)
-                    .with_color(theme.text_dim),
-            ));
-        for (value, label) in [
-            ("All", "All apps"),
-            ("On device", "Ready to use"),
-            ("qOS", "From qOS"),
-            ("Flatpak", "From Flathub"),
-        ] {
-            let mut button = ui::widget::Button::new(
-                &format!("store.rail.{}", value.to_ascii_lowercase()),
-                label,
-                None,
-            )
-            .fit_content(40.0)
-            .tooltip(format!("Show {label}"));
-            let resource = crate::browse_actions::resource(&self.category_labels());
-            if let Some(spec) = resource
-                .actions
-                .iter()
-                .find(|action| action.id == "set-source")
-            {
-                let value = value.to_owned();
-                if let Ok(binding) = ActionBinding::new(&resource, spec, move |()| {
-                    serde_json::Map::from_iter([(
-                        "source".into(),
-                        serde_json::Value::String(value.clone()),
-                    )])
-                }) {
-                    button = button.on_action(binding);
-                }
-            }
-            if self.active_filter.label() == value {
-                button = button.primary();
-            }
-            rail = rail.push(Box::new(button));
-        }
-        rail = rail
-            .push(Box::new(
-                Container::new().with_no_padding().with_height(8.0),
-            ))
-            .push(Box::new(
-                Text::new("Category")
-                    .with_scaled_size(14.0)
-                    .with_weight(TextWeight::Semibold),
-            ))
-            .push(self.build_category_row(theme));
-        Box::new(rail)
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "the responsive catalogue header is one cohesive search, navigation, status, and toolbar surface"
@@ -2803,37 +2818,53 @@ impl StoreApp {
         }
         let refresh_btn = refresh_btn.with_icon(Icon::Refresh).fit_content(40.0);
         if self.desktop_browse_layout() {
+            let main = Row::new()
+                .no_wrap()
+                .push(Box::new(
+                    Container::new()
+                        .with_width(140.0)
+                        .with_no_padding()
+                        .with_child(Box::new(
+                            Text::new("Apps")
+                                .with_scaled_size(28.0)
+                                .with_weight(TextWeight::Semibold)
+                                .with_heading_level(1),
+                        )),
+                ))
+                .push(Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_flex_grow()
+                        .with_child(Box::new(search)),
+                ))
+                .push(Box::new(
+                    Container::new()
+                        .with_width(318.0)
+                        .with_no_padding()
+                        .with_child(Box::new(
+                            Row::new()
+                                .no_wrap()
+                                .push(Box::new(safety_btn))
+                                .push(Box::new(remotes_btn))
+                                .push(Box::new(refresh_btn)),
+                        )),
+                ));
             return Box::new(
                 Container::new().with_no_padding().with_child(Box::new(
-                    Row::new()
-                        .no_wrap()
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_gap(8.0)
+                        .push(Box::new(main))
                         .push(Box::new(
-                            Container::new()
-                                .with_width(140.0)
-                                .with_no_padding()
-                                .with_child(Box::new(
-                                    Text::new("Apps")
-                                        .with_scaled_size(28.0)
-                                        .with_weight(TextWeight::Semibold)
-                                        .with_heading_level(1),
-                                )),
-                        ))
-                        .push(Box::new(
-                            Container::new()
-                                .with_no_padding()
-                                .with_flex_grow()
-                                .with_child(Box::new(search)),
-                        ))
-                        .push(Box::new(
-                            Container::new()
-                                .with_width(318.0)
-                                .with_no_padding()
-                                .with_child(Box::new(
-                                    Row::new()
-                                        .no_wrap()
-                                        .push(Box::new(safety_btn))
-                                        .push(Box::new(remotes_btn))
-                                        .push(Box::new(refresh_btn)),
+                            Row::new()
+                                .no_wrap()
+                                .push(self.build_filter_row(theme))
+                                .push(self.build_category_row(theme))
+                                .push(Box::new(
+                                    Text::new(&self.catalogue_source_summary())
+                                        .with_scaled_size(12.0)
+                                        .with_color(theme.text_dim),
                                 )),
                         )),
                 )),
@@ -2853,13 +2884,20 @@ impl StoreApp {
             let mut header = Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_gap(8.0)
-                .push(Box::new(
+                .with_gap(8.0);
+            // At 200% the catalogue's contextual "Browse apps" heading is
+            // the page title. Repeating a second giant "Apps" masthead above
+            // it consumed almost half the first viewport without adding
+            // meaning. Normal compact layouts retain the product title.
+            if !self.readable_type_layout() {
+                header = header.push(Box::new(
                     Text::new("Apps")
                         .with_scaled_size(21.0)
                         .with_weight(TextWeight::Semibold)
                         .with_heading_level(1),
-                ))
+                ));
+            }
+            header = header
                 .push(Box::new(search))
                 .push(Box::new(
                     Row::new()
@@ -3252,14 +3290,10 @@ impl StoreApp {
                     .with_intrinsic_height()
                     .with_gap(3.0)
                     .push(Box::new(
-                        Text::new(if group_by_availability {
-                            "Browse apps"
-                        } else {
-                            "Search results"
-                        })
-                        .with_scaled_size(20.0)
-                        .with_weight(TextWeight::Semibold)
-                        .with_heading_level(2),
+                        Text::new(catalogue_region_heading(group_by_availability, &self.query))
+                            .with_scaled_size(20.0)
+                            .with_weight(TextWeight::Semibold)
+                            .with_heading_level(if self.readable_type_layout() { 1 } else { 2 }),
                     ))
                     .push(Box::new(
                         Text::new(&format!("{visible_count} available"))
@@ -3308,10 +3342,11 @@ impl StoreApp {
                 .with_no_padding()
                 .with_intrinsic_height()
                 .with_gap(0.0);
-            let desktop_rail = self.desktop_browse_layout();
-            let min_card_width = if desktop_rail { 270.0 } else { 330.0 };
-            let card_height = if desktop_rail { 190.0 } else { 210.0 };
-            let make_section = |title: &str, caption: &str, cards: Vec<Box<dyn Widget>>| {
+            let make_section = |title: &str,
+                                caption: &str,
+                                cards: Vec<Box<dyn Widget>>,
+                                card_height: f64,
+                                min_card_width: f64| {
                 Box::new(
                     Column::new()
                         .with_no_padding()
@@ -3337,25 +3372,28 @@ impl StoreApp {
                         .push(Box::new(
                             CardGrid::new(cards)
                                 .with_min_card_width(min_card_width)
-                                // A 180px card keeps its action row in the
-                                // first desktop viewport while retaining a
-                                // calm, two-line description measure.  The
-                                // compact list keeps its natural height.
+                                // Desktop cards are an editorial two-column
+                                // layout (or one column inside each browse
+                                // lane), never the cramped three-column
+                                // catalogue that allowed artwork and copy to
+                                // compete for the same pixels.
                                 .with_card_height(card_height)
                                 .with_gap(16.0),
                         )),
                 ) as Box<dyn Widget>
             };
             if group_by_availability && !ready_cards.is_empty() {
-                let count = ready_cards.len();
+                let ready_count = ready_cards.len();
                 recommended = recommended.push(make_section(
-                    &format!("Ready on this device · {count}"),
-                    "Installed apps and cached qOS copies you can open or update now.",
+                    &format!("Ready to use · {ready_count}"),
+                    "Open or update apps already on this device.",
                     ready_cards,
+                    104.0,
+                    330.0,
                 ));
                 if !discover_cards.is_empty() {
                     recommended = recommended.push(Box::new(
-                        Container::new().with_no_padding().with_height(24.0),
+                        Container::new().with_no_padding().with_height(22.0),
                     ));
                 }
             }
@@ -3366,7 +3404,7 @@ impl StoreApp {
             };
             if !remaining_cards.is_empty() {
                 let title = if group_by_availability {
-                    format!("Explore something new · {}", remaining_cards.len())
+                    format!("Discover · {}", remaining_cards.len())
                 } else if self.query.trim().is_empty() {
                     format!("All apps · {}", remaining_cards.len())
                 } else {
@@ -3375,13 +3413,15 @@ impl StoreApp {
                 recommended = recommended.push(make_section(
                     &title,
                     if group_by_availability {
-                        "Apps you can add whenever they fit what you need."
+                        "Useful additions, available when you need them."
                     } else if self.query.trim().is_empty() {
                         "Available apps, arranged to make the most of this window."
                     } else {
                         "Results stay in relevance order across names, publishers, descriptions, and categories."
                     },
                     remaining_cards,
+                    if group_by_availability { 190.0 } else { 174.0 },
+                    330.0,
                 ));
             }
             // At a medium desktop width the header deliberately becomes a
@@ -3614,14 +3654,14 @@ impl StoreApp {
             ui::portal::PortalOutcome::Opened(path) => match atomic_file::write(&path, &bytes) {
                 Ok(()) => {
                     self.status_line = format!("Exported report evidence to {}.", path.display());
-                    qos_actions::InvocationUpdate::Succeeded {
+                    tilo_actions::InvocationUpdate::Succeeded {
                         invocation,
-                        output: qos_actions::ActionOutput::default(),
+                        output: tilo_actions::ActionOutput::default(),
                     }
                 }
-                Err(error) => qos_actions::InvocationUpdate::Failed {
+                Err(error) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "store.report_export_failed".into(),
                         message: format!("Could not export report evidence: {error}"),
                         details: None,
@@ -3629,13 +3669,13 @@ impl StoreApp {
                     },
                 },
             },
-            ui::portal::PortalOutcome::Cancelled => qos_actions::InvocationUpdate::Cancelled {
+            ui::portal::PortalOutcome::Cancelled => tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("Export cancelled".into()),
             },
-            ui::portal::PortalOutcome::Failed(message) => qos_actions::InvocationUpdate::Failed {
+            ui::portal::PortalOutcome::Failed(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "store.report_export_failed".into(),
                     message,
                     details: None,
@@ -3834,7 +3874,7 @@ impl Widget for StoreApp {
                     })
                 },
             )
-            .requiring(ui::qos_actions::PermissionRequirement::Admin)
+            .requiring(ui::tilo_actions::PermissionRequirement::Admin)
             .privileged()
             .execution(ExecutionMode::Background { cancellable: false })
             .returns(ResultSpec::Job),
@@ -3853,7 +3893,7 @@ impl Widget for StoreApp {
                 &vec!["remove".to_string(), remote.name.clone()],
             ) {
                 resource.actions.push(remove.with_contract(ActionContract {
-                    permission: ui::qos_actions::PermissionRequirement::Admin,
+                    permission: ui::tilo_actions::PermissionRequirement::Admin,
                     risk: RiskLevel::Destructive,
                     confirmation: ConfirmationPolicy::Confirm,
                     retry: RetryPolicy::Idempotent,
@@ -3920,7 +3960,7 @@ impl Widget for StoreApp {
                 report_resource.actions.push(export);
             }
             if let Some(item) = self.items.iter().find(|item| item.id == report.app_id)
-                && let StoreSource::Qos { registry_name } = &item.source
+                && let StoreSource::Tilo { registry_name } = &item.source
             {
                 if report.id.starts_with("case-") {
                     for (action, label, type_id, reason) in [
@@ -4001,7 +4041,7 @@ impl Widget for StoreApp {
                     crate::StoreTrust::PublisherSigned => {
                         "Signature verified · no independent review"
                     }
-                    crate::StoreTrust::Flathub => "Flathub distribution · no qOS review",
+                    crate::StoreTrust::Flathub => "Flathub distribution · no Tilo review",
                 };
                 return Some(Resource::new(id, "store.review", label));
             }
@@ -4172,7 +4212,7 @@ impl Widget for StoreApp {
     )]
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
@@ -4195,7 +4235,7 @@ impl Widget for StoreApp {
             }
             let envelope: ReportEnvelope =
                 serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-            if envelope.format != "qos.store.report-envelope.v1"
+            if envelope.format != "tilo.store.report-envelope.v1"
                 || envelope.app_id.trim().is_empty()
                 || envelope.evidence_note.len() > 65_536
             {
@@ -4227,7 +4267,7 @@ impl Widget for StoreApp {
                 serde_json::from_slice(payload)
                     .map_err(|_| "invalid moderation request".to_string())?;
             if registry_name.trim().is_empty()
-                || envelope.format != "qos.store.report-envelope.v1"
+                || envelope.format != "tilo.store.report-envelope.v1"
                 || envelope.app_id.trim().is_empty()
                 || envelope.evidence_note.trim().chars().count() < 8
                 || envelope.evidence_note.chars().count() > 4_096
@@ -4239,11 +4279,11 @@ impl Widget for StoreApp {
                 .iter()
                 .find(|item| item.id == envelope.app_id)
                 .ok_or_else(|| "the reported app is no longer in this catalogue".to_string())?;
-            let StoreSource::Qos {
+            let StoreSource::Tilo {
                 registry_name: current_registry,
             } = &item.source
             else {
-                return Err("reports can only be submitted to the app's qOS registry".into());
+                return Err("reports can only be submitted to the app's Tilo registry".into());
             };
             if current_registry != &registry_name {
                 return Err("the report target no longer matches this app's registry".into());
@@ -4300,11 +4340,11 @@ impl Widget for StoreApp {
                 .iter()
                 .find(|item| item.id == report.app_id)
                 .ok_or_else(|| "the moderated app is no longer in this catalogue".to_string())?;
-            let StoreSource::Qos {
+            let StoreSource::Tilo {
                 registry_name: current_registry,
             } = &item.source
             else {
-                return Err("this moderation case no longer has a qOS registry target".into());
+                return Err("this moderation case no longer has a Tilo registry target".into());
             };
             if current_registry != &registry_name {
                 return Err("the moderation case no longer matches this app's registry".into());
@@ -4398,11 +4438,11 @@ impl Widget for StoreApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         let index = self
             .completed_invocations
             .iter()
@@ -4653,7 +4693,7 @@ mod tests {
 
     fn item(name: &str, source: StoreSource, cat: &str, installed: InstalledState) -> StoreItem {
         let trust = match &source {
-            StoreSource::Qos { .. } => StoreTrust::PublisherSigned,
+            StoreSource::Tilo { .. } => StoreTrust::PublisherSigned,
             StoreSource::Flathub => StoreTrust::Flathub,
         };
         StoreItem {
@@ -4686,16 +4726,16 @@ mod tests {
         app.set_items(vec![
             item(
                 "Notes",
-                StoreSource::Qos {
-                    registry_name: "qOS".into(),
+                StoreSource::Tilo {
+                    registry_name: "Tilo".into(),
                 },
                 "Productivity",
                 InstalledState::Not,
             ),
             item(
                 "Terminal",
-                StoreSource::Qos {
-                    registry_name: "qOS".into(),
+                StoreSource::Tilo {
+                    registry_name: "Tilo".into(),
                 },
                 "System",
                 InstalledState::Installed {
@@ -4722,8 +4762,8 @@ mod tests {
         for index in 0..(RESOURCE_SNAPSHOT_LIMIT + 17) {
             let mut entry = item(
                 "Utility",
-                StoreSource::Qos {
-                    registry_name: "qOS".into(),
+                StoreSource::Tilo {
+                    registry_name: "Tilo".into(),
                 },
                 "Utilities",
                 InstalledState::Not,
@@ -4816,29 +4856,29 @@ mod tests {
     }
 
     #[test]
-    fn device_copy_distinguishes_qos_on_demand_from_flatpak_installation() {
-        let qos = item(
+    fn device_copy_distinguishes_tilo_on_demand_from_flatpak_installation() {
+        let tilo = item(
             "Notes",
-            StoreSource::Qos {
-                registry_name: "qOS".into(),
+            StoreSource::Tilo {
+                registry_name: "Tilo".into(),
             },
             "Productivity",
             InstalledState::Not,
         );
         let flatpak = item("Chess", StoreSource::Flathub, "Games", InstalledState::Not);
         assert_eq!(
-            device_state_label(&qos),
+            device_state_label(&tilo),
             "Available on demand · fetched when opened\nNot kept on this device"
         );
         assert_eq!(device_state_label(&flatpak), "Not installed");
-        assert_eq!(qos.action_kind(true).label(), "Open");
+        assert_eq!(tilo.action_kind(true).label(), "Open");
         assert_eq!(flatpak.action_kind(true).label(), "Install");
     }
 
     #[test]
-    fn filter_qos_hides_flatpak() {
+    fn filter_tilo_hides_flatpak() {
         let mut app = seeded_app();
-        app.set_active_filter(SourceFilter::Qos);
+        app.set_active_filter(SourceFilter::Tilo);
         let names: Vec<&str> = app
             .visible_items()
             .iter()
@@ -4928,6 +4968,13 @@ mod tests {
     }
 
     #[test]
+    fn catalogue_heading_does_not_claim_an_empty_query_is_a_search() {
+        assert_eq!(catalogue_region_heading(true, ""), "Browse apps");
+        assert_eq!(catalogue_region_heading(false, "  "), "All apps");
+        assert_eq!(catalogue_region_heading(false, "notes"), "Search results");
+    }
+
+    #[test]
     fn large_text_uses_the_safe_stacked_catalogue_layout() {
         let mut app = seeded_app();
         app.set_layout_width_hint(1_280.0);
@@ -4988,16 +5035,16 @@ mod tests {
     fn source_filter_is_local_and_re_filters_the_catalogue() {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
-        app.source_filter_state.set("qOS".into());
+        app.source_filter_state.set("Tilo".into());
         app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(app.active_filter(), SourceFilter::Qos);
+        assert_eq!(app.active_filter(), SourceFilter::Tilo);
         let names: Vec<&str> = app
             .visible_items()
             .iter()
             .map(|i| i.name.as_str())
             .collect();
         assert!(names.contains(&"Notes"));
-        assert!(!names.contains(&"Chess"), "qOS filter hides Flatpak items");
+        assert!(!names.contains(&"Chess"), "Tilo filter hides Flatpak items");
     }
 
     #[test]
@@ -5017,11 +5064,11 @@ mod tests {
         let mut first = seeded_app();
         let mut second = seeded_app();
         let mut doc = AutoCommit::new();
-        first.source_filter_state.set("qOS".into());
+        first.source_filter_state.set("Tilo".into());
         first.category_filter_state.set("Games".into());
         first.sync(&mut doc, &automerge::ROOT);
         second.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(first.active_filter(), SourceFilter::Qos);
+        assert_eq!(first.active_filter(), SourceFilter::Tilo);
         assert_eq!(first.active_category(), Some("Games"));
         assert_eq!(second.active_filter(), SourceFilter::All);
         assert_eq!(second.active_category(), None);
@@ -5038,10 +5085,10 @@ mod tests {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
         let heads = doc.get_heads();
-        let encoded = qos_actions::EncodedAction::encode_operation(
+        let encoded = tilo_actions::EncodedAction::encode_operation(
             crate::browse_actions::STORE_BROWSE_OPERATION_TYPE,
             &crate::browse_actions::BrowseOperation::SetSource {
-                source: "qOS".into(),
+                source: "Tilo".into(),
             },
         )
         .unwrap();
@@ -5055,11 +5102,11 @@ mod tests {
             )
             .unwrap()
         );
-        assert_eq!(app.active_filter(), SourceFilter::Qos);
+        assert_eq!(app.active_filter(), SourceFilter::Tilo);
         assert!(
             app.visible_items()
                 .iter()
-                .all(|item| matches!(item.source, StoreSource::Qos { .. }))
+                .all(|item| matches!(item.source, StoreSource::Tilo { .. }))
         );
         assert_eq!(
             doc.get_heads(),
@@ -5086,7 +5133,7 @@ mod tests {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
         let heads = doc.get_heads();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         assert_eq!(
             app.start_resource_operation(
                 invocation,
@@ -5137,7 +5184,7 @@ mod tests {
     fn exported_refresh_is_accepted_until_worker_completion() {
         let mut app = seeded_app();
         let doc = AutoCommit::new();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let started = app
             .start_resource_operation(
                 invocation,
@@ -5157,7 +5204,7 @@ mod tests {
         app.complete_lifecycle_invocation(invocation, None);
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 
@@ -5168,7 +5215,7 @@ mod tests {
         let payload = serde_json::to_vec(&vec!["id.notes", "open"]).unwrap();
         let first = app
             .start_resource_operation(
-                qos_actions::InvocationId::new(),
+                tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
                 "store.app",
                 &payload,
@@ -5185,7 +5232,7 @@ mod tests {
         assert_eq!(app.take_lifecycle_actions().len(), 1);
         assert!(
             app.start_resource_operation(
-                qos_actions::InvocationId::new(),
+                tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
                 "store.app",
                 &payload,
@@ -5205,7 +5252,7 @@ mod tests {
         let mut app = seeded_app();
         let doc = AutoCommit::new();
         let result = app.start_resource_operation(
-            qos_actions::InvocationId::new(),
+            tilo_actions::InvocationId::new(),
             OperationKind::Effect,
             "store.app",
             &serde_json::to_vec(&vec!["id.notes", "remove"]).unwrap(),
@@ -5272,7 +5319,7 @@ mod tests {
         }
         assert!(
             app.start_resource_operation(
-                qos_actions::InvocationId::new(),
+                tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
                 "store.app",
                 &serde_json::to_vec(&vec!["id.chess", "flatpak-remove"]).unwrap(),
@@ -5314,7 +5361,7 @@ mod tests {
     fn moderation_effect_waits_for_authoritative_case_before_materializing_status() {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.reports.push(ReportRecord {
             id: "report:id.notes".into(),
             app_id: "id.notes".into(),
@@ -5335,7 +5382,7 @@ mod tests {
                 invocation,
                 OperationKind::Effect,
                 "store.moderation",
-                &serde_json::to_vec(&("qOS", &envelope)).unwrap(),
+                &serde_json::to_vec(&("Tilo", &envelope)).unwrap(),
                 &doc,
                 &automerge::ROOT,
             )
@@ -5402,7 +5449,7 @@ mod tests {
         for _ in 0..MAX_PENDING_EXTERNAL_OPERATIONS {
             assert!(
                 app.start_resource_operation(
-                    qos_actions::InvocationId::new(),
+                    tilo_actions::InvocationId::new(),
                     OperationKind::Effect,
                     "store.remote",
                     &payload,
@@ -5414,7 +5461,7 @@ mod tests {
         }
         assert!(
             app.start_resource_operation(
-                qos_actions::InvocationId::new(),
+                tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
                 "store.remote",
                 &payload,
@@ -5476,10 +5523,10 @@ mod tests {
         );
         let doc = AutoCommit::new();
         let accepted = app.start_resource_operation(
-            qos_actions::InvocationId::new(),
+            tilo_actions::InvocationId::new(),
             OperationKind::Effect,
             "store.moderation",
-            &serde_json::to_vec(&("qOS", &current)).unwrap(),
+            &serde_json::to_vec(&("Tilo", &current)).unwrap(),
             &doc,
             &automerge::ROOT,
         );
@@ -5489,10 +5536,10 @@ mod tests {
         let mut stale = current;
         stale.evidence_note = "Different text that was never saved in this draft.".into();
         let rejected = app.start_resource_operation(
-            qos_actions::InvocationId::new(),
+            tilo_actions::InvocationId::new(),
             OperationKind::Effect,
             "store.moderation",
-            &serde_json::to_vec(&("qOS", stale)).unwrap(),
+            &serde_json::to_vec(&("Tilo", stale)).unwrap(),
             &doc,
             &automerge::ROOT,
         );
@@ -5532,8 +5579,8 @@ mod tests {
     fn trust_sheet_uses_a_scannable_publisher_identity_summary() {
         let mut signed = item(
             "Signed",
-            StoreSource::Qos {
-                registry_name: "qOS".into(),
+            StoreSource::Tilo {
+                registry_name: "Tilo".into(),
             },
             "Utilities",
             InstalledState::Not,

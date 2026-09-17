@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::chrome_state::Chrome;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
@@ -216,7 +216,7 @@ fn group_center(host: &mut ShellOverlayHost, strip_id: StripId, group_idx: usize
 #[test]
 fn drop_over_left_group_routes_to_left_group_only() {
     let (tree, strip_id, g_left, g_right) = two_group_one_strip_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
     let left_before = tab_count(&chrome, g_left);
@@ -240,7 +240,7 @@ fn drop_over_left_group_routes_to_left_group_only() {
 #[test]
 fn drop_over_right_group_routes_to_right_group_only() {
     let (tree, strip_id, g_left, g_right) = two_group_one_strip_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
     let left_before = tab_count(&chrome, g_left);
@@ -264,7 +264,7 @@ fn drop_over_right_group_routes_to_right_group_only() {
 #[test]
 fn two_drops_route_to_the_two_distinct_groups_they_land_on() {
     let (tree, strip_id, g_left, g_right) = two_group_one_strip_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
     let left_before = tab_count(&chrome, g_left);
@@ -295,7 +295,7 @@ fn two_drops_route_to_the_two_distinct_groups_they_land_on() {
 #[test]
 fn drop_over_empty_desktop_space_is_a_graceful_noop() {
     let (tree, _strip_id, g_left, g_right) = two_group_one_strip_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
     let left_before = tab_count(&chrome, g_left);
@@ -324,7 +324,7 @@ fn drop_over_empty_desktop_space_is_a_graceful_noop() {
 )]
 fn drop_records_filesystem_grant_for_target_app_on_the_workspace() {
     let (tree, strip_id, _g_left, _g_right) = two_group_one_strip_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
     let dropped = "/drop/notes.ts"; // .ts → Editor app
@@ -340,7 +340,7 @@ fn drop_records_filesystem_grant_for_target_app_on_the_workspace() {
     // it advertises via `xdg_toplevel::set_app_id`), not the display label.
     let editor_key = AppKind::Other("Editor".into()).app_id();
     assert_eq!(
-        editor_key, "org.nirios.Editor",
+        editor_key, "org.tilo.Editor",
         "the Editor app-id must be a real reverse-DNS app-id, not the \
          display label 'Editor'"
     );
@@ -372,7 +372,7 @@ fn drop_records_filesystem_grant_for_target_app_on_the_workspace() {
 )]
 fn repeated_drop_of_same_file_does_not_duplicate_the_grant() {
     let (tree, strip_id, _g_left, _g_right) = two_group_one_strip_tree();
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
     let dropped = "/drop/dup.ts";

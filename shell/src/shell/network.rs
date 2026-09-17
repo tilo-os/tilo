@@ -4,17 +4,23 @@
 //! Started by default in normal sessions; recovery sessions may disable it.
 
 use std::collections::VecDeque;
+use std::io::{Read as _, Write as _};
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
+use rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::network::actor::WorkspaceControlRoute;
-use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent};
+use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent, PersonalMediaTransferStatus};
+use crate::network::actor::{
+    PERSONAL_MEDIA_CHUNK_BYTES, PersonalFabricPayload, PersonalMediaTransferFrame,
+    WorkspaceControlRoute,
+};
 use crate::network::behaviour::load_or_create_keypair;
 use crate::network::identity::PeerIdentityStore;
 use crate::network::invite::accept_invite_into;
@@ -36,6 +42,322 @@ pub const DEFAULT_WS_TOPIC: u64 = 0;
 /// than a once-per-peer map. The history is session-local and intentionally
 /// contains no application payload.
 const PEER_DEPARTURE_HISTORY_CAPACITY: usize = 64;
+const PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY: usize = 256;
+const PERSONAL_DISPLAY_QUEUE_CAPACITY: usize = 16;
+
+fn queue_personal_display_message(
+    queue: &mut VecDeque<crate::shell::device_fabric::PersonalDisplayMessage>,
+    message: crate::shell::device_fabric::PersonalDisplayMessage,
+) {
+    use crate::shell::device_fabric::PersonalDisplayMessage;
+    if let PersonalDisplayMessage::Frame { session_id, .. } = &message
+        && let Some(existing) = queue.iter_mut().rev().find(|existing| {
+            matches!(existing, PersonalDisplayMessage::Frame { session_id: candidate, .. } if candidate == session_id)
+        })
+    {
+        *existing = message;
+        return;
+    }
+    if queue.len() >= PERSONAL_DISPLAY_QUEUE_CAPACITY {
+        if let Some(old_frame) = queue
+            .iter()
+            .position(|queued| matches!(queued, PersonalDisplayMessage::Frame { .. }))
+        {
+            queue.remove(old_frame);
+        } else if matches!(message, PersonalDisplayMessage::Frame { .. }) {
+            return;
+        } else {
+            queue.pop_front();
+        }
+    }
+    queue.push_back(message);
+}
+const MAX_PERSONAL_MEDIA_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+const MAX_PERSONAL_MEDIA_CACHE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+const MIN_PERSONAL_MEDIA_FREE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const PERSONAL_MEDIA_LEASE: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
+const MAX_INCOMING_PERSONAL_MEDIA_TRANSFERS: usize = 8;
+const MAX_COMPLETED_PERSONAL_MEDIA_TRANSFERS: usize = 64;
+const MAX_OUTGOING_PERSONAL_MEDIA_TRANSFERS: usize = 64;
+const OUTGOING_PERSONAL_MEDIA_RETENTION: std::time::Duration =
+    std::time::Duration::from_secs(5 * 60);
+
+fn portable_media_file_name(name: &str) -> Option<String> {
+    let sanitized = name
+        .chars()
+        .take(200)
+        .map(|character| {
+            if character.is_control() || matches!(character, '/' | '\\') {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    (!sanitized.is_empty() && sanitized != "." && sanitized != "..").then_some(sanitized)
+}
+
+fn personal_media_cache_root() -> Option<PathBuf> {
+    let root = dirs::cache_dir()?.join("tilo/personal-media");
+    // A partial stream is never useful after restart and can never become
+    // authorized again because transfer ids/actions are session-local.
+    let incoming = root.join("incoming");
+    let _ = std::fs::remove_dir_all(&incoming);
+    ensure_private_dir(&incoming).ok()?;
+    let _ = prune_personal_media_objects(
+        &root,
+        &std::collections::BTreeSet::new(),
+        MAX_PERSONAL_MEDIA_CACHE_BYTES,
+    );
+    Some(root)
+}
+
+fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+#[derive(Debug)]
+struct PersonalMediaCacheObject {
+    path: PathBuf,
+    bytes: u64,
+    modified: SystemTime,
+}
+
+fn personal_media_cache_objects(root: &Path) -> Vec<PersonalMediaCacheObject> {
+    let mut objects = Vec::new();
+    let Ok(hash_dirs) = std::fs::read_dir(root.join("objects")) else {
+        return objects;
+    };
+    for hash_dir in hash_dirs.flatten() {
+        let Ok(hash_metadata) = std::fs::symlink_metadata(hash_dir.path()) else {
+            continue;
+        };
+        if !hash_metadata.file_type().is_dir() {
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(hash_dir.path()) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let Ok(metadata) = std::fs::symlink_metadata(file.path()) else {
+                continue;
+            };
+            if metadata.file_type().is_file() {
+                objects.push(PersonalMediaCacheObject {
+                    path: file.path(),
+                    bytes: metadata.len(),
+                    modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                });
+            }
+        }
+    }
+    objects
+}
+
+/// Remove oldest unprotected objects until at most `target_bytes` remain.
+/// Symlinks and non-files are never followed or counted.
+fn prune_personal_media_objects(
+    root: &Path,
+    protected: &std::collections::BTreeSet<PathBuf>,
+    target_bytes: u64,
+) -> u64 {
+    let mut objects = personal_media_cache_objects(root);
+    let mut retained = objects
+        .iter()
+        .fold(0_u64, |total, object| total.saturating_add(object.bytes));
+    objects.sort_by_key(|object| object.modified);
+    for object in objects {
+        if retained <= target_bytes {
+            break;
+        }
+        if protected.contains(&object.path) || std::fs::remove_file(&object.path).is_err() {
+            continue;
+        }
+        retained = retained.saturating_sub(object.bytes);
+        if let Some(parent) = object.path.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+    retained
+}
+
+fn available_bytes(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut info = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    if unsafe { libc::statvfs(path.as_ptr(), info.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let info = unsafe { info.assume_init() };
+    info.f_bavail.checked_mul(info.f_frsize)
+}
+
+struct IncomingPersonalMediaTransfer {
+    file: std::fs::File,
+    part_path: PathBuf,
+    file_name: String,
+    total_bytes: u64,
+    received_bytes: u64,
+    hasher: blake3::Hasher,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OutgoingPersonalMediaTransfer {
+    pub target: crate::shell::personal_continuity::DeviceId,
+    pub transfer_id: [u8; 16],
+    pub sent_bytes: u64,
+    pub total_bytes: u64,
+    pub status: PersonalMediaTransferStatus,
+}
+
+struct OutgoingPersonalMediaTransferEntry {
+    transfer: OutgoingPersonalMediaTransfer,
+    updated: std::time::Instant,
+}
+
+#[derive(Default)]
+struct PersonalMediaTransferState {
+    authorized: std::collections::BTreeSet<(crate::shell::personal_continuity::DeviceId, [u8; 16])>,
+    incoming: std::collections::BTreeMap<
+        (crate::shell::personal_continuity::DeviceId, [u8; 16]),
+        IncomingPersonalMediaTransfer,
+    >,
+    completed: std::collections::BTreeMap<
+        (crate::shell::personal_continuity::DeviceId, [u8; 16]),
+        PathBuf,
+    >,
+    completed_order: VecDeque<(crate::shell::personal_continuity::DeviceId, [u8; 16])>,
+    leased_until: std::collections::BTreeMap<PathBuf, std::time::Instant>,
+}
+
+fn discard_personal_media_transfer(
+    state: &mut PersonalMediaTransferState,
+    key: &(crate::shell::personal_continuity::DeviceId, [u8; 16]),
+) {
+    if let Some(transfer) = state.incoming.remove(key) {
+        let _ = std::fs::remove_file(transfer.part_path);
+    }
+    state.authorized.remove(key);
+}
+
+impl PersonalMediaTransferState {
+    fn expire_media_leases(&mut self) {
+        let now = std::time::Instant::now();
+        self.leased_until.retain(|_, until| *until > now);
+    }
+
+    fn protected_paths(&mut self) -> std::collections::BTreeSet<PathBuf> {
+        self.expire_media_leases();
+        self.completed
+            .values()
+            .cloned()
+            .chain(self.leased_until.keys().cloned())
+            .collect()
+    }
+
+    fn incoming_reserved_bytes(&self) -> u64 {
+        self.incoming.values().fold(0_u64, |total, transfer| {
+            total.saturating_add(transfer.total_bytes)
+        })
+    }
+
+    fn incoming_remaining_bytes(&self) -> u64 {
+        self.incoming.values().fold(0_u64, |total, transfer| {
+            total.saturating_add(transfer.total_bytes.saturating_sub(transfer.received_bytes))
+        })
+    }
+
+    fn evict_oldest_completed(&mut self) -> bool {
+        let oldest = loop {
+            if let Some(candidate) = self.completed_order.pop_front() {
+                if self.completed.contains_key(&candidate) {
+                    break Some(candidate);
+                }
+                continue;
+            }
+            break self.completed.keys().next().cloned();
+        };
+        let Some(oldest) = oldest else {
+            return false;
+        };
+        let Some(path) = self.completed.remove(&oldest) else {
+            return false;
+        };
+        self.expire_media_leases();
+        let still_referenced = self.completed.values().any(|candidate| candidate == &path)
+            || self.leased_until.contains_key(&path);
+        if !still_referenced {
+            let _ = std::fs::remove_file(&path);
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
+        true
+    }
+}
+
+pub(crate) struct PreparedPersonalMediaTransfer {
+    ws: u64,
+    user_public_key: [u8; 32],
+    target: iroh::EndpointId,
+    pub transfer_id: [u8; 16],
+    pub file_name: String,
+    total_bytes: u64,
+    file: std::fs::File,
+}
+
+fn personal_media_object_matches(path: &Path, total_bytes: u64, expected: [u8; 32]) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    if !file
+        .metadata()
+        .is_ok_and(|metadata| metadata.len() == total_bytes)
+    {
+        return false;
+    }
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let Ok(read) = file.read(&mut buffer) else {
+            return false;
+        };
+        if read == 0 {
+            break;
+        }
+        let Some(bytes) = buffer.get(..read) else {
+            return false;
+        };
+        hasher.update(bytes);
+    }
+    *hasher.finalize().as_bytes() == expected
+}
+
+#[derive(Default)]
+struct PersonalFabricReplayWindow {
+    seen: std::collections::HashSet<[u8; 16]>,
+    order: VecDeque<[u8; 16]>,
+}
+
+impl PersonalFabricReplayWindow {
+    fn accept(&mut self, request_id: [u8; 16]) -> bool {
+        if !self.seen.insert(request_id) {
+            return false;
+        }
+        self.order.push_back(request_id);
+        if self.order.len() > PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY
+            && let Some(expired) = self.order.pop_front()
+        {
+            self.seen.remove(&expired);
+        }
+        true
+    }
+}
 
 /// A transport peer leaving one collaboration route.
 ///
@@ -92,14 +414,14 @@ pub fn room_topic_id(room: RoomId) -> u64 {
     // Fall back to the "no room identity" topic rather than panic on this
     // hot path — `room_workspace_id` never returns 0 on success, so a real
     // topic id can't collide with the fallback.
-    qos_relay::room_workspace_id(&room.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
+    tilo_relay::room_workspace_id(&room.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
 }
 
 /// Stable private shard shared only by certified devices rooted in the same
 /// person identity. The full root key is also carried in and authenticated on
 /// every message; this 64-bit value is routing, never authority.
 pub fn personal_continuity_topic_id(user_public_key: &[u8; 32]) -> u64 {
-    qos_relay::personal_continuity_workspace_id(user_public_key)
+    tilo_relay::personal_continuity_workspace_id(user_public_key)
 }
 
 /// Default on-disk path of the machine's device key, from which the
@@ -107,14 +429,14 @@ pub fn personal_continuity_topic_id(user_public_key: &[u8; 32]) -> u64 {
 /// file, so one device has one identity rather than one per subsystem.
 pub const DEFAULT_KEYPAIR_PATH: &str = crate::network::behaviour::DEVICE_KEY_PATH;
 
-/// The active collaboration identity tree unless `QOS_PEER_KEY_PATH` names
+/// The active collaboration identity tree unless `TILO_PEER_KEY_PATH` names
 /// somewhere else. Full-system sessions resolve to [`DEFAULT_KEYPAIR_PATH`];
 /// host-installed sessions select an XDG-owned tree at process startup. The
 /// override is what makes two sessions on one machine two
 /// *peers*: the key is the shell's network identity, so two processes
 /// reading one key file are one peer talking to itself.
 pub fn peer_key_path() -> std::path::PathBuf {
-    match std::env::var("QOS_PEER_KEY_PATH") {
+    match std::env::var("TILO_PEER_KEY_PATH") {
         Ok(v) if !v.is_empty() => std::path::PathBuf::from(v),
         _ => crate::firstboot::collaboration_identity_paths().device_privkey,
     }
@@ -131,19 +453,19 @@ fn parse_host_addr(value: &str) -> Option<iroh::EndpointAddr> {
 
 fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
     let mut hosts = Vec::new();
-    if let Ok(value) = std::env::var("QOS_COLLAB_HOSTS") {
+    if let Ok(value) = std::env::var("TILO_COLLAB_HOSTS") {
         match serde_json::from_str::<Vec<iroh::EndpointAddr>>(&value) {
             Ok(parsed) => hosts.extend(parsed),
             Err(error) => {
-                tracing::warn!(%error, "QOS_COLLAB_HOSTS must be a JSON array of Iroh endpoint addresses");
+                tracing::warn!(%error, "TILO_COLLAB_HOSTS must be a JSON array of Iroh endpoint addresses");
             }
         }
     }
-    if let Ok(value) = std::env::var("QOS_COLLAB_HOST") {
+    if let Ok(value) = std::env::var("TILO_COLLAB_HOST") {
         if let Some(addr) = parse_host_addr(&value) {
             hosts.push(addr);
         } else {
-            tracing::warn!("QOS_COLLAB_HOST is not a valid Iroh endpoint address or id");
+            tracing::warn!("TILO_COLLAB_HOST is not a valid Iroh endpoint address or id");
         }
     }
     hosts.sort_by_key(|addr| addr.id.to_string());
@@ -157,7 +479,7 @@ const MAX_HOME_PEER_LABEL_BYTES: usize = 80;
 const MAX_HOME_PEER_WORKSPACES: usize = 4096;
 
 fn home_peer_registry_path() -> PathBuf {
-    std::env::var_os("QOS_HOME_PEERS_PATH")
+    std::env::var_os("TILO_HOME_PEERS_PATH")
         .filter(|path| !path.is_empty())
         .map_or_else(
             || {
@@ -166,7 +488,7 @@ fn home_peer_registry_path() -> PathBuf {
                     .user_pubkey
                     .parent()
                     .and_then(std::path::Path::parent)
-                    .map_or_else(|| PathBuf::from("/var/lib/qos"), PathBuf::from)
+                    .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from)
                     .join("home-peers.json")
             },
             PathBuf::from,
@@ -213,9 +535,9 @@ fn registered_home_peer_addrs(
         tracing::warn!(path = %path.display(), "home-peer registry exceeds its bounded schema");
         return Err("home-peer registry exceeds its bounded schema".into());
     }
-    let registrations: Vec<qos_relay::HomePeerRegistration> =
+    let registrations: Vec<tilo_relay::HomePeerRegistration> =
         match std::fs::read(&path).ok().and_then(|bytes| {
-            serde_json::from_slice::<Vec<qos_relay::HomePeerRegistration>>(&bytes).ok()
+            serde_json::from_slice::<Vec<tilo_relay::HomePeerRegistration>>(&bytes).ok()
         }) {
             Some(registrations) if registrations.len() <= MAX_HOME_PEERS => registrations,
             _ => {
@@ -309,12 +631,57 @@ fn now_unix_seconds() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
+fn now_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
 fn pending_invites_path(keypair_path: &Path) -> PathBuf {
     keypair_path.with_file_name("pending-invitations.json")
 }
 
 fn personal_continuity_path(keypair_path: &Path) -> PathBuf {
     keypair_path.with_file_name("personal-continuity.postcard")
+}
+
+fn device_fabric_path(keypair_path: &Path) -> PathBuf {
+    keypair_path.with_file_name("personal-device-fabric.postcard")
+}
+
+fn device_fabric_backup_path(path: &Path) -> PathBuf {
+    path.with_extension("postcard.backup")
+}
+
+fn load_device_fabric(path: &Path) -> crate::shell::device_fabric::DeviceFabric {
+    [path.to_path_buf(), device_fabric_backup_path(path)]
+        .into_iter()
+        .find_map(|candidate| {
+            let bytes = std::fs::read(candidate).ok()?;
+            crate::shell::device_fabric::DeviceFabric::decode_checkpoint(&bytes).ok()
+        })
+        .unwrap_or_default()
+}
+
+fn persist_device_fabric(path: &Path, fabric: &crate::shell::device_fabric::DeviceFabric) -> bool {
+    let Ok(bytes) = fabric.encode_checkpoint() else {
+        return false;
+    };
+    if let Some(parent) = path.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return false;
+    }
+    let prior = std::fs::read(path)
+        .ok()
+        .filter(|prior| crate::shell::device_fabric::DeviceFabric::decode_checkpoint(prior).is_ok())
+        .unwrap_or_else(|| bytes.clone());
+    if atomic_file::write_with_mode(&device_fabric_backup_path(path), &prior, 0o600).is_err() {
+        return false;
+    }
+    atomic_file::write_with_mode(path, &bytes, 0o600).is_ok()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -504,6 +871,27 @@ pub struct ShellNetwork {
     personal_continuity_counter: Mutex<u64>,
     personal_continuity_fingerprint: Mutex<Option<[u8; 32]>>,
     personal_continuity_path: Option<PathBuf>,
+    /// Convergent same-person device state, persisted separately from app
+    /// continuation so transport upgrades cannot regress existing handoff.
+    device_fabric: Mutex<crate::shell::device_fabric::DeviceFabric>,
+    device_fabric_path: Option<PathBuf>,
+    /// Validated, ephemeral exact-target actions awaiting the shell runtime.
+    personal_fabric_actions:
+        Mutex<VecDeque<crate::shell::device_fabric::PersonalFabricActionEnvelope>>,
+    /// Authenticated display lifecycle and latest-wins frames. This queue is
+    /// deliberately separate from actions so video cannot starve control.
+    personal_display_messages: Mutex<VecDeque<crate::shell::device_fabric::PersonalDisplayMessage>>,
+    /// Bounded session-local replay filter for action request ids.
+    personal_fabric_action_replays: Mutex<PersonalFabricReplayWindow>,
+    /// Streaming, content-verified cache for explicit device-local media
+    /// handoffs. Paths stay local and never enter fabric snapshots/actions.
+    personal_media_cache_root: Option<PathBuf>,
+    personal_media_transfers: Mutex<PersonalMediaTransferState>,
+    /// Bounded, session-local transport truth for the Devices pane. Media
+    /// acceptance remains a separate action, so a completed upload never
+    /// implies that the destination app opened it.
+    outgoing_personal_media_transfers:
+        Mutex<std::collections::BTreeMap<[u8; 16], OutgoingPersonalMediaTransferEntry>>,
     /// Verified transport-device chains received on workspace topics.
     peer_identities: PeerIdentityStore,
     /// Production is fail-closed until a peer presents `IdentityHello`.
@@ -640,7 +1028,7 @@ pub struct InboundPresence {
     pub ts: u64,
 }
 
-/// Start mDNS LAN peer discovery when `QOS_COLLAB_LAN_DISCOVERY` requests
+/// Start mDNS LAN peer discovery when `TILO_COLLAB_LAN_DISCOVERY` requests
 /// it, registering it with `endpoint`'s address lookup. Returns `None`
 /// when discovery is disabled, disallowed by the env var, or the mDNS
 /// service or address-lookup registry is unavailable — the caller then
@@ -648,13 +1036,13 @@ pub struct InboundPresence {
 fn init_lan_discovery(
     endpoint: &iroh::Endpoint,
 ) -> Option<iroh_mdns_address_lookup::MdnsAddressLookup> {
-    let lan_discovery = std::env::var_os("QOS_COLLAB_LAN_DISCOVERY")
+    let lan_discovery = std::env::var_os("TILO_COLLAB_LAN_DISCOVERY")
         .is_some_and(|value| value != "0" && !value.is_empty());
     if !lan_discovery {
         return None;
     }
     let mdns = match iroh_mdns_address_lookup::MdnsAddressLookup::builder()
-        .service_name("qos-collab-v1")
+        .service_name("tilo-collab-v1")
         .build(endpoint.id())
     {
         Ok(mdns) => mdns,
@@ -695,7 +1083,7 @@ fn spawn_lan_discovery_forwarding(
         }
     });
     tracing::info!(
-        "peer-sync: privacy-sensitive LAN discovery enabled; advertising on _qos-collab-v1._udp.local"
+        "peer-sync: privacy-sensitive LAN discovery enabled; advertising on _tilo-collab-v1._udp.local"
     );
 }
 
@@ -813,6 +1201,8 @@ impl ShellNetwork {
         let pending_invitations_path = pending_invites_path(keypair_path);
         let personal_continuity_path = personal_continuity_path(keypair_path);
         let persisted_continuity = load_personal_continuity(&personal_continuity_path);
+        let device_fabric_path = device_fabric_path(keypair_path);
+        let device_fabric = load_device_fabric(&device_fabric_path);
         let now = now_unix_seconds();
         let pending_identity_admissions: std::collections::HashMap<_, _> =
             load_pending_invitations(&pending_invitations_path)
@@ -846,6 +1236,14 @@ impl ShellNetwork {
             personal_continuity_counter: Mutex::new(persisted_continuity.counter),
             personal_continuity_fingerprint: Mutex::new(None),
             personal_continuity_path: Some(personal_continuity_path),
+            device_fabric: Mutex::new(device_fabric),
+            device_fabric_path: Some(device_fabric_path),
+            personal_fabric_actions: Mutex::new(VecDeque::new()),
+            personal_display_messages: Mutex::new(VecDeque::new()),
+            personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
+            personal_media_cache_root: personal_media_cache_root(),
+            personal_media_transfers: Mutex::new(PersonalMediaTransferState::default()),
+            outgoing_personal_media_transfers: Mutex::new(std::collections::BTreeMap::new()),
             peer_identities: PeerIdentityStore::new(),
             require_peer_identity: true,
             pending_identity_admissions: Mutex::new(pending_identity_admissions),
@@ -869,7 +1267,21 @@ impl ShellNetwork {
         self.local_peer_hash
     }
 
-    /// Resolve and open a qOS workspace-control session over an authenticated
+    /// Certified local identity used to author personal-fabric state.
+    pub fn local_device_fabric_identity(
+        &self,
+    ) -> Option<(crate::shell::personal_continuity::DeviceId, String)> {
+        Some((
+            self.personal_continuity_device.clone()?,
+            self.host_identity
+                .as_ref()?
+                .device_cert
+                .device_label
+                .clone(),
+        ))
+    }
+
+    /// Resolve and open a Tilo workspace-control session over an authenticated
     /// exact-target device route. A successful route is transport reachability
     /// only: the returned session still waits for the target's authenticated
     /// `SurfaceStreamStart` before allowing input.
@@ -905,10 +1317,10 @@ impl ShellNetwork {
             .unwrap_or_default();
         let candidates = relay_ids
             .iter()
-            .map(|relay| qos_relay::ServerAdvertisement {
+            .map(|relay| tilo_relay::ServerAdvertisement {
                 device: *relay.as_bytes(),
-                role: qos_relay::DeviceRole::AlwaysOnServer,
-                services: qos_relay::ServiceCapabilities::relay_only(),
+                role: tilo_relay::DeviceRole::AlwaysOnServer,
+                services: tilo_relay::ServiceCapabilities::relay_only(),
                 workspaces: std::collections::BTreeSet::from([workspace]),
                 apps: std::collections::BTreeSet::new(),
                 priority: 0,
@@ -918,17 +1330,17 @@ impl ShellNetwork {
                 online: true,
             })
             .collect::<Vec<_>>();
-        let route = match qos_relay::route_remote_control(
+        let route = match tilo_relay::route_remote_control(
             *self.local_peer_id.as_bytes(),
             *target.as_bytes(),
             workspace,
             direct_reachable,
             &candidates,
         ) {
-            qos_relay::RemoteControlRoute::Direct { .. } => {
+            tilo_relay::RemoteControlRoute::Direct { .. } => {
                 WorkspaceControlRoute::Direct { target }
             }
-            qos_relay::RemoteControlRoute::Relayed { via, .. } => {
+            tilo_relay::RemoteControlRoute::Relayed { via, .. } => {
                 let _via = iroh::EndpointId::from_bytes(&via)
                     .map_err(|_| "mesh selected an invalid relay identity")?;
                 return Err(
@@ -936,7 +1348,7 @@ impl ShellNetwork {
                         .into(),
                 );
             }
-            qos_relay::RemoteControlRoute::Unavailable => {
+            tilo_relay::RemoteControlRoute::Unavailable => {
                 return Err("no authenticated direct workspace-control path is online".into());
             }
         };
@@ -1010,6 +1422,36 @@ impl ShellNetwork {
         };
 
         replica.tree.read().room_peer_labels(room)
+    }
+
+    /// Live session handles and their admitted display names for one room.
+    /// Unlike [`Self::peer_labels`], this projection is deliberately
+    /// ephemeral: [`WorkspaceTree::retire_session`] removes a device as soon
+    /// as the transport reports departure. Presence cleanup uses it to avoid
+    /// erasing a person's status when another device of theirs is still here.
+    pub fn active_session_labels(
+        &self,
+        cluster_id: &str,
+    ) -> std::collections::BTreeMap<u64, String> {
+        let Some(room) = crate::shell::state::RoomId::parse(cluster_id) else {
+            return std::collections::BTreeMap::new();
+        };
+        let Ok(replica) = self.replica.lock() else {
+            return std::collections::BTreeMap::new();
+        };
+        replica
+            .tree
+            .read()
+            .workspaces
+            .iter()
+            .filter(|workspace| workspace.room == room)
+            .flat_map(|workspace| &workspace.collaborators)
+            .filter_map(|participant| {
+                participant
+                    .session
+                    .map(|session| (session, participant.name.clone()))
+            })
+            .collect()
     }
 
     /// Snapshot recent transport departures, oldest first. This is bounded
@@ -1283,7 +1725,7 @@ impl ShellNetwork {
     fn is_in_room(&self, cluster_id: &str) -> bool {
         let Some(room) = crate::shell::state::RoomId::parse(cluster_id) else {
             tracing::info!(
-                target: "qos_collab_probe",
+                target: "tilo_collab_probe",
                 cluster = %cluster_id,
                 "PROBE is_in_room=false (not a uuid)",
             );
@@ -1291,7 +1733,7 @@ impl ShellNetwork {
         };
         if room.is_nil() {
             tracing::info!(
-                target: "qos_collab_probe",
+                target: "tilo_collab_probe",
                 cluster = %cluster_id,
                 "PROBE is_in_room=false (nil)",
             );
@@ -1304,7 +1746,7 @@ impl ShellNetwork {
         let in_room = known.contains(&room);
         drop(replica);
         tracing::info!(
-            target: "qos_collab_probe",
+            target: "tilo_collab_probe",
             cluster = %cluster_id,
             in_room,
             known = ?known.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
@@ -1669,7 +2111,7 @@ impl ShellNetwork {
         true
     }
 
-    /// Export the selected person identity as a non-secret card another qOS
+    /// Export the selected person identity as a non-secret card another Tilo
     /// user can paste into the recipient-bound invite composer.
     ///
     /// # Errors
@@ -1693,7 +2135,7 @@ impl ShellNetwork {
         };
         let cert = selected_device_cert(room, &self.keypair)?;
         Ok(format!(
-            "qos-identity:{}",
+            "tilo-identity:{}",
             hex::encode(cert.user_public_key)
         ))
     }
@@ -2020,14 +2462,14 @@ impl ShellNetwork {
         &self,
         peer: &iroh::EndpointId,
         room: &str,
-        device_cert: &qos_user_identity::DeviceCert,
-        revocations: &[qos_user_identity::RevocationEntry],
+        device_cert: &tilo_user_identity::DeviceCert,
+        revocations: &[tilo_user_identity::RevocationEntry],
     ) -> bool {
         let Some(room) = RoomId::parse(room) else {
             return false;
         };
         if device_cert.device_public_key != *peer.as_bytes()
-            || qos_user_identity::verify_device_cert(device_cert).is_err()
+            || tilo_user_identity::verify_device_cert(device_cert).is_err()
         {
             tracing::warn!(%peer, %room, "dropping mismatched device identity announcement");
             return false;
@@ -2145,6 +2587,7 @@ impl ShellNetwork {
         }
         self.publish_personal_continuity_request();
         self.publish_personal_continuity_if_changed();
+        self.publish_device_fabric_request();
     }
 
     fn local_continuity_snapshot_bytes(&self) -> Option<Vec<u8>> {
@@ -2259,6 +2702,609 @@ impl ShellNetwork {
         )
     }
 
+    /// Return the locally retained, convergent view of this person's devices.
+    pub fn device_fabric(&self) -> crate::shell::device_fabric::DeviceFabric {
+        self.device_fabric.lock().map_or_else(
+            |_| crate::shell::device_fabric::DeviceFabric::default(),
+            |state| state.clone(),
+        )
+    }
+
+    /// Open and validate one local media file for a later encrypted,
+    /// exact-target stream. The descriptor, not the host path, crosses the
+    /// personal fabric.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the target is not certified/live, the source is
+    /// not a regular file, its size exceeds the bounded cache contract, or the
+    /// actor command queue is unavailable.
+    pub(crate) fn prepare_personal_media_transfer(
+        &self,
+        target: &crate::shell::personal_continuity::DeviceId,
+        path: &Path,
+    ) -> Result<PreparedPersonalMediaTransfer, String> {
+        let user_public_key = self
+            .personal_continuity_user
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        let source = self
+            .personal_continuity_device
+            .as_ref()
+            .ok_or_else(|| "this device has no personal fabric identity".to_string())?;
+        if source == target || !self.certified_secret_recipients().contains(target) {
+            return Err("target is not another enrolled personal device".into());
+        }
+        let target_bytes: [u8; 32] = hex::decode(target.as_str())
+            .map_err(|_| "target is not a certified transport device id".to_string())?
+            .try_into()
+            .map_err(|_| "target is not a certified transport device id".to_string())?;
+        let transport_target = iroh::EndpointId::from_bytes(&target_bytes)
+            .map_err(|_| "target is not a certified transport device id".to_string())?;
+        let raw_name = path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .ok_or_else(|| "media file has no portable name".to_string())?;
+        let file_name = portable_media_file_name(raw_name)
+            .ok_or_else(|| "media file has no portable name".to_string())?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|error| format!("media file cannot be opened: {error}"))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| format!("media file cannot be inspected: {error}"))?;
+        let total_bytes = metadata.len();
+        if !metadata.is_file() || total_bytes == 0 || total_bytes > MAX_PERSONAL_MEDIA_BYTES {
+            return Err("media source is not a supported regular file".into());
+        }
+        let mut transfer_id = [0_u8; 16];
+        while transfer_id == [0; 16] {
+            rand_core::OsRng.fill_bytes(&mut transfer_id);
+        }
+        let ws = personal_continuity_topic_id(&user_public_key);
+        if !self.join_topic(ws) {
+            return Err("personal fabric transport is unavailable".into());
+        }
+        Ok(PreparedPersonalMediaTransfer {
+            ws,
+            user_public_key,
+            target: transport_target,
+            transfer_id,
+            file_name,
+            total_bytes,
+            file,
+        })
+    }
+
+    /// Start a previously prepared transfer after its authenticated handoff
+    /// action has been queued. Command-channel ordering lets the destination
+    /// authorize the random transfer id before accepting any file bytes.
+    pub(crate) fn start_personal_media_transfer(
+        &self,
+        transfer: PreparedPersonalMediaTransfer,
+    ) -> Result<(), String> {
+        let target = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            transfer.target.as_bytes(),
+        ))
+        .map_err(|_| "target is not a certified transport device id")?;
+        self.record_outgoing_personal_media_transfer(OutgoingPersonalMediaTransfer {
+            target,
+            transfer_id: transfer.transfer_id,
+            sent_bytes: 0,
+            total_bytes: transfer.total_bytes,
+            status: PersonalMediaTransferStatus::Started,
+        });
+        let transfer_id = transfer.transfer_id;
+        let result = self
+            .cmd_tx
+            .try_send(NetCmd::PublishPersonalMedia {
+                ws: transfer.ws,
+                user_public_key: transfer.user_public_key,
+                target: transfer.target,
+                transfer_id: transfer.transfer_id,
+                file_name: transfer.file_name,
+                total_bytes: transfer.total_bytes,
+                file: transfer.file,
+            })
+            .map_err(|error| error.to_string());
+        if result.is_err()
+            && let Ok(mut transfers) = self.outgoing_personal_media_transfers.lock()
+            && let Some(entry) = transfers.get_mut(&transfer_id)
+        {
+            entry.transfer.status = PersonalMediaTransferStatus::Failed;
+            entry.updated = std::time::Instant::now();
+        }
+        result
+    }
+
+    /// Stream an immutable Nearby spool object from a receiver-confirmed
+    /// checkpoint to one exact certified transport peer.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn start_nearby_transfer(
+        &self,
+        target: &crate::shell::personal_continuity::DeviceId,
+        transfer_id: [u8; 16],
+        request_id: [u8; 16],
+        total_bytes: u64,
+        resume_offset: u64,
+        prefix_hash: [u8; 32],
+        content_hash: [u8; 32],
+        path: &Path,
+    ) -> Result<(), String> {
+        let user_public_key = self
+            .personal_continuity_user
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        let source = self
+            .personal_continuity_device
+            .as_ref()
+            .ok_or_else(|| "this device has no personal fabric identity".to_string())?;
+        if source == target || !self.certified_secret_recipients().contains(target) {
+            return Err("target is not another enrolled personal device".into());
+        }
+        let target_bytes: [u8; 32] = hex::decode(target.as_str())
+            .map_err(|_| "invalid transfer target")?
+            .try_into()
+            .map_err(|_| "invalid transfer target")?;
+        let transport_target =
+            iroh::EndpointId::from_bytes(&target_bytes).map_err(|_| "invalid transfer target")?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|error| error.to_string())?;
+        if !file
+            .metadata()
+            .map_err(|error| error.to_string())?
+            .is_file()
+        {
+            return Err("nearby spool object is unsafe".into());
+        }
+        let ws = personal_continuity_topic_id(&user_public_key);
+        if !self.join_topic(ws) {
+            return Err("personal fabric transport is unavailable".into());
+        }
+        self.cmd_tx
+            .try_send(NetCmd::PublishNearbyTransfer {
+                ws,
+                user_public_key,
+                target: transport_target,
+                transfer_id,
+                request_id,
+                total_bytes,
+                resume_offset,
+                prefix_hash,
+                content_hash,
+                file,
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    fn record_outgoing_personal_media_transfer(&self, transfer: OutgoingPersonalMediaTransfer) {
+        let Ok(mut transfers) = self.outgoing_personal_media_transfers.lock() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        transfers.retain(|_, entry| {
+            !matches!(
+                entry.transfer.status,
+                PersonalMediaTransferStatus::Completed | PersonalMediaTransferStatus::Failed
+            ) || now.saturating_duration_since(entry.updated) <= OUTGOING_PERSONAL_MEDIA_RETENTION
+        });
+        transfers.insert(
+            transfer.transfer_id,
+            OutgoingPersonalMediaTransferEntry {
+                transfer,
+                updated: now,
+            },
+        );
+        while transfers.len() > MAX_OUTGOING_PERSONAL_MEDIA_TRANSFERS {
+            let oldest = transfers
+                .iter()
+                .min_by_key(|(_, entry)| entry.updated)
+                .map(|(id, _)| *id);
+            let Some(oldest) = oldest else {
+                break;
+            };
+            transfers.remove(&oldest);
+        }
+    }
+
+    pub(crate) fn outgoing_personal_media_transfers(&self) -> Vec<OutgoingPersonalMediaTransfer> {
+        let Ok(mut transfers) = self.outgoing_personal_media_transfers.lock() else {
+            return Vec::new();
+        };
+        let now = std::time::Instant::now();
+        transfers.retain(|_, entry| {
+            !matches!(
+                entry.transfer.status,
+                PersonalMediaTransferStatus::Completed | PersonalMediaTransferStatus::Failed
+            ) || now.saturating_duration_since(entry.updated) <= OUTGOING_PERSONAL_MEDIA_RETENTION
+        });
+        let mut snapshot = transfers
+            .values()
+            .map(|entry| (entry.updated, entry.transfer.clone()))
+            .collect::<Vec<_>>();
+        snapshot.sort_by_key(|(updated, _)| *updated);
+        snapshot.into_iter().map(|(_, transfer)| transfer).collect()
+    }
+
+    /// Send one non-durable command to exactly one certified personal device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when personal identity is unavailable, the target is
+    /// malformed/local, or the action fails the bounded wire contract.
+    pub fn send_personal_fabric_action(
+        &self,
+        target: &crate::shell::personal_continuity::DeviceId,
+        action: crate::shell::device_fabric::PersonalFabricAction,
+    ) -> Result<[u8; 16], String> {
+        let user_public_key = self
+            .personal_continuity_user
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        let source = self
+            .personal_continuity_device
+            .clone()
+            .ok_or_else(|| "this device has no personal fabric identity".to_string())?;
+        if &source == target {
+            return Err("personal fabric actions require another device".into());
+        }
+        if !self.certified_secret_recipients().contains(target) {
+            return Err("target is not an enrolled personal device".into());
+        }
+        let target_bytes = hex::decode(target.as_str())
+            .map_err(|_| "target is not a certified transport device id".to_string())?;
+        let target_bytes: [u8; 32] = target_bytes
+            .try_into()
+            .map_err(|_| "target is not a certified transport device id".to_string())?;
+        let transport_target = iroh::EndpointId::from_bytes(&target_bytes)
+            .map_err(|_| "target is not a certified transport device id".to_string())?;
+
+        let mut request_id = [0; 16];
+        while request_id == [0; 16] {
+            rand_core::OsRng.fill_bytes(&mut request_id);
+        }
+        let envelope = crate::shell::device_fabric::PersonalFabricActionEnvelope {
+            request_id,
+            source,
+            target: target.clone(),
+            issued_unix_ms: now_unix_millis(),
+            action,
+        };
+        envelope
+            .validate_at(&envelope.source, target, envelope.issued_unix_ms)
+            .map_err(|error| error.to_string())?;
+        let bytes = postcard::to_allocvec(&envelope).map_err(|error| error.to_string())?;
+        let ws = personal_continuity_topic_id(&user_public_key);
+        if !self.join_topic(ws) {
+            return Err("personal fabric transport is unavailable".into());
+        }
+        self.cmd_tx
+            .try_send(NetCmd::PublishPersonalFabricTarget {
+                ws,
+                user_public_key,
+                target: transport_target,
+                payload: PersonalFabricPayload::Action(bytes),
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(request_id)
+    }
+
+    /// Drain validated actions. They are never persisted or included in the
+    /// convergent snapshot, so a stale command cannot execute after restart.
+    pub fn take_personal_fabric_actions(
+        &self,
+    ) -> Vec<crate::shell::device_fabric::PersonalFabricActionEnvelope> {
+        self.personal_fabric_actions
+            .lock()
+            .map_or_else(|_| Vec::new(), |mut actions| actions.drain(..).collect())
+    }
+
+    /// Send one display lifecycle/frame message to its exact certified peer.
+    /// Saved placement is the durable authorization; absent or stale bindings
+    /// fail closed before bytes reach the actor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when identity, placement authorization, addressing,
+    /// message validation, or the bounded actor channel is unavailable.
+    pub fn send_personal_display(
+        &self,
+        peer: &crate::shell::personal_continuity::DeviceId,
+        message: crate::shell::device_fabric::PersonalDisplayMessage,
+    ) -> Result<(), String> {
+        let user_public_key = self
+            .personal_continuity_user
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        let local = self
+            .personal_continuity_device
+            .as_ref()
+            .ok_or_else(|| "this device has no personal fabric identity".to_string())?;
+        message
+            .validate_at(local, peer, now_unix_millis())
+            .map_err(|error| error.to_string())?;
+        if !self.display_route_authorized(&message) {
+            return Err("display stream is not authorized by a saved placement".into());
+        }
+        let peer_bytes: [u8; 32] = hex::decode(peer.as_str())
+            .map_err(|_| "invalid certified display id".to_string())?
+            .try_into()
+            .map_err(|_| "invalid certified display id".to_string())?;
+        let target = iroh::EndpointId::from_bytes(&peer_bytes)
+            .map_err(|_| "invalid certified display id".to_string())?;
+        let ws = personal_continuity_topic_id(&user_public_key);
+        if !self.join_topic(ws) {
+            return Err("personal display transport is unavailable".into());
+        }
+        self.cmd_tx
+            .try_send(NetCmd::PublishPersonalFabricTarget {
+                ws,
+                user_public_key,
+                target,
+                payload: PersonalFabricPayload::Display(message),
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn take_personal_display_messages(
+        &self,
+    ) -> Vec<crate::shell::device_fabric::PersonalDisplayMessage> {
+        self.personal_display_messages
+            .lock()
+            .map_or_else(|_| Vec::new(), |mut queue| queue.drain(..).collect())
+    }
+
+    fn display_route_authorized(
+        &self,
+        message: &crate::shell::device_fabric::PersonalDisplayMessage,
+    ) -> bool {
+        use crate::shell::device_fabric::PersonalDisplayMessage;
+        let (source, target) = match message {
+            PersonalDisplayMessage::Offer { source, target, .. }
+            | PersonalDisplayMessage::Accept { source, target, .. }
+            | PersonalDisplayMessage::Frame { source, target, .. }
+            | PersonalDisplayMessage::Feedback { source, target, .. }
+            | PersonalDisplayMessage::End { source, target, .. } => (source, target),
+        };
+        self.device_fabric
+            .lock()
+            .ok()
+            .and_then(|fabric| fabric.snapshots().get(target).cloned())
+            .is_some_and(|snapshot| {
+                snapshot.presence.online
+                    && snapshot.presence.capabilities.video_output
+                    && snapshot
+                        .display
+                        .is_some_and(|display| display.stream_source.as_ref() == Some(source))
+            })
+    }
+
+    /// Replace this machine's self-authored fabric snapshot and advertise it
+    /// to currently connected, certified devices of the same person.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot is invalid or names another device.
+    pub fn upsert_local_device_fabric(
+        &self,
+        snapshot: crate::shell::device_fabric::DeviceFabricSnapshot,
+    ) -> Result<bool, crate::shell::device_fabric::FabricError> {
+        if self
+            .personal_continuity_device
+            .as_ref()
+            .is_none_or(|device| device != &snapshot.owner)
+        {
+            return Err(crate::shell::device_fabric::FabricError::ForeignAuthorship);
+        }
+        let changed = {
+            let mut fabric = self
+                .device_fabric
+                .lock()
+                .map_err(|_| crate::shell::device_fabric::FabricError::InvalidCheckpoint)?;
+            let changed = fabric.upsert(snapshot)?;
+            if changed
+                && self
+                    .device_fabric_path
+                    .as_deref()
+                    .is_some_and(|path| !persist_device_fabric(path, &fabric))
+            {
+                tracing::warn!("device fabric persistence failed");
+            }
+            drop(fabric);
+            changed
+        };
+        if changed {
+            self.publish_device_fabric_snapshot();
+        }
+        Ok(changed)
+    }
+
+    /// Encrypt and publish a newly learned Wi-Fi passphrase to the local
+    /// device plus every non-revoked home device in the enrollment registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when identity/fabric state is unavailable or sealing
+    /// and validation fail. The passphrase is never logged or persisted in
+    /// plaintext by this path.
+    pub fn share_wifi_credential(
+        &self,
+        ssid: &str,
+        security: os_actions::WifiSecurity,
+        password: &str,
+    ) -> Result<(), String> {
+        if !security.supports_portable_passphrase() {
+            return Err(match security {
+                os_actions::WifiSecurity::Enterprise => {
+                    "enterprise Wi-Fi requires identity, EAP method, and certificate setup on this device"
+                }
+                os_actions::WifiSecurity::Open | os_actions::WifiSecurity::Owe => {
+                    "this Wi-Fi security mode has no portable passphrase"
+                }
+                os_actions::WifiSecurity::Unknown => {
+                    "unrecognized Wi-Fi security cannot be shared safely"
+                }
+                os_actions::WifiSecurity::Wpa2 | os_actions::WifiSecurity::Wpa3 => {
+                    "Wi-Fi security could not be validated for sharing"
+                }
+            }
+            .to_string());
+        }
+        let local = self
+            .personal_continuity_device
+            .clone()
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        let fabric = self.device_fabric();
+        let mut snapshot = fabric
+            .snapshots()
+            .get(&local)
+            .cloned()
+            .ok_or_else(|| "this device has not published fabric presence yet".to_string())?;
+        let recipients = self.certified_secret_recipients();
+        let stamp = crate::shell::device_fabric::FabricStamp {
+            counter: fabric.max_counter().saturating_add(1).max(1),
+            device: local,
+        };
+        let credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
+            ssid,
+            security,
+            password,
+            &snapshot.owner,
+            recipients,
+            stamp.clone(),
+        )
+        .map_err(|error| error.to_string())?;
+        snapshot
+            .wifi
+            .retain(|saved| saved.network_id != credential.network_id);
+        snapshot.wifi.push(credential);
+        snapshot.presence.stamp = stamp;
+        snapshot.presence.last_seen_unix_ms = now_unix_seconds().saturating_mul(1000);
+        self.upsert_local_device_fabric(snapshot)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    /// Decrypt a retained credential only for this certified device.
+    /// The returned string is intended for an immediate `NetworkManager` call.
+    pub fn shared_wifi_password(
+        &self,
+        ssid: &str,
+        security: os_actions::WifiSecurity,
+    ) -> Option<String> {
+        if !security.supports_portable_passphrase() {
+            return None;
+        }
+        let recipient_key = &self.host_identity.as_ref()?.device_signing_key;
+        self.device_fabric()
+            .merged_wifi()
+            .into_values()
+            .filter(|credential| credential.ssid == ssid && credential.security == security)
+            .find_map(|credential| {
+                crate::shell::device_fabric_secrets::open_wifi_credential(
+                    &credential,
+                    recipient_key,
+                )
+                .ok()
+            })
+    }
+
+    /// Rewrap credentials this device can open whenever certified device
+    /// membership changes. This is decentralized: any online recipient can
+    /// onboard a new device without uploading a universal key to a service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a retained envelope is malformed or resealing the
+    /// credential into the local authored snapshot fails.
+    pub fn refresh_wifi_credential_recipients(&self) -> Result<bool, String> {
+        let Some(recipient_key) = self
+            .host_identity
+            .as_ref()
+            .map(|identity| &identity.device_signing_key)
+        else {
+            return Ok(false);
+        };
+        let desired = self.certified_secret_recipients();
+        let credentials = self.device_fabric().merged_wifi().into_values();
+        let mut changed = false;
+        for credential in credentials {
+            if !credential.security.supports_portable_passphrase() {
+                continue;
+            }
+            let current =
+                crate::shell::device_fabric_secrets::wifi_envelope_recipients(&credential)
+                    .map_err(|error| error.to_string())?;
+            if current == desired {
+                continue;
+            }
+            let Ok(password) = crate::shell::device_fabric_secrets::open_wifi_credential(
+                &credential,
+                recipient_key,
+            ) else {
+                continue;
+            };
+            self.share_wifi_credential(&credential.ssid, credential.security, &password)?;
+            changed = true;
+        }
+        Ok(changed)
+    }
+
+    fn certified_secret_recipients(
+        &self,
+    ) -> std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId> {
+        let mut recipients = self
+            .personal_continuity_device
+            .clone()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if let Ok(peers) = self.registered_home_peer_ids.lock() {
+            recipients.extend(peers.iter().filter_map(|peer| {
+                crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.as_bytes())).ok()
+            }));
+        }
+        recipients
+    }
+
+    fn local_device_fabric_checkpoint(&self) -> Option<Vec<u8>> {
+        let local = self.personal_continuity_device.as_ref()?;
+        let snapshot = self
+            .device_fabric
+            .lock()
+            .ok()?
+            .snapshots()
+            .get(local)
+            .cloned()?;
+        let mut single = crate::shell::device_fabric::DeviceFabric::default();
+        single.upsert(snapshot).ok()?;
+        single.encode_checkpoint().ok()
+    }
+
+    fn publish_device_fabric_payload(&self, payload: PersonalFabricPayload) {
+        let Some(user_public_key) = self.personal_continuity_user else {
+            return;
+        };
+        let ws = personal_continuity_topic_id(&user_public_key);
+        if self.join_topic(ws) {
+            let _ = self.cmd_tx.try_send(NetCmd::PublishPersonalFabric {
+                ws,
+                user_public_key,
+                payload,
+            });
+        }
+    }
+
+    fn publish_device_fabric_request(&self) {
+        self.publish_device_fabric_payload(PersonalFabricPayload::Request);
+    }
+
+    fn publish_device_fabric_snapshot(&self) {
+        if let Some(snapshot) = self.local_device_fabric_checkpoint() {
+            self.publish_device_fabric_payload(PersonalFabricPayload::Snapshot(snapshot));
+        }
+    }
+
     fn publish_personal_continuity_request(&self) {
         let Some(user_public_key) = self.personal_continuity_user else {
             return;
@@ -2351,7 +3397,15 @@ impl ShellNetwork {
                 }
                 self.handle_host_ready(ws, peer);
             }
-            NetEvent::PeerJoined { .. } => self.publish_sync_requests(),
+            NetEvent::PeerJoined { ws, .. } => {
+                self.publish_sync_requests();
+                if self
+                    .personal_continuity_user
+                    .is_some_and(|user| ws == personal_continuity_topic_id(&user))
+                {
+                    self.publish_device_fabric_request();
+                }
+            }
             // Without this the roster only ever grows: nothing else
             // tells it a session went quiet.
             NetEvent::PeerLeft { ws, peer, cause } => {
@@ -2374,7 +3428,421 @@ impl ShellNetwork {
                 }
             }
             NetEvent::Msg { ws, peer, msg } => self.dispatch_neighbour_msg(ws, peer, msg),
+            NetEvent::PersonalFabric {
+                ws,
+                peer,
+                user_public_key,
+                payload,
+            } => self.dispatch_personal_fabric(ws, peer, user_public_key, payload),
+            NetEvent::PersonalMediaTransfer {
+                target,
+                transfer_id,
+                sent_bytes,
+                total_bytes,
+                status,
+            } => {
+                let Ok(target) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+                    target.as_bytes(),
+                )) else {
+                    return;
+                };
+                self.record_outgoing_personal_media_transfer(OutgoingPersonalMediaTransfer {
+                    target,
+                    transfer_id,
+                    sent_bytes: sent_bytes.min(total_bytes),
+                    total_bytes,
+                    status,
+                });
+            }
+            NetEvent::NearbyTransferProgress {
+                target,
+                transfer_id,
+                sent_bytes,
+                total_bytes,
+                status,
+            } => {
+                if let Ok(target) =
+                    crate::shell::personal_continuity::DeviceId::new(hex::encode(target.as_bytes()))
+                {
+                    crate::shell::device_fabric_runtime::record_nearby_transfer_progress(
+                        target,
+                        transfer_id,
+                        sent_bytes.min(total_bytes),
+                        total_bytes,
+                        status,
+                    );
+                }
+            }
         }
+    }
+
+    fn dispatch_personal_fabric(
+        &self,
+        ws: u64,
+        peer: iroh::EndpointId,
+        user_public_key: [u8; 32],
+        payload: PersonalFabricPayload,
+    ) {
+        let origin = crate::shell::state::PeerOrigin::peer(&peer);
+        let Some(identity) = self.peer_identities.get(&origin) else {
+            tracing::warn!(peer = %peer, "dropping unauthenticated personal fabric frame");
+            return;
+        };
+        if self.personal_continuity_user != Some(user_public_key)
+            || ws != personal_continuity_topic_id(&user_public_key)
+            || !identity.is_same_user(&user_public_key)
+        {
+            tracing::warn!(peer = %peer, "dropping cross-identity personal fabric frame");
+            return;
+        }
+        match payload {
+            PersonalFabricPayload::Request => self.publish_device_fabric_snapshot(),
+            PersonalFabricPayload::Snapshot(bytes) => {
+                let Ok(incoming) =
+                    crate::shell::device_fabric::DeviceFabric::decode_checkpoint(&bytes)
+                else {
+                    tracing::warn!(peer = %peer, "dropping invalid personal fabric checkpoint");
+                    return;
+                };
+                if incoming.snapshots().len() != 1 {
+                    tracing::warn!(peer = %peer, "dropping relayed personal fabric authorship");
+                    return;
+                }
+                let expected = hex::encode(identity.device_pubkey);
+                let Some(snapshot) = incoming.snapshots().values().next().cloned() else {
+                    return;
+                };
+                if snapshot.owner.as_str() != expected {
+                    tracing::warn!(peer = %peer, "personal fabric owner does not match device certificate");
+                    return;
+                }
+                let Ok(mut fabric) = self.device_fabric.lock() else {
+                    return;
+                };
+                match fabric.upsert(snapshot) {
+                    Ok(true) => {
+                        if let Some(path) = self.device_fabric_path.as_deref()
+                            && !persist_device_fabric(path, &fabric)
+                        {
+                            tracing::warn!("device fabric merge persistence failed");
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::warn!(%error, peer = %peer, "dropping conflicting personal fabric state");
+                    }
+                }
+            }
+            PersonalFabricPayload::Action(bytes) => {
+                self.dispatch_personal_fabric_action(peer, identity.device_pubkey, &bytes);
+            }
+            PersonalFabricPayload::MediaTransfer(frame) => {
+                let Ok(source) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+                    identity.device_pubkey,
+                )) else {
+                    return;
+                };
+                self.dispatch_personal_media_transfer(source, frame);
+            }
+            PersonalFabricPayload::Display(message) => {
+                let Ok(source) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+                    identity.device_pubkey,
+                )) else {
+                    return;
+                };
+                let Some(local) = self.personal_continuity_device.as_ref() else {
+                    return;
+                };
+                if message
+                    .validate_at(&source, local, now_unix_millis())
+                    .is_err()
+                    || !self.display_route_authorized(&message)
+                {
+                    tracing::warn!(peer = %peer, "dropping unauthorized personal display traffic");
+                    return;
+                }
+                let Ok(mut queue) = self.personal_display_messages.lock() else {
+                    return;
+                };
+                queue_personal_display_message(&mut queue, message);
+            }
+            PersonalFabricPayload::NearbyTransfer(frame) => {
+                let Ok(source) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+                    identity.device_pubkey,
+                )) else {
+                    return;
+                };
+                crate::shell::device_fabric_runtime::handle_nearby_transfer_frame(
+                    self, &source, frame,
+                );
+            }
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive transfer-state machine keeps authorization, offsets, hashing, cleanup, and publication auditable together"
+    )]
+    fn dispatch_personal_media_transfer(
+        &self,
+        source: crate::shell::personal_continuity::DeviceId,
+        frame: PersonalMediaTransferFrame,
+    ) {
+        let Some(root) = self.personal_media_cache_root.as_ref() else {
+            return;
+        };
+        let Ok(mut state) = self.personal_media_transfers.lock() else {
+            return;
+        };
+        match frame {
+            PersonalMediaTransferFrame::Start {
+                transfer_id,
+                file_name,
+                total_bytes,
+            } => {
+                let key = (source.clone(), transfer_id);
+                if transfer_id == [0; 16]
+                    || portable_media_file_name(&file_name).as_deref() != Some(file_name.as_str())
+                    || total_bytes == 0
+                    || total_bytes > MAX_PERSONAL_MEDIA_BYTES
+                    || state.incoming.len() >= MAX_INCOMING_PERSONAL_MEDIA_TRANSFERS
+                    || !state.authorized.contains(&key)
+                    || state.incoming.contains_key(&key)
+                    || state.completed.contains_key(&key)
+                {
+                    return;
+                }
+                let reserved = state.incoming_reserved_bytes();
+                let Some(object_budget) = MAX_PERSONAL_MEDIA_CACHE_BYTES
+                    .checked_sub(reserved)
+                    .and_then(|remaining| remaining.checked_sub(total_bytes))
+                else {
+                    return;
+                };
+                let protected = state.protected_paths();
+                if prune_personal_media_objects(root, &protected, object_budget) > object_budget {
+                    return;
+                }
+                let disk_required = state
+                    .incoming_remaining_bytes()
+                    .saturating_add(total_bytes)
+                    .saturating_add(MIN_PERSONAL_MEDIA_FREE_BYTES);
+                if available_bytes(root).is_none_or(|available| available < disk_required) {
+                    return;
+                }
+                let incoming_dir = root.join("incoming");
+                if ensure_private_dir(&incoming_dir).is_err() {
+                    return;
+                }
+                let part_path = incoming_dir.join(format!(
+                    "{}-{}.part",
+                    source.as_str(),
+                    hex::encode(transfer_id)
+                ));
+                let Ok(file) = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&part_path)
+                else {
+                    return;
+                };
+                state.incoming.insert(
+                    key,
+                    IncomingPersonalMediaTransfer {
+                        file,
+                        part_path,
+                        file_name,
+                        total_bytes,
+                        received_bytes: 0,
+                        hasher: blake3::Hasher::new(),
+                    },
+                );
+            }
+            PersonalMediaTransferFrame::Chunk {
+                transfer_id,
+                offset,
+                bytes,
+            } => {
+                let key = (source, transfer_id);
+                let invalid = bytes.is_empty()
+                    || bytes.len() > PERSONAL_MEDIA_CHUNK_BYTES
+                    || state.incoming.get(&key).is_none_or(|transfer| {
+                        offset != transfer.received_bytes
+                            || u64::try_from(bytes.len()).map_or(true, |length| {
+                                transfer.received_bytes.saturating_add(length)
+                                    > transfer.total_bytes
+                            })
+                    });
+                if invalid {
+                    discard_personal_media_transfer(&mut state, &key);
+                    return;
+                }
+                let failed = state.incoming.get_mut(&key).is_none_or(|transfer| {
+                    if transfer.file.write_all(&bytes).is_err() {
+                        return true;
+                    }
+                    transfer.hasher.update(&bytes);
+                    transfer.received_bytes = transfer
+                        .received_bytes
+                        .saturating_add(u64::try_from(bytes.len()).unwrap_or(0));
+                    false
+                });
+                if failed {
+                    discard_personal_media_transfer(&mut state, &key);
+                }
+            }
+            PersonalMediaTransferFrame::Finish {
+                transfer_id,
+                content_hash,
+            } => {
+                let key = (source, transfer_id);
+                let Some(mut transfer) = state.incoming.remove(&key) else {
+                    return;
+                };
+                state.authorized.remove(&key);
+                if transfer.received_bytes != transfer.total_bytes
+                    || *transfer.hasher.finalize().as_bytes() != content_hash
+                    || transfer.file.flush().is_err()
+                    || transfer.file.sync_all().is_err()
+                {
+                    let _ = std::fs::remove_file(transfer.part_path);
+                    return;
+                }
+                drop(transfer.file);
+                let object_dir = root.join("objects").join(hex::encode(content_hash));
+                if ensure_private_dir(&object_dir).is_err() {
+                    let _ = std::fs::remove_file(transfer.part_path);
+                    return;
+                }
+                let object_path = object_dir.join(&transfer.file_name);
+                let stored = if object_path.exists() {
+                    let valid = personal_media_object_matches(
+                        &object_path,
+                        transfer.total_bytes,
+                        content_hash,
+                    );
+                    if valid {
+                        let _ = std::fs::remove_file(&transfer.part_path);
+                        true
+                    } else if std::fs::remove_file(&object_path).is_ok() {
+                        std::fs::rename(&transfer.part_path, &object_path).is_ok()
+                    } else {
+                        false
+                    }
+                } else {
+                    std::fs::rename(&transfer.part_path, &object_path).is_ok()
+                };
+                if !stored {
+                    let _ = std::fs::remove_file(transfer.part_path);
+                    return;
+                }
+                while state.completed.len() >= MAX_COMPLETED_PERSONAL_MEDIA_TRANSFERS {
+                    if !state.evict_oldest_completed() {
+                        break;
+                    }
+                }
+                state.completed.insert(key.clone(), object_path);
+                state.completed_order.push_back(key);
+            }
+            PersonalMediaTransferFrame::Abort { transfer_id } => {
+                discard_personal_media_transfer(&mut state, &(source, transfer_id));
+            }
+        }
+    }
+
+    /// Resolve one fully verified incoming transfer to a local cache path.
+    /// Incomplete, aborted, or hash-mismatched transfers remain unavailable.
+    pub fn completed_personal_media_transfer(
+        &self,
+        source: &crate::shell::personal_continuity::DeviceId,
+        transfer_id: [u8; 16],
+    ) -> Option<PathBuf> {
+        self.personal_media_transfers
+            .lock()
+            .ok()
+            .and_then(|mut state| {
+                let path = state
+                    .completed
+                    .get(&(source.clone(), transfer_id))
+                    .cloned()?;
+                let now = std::time::Instant::now();
+                state.leased_until.insert(
+                    path.clone(),
+                    now.checked_add(PERSONAL_MEDIA_LEASE).unwrap_or(now),
+                );
+                Some(path)
+            })
+    }
+
+    fn dispatch_personal_fabric_action(
+        &self,
+        peer: iroh::EndpointId,
+        authenticated_device: [u8; 32],
+        bytes: &[u8],
+    ) {
+        if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_ACTION_BYTES {
+            tracing::warn!(peer = %peer, "dropping oversized personal fabric action");
+            return;
+        }
+        let Ok((envelope, trailing)) = postcard::take_from_bytes::<
+            crate::shell::device_fabric::PersonalFabricActionEnvelope,
+        >(bytes) else {
+            tracing::warn!(peer = %peer, "dropping invalid personal fabric action");
+            return;
+        };
+        if !trailing.is_empty() {
+            tracing::warn!(peer = %peer, "personal fabric action has trailing data");
+            return;
+        }
+        let Some(local) = self.personal_continuity_device.as_ref() else {
+            return;
+        };
+        let Ok(source) =
+            crate::shell::personal_continuity::DeviceId::new(hex::encode(authenticated_device))
+        else {
+            return;
+        };
+        if envelope
+            .validate_at(&source, local, now_unix_millis())
+            .is_err()
+        {
+            tracing::warn!(peer = %peer, "dropping untrusted personal fabric action");
+            return;
+        }
+        let Ok(mut replays) = self.personal_fabric_action_replays.lock() else {
+            return;
+        };
+        if !replays.accept(envelope.request_id) {
+            tracing::warn!(peer = %peer, "dropping replayed personal fabric action");
+            return;
+        }
+        drop(replays);
+        if let crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
+            locator:
+                crate::shell::device_fabric::MediaSourceLocator::PersonalTransfer {
+                    transfer_id, ..
+                },
+            ..
+        } = &envelope.action
+            && let Ok(mut transfers) = self.personal_media_transfers.lock()
+        {
+            if transfers.authorized.len() >= MAX_COMPLETED_PERSONAL_MEDIA_TRANSFERS
+                && let Some(oldest) = transfers.authorized.iter().next().cloned()
+            {
+                discard_personal_media_transfer(&mut transfers, &oldest);
+            }
+            transfers
+                .authorized
+                .insert((envelope.source.clone(), *transfer_id));
+        }
+        let Ok(mut actions) = self.personal_fabric_actions.lock() else {
+            return;
+        };
+        if actions.len() >= PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY {
+            actions.pop_front();
+        }
+        actions.push_back(envelope);
     }
 
     /// Capture departure evidence before identity and roster cleanup. Every
@@ -2885,7 +4353,7 @@ impl ShellNetwork {
 
     /// Authenticate the transport device as a person and then authorize that
     /// person against the room capability model. Device authentication alone
-    /// is deliberately insufficient: any valid qOS identity can possess a
+    /// is deliberately insufficient: any valid Tilo identity can possess a
     /// certificate without being a member of this workspace.
     fn peer_room_allows(
         &self,
@@ -3019,15 +4487,15 @@ impl ShellNetwork {
         workspace_topic: u64,
         origin: &crate::shell::state::PeerOrigin,
         peer: &iroh::EndpointId,
-        cert: &qos_user_identity::DeviceCert,
-        revocations: &[qos_user_identity::RevocationEntry],
+        cert: &tilo_user_identity::DeviceCert,
+        revocations: &[tilo_user_identity::RevocationEntry],
     ) {
         if cert.device_public_key != *peer.as_bytes() || revocations.len() > 4096 {
             tracing::warn!(peer = %peer, "rejecting invalid peer identity handshake");
             self.peer_identities.remove(origin);
             return;
         }
-        let mut list = qos_user_identity::RevocationList::new();
+        let mut list = tilo_user_identity::RevocationList::new();
         for entry in revocations {
             if entry.user_public_key != cert.user_public_key || list.insert(entry.clone()).is_err()
             {
@@ -3088,7 +4556,7 @@ impl ShellNetwork {
         workspace_topic: u64,
         invite_id: [u8; 32],
         peer: &iroh::EndpointId,
-        cert: &qos_user_identity::DeviceCert,
+        cert: &tilo_user_identity::DeviceCert,
     ) {
         let room = self.replica.lock().ok().and_then(|replica| {
             replica
@@ -3265,16 +4733,16 @@ impl ShellNetwork {
 fn selected_device_cert(
     room: RoomId,
     keypair: &iroh::SecretKey,
-) -> Result<qos_user_identity::DeviceCert, String> {
+) -> Result<tilo_user_identity::DeviceCert, String> {
     let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "no identity is selected for this workspace".to_string())?;
     let paths = crate::firstboot::collaboration_identity_paths();
-    let cert = qos_user_identity::persist::read_device_cert(
+    let cert = tilo_user_identity::persist::read_device_cert(
         &paths.device_cert_for_user(&profile.user_public_key),
     )
     .map_err(|error| error.to_string())?;
-    qos_user_identity::verify_device_cert(&cert).map_err(|error| error.to_string())?;
+    tilo_user_identity::verify_device_cert(&cert).map_err(|error| error.to_string())?;
     if cert.user_public_key != profile.user_public_key
         || cert.device_public_key != *keypair.public().as_bytes()
     {
@@ -3294,10 +4762,10 @@ fn host_identity_for_key(
     keypair_path: &std::path::Path,
 ) -> Option<HostIdentity> {
     let identity_root = keypair_path.parent()?.parent()?;
-    let paths = qos_user_identity::IdentityPaths::under(identity_root);
-    let user_public_key = qos_user_identity::persist::read_public_key(&paths.user_pubkey).ok()?;
-    let device_cert = qos_user_identity::persist::read_device_cert(&paths.device_cert).ok()?;
-    if qos_user_identity::verify_device_cert(&device_cert).is_err()
+    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+    let user_public_key = tilo_user_identity::persist::read_public_key(&paths.user_pubkey).ok()?;
+    let device_cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert).ok()?;
+    if tilo_user_identity::verify_device_cert(&device_cert).is_err()
         || device_cert.user_public_key != user_public_key
         || device_cert.device_public_key != *keypair.public().as_bytes()
     {
@@ -3317,7 +4785,7 @@ fn host_identity_for_key(
                 continue;
             };
             let cert_path = paths.device_cert_for_user(&profile.user_public_key);
-            let Ok(cert) = qos_user_identity::persist::read_device_cert(&cert_path) else {
+            let Ok(cert) = tilo_user_identity::persist::read_device_cert(&cert_path) else {
                 tracing::warn!(
                     room = %room_id,
                     identity = %identity_id,
@@ -3325,7 +4793,7 @@ fn host_identity_for_key(
                 );
                 continue;
             };
-            if qos_user_identity::verify_device_cert(&cert).is_ok()
+            if tilo_user_identity::verify_device_cert(&cert).is_ok()
                 && cert.user_public_key == profile.user_public_key
                 && cert.device_public_key == *keypair.public().as_bytes()
                 && !crate::device_fleet::DeviceFleetStore::from_env()
@@ -3354,18 +4822,18 @@ fn host_identity_for_key(
 fn load_identity_revocations(
     path: &std::path::Path,
     user_public_key: [u8; 32],
-) -> Result<Vec<qos_user_identity::RevocationEntry>, String> {
+) -> Result<Vec<tilo_user_identity::RevocationEntry>, String> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error.to_string()),
     };
-    let entries: Vec<qos_user_identity::RevocationEntry> =
+    let entries: Vec<tilo_user_identity::RevocationEntry> =
         postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
-    if entries.len() > qos_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
+    if entries.len() > tilo_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
         || entries.iter().any(|entry| {
             entry.user_public_key != user_public_key
-                || qos_user_identity::verify_revocation_entry(entry).is_err()
+                || tilo_user_identity::verify_revocation_entry(entry).is_err()
         })
     {
         return Err("revocation entries are invalid, cross-root, or over capacity".into());
@@ -3423,6 +4891,14 @@ pub(crate) fn shell_network_for_test(
         personal_continuity_counter: Mutex::new(0),
         personal_continuity_fingerprint: Mutex::new(None),
         personal_continuity_path: None,
+        device_fabric: Mutex::new(crate::shell::device_fabric::DeviceFabric::default()),
+        device_fabric_path: None,
+        personal_fabric_actions: Mutex::new(VecDeque::new()),
+        personal_display_messages: Mutex::new(VecDeque::new()),
+        personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
+        personal_media_cache_root: None,
+        personal_media_transfers: Mutex::new(PersonalMediaTransferState::default()),
+        outgoing_personal_media_transfers: Mutex::new(std::collections::BTreeMap::new()),
         peer_identities: PeerIdentityStore::new(),
         require_peer_identity: false,
         pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
@@ -3443,6 +4919,307 @@ pub(crate) fn shell_network_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_device(byte: u8) -> crate::shell::personal_continuity::DeviceId {
+        crate::shell::personal_continuity::DeviceId::new(hex::encode([byte; 32]))
+            .expect("valid test device")
+    }
+
+    #[test]
+    fn personal_display_frames_are_latest_wins_without_evicting_lifecycle() {
+        use crate::shell::device_fabric::PersonalDisplayMessage;
+        let source = test_device(1);
+        let target = test_device(2);
+        let end = |byte| PersonalDisplayMessage::End {
+            session_id: [byte; 16],
+            source: source.clone(),
+            target: target.clone(),
+        };
+        let frame = |sequence| PersonalDisplayMessage::Frame {
+            session_id: [99; 16],
+            source: source.clone(),
+            target: target.clone(),
+            sequence,
+            presentation_time_us: sequence,
+            keyframe: sequence == 1,
+            width: 640,
+            height: 360,
+            annex_b: vec![0, 0, 0, 1],
+        };
+        let mut queue = VecDeque::new();
+        for byte in 1..u8::try_from(PERSONAL_DISPLAY_QUEUE_CAPACITY).unwrap() {
+            queue_personal_display_message(&mut queue, end(byte));
+        }
+        queue_personal_display_message(&mut queue, frame(1));
+        queue_personal_display_message(&mut queue, frame(2));
+        assert_eq!(queue.len(), PERSONAL_DISPLAY_QUEUE_CAPACITY);
+        assert!(
+            queue.iter().any(|message| matches!(
+                message,
+                PersonalDisplayMessage::Frame { sequence: 2, .. }
+            ))
+        );
+        queue_personal_display_message(&mut queue, end(77));
+        assert_eq!(queue.len(), PERSONAL_DISPLAY_QUEUE_CAPACITY);
+        assert!(
+            queue
+                .iter()
+                .all(|message| matches!(message, PersonalDisplayMessage::End { .. }))
+        );
+    }
+
+    #[test]
+    fn personal_media_cache_prunes_only_unprotected_regular_objects() {
+        use std::os::unix::fs::symlink;
+
+        let cache = tempfile::tempdir().unwrap();
+        let first_dir = cache.path().join("objects").join("11".repeat(32));
+        let second_dir = cache.path().join("objects").join("22".repeat(32));
+        ensure_private_dir(&first_dir).unwrap();
+        ensure_private_dir(&second_dir).unwrap();
+        let protected_path = first_dir.join("keep.mp4");
+        let evictable_path = second_dir.join("old.mp4");
+        std::fs::write(&protected_path, [1_u8; 4]).unwrap();
+        std::fs::write(&evictable_path, [2_u8; 4]).unwrap();
+        let outside = cache.path().join("outside");
+        std::fs::write(&outside, b"do not follow").unwrap();
+        symlink(&outside, second_dir.join("link.mp4")).unwrap();
+
+        let retained = prune_personal_media_objects(
+            cache.path(),
+            &std::collections::BTreeSet::from([protected_path.clone()]),
+            4,
+        );
+        assert_eq!(retained, 4);
+        assert!(protected_path.exists());
+        assert!(!evictable_path.exists());
+        assert_eq!(std::fs::read(outside).unwrap(), b"do not follow");
+    }
+
+    #[test]
+    fn player_lease_keeps_evicted_transfer_object_alive() {
+        let cache = tempfile::tempdir().unwrap();
+        let object_dir = cache.path().join("objects").join("33".repeat(32));
+        ensure_private_dir(&object_dir).unwrap();
+        let path = object_dir.join("film.mkv");
+        std::fs::write(&path, b"film").unwrap();
+        let key = (test_device(0x44), [0x55; 16]);
+        let mut state = PersonalMediaTransferState::default();
+        state.completed.insert(key.clone(), path.clone());
+        state.completed_order.push_back(key);
+        let now = std::time::Instant::now();
+        state.leased_until.insert(
+            path.clone(),
+            now.checked_add(PERSONAL_MEDIA_LEASE).unwrap_or(now),
+        );
+
+        assert!(state.evict_oldest_completed());
+        assert!(path.exists());
+        assert!(state.completed.is_empty());
+    }
+
+    #[test]
+    fn personal_media_directories_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let cache = tempfile::tempdir().unwrap();
+        let private = cache.path().join("private");
+        ensure_private_dir(&private).unwrap();
+        assert_eq!(
+            std::fs::metadata(private).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    fn personal_media_becomes_visible_only_after_size_and_hash_verification() {
+        let (mut net, _commands) =
+            shell_network_for_test(WorkspaceTree::default().shared(), 0xCA12);
+        let cache = tempfile::tempdir().expect("cache");
+        net.personal_media_cache_root = Some(cache.path().to_path_buf());
+        let source = test_device(0x22);
+        let transfer_id = [0x33; 16];
+        let bytes = vec![0x5a; PERSONAL_MEDIA_CHUNK_BYTES.saturating_add(17)];
+        net.personal_media_transfers
+            .lock()
+            .expect("transfer state")
+            .authorized
+            .insert((source.clone(), transfer_id));
+        net.dispatch_personal_media_transfer(
+            source.clone(),
+            PersonalMediaTransferFrame::Start {
+                transfer_id,
+                file_name: "concert.webm".into(),
+                total_bytes: u64::try_from(bytes.len()).expect("fixture length"),
+            },
+        );
+        assert!(
+            net.completed_personal_media_transfer(&source, transfer_id)
+                .is_none(),
+            "a manifest is not playable bytes"
+        );
+        for (index, chunk) in bytes.chunks(PERSONAL_MEDIA_CHUNK_BYTES).enumerate() {
+            net.dispatch_personal_media_transfer(
+                source.clone(),
+                PersonalMediaTransferFrame::Chunk {
+                    transfer_id,
+                    offset: u64::try_from(index.saturating_mul(PERSONAL_MEDIA_CHUNK_BYTES))
+                        .expect("fixture offset"),
+                    bytes: chunk.to_vec(),
+                },
+            );
+        }
+        assert!(
+            net.completed_personal_media_transfer(&source, transfer_id)
+                .is_none(),
+            "all chunks still require an authenticated finish hash"
+        );
+        net.dispatch_personal_media_transfer(
+            source.clone(),
+            PersonalMediaTransferFrame::Finish {
+                transfer_id,
+                content_hash: *blake3::hash(&bytes).as_bytes(),
+            },
+        );
+        let path = net
+            .completed_personal_media_transfer(&source, transfer_id)
+            .expect("verified transfer");
+        assert_eq!(std::fs::read(path).expect("cached bytes"), bytes);
+    }
+
+    #[test]
+    fn malformed_personal_media_never_leaves_a_playable_cache_entry() {
+        let (mut net, _commands) =
+            shell_network_for_test(WorkspaceTree::default().shared(), 0xCA13);
+        let cache = tempfile::tempdir().expect("cache");
+        net.personal_media_cache_root = Some(cache.path().to_path_buf());
+        let source = test_device(0x44);
+        let transfer_id = [0x55; 16];
+        net.personal_media_transfers
+            .lock()
+            .expect("transfer state")
+            .authorized
+            .insert((source.clone(), transfer_id));
+        net.dispatch_personal_media_transfer(
+            source.clone(),
+            PersonalMediaTransferFrame::Start {
+                transfer_id,
+                file_name: "movie.mp4".into(),
+                total_bytes: 4,
+            },
+        );
+        net.dispatch_personal_media_transfer(
+            source.clone(),
+            PersonalMediaTransferFrame::Chunk {
+                transfer_id,
+                offset: 1,
+                bytes: b"evil".to_vec(),
+            },
+        );
+        net.dispatch_personal_media_transfer(
+            source.clone(),
+            PersonalMediaTransferFrame::Finish {
+                transfer_id,
+                content_hash: *blake3::hash(b"evil").as_bytes(),
+            },
+        );
+        assert!(
+            net.completed_personal_media_transfer(&source, transfer_id)
+                .is_none()
+        );
+        assert_eq!(
+            std::fs::read_dir(cache.path().join("incoming"))
+                .expect("incoming directory")
+                .count(),
+            0,
+            "rejected transfers remove partial bytes"
+        );
+    }
+
+    #[test]
+    fn personal_media_bytes_require_a_prior_authenticated_handoff_action() {
+        let (mut net, _commands) =
+            shell_network_for_test(WorkspaceTree::default().shared(), 0xCA14);
+        let cache = tempfile::tempdir().expect("cache");
+        net.personal_media_cache_root = Some(cache.path().to_path_buf());
+        let source = test_device(0x66);
+        let transfer_id = [0x77; 16];
+        net.dispatch_personal_media_transfer(
+            source.clone(),
+            PersonalMediaTransferFrame::Start {
+                transfer_id,
+                file_name: "unsolicited.mp4".into(),
+                total_bytes: 4,
+            },
+        );
+        assert!(
+            net.personal_media_transfers
+                .lock()
+                .expect("transfer state")
+                .incoming
+                .is_empty(),
+            "an enrolled device alone cannot allocate transfer cache storage"
+        );
+        assert!(
+            net.completed_personal_media_transfer(&source, transfer_id)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn media_handoff_authorization_is_queued_before_its_file_stream() {
+        let (mut net, mut commands) =
+            shell_network_for_test(WorkspaceTree::default().shared(), 0xCA15);
+        let local = test_device(0x88);
+        let user = [0x89; 32];
+        let target_endpoint = iroh::SecretKey::generate().public();
+        let target = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            target_endpoint.as_bytes(),
+        ))
+        .expect("target device");
+        net.personal_continuity_user = Some(user);
+        net.personal_continuity_device = Some(local);
+        net.registered_home_peer_ids
+            .lock()
+            .expect("recipients")
+            .insert(target_endpoint);
+        let dir = tempfile::tempdir().expect("media source");
+        let path = dir.path().join("song.flac");
+        std::fs::write(&path, b"audio bytes").expect("source bytes");
+        let transfer = net
+            .prepare_personal_media_transfer(&target, &path)
+            .expect("prepared transfer");
+        let transfer_id = transfer.transfer_id;
+        net.send_personal_fabric_action(
+            &target,
+            crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
+                session_id: "dev.tilo.music:1".into(),
+                app_id: "dev.tilo.music".into(),
+                workspace_id: "11111111-1111-1111-1111-111111111111".into(),
+                title: "Song".into(),
+                locator: crate::shell::device_fabric::MediaSourceLocator::PersonalTransfer {
+                    transfer_id,
+                    file_name: transfer.file_name.clone(),
+                },
+                position_ms: 0,
+                resume_playing: true,
+                has_video: false,
+            },
+        )
+        .expect("handoff action");
+        net.start_personal_media_transfer(transfer)
+            .expect("stream command");
+        let commands = std::iter::from_fn(|| commands.try_recv().ok()).collect::<Vec<_>>();
+        let action_index = commands
+            .iter()
+            .position(|command| matches!(command, NetCmd::PublishPersonalFabricTarget { .. }))
+            .expect("action command");
+        let media_index = commands
+            .iter()
+            .position(|command| matches!(command, NetCmd::PublishPersonalMedia { .. }))
+            .expect("media command");
+        assert!(action_index < media_index);
+    }
 
     #[test]
     fn workspace_control_uses_exact_target_direct_and_refuses_fanout_relay() {
@@ -3536,7 +5313,7 @@ mod tests {
         root: &ed25519_dalek::SigningKey,
         device: &iroh::SecretKey,
     ) {
-        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
@@ -3556,6 +5333,182 @@ mod tests {
             &cert,
             &[],
         );
+    }
+
+    fn fabric_snapshot(
+        owner: crate::shell::personal_continuity::DeviceId,
+        counter: u64,
+    ) -> crate::shell::device_fabric::DeviceFabricSnapshot {
+        use crate::shell::device_fabric::{
+            DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
+            FabricCapabilities, FabricStamp,
+        };
+        DeviceFabricSnapshot {
+            schema_version: FABRIC_SCHEMA_VERSION,
+            presence: DevicePresence {
+                device: owner.clone(),
+                label: "Test device".into(),
+                kind: DeviceKind::Laptop,
+                capabilities: FabricCapabilities {
+                    clipboard: true,
+                    app_continuation: true,
+                    ..FabricCapabilities::default()
+                },
+                online: true,
+                last_seen_unix_ms: counter,
+                stamp: FabricStamp {
+                    counter,
+                    device: owner.clone(),
+                },
+            },
+            owner,
+            media: Vec::new(),
+            clipboard: Vec::new(),
+            settings: Vec::new(),
+            wifi: Vec::new(),
+            display: None,
+        }
+    }
+
+    #[test]
+    fn device_fabric_store_recovers_from_valid_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal-device-fabric.postcard");
+        let owner = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
+        let mut expected = crate::shell::device_fabric::DeviceFabric::default();
+        expected.upsert(fabric_snapshot(owner, 7)).unwrap();
+        assert!(persist_device_fabric(&path, &expected));
+        std::fs::write(&path, b"damaged").unwrap();
+        assert_eq!(load_device_fabric(&path), expected);
+    }
+
+    #[test]
+    fn personal_fabric_merge_is_bound_to_authenticated_device_certificate() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xF1; 32]);
+        let user = root.verifying_key().to_bytes();
+        let peer_device = iroh::SecretKey::generate();
+        let (net, _commands) = personal_continuity_network_for_test(user);
+        authenticated_personal_peer(&net, &root, &peer_device);
+        let owner = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            peer_device.public().as_bytes(),
+        ))
+        .unwrap();
+        let snapshot = fabric_snapshot(owner.clone(), 8);
+        let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
+        incoming.upsert(snapshot).unwrap();
+        net.dispatch_personal_fabric(
+            personal_continuity_topic_id(&user),
+            peer_device.public(),
+            user,
+            PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap()),
+        );
+        assert!(net.device_fabric().snapshots().contains_key(&owner));
+
+        let forged = crate::shell::personal_continuity::DeviceId::new("some-other-device").unwrap();
+        let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
+        incoming.upsert(fabric_snapshot(forged.clone(), 9)).unwrap();
+        net.dispatch_personal_fabric(
+            personal_continuity_topic_id(&user),
+            peer_device.public(),
+            user,
+            PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap()),
+        );
+        assert!(!net.device_fabric().snapshots().contains_key(&forged));
+    }
+
+    #[test]
+    fn personal_fabric_action_is_exact_target_and_ephemeral() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
+        let user = root.verifying_key().to_bytes();
+        let target_key = iroh::SecretKey::generate();
+        let (net, mut commands) = personal_continuity_network_for_test(user);
+        let target = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            target_key.public().as_bytes(),
+        ))
+        .unwrap();
+        net.registered_home_peer_ids
+            .lock()
+            .unwrap()
+            .insert(target_key.public());
+        let request_id = net
+            .send_personal_fabric_action(
+                &target,
+                crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
+                    session_id: "player:one".into(),
+                    app_id: "dev.tilo.music".into(),
+                    workspace_id: "11111111-1111-1111-1111-111111111111".into(),
+                    title: "Track".into(),
+                    locator: crate::shell::device_fabric::MediaSourceLocator::Workspace {
+                        path: "Music/track.flac".into(),
+                    },
+                    position_ms: 12,
+                    resume_playing: true,
+                    has_video: false,
+                },
+            )
+            .unwrap();
+        assert_ne!(request_id, [0; 16]);
+        let mut found = false;
+        while let Ok(command) = commands.try_recv() {
+            if matches!(
+                command,
+                NetCmd::PublishPersonalFabricTarget {
+                    target: selected,
+                    payload: PersonalFabricPayload::Action(_),
+                    ..
+                } if selected == target_key.public()
+            ) {
+                found = true;
+            }
+        }
+        assert!(found, "action must use the exact-target transport command");
+        assert!(net.take_personal_fabric_actions().is_empty());
+    }
+
+    #[test]
+    fn personal_fabric_action_replay_and_misaddress_are_rejected() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xD2; 32]);
+        let user = root.verifying_key().to_bytes();
+        let peer_device = iroh::SecretKey::generate();
+        let (net, _commands) = personal_continuity_network_for_test(user);
+        authenticated_personal_peer(&net, &root, &peer_device);
+        let source = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            peer_device.public().as_bytes(),
+        ))
+        .unwrap();
+        let target = net.personal_continuity_device.clone().unwrap();
+        let envelope = crate::shell::device_fabric::PersonalFabricActionEnvelope {
+            request_id: [8; 16],
+            source,
+            target,
+            issued_unix_ms: now_unix_millis(),
+            action: crate::shell::device_fabric::PersonalFabricAction::MediaAccepted {
+                request_id: [7; 16],
+                session_id: "player:one".into(),
+            },
+        };
+        let payload = PersonalFabricPayload::Action(postcard::to_allocvec(&envelope).unwrap());
+        for _ in 0..2 {
+            net.dispatch_personal_fabric(
+                personal_continuity_topic_id(&user),
+                peer_device.public(),
+                user,
+                payload.clone(),
+            );
+        }
+        assert_eq!(net.take_personal_fabric_actions(), vec![envelope.clone()]);
+
+        let mut misaddressed = envelope;
+        misaddressed.request_id = [9; 16];
+        misaddressed.target =
+            crate::shell::personal_continuity::DeviceId::new("another-device").unwrap();
+        net.dispatch_personal_fabric(
+            personal_continuity_topic_id(&user),
+            peer_device.public(),
+            user,
+            PersonalFabricPayload::Action(postcard::to_allocvec(&misaddressed).unwrap()),
+        );
+        assert!(net.take_personal_fabric_actions().is_empty());
     }
 
     #[test]
@@ -3643,7 +5596,7 @@ mod tests {
                     id: browser_tab,
                     title: "Browser".into(),
                     tile: TileContent::Foreign {
-                        app_id: "dev.qos.browser".into(),
+                        app_id: "dev.tilo.browser".into(),
                         surface_id: 101,
                     },
                 },
@@ -3651,7 +5604,7 @@ mod tests {
                     id: ebook_tab,
                     title: "Ebook".into(),
                     tile: TileContent::Foreign {
-                        app_id: "dev.qos.ebook".into(),
+                        app_id: "dev.tilo.ebook".into(),
                         surface_id: 102,
                     },
                 },
@@ -3659,7 +5612,7 @@ mod tests {
                     id: music_tab,
                     title: "Music".into(),
                     tile: TileContent::Foreign {
-                        app_id: "dev.qos.music".into(),
+                        app_id: "dev.tilo.music".into(),
                         surface_id: 103,
                     },
                 },
@@ -3688,17 +5641,17 @@ mod tests {
             for (tab, app_id, metadata) in [
                 (
                     browser_tab,
-                    "dev.qos.browser",
+                    "dev.tilo.browser",
                     br#"{"url":"https://example.test/reading"}"#.to_vec(),
                 ),
                 (
                     ebook_tab,
-                    "dev.qos.ebook",
+                    "dev.tilo.ebook",
                     br#"{"book_id":"book-42","chapter":4,"page":9}"#.to_vec(),
                 ),
                 (
                     music_tab,
-                    "dev.qos.music",
+                    "dev.tilo.music",
                     br#"{"track_id":"track-42","position_ms":12345,"paused":true}"#.to_vec(),
                 ),
             ] {
@@ -3784,7 +5737,7 @@ mod tests {
         // Model the exact peer-window -> launcher staging used before the
         // restored toplevel adopts its remote tab. This verifies metadata and
         // source CRDT record identity travel together without starting a GUI.
-        let browser_launch = LaunchIntent::app("dev.qos.browser").expect("known app id");
+        let browser_launch = LaunchIntent::app("dev.tilo.browser").expect("known app id");
         let browser_resume = registry
             .lock()
             .expect("continuation registry")
@@ -3792,7 +5745,7 @@ mod tests {
             .expect("remote placeholder retains the app report");
         crate::shell::launcher::clear_pending_placements();
         crate::shell::launcher::set_pending_placement(
-            "dev.qos.browser",
+            "dev.tilo.browser",
             crate::compositor::tab_binding::Placement::IntoTab(browser_tab),
         );
         crate::shell::launcher::stage_continuation_resume(
@@ -3803,7 +5756,7 @@ mod tests {
             browser_resume.record_instance.0,
         );
         assert_eq!(
-            crate::shell::launcher::take_staged_resume_for_package("dev.qos.browser", room),
+            crate::shell::launcher::take_staged_resume_for_package("dev.tilo.browser", room),
             Some((
                 Some((1, br#"{"url":"https://example.test/reading"}"#.to_vec())),
                 browser_tab,
@@ -4318,7 +6271,7 @@ mod tests {
     #[test]
     #[serial_test::serial(identity_env)]
     fn exact_invite_redeems_as_editor_and_revocation_removes_trust() {
-        use qos_user_identity::{
+        use tilo_user_identity::{
             DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
             sign_revocation_entry,
         };
@@ -4505,7 +6458,7 @@ mod tests {
         );
 
         let route = crate::shell::collab_broker::CrdtRoute::record(
-            "dev.qos.notes",
+            "dev.tilo.notes",
             room.to_string(),
             "meeting-notes",
         );
@@ -4693,7 +6646,7 @@ mod tests {
     #[test]
     #[serial_test::serial(identity_env)]
     fn signed_viewer_invite_admits_a_viewer_not_an_editor() {
-        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
         let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
         let device = iroh::SecretKey::from_bytes(&[82; 32]);
@@ -4780,7 +6733,7 @@ mod tests {
     #[test]
     #[serial_test::serial(identity_env)]
     fn only_the_invite_pinned_authority_can_bootstrap_room_governance() {
-        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
         let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
         let device = iroh::SecretKey::from_bytes(&[92; 32]);
@@ -4882,9 +6835,9 @@ mod tests {
             .expect("registry"),
         )
         .expect("write registry");
-        let previous = std::env::var_os("QOS_HOME_PEERS_PATH");
+        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
         // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("QOS_HOME_PEERS_PATH", &registry) };
+        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
         let rooms = std::collections::BTreeSet::from([42]);
         let first_boot = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
         let restarted = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
@@ -4895,8 +6848,8 @@ mod tests {
         // SAFETY: guarded by the process_env serial group.
         unsafe {
             match previous {
-                Some(value) => std::env::set_var("QOS_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("QOS_HOME_PEERS_PATH"),
+                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
+                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
             }
         }
     }
@@ -4913,8 +6866,8 @@ mod tests {
         let hint = iroh::EndpointAddr::new(hinted_service)
             .with_ip_addr("127.0.0.1:47891".parse().expect("loopback address"));
         let registrations = vec![
-            qos_relay::HomePeerRegistration {
-                schema_version: qos_relay::HomePeerRegistration::CURRENT_SCHEMA,
+            tilo_relay::HomePeerRegistration {
+                schema_version: tilo_relay::HomePeerRegistration::CURRENT_SCHEMA,
                 device_node_id: hex::encode(device.as_bytes()),
                 relay_service_node_id: hex::encode(hinted_service.as_bytes()),
                 relay_endpoint: Some(hint.clone()),
@@ -4923,7 +6876,7 @@ mod tests {
                 device_cert: None,
                 relay_workspace_ids: vec![42],
             },
-            qos_relay::HomePeerRegistration {
+            tilo_relay::HomePeerRegistration {
                 schema_version: 1,
                 device_node_id: hex::encode(device.as_bytes()),
                 relay_service_node_id: hex::encode(legacy_service.as_bytes()),
@@ -4939,9 +6892,9 @@ mod tests {
             serde_json::to_vec(&registrations).expect("registry"),
         )
         .expect("write registry");
-        let previous = std::env::var_os("QOS_HOME_PEERS_PATH");
+        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
         // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("QOS_HOME_PEERS_PATH", &registry) };
+        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
         let hosts =
             registered_home_peer_addrs(Some(own_user), &std::collections::BTreeSet::from([42]))
                 .expect("registry parses");
@@ -4954,8 +6907,8 @@ mod tests {
         // SAFETY: guarded by the process_env serial group.
         unsafe {
             match previous {
-                Some(value) => std::env::set_var("QOS_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("QOS_HOME_PEERS_PATH"),
+                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
+                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
             }
         }
     }
@@ -4964,13 +6917,13 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn home_peer_registry_defaults_to_the_active_identity_root() {
         let temp = tempfile::tempdir().expect("temp");
-        let identity_root = temp.path().join("user-data/qos");
-        let old_identity_root = std::env::var_os("QOS_IDENTITY_ROOT");
-        let old_registry = std::env::var_os("QOS_HOME_PEERS_PATH");
+        let identity_root = temp.path().join("user-data/tilo");
+        let old_identity_root = std::env::var_os("TILO_IDENTITY_ROOT");
+        let old_registry = std::env::var_os("TILO_HOME_PEERS_PATH");
         // SAFETY: guarded by the process_env serial group.
         unsafe {
-            std::env::set_var("QOS_IDENTITY_ROOT", &identity_root);
-            std::env::remove_var("QOS_HOME_PEERS_PATH");
+            std::env::set_var("TILO_IDENTITY_ROOT", &identity_root);
+            std::env::remove_var("TILO_HOME_PEERS_PATH");
         }
         assert_eq!(
             home_peer_registry_path(),
@@ -4980,12 +6933,12 @@ mod tests {
         // SAFETY: guarded by the process_env serial group.
         unsafe {
             match old_identity_root {
-                Some(value) => std::env::set_var("QOS_IDENTITY_ROOT", value),
-                None => std::env::remove_var("QOS_IDENTITY_ROOT"),
+                Some(value) => std::env::set_var("TILO_IDENTITY_ROOT", value),
+                None => std::env::remove_var("TILO_IDENTITY_ROOT"),
             }
             match old_registry {
-                Some(value) => std::env::set_var("QOS_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("QOS_HOME_PEERS_PATH"),
+                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
+                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
             }
         }
     }
@@ -5004,9 +6957,9 @@ mod tests {
         assert!(tree.set_room(workspace, room));
         let (mut net, mut commands) = shell_network_for_test(tree.shared(), 7);
         net.personal_continuity_user = Some(own_user);
-        let old_registry = std::env::var_os("QOS_HOME_PEERS_PATH");
+        let old_registry = std::env::var_os("TILO_HOME_PEERS_PATH");
         // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("QOS_HOME_PEERS_PATH", &registry) };
+        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
         std::fs::write(
             &registry,
             serde_json::to_vec(&serde_json::json!([{
@@ -5044,8 +6997,8 @@ mod tests {
         // SAFETY: guarded by the process_env serial group.
         unsafe {
             match old_registry {
-                Some(value) => std::env::set_var("QOS_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("QOS_HOME_PEERS_PATH"),
+                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
+                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
             }
         }
     }
@@ -5094,7 +7047,7 @@ mod tests {
 
     #[test]
     fn concurrent_invites_redeem_their_own_names_and_roles() {
-        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
         let (_tmp, tree, net, rooms) = net_with_rooms();
         let room = rooms[0];
@@ -5204,7 +7157,7 @@ mod tests {
 
     #[test]
     fn peer_departure_retains_identity_route_and_cause_before_cleanup() {
-        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let room = tree.read().rooms()[0];
@@ -5329,7 +7282,7 @@ mod tests {
         peer: iroh::PublicKey,
         device: &ed25519_dalek::SigningKey,
     ) -> NetEvent {
-        let app_id = "dev.qos.notes";
+        let app_id = "dev.tilo.notes";
         let record_id = "note-1";
         let mut envelope = collab_types::SignedOp::new_unsigned(
             collab_types::DocumentMutation::Incremental(vec![1, 2, 3, 4])
@@ -5380,16 +7333,16 @@ mod tests {
         let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
         let device = iroh::SecretKey::from_bytes(&[72; 32]);
         let device_signing = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
-        let mut cert = qos_user_identity::DeviceCert {
+        let mut cert = tilo_user_identity::DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: *device.public().as_bytes(),
             device_label: "Peer laptop".into(),
-            capabilities: qos_user_identity::DeviceCapabilities::member(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
         };
-        qos_user_identity::sign_device_cert(&mut cert, &root).expect("device certificate");
+        tilo_user_identity::sign_device_cert(&mut cert, &root).expect("device certificate");
         let _ = net
             .pending_identity_admissions
             .lock()
@@ -5554,7 +7507,7 @@ mod tests {
     #[test]
     fn accepting_a_pinned_home_host_invite_queues_exact_expectation_once() {
         use crate::network::invite::{HomeHostPin, InviteRole, make_invite_token_with_recipient};
-        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
         let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
         let owner_device = iroh::SecretKey::from_bytes(&[0x52; 32]);
@@ -5938,16 +7891,16 @@ mod tests {
         let device_secret = iroh::SecretKey::generate();
         let endpoint = device_secret.public();
         let root = ed25519_dalek::SigningKey::from_bytes(&[104; 32]);
-        let mut certificate = qos_user_identity::DeviceCert {
+        let mut certificate = tilo_user_identity::DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: *endpoint.as_bytes(),
             device_label: "Ada's laptop".into(),
-            capabilities: qos_user_identity::DeviceCapabilities::member(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
         };
-        qos_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
 
         assert!(tree.write().name_peer(
             room,
@@ -5963,10 +7916,10 @@ mod tests {
         ));
         let projection_path = runtime
             .path()
-            .join("qos/identity-projections")
+            .join("tilo/identity-projections")
             .join(room.to_string())
             .join("trusted-identities.json");
-        let projected: qos_user_identity::TrustedIdentityProjectionV2 =
+        let projected: tilo_user_identity::TrustedIdentityProjectionV2 =
             serde_json::from_slice(&std::fs::read(&projection_path).unwrap()).unwrap();
         assert_eq!(projected.humans.len(), 1);
         assert_eq!(projected.humans[0].display_name, "Ada Lovelace");
@@ -5978,21 +7931,21 @@ mod tests {
             "the signed certificate cannot be rebound to another transport endpoint"
         );
 
-        let mut revocation = qos_user_identity::RevocationEntry {
+        let mut revocation = tilo_user_identity::RevocationEntry {
             user_public_key: root.verifying_key().to_bytes(),
             revoked_device_public_key: *endpoint.as_bytes(),
             revoked_at_ns: 2,
-            reason: qos_user_identity::RevocationReason::Retired,
+            reason: tilo_user_identity::RevocationReason::Retired,
             signature: [0; 64],
         };
-        qos_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
+        tilo_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
         assert!(network.handle_identity_announcement(
             &endpoint,
             &room.to_string(),
             &certificate,
             &[revocation]
         ));
-        let projected: qos_user_identity::TrustedIdentityProjectionV2 =
+        let projected: tilo_user_identity::TrustedIdentityProjectionV2 =
             serde_json::from_slice(&std::fs::read(&projection_path).unwrap()).unwrap();
         assert!(
             projected.humans.is_empty(),
@@ -6024,14 +7977,14 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let mut entry = qos_user_identity::RevocationEntry {
+        let mut entry = tilo_user_identity::RevocationEntry {
             user_public_key: root.verifying_key().to_bytes(),
             revoked_device_public_key: [102; 32],
             revoked_at_ns: 5,
-            reason: qos_user_identity::RevocationReason::Compromised,
+            reason: tilo_user_identity::RevocationReason::Compromised,
             signature: [0; 64],
         };
-        qos_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+        tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
         std::fs::write(&path, postcard::to_allocvec(&vec![entry.clone()]).unwrap()).unwrap();
         assert_eq!(
             load_identity_revocations(&path, root.verifying_key().to_bytes()).unwrap(),

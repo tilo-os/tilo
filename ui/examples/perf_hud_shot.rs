@@ -1,7 +1,7 @@
 //! Offscreen render of the **profiling HUD** overlaid on a real app scene, so
 //! the HUD can be inspected without opening a window.
 //!
-//! `QOS_PROFILE=1` draws the HUD live, but the live path needs a display. This
+//! `TILO_PROFILE=1` draws the HUD live, but the live path needs a display. This
 //! example reproduces exactly what `ui::App` does — run the real five passes,
 //! record each into a [`ui::profiling::FrameProfiler`], commit a per-frame
 //! sample — for a rolling window of frames, then composites the production

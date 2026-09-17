@@ -1,4 +1,4 @@
-//! Read-only consumer of the shared qOS region & formats store.
+//! Read-only consumer of the shared Tilo region & formats store.
 //!
 //! Measurement units are a **system preference** owned by the Settings app's
 //! "Region & Formats" panel — not something a weather app should host its own
@@ -6,7 +6,7 @@
 //! Weather, …) reads the same file:
 //!
 //! ```text
-//! $XDG_CONFIG_HOME/qos/settings.json   (falls back to ~/.config/qos/settings.json)
+//! $XDG_CONFIG_HOME/tilo/settings.json   (falls back to ~/.config/tilo/settings.json)
 //! ```
 //!
 //! The relevant field is `locale.measurement`, a string that is either

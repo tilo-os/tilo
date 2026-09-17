@@ -2,20 +2,29 @@
 # Merge every .profraw dropped by instrumented runs into the single
 # .profdata file the second-phase build consumes.
 #
-# Commits the merged file into os/pgo/qos.profdata — that's what makes
+# Commits the merged file into os/pgo/tilo.profdata — that's what makes
 # the whole PGO pipeline reproducible under the frozen RPM repo: the
 # same source + same profile bytes = the same compiled output.
 #
 # Usage:   scripts/perf/pgo-merge.sh
-# Emits:   os/pgo/qos.profdata (ready to commit)
+# Emits:   os/pgo/tilo.profdata (ready to commit)
 
 set -euo pipefail
+
+DISTROBOX="${TILO_DISTROBOX:-}"
+run_in_env() {
+    if [ -n "$DISTROBOX" ]; then
+        distrobox enter "$DISTROBOX" -- "$@"
+    else
+        "$@"
+    fi
+}
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
 PROFRAW="$ROOT/target/pgo-profraw"
-OUT="$ROOT/os/pgo/qos.profdata"
+OUT="$ROOT/os/pgo/tilo.profdata"
 mkdir -p "$(dirname "$OUT")"
 
 if ! compgen -G "$PROFRAW/*.profraw" > /dev/null; then
@@ -25,7 +34,7 @@ if ! compgen -G "$PROFRAW/*.profraw" > /dev/null; then
 fi
 
 # llvm-profdata ships with clang. Fedora packages it as `llvm`.
-distrobox enter my-distrobox-44 -- bash -c "cd $ROOT && \
+run_in_env bash -c "cd $ROOT && \
     llvm-profdata merge \
         --output=$OUT \
         $PROFRAW/*.profraw"

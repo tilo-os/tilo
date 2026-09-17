@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Three qOS sessions in one room, and an agent that drives one of them.
+"""Three Tilo sessions in one room, and an agent that drives one of them.
 
 Starts three real compositors — separate state directories, separate
 Iroh endpoint keys, separate user identities, separate control sockets:
@@ -32,7 +32,7 @@ GAP and moves on; it never prints a success it did not verify.
 
 Runs against target/demo/shell:
 
-    cargo build --profile demo -p shell --bin shell --bin qos-control
+    cargo build --profile demo -p shell --bin shell --bin tilo-control
 
 There is no mock and no fixture path: if the binary is missing the
 script exits rather than simulating it.
@@ -43,7 +43,7 @@ millisecond of it — and an unoptimised build spends ~1.4 s there per
 frame at 1920x1080, which is a recording nobody can watch.
 
 `--release` is not the profile to use, and not because of speed: the
-`QOS_TEST_CONTROL` socket this script drives the compositor through is a
+`TILO_TEST_CONTROL` socket this script drives the compositor through is a
 complete lock-screen bypass, so a shipped build deliberately does not
 contain the code that reads it. A `--release` shell binds no socket and
 never says why. `demo` is the release profile with that one gate left
@@ -124,7 +124,7 @@ def _doc_text_bin() -> str | None:
     quietly answered wrong.
     """
     for profile in ("demo", "debug"):
-        path = os.path.join(REPO, "target", profile, "qos-doc-text")
+        path = os.path.join(REPO, "target", profile, "tilo-doc-text")
         if os.path.exists(path):
             return path
     return None
@@ -145,8 +145,8 @@ AGENT_ACTION_EFFECT = "room_activity"
 # registry that feeds the palette, so the demo drives the production
 # launch path rather than a test entry point.
 APPLICATIONS = "applications"
-FILES_APP = "dev.qos.file-explorer"
-WORD_PROCESSOR = "dev.qos.word-processor"
+FILES_APP = "dev.tilo.file-explorer"
+WORD_PROCESSOR = "dev.tilo.word-processor"
 
 # Machine state, deliberately *not* isolated per session: without these
 # two a session enumerates zero applications and every launch fails with
@@ -165,9 +165,8 @@ WORD_PROCESSOR = "dev.qos.word-processor"
 #
 # It cannot be `/home/<user>`, which is what would render perfectly:
 # that is the real user's home and is not ours to write into. See the
-# note in `stage_home`, and `docs/demo-todo.md` for the app-side fix
-# that would make the path stop mattering.
-HOMES_ROOT = "/var/tmp/qos/home"
+# note in `stage_home`; the demo must not expose the staging path.
+HOMES_ROOT = "/var/tmp/tilo/home"
 
 # The photograph beat 8 drags into the document, by the name it wears on
 # screen. Named once because four places have to agree about it: the
@@ -178,13 +177,13 @@ HOMES_ROOT = "/var/tmp/qos/home"
 # rather than anything this script told it to say.
 PHOTO_NAME = "harbour.png"
 
-MACHINE_APPS = os.path.expanduser("~/.local/share/qos-apps")
-RUNTIME_BUNDLES = os.path.expanduser("~/.local/share/qos-runtime")
+MACHINE_APPS = os.path.expanduser("~/.local/share/tilo-apps")
+RUNTIME_BUNDLES = os.path.expanduser("~/.local/share/tilo-runtime")
 # A registry holding the word processor built from *this* tree. The
 # machine's installed payload is a static binary from an earlier build
 # and cannot exercise anything that has changed in `ui` since, so a run
 # against it would be filming last month's app.
-LIVE_APPS = os.path.join(REPO, "target", "qos-apps-live")
+LIVE_APPS = os.path.join(REPO, "target", "tilo-apps-live")
 
 # The capability principal ada grants in beat 3. An agent is not a
 # peer: it is a subject in the permission model, and the grant is scoped
@@ -290,7 +289,7 @@ SYNC_TIMEOUT_S = 25.0
 # slow hop is not reported as a failure to converge.
 DOC_SYNC_TIMEOUT_S = 60.0
 # An app launch is a sandbox spawn, a Wayland connection, a toolkit
-# starting up and a first frame. Generous because none of that is qOS
+# starting up and a first frame. Generous because none of that is Tilo
 # being slow when the machine is busy: at a load average near a hundred
 # this has been measured past two minutes, and a launch reported as
 # failed because the harness gave up is the worst kind of wrong answer.
@@ -367,7 +366,7 @@ class Session:
         # a supported state: the beat that needs it says so and moves on.
         self.tools = tools or {}
         # Each session needs its own XDG_RUNTIME_DIR: the compositor
-        # binds its collab broker at <runtime>/qos/services/collab.sock,
+        # binds its collab broker at <runtime>/tilo/services/collab.sock,
         # and two sessions sharing one runtime dir are two sessions
         # contending for one socket. Keep it short — sun_path is ~108 bytes.
         self.runtime_dir = runtime_dir
@@ -381,7 +380,7 @@ class Session:
 
     @property
     def collab_sock(self) -> str:
-        return os.path.join(self.runtime_dir, "qos", "services", "collab.sock")
+        return os.path.join(self.runtime_dir, "tilo", "services", "collab.sock")
 
     @property
     def collab_json_sock(self) -> str:
@@ -395,7 +394,7 @@ class Session:
         app* for the document it holds without being able to see its
         screen.
         """
-        return os.path.join(self.runtime_dir, "qos", "services",
+        return os.path.join(self.runtime_dir, "tilo", "services",
                             "collab-json.sock")
 
     # -- lifecycle ---------------------------------------------------
@@ -420,7 +419,7 @@ class Session:
         # software, and every assertion in this file passed while it did:
         # nothing here looks at a word on the screen.
         #
-        # A real qOS install has the OS set this and cannot drift; a
+        # A real Tilo install has the OS set this and cannot drift; a
         # session nested on somebody's desktop inherits whatever they
         # use, so the harness pins it. `LANGUAGE` is dropped rather than
         # set, because it outranks `LANG` and is a colon-separated list
@@ -435,19 +434,19 @@ class Session:
             # Named outright rather than left to `dirs::config_dir()`.
             # That helper ignores a *relative* XDG_CONFIG_HOME, so a run
             # started with a relative --out gets no isolation from it at
-            # all and persists into the real ~/.config/qos/state.json —
+            # all and persists into the real ~/.config/tilo/state.json —
             # three demo sessions writing workspaces, owned by
             # identities nobody at this machine can administer, into
             # somebody's live desktop. `--out` is absolutised for the
             # same reason; this is the belt to that pair of braces.
             LC_ALL="en_US.UTF-8",
             LANG="en_US.UTF-8",
-            QOS_STATE_PATH=os.path.join(self.dir, "config", "state.json"),
-            QOS_USER_ID=self.user,
-            QOS_PEER_KEY_PATH=os.path.join(self.dir, "keys", "peer-key"),
-            QOS_FS_ACL_PATH=os.path.join(self.dir, "config", "fs-capabilities.json"),
-            QOS_TEST_CONTROL=self.sock,
-            NIRIOS_HEADLESS_SIZE=self.size,
+            TILO_STATE_PATH=os.path.join(self.dir, "config", "state.json"),
+            TILO_USER_ID=self.user,
+            TILO_PEER_KEY_PATH=os.path.join(self.dir, "keys", "peer-key"),
+            TILO_FS_ACL_PATH=os.path.join(self.dir, "config", "fs-capabilities.json"),
+            TILO_TEST_CONTROL=self.sock,
+            TILO_HEADLESS_SIZE=self.size,
             # `info`, plus the two targets that narrate a cross-client
             # drag. Beat 8 aims a press at a file row inside a client,
             # and a client's widgets are not in the compositor's
@@ -470,13 +469,13 @@ class Session:
             # The two stores an app launch cannot do without. The install
             # root is this session's; the runtime bundle is the machine's,
             # because every packaged app pins it and none of them ship it.
-            QOS_APPS_DATA_DIR=self.apps_dir,
-            QOS_RUNTIME_BUNDLE_DIR=RUNTIME_BUNDLES,
+            TILO_APPS_DATA_DIR=self.apps_dir,
+            TILO_RUNTIME_BUNDLE_DIR=RUNTIME_BUNDLES,
             # Where the catalogue looks for registries, and where it caches
             # what it fetches. Per-session, so an install in one session is
             # not quietly an install in another.
-            QOS_STORE_CONFIG_DIR=os.path.join(self.dir, "store-config"),
-            QOS_STORE_CACHE_DIR=os.path.join(self.dir, "store-cache"),
+            TILO_STORE_CONFIG_DIR=os.path.join(self.dir, "store-config"),
+            TILO_STORE_CACHE_DIR=os.path.join(self.dir, "store-cache"),
             # Makes a `ui` app name the record it checked out, on the
             # session log. Beat 7 depends on two apps announcing the
             # *same* address, and the only address two sessions can share
@@ -485,7 +484,7 @@ class Session:
             # has a home of its own. If that beat ever reports that
             # nobody answered, this line is what says whether the two
             # apps were even listening on the same channel.
-            QUICK_COLLAB_DEBUG="1",
+            RUST_LOG="tilo.state=debug",
         )
         # The packaging chain, when it is on disk. Passed by path rather
         # than found on PATH so the run measures the binaries built for it.
@@ -540,7 +539,7 @@ class Session:
             time.sleep(0.2)
         # A compositor that is still running but never bound the socket is
         # almost always a `--release` build: `compositor::dev_env` gates
-        # QOS_TEST_CONTROL on `cfg!(debug_assertions)`, so a shipped binary
+        # TILO_TEST_CONTROL on `cfg!(debug_assertions)`, so a shipped binary
         # has no such code and logs nothing about it. Say so, rather than
         # leaving the next person to read a healthy log for an hour.
         alive = self.proc is not None and self.proc.poll() is None
@@ -548,7 +547,7 @@ class Session:
             f"{self.name} never answered on {self.sock}"
             + (f"\n  the process is still alive, so it started and did not bind"
                f"\n  the control socket. Is {self.binary} a --release build?"
-               f"\n  QOS_TEST_CONTROL is compiled out of release builds by"
+               f"\n  TILO_TEST_CONTROL is compiled out of release builds by"
                f"\n  design; build --profile demo instead."
                if alive else f"\n  see {self.log_path}"))
 
@@ -1100,7 +1099,7 @@ CAPTURE_YIELD = 0.25
 # What one 1920x1080 snapshot costs an idle machine with this build, in
 # ms. Not a threshold anything is enforced against — the recording is
 # whatever it turns out to be — only the number the report compares
-# against so a contended run says so instead of looking like a slow qOS.
+# against so a contended run says so instead of looking like a slow Tilo.
 SNAPSHOT_BUDGET_MS = 150.0
 
 
@@ -1429,7 +1428,7 @@ class Recorder:
         # The frame rate of this video *is* the compositor's snapshot
         # speed, so a recording made on a busy machine measures the rest
         # of the machine. Worth saying outright: the number above is
-        # otherwise indistinguishable from qOS being slow.
+        # otherwise indistinguishable from Tilo being slow.
         if mean_ms > SNAPSHOT_BUDGET_MS:
             print(f"  ! that is well over the ~{SNAPSHOT_BUDGET_MS:.0f} ms an "
                   f"idle machine takes at {VIDEO_W}x{VIDEO_H}. Parallel "
@@ -2672,7 +2671,7 @@ class DocumentReader:
     `(app_id, cluster_id, record)` address the word processor announces,
     and then sends the one frame every toolkit answers with its whole
     document: `Presence { Arrived }` (`collab_broker.rs:1149`, and the
-    same handshake `qos-agent` opens with, `apps/agent/src/session.rs:72`).
+    same handshake `tilo-agent` opens with, `apps/agent/src/session.rs:72`).
 
     What comes back is therefore **produced by the app running in that
     session, out of the document that app is holding**. It is not the
@@ -2683,7 +2682,7 @@ class DocumentReader:
     """
 
     # The presence scope the word processor's toolkit answers on. Same
-    # constant `qos-agent` uses, for the same reason: a different scope
+    # constant `tilo-agent` uses, for the same reason: a different scope
     # is a different conversation and gets no reply.
     SCOPE = "word-processor"
 
@@ -2802,7 +2801,7 @@ def _carries(blob: bytes, needle: str) -> bool:
     absence rather than a misreading, and the document frames are where
     the answer is.
 
-    Decoding is delegated to `qos-doc-text`, which walks the object
+    Decoding is delegated to `tilo-doc-text`, which walks the object
     graph, so this needs no knowledge of the app's schema. Without that
     binary there is no honest answer available, and saying so beats
     guessing from bytes.
@@ -3039,7 +3038,7 @@ def stage_home(path: str) -> str:
 
     **The path.** Files draws the directory it is showing, component by
     component, and a home under the checkout renders as
-    `… › quickdesktop › .claude › worktrees › yc-demo › target › …`. A
+    `… › tilo › .claude › worktrees › yc-demo › target › …`. A
     viewer reads that as a harness pointed at a scratch directory, and
     `.claude` tells them which tooling built it. So the homes live under
     [`HOMES_ROOT`], whose components each read as a machine's own.
@@ -3187,7 +3186,7 @@ def type_into_the_document(s: Session, wp: dict | None, text: str) -> bool:
 
 
 def agent_binary() -> str | None:
-    """`qos-agent`, if it has been built.
+    """`tilo-agent`, if it has been built.
 
     A separate process rather than a compositor: the whole point of it
     is that a participant can hold a document, a caret and a name in the
@@ -3196,7 +3195,7 @@ def agent_binary() -> str | None:
     something that looks similar.
     """
     for profile in ("demo", "release", "debug"):
-        path = os.path.join(REPO, "target", profile, "qos-agent")
+        path = os.path.join(REPO, "target", profile, "tilo-agent")
         if os.path.exists(path):
             return path
     return None
@@ -3282,7 +3281,7 @@ def run_the_agent(agent: Session, room: str, shots: str,
     if code != 0:
         with open(log_path) as fh:
             tail = fh.read()[-400:]
-        note(f"qos-agent exited {code}: {tail}")
+        note(f"tilo-agent exited {code}: {tail}")
     return code == 0
 
 
@@ -3465,7 +3464,7 @@ def beat_three(ada: Session, agent: Session, host_ws: dict,
     # And the scope is a real boundary rather than a label: the grant
     # named one app, so it must not answer for another.
     claim("and still may not write to a different app",
-          may_write("dev.qos.terminal"), False)
+          may_write("dev.tilo.terminal"), False)
     note("a capability is a verb on a scope; the scope here is one app")
 
     step("and the session it drives is admitted to the room as itself")
@@ -3714,7 +3713,7 @@ def beat_five(ada: Session, registry, shots: str) -> dict | None:
     if registry is None:
         gap("no local registry was served, so the fetch could not be filmed: "
             "build it with `cargo build -p app-catalogue --bins --examples` "
-            "and `cargo build -p qos-install --bin qos-install`")
+            "and `cargo build -p tilo-install --bin tilo-install`")
         return None
     note(f"a registry at {registry.base_url} offers it")
 
@@ -3829,7 +3828,7 @@ def beat_six(ada: Session, bob: Session, baseline: dict,
          f"{len(bob.tabs_here())}; the tab under test is the one his "
          f"machine opened in beat 5, taken before bob opened his own")
 
-    # Keep this beat on one of qOS's own apps. Those replicate through
+    # Keep this beat on one of Tilo's own apps. Those replicate through
     # the room document and are drawn from it on the far side, which is
     # what makes a real window appear there. A foreign Wayland surface
     # has no such description to replicate and degrades to a card
@@ -4571,7 +4570,7 @@ def beat_nine(ada: Session, bob: Session, agent: Session,
     # the other way round, and the next step is that — not a lesser
     # substitute for it.
     #
-    # `qos-agent` joins the room's collaboration broker as an ordinary
+    # `tilo-agent` joins the room's collaboration broker as an ordinary
     # CRDT peer and applies `WordProcessorAction` — the same variants the
     # word processor's own toolbar dispatches — under its own `ActorId`,
     # then broadcasts the result. So the exported action is the
@@ -4615,8 +4614,8 @@ def beat_nine(ada: Session, bob: Session, agent: Session,
     with patience(15.0):
         ran = run_the_agent(agent, host_ws["room"], shots)
     if ran is None:
-        gap("qos-agent is not built, so the agent could not act on the "
-            "document (cargo build -p agent --bin qos-agent)")
+        gap("tilo-agent is not built, so the agent could not act on the "
+            "document (cargo build -p agent --bin tilo-agent)")
         return
     claim("the agent carried out the instruction", ran, True)
     claim("and no synthetic input reached its session to do it",
@@ -4761,7 +4760,7 @@ def main() -> int:
     ap.add_argument("--shell",
                     default=os.path.join(REPO, "target", "demo", "shell"),
                     help="path to the compositor binary; must be a build that "
-                         "still honours QOS_TEST_CONTROL (any profile with "
+                         "still honours TILO_TEST_CONTROL (any profile with "
                          "debug-assertions on — `demo` or `dev`, never "
                          "`--release`)")
     ap.add_argument("--allow-stale-shell", action="store_true",
@@ -4825,7 +4824,7 @@ def main() -> int:
     # a substitute.
     if not os.path.exists(args.shell):
         print(f"no compositor at {args.shell}\nbuild it first:  "
-              f"cargo build --profile demo -p shell --bin shell --bin qos-control",
+              f"cargo build --profile demo -p shell --bin shell --bin tilo-control",
               file=sys.stderr)
         return 2
 
@@ -4836,7 +4835,7 @@ def main() -> int:
 
     # Absolute, always. A relative --out reaches the compositor as a
     # relative XDG_CONFIG_HOME, which `dirs::config_dir()` ignores, and
-    # the three sessions then persist into the real ~/.config/qos rather
+    # the three sessions then persist into the real ~/.config/tilo rather
     # than into this run.
     args.out = os.path.abspath(args.out)
 
@@ -4901,7 +4900,7 @@ def main() -> int:
             if len(newer) > 8:
                 print(f"    ... and {len(newer) - 8} more")
             print("\n  cargo build --profile demo -p shell --bin shell "
-                  "--bin qos-control")
+                  "--bin tilo-control")
             print("  (or --allow-stale-shell to film it anyway)")
             return 2
 
@@ -4922,9 +4921,9 @@ def main() -> int:
         return None
 
     tools = {var: path for var, name in (
-        ("QOS_CATALOGUE_BIN", "qos-catalogue"),
-        ("QOS_INSTALL_BIN", "qos-install"),
-        ("QOS_LAUNCHER_BIN", "qos-launcher"),
+        ("TILO_CATALOGUE_BIN", "tilo-catalogue"),
+        ("TILO_INSTALL_BIN", "tilo-install"),
+        ("TILO_LAUNCHER_BIN", "tilo-launcher"),
     ) if (path := tool(name))}
 
     # Every session's view of what is installed, composed from the
@@ -4944,14 +4943,14 @@ def main() -> int:
     sessions = []
     for short, name in zip("qxa", ("ada", "bob", "Claude")):
         run_dir = os.path.join(args.out, name)
-        apps_dir = os.path.join(run_dir, "qos-apps")
+        apps_dir = os.path.join(run_dir, "tilo-apps")
         # ada is the machine that does not have it yet. Everyone
         # else does, so bob can open his own copy in beat 7.
         compose_registry(apps_dir, entries,
                          drop=(WORD_PROCESSOR,) if name == "ada" else ())
         sessions.append(Session(
             name, name, run_dir,
-            os.path.join(runtime, f"qos-yc-{short}-{pid}.sock"),
+            os.path.join(runtime, f"tilo-yc-{short}-{pid}.sock"),
             args.shell, size,
             # A private runtime dir per session, standing in for the
             # per-user one logind would give each real login.
@@ -4969,7 +4968,7 @@ def main() -> int:
           f"{len(entries) - (1 if WORD_PROCESSOR in entries else 0)} for ada")
     for var, path in sorted(tools.items()):
         print(f"  {var:20} {path}")
-    for var in ("QOS_CATALOGUE_BIN", "QOS_INSTALL_BIN", "QOS_LAUNCHER_BIN"):
+    for var in ("TILO_CATALOGUE_BIN", "TILO_INSTALL_BIN", "TILO_LAUNCHER_BIN"):
         if var not in tools:
             print(f"  {var:20} MISSING — beat 5 cannot fetch anything")
 
@@ -5025,7 +5024,7 @@ def main() -> int:
         if args.keep:
             print("\n--keep: leaving the three sessions running.")
             for s in sessions:
-                print(f"  {s.name:8} QOS_TEST_CONTROL={s.sock}  "
+                print(f"  {s.name:8} TILO_TEST_CONTROL={s.sock}  "
                       f"(pid {s.proc.pid if s.proc else '?'})")
         else:
             for s in sessions:
@@ -5061,7 +5060,7 @@ def main() -> int:
         # Composed after teardown: encoding three tracks is CPU-hungry,
         # and the sessions have nothing left to say by now.
         try:
-            out_video = os.path.join(record_dir, "qos-demo.mp4")
+            out_video = os.path.join(record_dir, "tilo-demo.mp4")
             print(f"\ncomposing {out_video}")
             video = RECORDER.compose(out_video, args.record_fps, size)
         except Exception as exc:  # noqa: BLE001

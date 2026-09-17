@@ -1,6 +1,6 @@
 # Platform support
 
-qOS targets native x86-64 and ARM64 throughout its components, dependency
+Tilo targets native x86-64 and ARM64 throughout its components, dependency
 artifacts, desktop packages and complete-system releases. Hardware models are
 separate from CPU architectures: a board profile supplies firmware and an
 optional device tree, while the shared kernel, userspace and installer paths

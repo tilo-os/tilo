@@ -227,11 +227,35 @@ fn writer_loop(
     let mut deadline: Option<Instant> = None;
 
     let commit = |pending: &mut Option<Pending>| -> Result<(), StoreError> {
-        match pending.take() {
-            Some(Pending::Full(bytes)) => store.write_full(&bytes),
-            Some(Pending::Append(bytes)) => store.append_bytes(&bytes),
-            None => Ok(()),
+        let Some(write) = pending.take() else {
+            return Ok(());
+        };
+        let (kind, bytes, result) = match write {
+            Pending::Full(bytes) => {
+                let len = bytes.len();
+                let started = Instant::now();
+                let result = store.write_full(&bytes);
+                ("full", len, (result, started.elapsed()))
+            }
+            Pending::Append(bytes) => {
+                let len = bytes.len();
+                let started = Instant::now();
+                let result = store.append_bytes(&bytes);
+                ("append", len, (result, started.elapsed()))
+            }
+        };
+        let (result, elapsed) = result;
+        if result.is_ok() {
+            tracing::debug!(
+                target: "tilo.state",
+                event = "document_persist",
+                kind,
+                bytes,
+                elapsed_us = elapsed.as_micros(),
+                "persisted application document"
+            );
         }
+        result
     };
     let record = |last_error: &Arc<Mutex<Option<String>>>, r: Result<(), StoreError>| {
         if let Err(e) = r {
@@ -298,7 +322,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
         tmp
     }
@@ -307,7 +331,7 @@ mod tests {
     #[serial_test::serial]
     fn a_burst_of_edits_lands_on_disk_after_a_flush() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.autosave").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.autosave").unwrap();
         let mut doc = store.new_document();
         let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
         let mut saver = Autosave::spawn(store, Duration::from_millis(50));
@@ -320,7 +344,7 @@ mod tests {
         saver.flush();
         assert_eq!(saver.last_error(), None, "no write may have failed");
 
-        let mut reopened = DocStore::open_for("dev.qos.autosave").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.autosave").unwrap();
         let loaded = reopened.load().unwrap().expect("document on disk");
         let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
         assert_eq!(loaded.text(&body).unwrap(), "persisted");
@@ -330,7 +354,7 @@ mod tests {
     #[serial_test::serial]
     fn dropping_the_handle_flushes() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.autosave-drop").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.autosave-drop").unwrap();
         let mut doc = store.new_document();
         {
             let mut saver = Autosave::spawn(store, Duration::from_secs(600));
@@ -340,7 +364,7 @@ mod tests {
             // Debounce is 10 minutes: only Drop's flush can get this out.
         }
         drop(doc);
-        let mut reopened = DocStore::open_for("dev.qos.autosave-drop").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.autosave-drop").unwrap();
         let loaded = reopened.load().unwrap().expect("document on disk");
         assert!(matches!(loaded.get(&ROOT, "k"), Ok(Some(_))));
     }
@@ -352,7 +376,7 @@ mod tests {
     #[serial_test::serial]
     fn steady_edits_append_rather_than_rewrite() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.autosave-growth").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.autosave-growth").unwrap();
         let mut doc = store.new_document();
         let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
         doc.splice_text(&body, 0, 0, "seed").unwrap();
@@ -381,7 +405,7 @@ mod tests {
         assert!(grown > base, "the edits must have reached the file");
 
         drop((saver, doc));
-        let mut reopened = DocStore::open_for("dev.qos.autosave-growth").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.autosave-growth").unwrap();
         let loaded = reopened.load().unwrap().unwrap();
         let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
         assert_eq!(
@@ -396,7 +420,7 @@ mod tests {
     #[serial_test::serial]
     fn the_append_log_is_eventually_compacted() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.autosave-compact").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.autosave-compact").unwrap();
         let mut doc = store.new_document();
         let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
         doc.splice_text(&body, 0, 0, "seed").unwrap();
@@ -421,7 +445,7 @@ mod tests {
         assert_eq!(saver.last_error(), None);
 
         drop((saver, doc));
-        let mut reopened = DocStore::open_for("dev.qos.autosave-compact").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.autosave-compact").unwrap();
         let loaded = reopened.load().unwrap().unwrap();
         let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
         assert_eq!(loaded.text(&body).unwrap().chars().count(), 4 + 1200);

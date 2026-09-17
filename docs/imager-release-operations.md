@@ -1,4 +1,4 @@
-# qOS Imager release operations
+# Tilo Imager release operations
 
 The release workflow builds only on native, repository-scoped runners and
 publishes only from protected `imager-v*` tags. Configure these runner labels:
@@ -13,7 +13,7 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 | `imager-macos-aarch64` | Apple silicon | same macOS toolchain, running natively, Homebrew |
 
 Use Forgejo 15 or newer and Forgejo Runner 12.5 or newer. Register every host at
-**repository scope** (`qos/qos`), select ephemeral mode, expose exactly one of
+**repository scope** (`tilo/tilo`), select ephemeral mode, expose exactly one of
 the labels above as `<label>:host`, and start it with `forgejo-runner one-job`.
 The registration is invalidated after that one job; the VM must be destroyed,
 not returned to a warm pool. The practical autoscaling sequence is:
@@ -33,20 +33,20 @@ outside the checkout. Invoke that installed copy as
 Windows images should likewise install `tools/Run-ImagerEphemeralRunner.ps1`
 outside the checkout with an ACL writable only by Administrators, then invoke
 it as `powershell.exe -NoLogo -NoProfile -NonInteractive -File
-C:\ProgramData\qOS\Run-ImagerEphemeralRunner.ps1 -Label imager-windows-x86_64 -UuidFile
-C:\run\qos-runner\uuid -TokenFile C:\run\qos-runner\token`. Both launchers
+C:\ProgramData\Tilo\Run-ImagerEphemeralRunner.ps1 -Label imager-windows-x86_64 -UuidFile
+C:\run\tilo-runner\uuid -TokenFile C:\run\tilo-runner\token`. Both launchers
 validate the native OS/architecture-to-label binding, require
 Forgejo Runner 12.5 or newer, accept only private runner-owned metadata files
 inside a private runner-owned directory, pin the Forgejo origin, run exactly
 `one-job` with a `:host` label, bound the wait to six hours, and erase both
 registration values on every exit after their paths pass safety validation. Set
-`QOS_RUNNER_MAX_WAIT_SECONDS` to a smaller orchestration deadline when useful;
+`TILO_RUNNER_MAX_WAIT_SECONDS` to a smaller orchestration deadline when useful;
 the accepted range is 1 second through 24 hours. The final success message is a
 destruction instruction, not permission to return the VM to a pool. Run the
 PowerShell launcher directly on Windows; do not use a Unix compatibility layer
 as the release host.
 
-The repository runner page is `/qos/qos/settings/actions/runners`. Forgejo's
+The repository runner page is `/tilo/tilo/settings/actions/runners`. Forgejo's
 [runner-registration guide](https://forgejo.org/docs/latest/admin/actions/registration/)
 documents both the UI/API registration response and offline administrator CLI;
 its [Actions security guide](https://forgejo.org/docs/latest/admin/actions/security/)
@@ -61,9 +61,9 @@ must reject every non-protected, non-tag OIDC identity. Do not put a persistent
 private key or cloud credential on the native fleet.
 
 Installer media never allocate an OS generation. Set the protected
-`QOS_INSTALLER_OS_IMAGE` variable to one already-published, cosign-signed qOS
+`TILO_INSTALLER_OS_IMAGE` variable to one already-published, cosign-signed Tilo
 multi-architecture manifest-list reference of the form
-`code.sandbox.example/qos/qos@sha256:<64 lowercase hex>`. Both native Linux lanes
+`code.sandbox.example/qos/tilo@sha256:<64 lowercase hex>`. Both native Linux lanes
 verify that same digest and its SLSA provenance, require its immutable `genN`
 tag to bind the exact digest, pull their native manifest,
 and require the generation embedded in the image to equal the single generation
@@ -76,19 +76,25 @@ same repository, digest, signature, provenance, and embedded-generation checks.
 The workflow materializes checksum-pinned `linuxdeploy`, `appimagetool`, and
 type-2 runtime binaries from the Forgejo cache separately for each Linux
 architecture. They do not need to be baked into the runner, and AppImage
-creation is forbidden from downloading an implicit “latest” runtime.
-The same golden images preinstall `org.freedesktop.Sdk//25.08` and run UDisks2
+creation is forbidden from downloading an implicit “latest” runtime. CI runs
+the completed AppImage through both its extraction compatibility path and its
+normal embedded FUSE runtime. An extract-only result is accepted solely when
+the kernel exposes neither the FUSE filesystem nor `/dev/fuse`; a missing or
+inaccessible device on a FUSE-capable runner is a release failure, and the
+fallback reason is retained in the job summary.
+The same golden images preinstall `org.freedesktop.Sdk//25.08` and
+`org.freedesktop.Platform//25.08` system-wide and run UDisks2
 with at least the VM's system disk visible. The Flatpak build forbids downloads
-during bundle assembly, smoke-loads the exported app inside the pinned runtime,
-and reconciles its sandbox inventory with that host UDisks2 view before it can
-become an artifact.
+during bundle assembly, installs the emitted bundle into a clean per-job user
+installation, launches that installed application, and reconciles its sandbox
+inventory with that host UDisks2 view before it can become an artifact.
 End-user Linux hosts need UDisks2 (standard on major desktop
 distributions); its polkit prompt mediates the one exclusive removable-drive
 descriptor used by the sandboxed writer.
 
 ## Short-lived credentials
 
-The seven credentialed jobs set Forgejo's native `enable-openid-connect: true`.
+The eight credentialed jobs set Forgejo's native `enable-openid-connect: true`.
 Do not add GitHub's `permissions: id-token: write`: Forgejo ignores that field
 and emits a workflow warning. Repository capabilities come from Authorized
 Integrations; the native key is what causes Forgejo to inject
@@ -99,15 +105,15 @@ Forgejo behavior and token fields are documented in its
 Configure the external secret broker with all of these claim checks:
 
 - issuer: `https://code.sandbox.example/api/actions`
-- audience: a dedicated value such as `qos-release-signing`
-- `repository == qos/qos` and the pinned immutable `repository_id`
+- audience: a dedicated value such as `tilo-release-signing`
+- `repository == tilo/tilo` and the pinned immutable `repository_id`
 - `event_name == push`, `ref_type == tag`, `ref` matches only
   `refs/tags/imager-vMAJOR.MINOR.PATCH`, and `ref_protected == "true"`
-- `workflow == release-imager.yml`, and `workflow_ref` belongs to `qos/qos`
+- `workflow == release-imager.yml`, and `workflow_ref` belongs to `tilo/tilo`
 - `sub` equals the instance's actual protected-tag subject. Forgejo 16 may add
   immutable numeric owner/repository IDs to this string, so capture one denied
   bootstrap token and pin the exact format instead of assuming the older
-  `repo:qos/qos:ref:...` form.
+  `repo:tilo/tilo:ref:...` form.
 
 Validate JWT signature, `exp`, `nbf`, and `iat` against the issuer's discovery
 document/JWKS. Reject replay by `run_id` + `run_attempt` + platform, and never
@@ -124,15 +130,16 @@ variables:
 | `IMAGER_LINUX_CREDENTIAL_BROKER` | both Linux architectures | environment file described below |
 | `IMAGER_WINDOWS_CREDENTIAL_BROKER` | Windows x86-64 and ARM64 | environment file described below |
 | `IMAGER_MACOS_CREDENTIAL_BROKER` | both macOS architectures | environment file described below |
+| `IMAGER_RELEASE_CREDENTIAL_BROKER` | Linux x86-64 promotion runner | raw Forgejo token file |
 | `IMAGER_HOMEBREW_CREDENTIAL_BROKER` | macOS ARM64 | raw Forgejo token file |
 | `IMAGER_WINGET_CREDENTIAL_BROKER` | Linux x86-64 | raw GitHub token file |
 | `IMAGER_SITE_CREDENTIAL_BROKER` | Linux x86-64 | raw Forgejo token file |
-| `QOS_PCR_PREDICTION_SIGNER` | both Linux architectures | direct KMS/HSM signing interface described below |
-| `QOS_EFI_SIGNING_CERT_SHA256` | both Linux architectures | lowercase SHA-256 of the release EFI certificate's DER bytes |
+| `TILO_PCR_PREDICTION_SIGNER` | both Linux architectures | direct KMS/HSM signing interface described below |
+| `TILO_EFI_SIGNING_CERT_SHA256` | both Linux architectures | lowercase SHA-256 of the release EFI certificate's DER bytes |
 
 Each value is an absolute executable path appropriate to that host. The
 workflow invokes it as `BROKER PLATFORM OUTPUT`, where `PLATFORM` is `linux`,
-`windows`, `macos`, `homebrew`, `winget`, or `site`. The broker receives
+`windows`, `macos`, `release`, `homebrew`, `winget`, or `site`. The broker receives
 `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, requests the
 configured audience, validates its server-side claims, and exchanges the JWT
 for a narrowly scoped lease. It must create `OUTPUT` with mode 0600 (or a
@@ -142,12 +149,12 @@ exists:
 ```sh
 oidc_token="$(curl --fail --silent --show-error \
   -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-  "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=qos-release-signing" | jq -er .value)"
+  "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=tilo-release-signing" | jq -er .value)"
 # Exchange this JWT with the signing service. Never write the JWT or returned
 # credential to OUTPUT_ENV or an artifact.
 ```
 
-`QOS_PCR_PREDICTION_SIGNER` is a deliberately narrower direct interface. After
+`TILO_PCR_PREDICTION_SIGNER` is a deliberately narrower direct interface. After
 the installer UKI's composefs digest has converged, the medium builder invokes:
 
 ```text
@@ -163,12 +170,12 @@ operation obtains the industry/OEM-trusted Authenticode signature required for
 stock-firmware Secure Boot and must omit nondeterministic timestamps. The
 export operation returns its public X.509 signing certificate; CI verifies its
 DER SHA-256 fingerprint against the independently protected
-`QOS_EFI_SIGNING_CERT_SHA256` repository variable and verifies every returned
+`TILO_EFI_SIGNING_CERT_SHA256` repository variable and verifies every returned
 UKI against that exact certificate. The two
 inputs are the exact target UKI and `PolicyPCR || generation_be64`; neither is
 secret. The builder verifies both returned signatures against the independently
 pinned identities before adding the sidecars: the fingerprint above for EFI,
-and `/usr/share/qos/tpm2-pcr-signing.public.pem` for PCR authorization.
+and `/usr/share/tilo/tpm2-pcr-signing.public.pem` for PCR authorization.
 The signer and every parent directory must be root-owned and not group/world
 writable, and it must not live in the checkout or runner temporary directory.
 Tagged releases fail closed when this protected variable is absent.
@@ -184,8 +191,8 @@ For `linux`, `windows`, and `macos`, the broker configures the native signer and
 writes only these non-secret handles to the environment-file output, one
 newline-terminated `NAME=value` per line:
 
-- Linux: `QOS_LINUX_SIGNER=/absolute/root-owned/wrapper` and
-  `QOS_LINUX_VERIFY_KEY=/absolute/root-owned/release-public-key.asc`; packaging
+- Linux: `TILO_LINUX_SIGNER=/absolute/root-owned/wrapper` and
+  `TILO_LINUX_VERIFY_KEY=/absolute/root-owned/release-public-key.asc`; packaging
   imports that public key into a fresh isolated job keyring and verifies its
   complete fingerprint against the independent protected policy. The wrapper
   receives input and output-signature paths and emits an armored detached
@@ -194,17 +201,26 @@ newline-terminated `NAME=value` per line:
   full fingerprint. This policy value is deliberately supplied independently
   of the broker: a broker returning a different public key cannot silently
   rotate the release identity.
-- Windows: `QOS_WINDOWS_SIGNER=C:\absolute\root-owned\wrapper.exe`; it receives
+- Windows: `TILO_WINDOWS_SIGNER=C:\absolute\root-owned\wrapper.exe`; it receives
   one artifact path and returns after Authenticode signing and timestamping.
-- macOS: `QOS_MAC_SIGNING_IDENTITY=<Developer ID Application identity>` and
-  `QOS_NOTARY_KEYCHAIN_PROFILE=<temporary notarytool profile>` after leasing the
+- macOS: `TILO_MAC_SIGNING_IDENTITY=<Developer ID Application identity>` and
+  `TILO_NOTARY_KEYCHAIN_PROFILE=<temporary notarytool profile>` after leasing the
   certificate into a temporary keychain and storing a scoped App Store Connect
   API credential in that profile.
 - Homebrew: for the `homebrew` platform, write a 5–15 minute Forgejo token as
-  the complete raw output. Pre-create public repository `qos/homebrew-qos`, give
+  the complete raw output. Pre-create public repository `tilo/homebrew-tilo`, give
   the release bot write access to only that repository, and mint the token for
   that bot. Repository creation is supported by the script for bootstrap, but
   should not be part of the steady-state lease.
+- Release: for the `release` platform, write a 5–15 minute Forgejo token as the
+  complete raw output. Pre-create `tilo/releases` as a public repository with a
+  `main` branch. The token may create/update releases and attachments only in
+  that repository; it must have no write access to the private `tilo/tilo`
+  source repository, the Homebrew tap, or the website. The publisher checks
+  the target's exact full name and public/non-archived state before uploading,
+  reads every attachment back byte-for-byte, and publishes only a complete
+  draft. Set `IMAGER_PUBLIC_RELEASE_REPOSITORY` only when intentionally using
+  another pre-created public `OWNER/REPOSITORY` target.
 - WinGet: for the `winget` platform, write the complete raw GitHub token. A
   GitHub App **installation** token scoped only to the bot's fork can push the
   branch but cannot be relied on to create a pull request in
@@ -217,10 +233,13 @@ newline-terminated `NAME=value` per line:
   token only after Forgejo OIDC validation, and revoke it after submission when
   supported.
 - Site: for the `site` platform, write a 5–15 minute Forgejo token as the
-  complete raw output. Give its bot write access only to `qos/website`. After all
+  complete raw output. Give its bot write access only to `tilo/website`. After all
   native and package-index gates pass, the workflow updates only
-  `src/data/imager-release.json`, runs the site's release contract and full
-  production build, and pushes that exact-tag change to `main`.
+  `src/data/imager-release.json`, including its exact public `releaseRoot`, runs
+  the site's release contract and full production build, and pushes that
+  exact-tag change to `main`. Promotion also inspects the generated site and
+  refuses to push unless its signed setup link uses that manifest root and no
+  private-source download URL remains.
 
 The workflow rejects every other output key. The underlying code-signing
 identities are not all ephemeral, but their private material never needs to be
@@ -245,7 +264,7 @@ a Forgejo secret:
 - macOS: the Developer ID certificate itself is long-lived. Keep it in a
   signing service or secrets manager and release a short lease to the
   ephemeral macOS runner. Prefer an App Store Connect API key for notarization;
-  scope it to the qOS team and retrieve it through the same OIDC lease.
+  scope it to the Tilo team and retrieve it through the same OIDC lease.
 
 For initial bring-up only, set `IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP=1`; the
 workflow then accepts the protected `IMAGER_*` secrets documented in the
@@ -285,8 +304,8 @@ Before creating a release tag, verify all of the following:
   permitting the release bot, the GitHub fork exists, the bot has signed the
   Microsoft CLA, and no PR already exists for the package version.
 
-First publish and promote the multi-architecture qOS image from the exact commit
-to be tagged, then record its manifest-list digest in `QOS_INSTALLER_OS_IMAGE`.
+First publish and promote the multi-architecture Tilo image from the exact commit
+to be tagged, then record its manifest-list digest in `TILO_INSTALLER_OS_IMAGE`.
 Dispatch `Release / imager` manually on that commit with `full_native` enabled.
 That run does not sign or publish, but proves every native label and packaged UI.
 Only after it is green should a maintainer create a protected semantic tag such
@@ -308,11 +327,12 @@ administrators):
 
 | Variable | Required value |
 |---|---|
-| the six `IMAGER_*_CREDENTIAL_BROKER` variables listed above | absolute path on each corresponding golden image |
-| `QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY` | independently verified lowercase 64-hex qOS-main registry-owner Ed25519 public key |
-| `QOS_INSTALLER_OS_IMAGE` | signed, published multi-architecture `code.sandbox.example/qos/qos@sha256:...` manifest-list reference used by installer media |
-| `QOS_PCR_PREDICTION_SIGNER` | absolute root-owned KMS/HSM wrapper path on both native Linux runner images |
-| `QOS_EFI_SIGNING_CERT_SHA256` | independently verified lowercase 64-hex fingerprint of the firmware-trusted release certificate |
+| the seven `IMAGER_*_CREDENTIAL_BROKER` variables listed above | absolute path on each corresponding golden image |
+| `IMAGER_PUBLIC_RELEASE_REPOSITORY` | optional public binary repository in `OWNER/REPOSITORY` form; omit for `tilo/releases` |
+| `TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY` | independently verified lowercase 64-hex Tilo-main registry-owner Ed25519 public key |
+| `TILO_INSTALLER_OS_IMAGE` | signed, published multi-architecture `code.sandbox.example/qos/tilo@sha256:...` manifest-list reference used by installer media |
+| `TILO_PCR_PREDICTION_SIGNER` | absolute root-owned KMS/HSM wrapper path on both native Linux runner images |
+| `TILO_EFI_SIGNING_CERT_SHA256` | independently verified lowercase 64-hex fingerprint of the firmware-trusted release certificate |
 | `IMAGER_LINUX_SIGNING_FINGERPRINT` | uppercase 40- or 64-hex full primary-key fingerprint, independently verified |
 | `IMAGER_WINDOWS_PUBLISHER` | complete expected Authenticode certificate subject, independently verified |
 | `IMAGER_MAC_TEAM_ID` | 10-character Apple Developer team identifier, independently verified |
@@ -323,14 +343,15 @@ administrators):
 
 The live-medium builder separately needs protected secret `REGISTRY_TOKEN` for
 `code.sandbox.example`. Give its service account read-only access to the published
-qOS image and its signature/attestation attachments. The workflow copies its
+Tilo image and its signature/attestation attachments. The workflow copies its
 short-lived Podman auth file into a private Docker config for Cosign, then
 destroys both after use; installer-media CI never
 pushes an OS image or allocates a generation. Rotate it independently of
 signing. The WPE buildroot snapshot workflow does **not** use
 that persistent token in steady state; its broker setup is described below.
-Forgejo provides the tag-release upload token as `github.token` and no
-additional release-upload secret is required.
+The source job's `github.token` is deliberately never used for binary
+publication. `IMAGER_RELEASE_CREDENTIAL_BROKER` exchanges the protected-tag
+OIDC identity for the short-lived, target-only token described above.
 
 Do not configure any of the following in steady state:
 `IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP`, `IMAGER_LINUX_SIGNING_KEY_B64`,
@@ -359,8 +380,8 @@ BROKER promote OUTPUT
 The broker must fail if `OUTPUT` exists, create it as a regular mode-0600 file
 owned by the runner account, and write exactly one newline-terminated
 `NAME=value` per line. Resolve and promotion leases contain
-`QOS_REGISTRY_USERNAME`, `QOS_REGISTRY_PASSWORD`,
-and `QOS_LEASE_EXPIRES_AT`. Publish leases also contain `QOS_WPE_SIGNER`. The
+`TILO_REGISTRY_USERNAME`, `TILO_REGISTRY_PASSWORD`,
+and `TILO_LEASE_EXPIRES_AT`. Publish leases also contain `TILO_WPE_SIGNER`. The
 expiry is a Unix timestamp no more than 15 minutes in the future. CI acquires a
 read lease to resolve the base image, builds without pushing, logs out, then
 acquires a fresh write/signing lease immediately before push and signing;
@@ -373,15 +394,15 @@ The helper deliberately never handles the JWT itself: it verifies that
 Forgejo injected `ACTIONS_ID_TOKEN_REQUEST_URL` and
 `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, then invokes the trusted broker with both
 still present in its environment. The broker must request the audience
-`qos-wpe-buildroot-snapshot` from that URL, validate and exchange the returned
+`tilo-wpe-buildroot-snapshot` from that URL, validate and exchange the returned
 JWT server-side, and must never copy either OIDC value into `OUTPUT`, logs, or
 an artifact. A broker which merely trusts the requested mode or other process
 environment without validating the signed JWT is not conforming.
 
-`QOS_WPE_SIGNER` must resolve to an executable, non-symlink, root-owned path
+`TILO_WPE_SIGNER` must resolve to an executable, non-symlink, root-owned path
 outside the checkout and job temporary directory. It receives one argument:
 the immutable
-`code.sandbox.example/qos/qos-wpe-buildroot@sha256:...` reference. The wrapper must
+`code.sandbox.example/qos/tilo-wpe-buildroot@sha256:...` reference. The wrapper must
 hold or acquire a non-exportable KMS/HSM signing lease, reject every other
 repository/reference shape, sign at most once for its build lease, upload the
 transparency-log entry, and return only after signing succeeds. CI immediately
@@ -389,19 +410,19 @@ verifies the result with `keys/cosign.pub`; the broker cannot rotate the trusted
 identity by returning another public key.
 
 Configure this broker with a dedicated audience such as
-`qos-wpe-buildroot-snapshot` and the same JWT signature/time/replay checks
+`tilo-wpe-buildroot-snapshot` and the same JWT signature/time/replay checks
 described above, but with a policy specific to this workflow:
 
-- `repository == qos/qos` and the pinned immutable repository ID;
+- `repository == tilo/tilo` and the pinned immutable repository ID;
 - `event_name` is `push` or an authorized `workflow_dispatch`, `ref_type` is
   `branch`, `ref == refs/heads/main`, and main is protected;
-- `workflow == snapshot-wpe-buildroot.yml`, with `workflow_ref` in `qos/qos`;
+- `workflow == snapshot-wpe-buildroot.yml`, with `workflow_ref` in `tilo/tilo`;
 - the requested mode is exactly one of the two `resolve-*`, two `publish-*`, or
   `promote` modes above, and `(run_id, run_attempt, mode)` has not already
   received a lease.
 
 Give resolve-mode registry leases pull access, publish-mode leases push access,
-and promotion-mode leases pull access only to `qos/qos-wpe-buildroot`. The
+and promotion-mode leases pull access only to `tilo/tilo-wpe-buildroot`. The
 promotion job explicitly gives `actions/checkout` Forgejo's job-scoped
 `github.token` for its atomic main-branch pin commit, so the broker does not
 mint a repository PAT.
@@ -420,14 +441,14 @@ refresh the expiry as a steady-state operating procedure.
 
 ## Package indexes
 
-`publish-homebrew-tap.sh` creates `qos/homebrew-qos` when needed, renders the
+`publish-homebrew-tap.sh` creates `tilo/homebrew-tilo` when needed, renders the
 formula and cask from release digests, audits them, and pushes `main`. Configure
 the broker's `homebrew` exchange as described above. `HOMEBREW_TAP_TOKEN` is
 accepted only when the explicit static-bootstrap switch is enabled.
 
 WinGet's public consumer path is the Microsoft community index. A self-hosted
 source is a separate HTTPS REST service that every user must add as
-administrator, so qOS does not make it the default. `publish-winget.sh` creates
+administrator, so Tilo does not make it the default. `publish-winget.sh` creates
 the release bot's GitHub fork when needed and opens the one-version PR expected
 by `microsoft/winget-pkgs`. Configure:
 
@@ -436,10 +457,16 @@ by `microsoft/winget-pkgs`. Configure:
   static-bootstrap-only fallback;
 - repository variable `WINGET_GITHUB_USER`: that bot account's login.
 
+The `Monitor / WinGet acceptance` workflow runs every six hours and can also be
+dispatched manually. It reads the release already published by the landing
+page, refuses to select another version, and uses
+`IMAGER_SITE_CREDENTIAL_BROKER` to advance `submitted` to `available` only
+after Microsoft's public index serves the exact identifier and version.
+
 After first publication users install with:
 
 ```text
-brew tap qos/qos https://code.sandbox.example/qos/homebrew-qos.git
-brew install qos-imager
-winget install qOS.Imager
+brew tap tilo/tilo https://code.sandbox.example/qos/homebrew-tilo.git
+brew install tilo-imager
+winget install Tilo.Imager
 ```

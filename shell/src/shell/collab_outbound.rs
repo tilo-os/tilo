@@ -100,7 +100,7 @@ impl PeerPublisher {
             tracing::warn!(
                 "collab outbound: no peer network — this session is \
                  LOCAL ONLY. Nothing typed in any app will reach another \
-                 machine. (Peer sync is off, or QOS_PEER_KEY_PATH did not \
+                 machine. (Peer sync is off, or TILO_PEER_KEY_PATH did not \
                  point somewhere writable.)"
             );
             Self::disabled()

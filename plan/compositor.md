@@ -2,13 +2,11 @@
 
 The compositor is a single Rust binary, `shell`, that is a real **Wayland server** built on `smithay` 0.6+. It hosts the in-tree shell chrome (top bar, wheel disc, command palette, modals) and third-party Wayland clients adopted into the workspace/strip/group model.
 
-The phased rewrite (`docs/superpowers/archive/2026-05-02-real-wayland-compositor.md` phases 0-7) is complete; this document describes the resulting design.
-
 ## Modes and backends
 
 The binary picks a mode and a backend at startup:
 
-- `--mode native` (default since Phase 7) — `shell` IS the compositor. Hosts a real Wayland socket, accepts third-party clients, paints frames itself.
+- `--mode native` (default) — `shell` is the compositor. It hosts a Wayland socket, accepts third-party clients, and paints frames itself.
 - `--mode hosted` — runs as a regular `ui` Wayland *client* of an existing display server. Useful for development inside an existing GNOME/Sway session; **not** a separate compositor.
 
 Within `--mode native`, the backend is a trait (`compositor::backend::Backend`) and `--backend` picks the implementation:
@@ -31,7 +29,7 @@ pub trait Backend {
 }
 ```
 
-`drm` Phase 5.3 (vello → DMA-BUF direct interop, zero-copy GPU scanout) is deferred — see the compositor plan's Phase 5 notes. The current DRM path renders via wgpu's GL fallback into a GBM buffer.
+The DRM path currently renders via wgpu's GL fallback into a GBM buffer. Direct vello-to-DMA-BUF interop remains future work.
 
 ## Presentation: cadence and threading
 
@@ -62,7 +60,7 @@ queueing a burst.
 
 **`compositor::present`** — presentation off the input thread. Backends
 that can be split hand a `Presenter` (their render state) to a
-`PresentPipe`, which owns a `qos-present` thread. The seam is the
+`PresentPipe`, which owns a `tilo-present` thread. The seam is the
 finished `vello::Scene`: an owned encoding that borrows nothing from the
 Automerge document, the widget tree or the text renderer, so the logic
 thread keeps sole ownership of the CRDT and `ui`'s "widgets mutate the
@@ -83,7 +81,7 @@ Resize and DPMS travel the same channel as frames, so a blank cannot
 overtake a frame already queued.
 
 `shell/src/compositor/metrics.rs` instruments all of it
-(`QOS_FRAME_TRACE`, `QOS_FRAME_SUMMARY`); `scripts/perf/frame-loop-bench.py`
+(`TILO_FRAME_TRACE`, `TILO_FRAME_SUMMARY`); `scripts/perf/frame-loop-bench.py`
 drives a measured run and diffs two of them.
 
 **Known residual: client dispatch is the next thing on the logic
@@ -103,7 +101,7 @@ per frame, is the follow-up — and the frame trace already measures it.
 
 **What is verified, and what isn't.** The loop demonstrably holds the
 cadence it is configured for — including non-60 rates, via the
-`QOS_REFRESH_HZ` override. That is a statement about the *loop*. It is
+`TILO_REFRESH_HZ` override. That is a statement about the *loop*. It is
 not a statement about frames landing on a real panel's vblank: nothing in
 this design consumes hardware presentation feedback (DRM page-flip
 completion timestamps, or a `presentation-time` protocol event from a
@@ -216,11 +214,11 @@ Backend events (`BackendEvent::Pointer / Key / …`) flow into `smithay::input::
 - Shell-chrome shortcuts (palette open, wheel disc, workspace switching) are intercepted before the seat dispatch.
 - Per-workspace input policy (host-priority over guests, per-peer `read_only` flags) is enforced when `RemoteInput` arrives — see `plan/collaboration.md`.
 
-### Test-control input (`QOS_TEST_CONTROL`)
+### Test-control input (`TILO_TEST_CONTROL`)
 
 When the env var is set, the compositor binds an additional unix socket alongside the wayland one. Newline-delimited JSON commands dispatch on the calloop main thread via `calloop::ping::Ping`, so seat injection stays single-threaded. Inputs go through `smithay::input::Seat::input` — same focus rules as physical input.
 
-Phase 1 of the spec has landed (`shell/src/compositor/test_control.rs`): the pure-logic dispatcher plus `list_targets` and `click_at`. Later phases (drag, key, type, modifiers, snapshot, state_dump, the `qos-control` CLI binary, and `tests/support/live_compositor.rs`) are described in `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`.
+`shell/src/compositor/test_control.rs` implements semantic target listing and activation, pointer and keyboard input, state inspection, and snapshots. `tilo-control` exposes the protocol as a CLI, and `shell/tests/control_socket_test.rs` covers the live socket.
 
 ### Keyboard shortcuts (host-only)
 
@@ -273,11 +271,10 @@ Fallback if bare DRM init fails: relaunch under `cage` as a single-window Waylan
 - **Peer sync, foreign-surface streaming, remote input replay** — `plan/collaboration.md`.
 - **xdg-desktop-portal backend** — `plan/security.md` and `shell/src/portal/`.
 - **WorkspaceTree CRDT shape** — `plan/architecture.md` plus `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`.
-- **Future**: vello → DMA-BUF direct interop (deferred Phase 5.3), libei input emulation in addition to the control socket, multi-monitor workspace pinning.
+- **Future**: vello → DMA-BUF direct interop, libei input emulation in addition to the control socket, multi-monitor workspace pinning.
 
 ## Where to read first
 
 - `shell/src/compositor/{mod.rs, state.rs, native.rs, hosted.rs, frame.rs, tab_binding.rs, test_control.rs}` — the live wiring.
 - `shell/src/compositor/backend/{mod.rs, winit.rs, drm/}` — backend implementations.
-- `docs/superpowers/archive/2026-05-02-real-wayland-compositor.md` — phase-by-phase implementation log.
 - `shell/tests/{compositor_test.rs, interaction_test.rs, drm_backend_boot.rs, control_socket_test.rs}` — the integration coverage.

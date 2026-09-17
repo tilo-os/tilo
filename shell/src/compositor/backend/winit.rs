@@ -16,13 +16,13 @@ use std::time::Duration;
 
 use vello::peniko::Color;
 // `ui::gpu`'s context, not `vello::util`'s — this window shares an
-// integrated GPU with every other qOS process and needs the same memory
+// integrated GPU with every other Tilo process and needs the same memory
 // hint (see `ui/src/gpu.rs`).
 use ui::gpu::RenderContext;
 use vello::util::RenderSurface;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -39,8 +39,8 @@ const INITIAL_HEIGHT: u32 = 900;
 /// Override for the initial window size, as `WxH`. Named rather than left
 /// to a resize because resizing this backend isn't free: reconfiguring the
 /// surface while a frame is in flight panics the present thread. Mirrors
-/// `NIRIOS_HEADLESS_SIZE`, which the headless backend reads for the same reason.
-const SIZE_ENV: &str = "NIRIOS_WINIT_SIZE";
+/// `TILO_HEADLESS_SIZE`, which the headless backend reads for the same reason.
+const SIZE_ENV: &str = "TILO_WINIT_SIZE";
 
 /// Size the host window is created at; falls back to the defaults on
 /// anything unparseable, zero, or absent — a typo should give the ordinary
@@ -57,7 +57,7 @@ fn initial_size() -> (u32, u32) {
         size
     } else {
         eprintln!(
-            "nirios compositor: {SIZE_ENV}={raw:?} is not a usable WxH; \
+            "tilo compositor: {SIZE_ENV}={raw:?} is not a usable WxH; \
              using {INITIAL_WIDTH}x{INITIAL_HEIGHT}"
         );
         (INITIAL_WIDTH, INITIAL_HEIGHT)
@@ -102,6 +102,14 @@ fn apply_scale_factor_changed(output: &mut Output, scale_factor: f64) -> Option<
     })
 }
 
+fn relative_motion_from_device_event(focused: bool, event: &DeviceEvent) -> Option<(f64, f64)> {
+    let DeviceEvent::MouseMotion { delta: (dx, dy) } = event else {
+        return None;
+    };
+    (focused && dx.is_finite() && dy.is_finite() && (*dx != 0.0 || *dy != 0.0))
+        .then_some((*dx, *dy))
+}
+
 /// Base color for the first few frames before a theme arrives. Matches
 /// `ui::theme::Theme::dark().bg_app` so the window doesn't flash white on
 /// boot; overridden each frame via [`WinitBackend::set_base_color`].
@@ -131,6 +139,10 @@ struct Inner {
     /// Set when `pump_app_events` returns `Exit`, so we emit one
     /// `CloseRequested` and stop pumping.
     closed: bool,
+    /// Raw device motion must never control Tilo while its hosted window is
+    /// unfocused. Window events already obey that boundary; `DeviceEvent`
+    /// deliberately does not, so we gate it explicitly.
+    focused: bool,
 }
 
 struct RenderState {
@@ -159,6 +171,7 @@ impl WinitBackend {
                 event_buffer: Vec::new(),
                 base_color: FALLBACK_BG,
                 closed: false,
+                focused: false,
             },
         };
         me.pump_until_resumed();
@@ -192,7 +205,7 @@ impl WinitBackend {
         }
         if self.inner.window.is_none() {
             eprintln!(
-                "nirios compositor: winit did not deliver `resumed` within 2s; \
+                "tilo compositor: winit did not deliver `resumed` within 2s; \
                  falling back to lazy window creation"
             );
         }
@@ -230,7 +243,7 @@ impl WinitPresenter {
         // dropped out from under us — skip the frame rather than panic.
         let Some(device_handle) = render.render_cx.devices.get(render.surface.dev_id) else {
             eprintln!(
-                "nirios compositor: render_and_present: no device handle for dev_id {}",
+                "tilo compositor: render_and_present: no device handle for dev_id {}",
                 render.surface.dev_id
             );
             return;
@@ -251,7 +264,7 @@ impl WinitPresenter {
             },
         );
         if let Err(e) = result {
-            eprintln!("nirios compositor: render_to_texture: {e:?}");
+            eprintln!("tilo compositor: render_to_texture: {e:?}");
             return;
         }
         let surface_texture = match render.surface.surface.get_current_texture() {
@@ -262,11 +275,11 @@ impl WinitPresenter {
             }
             wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => return,
             wgpu::CurrentSurfaceTexture::Lost => {
-                eprintln!("nirios compositor: surface lost");
+                eprintln!("tilo compositor: surface lost");
                 return;
             }
             wgpu::CurrentSurfaceTexture::Validation => {
-                eprintln!("nirios compositor: surface validation error");
+                eprintln!("tilo compositor: surface validation error");
                 return;
             }
         };
@@ -274,7 +287,7 @@ impl WinitPresenter {
             device_handle
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("nirios compositor blit"),
+                    label: Some("tilo compositor blit"),
                 });
         render.surface.blitter.copy(
             &device_handle.device,
@@ -302,7 +315,7 @@ impl WinitPresenter {
             timeout: Some(Duration::from_secs(1)),
         });
         if let Err(e) = waited {
-            eprintln!("nirios compositor: frame fence wait: {e:?} — carrying on");
+            eprintln!("tilo compositor: frame fence wait: {e:?} — carrying on");
         }
     }
 }
@@ -367,7 +380,7 @@ impl Backend for WinitBackend {
             // No legitimate path here — construction drains `resumed`. Log
             // rather than quietly leaving the GPU submit on the input thread.
             eprintln!(
-                "nirios compositor: winit backend has no render state to hand \
+                "tilo compositor: winit backend has no render state to hand \
                  to the render thread; presenting inline"
             );
             return None;
@@ -407,7 +420,7 @@ impl ApplicationHandler for Inner {
             return;
         }
         let attrs = WindowAttributes::default()
-            .with_title("nirios")
+            .with_title("tilo")
             .with_inner_size({
                 let (w, h) = initial_size();
                 winit::dpi::PhysicalSize::new(w, h)
@@ -415,7 +428,7 @@ impl ApplicationHandler for Inner {
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
-                eprintln!("nirios compositor: create_window: {e:?}");
+                eprintln!("tilo compositor: create_window: {e:?}");
                 event_loop.exit();
                 return;
             }
@@ -446,7 +459,7 @@ impl ApplicationHandler for Inner {
                 s
             }
             Err(e) => {
-                eprintln!("nirios compositor: create_surface: {e:?}");
+                eprintln!("tilo compositor: create_surface: {e:?}");
                 event_loop.exit();
                 return;
             }
@@ -455,7 +468,7 @@ impl ApplicationHandler for Inner {
         // very surface — a miss here means device state vanished under us.
         let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
             eprintln!(
-                "nirios compositor: resumed: no device handle for dev_id {}",
+                "tilo compositor: resumed: no device handle for dev_id {}",
                 surface.dev_id
             );
             event_loop.exit();
@@ -472,7 +485,7 @@ impl ApplicationHandler for Inner {
         ) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("nirios compositor: Renderer::new: {e:?}");
+                eprintln!("tilo compositor: Renderer::new: {e:?}");
                 event_loop.exit();
                 return;
             }
@@ -563,6 +576,7 @@ impl ApplicationHandler for Inner {
                 }
             }
             WindowEvent::Focused(focused) => {
+                self.focused = focused;
                 self.event_buffer.push(BackendEvent::Focus(focused));
             }
             WindowEvent::RedrawRequested => {
@@ -583,6 +597,21 @@ impl ApplicationHandler for Inner {
                     .push(BackendEvent::ModifiersChanged(modifiers));
             }
             _ => {}
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        if let Some((dx, dy)) = relative_motion_from_device_event(self.focused, &event) {
+            // Unlike `CursorMoved`, raw motion keeps arriving after the host
+            // cursor reaches a window edge. This gives the nested/dev backend
+            // the same four-edge cross-device control contract as DRM.
+            self.event_buffer
+                .push(BackendEvent::RelativePointerMotion { dx, dy });
         }
     }
 
@@ -625,5 +654,31 @@ mod tests {
         assert!(apply_scale_factor_changed(&mut output, 0.0).is_none());
         assert!(apply_scale_factor_changed(&mut output, f64::NAN).is_none());
         assert_eq!(output.scale, 1.25);
+    }
+
+    #[test]
+    fn raw_motion_is_forwarded_only_while_the_host_window_is_focused() {
+        let motion = DeviceEvent::MouseMotion { delta: (-4.5, 2.0) };
+        assert_eq!(
+            relative_motion_from_device_event(true, &motion),
+            Some((-4.5, 2.0))
+        );
+        assert_eq!(relative_motion_from_device_event(false, &motion), None);
+        assert_eq!(
+            relative_motion_from_device_event(
+                true,
+                &DeviceEvent::MouseMotion {
+                    delta: (f64::NAN, 1.0),
+                },
+            ),
+            None
+        );
+        assert_eq!(
+            relative_motion_from_device_event(
+                true,
+                &DeviceEvent::MouseMotion { delta: (0.0, 0.0) },
+            ),
+            None
+        );
     }
 }

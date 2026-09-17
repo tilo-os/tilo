@@ -12,6 +12,7 @@ use crate::shell::personal_continuity::{
     AppInstanceId, ContinuityError, LaunchIntent, ResumeMetadata, ResumeSensitivity,
 };
 use crate::shell::state::RoomId;
+use launcher::manifest::ContinuityFacet;
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,6 +34,15 @@ struct MusicResume {
     track_id: String,
     position_ms: u64,
     paused: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatResume {
+    workspace_id: String,
+    channel_id: String,
+    media: ui::realtime_continuity::RealtimeMediaFacets,
+    controls: ui::realtime_continuity::RealtimeControlIntent,
 }
 
 fn portable_id(value: &str) -> bool {
@@ -59,24 +69,54 @@ fn portable_http_url(value: &str) -> bool {
 }
 
 pub(crate) fn validate_app_metadata(app_id: &str, schema: u16, bytes: &[u8]) -> bool {
+    if schema == ui::app::STRUCTURAL_CONTINUATION_SCHEMA {
+        return ui::app::sanitize_structural_continuation_metadata(bytes, |schema, bytes| {
+            validate_app_semantic_metadata(app_id, schema, bytes)
+        })
+        .is_some();
+    }
     if schema == ui::app::GENERIC_VIEW_CONTINUATION_SCHEMA {
         return ui::app::validate_generic_continuation_metadata(bytes);
     }
+    validate_app_semantic_metadata(app_id, schema, bytes)
+}
+
+fn validate_app_semantic_metadata(app_id: &str, schema: u16, bytes: &[u8]) -> bool {
     if schema != 1 {
         return false;
     }
     match app_id {
-        "dev.qos.browser" => serde_json::from_slice::<BrowserResume>(bytes)
+        "dev.tilo.browser" => serde_json::from_slice::<BrowserResume>(bytes)
             .is_ok_and(|resume| portable_http_url(&resume.url)),
-        "dev.qos.ebook" => serde_json::from_slice::<EbookResume>(bytes).is_ok_and(|resume| {
+        "dev.tilo.ebook" => serde_json::from_slice::<EbookResume>(bytes).is_ok_and(|resume| {
             let _ = (resume.chapter, resume.page);
             portable_id(&resume.book_id)
         }),
-        "dev.qos.music" => serde_json::from_slice::<MusicResume>(bytes).is_ok_and(|resume| {
+        "dev.tilo.music" => serde_json::from_slice::<MusicResume>(bytes).is_ok_and(|resume| {
             let _ = resume.position_ms;
             resume.paused && portable_id(&resume.track_id)
         }),
+        "dev.tilo.chat" => serde_json::from_slice::<ChatResume>(bytes).is_ok_and(|resume| {
+            let _ = resume.controls;
+            resume.media.valid()
+                && resume.media.microphone
+                && !resume.media.share_audio
+                && portable_id(&resume.workspace_id)
+                && portable_id(&resume.channel_id)
+        }),
         _ => false,
+    }
+}
+
+fn required_facets_for_app(app_id: &str) -> Result<Vec<ContinuityFacet>, ContinuityError> {
+    match crate::shell::launcher::installed_continuity_required_facets(app_id) {
+        crate::shell::launcher::InstalledContinuityRequirements::NotInstalled => {
+            Ok(vec![ContinuityFacet::Presentation])
+        }
+        crate::shell::launcher::InstalledContinuityRequirements::Required(required) => Ok(required),
+        crate::shell::launcher::InstalledContinuityRequirements::Invalid => {
+            Err(ContinuityError::InvalidResumePayload)
+        }
     }
 }
 
@@ -126,11 +166,44 @@ impl ContinuationRegistry {
         bytes: Vec<u8>,
     ) -> Result<bool, ContinuityError> {
         let app_id = app_id.into();
+        let required = required_facets_for_app(&app_id)?;
+        self.report_with_required_facets(
+            room,
+            app_id,
+            instance_id,
+            schema_version,
+            bytes,
+            &required,
+        )
+    }
+
+    fn report_with_required_facets(
+        &mut self,
+        room: RoomId,
+        app_id: String,
+        instance_id: AppInstanceId,
+        schema_version: u16,
+        bytes: Vec<u8>,
+        required: &[ContinuityFacet],
+    ) -> Result<bool, ContinuityError> {
         // Reuse the launch target validator: a process cannot smuggle a local
         // pathname into the registry key either.
         LaunchIntent::app(app_id.clone())?;
-        let resume = ResumeMetadata::new(schema_version, ResumeSensitivity::Syncable, bytes)?;
-        if !validate_app_metadata(&app_id, schema_version, resume.bytes()) {
+        let resume = if schema_version == ui::app::STRUCTURAL_CONTINUATION_SCHEMA {
+            let bytes =
+                ui::app::sanitize_structural_continuation_metadata(&bytes, |schema, bytes| {
+                    validate_app_semantic_metadata(&app_id, schema, bytes)
+                })
+                .ok_or(ContinuityError::InvalidResumePayload)?;
+            ResumeMetadata::new(schema_version, ResumeSensitivity::Syncable, bytes)?
+        } else {
+            let resume = ResumeMetadata::new(schema_version, ResumeSensitivity::Syncable, bytes)?;
+            if !validate_app_metadata(&app_id, schema_version, resume.bytes()) {
+                return Err(ContinuityError::InvalidResumePayload);
+            }
+            resume
+        };
+        if !resume_has_required_facets(&resume, required) {
             return Err(ContinuityError::InvalidResumePayload);
         }
         let report = AppContinuationReport {
@@ -208,6 +281,12 @@ impl ContinuationRegistry {
         resume: ResumeMetadata,
         record_instance: AppInstanceId,
     ) {
+        let Ok(required) = required_facets_for_app(&app_id) else {
+            return;
+        };
+        if !resume_has_required_facets(&resume, &required) {
+            return;
+        }
         self.remote_resumes.insert(
             (room, app_id.clone(), tab),
             ResolvedContinuation {
@@ -298,6 +377,27 @@ impl ContinuationRegistry {
     }
 }
 
+fn resume_has_required_facets(resume: &ResumeMetadata, required: &[ContinuityFacet]) -> bool {
+    let (presentation, semantic) = match resume.schema_version() {
+        ui::app::STRUCTURAL_CONTINUATION_SCHEMA => {
+            let Some(facets) = ui::app::structural_continuation_facets(resume.bytes()) else {
+                return false;
+            };
+            (facets.presentation(), facets.semantic())
+        }
+        ui::app::GENERIC_VIEW_CONTINUATION_SCHEMA => (true, false),
+        _ => (false, true),
+    };
+    // Presentation is a framework invariant, not an app-controlled opt-in.
+    // Even a malformed/legacy signed contract with an empty requirement list
+    // cannot downgrade the structural checkpoint back to opaque app bytes.
+    presentation
+        && required.iter().all(|facet| match facet {
+            ContinuityFacet::Presentation => presentation,
+            ContinuityFacet::Semantic => semantic,
+        })
+}
+
 /// The shell broker and network share this process-local registry. It is not
 /// persisted: authoritative app CRDT state repopulates it after launch.
 pub fn global_registry() -> Arc<Mutex<ContinuationRegistry>> {
@@ -309,36 +409,59 @@ pub fn global_registry() -> Arc<Mutex<ContinuationRegistry>> {
 mod tests {
     use super::*;
 
+    fn browser_checkpoint(url: &[u8]) -> ui::collaboration::ContinuationMetadata {
+        ui::app::compose_structural_continuation_metadata(
+            ui::view::View::default(),
+            Some(ui::collaboration::ContinuationMetadata {
+                schema_version: 1,
+                bytes: url.to_vec(),
+            }),
+        )
+        .unwrap()
+    }
+
+    fn report_browser(
+        reports: &mut ContinuationRegistry,
+        room: RoomId,
+        instance: AppInstanceId,
+        url: &[u8],
+    ) -> Result<bool, ContinuityError> {
+        let metadata = browser_checkpoint(url);
+        reports.report(
+            room,
+            "dev.tilo.browser",
+            instance,
+            metadata.schema_version,
+            metadata.bytes,
+        )
+    }
+
     #[test]
     fn replaces_only_changed_safe_reports() {
         let room = RoomId::new();
         let mut reports = ContinuationRegistry::default();
         assert!(
-            reports
-                .report(
-                    room,
-                    "dev.qos.browser",
-                    AppInstanceId(11),
-                    1,
-                    br#"{"url":"https://qos.dev"}"#.to_vec()
-                )
-                .unwrap()
+            report_browser(
+                &mut reports,
+                room,
+                AppInstanceId(11),
+                br#"{"url":"https://tilo.dev"}"#,
+            )
+            .unwrap()
         );
         assert!(
-            !reports
-                .report(
-                    room,
-                    "dev.qos.browser",
-                    AppInstanceId(11),
-                    1,
-                    br#"{"url":"https://qos.dev"}"#.to_vec()
-                )
-                .unwrap()
+            !report_browser(
+                &mut reports,
+                room,
+                AppInstanceId(11),
+                br#"{"url":"https://tilo.dev"}"#,
+            )
+            .unwrap()
         );
         assert_eq!(reports.len(), 1);
         assert!(
             reports
-                .resume_for(room, "dev.qos.browser", AppInstanceId(11))
+                .resume_for(room, "dev.tilo.browser", AppInstanceId(11))
                 .is_some()
         );
     }
@@ -348,7 +471,7 @@ mod tests {
         let error = ContinuationRegistry::default()
             .report(
                 RoomId::new(),
-                "dev.qos.browser",
+                "dev.tilo.browser",
                 AppInstanceId(11),
                 1,
                 b"file:///home/alice/private".to_vec(),
@@ -364,7 +487,7 @@ mod tests {
         assert_eq!(
             reports.report(
                 room,
-                "dev.qos.mail",
+                "dev.tilo.mail",
                 AppInstanceId(1),
                 1,
                 br#"{"password":"secret"}"#.to_vec(),
@@ -374,7 +497,7 @@ mod tests {
         assert_eq!(
             reports.report(
                 room,
-                "dev.qos.browser",
+                "dev.tilo.browser",
                 AppInstanceId(2),
                 1,
                 br#"{"url":"https://alice:secret@example.test"}"#.to_vec(),
@@ -385,30 +508,151 @@ mod tests {
     }
 
     #[test]
+    fn chat_continuation_accepts_only_bounded_semantic_call_intent() {
+        let safe = br#"{
+            "workspace_id":"ws_acme",
+            "channel_id":"c_huddle",
+            "media":{"microphone":true,"camera":true,"screen_share":false,"share_audio":false},
+            "controls":{"microphone_muted":true,"camera_muted":false,"screen_share_paused":false,"share_audio_muted":true}
+        }"#;
+        assert!(validate_app_metadata("dev.tilo.chat", 1, safe));
+        assert!(!validate_app_metadata(
+            "dev.tilo.chat",
+            1,
+            br#"{
+                "workspace_id":"ws_acme","channel_id":"https://join.invalid/secret",
+                "media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},
+                "controls":{"microphone_muted":false,"camera_muted":true,"screen_share_paused":false,"share_audio_muted":true}
+            }"#,
+        ));
+        assert!(!validate_app_metadata(
+            "dev.tilo.chat",
+            1,
+            br#"{
+                "workspace_id":"ws_acme","channel_id":"c_huddle","members":["alice"],
+                "media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},
+                "controls":{"microphone_muted":false,"camera_muted":true,"screen_share_paused":false,"share_audio_muted":true}
+            }"#,
+        ));
+    }
+
+    #[test]
+    fn unknown_app_semantics_cannot_suppress_framework_presentation() {
+        let metadata = ui::app::compose_structural_continuation_metadata(
+            ui::view::View {
+                scroll: vec![24.0],
+                focus: None,
+                open_resource: None,
+                viewport: ui::view::ViewRect::default(),
+                view_mode: Some("grid".into()),
+            },
+            Some(ui::collaboration::ContinuationMetadata {
+                schema_version: 1,
+                bytes: br#"{"password":"must-not-survive"}"#.to_vec(),
+            }),
+        )
+        .unwrap();
+        let room = RoomId::new();
+        let instance = AppInstanceId(41);
+        let mut reports = ContinuationRegistry::default();
+        assert!(
+            reports
+                .report(
+                    room,
+                    "dev.tilo.custom",
+                    instance,
+                    metadata.schema_version,
+                    metadata.bytes,
+                )
+                .unwrap()
+        );
+        let retained = reports
+            .resume_for(room, "dev.tilo.custom", instance)
+            .expect("generic presentation is retained");
+        let facets = ui::app::structural_continuation_facets(retained.bytes()).unwrap();
+        assert!(facets.presentation());
+        assert!(!facets.semantic());
+        assert!(
+            !retained
+                .bytes()
+                .windows(8)
+                .any(|window| window == b"password")
+        );
+    }
+
+    #[test]
+    fn semantic_manifest_contract_rejects_presentation_only_regression() {
+        let room = RoomId::new();
+        let instance = AppInstanceId(72);
+        let presentation_only =
+            ui::app::compose_structural_continuation_metadata(ui::view::View::default(), None)
+                .unwrap();
+        let required = [ContinuityFacet::Presentation, ContinuityFacet::Semantic];
+        let mut reports = ContinuationRegistry::default();
+        assert_eq!(
+            reports.report_with_required_facets(
+                room,
+                "dev.tilo.browser".into(),
+                instance,
+                presentation_only.schema_version,
+                presentation_only.bytes,
+                &required,
+            ),
+            Err(ContinuityError::InvalidResumePayload)
+        );
+
+        let complete = browser_checkpoint(br#"{"url":"https://tilo.dev"}"#);
+        assert!(
+            reports
+                .report_with_required_facets(
+                    room,
+                    "dev.tilo.browser".into(),
+                    instance,
+                    complete.schema_version,
+                    complete.bytes,
+                    &required,
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn empty_manifest_contract_cannot_opt_out_of_framework_presentation() {
+        let mut reports = ContinuationRegistry::default();
+        assert_eq!(
+            reports.report_with_required_facets(
+                RoomId::new(),
+                "dev.tilo.browser".into(),
+                AppInstanceId(73),
+                1,
+                br#"{"url":"https://tilo.dev"}"#.to_vec(),
+                &[],
+            ),
+            Err(ContinuityError::InvalidResumePayload)
+        );
+    }
+
+    #[test]
     fn two_browser_instances_keep_distinct_urls() {
         let room = RoomId::new();
         let mut reports = ContinuationRegistry::default();
-        reports
-            .report(
-                room,
-                "dev.qos.browser",
-                AppInstanceId(11),
-                1,
-                br#"{"url":"https://a.test"}"#.to_vec(),
-            )
-            .unwrap();
-        reports
-            .report(
-                room,
-                "dev.qos.browser",
-                AppInstanceId(22),
-                1,
-                br#"{"url":"https://b.test"}"#.to_vec(),
-            )
-            .unwrap();
+        report_browser(
+            &mut reports,
+            room,
+            AppInstanceId(11),
+            br#"{"url":"https://a.test"}"#,
+        )
+        .unwrap();
+        report_browser(
+            &mut reports,
+            room,
+            AppInstanceId(22),
+            br#"{"url":"https://b.test"}"#,
+        )
+        .unwrap();
         reports.bind_tab(AppInstanceId(101), AppInstanceId(11));
         reports.bind_tab(AppInstanceId(202), AppInstanceId(22));
-        let launch = LaunchIntent::app("dev.qos.browser").unwrap();
+        let launch = LaunchIntent::app("dev.tilo.browser").unwrap();
         assert_eq!(reports.len(), 2);
         assert_ne!(
             reports.resume_for_tab(room, AppInstanceId(101), &launch),
@@ -424,44 +668,40 @@ mod tests {
             (AppInstanceId(11), br#"{"url":"https://a.test"}"#.as_slice()),
             (AppInstanceId(22), br#"{"url":"https://b.test"}"#.as_slice()),
         ] {
-            reports
-                .report(room, "dev.qos.browser", instance, 1, url.to_vec())
-                .unwrap();
+            report_browser(&mut reports, room, instance, url).unwrap();
         }
 
-        assert!(reports.clear(room, "dev.qos.browser", AppInstanceId(11)));
+        assert!(reports.clear(room, "dev.tilo.browser", AppInstanceId(11)));
         assert!(
             reports
-                .resume_for(room, "dev.qos.browser", AppInstanceId(11))
+                .resume_for(room, "dev.tilo.browser", AppInstanceId(11))
                 .is_none()
         );
         assert!(
             reports
-                .resume_for(room, "dev.qos.browser", AppInstanceId(22))
+                .resume_for(room, "dev.tilo.browser", AppInstanceId(22))
                 .is_some()
         );
-        assert!(!reports.clear(room, "dev.qos.browser", AppInstanceId(11)));
+        assert!(!reports.clear(room, "dev.tilo.browser", AppInstanceId(11)));
     }
 
     #[test]
     fn remote_refresh_does_not_replace_a_live_tab_record() {
         let room = RoomId::new();
-        let launch = LaunchIntent::app("dev.qos.browser").unwrap();
+        let launch = LaunchIntent::app("dev.tilo.browser").unwrap();
         let mut reports = ContinuationRegistry::default();
         reports.bind_tab(AppInstanceId(10), AppInstanceId(101));
-        reports
-            .report(
-                room,
-                "dev.qos.browser",
-                AppInstanceId(101),
-                1,
-                br#"{"url":"https://local.test"}"#.to_vec(),
-            )
-            .unwrap();
+        report_browser(
+            &mut reports,
+            room,
+            AppInstanceId(101),
+            br#"{"url":"https://local.test"}"#,
+        )
+        .unwrap();
         reports.store_remote_resume(
             room,
             AppInstanceId(10),
-            "dev.qos.browser".into(),
+            "dev.tilo.browser".into(),
             ResumeMetadata::new(
                 1,
                 ResumeSensitivity::Syncable,
@@ -474,23 +714,29 @@ mod tests {
             .continuation_for_tab(room, AppInstanceId(10), &launch)
             .unwrap();
         assert_eq!(resolved.record_instance, AppInstanceId(101));
-        assert_eq!(resolved.resume.bytes(), br#"{"url":"https://local.test"}"#);
+        assert_eq!(
+            resolved.resume.schema_version(),
+            ui::app::STRUCTURAL_CONTINUATION_SCHEMA
+        );
+        let facets = ui::app::structural_continuation_facets(resolved.resume.bytes()).unwrap();
+        assert!(facets.presentation() && facets.semantic());
     }
 
     #[test]
     fn removing_a_closed_remote_tab_drops_its_staged_checkpoint() {
         let room = RoomId::new();
         let tab = AppInstanceId(10);
-        let launch = LaunchIntent::app("dev.qos.browser").unwrap();
+        let launch = LaunchIntent::app("dev.tilo.browser").unwrap();
         let mut reports = ContinuationRegistry::default();
+        let metadata = browser_checkpoint(br#"{"url":"https://closed.test"}"#);
         reports.store_remote_resume(
             room,
             tab,
-            "dev.qos.browser".into(),
+            "dev.tilo.browser".into(),
             ResumeMetadata::new(
-                1,
+                metadata.schema_version,
                 ResumeSensitivity::Syncable,
-                br#"{"url":"https://closed.test"}"#.to_vec(),
+                metadata.bytes,
             )
             .unwrap(),
             AppInstanceId(101),

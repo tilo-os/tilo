@@ -40,7 +40,7 @@
 //! readiness is not bounded to one frame. The asynchronous path does wait
 //! for its mapping. If a budget is too small, that render can omit work;
 //! later renders grow from the counters that were reached before failure.
-//! This is therefore appropriate for qOS only because its first-render
+//! This is therefore appropriate for Tilo only because its first-render
 //! floors cover measured application and compositor scenes. A one-shot
 //! renderer should not rely on adaptation to repair its only output.
 
@@ -198,7 +198,7 @@ impl BudgetTracker {
     /// renderer reject the incomplete pixels and immediately submit again.
     #[allow(
         clippy::print_stderr,
-        reason = "qOS applications do not install a log-to-tracing bridge"
+        reason = "Tilo applications do not install a log-to-tracing bridge"
     )]
     pub(crate) fn collect(&mut self, device: &Device, engine: &mut WgpuEngine) -> (bool, bool) {
         let Some(pending) = self.pending.take() else {

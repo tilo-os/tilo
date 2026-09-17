@@ -298,12 +298,12 @@ mod tests {
 
     /// Build a payload directory plus the record that describes it, exactly as the installer would.
     fn fixture(root: &Path) -> (PathBuf, String) {
-        let payload = root.join("payloads/dev.qos.example");
+        let payload = root.join("payloads/dev.tilo.example");
         std::fs::create_dir_all(payload.join("bin")).unwrap();
         std::fs::write(payload.join("bin/app"), b"binary bytes").unwrap();
         std::fs::write(payload.join("data.txt"), b"hello").unwrap();
 
-        let manifest_bytes = b"[package]\nid = \"dev.qos.example\"\n".to_vec();
+        let manifest_bytes = b"[package]\nid = \"dev.tilo.example\"\n".to_vec();
         let collection = Collection::from_entries([
             ("bin/app".to_string(), BlobHash::of(b"binary bytes")),
             ("data.txt".to_string(), BlobHash::of(b"hello")),
@@ -319,7 +319,7 @@ mod tests {
 
         record(
             root,
-            "dev.qos.example",
+            "dev.tilo.example",
             &signed_bytes,
             &manifest_bytes,
             &collection_bytes,
@@ -332,7 +332,7 @@ mod tests {
     fn an_untouched_install_verifies() {
         let tmp = tempfile::tempdir().unwrap();
         let (payload, id_hex) = fixture(tmp.path());
-        let report = verify(tmp.path(), "dev.qos.example", &id_hex, &payload).unwrap();
+        let report = verify(tmp.path(), "dev.tilo.example", &id_hex, &payload).unwrap();
         assert!(report.is_intact(), "{report:?}");
         assert_eq!(report.files_checked, 2);
         assert!(report.unexpected.is_empty());
@@ -343,7 +343,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (payload, id_hex) = fixture(tmp.path());
         std::fs::write(payload.join("bin/app"), b"tampered").unwrap();
-        let report = verify(tmp.path(), "dev.qos.example", &id_hex, &payload).unwrap();
+        let report = verify(tmp.path(), "dev.tilo.example", &id_hex, &payload).unwrap();
         assert!(!report.is_intact());
         assert_eq!(report.faults, vec![FileFault::Modified("bin/app".into())]);
     }
@@ -353,7 +353,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (payload, id_hex) = fixture(tmp.path());
         std::fs::remove_file(payload.join("data.txt")).unwrap();
-        let report = verify(tmp.path(), "dev.qos.example", &id_hex, &payload).unwrap();
+        let report = verify(tmp.path(), "dev.tilo.example", &id_hex, &payload).unwrap();
         assert_eq!(report.faults, vec![FileFault::Missing("data.txt".into())]);
     }
 
@@ -362,7 +362,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (payload, id_hex) = fixture(tmp.path());
         std::fs::write(payload.join("extra.so"), b"?").unwrap();
-        let report = verify(tmp.path(), "dev.qos.example", &id_hex, &payload).unwrap();
+        let report = verify(tmp.path(), "dev.tilo.example", &id_hex, &payload).unwrap();
         assert!(report.is_intact(), "a stray file is not proof of tampering");
         assert_eq!(report.unexpected, vec!["extra.so".to_string()]);
     }
@@ -375,7 +375,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (payload, _id_hex) = fixture(tmp.path());
         let wrong_hex = hex::encode([0u8; 32]);
-        let err = verify(tmp.path(), "dev.qos.example", &wrong_hex, &payload)
+        let err = verify(tmp.path(), "dev.tilo.example", &wrong_hex, &payload)
             .expect_err("the record does not describe that package id");
         assert!(matches!(err, IntegrityError::RootIdMismatch));
     }
@@ -386,11 +386,11 @@ mod tests {
         let (payload, id_hex) = fixture(tmp.path());
         let forged = Collection::from_entries([("bin/app".to_string(), BlobHash::of(b"tampered"))]);
         std::fs::write(
-            record_dir(tmp.path(), "dev.qos.example").join(COLLECTION),
+            record_dir(tmp.path(), "dev.tilo.example").join(COLLECTION),
             forged.encode(),
         )
         .unwrap();
-        let err = verify(tmp.path(), "dev.qos.example", &id_hex, &payload)
+        let err = verify(tmp.path(), "dev.tilo.example", &id_hex, &payload)
             .expect_err("the collection hash is covered by the signature");
         assert!(matches!(err, IntegrityError::CollectionMismatch));
     }
@@ -400,7 +400,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let err = verify(
             tmp.path(),
-            "dev.qos.never-installed",
+            "dev.tilo.never-installed",
             &hex::encode([0u8; 32]),
             tmp.path(),
         )
@@ -412,8 +412,8 @@ mod tests {
     fn forget_removes_the_record() {
         let tmp = tempfile::tempdir().unwrap();
         let _ = fixture(tmp.path());
-        assert!(has_record(tmp.path(), "dev.qos.example"));
-        forget(tmp.path(), "dev.qos.example");
-        assert!(!has_record(tmp.path(), "dev.qos.example"));
+        assert!(has_record(tmp.path(), "dev.tilo.example"));
+        forget(tmp.path(), "dev.tilo.example");
+        assert!(!has_record(tmp.path(), "dev.tilo.example"));
     }
 }
