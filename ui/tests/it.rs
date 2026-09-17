@@ -49,6 +49,8 @@ mod diagnostics_outlive_a_closed_log_pipe;
 mod dnd_test;
 #[path = "f1_spacing_token_audit.rs"]
 mod f1_spacing_token_audit;
+#[path = "f2_control_row_alignment.rs"]
+mod f2_control_row_alignment;
 #[path = "file_picker_render_test.rs"]
 mod file_picker_render_test;
 #[path = "filled_control_labels_are_readable.rs"]

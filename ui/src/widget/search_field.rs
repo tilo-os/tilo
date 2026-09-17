@@ -27,6 +27,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
+use crate::widget::text::centered_text_top;
 use crate::widget::{TextInput, TextInputKind, Widget};
 
 const HEIGHT: f64 = 38.0;
@@ -34,6 +35,16 @@ const ICON_GUTTER: f64 = 34.0;
 const CLEAR_GUTTER: f64 = 30.0;
 const ICON_D: f64 = 16.0;
 const CLEAR_D: f64 = 16.0;
+
+/// The palette-shortcut key cap drawn at the trailing edge when the field
+/// opens the palette instead of editing. A 20 px cap with a 7 px inset each
+/// side around an 11 px label, set 10 px in from the pill's edge so it
+/// clears the pill's curvature; the label is centred on its measured line.
+const KBD_HEIGHT: f64 = 20.0;
+const KBD_PAD_X: f64 = 7.0;
+const KBD_INSET: f64 = 10.0;
+const KBD_RADIUS: f64 = 5.0;
+const KBD_LABEL_SIZE: f32 = 11.0;
 
 /// A search-styled input: magnifier + editable text + clear button.
 #[allow(
@@ -200,20 +211,17 @@ impl SearchField {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        const SIZE: f32 = 11.0;
         let label = Shortcut::command("K").label(self.platform);
-        let (tw, _) = text_renderer.measure(&label, SIZE, None);
-        let chip_h = 20.0_f64;
-        let chip_w = f64::from(tw) + 14.0;
-        let right_inset = 10.0_f64;
+        let (tw, th) = text_renderer.measure(&label, KBD_LABEL_SIZE, None);
+        let chip_w = f64::from(tw) + 2.0 * KBD_PAD_X;
         let cy = self.rect.center().y;
         let chip = Rect::new(
-            self.rect.x1 - right_inset - chip_w,
-            cy - chip_h / 2.0,
-            self.rect.x1 - right_inset,
-            cy + chip_h / 2.0,
+            self.rect.x1 - KBD_INSET - chip_w,
+            cy - KBD_HEIGHT / 2.0,
+            self.rect.x1 - KBD_INSET,
+            cy + KBD_HEIGHT / 2.0,
         );
-        let rounded = RoundedRect::from_rect(chip, 5.0);
+        let rounded = RoundedRect::from_rect(chip, KBD_RADIUS);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -233,8 +241,19 @@ impl SearchField {
             reason = "Affine composition is float matrix multiplication; it cannot overflow \
                       or panic"
         )]
-        let label_transform = transform * Affine::translate((chip.x0 + 7.0, cy - 6.5));
-        text_renderer.draw_text(scene, &label, SIZE, theme.text_dim, label_transform, None);
+        // Centre the measured line in the chip; the former `cy - 6.5` was a
+        // hand-tuned offset for an 11 px face that left the label a fraction
+        // low and could not follow a text-scale change.
+        let label_top = centered_text_top(chip.y0, KBD_HEIGHT, f64::from(th));
+        let label_transform = transform * Affine::translate((chip.x0 + KBD_PAD_X, label_top));
+        text_renderer.draw_text(
+            scene,
+            &label,
+            KBD_LABEL_SIZE,
+            theme.text_dim,
+            label_transform,
+            None,
+        );
     }
 }
 
@@ -513,6 +532,39 @@ pub(crate) fn observed_language(field: &SearchField) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The palette key cap centres its label on the measured 11 px line
+    /// inside the 20 px cap — not on the former hand-tuned `cy - 6.5`.
+    #[test]
+    fn palette_keycap_label_centres_its_measured_line() {
+        let mut field = SearchField::new().opens_palette();
+        lay_out(&mut field, 400.0);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        field.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let label = Shortcut::command("K").label(field.platform);
+        // The cap is painted after the (empty) input, so its label is the
+        // last glyph run of the frame.
+        let runs = scene.encoding().resources.glyph_runs.len();
+        assert!(runs > 0, "key cap label glyphs");
+        crate::widget::text::assert_glyph_run_centred_in_band(
+            &scene,
+            runs - 1,
+            &label,
+            KBD_LABEL_SIZE,
+            field.rect.center().y - KBD_HEIGHT / 2.0,
+            KBD_HEIGHT,
+            &mut tr,
+            theme.text_dim,
+        );
+    }
 
     #[allow(
         clippy::cast_possible_truncation,
