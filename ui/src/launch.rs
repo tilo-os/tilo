@@ -955,6 +955,24 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
     theme.with_reduce_motion(shot_motion_reduced())
 }
 
+/// The screenshot theme for capture frontends that have no [`LaunchArgs`]
+/// (the `ui-shots` examples): `QOS_SHOTS_THEME`, `QOS_SHOTS_TEXT_SCALE` and
+/// the motion preference through the same policy as [`shot_theme`]. An
+/// unknown theme name is an error rather than a silent fall back to dark, so
+/// a mis-typed light capture cannot masquerade as a dark one.
+pub fn shot_theme_from_env() -> Result<Theme, String> {
+    let theme = match std::env::var("QOS_SHOTS_THEME") {
+        Ok(name) => {
+            Theme::named(&name).ok_or_else(|| format!("unknown QOS_SHOTS_THEME `{name}`"))?
+        }
+        Err(_) => Theme::dark(),
+    };
+    let environment_scale = std::env::var("QOS_SHOTS_TEXT_SCALE").ok();
+    Ok(theme
+        .with_text_scale(shot_text_scale(None, environment_scale.as_deref()))
+        .with_reduce_motion(shot_motion_reduced()))
+}
+
 /// Resolve screenshot text-scale precedence without reading process-global
 /// state. Custom capture frontends can pass their parsed CLI value and the
 /// compatibility environment value through the same policy as [`shot_theme`].
