@@ -21,15 +21,25 @@ namespace qos {
 class Downloads final : public CefDownloadHandler {
  public:
   using Emit=std::function<void(const std::string&,CefRefPtr<CefDictionaryValue>)>;
-  Downloads(std::string directory,Emit emit,std::function<int(CefRefPtr<CefBrowser>)> owner,std::function<bool(int)> eligible,std::function<void(int)> owner_idle,std::function<void()> changed):downloads_(std::move(directory)),emit_(std::move(emit)),owner_(std::move(owner)),eligible_(std::move(eligible)),owner_idle_(std::move(owner_idle)),changed_(std::move(changed)) {}
+  Downloads(std::string directory,Emit emit,std::function<int(CefRefPtr<CefBrowser>)> owner,
+            std::function<bool(int)> eligible,std::function<bool(int)> can_reserve,
+            std::function<void(int,bool)> owner_busy,std::function<void(int)> owner_idle,
+            std::function<void()> changed)
+      :downloads_(std::move(directory)),emit_(std::move(emit)),owner_(std::move(owner)),
+       eligible_(std::move(eligible)),can_reserve_(std::move(can_reserve)),
+       owner_busy_(std::move(owner_busy)),owner_idle_(std::move(owner_idle)),changed_(std::move(changed)) {}
   size_t Admitted() const {return slots_.Size();}
   bool Accepting() const {return accepting_;}
+  bool OwnerBusy(int owner) const {
+    const auto matches=[owner](const auto& entry){return entry.second.owner==owner;};
+    return std::any_of(transfers_.begin(),transfers_.end(),matches) ||
+           std::any_of(early_.begin(),early_.end(),matches);
+  }
   bool Detach(int tab) {
     std::vector<int> pending;
     for(const auto& [id,transfer]:transfers_) if(transfer.owner==tab && !transfer.approved) pending.push_back(id);
     for(int id:pending) CancelDownload(id);
-    auto early=slots_.EarlyForOwner(tab);
-    for(int id:early){auto transfer=early_[id];if(transfer.active)transfer.active->Cancel();early_.erase(id);TerminalWithoutTransfer(id,transfer.name,transfer.url,false,"cancelled","");}
+    for(int id:slots_.EarlyForOwner(tab)) CancelEarly(id,"cancelled","");
     return std::any_of(transfers_.begin(),transfers_.end(),[tab](const auto& entry){return entry.second.owner==tab && entry.second.approved;});
   }
   static std::string FileName(std::string name) {
@@ -46,16 +56,30 @@ class Downloads final : public CefDownloadHandler {
     return true;
   }
   bool OnBeforeDownload(CefRefPtr<CefBrowser> browser,CefRefPtr<CefDownloadItem> item,const CefString& suggested,CefRefPtr<CefBeforeDownloadCallback> callback) override {
-    int id=item->GetId();
+    const int id=item->GetId();
     if(terminal_.count(id))return true;
     const int owner=owner_(browser);const auto url=item->GetURL().ToString();auto name=FileName(suggested);
     const bool retryable=provenance_.TakeRetryable(owner,item->GetOriginalUrl().ToString(),url);
     auto early=early_.find(id);const bool staged=early!=early_.end();
-    if(!accepting_ || !owner || !eligible_(owner)) {if(staged){early->second.active->Cancel();early_.erase(early);}TerminalWithoutTransfer(id,name,url,false,"failed","Download source is no longer visible");return true;}
+    const bool source_valid=accepting_ && owner && eligible_(owner);
+    const bool owner_capacity=staged || (source_valid && can_reserve_(owner));
+    if(!source_valid || !owner_capacity) {
+      const std::string error=!source_valid ? "Download source is no longer visible" : "Download owner limit reached (32 retained owners)";
+      if(staged) {
+        auto transfer=early->second;early_.erase(early);transfers_[id]=std::move(transfer);
+        transfers_[id].name=name;transfers_[id].url=url;
+        auto active=transfers_[id].active;
+        Finish(id,"failed",error);
+        if(active)active->Cancel();
+      } else TerminalWithoutTransfer(id,name,url,false,"failed",error);
+      return true;
+    }
     if(!slots_.Admit(id)) {TerminalWithoutTransfer(id,name,url,retryable,"failed","Download limit reached (32 active transfers)");return true;}
+    const bool was_busy=OwnerBusy(owner);
     slots_.Promote(id);
     Transfer transfer;if(staged){transfer=early->second;early_.erase(early);}transfer.owner=owner;transfer.before=callback;transfer.name=name;transfer.url=url;transfer.retryable=retryable;
     transfers_[id]=std::move(transfer);
+    OwnerStateChanged(owner,was_busy);
     auto d=CefDictionaryValue::Create();d->SetInt("id",id);d->SetString("url",url);d->SetString("name",name);emit_("download_prompt",d);Changed();
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Downloads> self,int id){self->DownloadDecision(id,false);},CefRefPtr<Downloads>(this),id),60000);
     return true;
@@ -68,14 +92,25 @@ class Downloads final : public CefDownloadHandler {
     // names cannot traverse or overwrite an existing file, even on repetition.
     std::string directory=downloads_+"/qos-download-XXXXXX";
     if(ec || !mkdtemp(directory.data())) { Finish(id,"failed","Cannot create download directory");return; }
-    it->second.approved=true;auto callback=it->second.before;it->second.before=nullptr;
-    callback->Continue(directory+"/"+it->second.name,false);Changed();
+    it->second.approved=true;
+    auto callback=it->second.before;it->second.before=nullptr;
+    callback->Continue(directory+"/"+it->second.name,false);
+    Changed();
   }
   void CancelDownload(int id) {
     auto it=transfers_.find(id);if(it==transfers_.end()) return;
-    if(!it->second.approved) {if(it->second.active)it->second.active->Cancel();Finish(id,"cancelled","");return;}
+    if(!it->second.approved) {
+      auto active=it->second.active;
+      Finish(id,"cancelled","");
+      if(active)active->Cancel();
+      return;
+    }
     it->second.cancel_requested=true;
-    if(it->second.active && !it->second.cancel_sent) {it->second.cancel_sent=true;it->second.active->Cancel();}
+    CefRefPtr<CefDownloadItemCallback> active;
+    if(it->second.active && !it->second.cancel_sent) {
+      it->second.cancel_sent=true;active=it->second.active;
+    }
+    if(active)active->Cancel();
     Changed();
   }
   void OnDownloadUpdated(CefRefPtr<CefBrowser> browser,CefRefPtr<CefDownloadItem> item,CefRefPtr<CefDownloadItemCallback> callback) override {
@@ -91,8 +126,15 @@ class Downloads final : public CefDownloadHandler {
         Finish(id,state,state=="failed"?"Chromium interrupted download ("+std::to_string(item->GetInterruptReason())+")":"");return;
       }
       if(item->IsInProgress()) {
-        const int owner=owner_(browser);if(!slots_.Stage(id,owner)){callback->Cancel();TerminalWithoutTransfer(id,FileName(item->GetSuggestedFileName()),item->GetURL(),false,"failed","Download limit reached (32 active transfers)");return;}
-        Transfer transfer;transfer.owner=owner;transfer.active=callback;Merge(transfer,item);early_[id]=std::move(transfer);Changed();
+        const int owner=owner_(browser);
+        if(!accepting_ || !owner || !eligible_(owner) || !can_reserve_(owner)) {
+          callback->Cancel();TerminalWithoutTransfer(id,FileName(item->GetSuggestedFileName()),item->GetURL(),false,"failed","Download owner unavailable");return;
+        }
+        if(!slots_.Stage(id,owner)){callback->Cancel();TerminalWithoutTransfer(id,FileName(item->GetSuggestedFileName()),item->GetURL(),false,"failed","Download limit reached (32 active transfers)");return;}
+        const bool was_busy=OwnerBusy(owner);
+        Transfer transfer;transfer.owner=owner;transfer.active=callback;Merge(transfer,item);early_[id]=std::move(transfer);
+        OwnerStateChanged(owner,was_busy);
+        Changed();
       }
       return;
     }
@@ -109,10 +151,16 @@ class Downloads final : public CefDownloadHandler {
     auto found=history_.find(id);if(!accepting_ || !browser || found==history_.end() || !found->second.retryable) return;
     browser->GetHost()->StartDownload(found->second.url);
   }
-  void CancelAll() {accepting_=false;std::vector<int> staged;for(const auto& entry:early_)staged.push_back(entry.first);for(int id:staged){auto transfer=early_[id];if(transfer.active)transfer.active->Cancel();early_.erase(id);TerminalWithoutTransfer(id,transfer.name,transfer.url,false,"cancelled","");}std::vector<int> ids;for(const auto& entry:transfers_)ids.push_back(entry.first);for(int id:ids)CancelDownload(id);Changed();}
-  void Close() {
-    CancelAll();
+  void CancelAll() {
+    accepting_=false;
+    std::vector<int> staged;for(const auto& entry:early_)staged.push_back(entry.first);
+    for(int id:staged)CancelEarly(id,"cancelled","");
+    std::vector<int> ids;for(const auto& entry:transfers_)ids.push_back(entry.first);
+    for(int id:ids)CancelDownload(id);
+    // This event is the acknowledgment barrier consumed by cancel-and-quit.
+    Changed();
   }
+  void Close() {CancelAll();}
  private:
   struct Transfer {int owner=0;CefRefPtr<CefBeforeDownloadCallback> before;CefRefPtr<CefDownloadItemCallback> active;std::string name,url,path;int64_t received=0,total=0;bool retryable=false,approved=false,cancel_requested=false,cancel_sent=false;};
   struct RetryRecord {std::string url;bool retryable=false;};
@@ -128,10 +176,30 @@ class Downloads final : public CefDownloadHandler {
     history_[id]={transfer.url,transfer.retryable};terminal_.insert(id);terminal_order_.push_back(id);
     while(terminal_order_.size()>100){int old=terminal_order_.front();terminal_order_.pop_front();terminal_.erase(old);history_.erase(old);}
   }
+  void OwnerStateChanged(int owner,bool was_busy) {
+    const bool busy=OwnerBusy(owner);
+    if(busy==was_busy)return;
+    owner_busy_(owner,busy);
+    if(was_busy && !busy)
+      CefPostTask(TID_UI,base::BindOnce([](std::function<void(int)> callback,int id){callback(id);},owner_idle_,owner));
+  }
   void Finish(int id,const std::string& state,const std::string& error) {
-    if(terminal_.count(id))return;auto it=transfers_.find(id);if(it==transfers_.end())return;auto transfer=it->second;transfers_.erase(it);slots_.Settle(id);Remember(id,transfer);EmitState(id,transfer,state,error);Changed();
-    const bool owner_busy=std::any_of(transfers_.begin(),transfers_.end(),[&](const auto& entry){return entry.second.owner==transfer.owner;});
-    if(!owner_busy) CefPostTask(TID_UI,base::BindOnce([](std::function<void(int)> callback,int owner){callback(owner);},owner_idle_,transfer.owner));
+    if(terminal_.count(id))return;
+    auto it=transfers_.find(id);if(it==transfers_.end())return;
+    auto transfer=it->second;const bool was_busy=OwnerBusy(transfer.owner);
+    transfers_.erase(it);slots_.Settle(id);Remember(id,transfer);
+    EmitState(id,transfer,state,error);
+    OwnerStateChanged(transfer.owner,was_busy);
+    Changed();
+  }
+  void CancelEarly(int id,const std::string& state,const std::string& error) {
+    auto found=early_.find(id);if(found==early_.end())return;
+    auto transfer=found->second;const bool was_busy=OwnerBusy(transfer.owner);
+    early_.erase(found);slots_.Settle(id);Remember(id,transfer);
+    auto active=transfer.active;if(active)active->Cancel();
+    EmitState(id,transfer,state,error);
+    OwnerStateChanged(transfer.owner,was_busy);
+    Changed();
   }
   void TerminalWithoutTransfer(int id,const std::string& name,const std::string& url,bool retryable,const std::string& state,const std::string& error) {
     if(terminal_.count(id))return;slots_.Settle(id);Transfer transfer;transfer.name=name;transfer.url=url;transfer.retryable=retryable;Remember(id,transfer);EmitState(id,transfer,state,error);Changed();
@@ -139,7 +207,8 @@ class Downloads final : public CefDownloadHandler {
   void Changed(){if(changed_)changed_();}
   std::string downloads_;Emit emit_;
   std::function<int(CefRefPtr<CefBrowser>)> owner_;
-  std::function<bool(int)> eligible_;std::function<void(int)> owner_idle_;std::function<void()> changed_;
+  std::function<bool(int)> eligible_,can_reserve_;
+  std::function<void(int,bool)> owner_busy_;std::function<void(int)> owner_idle_;std::function<void()> changed_;
   bool accepting_=true;
   DownloadSlots slots_;std::map<int,Transfer> transfers_,early_;std::map<int,RetryRecord> history_;std::set<int> terminal_;std::deque<int> terminal_order_;
   DownloadProvenance provenance_;

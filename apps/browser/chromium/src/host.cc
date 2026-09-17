@@ -134,6 +134,7 @@ bool private_mode=false;
 std::string downloads_directory;
 CefRefPtr<qos::RequestFilter> request_filter;
 CefRefPtr<qos::Downloads> downloads;
+qos::DownloadOwnerReservations download_owners;
 
 class Client final : public CefClient, public CefRenderHandler, public CefLifeSpanHandler,
                      public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler, public CefFindHandler, public CefContextMenuHandler, public CefDialogHandler {
@@ -219,7 +220,19 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   bool DoClose(CefRefPtr<CefBrowser>) override { return false; }
   void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
-    if(browser_ && browser->IsSame(browser_)) { request_filter->Remove(browser->GetIdentifier());if(site_clear_)site_clear_->Detach();site_clear_=nullptr;capabilities_->Close();if(navigation_history_)navigation_history_->Detach();navigation_history_=nullptr;if(document_scripts_)document_scripts_->Detach();document_scripts_=nullptr;browser_=nullptr;Event("closed");clients.erase(id_);PublishDownloadRuntime();if(closing && clients.empty()) CefQuitMessageLoop(); }
+    if(!browser_ || !browser->IsSame(browser_))return;
+    request_filter->Remove(browser->GetIdentifier());
+    if(site_clear_)site_clear_->Detach();
+    site_clear_=nullptr;
+    capabilities_->Close();
+    if(navigation_history_)navigation_history_->Detach();
+    navigation_history_=nullptr;
+    if(document_scripts_)document_scripts_->Detach();
+    document_scripts_=nullptr;
+    browser_=nullptr;
+    download_owners.Destroy(id_);
+    Event("closed");clients.erase(id_);PublishDownloadRuntime();
+    if(closing && clients.empty())CefQuitMessageLoop();
   }
   bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool,bool) override {
     if(frame->IsMain()) { request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
@@ -464,6 +477,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void CloseNative() {if(!browser_ || native_closing_)return;native_closing_=true;browser_->GetHost()->CloseDevTools();browser_->GetHost()->CloseBrowser(true);}
   void DetachVisible() {
     if(transfer_owner_ || native_closing_)return;const bool retained=downloads->Detach(id_);if(!retained){CloseNative();return;}
+    // Every busy visible owner reserved this slot at admission, so detaching
+    // cannot displace accepted work even while earlier owners await destruction.
+    if(!download_owners.Detach(id_)){Event("close_blocked");return;}
     transfer_owner_=true;visible_=false;auto host=browser_->GetHost();host->WasHidden(true);host->SetFocus(false);
     if(context_callback_){context_callback_->Cancel();context_callback_=nullptr;}capabilities_->Close();pixels_.clear();popup_.clear();Event("tab_detached");PublishDownloadRuntime();
   }
@@ -492,7 +508,13 @@ size_t VisibleOwners() {return std::count_if(clients.begin(),clients.end(),[](co
 void PublishDownloadRuntime() {
   if(!downloads)return;auto d=CefDictionaryValue::Create();d->SetInt("admitted",static_cast<int>(downloads->Admitted()));d->SetInt("detached",static_cast<int>(DetachedOwners()));d->SetBool("accepting",downloads->Accepting());d->SetString("error","");Event("download_runtime",d);
 }
-void DownloadOwnerIdle(int id) {auto found=clients.find(id);if(found!=clients.end() && found->second->detached())found->second->CloseNative();PublishDownloadRuntime();}
+void DownloadOwnerIdle(int id) {
+  auto found=clients.find(id);
+  const bool detached=found!=clients.end() && found->second->detached();
+  const bool busy=downloads && downloads->OwnerBusy(id);
+  if(found!=clients.end() && qos::ShouldCloseDetached(detached,busy))found->second->CloseNative();
+  PublishDownloadRuntime();
+}
 void CreateTab(int id) {
   if(closing || id<=0 || clients.count(id) || VisibleOwners()>=32 || clients.size()>=64) {auto d=CefDictionaryValue::Create();d->SetInt("tab",id);Event("closed",d);return;}
   auto client=CefRefPtr<Client>(new Client(id));clients.emplace(id,client);
@@ -530,7 +552,15 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     } else {
       shared_context=CefRequestContext::CreateContext(CefRequestContext::GetGlobalContext(),request_filter);
     }
-    downloads=new qos::Downloads(downloads_directory,[](const std::string& name,CefRefPtr<CefDictionaryValue> fields){ ::Event(name,fields); },[](CefRefPtr<CefBrowser> browser) { for(const auto& entry:clients) if(entry.second->browser_ && browser && entry.second->browser_->IsSame(browser)) return entry.first;return 0; },[](int id){auto found=clients.find(id);return found!=clients.end() && found->second->accepts_downloads();},[](int id){DownloadOwnerIdle(id);},[]{PublishDownloadRuntime();});
+    downloads=new qos::Downloads(
+      downloads_directory,
+      [](const std::string& name,CefRefPtr<CefDictionaryValue> fields){::Event(name,fields);},
+      [](CefRefPtr<CefBrowser> browser){for(const auto& entry:clients)if(entry.second->browser_ && browser && entry.second->browser_->IsSame(browser))return entry.first;return 0;},
+      [](int id){auto found=clients.find(id);return found!=clients.end() && found->second->accepts_downloads();},
+      [](int id){auto found=clients.find(id);return found!=clients.end() && found->second->accepts_downloads() && download_owners.CanAdmit(id);},
+      [](int id,bool busy){download_owners.SetBusy(id,busy);PublishDownloadRuntime();},
+      [](int id){DownloadOwnerIdle(id);},
+      []{PublishDownloadRuntime();});
     CreateTab(1);PublishDownloadRuntime();if(clients.empty()) CefQuitMessageLoop();
   }
  private: IMPLEMENT_REFCOUNTING(App);

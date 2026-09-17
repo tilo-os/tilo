@@ -142,28 +142,39 @@ class Lifetime(unittest.TestCase):
         self.terminal(host, pending["id"], "cancelled")
         host.until(lambda event: event["event"] == "closed" and event.get("tab") == 1)
 
-    def test_post_terminal_is_not_retryable(self):
+    def test_post_retry_is_refused_while_accepting_then_cancel_all_acknowledges(self):
         host = self.host()
         host.send(op="navigate", tab=1, url=f"http://127.0.0.1:{self.server.server_port}/post-start")
         prompt = host.until(lambda event: event["event"] == "download_prompt")
         host.send(op="download_decision", tab=1, id=prompt["id"], allow=True)
         host.until(lambda event: event["event"] == "download" and event["id"] == prompt["id"] and event["received"] >= 32768)
-        host.send(op="download_cancel_all", tab=1)
+        host.send(op="download_cancel", tab=1, id=prompt["id"])
         cancelled = self.terminal(host, prompt["id"], "cancelled")
         self.assertFalse(cancelled["retryable"])
+        prompt_count = sum(event.get("event") == "download_prompt" for event in host.seen)
+        host.send(op="download_retry", tab=1, id=prompt["id"])
+        host.settle(0.5)
+        self.assertEqual(sum(event.get("event") == "download_prompt" for event in host.seen), prompt_count)
+        self.assertTrue(
+            next(event for event in reversed(host.seen) if event.get("event") == "download_runtime")["accepting"],
+            "POST retry refusal must not depend on the cancel-all barrier",
+        )
+        with Page.requests_lock:
+            self.assertIn(("POST", "/file?case=post"), Page.requests)
+            self.assertNotIn(("GET", "/file?case=post"), Page.requests)
+
+        host.send(op="navigate", tab=1, url=self.url + "?case=cancel-all")
+        active = host.until(lambda event: event["event"] == "download_prompt")
+        host.send(op="download_decision", tab=1, id=active["id"], allow=True)
+        host.until(lambda event: event["event"] == "download" and event["id"] == active["id"] and event["received"] >= 32768)
+        host.send(op="download_cancel_all", tab=1)
+        self.terminal(host, active["id"], "cancelled")
         runtime = host.until(
             lambda event: event["event"] == "download_runtime"
             and event["admitted"] == 0
             and not event["accepting"]
         )
         self.assertEqual(runtime["detached"], 0)
-        prompt_count = sum(event.get("event") == "download_prompt" for event in host.seen)
-        host.send(op="download_retry", tab=1, id=prompt["id"])
-        host.settle(0.5)
-        self.assertEqual(sum(event.get("event") == "download_prompt" for event in host.seen), prompt_count)
-        with Page.requests_lock:
-            self.assertIn(("POST", "/file?case=post"), Page.requests)
-            self.assertNotIn(("GET", "/file?case=post"), Page.requests)
 
     def test_destination_failure_settles_without_detached_owner(self):
         host = self.host(("--downloads=/dev/null/qos-downloads",))
