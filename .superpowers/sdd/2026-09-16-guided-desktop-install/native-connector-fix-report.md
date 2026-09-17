@@ -31,10 +31,10 @@ The minimal GREEN change uses `connector::Interface`: `Virtual` remains eligible
 Native GREEN command at implementation commit `ccc2ebae07b951367aef4888de564f888d5755a8`:
 
 ```text
-CARGO_TARGET_DIR=/home/parallels/qos-target cargo test --locked -p shell --lib --no-default-features compositor::backend::drm::scanout::tests -- --nocapture
+CARGO_TARGET_DIR=/home/parallels/qos-target cargo test --locked -p shell --lib --no-default-features compositor::backend::drm::scanout::tests -- --test-threads=1
 ```
 
-Result: exit `0`; all 20 selected scanout unit tests passed, 0 ignored, 2,690 filtered. This includes all five eligibility regressions and existing connector-key/configuration, cursor, damage, mode-timing, and page-flip policy regressions. Compilation took 1m31s and test execution 0.34s. The only warning was the pre-existing unused `restore_documents` method in shell hosted-input code, outside this task's scope.
+Result: exit `0`; all 20 selected scanout unit tests passed, 0 ignored, 2,690 filtered. This includes all five eligibility regressions and existing topology/configuration, cursor, damage, and page-flip policy regressions. Compilation took 1m31s and test execution 0.34s. The only warning was the pre-existing unused `restore_documents` method in shell hosted-input code, outside this task's scope.
 
 ## Formatting and self-review
 
