@@ -73,28 +73,50 @@ pub fn chip_rows_for_width(avail: f32) -> usize {
 }
 
 /// Height of the chip-grid region (header, wrapped chip rows, caption) at a
-/// content width of `avail`. Measured from the row count instead of a fixed
-/// band, so a wide panel that fits every chip on one row does not leave a
-/// dead strip between the chips and their caption.
+/// content width of `avail`, at 1×. Measured from the row count instead of a
+/// fixed band, so a wide panel that fits every chip on one row does not leave
+/// a dead strip between the chips and their caption.
 pub fn chip_grid_height(avail: f32) -> f32 {
+    chip_grid_height_scaled(avail, 1.0)
+}
+
+/// [`chip_grid_height`] at the accessibility text scale: the header block
+/// and the caption seat glyphs the renderer draws at that scale, so they
+/// grow with it; the chips themselves do not.
+pub fn chip_grid_height_scaled(avail: f32, text_scale: f32) -> f32 {
+    let scale = f64::from(text_scale.max(1.0));
     let rows = chip_rows_for_width(avail) as f64;
     let chips = rows * (CHIP_SIZE + CHIP_GAP) - CHIP_GAP;
-    (CHIP_HEADER_H + chips + CHIP_CAPTION_GAP + CHIP_CAPTION_H) as f32
+    ((CHIP_HEADER_H + CHIP_CAPTION_GAP + CHIP_CAPTION_H) * scale + chips) as f32
 }
 
 /// Intrinsic content height of the customizer column (grid + picker + two
 /// sliders + font dropdown + actions, plus padding and inter-row gaps) when
-/// the panel is `panel_width` wide. Used to stack it under the preview inside
-/// the narrow vertical scroll, where the panel can't claim `percent(1.0)`.
+/// the panel is `panel_width` wide, at 1×. Used to stack it under the
+/// preview inside the narrow vertical scroll, where the panel can't claim
+/// `percent(1.0)`.
 pub fn intrinsic_height_for_width(panel_width: f32) -> f32 {
+    intrinsic_height_for_width_scaled(panel_width, 1.0)
+}
+
+/// [`intrinsic_height_for_width`] at the accessibility text scale. The
+/// inter-control gap carries each control's label (drawn one label offset
+/// above the control), so it grows with the type as the grid's header does;
+/// the toolkit controls keep their own heights.
+pub fn intrinsic_height_for_width_scaled(panel_width: f32, text_scale: f32) -> f32 {
+    let scale = text_scale.max(1.0);
     PAD * 2.0
-        + chip_grid_height(panel_width - PAD * 2.0)
-        + GAP * 5.0
+        + chip_grid_height_scaled(panel_width - PAD * 2.0, scale)
+        + GAP * scale * 5.0
         + PICKER_H
         + SLIDER_H * 2.0
         + DROPDOWN_H
         + ACTIONS_H
 }
+
+/// Vertical offset (logical px, at 1×) of a control's label above its
+/// control — a `sm` line plus its `s1` caption gap.
+const CONTROL_LABEL_OFFSET: f64 = 18.0;
 
 /// Panic-free leaf/parent node construction for [`Widget::build_layout`].
 /// `TaffyTree::new_leaf` / `new_with_children` are typed `-> TaffyResult<_>`
@@ -158,6 +180,11 @@ pub struct Customizer {
     /// for. The owning app sets it from the layout class it is building
     /// (docked column or full narrow width) before every `build_layout`.
     layout_width: f32,
+    /// The OS theme's text scale as `build_layout` last saw it. The panel's
+    /// hand-laid text (header, caption, control labels) is drawn at that
+    /// scale by the renderer, so the offsets that seat it follow the same
+    /// factor.
+    text_scale: f32,
 }
 
 impl Default for Customizer {
@@ -214,6 +241,7 @@ impl Customizer {
             structure_dirty: false,
             cursor: None,
             layout_width: 0.0,
+            text_scale: 1.0,
         }
     }
 
@@ -226,8 +254,21 @@ impl Customizer {
     /// Intrinsic content height of the panel at the width it was last told
     /// about (see [`Self::set_layout_width`]); the narrow stacked layout uses
     /// it to size the panel as a scrolling stack member.
-    pub fn intrinsic_height(&self) -> f32 {
-        intrinsic_height_for_width(self.layout_width)
+    pub fn intrinsic_height(&self, text_scale: f32) -> f32 {
+        intrinsic_height_for_width_scaled(self.layout_width, text_scale)
+    }
+
+    /// The text scale the panel's hand-laid text geometry follows, as
+    /// `build_layout` last saw it on the OS theme.
+    fn scale(&self) -> f64 {
+        f64::from(self.text_scale.max(1.0))
+    }
+
+    /// Renderer-relative size for a theme-resolved type size, so the theme's
+    /// text scale is applied exactly once.
+    fn renderer_size(tr: &TextRenderer, size: f32) -> f32 {
+        tr.renderer_input_style(&ui::text_render::TextStyle::new(size))
+            .size
     }
 
     /// Content width the chip grid is sized for: the declared panel width
@@ -335,12 +376,16 @@ impl Widget for Customizer {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = theme.text_scale;
         let grid = leaf_node(
             taffy,
             Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(chip_grid_height(self.grid_content_width())),
+                    height: Dimension::length(chip_grid_height_scaled(
+                        self.grid_content_width(),
+                        theme.text_scale,
+                    )),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
@@ -387,9 +432,11 @@ impl Widget for Customizer {
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
+                // Each control's label rides in the gap above it, so the
+                // gap grows with the type.
                 gap: Size {
                     width: length(0.0_f32),
-                    height: length(GAP),
+                    height: length(GAP * theme.text_scale.max(1.0)),
                 },
                 padding: taffy::Rect {
                     left: length(PAD),
@@ -606,7 +653,7 @@ impl Customizer {
     fn layout_chips(&mut self) {
         self.chip_rects.clear();
         let x0 = self.grid_rect.x0;
-        let y0 = self.grid_rect.y0 + CHIP_HEADER_H;
+        let y0 = self.grid_rect.y0 + CHIP_HEADER_H * self.scale();
         let per_row = chips_per_row(self.grid_rect.width());
         for (i, tok) in TokenId::ALL.iter().enumerate() {
             let col = (i % per_row) as f64;
@@ -626,15 +673,20 @@ impl Customizer {
             .as_ref()
             .map(|s| s.name.clone())
             .unwrap_or_default();
+        // Panel title in the theme's `lg` step, the theme name and section
+        // label in `sm`; the header's 1× offsets scale with the type.
+        let scale = self.scale();
+        let title_size = Self::renderer_size(tr, theme.tokens.typography.scale.lg);
+        let small_size = Self::renderer_size(tr, theme.tokens.typography.scale.sm);
         draw::text_w(
             tr,
             scene,
             t,
             "Customize",
-            16.0,
+            title_size,
             theme.text_primary,
             self.grid_rect.x0,
-            self.grid_rect.y0 + 2.0,
+            self.grid_rect.y0 + 2.0 * scale,
             TextWeight::Bold,
         );
         draw::text(
@@ -642,10 +694,10 @@ impl Customizer {
             scene,
             t,
             &name,
-            11.0,
+            small_size,
             theme.text_dim,
             self.grid_rect.x0,
-            self.grid_rect.y0 + 22.0,
+            self.grid_rect.y0 + 22.0 * scale,
         );
 
         draw::text_w(
@@ -653,10 +705,10 @@ impl Customizer {
             scene,
             t,
             "COLORS",
-            11.0,
+            small_size,
             theme.text_dim,
             self.grid_rect.x0,
-            self.grid_rect.y0 + 40.0,
+            self.grid_rect.y0 + 40.0 * scale,
             TextWeight::Semibold,
         );
     }
@@ -680,10 +732,10 @@ impl Customizer {
                 scene,
                 t,
                 &cap,
-                12.0,
+                Self::renderer_size(tr, theme.tokens.typography.scale.sm),
                 theme.text_primary,
                 self.grid_rect.x0,
-                self.grid_rect.y1 - CHIP_CAPTION_H,
+                self.grid_rect.y1 - CHIP_CAPTION_H * self.scale(),
                 TextWeight::Medium,
             );
         }
@@ -706,26 +758,30 @@ impl Customizer {
         let radius_r = self.radius_slider.get_rect();
         let spacing_r = self.spacing_slider.get_rect();
         let font_r = self.font_dropdown.get_rect();
+        // Labels are the theme's `sm` step, one scaled label offset above
+        // their control (the inter-control gap grows by the same factor).
+        let label_size = Self::renderer_size(tr, theme.tokens.typography.scale.sm);
+        let label_offset = CONTROL_LABEL_OFFSET * self.scale();
         if let Some(spec) = &self.spec {
             draw::text(
                 tr,
                 scene,
                 t,
                 &format!("Corner radius — {:.0}px", spec.radius_px()),
-                12.0,
+                label_size,
                 theme.text_dim,
                 radius_r.x0,
-                radius_r.y0 - 18.0,
+                radius_r.y0 - label_offset,
             );
             draw::text(
                 tr,
                 scene,
                 t,
                 &format!("Spacing — {:.0}px", spec.spacing_px()),
-                12.0,
+                label_size,
                 theme.text_dim,
                 spacing_r.x0,
-                spacing_r.y0 - 18.0,
+                spacing_r.y0 - label_offset,
             );
         }
         draw::text(
@@ -733,10 +789,10 @@ impl Customizer {
             scene,
             t,
             "Font family",
-            12.0,
+            label_size,
             theme.text_dim,
             font_r.x0,
-            font_r.y0 - 18.0,
+            font_r.y0 - label_offset,
         );
 
         self.radius_slider.draw(scene, t, tr, theme, p);

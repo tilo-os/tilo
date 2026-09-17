@@ -31,6 +31,10 @@ const ICON_BTN: f64 = 32.0;
 /// Inset of a container row's text from its column edge (clears the status
 /// accent bar); the column heading shares it.
 const ROW_TEXT_INSET: f64 = 8.0;
+/// Header search launcher placeholders: the full hint, and the short form used
+/// when the field cannot hold the full one beside its ⌘K key cap.
+pub(crate) const LAUNCHER_PLACEHOLDER: &str = "Search containers…";
+const LAUNCHER_PLACEHOLDER_SHORT: &str = "Search";
 
 /// Grouped inputs to a single container row's paint (position, the
 /// container itself, the shared column x-positions, and whether the
@@ -439,6 +443,10 @@ impl ContainersApp {
             right = btn.x0 - 12.0;
         }
 
+        // The title centres on its measured line box (not `centre − 14`,
+        // which only centred a 1× x2l line) when it shares the header with
+        // the search launcher and action; the compact header stacks it above.
+        let (_, title_h) = draw::measure(tr, title, title_size, TextWeight::Bold);
         draw::text_clip(
             scene,
             tr,
@@ -453,7 +461,7 @@ impl ContainersApp {
                 if compact {
                     header.y0 + 16.0
                 } else {
-                    header.center().y - 14.0
+                    header.center().y - f64::from(title_h) / 2.0
                 },
             ),
             (right - title_x - if compact { 8.0 } else { 220.0 }).max(40.0),
@@ -478,6 +486,7 @@ impl ContainersApp {
                 header.center().y + 19.0,
             )
         };
+        self.fit_launcher_placeholder(tr, theme, search.width());
         self.draw_search_launcher(scene, tr, theme, search);
 
         // bottom divider
@@ -489,6 +498,37 @@ impl ContainersApp {
             c.border_standard,
         );
         header.y1
+    }
+
+    /// Pick the launcher placeholder that fits beside the ⌘K key cap.
+    ///
+    /// App-side fallback for `ui::SearchField`, which pads its text region by
+    /// a fixed clear-button gutter and only measures the key cap while
+    /// painting, so at 768 px "Search containers…" ran under "⌘K". Until the
+    /// field reserves the cap itself (F2, composition Task 18), the app
+    /// measures the placeholder against the room the field leaves and falls
+    /// back to the short form.
+    ///
+    /// The geometry mirrors the widget's private constants and must track
+    /// them: a 34 px leading icon gutter (`ICON_GUTTER`), the cap label at
+    /// 11 px (`KBD_LABEL_SIZE`) with 7 px of padding either side
+    /// (`KBD_PAD_X`) and a 10 px trailing inset (`KBD_INSET`); the inner
+    /// `TextInput` paints the placeholder at its own 16 px (`FONT_SIZE`). Both
+    /// sizes are renderer-relative, so they are measured with the legacy API
+    /// exactly as the widget measures them, not as theme tokens.
+    pub(crate) fn fit_launcher_placeholder(&mut self, tr: &mut TextRenderer, theme: &Theme, width: f64) {
+        let cap_label =
+            ui::Shortcut::command("K").label(ui::PlatformConventions::default());
+        let (cap_w, _) = tr.measure(&cap_label, 11.0, None);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let reserved = 34.0 + f64::from(cap_w) + 2.0 * 7.0 + 10.0 + gap;
+        let (full_w, _) = tr.measure(LAUNCHER_PLACEHOLDER, 16.0, None);
+        let placeholder = if f64::from(full_w) <= width - reserved {
+            LAUNCHER_PLACEHOLDER
+        } else {
+            LAUNCHER_PLACEHOLDER_SHORT
+        };
+        self.search_field.set_placeholder(placeholder);
     }
 
     /// Lay out and paint the header search launcher (a `ui::SearchField` in

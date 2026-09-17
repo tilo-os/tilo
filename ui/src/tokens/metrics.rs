@@ -74,6 +74,26 @@ impl Metrics {
         compact_breakpoint: 720.0,
     };
 
+    /// The factor a **text-sized** width or breakpoint grows by at a given
+    /// accessibility text scale: `text_scale.max(1.0)`.
+    ///
+    /// A destination list, an overview column and the window width at which
+    /// two panes still fit side by side are all sized by the text they hold,
+    /// so they grow with the text — but never shrink below their authored
+    /// 1× geometry, where the rows, hit targets and paddings were designed.
+    /// This is the one rule the responsive shells (`NavSplit`, `NavShell`,
+    /// `AppShell`, `SidebarDrawer`) apply to their inputs
+    /// (`crate::Theme::responsive_scale`), so an app never restates it.
+    /// A non-finite scale counts as 1×.
+    #[must_use]
+    pub fn text_growth(text_scale: f32) -> f32 {
+        if text_scale.is_finite() {
+            text_scale.max(1.0)
+        } else {
+            1.0
+        }
+    }
+
     /// Every metric multiplied by `factor`. Used by `ui_scale`; never by a
     /// custom theme's spacing preference.
     #[must_use]

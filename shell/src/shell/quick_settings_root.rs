@@ -109,7 +109,16 @@ impl QuickSettingsRoot {
     // The compact icon-over-label treatment keeps their meaning visible
     // without turning them into a second dashboard.
     const ACTIONS: f64 = 58.0;
-    const SLIDERS: f64 = 72.0;
+    /// The slider block: two pointer bands inside a `SLIDER_INSET` at each
+    /// end, i.e. `2 · SLIDER_INSET + 2 · SLIDER_PITCH` — derived so the
+    /// block can never be shorter than the faces it holds.
+    const SLIDERS: f64 = 2.0 * Self::SLIDER_INSET + 2.0 * Self::SLIDER_PITCH;
+    /// Each slider's band is one minimum pointer target (HIG §9.6).
+    const SLIDER_PITCH: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
+    /// Air above the first and below the last slider band (`spacing.s1`).
+    const SLIDER_INSET: f64 = ui::tokens::Spacing::BASE.s1 as f64;
+    /// Track thickness, centred in its band.
+    const SLIDER_BAR_H: f64 = 6.0;
     const CARD: f64 = 70.0;
     const GAP: f64 = 8.0;
     const POWER: f64 = 50.0;
@@ -176,8 +185,16 @@ impl QuickSettingsRoot {
             self.panel.x0 + pad,
             self.panel.y0 + pad,
             self.panel.x1 - pad,
-            self.panel.y0 + pad + self.scaled(Self::HEADER),
+            self.header_bottom(self.panel),
         )
+    }
+    /// Bottom edge of the title band for `panel` — the line every section
+    /// below the header measures from. One definition, so the tiles, the
+    /// slider block, the edit grid and the header itself cannot drift apart.
+    /// Takes the panel explicitly because the compatibility geometry helpers
+    /// are called before `self.panel` is laid out.
+    fn header_bottom(&self, panel: Rect) -> f64 {
+        panel.y0 + self.scaled(Self::PAD + Self::HEADER)
     }
 
     pub fn load_persisted() -> Self {
@@ -405,9 +422,7 @@ impl QuickSettingsRoot {
         }
     }
     fn grid_top(&self, panel: Rect) -> f64 {
-        panel.y0
-            + self.scaled(Self::PAD)
-            + self.scaled(Self::HEADER)
+        self.header_bottom(panel)
             + self.scaled(Self::GAP)
             + self.action_height()
             + self.scaled(Self::GAP)
@@ -415,9 +430,7 @@ impl QuickSettingsRoot {
             + self.scaled(Self::GAP)
     }
     fn edit_grid_top(&self, panel: Rect) -> f64 {
-        panel.y0
-            + self.scaled(Self::PAD)
-            + self.scaled(Self::HEADER)
+        self.header_bottom(panel)
             + self.scaled(Self::EDIT_HELP)
             + self.scaled(Self::GAP)
     }
@@ -470,33 +483,45 @@ impl QuickSettingsRoot {
     pub fn slider_geometry(panel: Rect, i: usize) -> (Rect, f64) {
         Self::default().slider_geometry_for(panel, i)
     }
-    fn slider_geometry_for(&self, panel: Rect, i: usize) -> (Rect, f64) {
-        let y = panel.y0
-            + self.scaled(Self::PAD + Self::HEADER + Self::GAP)
+    /// Top of the slider block: one gap under the action tiles.
+    fn sliders_top(&self, panel: Rect) -> f64 {
+        self.header_bottom(panel)
+            + self.scaled(Self::GAP)
             + self.action_height()
             + self.scaled(Self::GAP)
-            + self.scaled(12.0)
-            + n(i) * self.scaled(28.0);
+    }
+    /// Slider `i`'s track and the top of the pointer band it sits in. The
+    /// two sliders share the 72 px block as two full pointer targets
+    /// (`SLIDER_PITCH`, HIG §9.6 minimum 32) inside `SLIDER_INSET` — the old
+    /// 30 px faces on a 28 px pitch overlapped each other by 2 px and were
+    /// under the minimum target.
+    fn slider_geometry_for(&self, panel: Rect, i: usize) -> (Rect, f64) {
+        let y = self.sliders_top(panel)
+            + self.scaled(Self::SLIDER_INSET)
+            + n(i) * self.scaled(Self::SLIDER_PITCH);
+        let bar_h = self.scaled(Self::SLIDER_BAR_H);
+        let bar_y = y + (self.scaled(Self::SLIDER_PITCH) - bar_h) / 2.0;
         (
             Rect::new(
                 panel.x0 + self.scaled(52.0),
-                y + self.scaled(8.0),
+                bar_y,
                 panel.x1 - self.scaled(28.0),
-                y + self.scaled(14.0),
+                bar_y + bar_h,
             ),
             y,
         )
     }
     /// The whole slider control — track plus the room around it that the
     /// shared `Slider` face paints and the pointer may press. One helper
-    /// feeds paint, hit-testing and the accessibility tree.
+    /// feeds paint, hit-testing and the accessibility tree. Exactly one
+    /// pointer band tall, so the two faces tile the block without overlap.
     fn slider_face_rect(&self, panel: Rect, i: usize) -> Rect {
         let (bar, y) = self.slider_geometry_for(panel, i);
         Rect::new(
             bar.x0 - self.scaled(5.),
-            y - self.scaled(4.),
+            y,
             bar.x1 + self.scaled(5.),
-            y + self.scaled(26.),
+            y + self.scaled(Self::SLIDER_PITCH),
         )
     }
     pub(crate) fn power_geometry(&self, panel: Rect, state: &QuickSettingsState) -> Rect {
@@ -526,7 +551,7 @@ impl QuickSettingsRoot {
         let gap = self.scaled(Self::GAP);
         let w = (self.panel.width() - 2.0 * pad - 3.0 * gap) / 4.0;
         let x = self.panel.x0 + pad + n(i) * (w + gap);
-        let y = self.panel.y0 + pad + self.scaled(Self::HEADER);
+        let y = self.header_bottom(self.panel);
         Rect::new(x, y, x + w, y + self.action_height())
     }
     fn edit_rect(&self) -> Rect {
@@ -854,7 +879,9 @@ impl QuickSettingsRoot {
         }
         for i in 0..2 {
             let (bar, _) = self.slider_geometry_for(panel, i);
-            if Rect::new(bar.x0 - 6., bar.y0 - 10., bar.x1 + 6., bar.y1 + 10.).contains(point) {
+            // The pointer target is the painted face — the same rect the
+            // accessibility tree publishes — not a second band around the track.
+            if self.slider_face_rect(panel, i).contains(point) {
                 let value = f32v(((point.x - bar.x0) / bar.width()).clamp(0., 1.));
                 if i == 0 {
                     state.brightness = value;
@@ -1211,10 +1238,7 @@ impl QuickSettingsRoot {
                 TextWeight::Medium,
             );
         }
-        let sliders_top = self.panel.y0
-            + self.scaled(Self::PAD + Self::HEADER + Self::GAP)
-            + self.action_height()
-            + self.scaled(Self::GAP);
+        let sliders_top = self.sliders_top(self.panel);
         let sliders = Rect::new(
             self.panel.x0 + self.scaled(Self::PAD),
             sliders_top,
@@ -1231,16 +1255,18 @@ impl QuickSettingsRoot {
                 .accessible_name("Brightness and volume"),
         );
         for i in 0..2 {
-            let (_, y) = self.slider_geometry_for(self.panel, i);
             let face = self.slider_face_rect(self.panel, i);
+            // The glyph is centred on the slider's band, so it shares the
+            // track's centre line whatever the band's height.
+            let glyph = self.scaled(16.);
             ui::icons::draw_icon(
                 scene,
                 transform,
                 Rect::new(
                     self.panel.x0 + self.scaled(28.),
-                    y + self.scaled(3.),
-                    self.panel.x0 + self.scaled(44.),
-                    y + self.scaled(19.),
+                    face.center().y - glyph / 2.0,
+                    self.panel.x0 + self.scaled(28.) + glyph,
+                    face.center().y + glyph / 2.0,
                 ),
                 if i == 0 {
                     ui::icons::Icon::Sun
@@ -1488,7 +1514,7 @@ impl QuickSettingsRoot {
             transform.pre_translate(
                 (
                     self.panel.x0 + self.scaled(Self::PAD),
-                    self.panel.y0 + self.scaled(Self::PAD + Self::HEADER + 11.),
+                    self.header_bottom(self.panel) + self.scaled(11.),
                 )
                     .into(),
             ),

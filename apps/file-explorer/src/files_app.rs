@@ -1166,7 +1166,15 @@ impl FileExplorerWidget {
             return;
         }
         if can_retry {
-            EmptyState::paint(
+            // The shared empty state lays out the action as part of its
+            // centred stack (measured title, detail and label, so the pill
+            // clears the detail line at every text scale) and returns that
+            // rect; the retained shared Button — which owns hover, focus,
+            // keyboard activation and the typed Refresh command — is then
+            // painted over it, so the geometry has one author and the
+            // behaviour keeps the production control. Hover is suppressed on
+            // the underlay because the Button draws its own.
+            let action_rect = EmptyState::paint(
                 scene,
                 transform,
                 text_renderer,
@@ -1175,13 +1183,17 @@ impl FileExplorerWidget {
                 Some(ui::icons::Icon::FolderOpen),
                 &title,
                 Some(&detail),
-                None,
+                Some(&t("files-try-again")),
                 Point::new(-1.0, -1.0),
             );
-            let button_rect = vello::kurbo::Rect::from_center_size(
-                Point::new(rect.center().x, rect.center().y + 86.0),
-                (128.0, 36.0),
-            );
+            let button_rect = action_rect.map_or(vello::kurbo::Rect::ZERO, |r| {
+                // Never narrower than four minimum pointer targets, so a short
+                // localized label still gets a comfortable retry button; widen
+                // symmetrically so the Button still covers the underlay pill.
+                let min_w = 4.0 * f64::from(theme.tokens.metrics.min_pointer_target);
+                let w = r.width().max(min_w);
+                vello::kurbo::Rect::from_center_size(r.center(), (w, r.height()))
+            });
             self.state_retry.apply_layout_external(button_rect);
             self.state_retry
                 .draw(scene, transform, text_renderer, theme, presence);
@@ -1323,7 +1335,9 @@ impl FileExplorerWidget {
         if label.is_empty() {
             return;
         }
-        let text_size = theme.tokens.typography.scale.sm;
+        // `pill_size` / `draw_pill` hand the size to a scaling renderer, so
+        // unscale the theme token once or the bubble paints at 4× at 200 %.
+        let text_size = theme.tokens.typography.scale.sm / tr.text_scale();
         let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
         let margin = f64::from(theme.tokens.spacing.s4);
         let rect = vello::kurbo::Rect::new(
@@ -3506,7 +3520,11 @@ impl FileExplorerWidget {
         let tokens = &theme.tokens;
         let dim = tokens.colors.text_dim;
         let icon_px = 40.0_f64;
-        let size = tokens.typography.scale.base;
+        // The theme token is already text-scaled and the renderer scales
+        // again, so hand it the nominal size (one scale rule, see
+        // `crate::text_layout`).
+        let text_scale = text_renderer.text_scale();
+        let size = tokens.typography.scale.base / text_scale;
         let (tw, _) = text_renderer.measure(&msg, size, None);
         let cx = rect.x0 + rect.width() / 2.0;
         let cy = rect.y0 + rect.height() / 2.0;
@@ -3521,7 +3539,12 @@ impl FileExplorerWidget {
             dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let ty = crate::text_layout::centered_text_y(cy, f64::from(size), size);
+        let ty = crate::text_layout::centered_text_y(
+            cy,
+            f64::from(size) * f64::from(text_scale),
+            size,
+            text_scale,
+        );
         text_renderer.draw_text(
             scene,
             &msg,
@@ -3804,9 +3827,12 @@ impl FileExplorerWidget {
             )
         };
         let tokens = &theme.tokens;
-        let size = tokens.typography.scale.base;
-        let (tw, _) = text_renderer.measure(&label, size, None);
-        let (pad, icon, gap, h) = (10.0_f64, 16.0_f64, 8.0_f64, 30.0_f64);
+        let text_scale = text_renderer.text_scale();
+        let size = tokens.typography.scale.base / text_scale;
+        let (tw, th) = text_renderer.measure(&label, size, None);
+        let (pad, icon, gap) = (10.0_f64, 16.0_f64, 8.0_f64);
+        // The pill grows with its measured label so enlarged text stays inside it.
+        let h = (f64::from(th) + 2.0 * f64::from(tokens.spacing.s1)).max(30.0);
         let w = pad + icon + gap + f64::from(tw) + pad;
         // Offset from the cursor so the ghost sits beside, not under, the pointer.
         let x0 = self.last_cursor.x + 14.0;
@@ -3837,7 +3863,7 @@ impl FileExplorerWidget {
             accent,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let ty = crate::text_layout::centered_text_y(y0, h, size);
+        let ty = crate::text_layout::centered_text_y(y0, h, size, text_scale);
         text_renderer.draw_text(
             scene,
             &label,

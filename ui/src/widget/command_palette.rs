@@ -13,6 +13,7 @@ use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::centered_text_top;
 use crate::color_compat::ColorCompat;
 use crate::icons::{self, Icon};
 use crate::platform::{PlatformConventions, Shortcut};
@@ -1231,13 +1232,18 @@ impl CommandPalette {
     ) {
         let colors = &theme.tokens.colors;
         let text_size = theme.tokens.typography.scale.base;
-        let text_y =
-            layout.input_rect.y0 + (layout.input_rect.height() - f64::from(text_size)) / 2.0;
         let mut tx = layout.input_rect.x0;
         let style = theme.tokens.typography.style(TextRole::Body);
         if let Some(arg) = &mut self.arg_state {
             if !arg.prompt.is_empty() {
                 let heading = format!("{}:  ", arg.prompt);
+                // Centre the heading on its measured line box, not the font size.
+                let (hw, hh) = text_renderer.measure(&heading, text_size, None);
+                let text_y = centered_text_top(
+                    layout.input_rect.y0,
+                    layout.input_rect.height(),
+                    f64::from(hh),
+                );
                 text_renderer.draw_text(
                     scene,
                     &heading,
@@ -1246,7 +1252,6 @@ impl CommandPalette {
                     transform.pre_translate(Vec2::new(tx, text_y)),
                     None,
                 );
-                let (hw, _) = text_renderer.measure(&heading, text_size, None);
                 tx += f64::from(hw);
             }
             arg.composition.draw(

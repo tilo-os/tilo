@@ -3710,11 +3710,24 @@ impl Widget for TextInput {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.capture_layout_text_scale(theme.text_scale);
-        // Multiline is measured (grows with content, see `measure`); single-line is a fixed 40px row.
+        // Multiline is measured (grows with content, see `measure`). Single-
+        // line is the 40 px form-field band — until the scaled line no
+        // longer fits it: at 2× text the 16 px face shapes a 40 px line,
+        // which left zero slack in a 40 px band, so the band grows to the
+        // line plus the same vertical inset the multiline body keeps
+        // (`ML_PAD_Y` each side). At 1× a 20 px line leaves the band at 40.
         let height = if self.multiline {
             Dimension::auto()
         } else {
-            Dimension::length(40.0_f32.max(self.interaction.minimum_target()))
+            let line_px = f64::from(self.effective_font_size() * LINE_HEIGHT_RATIO)
+                * f64::from(theme.text_scale);
+            let band = (line_px + ML_PAD_Y * 2.0).max(40.0);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a control band is a few dozen logical pixels, far inside f32"
+            )]
+            let band = band as f32;
+            Dimension::length(band.max(self.interaction.minimum_target()))
         };
         let node = taffy.leaf_node(Style {
             size: Size {
@@ -7579,6 +7592,32 @@ mod tests {
         assert!(
             measured_large.height > measured_normal.height * 1.8,
             "same instance remeasures from large text back to normal"
+        );
+    }
+
+    /// The single-line band is the shipped 40 px at 1× (a 20 px line has
+    /// 10 px of slack a side) and grows to line + `ML_PAD_Y` a side once
+    /// the scaled line no longer fits: at 2× text the 40 px line sat edge
+    /// to edge in a 40 px band.
+    #[test]
+    fn single_line_band_is_40_at_one_x_and_grows_with_the_scaled_line() {
+        fn band_height(theme: &Theme) -> Dimension {
+            let mut ti = TextInput::new(vec![PathSegment::Field("name".into())]);
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+                std::collections::HashMap::new();
+            let node = ti.build_layout(&mut taffy, theme, &mut node_map);
+            taffy.style(node).unwrap().size.height
+        }
+        assert_eq!(band_height(&Theme::dark()), Dimension::length(40.0));
+        let scaled_line = f64::from(FONT_SIZE * LINE_HEIGHT_RATIO) * 2.0;
+        assert_eq!(scaled_line, 40.0, "2× base line fills the shipped band exactly");
+        #[allow(clippy::cast_possible_truncation, reason = "small test constant")]
+        let expected = (scaled_line + ML_PAD_Y * 2.0) as f32;
+        assert_eq!(
+            band_height(&Theme::dark().with_text_scale(2.0)),
+            Dimension::length(expected),
+            "2× band = scaled line + 2×ML_PAD_Y"
         );
     }
 

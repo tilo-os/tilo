@@ -11,6 +11,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
@@ -149,7 +150,7 @@ impl Breadcrumb {
 
         // Lay the labels out left-to-right; the chevron between segments is
         // painted by `draw` but never needs its own rect (never clickable).
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let sep_pad = f64::from(theme.tokens.spacing.s2);
         let (sep_w, _sep_h) = tr.measure(SEPARATOR_GLYPH, size, None);
         let sep_w = f64::from(sep_w);
@@ -187,7 +188,7 @@ impl Breadcrumb {
 /// [`Breadcrumb::visible_segments`] to decide whether the full path
 /// fits. A free function (not a method) since it touches no `self` field.
 fn measure_total_width(labels: &[String], theme: &Theme, tr: &mut TextRenderer) -> f64 {
-    let size = theme.tokens.typography.scale.sm;
+    let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
     let sep_pad = f64::from(theme.tokens.spacing.s2);
     let (sep_w, _) = tr.measure(SEPARATOR_GLYPH, size, None);
     let sep_block = f64::from(sep_w) + sep_pad * 2.0;
@@ -266,7 +267,7 @@ impl Widget for Breadcrumb {
         // available width retriggers truncation on the next paint.
         self.rebuild_rects(theme, text_renderer);
 
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let sep_pad = f64::from(theme.tokens.spacing.s2);
         // One measured line height serves every segment and chevron: all are
         // single lines at one size, so cosmic-text gives each the same line

@@ -237,3 +237,66 @@ fn secondary_pages_share_one_header_composition() {
         "title to explanation",
     );
 }
+
+// ---- round two (2026-09-17) ----
+
+/// The floating status pill — and the hover band that reveals it — lives at
+/// the catalogue's bottom-left, on the cards' own leading edge. Every card
+/// puts its actions at its trailing edge, so at no window size does the pill
+/// sit on an Install, Open or Details button (round one's T7: at 800 × 700
+/// the bottom-right pill covered the last card's Install).
+#[test]
+fn status_pill_never_floats_over_a_card_action() {
+    let theme = ui::Theme::dark();
+    let sp = spacing();
+    for (w, h) in [(1200.0, 800.0), (1366.0, 768.0), (800.0, 700.0), (480.0, 900.0)] {
+        let mut app = store::shots::seeded_app();
+        app.arm_status_bubble_for_shots();
+        lay_out(&mut app, (w, h));
+        let mut tr = TextRenderer::new();
+        let pill = app.status_bubble_rect(&theme, &mut tr);
+        close(
+            pill.y1,
+            f64::from(h) - f64::from(sp.s4),
+            &format!("{w}×{h}: pill sits one s4 above the bottom edge"),
+        );
+        assert!(
+            pill.x0 >= 0.0 && pill.width() > 0.0,
+            "{w}×{h}: pill {pill:?} is inside the window"
+        );
+        let buttons = by_widget_name(&app, "Button");
+        assert!(!buttons.is_empty(), "{w}×{h}: the catalogue shows card actions");
+        for button in buttons {
+            let overlap = pill.intersect(button);
+            assert!(
+                overlap.width() <= 0.0 || overlap.height() <= 0.0,
+                "{w}×{h}: pill {pill:?} overlaps a button {button:?}"
+            );
+        }
+        // On the catalogue's leading edge — shared with the masthead's own
+        // leading control on a compact window — never inside the card column.
+        let leftmost_button_x0 = by_widget_name(&app, "Button")
+            .iter()
+            .map(|b| b.x0)
+            .fold(f64::MAX, f64::min);
+        assert!(
+            pill.x0 <= leftmost_button_x0 + 0.5,
+            "{w}×{h}: pill {pill:?} starts at or before every button ({leftmost_button_x0})"
+        );
+    }
+}
+
+/// The landing zone under the last row is the pill's own band (its height
+/// plus an `s4` above and below), so it follows the text scale instead of
+/// restating one number.
+#[test]
+fn status_pill_landing_zone_follows_the_text_scale() {
+    let sp = spacing();
+    let one = StoreApp::status_bubble_band(&ui::Theme::dark());
+    let two = StoreApp::status_bubble_band(&ui::Theme::dark().with_text_scale(2.0));
+    assert!(
+        one >= 30.0 + 2.0 * sp.s4,
+        "1× band ({one}) reserves the pill floor plus two margins"
+    );
+    assert!(two > one, "200 % band ({two}) is taller than the 1× band ({one})");
+}

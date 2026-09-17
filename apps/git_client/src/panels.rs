@@ -295,14 +295,15 @@ impl PanelsView {
             None,
             TextWeight::Semibold,
         );
-        let pill_h = 18.0;
+        // 12 px label → 18 px pill at 1×; the pill grows with its label.
+        let pill_h = draw::pill_height(tr, 12.0);
         draw::pill(
             scene,
             tr,
             t,
             rect.x0 + 16.0 + f64::from(cw) + 8.0,
             rect.y0 + (header_h - pill_h) / 2.0,
-            pill_h,
+            12.0,
             &count.to_string(),
             c.text_dim,
             c.lift(0.72),
@@ -449,9 +450,14 @@ impl PanelsView {
             t,
             &body,
         );
+        // 12 px tag label → 18 px pill on a 28 px pitch at 1×; both follow the
+        // measured pill at larger text scales, and the target hash / message
+        // centre on the pill instead of a fixed `+ 2`.
+        let pill_h = draw::pill_height(tr, 12.0);
+        let pitch = (pill_h + 10.0).max(28.0);
         let mut y = body.y0 + 4.0;
         for tag in &model.tags {
-            if y > body.y1 - 18.0 {
+            if y > body.y1 - pill_h {
                 break;
             }
             let a = c.semantic.warning;
@@ -461,17 +467,15 @@ impl PanelsView {
                 t,
                 body.x0 + 16.0,
                 y,
-                18.0,
+                12.0,
                 &tag.name,
                 c.surfaces.base,
                 Color::from_rgba8(a.r(), a.g(), a.b(), 220),
                 None,
             );
-            let nw = f64::from(
-                tr.measure_weighted(&tag.name, 12.0, None, TextWeight::Medium)
-                    .0,
-            ) + 20.0;
+            let nw = draw::pill_width(tr, &tag.name, 12.0) + 8.0;
             let tw = f64::from(draw::mono_width(tr, &tag.target, 11.0));
+            let target_y = draw::mono_centered_top(tr, &tag.target, 11.0, y, pill_h);
             draw::mono(
                 scene,
                 tr,
@@ -480,9 +484,10 @@ impl PanelsView {
                 11.0,
                 c.neutral[5],
                 body.x1 - 16.0 - tw,
-                y + 2.0,
+                target_y,
             );
             if let Some(msg) = &tag.message {
+                let msg_y = draw::centered_top(tr, msg, 11.0, TextWeight::Regular, y, pill_h);
                 draw::text(
                     scene,
                     tr,
@@ -491,11 +496,11 @@ impl PanelsView {
                     11.0,
                     c.text_dim,
                     body.x0 + 24.0 + nw,
-                    y + 2.0,
+                    msg_y,
                     Some((body.width() - nw - 90.0) as f32),
                 );
             }
-            y += 28.0;
+            y += pitch;
         }
         scene.pop_layer();
     }

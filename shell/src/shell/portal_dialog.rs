@@ -968,17 +968,20 @@ impl PortalDialogController {
             bounds.center().x + width / 2.0,
             bounds.center().y + height / 2.0,
         );
+        // Choice rows are Control rows (HIG §9.6: 44) on the 48 px pitch —
+        // the 38 they were left the row under the density scale.
+        let row_h = f64::from(ui::tokens::Metrics::BASE.panel_row_height);
         let choices = (0..row_count)
             .map(|i| {
                 let y = sheet.y0 + 118.0 + small_count_as_f64(i) * 48.0;
-                Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + 38.0)
+                Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
             })
             .collect();
         let launcher_name = launcher_editor
             .filter(|editor| editor.editable_name)
             .map(|_| {
                 let y = sheet.y0 + 118.0 + small_count_as_f64(row_count) * 48.0;
-                Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + 38.0)
+                Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
             });
         let launcher_icons = launcher_editor
             .filter(|editor| editor.editable_icon)
@@ -994,7 +997,7 @@ impl PortalDialogController {
                 (0..count)
                     .map(|index| {
                         let x = sheet.x0 + 24.0 + small_count_as_f64(index) * (width + gap);
-                        Rect::new(x, y, x + width, y + 38.0)
+                        Rect::new(x, y, x + width, y + row_h)
                     })
                     .collect()
             })

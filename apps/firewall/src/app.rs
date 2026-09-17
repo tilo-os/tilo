@@ -42,14 +42,20 @@ use crate::model::{
 use crate::paint;
 
 // ---- geometry constants -------------------------------------------------
+//
+// Every band below is the 1× *floor* of a measured value in [`Metrics`]: the
+// layout reads the metrics, which never go under these constants, so the 1×
+// picture is unchanged and the bands only grow once the accessibility text
+// scale makes their labels taller than the band was drawn for.
 const HEADER_H: f64 = 60.0;
 const RAIL_W: f64 = 214.0;
 const SERVICES_W: f64 = 300.0;
 const PAD: f64 = 16.0;
 const CARD_R: f64 = 12.0;
+/// Summary card floor: title, description and one row of stat chips. The
+/// card grows per extra chip row instead of reserving a fixed taller band
+/// (the old `SUMMARY_H_NARROW = 188` left ~60px blank when the chips fit).
 const SUMMARY_H: f64 = 134.0;
-/// Taller summary when the stat chips wrap onto a second row at narrow widths.
-const SUMMARY_H_NARROW: f64 = 188.0;
 const FORM_H: f64 = 154.0;
 /// The add-rule form stacks its controls onto four lines when narrow.
 const FORM_H_NARROW: f64 = 226.0;
@@ -66,11 +72,274 @@ const TOGGLE_SIZE: f64 = 34.0;
 
 /// Below this window width the zone rail overlays (a summoned drawer) instead
 /// of docking, the add-rule form stacks its controls, and the rules table
-/// switches to two-line rows.
+/// switches to two-line rows. Scaled by the text scale: an 800px window at 2×
+/// has the room of a 400px one, so it takes the narrow layout.
 const NARROW_BREAKPOINT: f64 = 720.0;
 /// The per-zone services panel only earns its ~300px column at/above this
 /// width; below it collapses so the rules table + form get the whole center.
 const SERVICES_BREAKPOINT: f64 = 1000.0;
+
+/// Text-derived geometry. Refreshed from the renderer in
+/// `adjust_layout_with_measure` and again at the top of `draw`, then read by
+/// [`FirewallApp::relayout`], which has no renderer of its own. Every band
+/// floors at the 1× value in [`Metrics::default`] — the geometry the layout
+/// used before it was measured — so hit rects and painted rects come from
+/// one place at every text scale.
+#[derive(Clone, Debug, PartialEq)]
+struct Metrics {
+    text_scale: f64,
+    /// Control band: form controls and the header buttons (`CTRL_H` floor).
+    ctrl_h: f64,
+    header_h: f64,
+    /// Header button widths: enable pill, panic, apply — wide and narrow
+    /// forms, each its 1× floor grown to its label plus padding.
+    enable_w: f64,
+    panic_w: f64,
+    apply_w: f64,
+    enable_w_narrow: f64,
+    panic_w_narrow: f64,
+    apply_w_narrow: f64,
+    rail_rows_top: f64,
+    rail_row_h: f64,
+    /// Summary card: measured title / description line heights and, per
+    /// zone, each stat chip's width in [`stat_chip_specs`] order — every zone
+    /// is measured so a zone-change click relayouts against the right widths
+    /// before the next paint re-measures.
+    title_h: f64,
+    desc_h: f64,
+    chip_h: f64,
+    /// Gap between chips on a row, and between chip rows.
+    chip_gap: f64,
+    chip_row_gap: f64,
+    chip_ws: Vec<(ZoneKind, Vec<f64>)>,
+    seg_h: f64,
+    /// Filter (`All`/`Allow`/`Deny`) and route (`Rules`/`Services`) segment
+    /// widths: wide / narrow floors, grown to the widest label.
+    filter_seg_w: f64,
+    filter_seg_w_narrow: f64,
+    content_seg_w: f64,
+    table_head_h: f64,
+    rule_row_h: f64,
+    rule_row_h_narrow: f64,
+    /// Two-line row: centre of the dot/action chip on the first line and the
+    /// top of the second line.
+    rule_dot_y: f64,
+    rule_sub_top: f64,
+    svc_row_h: f64,
+    svc_row_h_narrow: f64,
+    /// Services row: top of the `ports/proto` detail line under the name.
+    svc_detail_top: f64,
+    /// Form: title band above line 1 (wide / stacked), the status band under
+    /// the last line (wide), and the gap that carries the `Source` caption
+    /// above its field when stacked.
+    form_title_h: f64,
+    form_title_h_narrow: f64,
+    form_status_h: f64,
+    form_source_gap: f64,
+    /// Form control widths that follow their labels (1× floors).
+    kind_w: f64,
+    act_w: f64,
+    proto_w: f64,
+    add_w: f64,
+}
+
+impl Default for Metrics {
+    /// The unmeasured 1× layout — the single source of every band's 1× floor
+    /// (the geometry the layout used before it was measured, plus the two
+    /// offsets `measure` derives from the 1× line height: the two-line row's
+    /// dot centre and the stacked form's title band), so the first frame lays
+    /// out exactly as every measured 1× frame does.
+    fn default() -> Self {
+        Self {
+            text_scale: 1.0,
+            ctrl_h: CTRL_H,
+            header_h: HEADER_H,
+            enable_w: 92.0,
+            panic_w: 104.0,
+            apply_w: 92.0,
+            enable_w_narrow: 80.0,
+            panic_w_narrow: 78.0,
+            apply_w_narrow: 76.0,
+            // Zone rail: first row under the `ZONES` caption, row pitch.
+            rail_rows_top: 44.0,
+            rail_row_h: 32.0,
+            title_h: 27.5,
+            desc_h: 15.0,
+            chip_h: 40.0,
+            chip_gap: 10.0,
+            chip_row_gap: 8.0,
+            chip_ws: Vec::new(),
+            // Filter / Rules·Services segments.
+            seg_h: 30.0,
+            filter_seg_w: 72.0,
+            filter_seg_w_narrow: 60.0,
+            content_seg_w: 66.0,
+            // Rules-table caption band above the separator line.
+            table_head_h: 30.0,
+            rule_row_h: RULE_ROW_H,
+            rule_row_h_narrow: RULE_ROW_H_NARROW,
+            rule_dot_y: 18.75,
+            rule_sub_top: 32.0,
+            svc_row_h: SVC_ROW_H,
+            svc_row_h_narrow: SVC_ROW_H_NARROW,
+            svc_detail_top: 24.0,
+            form_title_h: 42.0,
+            form_title_h_narrow: 50.0,
+            form_status_h: 30.0,
+            form_source_gap: 26.0,
+            kind_w: 64.0,
+            act_w: 64.0,
+            proto_w: 52.0,
+            add_w: 120.0,
+        }
+    }
+}
+
+impl Metrics {
+    /// Measure every band from the renderer at its current text scale. Each
+    /// value is the label's measured line plus the padding the 1× band
+    /// implied, floored at that band ([`Self::default`]). `chips` are every
+    /// zone's stat chips ([`stat_chip_specs`]).
+    fn measure(tr: &mut TextRenderer, chips: &[(ZoneKind, Vec<(&str, String, ChipTone)>)]) -> Self {
+        let floors = Self::default();
+        let h = |tr: &mut TextRenderer, size: f32| f64::from(tr.measure("Hg", size, None).1);
+        let w = |tr: &mut TextRenderer, text: &str, size: f32| paint::text_width(tr, text, size);
+        let h9 = h(tr, 9.0);
+        let h10 = h(tr, 10.0);
+        let h11 = h(tr, 11.0);
+        let h12 = h(tr, 12.0);
+        let h13 = h(tr, 13.0);
+        let h14 = h(tr, 14.0);
+        let h22 = h(tr, 22.0);
+        let ctrl_h = CTRL_H.max(h13 + 16.0);
+        let rule_dot_y = 10.0 + h14 / 2.0;
+        let rule_sub_top = 10.0 + h14 + 4.5;
+        let svc_detail_top = 5.0 + h14 + 1.5;
+        let chip_ws = chips
+            .iter()
+            .map(|(zone, specs)| {
+                let ws = specs
+                    .iter()
+                    .map(|(caption, value, _)| {
+                        w(tr, caption, 9.0).max(w(tr, value, 13.0)) + 20.0
+                    })
+                    .collect();
+                (*zone, ws)
+            })
+            .collect();
+        let filter_label_w = Filter::ALL
+            .iter()
+            .map(|f| w(tr, f.label(), 13.0))
+            .fold(0.0, f64::max);
+        let content_label_w = w(tr, "Rules", 13.0).max(w(tr, "Services", 13.0));
+        // Header buttons: the narrow form keeps a tighter floor but the same
+        // minimum label padding, so a long label never outgrows its button.
+        let enable_label = w(tr, "○ Stopped", 12.0).max(w(tr, "● Active", 12.0));
+        let panic_label = w(tr, "Panic ON", 12.0);
+        let apply_label = w(tr, "Apply", 13.0);
+        Self {
+            text_scale: f64::from(tr.text_scale()),
+            ctrl_h,
+            header_h: HEADER_H.max(ctrl_h + 26.0),
+            enable_w: 92.0_f64.max(enable_label + 24.0),
+            panic_w: 104.0_f64.max(panic_label + 24.0),
+            apply_w: 92.0_f64.max(apply_label + 24.0),
+            enable_w_narrow: floors.enable_w_narrow.max(enable_label + 16.0),
+            panic_w_narrow: floors.panic_w_narrow.max(panic_label + 16.0),
+            apply_w_narrow: floors.apply_w_narrow.max(apply_label + 16.0),
+            rail_rows_top: floors.rail_rows_top.max(18.0 + h11 + 12.0),
+            rail_row_h: floors.rail_row_h.max(h14 + 10.0),
+            title_h: h22,
+            desc_h: h12,
+            chip_h: floors.chip_h.max(h9 + h13 + 12.0),
+            chip_gap: floors.chip_gap,
+            chip_row_gap: floors.chip_row_gap,
+            chip_ws,
+            seg_h: floors.seg_h.max(h13 + 12.0),
+            filter_seg_w: floors.filter_seg_w.max(filter_label_w + 20.0),
+            filter_seg_w_narrow: floors.filter_seg_w_narrow.max(filter_label_w + 20.0),
+            content_seg_w: floors.content_seg_w.max(content_label_w + 20.0),
+            table_head_h: floors.table_head_h.max(h10 + 14.0),
+            rule_row_h: RULE_ROW_H.max(h14 + 20.0),
+            rule_row_h_narrow: RULE_ROW_H_NARROW.max(rule_sub_top + h12 + 11.0),
+            rule_dot_y,
+            rule_sub_top,
+            svc_row_h: SVC_ROW_H.max(svc_detail_top + h10 + 9.5),
+            svc_row_h_narrow: SVC_ROW_H_NARROW.max(3.0 + h13 + 5.0),
+            svc_detail_top,
+            form_title_h: 42.0_f64.max(12.0 + h13 + 12.0),
+            // Stacked form: the status line sits between the title and line
+            // 1, so the band carries both lines (1× grows 40 → 50; before,
+            // a validation message painted across the title's descenders).
+            form_title_h_narrow: 40.0_f64.max(12.0 + h13 + 2.0 + h11 + 6.0),
+            form_status_h: 30.0_f64.max(h11 + 16.0),
+            form_source_gap: 26.0_f64.max(h11 + 12.0),
+            kind_w: 64.0_f64.max(w(tr, "Service", 13.0).max(w(tr, "Port", 13.0)) + 20.0),
+            act_w: 64.0_f64.max(w(tr, "allow", 13.0).max(w(tr, "deny", 13.0)) + 20.0),
+            proto_w: 52.0_f64.max(w(tr, "tcp", 13.0).max(w(tr, "udp", 13.0)) + 20.0),
+            add_w: 120.0_f64.max(w(tr, "Add rule", 13.0) + 32.0),
+        }
+    }
+
+    /// The measured stat-chip widths for `zone` (empty until measured).
+    fn chip_ws(&self, zone: ZoneKind) -> &[f64] {
+        self.chip_ws
+            .iter()
+            .find_map(|(z, ws)| (*z == zone).then_some(ws.as_slice()))
+            .unwrap_or(&[])
+    }
+
+    /// Height of the summary card for `rows` rows of stat chips: title,
+    /// description, the chip rows and the card's bottom padding.
+    fn summary_h(&self, rows: usize) -> f64 {
+        let rows = rows.max(1) as f64;
+        SUMMARY_H.max(
+            self.chips_top() + rows * self.chip_h + (rows - 1.0) * self.chip_row_gap + 20.0,
+        )
+    }
+
+    fn desc_top(&self) -> f64 {
+        14.0 + self.title_h + 4.5
+    }
+
+    fn chips_top(&self) -> f64 {
+        self.desc_top() + self.desc_h + 13.0
+    }
+}
+
+/// Colour role of a summary stat value, resolved against the theme at paint
+/// time so the chip list can be built (and measured) without one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChipTone {
+    Target(Target),
+    Primary,
+    Success,
+    Danger,
+    Info,
+}
+
+/// The summary card's stat chips for `z`, in display order. One list feeds
+/// the measurement, the wrapping layout and the painter, so a chip is always
+/// painted where the layout wrapped it.
+fn stat_chip_specs(z: &Zone) -> Vec<(&'static str, String, ChipTone)> {
+    let (allow, deny) = z.rule_counts();
+    let ifaces = if z.interfaces.is_empty() {
+        "—".to_string()
+    } else {
+        z.interfaces.join(", ")
+    };
+    let mut chips = vec![
+        ("target", z.target.short().to_string(), ChipTone::Target(z.target)),
+        ("services", z.services.len().to_string(), ChipTone::Primary),
+        ("allow rules", allow.to_string(), ChipTone::Success),
+        ("deny rules", deny.to_string(), ChipTone::Danger),
+        ("interfaces", ifaces, ChipTone::Primary),
+    ];
+    if z.masquerade {
+        chips.push(("nat", "masquerade".to_string(), ChipTone::Info));
+    }
+    chips
+}
 
 /// Which rules are shown in the table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,6 +449,9 @@ struct Layout {
 
     summary: Rect,
     set_active_btn: Rect,
+    /// One rect per entry of [`stat_chip_specs`], wrapped inside the summary
+    /// card; the painter reads these instead of re-deriving positions.
+    stat_chips: Vec<Rect>,
 
     filter_seg: Vec<Rect>,
     content_seg: Vec<Rect>,
@@ -243,6 +515,11 @@ pub struct FirewallApp {
     rect: Rect,
     node: Option<NodeId>,
     layout: Layout,
+    /// Renderer-measured bands; see [`Metrics`]. `metrics_key` is the
+    /// (text scale, config) the metrics were measured for, so a frame that
+    /// changes neither skips the measurement.
+    metrics: Metrics,
+    metrics_key: Option<(u32, String)>,
     last_cursor: Point,
 
     /// JSON last written to / read from the doc. Guards against re-adopting
@@ -356,6 +633,8 @@ impl FirewallApp {
             rect: Rect::ZERO,
             node: None,
             layout: Layout::default(),
+            metrics: Metrics::default(),
+            metrics_key: None,
             last_cursor: Point::ZERO,
             last_json: None,
             seeded: false,
@@ -436,6 +715,26 @@ impl FirewallApp {
     }
 
     // ---- layout ---------------------------------------------------------
+    /// Refresh [`Metrics`] from the renderer. Called from the renderer-aware
+    /// layout hook and again at the top of `draw`, so the geometry every hit
+    /// rect is built from has seen the current text scale and config. Skipped
+    /// while neither has changed since the last measurement: the bands
+    /// depend only on the text scale, the chip widths only on the config.
+    fn measure_metrics(&mut self, tr: &mut TextRenderer) {
+        let key = (tr.text_scale().to_bits(), self.config.to_json());
+        if self.metrics_key.as_ref() == Some(&key) {
+            return;
+        }
+        let chips: Vec<(ZoneKind, Vec<(&str, String, ChipTone)>)> = self
+            .config
+            .zones
+            .iter()
+            .map(|z| (z.kind, stat_chip_specs(z)))
+            .collect();
+        self.metrics = Metrics::measure(tr, &chips);
+        self.metrics_key = Some(key);
+    }
+
     fn relayout(&mut self) {
         let r = self.rect;
         let mut l = Layout::default();
@@ -444,13 +743,16 @@ impl FirewallApp {
             return;
         }
 
-        let narrow = r.width() < NARROW_BREAKPOINT;
-        let services_visible = r.width() >= SERVICES_BREAKPOINT;
+        // Breakpoints follow the text scale: at 2× an 800px window carries
+        // what a 400px window carries at 1×, so it takes the narrow layout.
+        let scale = self.metrics.text_scale;
+        let narrow = r.width() < NARROW_BREAKPOINT * scale;
+        let services_visible = r.width() >= SERVICES_BREAKPOINT * scale;
         l.narrow = narrow;
         l.services_visible = services_visible;
         l.compact_services = !services_visible && self.compact_view == CompactView::Services;
 
-        let by = Self::layout_header(r, &mut l, narrow);
+        let by = self.layout_header(r, &mut l, narrow);
         let unavailable_area = Rect::new(r.x0, l.header.y1, r.x1, r.y1);
         let card_w = 520.0_f64.min((unavailable_area.width() - 48.0).max(160.0));
         let card_x = unavailable_area.x0 + (unavailable_area.width() - card_w) / 2.0;
@@ -475,18 +777,22 @@ impl FirewallApp {
     /// Header spans the full width; controls are right-aligned. Returns the
     /// header's vertical center, reused by [`Self::layout_rail`] for the
     /// hamburger toggle.
-    fn layout_header(r: Rect, l: &mut Layout, narrow: bool) -> f64 {
-        l.header = Rect::new(r.x0, r.y0, r.x1, r.y0 + HEADER_H);
-        let by = r.y0 + HEADER_H / 2.0;
+    fn layout_header(&self, r: Rect, l: &mut Layout, narrow: bool) -> f64 {
+        let m = &self.metrics;
+        l.header = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.header_h);
+        let by = r.y0 + m.header_h / 2.0;
+        let half = m.ctrl_h / 2.0;
+        // Narrow windows take the tighter button floors; either form grows
+        // with its label.
         let mut rx = r.x1 - PAD;
-        let apply_w = if narrow { 76.0 } else { 92.0 };
-        l.apply_btn = Rect::new(rx - apply_w, by - 17.0, rx, by + 17.0);
+        let apply_w = if narrow { m.apply_w_narrow } else { m.apply_w };
+        l.apply_btn = Rect::new(rx - apply_w, by - half, rx, by + half);
         rx = l.apply_btn.x0 - 8.0;
-        let panic_w = if narrow { 78.0 } else { 104.0 };
-        l.panic_btn = Rect::new(rx - panic_w, by - 17.0, rx, by + 17.0);
+        let panic_w = if narrow { m.panic_w_narrow } else { m.panic_w };
+        l.panic_btn = Rect::new(rx - panic_w, by - half, rx, by + half);
         rx = l.panic_btn.x0 - 8.0;
-        let enable_w = if narrow { 80.0 } else { 92.0 };
-        l.enable_pill = Rect::new(rx - enable_w, by - 17.0, rx, by + 17.0);
+        let enable_w = if narrow { m.enable_w_narrow } else { m.enable_w };
+        l.enable_pill = Rect::new(rx - enable_w, by - half, rx, by + half);
         by
     }
 
@@ -494,10 +800,13 @@ impl FirewallApp {
     /// rows within it. Returns the content rect the rail insets.
     fn layout_rail(&mut self, r: Rect, l: &mut Layout, by: f64) -> Rect {
         // Content area below the header. The rail drawer decides docked (wide)
-        // vs overlay (narrow) from its width, insetting the content when docked.
-        let content_outer = Rect::new(r.x0, r.y0 + HEADER_H, r.x1, r.y1);
+        // vs overlay (narrow) from its width, insetting the content when docked;
+        // its breakpoint follows the same text-scaled rule as `narrow`.
+        let content_outer = Rect::new(r.x0, l.header.y1, r.x1, r.y1);
         self.rail.set_docked_width(RAIL_W);
         self.rail.set_overlay_width(RAIL_W.max(264.0));
+        self.rail
+            .set_breakpoint(NARROW_BREAKPOINT * self.metrics.text_scale);
         let mut content = self.rail.resolve(content_outer);
         // `--shots`: force the overlay drawer open so its narrow state renders.
         if self.force_rail_open && self.rail.is_overlay() && !self.rail.is_open() {
@@ -528,8 +837,8 @@ impl FirewallApp {
 
         // Zone rows within the (possibly off-screen / sliding) rail rect.
         if l.rail.width() > 4.0 {
-            let rows_top = l.rail.y0 + 44.0;
-            let row_h = 32.0;
+            let rows_top = l.rail.y0 + self.metrics.rail_rows_top;
+            let row_h = self.metrics.rail_row_h;
             for (i, kind) in ZoneKind::ALL.iter().enumerate() {
                 let y = rows_top + i as f64 * row_h;
                 let rect = Rect::new(l.rail.x0 + 8.0, y, l.rail.x1 - 8.0, y + row_h - 4.0);
@@ -567,8 +876,28 @@ impl FirewallApp {
         let cy = center.y0 + PAD;
         let cy1 = r.y1 - PAD;
 
-        let summary_h = if narrow { SUMMARY_H_NARROW } else { SUMMARY_H };
-        l.summary = Rect::new(cx0, cy, cx1, cy + summary_h);
+        // Summary card: wrap the stat chips inside the card's width first, so
+        // the card is exactly as tall as its rows need (one row at desktop
+        // width, two on a phone) instead of a fixed per-breakpoint band.
+        let m = &self.metrics;
+        let inset_x = cx0 + 18.0;
+        let max_x = cx1 - 16.0;
+        let mut sx = inset_x;
+        let mut row = 0_usize;
+        let chip_ws = m.chip_ws(self.selected_zone);
+        let mut chips = Vec::with_capacity(chip_ws.len());
+        for &w in chip_ws {
+            if sx + w > max_x && sx > inset_x + 0.5 {
+                row += 1;
+                sx = inset_x;
+            }
+            let top = cy + m.chips_top() + row as f64 * (m.chip_h + m.chip_row_gap);
+            chips.push(Rect::new(sx, top, sx + w, top + m.chip_h));
+            sx += w + m.chip_gap;
+        }
+        let rows = if chips.is_empty() { 1 } else { row + 1 };
+        l.summary = Rect::new(cx0, cy, cx1, cy + m.summary_h(rows));
+        l.stat_chips = chips;
         // Set-active button inside summary, top-right.
         l.set_active_btn = Rect::new(
             l.summary.x1 - 12.0 - 118.0,
@@ -579,15 +908,19 @@ impl FirewallApp {
 
         // Filter row.
         let fy = l.summary.y1 + PAD;
-        let seg_w = if narrow { 60.0 } else { 72.0 };
-        let seg_h = 30.0;
+        let seg_w = if narrow {
+            m.filter_seg_w_narrow
+        } else {
+            m.filter_seg_w
+        };
+        let seg_h = m.seg_h;
         let seg_total = seg_w * 3.0;
         for i in 0..3 {
             let x = cx1 - seg_total + f64::from(i) * seg_w;
             l.filter_seg.push(Rect::new(x, fy, x + seg_w, fy + seg_h));
         }
         if !services_visible {
-            let compact_w = 66.0;
+            let compact_w = m.content_seg_w;
             for i in 0..2 {
                 let x = cx0 + f64::from(i) * compact_w;
                 l.content_seg
@@ -595,8 +928,16 @@ impl FirewallApp {
             }
         }
 
-        // Form card pinned to the bottom (taller when its controls stack).
-        let form_h = if narrow { FORM_H_NARROW } else { FORM_H };
+        // Form card pinned to the bottom (taller when its controls stack). Its
+        // height is the sum of the bands its controls occupy, so the table
+        // above it gets every pixel the form does not need.
+        let form_h = if narrow {
+            FORM_H_NARROW.max(
+                m.form_title_h_narrow + 3.0 * m.ctrl_h + 12.0 + m.form_source_gap + 12.0 + m.ctrl_h,
+            )
+        } else {
+            FORM_H.max(m.form_title_h + 2.0 * m.ctrl_h + 14.0 + m.form_status_h)
+        };
         l.form = if l.compact_services {
             Rect::ZERO
         } else {
@@ -631,9 +972,9 @@ impl FirewallApp {
                 l.services
             };
             let row_h = if l.compact_services {
-                SVC_ROW_H_NARROW
+                m.svc_row_h_narrow
             } else {
-                SVC_ROW_H
+                m.svc_row_h
             };
             let svc_top = panel.y0 + if l.compact_services { 38.0 } else { 48.0 };
             for (i, def) in ServiceCatalog::ALL.iter().enumerate() {
@@ -666,11 +1007,11 @@ impl FirewallApp {
         };
         let inner_x0 = l.table.x0 + 12.0;
         let inner_x1 = l.table.x1 - 12.0;
-        let body_top = l.table.y0 + 34.0;
+        let body_top = l.table.y0 + self.metrics.table_head_h + 4.0;
         let row_h = if narrow {
-            RULE_ROW_H_NARROW
+            self.metrics.rule_row_h_narrow
         } else {
-            RULE_ROW_H
+            self.metrics.rule_row_h
         };
         let max_rows = ((l.table.y1 - body_top) / row_h).floor().max(0.0) as usize;
         for (vis, &idx) in indices.iter().take(max_rows).enumerate() {
@@ -708,91 +1049,95 @@ impl FirewallApp {
             self.build_form_narrow(l, fx0, fx1);
             return;
         }
+        let m = &self.metrics;
+        let ctrl_h = m.ctrl_h;
         // Line 1.
-        let y1 = l.form.y0 + 42.0;
+        let y1 = l.form.y0 + m.form_title_h;
         // kind segmented Service|Port
-        let kind_w = 64.0;
+        let kind_w = m.kind_w;
         for i in 0..2 {
             let x = fx0 + f64::from(i) * kind_w;
-            l.kind_seg.push(Rect::new(x, y1, x + kind_w, y1 + CTRL_H));
+            l.kind_seg.push(Rect::new(x, y1, x + kind_w, y1 + ctrl_h));
         }
         let mut x = fx0 + kind_w * 2.0 + 12.0;
         if self.form.is_service {
             // service cycle selector: [<] name [>]
             let sel_w = 188.0;
-            l.service_prev = Rect::new(x, y1, x + 30.0, y1 + CTRL_H);
-            l.service_sel = Rect::new(x + 30.0, y1, x + sel_w - 30.0, y1 + CTRL_H);
-            l.service_next = Rect::new(x + sel_w - 30.0, y1, x + sel_w, y1 + CTRL_H);
+            l.service_prev = Rect::new(x, y1, x + 30.0, y1 + ctrl_h);
+            l.service_sel = Rect::new(x + 30.0, y1, x + sel_w - 30.0, y1 + ctrl_h);
+            l.service_next = Rect::new(x + sel_w - 30.0, y1, x + sel_w, y1 + ctrl_h);
             x += sel_w + 12.0;
         } else {
             // port field + proto segmented
-            l.port_field = Rect::new(x, y1, x + 96.0, y1 + CTRL_H);
+            l.port_field = Rect::new(x, y1, x + 96.0, y1 + ctrl_h);
             x += 96.0 + 8.0;
-            let pw = 52.0;
+            let pw = m.proto_w;
             for i in 0..2 {
                 let px = x + f64::from(i) * pw;
-                l.proto_seg.push(Rect::new(px, y1, px + pw, y1 + CTRL_H));
+                l.proto_seg.push(Rect::new(px, y1, px + pw, y1 + ctrl_h));
             }
             x += pw * 2.0 + 12.0;
         }
         let _ = x;
         // action segmented allow|deny — right aligned on line 1
-        let act_w = 64.0;
+        let act_w = m.act_w;
         for i in 0..2 {
             let ax = fx1 - act_w * 2.0 + f64::from(i) * act_w;
             l.action_seg
-                .push(Rect::new(ax, y1, ax + act_w, y1 + CTRL_H));
+                .push(Rect::new(ax, y1, ax + act_w, y1 + ctrl_h));
         }
 
         // Line 2: source field + Add button.
-        let y2 = l.form.y0 + 42.0 + CTRL_H + 14.0;
-        let add_w = 120.0;
-        l.add_btn = Rect::new(fx1 - add_w, y2, fx1, y2 + CTRL_H);
+        let y2 = y1 + ctrl_h + 14.0;
+        let add_w = m.add_w;
+        l.add_btn = Rect::new(fx1 - add_w, y2, fx1, y2 + ctrl_h);
         let src_x0 = fx0 + 64.0; // after "Source" label
-        l.source_field = Rect::new(src_x0, y2, l.add_btn.x0 - 16.0, y2 + CTRL_H);
+        l.source_field = Rect::new(src_x0, y2, l.add_btn.x0 - 16.0, y2 + ctrl_h);
     }
 
     /// Stacked add-rule form for narrow windows: four short lines instead of a
     /// dense two-line row, so no control is crushed or clipped.
     fn build_form_narrow(&self, l: &mut Layout, fx0: f64, fx1: f64) {
+        let m = &self.metrics;
+        let ctrl_h = m.ctrl_h;
         // Line 1: kind segmented (Service|Port) on the left, action on the right.
-        let y1 = l.form.y0 + 40.0;
-        let kind_w = 62.0;
+        let y1 = l.form.y0 + m.form_title_h_narrow;
+        let kind_w = m.kind_w - 2.0;
         for i in 0..2 {
             let x = fx0 + f64::from(i) * kind_w;
-            l.kind_seg.push(Rect::new(x, y1, x + kind_w, y1 + CTRL_H));
+            l.kind_seg.push(Rect::new(x, y1, x + kind_w, y1 + ctrl_h));
         }
-        let act_w = 62.0;
+        let act_w = m.act_w - 2.0;
         for i in 0..2 {
             let ax = fx1 - act_w * 2.0 + f64::from(i) * act_w;
             l.action_seg
-                .push(Rect::new(ax, y1, ax + act_w, y1 + CTRL_H));
+                .push(Rect::new(ax, y1, ax + act_w, y1 + ctrl_h));
         }
 
         // Line 2: service selector OR port + proto, spanning the width.
-        let y2 = y1 + CTRL_H + 12.0;
+        let y2 = y1 + ctrl_h + 12.0;
         if self.form.is_service {
             let prev_w = 34.0;
-            l.service_prev = Rect::new(fx0, y2, fx0 + prev_w, y2 + CTRL_H);
-            l.service_next = Rect::new(fx1 - prev_w, y2, fx1, y2 + CTRL_H);
-            l.service_sel = Rect::new(fx0 + prev_w, y2, fx1 - prev_w, y2 + CTRL_H);
+            l.service_prev = Rect::new(fx0, y2, fx0 + prev_w, y2 + ctrl_h);
+            l.service_next = Rect::new(fx1 - prev_w, y2, fx1, y2 + ctrl_h);
+            l.service_sel = Rect::new(fx0 + prev_w, y2, fx1 - prev_w, y2 + ctrl_h);
         } else {
-            let pw = 52.0;
+            let pw = m.proto_w;
             let port_x1 = fx1 - pw * 2.0 - 8.0;
-            l.port_field = Rect::new(fx0, y2, port_x1, y2 + CTRL_H);
+            l.port_field = Rect::new(fx0, y2, port_x1, y2 + ctrl_h);
             for i in 0..2 {
                 let px = fx1 - pw * 2.0 + f64::from(i) * pw;
-                l.proto_seg.push(Rect::new(px, y2, px + pw, y2 + CTRL_H));
+                l.proto_seg.push(Rect::new(px, y2, px + pw, y2 + ctrl_h));
             }
         }
 
         // Line 3: source field (label sits above it), full width.
-        let y3 = y2 + CTRL_H + 26.0;
-        l.source_field = Rect::new(fx0, y3, fx1, y3 + CTRL_H);
+        let y3 = y2 + ctrl_h + m.form_source_gap;
+        l.source_field = Rect::new(fx0, y3, fx1, y3 + ctrl_h);
 
         // Line 4: Add button, full width.
-        let y4 = y3 + CTRL_H + 12.0;
-        l.add_btn = Rect::new(fx0, y4, fx1, y4 + CTRL_H);
+        let y4 = y3 + ctrl_h + 12.0;
+        l.add_btn = Rect::new(fx0, y4, fx1, y4 + ctrl_h);
     }
 
     // ---- mutations ------------------------------------------------------
@@ -1116,6 +1461,19 @@ impl Widget for FirewallApp {
         }
     }
 
+    fn adjust_layout_with_measure(
+        &mut self,
+        _taffy: &mut TaffyTree<()>,
+        _node: NodeId,
+        tr: &mut TextRenderer,
+    ) -> bool {
+        // The root node is percent-sized, so taffy has nothing to re-solve;
+        // the measurement feeds `relayout`, which `apply_layout` runs next.
+        let before = self.metrics.clone();
+        self.measure_metrics(tr);
+        before != self.metrics
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1160,8 +1518,11 @@ impl Widget for FirewallApp {
         presence: &PresenceCtx,
     ) {
         // Advance the rail's eased reveal off a real wall-clock delta, then lay
-        // out against the freshly-settled geometry so the drawer slides.
+        // out against the freshly-settled geometry so the drawer slides. The
+        // bands are re-measured first so a zone change or text-scale change
+        // is laid out and painted from the same numbers this frame.
         self.rail.tick(false);
+        self.measure_metrics(tr);
         self.relayout();
         self.draw_app(scene, t, tr, theme, presence);
     }
@@ -2211,8 +2572,9 @@ impl FirewallApp {
         } else {
             theme.text_primary
         };
-        // When shown, shift it right past the header hamburger and clamp its
-        // width under the controls.
+        // When shown, shift it right past the header hamburger and elide it
+        // under the controls: one line, centred on the controls' own centre
+        // line (a wrapped second line used to paint across the zone rail).
         if !l.narrow {
             let toggle_in_header = !(self.rail.is_docked() && self.rail.is_open());
             let sub_x = if toggle_in_header {
@@ -2226,15 +2588,17 @@ impl FirewallApp {
                 h.x1 - PAD
             };
             let sub_max = (ctrl_left - sub_x).max(80.0);
-            paint::label(
+            let shown = tr.elide_to_width(&sub, 13.0, sub_max as f32);
+            paint::label_v(
                 tr,
                 scene,
                 t,
-                &sub,
+                &shown,
                 13.0,
                 sub_color,
                 sub_x,
-                h.y0 + 18.0,
+                h.y0,
+                h.height(),
                 sub_max,
             );
         }
@@ -2270,7 +2634,7 @@ impl FirewallApp {
                 theme.text_dim,
                 l.enable_pill.x0 - 10.0,
                 h.y0,
-                HEADER_H,
+                h.height(),
             );
         }
 
@@ -2488,7 +2852,7 @@ impl FirewallApp {
         };
         let inset_x = card.x0 + 18.0;
         self.draw_summary_title(scene, t, tr, theme, card, inset_x);
-        Self::draw_summary_chips(scene, t, tr, theme, card, inset_x, z);
+        Self::draw_summary_chips(scene, t, tr, theme, l, z);
         self.draw_summary_set_active(scene, t, tr, theme, l);
     }
 
@@ -2532,77 +2896,46 @@ impl FirewallApp {
                 8.0,
             );
         }
+        // The description follows the title's measured line, the chips
+        // follow the description (see `Metrics::desc_top` / `chips_top`).
+        let shown = tr.elide_to_width(
+            self.selected_zone.description(),
+            12.0,
+            (card.width() - 36.0) as f32,
+        );
         paint::label(
             tr,
             scene,
             t,
-            self.selected_zone.description(),
+            &shown,
             12.0,
             theme.text_dim,
             inset_x,
-            card.y0 + 46.0,
+            card.y0 + self.metrics.desc_top(),
             card.width() - 36.0,
         );
     }
 
-    /// Stat chips row: laid out left-to-right, wrapping onto further rows so
-    /// a narrow card never runs them off its right edge.
+    /// Stat chips, painted into the rects the layout wrapped them into (so a
+    /// narrow card never runs them off its right edge and the card is exactly
+    /// as tall as the rows need).
     fn draw_summary_chips(
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        card: Rect,
-        inset_x: f64,
+        l: &Layout,
         z: &Zone,
     ) {
-        let (allow, deny) = z.rule_counts();
-        let ifaces = if z.interfaces.is_empty() {
-            "—".to_string()
-        } else {
-            z.interfaces.join(", ")
-        };
-        let mut chips: Vec<(&str, String, Color)> = vec![
-            (
-                "target",
-                z.target.short().to_string(),
-                target_color(theme, z.target),
-            ),
-            ("services", z.services.len().to_string(), theme.text_primary),
-            (
-                "allow rules",
-                allow.to_string(),
-                theme.tokens.colors.semantic.success,
-            ),
-            (
-                "deny rules",
-                deny.to_string(),
-                theme.tokens.colors.semantic.danger,
-            ),
-            ("interfaces", ifaces, theme.text_primary),
-        ];
-        if z.masquerade {
-            chips.push((
-                "nat",
-                "masquerade".to_string(),
-                theme.tokens.colors.semantic.info,
-            ));
-        }
-        let gap = 10.0;
-        let row_h = 48.0;
-        let chips_top = card.y0 + 74.0;
-        let max_x = card.x1 - 16.0;
-        let mut sx = inset_x;
-        let mut row = 0.0_f64;
-        for (caption, value, color) in &chips {
-            let w = Self::stat_chip_width(tr, caption, value);
-            if sx + w > max_x && sx > inset_x + 0.5 {
-                row += 1.0;
-                sx = inset_x;
-            }
-            let cy = chips_top + row * row_h + 20.0;
-            Self::stat_chip(scene, t, tr, theme, caption, value, *color, sx, cy);
-            sx += w + gap;
+        for ((caption, value, tone), rect) in stat_chip_specs(z).iter().zip(&l.stat_chips) {
+            let color = match tone {
+                ChipTone::Target(target) => target_color(theme, *target),
+                ChipTone::Primary => theme.text_primary,
+                ChipTone::Success => theme.tokens.colors.semantic.success,
+                ChipTone::Danger => theme.tokens.colors.semantic.danger,
+                ChipTone::Info => theme.tokens.colors.semantic.info,
+            };
+            Self::stat_chip(scene, t, tr, theme, caption, value, color, *rect);
         }
     }
 
@@ -2643,16 +2976,9 @@ impl FirewallApp {
         );
     }
 
-    /// The width [`Self::stat_chip`] will paint for `caption`/`value`, so the
-    /// summary can wrap chips before drawing them.
-    fn stat_chip_width(tr: &mut TextRenderer, caption: &str, value: &str) -> f64 {
-        let cap_w = paint::text_width(tr, caption, 9.0);
-        let val_w = paint::text_width(tr, value, 13.0);
-        cap_w.max(val_w) + 20.0
-    }
-
     /// A two-tier stat: a dim caption with a coloured value beneath, framed
-    /// in a soft chip. Returns the chip width.
+    /// in a soft chip filling `rect` (sized by `Metrics::measure` from the
+    /// same caption/value).
     #[allow(
         clippy::too_many_arguments,
         reason = "a single-call-site draw primitive; bundling position/color/text into a \
@@ -2666,20 +2992,16 @@ impl FirewallApp {
         caption: &str,
         value: &str,
         value_color: Color,
-        x: f64,
-        y_center: f64,
-    ) -> f64 {
-        let (cap_w, cap_h) = tr.measure(caption, 9.0, None);
-        let (val_w, val_h) = tr.measure(value, 13.0, None);
-        let inner = f64::from(cap_w.max(val_w));
-        let w = inner + 20.0;
-        let h = 40.0;
-        let rect = Rect::new(x, y_center - h / 2.0, x + w, y_center + h / 2.0);
+        rect: Rect,
+    ) {
+        let (_, cap_h) = tr.measure(caption, 9.0, None);
+        let (_, val_h) = tr.measure(value, 13.0, None);
+        let inner = rect.width() - 20.0;
         paint::fill_rrect(scene, t, rect, 8.0, theme.tokens.colors.neutral[1]);
         // Centre the caption/value stack in the chip so the top and bottom
         // paddings match instead of the value crowding the lower edge.
         let stack_h = f64::from(cap_h) + f64::from(val_h);
-        let cap_top = rect.y0 + (h - stack_h) / 2.0;
+        let cap_top = rect.y0 + (rect.height() - stack_h) / 2.0;
         paint::label(
             tr,
             scene,
@@ -2687,7 +3009,7 @@ impl FirewallApp {
             caption,
             9.0,
             theme.text_dim,
-            x + 10.0,
+            rect.x0 + 10.0,
             cap_top,
             inner + 2.0,
         );
@@ -2698,11 +3020,10 @@ impl FirewallApp {
             value,
             13.0,
             value_color,
-            x + 10.0,
+            rect.x0 + 10.0,
             cap_top + f64::from(cap_h),
             inner + 2.0,
         );
-        w
     }
 
     fn draw_filter(
@@ -2814,7 +3135,8 @@ impl FirewallApp {
         paint::stroke_rrect(scene, t, table, CARD_R, theme.border_standard, 1.0);
 
         let cols = rule_columns(table);
-        Self::draw_table_header(scene, t, tr, theme, l, table, cols);
+        let head_h = self.metrics.table_head_h;
+        Self::draw_table_header(scene, t, tr, theme, l, table, cols, head_h);
 
         if l.rule_rows.is_empty() {
             paint::label(
@@ -2825,7 +3147,7 @@ impl FirewallApp {
                 13.0,
                 theme.text_dim,
                 cols.text,
-                table.y0 + 44.0,
+                table.y0 + head_h + 14.0,
                 300.0,
             );
             return;
@@ -2844,6 +3166,11 @@ impl FirewallApp {
 
     /// Column headers — five columns collapse to two labels when narrow —
     /// and the separator line beneath them.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one call site; the caption band height comes from the measured metrics \
+                  the row layout was built with"
+    )]
     fn draw_table_header(
         scene: &mut Scene,
         t: Affine,
@@ -2852,12 +3179,14 @@ impl FirewallApp {
         l: &Layout,
         table: Rect,
         cols: RuleColumns,
+        head_h: f64,
     ) {
-        // Captions sit in the 30px band above the separator, centred on the
-        // same measured line the rows use, and start at the row text column
-        // (not at the status dot) so they line up with what they label.
+        // Captions sit in the caption band above the separator (30px at 1×,
+        // taller once the type is), centred on the same measured line the
+        // rows use, and start at the row text column (not at the status dot)
+        // so they line up with what they label.
         let hy0 = table.y0;
-        let hh = 30.0;
+        let hh = head_h;
         let hc = theme.text_dim;
         if l.narrow {
             paint::label_v(tr, scene, t, "RULE", 10.0, hc, cols.text, hy0, hh, 200.0);
@@ -2874,7 +3203,7 @@ impl FirewallApp {
             t,
             table.x0 + 12.0,
             table.x1 - 12.0,
-            table.y0 + 30.0,
+            table.y0 + head_h,
             theme.border_standard,
             1.0,
         );
@@ -2908,7 +3237,7 @@ impl FirewallApp {
         let src = rule.source_label();
 
         if l.narrow {
-            Self::draw_table_row_narrow(scene, t, tr, cols, row, rule, &style, src);
+            Self::draw_table_row_narrow(scene, t, tr, &self.metrics, cols, row, rule, &style, src);
         } else {
             Self::draw_table_row_wide(scene, t, tr, cols, row, rule, &style, src);
         }
@@ -2935,13 +3264,16 @@ impl FirewallApp {
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
+        m: &Metrics,
         cols: RuleColumns,
         row: &RuleRow,
         rule: &Rule,
         style: &RowStyle,
         src: &str,
     ) {
-        let dot_y = row.rect.y0 + 18.0;
+        // First-line centre and second-line top follow the measured 14px
+        // label, as the row height the layout built does.
+        let dot_y = row.rect.y0 + m.rule_dot_y;
         paint::dot(
             scene,
             t,
@@ -2953,7 +3285,12 @@ impl FirewallApp {
                 style.dot_color
             },
         );
-        let label_max = row.toggle.x0 - cols.text - 60.0;
+        // Action chip on the top line, right-aligned 8px before the toggle
+        // (a fixed left edge ran under the toggle once the label doubled);
+        // the target label elides against the chip.
+        let chip_w = paint::text_width(tr, style.action_text, 11.0) + 16.0;
+        let chip_x = row.toggle.x0 - 8.0 - chip_w;
+        let label_max = chip_x - cols.text - 8.0;
         paint::label(
             tr,
             scene,
@@ -2965,7 +3302,6 @@ impl FirewallApp {
             row.rect.y0 + 10.0,
             label_max.max(40.0),
         );
-        // Action chip on the top line, just left of the toggle.
         let _ = paint::chip(
             tr,
             scene,
@@ -2974,7 +3310,7 @@ impl FirewallApp {
             11.0,
             style.action_color,
             alpha(style.action_color, 40),
-            row.toggle.x0 - 62.0,
+            chip_x,
             dot_y,
             8.0,
             20.0,
@@ -2994,7 +3330,7 @@ impl FirewallApp {
             12.0,
             style.secondary,
             cols.text,
-            row.rect.y0 + 32.0,
+            row.rect.y0 + m.rule_sub_top,
             row.rect.width() - 30.0,
         );
     }
@@ -3247,7 +3583,7 @@ impl FirewallApp {
                 } else {
                     row.x0 + 10.0
                 },
-                row.y0 + if compact { 5.0 } else { 24.0 },
+                row.y0 + if compact { 5.0 } else { self.metrics.svc_detail_top },
                 if compact {
                     row.width() - 180.0
                 } else {
@@ -3330,16 +3666,27 @@ impl FirewallApp {
             } else {
                 theme.text_dim
             };
+            // Stacked: the line under the title, inside the title band the
+            // layout reserved for both. Wide: centred in the status band
+            // under the last control row.
+            let m = &self.metrics;
             let status_y = if l.narrow {
-                card.y0 + 26.0
+                card.y0 + 12.0 + f64::from(tr.measure("Hg", 13.0, None).1) + 2.0
             } else {
-                card.y1 - 22.0
+                paint::centered_top(
+                    tr,
+                    &self.status,
+                    11.0,
+                    card.y1 - m.form_status_h,
+                    m.form_status_h,
+                )
             };
+            let shown = tr.elide_to_width(&self.status, 11.0, (card.width() - 32.0) as f32);
             paint::label(
                 tr,
                 scene,
                 t,
-                &self.status,
+                &shown,
                 11.0,
                 status_color,
                 card.x0 + 16.0,
@@ -3427,6 +3774,8 @@ impl FirewallApp {
     ) {
         let card = l.form;
         if l.narrow {
+            // The caption sits in the gap the layout left above the field
+            // (`form_source_gap`), ending 2px above the field's top edge.
             paint::label(
                 tr,
                 scene,
@@ -3435,7 +3784,7 @@ impl FirewallApp {
                 11.0,
                 theme.text_dim,
                 l.source_field.x0,
-                l.source_field.y0 - 16.0,
+                l.source_field.y0 - self.metrics.form_source_gap + 10.0,
                 120.0,
             );
         } else {
@@ -3448,7 +3797,7 @@ impl FirewallApp {
                 theme.text_dim,
                 card.x0 + 16.0,
                 l.source_field.y0,
-                CTRL_H,
+                l.source_field.height(),
                 60.0,
             );
         }
@@ -3660,6 +4009,147 @@ mod tests {
                 "columns stay inside the row at width {width}"
             );
         }
+    }
+
+    /// Lay the demo app out at `width` × 800 with renderer-measured metrics at
+    /// `scale`, exactly as the host does (`adjust_layout_with_measure`, then
+    /// `apply_layout` → `relayout`).
+    fn measured_app(width: f64, scale: f32) -> (FirewallApp, TextRenderer) {
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(scale);
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut app = FirewallApp::new_demo();
+        app.rect = Rect::new(0.0, 0.0, width, 800.0);
+        app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+        app.relayout();
+        (app, tr)
+    }
+
+    /// The summary card is as tall as its chip rows need: one row at desktop
+    /// width keeps the 134px floor, and the phone width — where the five chips
+    /// wrap onto two rows — grows by exactly one chip row instead of reserving
+    /// the old fixed 188px band (which left ~60px blank under the chips).
+    #[test]
+    fn summary_card_height_follows_the_wrapped_chip_rows() {
+        let (wide, _) = measured_app(1280.0, 1.0);
+        let chips = &wide.layout.stat_chips;
+        assert_eq!(chips.len(), 5, "public zone has five stat chips");
+        assert!(
+            chips.iter().all(|c| (c.y0 - chips[0].y0).abs() < 1e-6),
+            "desktop width keeps every chip on one row"
+        );
+        assert!((wide.layout.summary.height() - SUMMARY_H).abs() < 1e-6);
+        assert!(
+            chips.iter().all(|c| c.x1 <= wide.layout.summary.x1 - 16.0 + 1e-6),
+            "chips stay inside the card"
+        );
+
+        // 480px: the five chips still fit one row, so the card keeps the
+        // one-row height instead of the fixed 188px narrow band that
+        // reserved a wrap which never happened.
+        let (narrow, _) = measured_app(480.0, 1.0);
+        let chips = &narrow.layout.stat_chips;
+        assert!(chips.iter().all(|c| (c.y0 - chips[0].y0).abs() < 1e-6));
+        assert!((narrow.layout.summary.height() - SUMMARY_H).abs() < 1e-6);
+
+        // 360px: they wrap, and the card grows by exactly the rows it needs.
+        let (phone, _) = measured_app(360.0, 1.0);
+        let chips = &phone.layout.stat_chips;
+        assert!(
+            chips.iter().any(|c| (c.y0 - chips[0].y0).abs() > 1e-6),
+            "five chips wrap onto a second row at 360px"
+        );
+        let last = chips.last().unwrap();
+        assert!(
+            (phone.layout.summary.y1 - last.y1 - 20.0).abs() < 1e-6,
+            "the card ends one padding below the last chip row, not ~60px later"
+        );
+        assert!(phone.layout.summary.height() < 188.0);
+        assert!(
+            chips.iter().all(|c| c.x1 <= phone.layout.summary.x1 - 16.0 + 1e-6),
+            "wrapped chips never run off the card's right edge"
+        );
+        // Everything below the card follows it.
+        assert!(phone.layout.filter_seg[0].y0 >= phone.layout.summary.y1 + PAD - 1e-6);
+    }
+
+    /// At 1× the measured bands are exactly the constants the layout was
+    /// drawn for; at 2× they grow with the type and no control overlaps its
+    /// neighbour or leaves its card.
+    #[test]
+    fn bands_hold_their_1x_floors_and_grow_with_the_text_scale() {
+        let (one, _) = measured_app(1280.0, 1.0);
+        let m = &one.metrics;
+        let floors = Metrics::default();
+        assert!((m.ctrl_h - CTRL_H).abs() < 1e-6);
+        assert!((m.header_h - HEADER_H).abs() < 1e-6);
+        assert!((m.rule_row_h - RULE_ROW_H).abs() < 1e-6);
+        assert!((m.rule_row_h_narrow - RULE_ROW_H_NARROW).abs() < 1e-6);
+        assert!((m.table_head_h - floors.table_head_h).abs() < 1e-6);
+        assert!((m.svc_row_h - SVC_ROW_H).abs() < 1e-6);
+        assert!((m.seg_h - floors.seg_h).abs() < 1e-6);
+        assert!((m.rail_row_h - floors.rail_row_h).abs() < 1e-6);
+        assert!((m.chip_h - floors.chip_h).abs() < 1e-6);
+        assert!((one.layout.form.height() - FORM_H).abs() < 1e-6);
+        assert!((one.layout.header.height() - HEADER_H).abs() < 1e-6);
+        // The first (unmeasured) frame lays out exactly like the measured 1×
+        // frame: no jump on open.
+        let mut unmeasured = FirewallApp::new_demo();
+        unmeasured.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        unmeasured.relayout();
+        assert_eq!(unmeasured.layout.form, one.layout.form);
+        assert_eq!(unmeasured.layout.table, one.layout.table);
+        assert_eq!(unmeasured.layout.header, one.layout.header);
+
+        // 2400px at 2× is the wide layout (the breakpoint scales too).
+        let (two, mut tr) = measured_app(2400.0, 2.0);
+        let m = &two.metrics;
+        assert!(m.ctrl_h > CTRL_H && m.header_h > HEADER_H && m.rule_row_h > RULE_ROW_H);
+        let l = &two.layout;
+        assert!(!l.narrow);
+        assert!(l.form.height() > FORM_H, "form grows with its control bands");
+        // Header controls fit their labels and stay inside the header band.
+        for b in [l.enable_pill, l.panic_btn, l.apply_btn] {
+            assert!(b.y0 >= l.header.y0 && b.y1 <= l.header.y1);
+        }
+        assert!(l.enable_pill.width() > 92.0, "the enable pill widens for its 2× label");
+        // Form: line 1 clears the title band, line 2 clears line 1, the status
+        // band clears line 2, and nothing leaves the card.
+        let title_h = f64::from(tr.measure("Hg", 13.0, None).1);
+        assert!(l.kind_seg[0].y0 >= l.form.y0 + 12.0 + title_h);
+        assert!(l.source_field.y0 >= l.kind_seg[0].y1);
+        assert!(l.add_btn.y1 + m.form_status_h <= l.form.y1 + 1e-6);
+        assert!(l.action_seg[1].x1 <= l.form.x1 && l.kind_seg[1].x1 < l.port_field.x0);
+        // Rows never overlap and the first clears the caption band.
+        assert!(l.rule_rows[0].rect.y0 >= l.table.y0 + m.table_head_h);
+        for pair in l.rule_rows.windows(2) {
+            assert!(pair[1].rect.y0 >= pair[0].rect.y1);
+        }
+
+        // The stacked 2× form: four control lines, the `Source` caption's gap
+        // and the title band all clear each other inside the card.
+        let (stacked, _) = measured_app(800.0, 2.0);
+        let l = &stacked.layout;
+        assert!(l.narrow);
+        assert!(l.kind_seg[0].y0 >= l.form.y0 + stacked.metrics.form_title_h_narrow - 1e-6);
+        assert!(l.service_sel.y0.max(l.port_field.y0) >= l.kind_seg[0].y1);
+        assert!(l.source_field.y0 >= l.port_field.y1.max(l.service_sel.y1) + stacked.metrics.form_source_gap - 1e-6);
+        assert!(l.add_btn.y0 >= l.source_field.y1 && l.add_btn.y1 <= l.form.y1 + 1e-6);
+    }
+
+    /// The narrow / services breakpoints follow the text scale: an 800px
+    /// window at 2× has the room of a 400px window at 1×, so it stacks the
+    /// form and takes two-line rows instead of crushing five columns.
+    #[test]
+    fn breakpoints_follow_the_text_scale() {
+        let (one, _) = measured_app(800.0, 1.0);
+        assert!(!one.layout.narrow);
+        let (two, _) = measured_app(800.0, 2.0);
+        assert!(two.layout.narrow, "800px at 2× takes the narrow layout");
+        assert!(!two.layout.services_visible);
+        let (wide, _) = measured_app(2400.0, 2.0);
+        assert!(!wide.layout.narrow && wide.layout.services_visible);
     }
 
     #[test]

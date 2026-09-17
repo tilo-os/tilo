@@ -26,6 +26,7 @@ use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::renderer_type_size;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -307,6 +308,9 @@ pub struct ActivityTimeline {
     /// matches what was actually painted.
     chip_rects: Vec<(ChipKind, Rect)>,
     author_pill_rect: Rect,
+    /// `metrics.min_pointer_target`, taken from the theme each `draw` so the
+    /// theme-less hit-test accessors can grow a chip's target to it.
+    min_pointer_target: f64,
     /// `RoomActivity` may supply its own Everyone/person selector; suppressing
     /// this duplicate leaves the op-class strip intact.
     show_author_pill: bool,
@@ -365,6 +369,7 @@ impl ActivityTimeline {
             newest_first: true,
             chip_rects: Vec::new(),
             author_pill_rect: Rect::ZERO,
+            min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
             show_author_pill: true,
             clear_chip_rect: Rect::ZERO,
             name_selection_rect: Rect::ZERO,
@@ -1130,8 +1135,32 @@ impl ActivityTimeline {
         ))
     }
 
-    /// `(name, restore)`. `restore` is `None` when nothing in the range can
-    /// be restored to.
+    /// The pointer target for a chip painted as `painted` inside `within`:
+    /// grown vertically to the minimum pointer target, centred on the paint
+    /// and clamped to its container, while the paint stays the designed
+    /// 20 / 28 px pill. Neighbouring chips only ever differ in x, so grown
+    /// targets never overlap each other. Hit-testing and accessibility read
+    /// this rect; painting reads the original.
+    fn hit_rect_within(&self, painted: Rect, within: Rect) -> Rect {
+        let target = self.min_pointer_target.max(painted.height());
+        let mut y0 = painted.y0 - (target - painted.height()) / 2.0;
+        let mut y1 = y0 + target;
+        // Against a container edge the target slides rather than shrinks,
+        // so a chip near the top of its row still gets the full height.
+        if y0 < within.y0 {
+            y1 += within.y0 - y0;
+            y0 = within.y0;
+        }
+        if y1 > within.y1 {
+            y0 -= y1 - within.y1;
+            y1 = within.y1;
+            y0 = y0.max(within.y0);
+        }
+        Rect::new(painted.x0, y0, painted.x1, y1.max(y0))
+    }
+
+    /// `(name, restore)` pointer targets — see [`Self::hit_rect_within`].
+    /// `restore` is `None` when nothing in the range can be restored to.
     pub fn group_chip_rects(&self, i: usize) -> Option<(Rect, Option<Rect>)> {
         let VisualRow::Group(g) = *self.rows.get(i)? else {
             return None;
@@ -1144,7 +1173,11 @@ impl ActivityTimeline {
             full.x1,
             full.y1 - 2.0,
         );
-        Some(self.group_chip_rects_local(row, rg))
+        let (name, restore) = self.group_chip_rects_local(row, rg);
+        Some((
+            self.hit_rect_within(name, row),
+            restore.map(|r| self.hit_rect_within(r, row)),
+        ))
     }
 
     /// `None` when the line is not a band header, is off-screen, holds
@@ -1162,7 +1195,9 @@ impl ActivityTimeline {
             full.x1,
             full.y1 - 2.0,
         );
-        self.group_chip_rects_full(row, rg).undo
+        self.group_chip_rects_full(row, rg)
+            .undo
+            .map(|r| self.hit_rect_within(r, row))
     }
 
     /// `None` on a line that is not a band header.
@@ -1610,7 +1645,7 @@ fn draw_chip(
         None,
         &shape,
     );
-    let size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+    let size = renderer_type_size(tr, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
     let shown = fit_text(tr, label, size, rect.width() - 8.0);
     let (lw, lh) = tr.measure(&shown, size, None);
     tr.draw_text(
@@ -1666,7 +1701,7 @@ impl ActivityTimeline {
         let cy = f64::midpoint(row.y0, row.y1);
         let dot_x = Self::draw_row_avatar(scene, transform, row, cy, entry);
 
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         // The indent comes out of the author cluster, not the summary — the
         // summary is what the reader is here for.
         let author_slot_w = (self.author_slot_w() - px(depth) * INDENT).max(72.0);
@@ -2059,7 +2094,7 @@ impl ActivityTimeline {
             scene, transform, theme, full_row, row, rg, is_hovered, is_focused,
         );
 
-        let title_size = theme.tokens.typography.scale.sm;
+        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let title_x = row.x0 + 26.0;
         let chips = self.group_chip_rects_local(row, rg);
         Self::draw_group_row_title(
@@ -2067,8 +2102,14 @@ impl ActivityTimeline {
             if self.preview_selection { row.x1 + 8.0 } else { chips.0.x0 },
         );
 
-        // Line two: who and how much, plus — right-aligned — when.
-        let meta_y = row.y0 + 27.0;
+        // Line two: who and how much, plus — right-aligned — when. Stacked
+        // under the title's *measured* line box (top pad + line + gap; 27 px
+        // at 1×, the literal this replaces) so a larger text scale keeps the
+        // two lines apart. The group row itself is still a fixed
+        // `GROUP_ROW_HEIGHT`, so at 2× line two overhangs the row's bottom —
+        // the row height has to follow the text scale for that (F5).
+        let (_, title_h) = tr.measure("Ag", title_size, None);
+        let meta_y = row.y0 + 6.0 + f64::from(title_h) + 6.0;
         Self::draw_group_row_meta(
             scene, transform, tr, theme, row, rg, now, title_x, meta_y, title_size,
         );
@@ -2358,7 +2399,7 @@ impl ActivityTimeline {
         theme: &Theme,
     ) {
         let strip = self.filter_strip_rect();
-        let chip_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        let chip_text_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
 
         let active_fill = theme.tokens.colors.accent[5];
         let idle_fill = theme.tokens.colors.surface_white_5;
@@ -2459,7 +2500,8 @@ impl ActivityTimeline {
                 break;
             }
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
-            self.chip_rects.push((chip, chip_rect));
+            self.chip_rects
+                .push((chip, self.hit_rect_within(chip_rect, strip)));
             let active = self.active_chip == chip;
             let body = if active { active_fill } else { idle_fill };
             let text_color = if active { active_text } else { idle_text };
@@ -2502,7 +2544,7 @@ impl ActivityTimeline {
         let arx1 = strip.x1;
         let arx0 = arx1 - author_full_w;
         let chip_rect = Rect::new(arx0, cy - chip_h / 2.0, arx1, cy + chip_h / 2.0);
-        self.author_pill_rect = chip_rect;
+        self.author_pill_rect = self.hit_rect_within(chip_rect, strip);
         let drawn_author = fit_text(
             text_renderer,
             author_label,
@@ -2571,7 +2613,7 @@ impl ActivityTimeline {
             &shape,
         );
 
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         // `selection` is normalised so `b >= a` (see `set_selection`).
         let n = b.saturating_sub(a).saturating_add(1);
         let naming = matches!(
@@ -2676,6 +2718,7 @@ impl Widget for ActivityTimeline {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.min_pointer_target = f64::from(theme.tokens.metrics.min_pointer_target);
         if self.draws_own_surface {
             self.draw_surface_chrome(scene, transform, theme);
         }
@@ -3010,7 +3053,7 @@ impl ActivityTimeline {
         theme: &Theme,
     ) {
         let (title, detail) = self.empty_state_lines();
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let small = (size - 1.0).max(10.0);
         let rows_top = self.rows_top();
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);
@@ -5091,6 +5134,63 @@ mod group_tests {
 
     /// Row text is centred on the renderer's measured line box, which is
     /// what keeps it on the avatar's centre line when type is scaled.
+    /// Every chip the timeline offers the pointer — the filter strip's
+    /// class chips, the author pill, a band header's Name/Restore — is at
+    /// least the minimum pointer target tall and no two claim the same
+    /// pixels, while the strip's chips stay inside their strip. The paint
+    /// is still the 28 / 20 px pill; only the target grew.
+    #[test]
+    fn chip_targets_meet_the_minimum_pointer_target_and_never_overlap() {
+        let mut t = ActivityTimeline::with_entries(typing_run(20));
+        t.set_rect(Rect::new(0.0, 0.0, 520.0, 500.0));
+        t.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW));
+        let theme = Theme::dark();
+        let min = f64::from(theme.tokens.metrics.min_pointer_target);
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        t.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+
+        let strip = t.filter_strip_rect();
+        let mut targets: Vec<(String, Rect)> = t
+            .chip_rects
+            .iter()
+            .map(|(k, r)| (format!("{k:?}"), *r))
+            .collect();
+        assert!(targets.len() >= 2, "the strip painted no chips");
+        for (k, r) in &targets {
+            assert!(
+                r.y0 >= strip.y0 - 1e-6 && r.y1 <= strip.y1 + 1e-6,
+                "{k} target {r:?} leaves the strip {strip:?}"
+            );
+        }
+        targets.push(("author".to_string(), t.author_pill_rect()));
+        let (name, restore) = t.group_chip_rects(0).expect("a band header has chips");
+        targets.push(("name".to_string(), name));
+        if let Some(r) = restore {
+            targets.push(("restore".to_string(), r));
+        }
+        for (k, r) in &targets {
+            assert!(
+                r.height() >= min - 1e-6,
+                "{k} target {r:?} is under the {min}px minimum pointer target"
+            );
+        }
+        for (i, (a_name, a)) in targets.iter().enumerate() {
+            for (b_name, b) in targets.iter().skip(i + 1) {
+                assert!(
+                    a.intersect(*b).is_zero_area(),
+                    "{a_name} {a:?} and {b_name} {b:?} claim the same pixels"
+                );
+            }
+        }
+    }
+
     #[test]
     fn row_text_centring_tracks_the_measured_line_box_at_every_text_scale() {
         let theme = Theme::dark();

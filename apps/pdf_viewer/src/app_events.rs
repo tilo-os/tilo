@@ -1756,6 +1756,76 @@ mod event_tests {
         );
     }
 
+    /// Every toolbar control as `(name, rect)`, hidden (zero) pieces skipped.
+    fn toolbar_controls(lay: &ToolbarLayout) -> Vec<(String, Rect)> {
+        let mut out = vec![
+            ("open".to_string(), lay.open),
+            ("save".to_string(), lay.save),
+            ("zoom_out".to_string(), lay.zoom_out),
+            ("zoom_label".to_string(), lay.zoom_label),
+            ("zoom_in".to_string(), lay.zoom_in),
+            ("fit".to_string(), lay.fit),
+            ("search".to_string(), lay.search),
+            ("toggle_rail".to_string(), lay.toggle_rail),
+            ("toggle_sidebar".to_string(), lay.toggle_sidebar),
+        ];
+        for (t, r) in &lay.tools {
+            out.push((format!("{t:?}"), *r));
+        }
+        for (sw, r) in &lay.swatches {
+            out.push((format!("{sw:?}"), *r));
+        }
+        out.retain(|(_, r)| r.width() > 0.0 && r.height() > 0.0);
+        out
+    }
+
+    /// At 480px the tool cluster cannot fit between Open/Save and the zoom
+    /// controls, so it wraps onto a second toolbar row: the bar grows to two
+    /// rows, the canvas starts beneath it, no two controls overlap and every
+    /// control stays inside the bar. At desktop width the bar is one row.
+    #[test]
+    fn toolbar_wraps_the_tool_cluster_onto_a_second_row_when_narrow() {
+        let (mut app, _st) = app();
+        app.tool = Tool::Highlight; // swatches visible when there is room
+        for (width, rows) in [(1280.0, 1_usize), (480.0, 2)] {
+            app.rect = Rect::new(0.0, 0.0, width, 900.0);
+            app.recompute_regions();
+            let lay = app.toolbar_layout();
+            assert_eq!(lay.rows, rows, "rows at {width}px");
+            let tb = app.toolbar_rect;
+            assert!(
+                (tb.height() - TOOLBAR_H * rows as f64).abs() < 1e-9,
+                "toolbar height {} follows its rows at {width}px",
+                tb.height()
+            );
+            assert!(
+                (app.canvas_rect.y0 - tb.y1).abs() < 1e-9,
+                "the canvas starts under the whole bar at {width}px"
+            );
+            let controls = toolbar_controls(&lay);
+            assert_eq!(
+                lay.tools.len(),
+                Tool::ALL.len(),
+                "every tool is laid out at {width}px"
+            );
+            for (name, r) in &controls {
+                assert!(
+                    r.x0 >= tb.x0 && r.x1 <= tb.x1 && r.y0 >= tb.y0 && r.y1 <= tb.y1,
+                    "{name} {r:?} lies inside the toolbar {tb:?} at {width}px"
+                );
+            }
+            for (i, (a_name, a)) in controls.iter().enumerate() {
+                for (b_name, b) in controls.iter().skip(i + 1) {
+                    let o = a.intersect(*b);
+                    assert!(
+                        o.width() <= 0.0 || o.height() <= 0.0,
+                        "{a_name} {a:?} overlaps {b_name} {b:?} at {width}px"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn sidebar_delete_buttons_remove_items() {
         let (mut app, mut st) = app();

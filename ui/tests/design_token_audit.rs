@@ -14,10 +14,13 @@
 
 use regex::Regex;
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::{
     fs,
     path::{Path, PathBuf},
+};
+
+use crate::support::ratchet::{
+    Counts, is_skipped, ratchet_failures, read_baseline, test_module_spans, write_baseline,
 };
 
 /// Files exempt from the audit:
@@ -25,7 +28,7 @@ use std::{
 ///  - tokens/** (palette sub-modules — the token origin, not token consumers)
 ///  - presence/render.rs (the HSL helper intentionally encodes per-user hue math)
 ///  - tests/** and `#[cfg(test)]` modules inside a src file (test fixtures —
-///    see `test_module_spans`)
+///    see `support::ratchet::test_module_spans`)
 fn is_exempt(path: &Path) -> bool {
     let s = path.to_string_lossy();
     s.contains("/theme.rs")
@@ -36,18 +39,7 @@ fn is_exempt(path: &Path) -> bool {
 }
 
 fn walk(root: &Path, out: &mut Vec<PathBuf>) {
-    if let Ok(read) = fs::read_dir(root) {
-        for entry in read.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                walk(&p, out);
-                continue;
-            }
-            if p.extension().and_then(|e| e.to_str()) == Some("rs") && !is_exempt(&p) {
-                out.push(p);
-            }
-        }
-    }
+    crate::support::ratchet::walk(root, &is_exempt, out);
 }
 
 /// Hard failures. Each pattern names a constructor that exists in this tree
@@ -115,64 +107,12 @@ fn forbidden_patterns_match_the_shapes_they_name() {
     );
 }
 
-/// Line ranges (half-open, 0-based) covered by a `#[cfg(test)]` module.
-///
-/// Found by brace-counting from the `mod ... {` that follows the
-/// attribute, so a test module anywhere in the file is handled, not just
-/// one conventionally parked at the bottom. Braces inside string or char
-/// literals would fool this; no test module in the tree contains one, and
-/// the failure mode is a skipped line rather than a false accusation.
-fn test_module_spans(content: &str) -> Vec<(usize, usize)> {
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.iter().any(|line| line.trim() == "#![cfg(test)]") {
-        return vec![(0, lines.len())];
-    }
-    let mut spans = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        if lines[i].trim_start().starts_with("#[cfg(test)]") {
-            // Find the opening brace of the module body.
-            let mut j = i;
-            while j < lines.len() && !lines[j].contains('{') {
-                j = j.saturating_add(1);
-            }
-            if j == lines.len() {
-                break;
-            }
-            let mut depth = 0i32;
-            let start = i;
-            let mut k = j;
-            'outer: while k < lines.len() {
-                for c in lines[k].chars() {
-                    match c {
-                        '{' => depth = depth.saturating_add(1),
-                        '}' => {
-                            depth = depth.saturating_sub(1);
-                            if depth == 0 {
-                                break 'outer;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                k = k.saturating_add(1);
-            }
-            spans.push((start, k.saturating_add(1).min(lines.len())));
-            i = k.saturating_add(1);
-            continue;
-        }
-        i = i.saturating_add(1);
-    }
-    spans
-}
-
-#[test]
-fn a_file_gated_to_tests_has_no_production_style_lines() {
-    let source = "#![cfg(test)]\nuse super::*;\nfn fixture() { let ink = Color::WHITE; }\n";
-    assert_eq!(test_module_spans(source), vec![(0, 3)]);
-    assert!(test_module_spans("fn draw() { let ink = Color::WHITE; }\n").is_empty());
-}
-
+/// The `#[cfg(test)]` span finder and the baseline plumbing live in
+/// `support::ratchet`, shared with `f1_spacing_token_audit.rs`. The finder
+/// covers exactly the item the attribute governs — an earlier copy here
+/// treated every `#[cfg(test)]` as a braced module, so a `#[cfg(test)]
+/// const …;` or `mod tests;` exempted whatever braced production item
+/// followed it (F1 round one, R4).
 #[test]
 fn no_hardcoded_style_literals_in_tree() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -186,13 +126,10 @@ fn no_hardcoded_style_literals_in_tree() {
         let content = fs::read_to_string(f).unwrap();
         let skip = test_module_spans(&content);
         for (i, line) in content.lines().enumerate() {
-            if line.trim_start().starts_with("//") {
-                continue;
-            }
             // The audit polices *draw paths*; a `#[cfg(test)]` module is a
             // fixture living in the same file as the code it covers, and a
             // test that pins how a token is painted has to name its values.
-            if skip.iter().any(|(a, b)| i >= *a && i < *b) {
+            if is_skipped(line, i, &skip) {
                 continue;
             }
             for (re, msg) in &patterns {
@@ -262,9 +199,9 @@ fn ratcheted_patterns() -> Vec<(&'static str, Regex, &'static str)> {
 
 /// Count every ratcheted pattern per file, skipping comments and `#[cfg(test)]`
 /// modules exactly as the audit above does.
-fn ratcheted_counts(files: &[PathBuf], root: &Path) -> BTreeMap<(String, String), usize> {
+fn ratcheted_counts(files: &[PathBuf], root: &Path) -> Counts {
     let patterns = ratcheted_patterns();
-    let mut counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let mut counts: Counts = BTreeMap::new();
     for f in files {
         let content = fs::read_to_string(f).unwrap();
         let skip = test_module_spans(&content);
@@ -274,10 +211,7 @@ fn ratcheted_counts(files: &[PathBuf], root: &Path) -> BTreeMap<(String, String)
             .to_string_lossy()
             .replace('\\', "/");
         for (i, line) in content.lines().enumerate() {
-            if line.trim_start().starts_with("//") {
-                continue;
-            }
-            if skip.iter().any(|(a, b)| i >= *a && i < *b) {
+            if is_skipped(line, i, &skip) {
                 continue;
             }
             for (key, re, _) in &patterns {
@@ -291,77 +225,20 @@ fn ratcheted_counts(files: &[PathBuf], root: &Path) -> BTreeMap<(String, String)
     counts
 }
 
-fn read_baseline(path: &Path) -> BTreeMap<(String, String), usize> {
-    let raw = fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("the ratchet baseline at {} must exist: {e}", path.display()));
-    let mut out = BTreeMap::new();
-    for (n, line) in raw.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        let line_no = n.saturating_add(1);
-        assert_eq!(
-            parts.len(),
-            3,
-            "{}:{}: expected `<path> <pattern> <count>`, got: {line}",
-            path.display(),
-            line_no
-        );
-        let count: usize = parts[2]
-            .parse()
-            .unwrap_or_else(|_| panic!("{}:{}: count must be a number", path.display(), line_no));
-        out.insert((parts[0].to_string(), parts[1].to_string()), count);
-    }
-    out
-}
-
-fn write_baseline(path: &Path, counts: &BTreeMap<(String, String), usize>) {
-    let mut output = String::from(
-        "# Theme escape hatches in app and shell production code.\n\
-         # Format: <path relative to repository root> <pattern> <count>\n\
-         # This is a ratchet, not approval: counts may only move down.\n",
-    );
-    for ((path, pattern), count) in counts {
-        writeln!(&mut output, "{path} {pattern} {count}")
-            .expect("writing a baseline line to a String is infallible");
-    }
-    fs::write(path, output).unwrap_or_else(|e| panic!("could not write {}: {e}", path.display()));
-}
-
-fn ratchet_failures(
-    found: &BTreeMap<(String, String), usize>,
-    baseline: &BTreeMap<(String, String), usize>,
-) -> (Vec<String>, Vec<String>) {
-    let messages: BTreeMap<&str, &str> = ratcheted_patterns()
+/// What a new hit of `pattern` is told to do.
+fn ratchet_message(pattern: &str) -> String {
+    ratcheted_patterns()
         .into_iter()
-        .map(|(key, _, message)| (key, message))
-        .collect();
-    let mut grew = Vec::new();
-    let mut stale = Vec::new();
-    for (key, count) in found {
-        let allowed = baseline.get(key).copied().unwrap_or(0);
-        if *count > allowed {
-            grew.push(format!(
-                "{} [{}]: {count} occurrence(s), baseline {allowed} — {}",
-                key.0,
-                key.1,
-                messages.get(key.1.as_str()).copied().unwrap_or_default(),
-            ));
-        }
-    }
-    for (key, allowed) in baseline {
-        let count = found.get(key).copied().unwrap_or(0);
-        if count < *allowed {
-            stale.push(format!(
-                "{} [{}]: now {count}, baseline still {allowed} — lower it to {count}",
-                key.0, key.1,
-            ));
-        }
-    }
-    (grew, stale)
+        .find(|(key, _, _)| *key == pattern)
+        .map(|(_, _, message)| message.to_string())
+        .unwrap_or_default()
 }
+
+const BASELINE_HEADER: &[&str] = &[
+    "Theme escape hatches in app and shell production code.",
+    "Format: <path relative to repository root> <pattern> <count>",
+    "This is a ratchet, not approval: counts may only move down.",
+];
 
 /// The escape hatches the older audit was blind to may not grow, and a file
 /// that has shed some has to say so — the record only moves downward.
@@ -374,8 +251,13 @@ fn theme_escape_hatches_do_not_grow() {
     files.sort();
 
     let found = ratcheted_counts(&files, root);
-    let baseline = read_baseline(&root.join(BASELINE));
-    let (grew, stale) = ratchet_failures(&found, &baseline);
+    let baseline_path = root.join(BASELINE);
+    if std::env::var_os("UPDATE_DESIGN_BASELINE").is_some_and(|value| value == "1") {
+        write_baseline(&baseline_path, BASELINE_HEADER, &found);
+        return;
+    }
+    let baseline = read_baseline(&baseline_path);
+    let (grew, stale) = ratchet_failures(&found, &baseline, &ratchet_message);
 
     assert!(
         grew.is_empty(),
@@ -413,11 +295,11 @@ fn app_and_shell_theme_escape_hatches_do_not_grow() {
     let found = ratcheted_counts(&files, repository);
     let baseline_path = ui_root.join(APP_SHELL_BASELINE);
     if std::env::var_os("UPDATE_APP_SHELL_DESIGN_BASELINE").is_some_and(|value| value == "1") {
-        write_baseline(&baseline_path, &found);
+        write_baseline(&baseline_path, BASELINE_HEADER, &found);
         return;
     }
     let baseline = read_baseline(&baseline_path);
-    let (grew, stale) = ratchet_failures(&found, &baseline);
+    let (grew, stale) = ratchet_failures(&found, &baseline, &ratchet_message);
 
     assert!(
         grew.is_empty(),

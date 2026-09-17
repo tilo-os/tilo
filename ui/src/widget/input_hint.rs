@@ -13,6 +13,7 @@ use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
+use crate::text_metrics::renderer_type_size;
 use crate::input::{ControllerBinding, InputBinding, KeyboardBinding};
 use crate::interaction::{ControllerFamily, InteractionEnvironment, KeyboardFamily};
 use crate::platform::PlatformConventions;
@@ -524,7 +525,7 @@ fn paint_separator(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) -> f64 {
-    let size = theme.tokens.typography.scale.xs;
+    let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
     let (width, height) = text_renderer.measure(label, size, None);
     text_renderer.draw_text(
         scene,
@@ -579,7 +580,7 @@ fn token_rects(
     tokens
         .iter()
         .map(|(label, shape)| {
-            let size = token_text_size(label, theme);
+            let size = token_text_size(label, theme, text_renderer);
             let (text_width, _) = text_renderer.measure(label, size, None);
             let width = match shape {
                 HintShape::RoundButton => (f64::from(text_width) + CAP_PAD_X).max(HEIGHT),
@@ -618,7 +619,7 @@ fn paint_token(
         None,
         &outline,
     );
-    let size = token_text_size(label, theme);
+    let size = token_text_size(label, theme, text_renderer);
     let (tw, th) = text_renderer.measure(label, size, None);
     text_renderer.draw_text_weighted(
         scene,
@@ -635,12 +636,15 @@ fn paint_token(
     );
 }
 
-fn token_text_size(label: &str, theme: &Theme) -> f32 {
-    if matches!(label, "←" | "→" | "↑" | "↓" | "×" | "○" | "□" | "△") {
-        theme.tokens.typography.scale.sm
-    } else {
-        theme.tokens.typography.scale.xs
-    }
+fn token_text_size(label: &str, theme: &Theme, text_renderer: &TextRenderer) -> f32 {
+    renderer_type_size(
+        text_renderer,
+        if matches!(label, "←" | "→" | "↑" | "↓" | "×" | "○" | "□" | "△") {
+            theme.tokens.typography.scale.sm
+        } else {
+            theme.tokens.typography.scale.xs
+        },
+    )
 }
 
 #[allow(
@@ -695,6 +699,8 @@ impl Widget for InputHint {
                     f64::from(theme.tokens.spacing.s6).max(HEIGHT),
                 )),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));

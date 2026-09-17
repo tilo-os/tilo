@@ -256,6 +256,243 @@ const PAGE_GAP: f64 = 22.0;
 const CARET_WIDTH: f64 = 2.0;
 const TOOLBAR_H: f64 = ui::chrome::TOOLBAR_HEIGHT;
 const LAYOUT_BAR_H: f64 = 32.0;
+/// Layout-bar type roles (renderer input; scaled once) and the classic 1× chip.
+const LAYOUT_BAR_FONT: f32 = 13.0;
+const LAYOUT_BAR_STATUS_FONT: f32 = 12.5;
+const LAYOUT_CHIP_H: f64 = 22.0;
+
+/// A layout-bar chip: the measured label line box plus `s1`, never below the
+/// classic 22 px.
+fn layout_chip_h(label_h: f64, tk: ChromeTokens) -> f64 {
+    (label_h + tk.s1).max(LAYOUT_CHIP_H)
+}
+
+/// Top of one text line centred in a band: the same arithmetic as the
+/// toolkit's `widget::text::centered_text_top` (measured line box, never the
+/// font size), which is not publicly exported yet — see the F2 note in the
+/// review; delete this once it is.
+fn centred_line_top(band_y0: f64, band_h: f64, measured_line_h: f64) -> f64 {
+    band_y0 + (band_h - measured_line_h) / 2.0
+}
+
+/// The theme's spacing and radius tokens, resolved once per frame next to
+/// [`ChromeColors`] so every chrome band, chip and gap reads the OS grid
+/// rather than a private literal. Defaults to the unscaled base grid until
+/// the first draw hands over a theme.
+#[derive(Clone, Copy, Debug)]
+struct ChromeTokens {
+    s1: f64,
+    s2: f64,
+    s3: f64,
+    radius_md: f64,
+}
+
+impl ChromeTokens {
+    fn for_theme(theme: &Theme) -> Self {
+        let sp = &theme.tokens.spacing;
+        let radii = &theme.tokens.radii;
+        Self {
+            s1: f64::from(sp.s1),
+            s2: f64::from(sp.s2),
+            s3: f64::from(sp.s3),
+            radius_md: f64::from(radii.md),
+        }
+    }
+}
+
+impl Default for ChromeTokens {
+    fn default() -> Self {
+        Self::for_theme(&Theme::dark())
+    }
+}
+
+/// Chrome type roles of the styles panel, passed unscaled to the renderer,
+/// which applies the accessibility scale once.
+const PANEL_LABEL_FONT: f32 = 12.5;
+const PANEL_CAPTION_FONT: f32 = 10.5;
+const PANEL_HINT_FONT: f32 = 11.0;
+const PANEL_NAME_FONT: f32 = 18.0;
+const PANEL_DIMS_FONT: f32 = 15.0;
+/// Inset of the styles panel's content column from its edges.
+const PANEL_PAD: f64 = 14.0;
+/// Classic 1× panel geometry, kept as the floors of [`PanelMetrics`]: a 1×
+/// panel keeps this rhythm, a larger text scale grows every row from its
+/// measured line box instead of painting captions under the control below.
+const PANEL_CONTROL_H: f64 = 24.0;
+const PANEL_WIDE_CONTROL_H: f64 = 26.0;
+const PANEL_CAPTION_ADV: f64 = 18.0;
+const PANEL_NAME_ADV: f64 = 24.0;
+const PANEL_HINT_ADV: f64 = 22.0;
+const PANEL_DIMS_ADV: f64 = 26.0;
+const PANEL_HEADING_ADV: f64 = 20.0;
+const PANEL_SWATCH_H: f64 = 22.0;
+const PANEL_CLOSE_W: f64 = 62.0;
+const PANEL_ALIGN_W: f64 = 28.0;
+const PANEL_CHIP_W: f64 = 96.0;
+const PANEL_TOGGLE_W: f64 = 60.0;
+const PANEL_VALUE_W: f64 = 60.0;
+const PANEL_SWATCH_STRIP_MIN_W: f64 = 120.0;
+const PANEL_SWATCH_STRIP_MAX_W: f64 = 196.0;
+const PANEL_IMAGE_LABEL_COL: f64 = 60.0;
+const PANEL_IMAGE_BUTTON_MIN_W: f64 = 48.0;
+const PANEL_IMAGE_BUTTON_MAX_W: f64 = 92.0;
+/// Deliberately off-scale seams: the 6 px between panel rows / chips and
+/// the 2 px between a stepper and its value box.
+const PANEL_ROW_SEAM: f64 = 6.0;
+const PANEL_STEP_SEAM: f64 = 2.0;
+
+/// Measured line boxes of the styles panel's type roles plus the theme
+/// tokens; every row, chip and label slot in the panel derives from these,
+/// with the classic 1× values as floors. Resolved at the top of each frame
+/// (`draw_frame_chrome`) from the renderer that paints, so the panel width
+/// the canvas reserves and the rows it paints come from one measurement.
+#[derive(Clone, Copy, Debug)]
+struct PanelMetrics {
+    /// Renderer text scale the line boxes were measured under.
+    scale: f64,
+    lh_label: f64,
+    lh_caption: f64,
+    lh_hint: f64,
+    lh_name: f64,
+    lh_dims: f64,
+    tk: ChromeTokens,
+}
+
+impl PanelMetrics {
+    fn resolve(tr: &mut TextRenderer, tk: ChromeTokens) -> Self {
+        let lh = |tr: &mut TextRenderer, font: f32| f64::from(tr.measure("Ag", font, None).1);
+        Self {
+            scale: f64::from(tr.text_scale()),
+            lh_label: lh(tr, PANEL_LABEL_FONT),
+            lh_caption: lh(tr, PANEL_CAPTION_FONT),
+            lh_hint: lh(tr, PANEL_HINT_FONT),
+            lh_name: lh(tr, PANEL_NAME_FONT),
+            lh_dims: lh(tr, PANEL_DIMS_FONT),
+            tk,
+        }
+    }
+
+    /// The 1× metrics used before the first draw has a renderer.
+    fn fallback() -> Self {
+        let lh = |font: f32| f64::from(font) * 1.25;
+        Self {
+            scale: 1.0,
+            lh_label: lh(PANEL_LABEL_FONT),
+            lh_caption: lh(PANEL_CAPTION_FONT),
+            lh_hint: lh(PANEL_HINT_FONT),
+            lh_name: lh(PANEL_NAME_FONT),
+            lh_dims: lh(PANEL_DIMS_FONT),
+            tk: ChromeTokens::default(),
+        }
+    }
+
+    /// Width the panel reserves: the classic column grown with the text.
+    fn panel_w(&self) -> f64 {
+        STYLES_PANEL_W * self.scale
+    }
+
+    /// A chip / button / stepper row: the label line box plus `s2`.
+    fn control_h(&self) -> f64 {
+        (self.lh_label + self.tk.s2).max(PANEL_CONTROL_H)
+    }
+
+    /// The image inspector's and "new style" wider controls.
+    fn wide_control_h(&self) -> f64 {
+        (self.lh_label + self.tk.s2).max(PANEL_WIDE_CONTROL_H)
+    }
+
+    /// Advance from one control row to the next.
+    fn row_adv(&self) -> f64 {
+        self.control_h() + PANEL_ROW_SEAM
+    }
+
+    /// Advance past a small-caps section caption.
+    fn caption_adv(&self) -> f64 {
+        (self.lh_caption + self.tk.s1).max(PANEL_CAPTION_ADV)
+    }
+
+    /// Advance past the focused style's display name.
+    fn name_adv(&self) -> f64 {
+        self.lh_name.max(PANEL_NAME_ADV)
+    }
+
+    /// Advance past the style hint line.
+    fn hint_adv(&self) -> f64 {
+        (self.lh_hint + self.tk.s2).max(PANEL_HINT_ADV)
+    }
+
+    /// Advance past the image dimensions line.
+    fn dims_adv(&self) -> f64 {
+        (self.lh_dims + self.tk.s1).max(PANEL_DIMS_ADV)
+    }
+
+    /// Advance past a label that heads its own row of controls.
+    fn heading_adv(&self) -> f64 {
+        (self.lh_label + self.tk.s1).max(PANEL_HEADING_ADV)
+    }
+
+    /// Colour swatch height (and the custom-colour chip's side).
+    fn swatch_h(&self) -> f64 {
+        (self.lh_label + self.tk.s1).max(PANEL_SWATCH_H)
+    }
+
+    /// Top of a label line centred on a control of height `h` at `row_y`.
+    fn label_top(&self, row_y: f64, h: f64) -> f64 {
+        centred_line_top(row_y, h, self.lh_label)
+    }
+}
+
+/// The shared `ui::chrome::toolbar` geometry this app mirrors to pack rows
+/// and reserve their height. The toolkit's `draw` lays items out from a
+/// 14 px left pad with a 6 px gap, a 14 px separator before a group, a
+/// 34 px item floor (measured label line box + 12) and a 15 px label; the
+/// packer here must agree with it exactly or a row it admits would be drawn
+/// clipped. Until the toolkit publishes these (`ToolbarMetrics` /
+/// `item_rects`, review item F6), this struct is their single app-side
+/// statement.
+struct ToolbarModel {
+    /// Left padding `chrome::toolbar::draw` applies before the first item.
+    pad: f64,
+    /// Gap `chrome::toolbar::draw` places after each item.
+    gap: f64,
+    /// Extra width a group separator inserts before a `group_start` item.
+    sep: f64,
+    /// Right margin reserved when packing rows (breathing space at the
+    /// toolbar's right edge).
+    right_pad: f64,
+    /// Horizontal padding an item adds around its measured label.
+    item_pad: f64,
+    /// Vertical room a row keeps around its tallest label line box.
+    row_pad: f64,
+    /// The label size the toolkit paints (renderer input; scaled once).
+    label_font: f32,
+}
+
+const TOOLBAR_MODEL: ToolbarModel = ToolbarModel {
+    pad: 14.0,
+    gap: 6.0,
+    sep: 14.0,
+    right_pad: 18.0,
+    item_pad: 12.0,
+    row_pad: 16.0,
+    label_font: 15.0,
+};
+
+impl ToolbarModel {
+    /// Width of an item carrying `label_w` of measured text.
+    fn item_w(&self, label_w: f64) -> f64 {
+        label_w + self.item_pad
+    }
+
+    /// Height of one toolbar row holding labels up to `label_h` tall and a
+    /// zoom control `zoom_h` tall: the classic row, grown so the toolkit's
+    /// `label + 12` item and the zoom cluster both fit with room.
+    fn row_h(&self, label_h: f64, zoom_h: f64) -> f64 {
+        TOOLBAR_H
+            .max(zoom_h + self.item_pad)
+            .max(label_h + self.row_pad)
+    }
+}
 /// Width of the contextual styles panel reserved on the right of the canvas.
 const STYLES_PANEL_W: f64 = 250.0;
 /// Width of the document outline / navigation pane reserved on the LEFT of the
@@ -713,15 +950,6 @@ fn swatch_reserve_width() -> f64 {
     14.0 + color + 10.0 + hl
 }
 
-/// Left padding `chrome::toolbar::draw` applies before the first item.
-const TOOLBAR_PAD: f64 = 14.0;
-/// Gap `chrome::toolbar::draw` places after each item.
-const TOOLBAR_GAP: f64 = 6.0;
-/// Extra width a group separator inserts before a `group_start` item.
-const TOOLBAR_SEP: f64 = 14.0;
-/// Right margin reserved when packing rows (room for the colour-swatch strip /
-/// breathing space at the toolbar's right edge).
-const TOOLBAR_RIGHT_PAD: f64 = 18.0;
 /// Below this width the toolbar becomes a single focused writing row. Less
 /// frequent structure/review/view controls move into the labeled More menu.
 const COMPACT_TOOLBAR_BREAKPOINT: f64 = 720.0;
@@ -733,12 +961,12 @@ const COMPACT_TOOLBAR_BREAKPOINT: f64 = 720.0;
 /// one item (an over-wide single item simply occupies its own row).
 fn pack_toolbar_rows(widths: &[f64], group_starts: &[bool], avail_w: f64) -> Vec<(usize, usize)> {
     let mut rows = Vec::new();
-    let usable = (avail_w - TOOLBAR_PAD - TOOLBAR_RIGHT_PAD).max(1.0);
+    let usable = (avail_w - TOOLBAR_MODEL.pad - TOOLBAR_MODEL.right_pad).max(1.0);
     let mut row_start = 0usize;
     let mut x = 0.0f64; // running width consumed within the current row (post-pad)
     for (i, (&w, &group_start)) in widths.iter().zip(group_starts.iter()).enumerate() {
-        let sep = if group_start { TOOLBAR_SEP } else { 0.0 };
-        let item_w = sep + w + TOOLBAR_GAP;
+        let sep = if group_start { TOOLBAR_MODEL.sep } else { 0.0 };
+        let item_w = sep + w + TOOLBAR_MODEL.gap;
         // If this isn't the first item on the row and it would overflow, wrap.
         if i > row_start && x + item_w > usable {
             rows.push((row_start, i));
@@ -1836,6 +2064,13 @@ pub struct WordProcessorWidget {
     /// hard-coded colours, so the editor honours light/dark mode + the OS
     /// palette. Initialised to the dark theme's mapping for off-frame use.
     chrome: ChromeColors,
+    /// The theme's spacing / radius tokens for this frame (see
+    /// [`ChromeTokens`]); resolved next to `chrome`.
+    tokens: ChromeTokens,
+    /// Measured styles-panel metrics for this frame (see [`PanelMetrics`]);
+    /// resolved at the top of `draw_frame_chrome`, read by the panel painter
+    /// and by the canvas geometry that reserves the panel's width.
+    panel_metrics: PanelMetrics,
     /// Crash-recovery persistence and its Restore/Discard surface.
     recovery: RecoveryBanner,
     /// The "New ▾" picker owns its shared menu, lifecycle, and typed outcomes.
@@ -1972,6 +2207,8 @@ impl WordProcessorWidget {
             history: crate::history_panel::HistoryPanel::new(),
             // Overwritten at the top of every `draw` from the live theme.
             chrome: ChromeColors::for_theme(&Theme::dark()),
+            tokens: ChromeTokens::default(),
+            panel_metrics: PanelMetrics::fallback(),
             recovery: RecoveryBanner::default(),
             template_picker: TemplatePicker::default(),
             unsaved_changes: UnsavedChanges::default(),
@@ -3880,16 +4117,20 @@ impl WordProcessorWidget {
             &Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + 1.0),
         );
 
+        let tk = self.tokens;
         let cy = f64::midpoint(bar.y0, bar.y1);
-        let mut x = bar.x0 + 12.0;
+        let mut x = bar.x0 + tk.s3;
         self.layout_chips.clear();
         for (mode, label) in [
             (LayoutMode::Margins, t("layout-margins")),
             (LayoutMode::Spacing, t("layout-spacing")),
         ] {
-            let (label_width, label_height) = tr.measure(&label, 13.0, None);
-            let w = 16.0 + f64::from(label_width);
-            let r = Rect::new(x, bar.y0 + 5.0, x + w, bar.y1 - 5.0);
+            let (label_width, label_height) = tr.measure(&label, LAYOUT_BAR_FONT, None);
+            // A chip is its measured label plus `s2` each side, centred on
+            // the bar's centre line at the measured chip height.
+            let w = 2.0 * tk.s2 + f64::from(label_width);
+            let chip_h = layout_chip_h(f64::from(label_height), tk);
+            let r = Rect::new(x, cy - chip_h / 2.0, x + w, cy + chip_h / 2.0);
             let active = self.layout_mode == mode;
             let bg = if active { cc.accent } else { cc.chip };
             let fg = if active { cc.on_accent } else { cc.text_dim };
@@ -3898,18 +4139,18 @@ impl WordProcessorWidget {
                 transform,
                 bg,
                 None,
-                &vello::kurbo::RoundedRect::from_rect(r, 6.0),
+                &vello::kurbo::RoundedRect::from_rect(r, tk.radius_md),
             );
             tr.draw_text(
                 scene,
                 &label,
-                13.0,
+                LAYOUT_BAR_FONT,
                 fg,
-                transform * Affine::translate((x + 8.0, cy - f64::from(label_height) / 2.0)),
+                transform * Affine::translate((x + tk.s2, cy - f64::from(label_height) / 2.0)),
                 None,
             );
             self.layout_chips.push((mode, r));
-            x += w + 8.0;
+            x += w + tk.s2;
         }
 
         let readout = match self.layout_mode {
@@ -3942,18 +4183,19 @@ impl WordProcessorWidget {
         // lets long translations paint through the status label. Keep status
         // persistent, but omit the redundant hint when those two would collide.
         let status = self.status_count_label();
-        let (status_width, status_height) = tr.measure(&status, 12.5, None);
-        let status_rect = Self::layout_bar_status_rect(bar, x + 12.0, f64::from(status_width));
-        let readout_x = x + 12.0;
-        let (readout_width, readout_height) = tr.measure(&readout, 12.5, None);
+        let (status_width, status_height) = tr.measure(&status, LAYOUT_BAR_STATUS_FONT, None);
+        let status_rect =
+            Self::layout_bar_status_rect(bar, x + tk.s3, f64::from(status_width), tk.s3);
+        let readout_x = x + tk.s3;
+        let (readout_width, readout_height) = tr.measure(&readout, LAYOUT_BAR_STATUS_FONT, None);
         let readout_end = status_rect
             .as_ref()
-            .map_or(bar.x1 - 12.0, |rect| rect.x0 - 12.0);
+            .map_or(bar.x1 - tk.s3, |rect| rect.x0 - tk.s3);
         if readout_x + f64::from(readout_width) <= readout_end {
             tr.draw_text(
                 scene,
                 &readout,
-                12.5,
+                LAYOUT_BAR_STATUS_FONT,
                 cc.text_dim,
                 transform * Affine::translate((readout_x, cy - f64::from(readout_height) / 2.0)),
                 None,
@@ -3965,7 +4207,7 @@ impl WordProcessorWidget {
             tr.draw_text(
                 scene,
                 &status,
-                12.5,
+                LAYOUT_BAR_STATUS_FONT,
                 cc.text_dim,
                 transform
                     * Affine::translate((status_rect.x0, cy - f64::from(status_height) / 2.0)),
@@ -3983,7 +4225,8 @@ impl WordProcessorWidget {
     /// wide windows reserve space for it. This keeps the document useful at
     /// phone/three-column widths without making advanced formatting unreachable.
     fn styles_panel_overlay(&self) -> bool {
-        self.styles_panel_open && self.rect.width() < STYLES_PANEL_W + MAX_PAGE_W + 48.0
+        self.styles_panel_open
+            && self.rect.width() < self.panel_metrics.panel_w() + MAX_PAGE_W + 48.0
     }
 
     /// The contextual paragraph panel, in two clearly-labelled sections: **This
@@ -4018,28 +4261,26 @@ impl WordProcessorWidget {
             &panel,
         );
 
-        let pad = 14.0;
+        // Every row below derives from the measured panel metrics (1× floors),
+        // so a scaled label never paints under the control that follows it.
+        let pm = self.panel_metrics;
+        let pad = PANEL_PAD;
         let x0 = panel.x0 + pad;
         let right = panel.x1 - pad;
         let inner_w = right - x0;
-        let mut y = panel.y0 + 14.0;
+        let mut y = panel.y0 + pad;
 
         // A visible dismissal affordance matters on narrow screens: the
         // inspector overlays the document there, so relying only on a tap in
         // the dimmed background makes the way back needlessly undiscoverable.
-        let close = Rect::new(right - 62.0, y, right, y + 24.0);
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            close,
-            &t("panel-close"),
-            false,
-            true,
-        );
+        let close_label = t("panel-close");
+        let close_w = (f64::from(tr.measure(&close_label, PANEL_LABEL_FONT, None).0)
+            + 2.0 * pm.tk.s3)
+            .max(PANEL_CLOSE_W);
+        let close = Rect::new(right - close_w, y, right, y + pm.control_h());
+        draw_btn(scene, transform, tr, &cc, close, &close_label, false, true);
         self.panel_hits.push((close, PanelHit::Close));
-        y += 30.0;
+        y += pm.row_adv();
 
         // When an image is selected, the panel becomes an image inspector
         // (resize + flip) instead of the paragraph editor.
@@ -4053,7 +4294,7 @@ impl WordProcessorWidget {
             tr.draw_text(
                 scene,
                 &t("panel-caret-hint"),
-                12.5,
+                PANEL_LABEL_FONT,
                 cc.text_dim,
                 transform * Affine::translate((x0, y)),
                 Some(num::f32_of_f64(inner_w)),
@@ -4093,15 +4334,15 @@ impl WordProcessorWidget {
                 right,
                 y,
             );
-            y += 30.0;
+            y += pm.row_adv();
         }
 
         panel_divider(ctx.scene, ctx.transform, &ctx.cc, x0, right, y);
-        y += 12.0;
+        y += pm.tk.s3;
 
         // New style from this.
         {
-            let r = Rect::new(x0, y, right, y + 26.0);
+            let r = Rect::new(x0, y, right, y + pm.wide_control_h());
             draw_btn(
                 ctx.scene,
                 ctx.transform,
@@ -4128,16 +4369,17 @@ impl WordProcessorWidget {
         right: f64,
         mut y: f64,
     ) -> f64 {
+        let pm = self.panel_metrics;
         // ================= This paragraph (direct formatting) =============
         ctx.tr.draw_text(
             ctx.scene,
             &t("panel-this-paragraph"),
-            10.5,
+            PANEL_CAPTION_FONT,
             ctx.cc.text_dim,
             ctx.transform * Affine::translate((x0, y)),
             None,
         );
-        y += 18.0;
+        y += pm.caption_adv();
 
         // Alignment: L / C / R / J — the current paragraph(s), via an instance
         // `align` attr (not the style default).
@@ -4146,15 +4388,15 @@ impl WordProcessorWidget {
             // Compact single-glyph buttons: a long localized label ("Ausrichtung"
             // in German) must not collide with the L button, so the four glyphs are
             // narrow — moving the strip right to open a gap after the label.
-            let bw = 28.0;
-            let gap = 6.0;
+            let bw = (pm.control_h() + pm.tk.s1).max(PANEL_ALIGN_W);
+            let gap = PANEL_ROW_SEAM;
             let strip_left = right - 4.0 * bw - 3.0 * gap;
             ctx.tr.draw_text(
                 ctx.scene,
                 &t("panel-align"),
-                12.5,
+                PANEL_LABEL_FONT,
                 ctx.cc.text,
-                ctx.transform * Affine::translate((x0, y + 5.0)),
+                ctx.transform * Affine::translate((x0, pm.label_top(y, pm.control_h()))),
                 None,
             );
             for (i, (label, val)) in [
@@ -4167,7 +4409,7 @@ impl WordProcessorWidget {
             .enumerate()
             {
                 let rx = strip_left + num::f64_of_usize(i) * (bw + gap);
-                let r = Rect::new(rx, y, rx + bw, y + 24.0);
+                let r = Rect::new(rx, y, rx + bw, y + pm.control_h());
                 draw_btn(
                     ctx.scene,
                     ctx.transform,
@@ -4180,7 +4422,7 @@ impl WordProcessorWidget {
                 );
                 self.panel_hits.push((r, PanelHit::ParaAlign(val)));
             }
-            y += 30.0;
+            y += pm.row_adv();
         }
 
         // Line spacing: a cycling chip (1.0 → 1.15 → 1.5 → 2.0) on the current
@@ -4189,13 +4431,15 @@ impl WordProcessorWidget {
             ctx.tr.draw_text(
                 ctx.scene,
                 &t("panel-line-spacing"),
-                12.5,
+                PANEL_LABEL_FONT,
                 ctx.cc.text,
-                ctx.transform * Affine::translate((x0, y + 5.0)),
+                ctx.transform * Affine::translate((x0, pm.label_top(y, pm.control_h()))),
                 None,
             );
             let label = line_spacing_label(self.current_line_spacing());
-            let r = Rect::new(right - 96.0, y, right, y + 24.0);
+            let w = (f64::from(ctx.tr.measure(&label, PANEL_LABEL_FONT, None).0) + 2.0 * pm.tk.s3)
+                .max(PANEL_CHIP_W);
+            let r = Rect::new(right - w, y, right, y + pm.control_h());
             draw_btn(
                 ctx.scene,
                 ctx.transform,
@@ -4207,11 +4451,11 @@ impl WordProcessorWidget {
                 true,
             );
             self.panel_hits.push((r, PanelHit::ParaLineSpacing));
-            y += 30.0;
+            y += pm.row_adv();
         }
 
         panel_divider(ctx.scene, ctx.transform, &ctx.cc, x0, right, y);
-        y += 12.0;
+        y += pm.tk.s3;
         y
     }
 
@@ -4229,45 +4473,46 @@ impl WordProcessorWidget {
     ) -> f64 {
         // ================= Paragraph style (the named preset) =============
         let inner_w = right - x0;
+        let pm = self.panel_metrics;
         // `st` is a snapshot of the focused style (read-only copy), taken once
         // by the caller and threaded through every panel section that needs it.
         let display_name = crate::styles::style_display_name(key, st);
         ctx.tr.draw_text(
             ctx.scene,
             &t("panel-style"),
-            10.5,
+            PANEL_CAPTION_FONT,
             ctx.cc.text_dim,
             ctx.transform * Affine::translate((x0, y)),
             None,
         );
-        y += 16.0;
+        y += pm.caption_adv();
         ctx.tr.draw_text(
             ctx.scene,
             &display_name,
-            18.0,
+            PANEL_NAME_FONT,
             ctx.cc.text,
             ctx.transform * Affine::translate((x0, y)),
             Some(num::f32_of_f64(inner_w)),
         );
-        y += 24.0;
+        y += pm.name_adv();
         // Caption: name the preset semantics explicitly so this section reads as
         // "edit the shared style" — distinct from the toolbar, which formats only
         // the current selection. This is what keeps the two homes unambiguous.
         ctx.tr.draw_text(
             ctx.scene,
             &t_args("panel-style-hint", &[arg("name", display_name)]),
-            11.0,
+            PANEL_HINT_FONT,
             ctx.cc.text_dim,
             ctx.transform * Affine::translate((x0, y)),
             Some(num::f32_of_f64(inner_w)),
         );
-        y += 22.0;
+        y += pm.hint_adv();
 
         // ---- Style picker -------------------------------------------------
         let order = self.sheet.order();
-        let gap = 6.0;
+        let gap = PANEL_ROW_SEAM;
         let col_w = (inner_w - gap) / 2.0;
-        let chip_h = 24.0;
+        let chip_h = pm.control_h();
         for (i, id) in order.iter().enumerate() {
             let col = num::f64_of_usize(i % 2);
             let row = num::f64_of_usize(i / 2);
@@ -4288,9 +4533,9 @@ impl WordProcessorWidget {
             self.panel_hits.push((r, PanelHit::Pick(id.clone())));
         }
         let rows = num::f64_of_usize(order.len().div_ceil(2));
-        y += rows * (chip_h + gap) + 6.0;
+        y += rows * (chip_h + gap) + PANEL_ROW_SEAM;
         panel_divider(ctx.scene, ctx.transform, &ctx.cc, x0, right, y);
-        y += 12.0;
+        y += pm.tk.s3;
         y
     }
 
@@ -4309,14 +4554,15 @@ impl WordProcessorWidget {
         // "PARAGRAPH STYLE" header + style name already frame this as the preset
         // editor, so no separate sub-header is needed.
 
+        let pm = self.panel_metrics;
         // Font (cycles sans → serif → mono).
         {
             ctx.tr.draw_text(
                 ctx.scene,
                 &t("panel-font"),
-                12.5,
+                PANEL_LABEL_FONT,
                 ctx.cc.text,
-                ctx.transform * Affine::translate((x0, y + 5.0)),
+                ctx.transform * Affine::translate((x0, pm.label_top(y, pm.control_h()))),
                 None,
             );
             let fl = t(match st.font.as_str() {
@@ -4324,7 +4570,9 @@ impl WordProcessorWidget {
                 "mono" => "panel-font-mono",
                 _ => "panel-font-sans",
             });
-            let r = Rect::new(right - 96.0, y, right, y + 24.0);
+            let w = (f64::from(ctx.tr.measure(&fl, PANEL_LABEL_FONT, None).0) + 2.0 * pm.tk.s3)
+                .max(PANEL_CHIP_W);
+            let r = Rect::new(right - w, y, right, y + pm.control_h());
             draw_btn(
                 ctx.scene,
                 ctx.transform,
@@ -4336,7 +4584,7 @@ impl WordProcessorWidget {
                 true,
             );
             self.panel_hits.push((r, PanelHit::CycleFont));
-            y += 30.0;
+            y += pm.row_adv();
         }
 
         // Weight: Bold / Italic toggles.
@@ -4344,21 +4592,27 @@ impl WordProcessorWidget {
             ctx.tr.draw_text(
                 ctx.scene,
                 &t("panel-weight"),
-                12.5,
+                PANEL_LABEL_FONT,
                 ctx.cc.text,
-                ctx.transform * Affine::translate((x0, y + 5.0)),
+                ctx.transform * Affine::translate((x0, pm.label_top(y, pm.control_h()))),
                 None,
             );
-            let bw = 60.0;
-            let rb = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 24.0);
-            let ri = Rect::new(right - bw, y, right, y + 24.0);
+            let bold = t("panel-bold");
+            let italic = t("panel-italic");
+            let widest = f64::from(ctx.tr.measure(&bold, PANEL_LABEL_FONT, None).0)
+                .max(f64::from(ctx.tr.measure(&italic, PANEL_LABEL_FONT, None).0));
+            let bw = (widest + 2.0 * pm.tk.s2).max(PANEL_TOGGLE_W);
+            let seam = PANEL_ROW_SEAM;
+            let ch = pm.control_h();
+            let rb = Rect::new(right - bw * 2.0 - seam, y, right - bw - seam, y + ch);
+            let ri = Rect::new(right - bw, y, right, y + ch);
             draw_btn(
                 ctx.scene,
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
                 rb,
-                &t("panel-bold"),
+                &bold,
                 st.bold,
                 true,
             );
@@ -4368,13 +4622,13 @@ impl WordProcessorWidget {
                 ctx.tr,
                 &ctx.cc,
                 ri,
-                &t("panel-italic"),
+                &italic,
                 st.italic,
                 true,
             );
             self.panel_hits.push((rb, PanelHit::ToggleBold));
             self.panel_hits.push((ri, PanelHit::ToggleItalic));
-            y += 30.0;
+            y += pm.row_adv();
         }
         y
     }
@@ -4393,24 +4647,35 @@ impl WordProcessorWidget {
         // Colour: quick-preset swatches + a "Custom…" affordance that opens the
         // shared `ColorPicker` popover for an arbitrary colour.
         let inner_w = right - x0;
+        let pm = self.panel_metrics;
+        let sh = pm.swatch_h();
         {
+            let label = t("panel-colour");
+            let (label_w, _) = ctx.tr.measure(&label, PANEL_LABEL_FONT, None);
             ctx.tr.draw_text(
                 ctx.scene,
-                &t("panel-colour"),
-                12.5,
+                &label,
+                PANEL_LABEL_FONT,
                 ctx.cc.text,
-                ctx.transform * Affine::translate((x0, y + 5.0)),
+                ctx.transform * Affine::translate((x0, pm.label_top(y, sh))),
                 None,
             );
             let n = STYLE_PALETTE.len();
-            let sw_gap = 5.0;
-            // Leave room on the left for the "Colour" label.
-            let strip_w = (inner_w - 54.0).clamp(120.0, 196.0);
+            let sw_gap = pm.tk.s1;
+            // The strip starts at the control column: right of the measured
+            // label plus `s3`, between the classic bounds grown with the text.
+            let room = (inner_w - f64::from(label_w) - pm.tk.s3).max(0.0);
+            let strip_w = room
+                .clamp(
+                    PANEL_SWATCH_STRIP_MIN_W * pm.scale,
+                    PANEL_SWATCH_STRIP_MAX_W * pm.scale,
+                )
+                .min(room);
             let sw = (strip_w - sw_gap * (num::f64_of_usize(n) - 1.0)) / num::f64_of_usize(n);
             let sx0 = right - strip_w;
             for (i, c) in STYLE_PALETTE.iter().enumerate() {
                 let sx = sx0 + num::f64_of_usize(i) * (sw + sw_gap);
-                let r = Rect::new(sx, y, sx + sw, y + 22.0);
+                let r = Rect::new(sx, y, sx + sw, y + sh);
                 let col = Color::from_rgb8(c[0], c[1], c[2]);
                 ctx.scene.fill(
                     Fill::NonZero,
@@ -4430,9 +4695,11 @@ impl WordProcessorWidget {
                 }
                 self.panel_hits.push((r, PanelHit::SetColor(*c)));
             }
-            y += 30.0;
-            // "Custom…" — shows the current colour chip and opens the full picker.
-            let chip = Rect::new(x0, y, x0 + 22.0, y + 22.0);
+            y += sh + pm.tk.s2;
+            // "Custom…" — shows the current colour chip and opens the full
+            // picker. The chip sits on the control column with the swatches
+            // above it, not under the label column.
+            let chip = Rect::new(sx0, y, sx0 + sh, y + sh);
             let cur = Color::from_rgb8(st.color[0], st.color[1], st.color[2]);
             ctx.scene.fill(
                 Fill::NonZero,
@@ -4448,7 +4715,7 @@ impl WordProcessorWidget {
                 None,
                 &vello::kurbo::RoundedRect::from_rect(chip, 4.0),
             );
-            let btn = Rect::new(chip.x1 + 8.0, y, right, y + 22.0);
+            let btn = Rect::new(chip.x1 + pm.tk.s2, y, right, y + sh);
             draw_btn(
                 ctx.scene,
                 ctx.transform,
@@ -4461,7 +4728,7 @@ impl WordProcessorWidget {
             );
             self.panel_hits.push((btn, PanelHit::OpenColorPicker));
             self.panel_hits.push((chip, PanelHit::OpenColorPicker));
-            y += 30.0;
+            y += sh + pm.tk.s2;
         }
         y
     }
@@ -4485,18 +4752,20 @@ impl WordProcessorWidget {
         y0: f64,
     ) {
         let cc = self.chrome;
+        let pm = self.panel_metrics;
+        let ch = pm.wide_control_h();
         let inner_w = right - x0;
         let mut y = y0;
 
         tr.draw_text(
             scene,
             &t("panel-image"),
-            10.5,
+            PANEL_CAPTION_FONT,
             cc.text_dim,
             transform * Affine::translate((x0, y)),
             None,
         );
-        y += 22.0;
+        y += pm.caption_adv() + pm.tk.s1;
 
         // Current display dimensions (from this frame's laid geometry).
         let (dw, dh) = self.selected_image_dims().unwrap_or((0.0, 0.0));
@@ -4508,28 +4777,32 @@ impl WordProcessorWidget {
         tr.draw_text(
             scene,
             &dims,
-            15.0,
+            PANEL_DIMS_FONT,
             cc.text,
             transform * Affine::translate((x0, y)),
             None,
         );
-        y += 26.0;
+        y += pm.dims_adv();
         panel_divider(scene, transform, &cc, x0, right, y);
-        y += 12.0;
+        y += pm.tk.s3;
 
         // ---- Size (aspect-locked scale steppers) --------------------------
         // Leave a label column on the left; the two buttons share the right side.
         tr.draw_text(
             scene,
             &t("panel-image-size"),
-            12.5,
+            PANEL_LABEL_FONT,
             cc.text,
-            transform * Affine::translate((x0, y + 5.0)),
+            transform * Affine::translate((x0, pm.label_top(y, ch))),
             None,
         );
-        let bw = ((inner_w - 60.0) / 2.0 - 6.0).clamp(48.0, 92.0);
-        let rs = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 26.0);
-        let rl = Rect::new(right - bw, y, right, y + 26.0);
+        let seam = PANEL_ROW_SEAM;
+        let bw = ((inner_w - PANEL_IMAGE_LABEL_COL * pm.scale) / 2.0 - seam).clamp(
+            PANEL_IMAGE_BUTTON_MIN_W * pm.scale,
+            PANEL_IMAGE_BUTTON_MAX_W * pm.scale,
+        );
+        let rs = Rect::new(right - bw * 2.0 - seam, y, right - bw - seam, y + ch);
+        let rl = Rect::new(right - bw, y, right, y + ch);
         draw_btn(
             scene,
             transform,
@@ -4552,10 +4825,10 @@ impl WordProcessorWidget {
         );
         self.panel_hits.push((rs, PanelHit::ImageScale(0.9)));
         self.panel_hits.push((rl, PanelHit::ImageScale(1.1)));
-        y += 34.0;
+        y += ch + pm.tk.s2;
 
         self.draw_panel_image_flip(scene, transform, tr, x0, right, y, bw);
-        y += 38.0;
+        y += ch + pm.tk.s3;
 
         // ---- Crop ---------------------------------------------------------
         // Cropping keeps the object's display frame, while changing the source
@@ -4565,13 +4838,13 @@ impl WordProcessorWidget {
         tr.draw_text(
             scene,
             &t("panel-image-crop"),
-            12.5,
+            PANEL_LABEL_FONT,
             cc.text,
-            transform * Affine::translate((x0, y + 5.0)),
+            transform * Affine::translate((x0, pm.label_top(y, ch))),
             None,
         );
-        let crop = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 26.0);
-        let reset = Rect::new(right - bw, y, right, y + 26.0);
+        let crop = Rect::new(right - bw * 2.0 - seam, y, right - bw - seam, y + ch);
+        let reset = Rect::new(right - bw, y, right, y + ch);
         draw_btn(
             scene,
             transform,
@@ -4594,7 +4867,7 @@ impl WordProcessorWidget {
         );
         self.panel_hits.push((crop, PanelHit::ImageCropInset));
         self.panel_hits.push((reset, PanelHit::ImageCropReset));
-        y += 38.0;
+        y += ch + pm.tk.s3;
 
         // ---- Object placement --------------------------------------------
         // Keep Position as a real heading, rather than competing with three
@@ -4603,22 +4876,23 @@ impl WordProcessorWidget {
         tr.draw_text(
             scene,
             &t("panel-image-position"),
-            12.5,
+            PANEL_LABEL_FONT,
             cc.text,
             transform * Affine::translate((x0, y)),
             None,
         );
-        y += 20.0;
-        let placement_gap = 6.0;
-        let placement_w = ((inner_w - placement_gap * 2.0) / 3.0).max(48.0);
-        let free = Rect::new(x0, y, x0 + placement_w, y + 26.0);
+        y += pm.heading_adv();
+        let placement_gap = PANEL_ROW_SEAM;
+        let placement_w =
+            ((inner_w - placement_gap * 2.0) / 3.0).max(PANEL_IMAGE_BUTTON_MIN_W * pm.scale);
+        let free = Rect::new(x0, y, x0 + placement_w, y + ch);
         let left = Rect::new(
             free.x1 + placement_gap,
             y,
             free.x1 + placement_gap + placement_w,
-            y + 26.0,
+            y + ch,
         );
-        let right_wrap = Rect::new(left.x1 + placement_gap, y, right, y + 26.0);
+        let right_wrap = Rect::new(left.x1 + placement_gap, y, right, y + ch);
         draw_btn(
             scene,
             transform,
@@ -4681,16 +4955,19 @@ impl WordProcessorWidget {
                     matches!(b.attrs.get("flip_v"), Some(AttrVal::Bool(true))),
                 )
             });
+        let pm = self.panel_metrics;
+        let ch = pm.wide_control_h();
+        let seam = PANEL_ROW_SEAM;
         tr.draw_text(
             scene,
             &t("panel-image-flip"),
-            12.5,
+            PANEL_LABEL_FONT,
             cc.text,
-            transform * Affine::translate((x0, y + 5.0)),
+            transform * Affine::translate((x0, pm.label_top(y, ch))),
             None,
         );
-        let rh = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 26.0);
-        let rv = Rect::new(right - bw, y, right, y + 26.0);
+        let rh = Rect::new(right - bw * 2.0 - seam, y, right - bw - seam, y + ch);
+        let rv = Rect::new(right - bw, y, right, y + ch);
         draw_btn(
             scene,
             transform,
@@ -4730,17 +5007,23 @@ impl WordProcessorWidget {
         y: f64,
     ) {
         let cc = self.chrome;
+        let pm = self.panel_metrics;
+        let ch = pm.control_h();
         tr.draw_text(
             scene,
             &field.label(),
-            12.5,
+            PANEL_LABEL_FONT,
             cc.text,
-            transform * Affine::translate((x0, y + 5.0)),
+            transform * Affine::translate((x0, pm.label_top(y, ch))),
             None,
         );
-        let plus = Rect::new(right - 24.0, y, right, y + 24.0);
-        let vb = Rect::new(plus.x0 - 60.0, y, plus.x0 - 2.0, y + 24.0);
-        let minus = Rect::new(vb.x0 - 26.0, y, vb.x0 - 2.0, y + 24.0);
+        // Steppers are squares of the control height; the value box holds a
+        // four-digit value plus `s3`, never narrower than the classic box.
+        let value_w = (f64::from(tr.measure("999.9", PANEL_LABEL_FONT, None).0) + pm.tk.s3)
+            .max(PANEL_VALUE_W);
+        let plus = Rect::new(right - ch, y, right, y + ch);
+        let vb = Rect::new(plus.x0 - PANEL_STEP_SEAM - value_w, y, plus.x0 - PANEL_STEP_SEAM, y + ch);
+        let minus = Rect::new(vb.x0 - PANEL_STEP_SEAM - ch, y, vb.x0 - PANEL_STEP_SEAM, y + ch);
         draw_btn(scene, transform, tr, &cc, minus, "−", false, true);
         draw_btn(scene, transform, tr, &cc, plus, "+", false, true);
         // Value box.
@@ -4770,14 +5053,18 @@ impl WordProcessorWidget {
         } else {
             fmt_num(value)
         };
-        let approx = num::f64_of_usize(text.chars().count()) * 7.0;
-        let tx = f64::midpoint(vb.x0, vb.x1) - approx / 2.0;
+        let (text_w, text_h) = tr.measure(&text, PANEL_LABEL_FONT, None);
+        let tx = f64::midpoint(vb.x0, vb.x1) - f64::from(text_w) / 2.0;
         tr.draw_text(
             scene,
             &text,
-            12.5,
+            PANEL_LABEL_FONT,
             cc.text,
-            transform * Affine::translate((tx, f64::midpoint(vb.y0, vb.y1) - 8.0)),
+            transform
+                * Affine::translate((
+                    tx,
+                    centred_line_top(vb.y0, vb.height(), f64::from(text_h)),
+                )),
             None,
         );
         self.panel_hits.push((vb, PanelHit::Num(field)));
@@ -4950,17 +5237,19 @@ fn draw_btn(
         None,
         &vello::kurbo::RoundedRect::from_rect(r, 6.0),
     );
-    let approx = num::f64_of_usize(label.chars().count()) * 6.6;
+    // Centre on the measured label box, not a per-glyph estimate: a scaled
+    // or localised label lands on the button's centre line either way.
+    let (label_w, label_h) = tr.measure(label, PANEL_LABEL_FONT, None);
     let tx = if center {
-        (f64::midpoint(r.x0, r.x1) - approx / 2.0).max(r.x0 + 4.0)
+        (f64::midpoint(r.x0, r.x1) - f64::from(label_w) / 2.0).max(r.x0 + 4.0)
     } else {
         r.x0 + 8.0
     };
-    let ty = f64::midpoint(r.y0, r.y1) - 8.0;
+    let ty = centred_line_top(r.y0, r.height(), f64::from(label_h));
     tr.draw_text(
         scene,
         label,
-        12.5,
+        PANEL_LABEL_FONT,
         fg,
         transform * Affine::translate((tx, ty)),
         Some(num::f32_of_f64(r.width() - 6.0)),
@@ -5529,7 +5818,7 @@ impl WordProcessorWidget {
         if self.auto_fit_page {
             let mut available = full.width();
             if self.styles_panel_visible() && !self.styles_panel_overlay() {
-                available -= STYLES_PANEL_W;
+                available -= self.panel_metrics.panel_w();
             }
             if self.outline.is_open() {
                 available -= OUTLINE_PANEL_W;
@@ -5542,8 +5831,10 @@ impl WordProcessorWidget {
         // no control is clipped. `draw_toolbar` re-derives the same packing, so
         // the reserved band and the drawn rows always agree.
         self.zoom.measure(text_renderer);
+        self.tokens = ChromeTokens::for_theme(theme);
+        self.panel_metrics = PanelMetrics::resolve(text_renderer, self.tokens);
         self.toolbar_label_widths.clear();
-        self.toolbar_row_height = TOOLBAR_H.max(self.zoom.height() + 12.0);
+        let mut label_h = 0.0_f64;
         for (_, item) in self
             .toolbar_button_specs(false)
             .into_iter()
@@ -5554,11 +5845,13 @@ impl WordProcessorWidget {
             } else {
                 ui::text_render::TextWeight::Regular
             };
-            let (width, height) = text_renderer.measure_weighted(&item.label, 15.0, None, weight);
+            let (width, height) =
+                text_renderer.measure_weighted(&item.label, TOOLBAR_MODEL.label_font, None, weight);
             self.toolbar_label_widths
-                .insert(item.label, f64::from(width) + 12.0);
-            self.toolbar_row_height = self.toolbar_row_height.max(f64::from(height) + 16.0);
+                .insert(item.label, TOOLBAR_MODEL.item_w(f64::from(width)));
+            label_h = label_h.max(f64::from(height));
         }
+        self.toolbar_row_height = TOOLBAR_MODEL.row_h(label_h, self.zoom.height());
         let tb_h = self.toolbar_height(full.width());
         let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + tb_h);
         self.draw_toolbar(scene, transform, text_renderer, theme, tb);
@@ -5567,8 +5860,12 @@ impl WordProcessorWidget {
         // so the content spans down to the layout bar and
         // reclaims the strip's height. The layout bar now sits at the very bottom.
         let content_bottom = full.y1.max(full.y0 + tb_h);
-        self.layout_bar_height =
-            LAYOUT_BAR_H.max(f64::from(text_renderer.measure("Mg", 13.0, None).1) + 10.0);
+        // The bar is its measured chip plus `s1` above and below (1× floor 32).
+        let chip_h = layout_chip_h(
+            f64::from(text_renderer.measure("Mg", LAYOUT_BAR_FONT, None).1),
+            self.tokens,
+        );
+        self.layout_bar_height = LAYOUT_BAR_H.max(chip_h + 2.0 * self.tokens.s1);
         let layout_bar_top = (content_bottom - self.layout_bar_height).max(full.y0 + tb_h);
         // Version-history strip: a band between the canvas and the layout bar,
         // so the page shrinks rather than the history painting over the text.
@@ -5577,7 +5874,7 @@ impl WordProcessorWidget {
         // Reserve the styles panel out of the canvas so the page re-centers in the
         // remaining width (and scrolled content never paints under the panel).
         let canvas_right = if self.styles_panel_visible() && !self.styles_panel_overlay() {
-            (full.x1 - STYLES_PANEL_W).max(full.x0 + 1.0)
+            (full.x1 - self.panel_metrics.panel_w()).max(full.x0 + 1.0)
         } else {
             full.x1
         };
@@ -5590,7 +5887,12 @@ impl WordProcessorWidget {
             full.x0
         };
         // Reserve + draw the crash-recovery banner (when staged) and the Find
-        // bar (when open), stacked directly under the toolbar.
+        // bar (when open), stacked directly under the toolbar. The find bar
+        // is measured against the canvas width it will span first, so the
+        // band it reserves (one row, or two when the controls would run off
+        // the window) is the band it paints.
+        self.find
+            .measure(text_renderer, theme, canvas_right - canvas_left);
         let (recovery_h, find_h) = self.draw_recovery_and_find_bars(
             scene,
             transform,
@@ -8031,7 +8333,7 @@ impl WordProcessorWidget {
         if self.find.is_open() {
             let recovery_h = self.recovery.height();
             let fbar_top = self.rect.y0 + tb_h + recovery_h;
-            let fbar_bot = fbar_top + crate::find_bar::HEIGHT;
+            let fbar_bot = fbar_top + self.find.height();
             if self.pointer.y >= fbar_top && self.pointer.y < fbar_bot {
                 let effect = self.find.click(self.pointer, &self.blocks);
                 self.apply_find_effect_mut(state, effect);
@@ -9191,7 +9493,8 @@ impl Widget for WordProcessorWidget {
     ) {
         // Resolve the OS theme into this frame's chrome palette once; every
         // chrome helper below reads `self.chrome` so the whole editor follows
-        // light/dark mode + the OS palette.
+        // light/dark mode + the OS palette. (`draw_frame_chrome` resolves the
+        // spacing tokens and the measured panel metrics alongside it.)
         self.chrome = ChromeColors::for_theme(theme);
         let full = self.rect;
         let fg = self.draw_frame_chrome(scene, transform, text_renderer, theme, full);
@@ -9279,7 +9582,7 @@ impl Widget for WordProcessorWidget {
             }
             let panel = Rect::new(
                 if overlay {
-                    (full.x1 - STYLES_PANEL_W).max(full.x0)
+                    (full.x1 - self.panel_metrics.panel_w()).max(full.x0)
                 } else {
                     fg.canvas_right
                 },
@@ -11694,8 +11997,8 @@ impl WordProcessorWidget {
     /// Allocate the docked document-status label wholly inside `bar`, after the
     /// layout chips and hint. Returning `None` at extremely narrow widths is
     /// preferable to either overlapping a control or painting over the page.
-    fn layout_bar_status_rect(bar: Rect, after_x: f64, width: f64) -> Option<Rect> {
-        let x0 = bar.x1 - 12.0 - width;
+    fn layout_bar_status_rect(bar: Rect, after_x: f64, width: f64, margin: f64) -> Option<Rect> {
+        let x0 = bar.x1 - margin - width;
         (x0 >= after_x).then_some(Rect::new(x0, bar.y0, x0 + width, bar.y1))
     }
 
@@ -12186,6 +12489,10 @@ impl WordProcessorWidget {
 }
 
 #[cfg(test)]
+#[path = "widget/r2_chrome_metrics.rs"]
+mod r2_chrome_metrics;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::fmt::Write as _;
@@ -12430,7 +12737,7 @@ mod tests {
     /// Like [`pipeline_draw`] but renders under an explicit [`Theme`] so tests
     /// can exercise the real five-pass draw path under light/dark/high-contrast
     /// palettes. Returns the widget's resolved chrome palette for inspection.
-    fn pipeline_draw_themed(
+    pub(super) fn pipeline_draw_themed(
         wp: &mut WordProcessorWidget,
         state: &mut ui::State,
         w: u32,
@@ -15155,11 +15462,11 @@ mod tests {
             assert_eq!(w[0].1, w[1].0, "row ranges are contiguous");
         }
         // No row's packed width exceeds the usable width (mirrors `draw`).
-        let usable = 400.0 - TOOLBAR_PAD - TOOLBAR_RIGHT_PAD;
+        let usable = 400.0 - TOOLBAR_MODEL.pad - TOOLBAR_MODEL.right_pad;
         for (s, e) in &rows {
             let mut x = 0.0;
             for i in *s..*e {
-                x += widths[i] + TOOLBAR_GAP + if starts[i] { TOOLBAR_SEP } else { 0.0 };
+                x += widths[i] + TOOLBAR_MODEL.gap + if starts[i] { TOOLBAR_MODEL.sep } else { 0.0 };
             }
             // A row is allowed to overflow only if it holds a single over-wide item.
             assert!(
@@ -15267,6 +15574,7 @@ mod tests {
                 bar,
                 210.0,
                 f64::from(TextRenderer::new().measure(&label, 12.5, None).0),
+                12.0,
             )
             .expect("the count fits after the layout controls");
             assert!(

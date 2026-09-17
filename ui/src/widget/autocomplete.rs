@@ -30,6 +30,7 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::renderer_type_size;
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -482,8 +483,8 @@ impl Autocomplete {
         } else {
             tokens.colors.text_dim
         };
-        let text_size = tokens.typography.scale.base;
-        let detail_size = tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.base);
+        let detail_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         let mut x = row.x0 + ROW_PAD_X;
         if let Some(icon) = s.icon {
             let iy = row.y0 + (ROW_H - ICON_PX) / 2.0;
@@ -518,15 +519,19 @@ impl Autocomplete {
                 transform.pre_translate(Vec2::new(dx, row.y0 + (ROW_H - f64::from(dh)) / 2.0)),
                 None,
             );
-            label_x1 = dx - 8.0;
+            label_x1 = dx - f64::from(tokens.spacing.s2);
         }
+        // The row was measured one line tall, so a label longer than the
+        // room left of the detail elides — handing `draw_text` a max width
+        // wraps it onto a second line that paints over the next row.
+        let shown = text_renderer.elide_to_width(&s.label, text_size, px((label_x1 - x).max(0.0)));
         text_renderer.draw_text(
             scene,
-            &s.label,
+            &shown,
             text_size,
             text_color,
             transform.pre_translate(Vec2::new(x, ty)),
-            Some(px((label_x1 - x).max(0.0))),
+            None,
         );
     }
 }
@@ -684,7 +689,7 @@ impl Widget for Autocomplete {
             &shape,
         );
 
-        let text_size = tokens.typography.scale.base;
+        let text_size = renderer_type_size(text_renderer, tokens.typography.scale.base);
 
         // No rows yet: render the lone status line (loading / no matches).
         if self.suggestions.is_empty() {

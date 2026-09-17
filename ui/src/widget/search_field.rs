@@ -285,11 +285,24 @@ impl Widget for SearchField {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.input.build_layout(taffy, theme, node_map);
+        // A fluid control: it asks for the row's width and, when the row
+        // overflows, it is the item that gives — never the fixed targets
+        // beside it. With `flex_shrink: 0` a `percent(100%)` item claimed
+        // the whole row and pushed every later sibling to zero width (the
+        // F2-16 shape recorded against `Dropdown`). The floor keeps the two
+        // gutters plus two pointer targets of text, so it cannot vanish.
+        let min_width = ICON_GUTTER
+            + CLEAR_GUTTER
+            + 2.0 * f64::from(theme.tokens.metrics.min_pointer_target);
         let node = taffy.parent_node(
             Style {
                 display: taffy::Display::Flex,
                 align_items: Some(taffy::AlignItems::Center),
-                flex_shrink: 0.0,
+                flex_shrink: 1.0,
+                min_size: taffy::Size {
+                    width: length(min_width as f32),
+                    height: taffy::Dimension::auto(),
+                },
                 padding: taffy::Rect {
                     left: length(ICON_GUTTER as f32),
                     right: length(CLEAR_GUTTER as f32),

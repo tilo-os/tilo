@@ -10,6 +10,7 @@
 )]
 
 use super::{ParticipantKind, PresenceCtx};
+use crate::text_metrics::renderer_type_size;
 use crate::permissions::UserId;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
@@ -306,7 +307,7 @@ impl PresenceCtx {
             is_agent,
         );
         let actor_label = actor_label(self, &user, is_agent);
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let first = tr.elide_to_width(&actor_label, size, (rect.width() - 40.0) as f32);
         tr.draw_text_weighted(
             scene,

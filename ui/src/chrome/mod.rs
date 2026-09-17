@@ -16,4 +16,4 @@ pub use shell::{
     ChromeRole, SelectionState, SelectionTier, fill_scrim, scrim_maps, selection_tier,
 };
 pub use status_bar::STATUS_BAR_HEIGHT;
-pub use toolbar::{LabelCue, TOOLBAR_HEIGHT, ToolbarItem};
+pub use toolbar::{LabelCue, TOOLBAR_HEIGHT, ToolbarItem, ToolbarMetrics, item_rects};

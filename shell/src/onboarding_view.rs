@@ -1699,32 +1699,29 @@ impl OnboardingView {
         let Some(composed) = self.composed.as_mut() else {
             return;
         };
-        let colors = &theme.tokens.colors;
         let panel = composed.get_rect();
         if panel.area() > 0.0 {
-            if !theme.name.eq_ignore_ascii_case("high contrast") {
-                ui::surface::soft_shadow(
-                    scene,
-                    transform,
-                    panel,
-                    colors.neutral[0],
-                    42.0,
-                    18.0,
-                    0.42,
-                );
-            }
-            let shape = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.xl));
+            // Panel role (HIG §9.1–§9.3): the onboarding card floats over the
+            // backdrop, so it casts the same Panel shadow every other Panel
+            // casts, from the elevation token; on the high-contrast palette
+            // that black shadow lands on a black ground and contributes
+            // nothing — the edge does the separating (§9.3) — so the former
+            // by-name high-contrast guard is not needed. Ground is
+            // `panel_ground`, edge the derived Panel border.
+            let radius = ui::chrome::ChromeRole::Panel.radius(theme, panel.height());
+            ui::chrome::shell::panel_shadow(scene, transform, panel, radius, theme, 1.0);
+            let shape = RoundedRect::from_rect(panel, radius);
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.surfaces.raised,
+                ui::chrome::shell::panel_ground(theme),
                 None,
                 &shape,
             );
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
                 transform,
-                colors.border_standard,
+                ui::chrome::shell::panel_border(theme),
                 None,
                 &shape,
             );

@@ -1838,7 +1838,10 @@ impl TaffyTreeExt for TaffyTree<()> {
 pub type Element = Box<dyn Widget>;
 
 pub(crate) mod layout;
-pub use layout::{WidgetLayoutError, compute_widget_layout, insets, insets_all, insets_xy};
+pub use layout::{
+    AuthoredExtent, ExtentSizing, WidgetLayoutError, compute_widget_layout, insets, insets_all,
+    insets_xy, text_control_height,
+};
 
 mod button;
 pub use button::{Button, ButtonFace, ButtonInteract, ButtonStyle, face_colors};

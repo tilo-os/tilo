@@ -26,6 +26,7 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::renderer_type_size;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
@@ -254,7 +255,7 @@ impl Popover {
                   f64's exact-integer range"
     )]
     pub fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let mut w = MIN_W.max(self.anchor.width());
         for label in &self.items {
             let tw = f64::from(tr.measure(label, fs, None).0);
@@ -387,7 +388,7 @@ impl Widget for Popover {
             &shape,
         );
 
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         for (idx, label) in self.items.iter().enumerate() {
             let row = self.row_rect(idx);
             let is_hl = idx == self.highlighted;

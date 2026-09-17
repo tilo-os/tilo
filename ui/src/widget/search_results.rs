@@ -30,7 +30,7 @@ use crate::theme::Theme;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::data_table::renderer_type_size;
+use crate::widget::data_table::{renderer_type_size, text_band, type_line_height};
 
 const PAD: f64 = 8.0; // card inner padding
 const ROW_INSET: f64 = 8.0; // rows inset from the card edge
@@ -67,6 +67,42 @@ struct LayoutPlan {
     rows: Vec<RowGeom>,
 }
 
+/// Row and header bands. The constants are the 1× defaults; `build_layout`
+/// resolves them from the theme's type so a 2× title still has its 1×
+/// padding instead of overrunning the next row. A free-floating overlay
+/// that never goes through layout keeps the defaults.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RowBands {
+    header: f64,
+    one_line: f64,
+    two_line: f64,
+}
+
+impl RowBands {
+    const DEFAULT: Self = Self {
+        header: HEADER_H,
+        one_line: ROW_H_ONE_LINE,
+        two_line: ROW_H_TWO_LINE,
+    };
+
+    /// Title (`base`) and subtitle (`sm`) lines plus one sibling step of
+    /// padding; the caption band holds its `xs` line plus its two `s1`
+    /// insets. Every value floors at the pinned 1× constant.
+    fn resolve(theme: &Theme) -> Self {
+        let tokens = &theme.tokens;
+        let title = type_line_height(tokens.typography.scale.base);
+        let subtitle = type_line_height(tokens.typography.scale.sm);
+        let caption = type_line_height(tokens.typography.scale.xs);
+        let pad = f64::from(tokens.spacing.s3);
+        let gap = f64::from(tokens.spacing.s1);
+        Self {
+            header: text_band(HEADER_H, caption, 2.0 * gap),
+            one_line: text_band(ROW_H_ONE_LINE, title, pad),
+            two_line: text_band(ROW_H_TWO_LINE, title + gap + subtitle, pad),
+        }
+    }
+}
+
 /// The results overlay. Populate it with [`set_groups`](Self::set_groups) each
 /// time the query changes, drive selection with the keyboard or pointer, and
 /// drain activations with [`take_activated`](Self::take_activated).
@@ -81,6 +117,7 @@ pub struct SearchResultsView {
     activated: Option<String>,
     empty_text: String,
     test_id: Option<String>,
+    bands: RowBands,
 }
 
 impl SearchResultsView {
@@ -95,6 +132,7 @@ impl SearchResultsView {
             activated: None,
             empty_text: "No results".to_string(),
             test_id: None,
+            bands: RowBands::DEFAULT,
         }
     }
 
@@ -231,19 +269,19 @@ impl SearchResultsView {
         }
         let mut h = PAD * 2.0;
         for g in &self.groups {
-            h += HEADER_H;
+            h += self.bands.header;
             for r in &g.results {
-                h += Self::row_height(r);
+                h += self.row_height(r);
             }
         }
         h
     }
 
-    fn row_height(r: &SearchResult) -> f64 {
+    fn row_height(&self, r: &SearchResult) -> f64 {
         if r.subtitle.is_some() {
-            ROW_H_TWO_LINE
+            self.bands.two_line
         } else {
-            ROW_H_ONE_LINE
+            self.bands.one_line
         }
     }
 
@@ -256,15 +294,16 @@ impl SearchResultsView {
         let x1 = self.rect.x1 - ROW_INSET;
         let mut y = self.rect.y0 + PAD;
         let mut flat = 0usize;
+        let header_h = self.bands.header;
         for (gi, g) in self.groups.iter().enumerate() {
             headers.push((
-                Rect::new(x0, y, x1, y + HEADER_H),
+                Rect::new(x0, y, x1, y + header_h),
                 g.kind.clone(),
                 g.results.len(),
             ));
-            y += HEADER_H;
+            y += header_h;
             for (ri, r) in g.results.iter().enumerate() {
-                let rh = Self::row_height(r);
+                let rh = self.row_height(r);
                 rows.push(RowGeom {
                     rect: Rect::new(x0, y, x1, y + rh),
                     flat,
@@ -419,9 +458,10 @@ impl Widget for SearchResultsView {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.bands = RowBands::resolve(theme);
         // A results overlay's desired height is a small on-screen pixel value
         // (a handful of rows), well inside `f32`'s exact-integer range.
         #[allow(

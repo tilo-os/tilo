@@ -171,6 +171,26 @@ impl CollaboratorsOverlay {
         model: &CollaboratorsModel<'_>,
         cursor: Option<Point>,
     ) {
+        // Theme type tokens already carry the user's text scale, and this
+        // popover lays out and paints with those resolved sizes; the
+        // renderer must not scale them a second time (HIG §7a), so it is
+        // reset for the pass exactly as the lens pass resets it, and
+        // restored for the ordinary child widgets that follow.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
+        self.draw_at_theme_scale(scene, transform, text_renderer, theme, model, cursor);
+        text_renderer.set_text_scale(renderer_scale);
+    }
+
+    fn draw_at_theme_scale(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        model: &CollaboratorsModel<'_>,
+        cursor: Option<Point>,
+    ) {
         self.layout(
             model.host,
             model.rows.len(),
@@ -185,7 +205,12 @@ impl CollaboratorsOverlay {
         let rect = self.panel;
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let card = RoundedRect::from_rect(rect, f64::from(tokens.radii.lg));
+        // Panel role (HIG §9.1/§9.5): the popover's corner is the Panel
+        // radius and its edge is derived against the ground, not declared.
+        let card = RoundedRect::from_rect(
+            rect,
+            ui::chrome::ChromeRole::Panel.radius(theme, rect.height()),
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -196,7 +221,7 @@ impl CollaboratorsOverlay {
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            ui::chrome::shell::panel_border(theme),
             None,
             &card,
         );
@@ -614,8 +639,11 @@ impl CollaboratorsOverlay {
             let action = Self::row_action_rect(self.panel, row_y);
             // Control role (HIG §9.1): a pressable body takes `radii.lg`;
             // `radii.sm` is for details drawn inside a control.
+            // The pass paints with the renderer reset to 1× (see `draw`), so
+            // the face is handed the theme-scaled label size explicitly.
             let face = ButtonFace::new(action, if followed { "Stop" } else { "Follow" })
                 .radius(ui::chrome::ChromeRole::Control.radius(theme, action.height()))
+                .text_size(tokens.typography.scale.base)
                 .hovered(frame.cursor.is_some_and(|point| action.contains(point)));
             Button::paint(scene, transform, text_renderer, theme, &face);
         }
@@ -634,6 +662,9 @@ impl CollaboratorsOverlay {
         if self.invite.area() > 0.0 {
             // Control role (HIG §9.1): pressable bodies take `radii.lg`.
             let radius = ui::chrome::ChromeRole::Control.radius(theme, self.invite.height());
+            // The pass paints with the renderer reset to 1× (see `draw`), so
+            // each face is handed the theme-scaled label size explicitly.
+            let label_size = tokens.typography.scale.base;
             Button::paint(
                 scene,
                 transform,
@@ -642,6 +673,7 @@ impl CollaboratorsOverlay {
                 &ButtonFace::new(self.invite, "Invite")
                     .primary()
                     .radius(radius)
+                    .text_size(label_size)
                     .hovered(cursor.is_some_and(|point| self.invite.contains(point))),
             );
             Button::paint(
@@ -651,6 +683,7 @@ impl CollaboratorsOverlay {
                 theme,
                 &ButtonFace::new(self.join, "Join")
                     .radius(radius)
+                    .text_size(label_size)
                     .hovered(cursor.is_some_and(|point| self.join.contains(point))),
             );
         }

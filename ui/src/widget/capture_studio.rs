@@ -11,6 +11,7 @@
 )]
 //! Pixel readback stays in the compositor; this widget emits semantic intents.
 
+use crate::text_metrics::renderer_type_size;
 use crate::{
     ColorCompat,
     icons::{self, Icon},
@@ -50,6 +51,18 @@ const RECORDING_RECEIPT_EXIT: Duration = Duration::from_millis(320);
 const SCREENSHOT_RECEIPT_DURATION: Duration = Duration::from_millis(5_500);
 const SCREENSHOT_RECEIPT_ENTER: Duration = Duration::from_millis(520);
 const SCREENSHOT_RECEIPT_EXIT: Duration = Duration::from_millis(300);
+/// Top-bar selector geometry, shared by the mode and source groups so the
+/// two read as one control family, derived from the tokens because the bar
+/// has no theme when it lays out: each group is inset `s2` all round and
+/// the groups sit `s2` apart; the bar is a `bar_height` button row plus
+/// that inset top and bottom (56 px); a symbol button is as wide as the
+/// bar is tall and neighbours sit on a hairline gap of half the smallest
+/// step (2 px).
+const TOP_GROUP_PAD: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+const TOP_GROUP_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+const TOP_BAR_H: f64 = crate::tokens::Metrics::BASE.bar_height as f64 + TOP_GROUP_PAD * 2.0;
+const TOP_BUTTON_W: f64 = TOP_BAR_H;
+const TOP_BUTTON_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
 const MIN_REGION: f64 = 12.0;
 
 /// Height of one line of `size`-px text exactly as the renderer paints it.
@@ -397,6 +410,10 @@ pub struct CaptureStudio {
     screenshot_origin: Option<Point>,
     delay_seconds: u8,
     armed_capture: Option<ArmedCapture>,
+    /// Content-driven floor for the docked recorder's width above 1× type;
+    /// see [`Self::remember_docked_content_widths`]. Render caches only.
+    docked_pill_min_width: f64,
+    docked_stop_width: f64,
 }
 
 impl Default for CaptureStudio {
@@ -448,6 +465,8 @@ impl Default for CaptureStudio {
             screenshot_origin: None,
             delay_seconds: 0,
             armed_capture: None,
+            docked_pill_min_width: 0.0,
+            docked_stop_width: 0.0,
         }
     }
 }
@@ -824,22 +843,44 @@ impl CaptureStudio {
         self.mode = CaptureMode::Recording;
     }
 
+    /// Width of a top-bar group holding `buttons` buttons: one inset all
+    /// round, one gap between neighbours — so the group is exactly as wide
+    /// as what it holds. The old fixed spans (180 / 300 in a 488 bar) left
+    /// the mode group with no trailing inset and the source group with
+    /// ~50 px of dead space after its last button.
+    fn top_group_width(buttons: usize) -> f64 {
+        let n = buttons as f64;
+        TOP_GROUP_PAD * 2.0 + n * TOP_BUTTON_W + (n - 1.0).max(0.0) * TOP_BUTTON_GAP
+    }
     fn top_bar(&self) -> Rect {
-        let w = 488.0_f64.min(self.rect.width() - 32.0);
+        let w = (Self::top_group_width(3) + TOP_GROUP_GAP + Self::top_group_width(4))
+            .min(self.rect.width() - 32.0);
         Rect::new(
             self.rect.center().x - w / 2.0,
             self.rect.y0 + 22.0,
             self.rect.center().x + w / 2.0,
-            self.rect.y0 + 78.0,
+            self.rect.y0 + 22.0 + TOP_BAR_H,
         )
     }
     fn mode_group_rect(&self) -> Rect {
         let b = self.top_bar();
-        Rect::new(b.x0, b.y0, b.x0 + 180.0, b.y1)
+        Rect::new(b.x0, b.y0, b.x0 + Self::top_group_width(3), b.y1)
     }
     fn source_group_rect(&self) -> Rect {
         let b = self.top_bar();
-        Rect::new(b.x0 + 188.0, b.y0, b.x1, b.y1)
+        let x0 = b.x0 + Self::top_group_width(3) + TOP_GROUP_GAP;
+        Rect::new(x0, b.y0, x0 + Self::top_group_width(4), b.y1)
+    }
+    /// The `i`th button of a group whose left edge is `group_x0`.
+    fn top_button_rect(&self, group_x0: f64, i: usize) -> Rect {
+        let b = self.top_bar();
+        let x = group_x0 + TOP_GROUP_PAD + i as f64 * (TOP_BUTTON_W + TOP_BUTTON_GAP);
+        Rect::new(
+            x,
+            b.y0 + TOP_GROUP_PAD,
+            x + TOP_BUTTON_W,
+            b.y1 - TOP_GROUP_PAD,
+        )
     }
     fn bottom_bar(&self) -> Rect {
         let has_options = matches!(self.source, SourceMode::Window | SourceMode::Multi);
@@ -881,24 +922,12 @@ impl CaptureStudio {
         })
     }
     fn mode_rects(&self) -> [Rect; 3] {
-        let b = self.top_bar();
-        [
-            Rect::new(b.x0 + 8.0, b.y0 + 8.0, b.x0 + 64.0, b.y1 - 8.0),
-            Rect::new(b.x0 + 66.0, b.y0 + 8.0, b.x0 + 122.0, b.y1 - 8.0),
-            Rect::new(b.x0 + 124.0, b.y0 + 8.0, b.x0 + 180.0, b.y1 - 8.0),
-        ]
+        let group = self.mode_group_rect();
+        std::array::from_fn(|i| self.top_button_rect(group.x0, i))
     }
     fn source_rects(&self) -> [Rect; 4] {
-        let b = self.top_bar();
-        let x = b.x0 + 188.0;
-        std::array::from_fn(|i| {
-            Rect::new(
-                x + i as f64 * 64.0,
-                b.y0 + 8.0,
-                x + i as f64 * 64.0 + 58.0,
-                b.y1 - 8.0,
-            )
-        })
+        let group = self.source_group_rect();
+        std::array::from_fn(|i| self.top_button_rect(group.x0, i))
     }
     fn candidate_picker_rects(&self) -> Vec<Rect> {
         let count = self.candidates.len().min(5);
@@ -1698,7 +1727,7 @@ impl CaptureStudio {
         let colors = &theme.tokens.colors;
         let (detail_width, _) = text_renderer.measure_weighted(
             detail,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             None,
             TextWeight::Medium,
         );
@@ -1738,21 +1767,21 @@ impl CaptureStudio {
         );
         let detail_top = centered_text_top(
             text_renderer,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             TextWeight::Medium,
             tooltip.center().y,
         );
         let shown = fit_label(
             text_renderer,
             detail,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             TextWeight::Medium,
             tooltip.width() - 24.0,
         );
         text_renderer.draw_text_weighted(
             scene,
             &shown,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             colors.text_dim,
             transform.pre_translate((tooltip.x0 + 12.0, detail_top).into()),
             None,
@@ -1837,7 +1866,7 @@ impl CaptureStudio {
         let dock_raw = ((p - 0.76) / 0.24).clamp(0.0, 1.0);
         let dock_p = dock_raw * dock_raw * (3.0 - 2.0 * dock_raw);
         let start_center_x = bounds.center().x;
-        let final_width = if bounds.width() >= 1000.0 {
+        let designed_width: f64 = if bounds.width() >= 1000.0 {
             252.0
         } else {
             // Match the compact clock capsule exactly. The recording state
@@ -1845,6 +1874,11 @@ impl CaptureStudio {
             // inside another pill.
             360.0
         };
+        // At 1× the designed width wins — it trades the tail of a long
+        // scope for the clock alignment. Above 1× the content can no longer
+        // fit even the timer, so the pill grows to what the painter measured
+        // last frame (`docked_pill_min_width`, zero at 1×).
+        let final_width = designed_width.max(self.docked_pill_min_width);
         // The confirmation starts roomy enough to name the selected source,
         // then sheds that explanatory width as it joins the persistent bar.
         let width = 304.0 + (final_width - 304.0) * horizontal_p;
@@ -1881,7 +1915,7 @@ impl CaptureStudio {
             center_x + width / 2.0,
             y0 + height,
         );
-        let stop_width = 64.0;
+        let stop_width = 64.0_f64.max(self.docked_stop_width);
         let inset = 4.0 + if compact { 0.0 } else { 2.0 * p };
         let stop = Rect::new(
             pill.x1 - stop_width - inset,
@@ -1891,6 +1925,54 @@ impl CaptureStudio {
         );
         let pause = Rect::new(stop.x0 - 34.0, stop.y0, stop.x0 - 4.0, stop.y1);
         (pill, pause, stop)
+    }
+
+    /// Record what the docked recorder's content needs at the current type
+    /// magnification, so [`Self::recording_indicator_rects_at`] can grow the
+    /// pill and its Stop button around it. `label_w` is the widest settled
+    /// label, `stop_label_w` the "Stop" caption, both measured at the size
+    /// and weight they are painted with. Zero at 1× — the designed widths
+    /// are the 1× layout — so nothing moves until the type does.
+    fn remember_docked_content_widths(
+        &mut self,
+        text_renderer: &TextRenderer,
+        theme: &Theme,
+        label_w: f64,
+        stop_label_w: f64,
+    ) {
+        // The same magnification rule the presence pills use: the theme's
+        // type step against the default, so a type grown by `with_ui_scale`
+        // (which leaves `Theme::text_scale` at 1) counts as well as one grown
+        // by the text scale. A renderer scaled without the theme no longer
+        // magnifies glyphs (they are drawn at the renderer-relative size), so
+        // it does not count.
+        let magnification = crate::presence::label_magnification(theme, text_renderer);
+        if magnification <= 1.0 + 1e-6 {
+            self.reset_docked_content_widths();
+            return;
+        }
+        // Both floors are monotone for the life of a recording: the label
+        // alternates between the timer, "Paused · …" and "Resumed · …" and
+        // its digits change width, and a pill that re-fitted itself every
+        // frame would slide Pause and Stop under a resting pointer. They are
+        // cleared when the recording ends (`reset_docked_content_widths`).
+        //
+        // "Stop" is painted at `stop.x0 + 22`; keep the same trailing room
+        // the 64 px button gives a 1× caption.
+        let stop_width = (22.0 + stop_label_w + 8.0).max(64.0);
+        self.docked_stop_width = self.docked_stop_width.max(stop_width);
+        // The settled label starts at `pill.x0 + 43`, ends 8 px before the
+        // pause button (30 px + 4 px gap), which sits ahead of the stop
+        // button and its 6 px inset — the sum the painter's `fit_label`
+        // budget is derived from.
+        let pill_width = 43.0 + label_w + 8.0 + 34.0 + self.docked_stop_width + 6.0;
+        self.docked_pill_min_width = self.docked_pill_min_width.max(pill_width);
+    }
+
+    /// Forget the content-driven floors; the next recording measures afresh.
+    fn reset_docked_content_widths(&mut self) {
+        self.docked_stop_width = 0.0;
+        self.docked_pill_min_width = 0.0;
     }
 
     fn queue_recording_command(&mut self, command: RecordingCommand) {
@@ -2266,10 +2348,8 @@ impl CaptureStudio {
     fn symbol_button(
         scene: &mut Scene,
         t: Affine,
-        tr: &mut TextRenderer,
         theme: &Theme,
         r: Rect,
-        shortcut: &str,
         active: bool,
         hovered: bool,
         icon: Icon,
@@ -2306,20 +2386,6 @@ impl CaptureStudio {
             },
             icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        if !shortcut.is_empty() {
-            tr.draw_text(
-                scene,
-                shortcut,
-                8.0,
-                if active || hovered {
-                    c.text_primary
-                } else {
-                    c.text_dim
-                },
-                t.pre_translate((r.x1 - 11.0, r.y1 - 12.0).into()),
-                None,
-            )
-        }
     }
     fn toggle_button(
         scene: &mut Scene,
@@ -2395,7 +2461,7 @@ impl CaptureStudio {
         let label = format!("{prefix}{}{}", target.title, suffix);
         let (tw, _) = tr.measure_weighted(
             &label,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(tr, theme.tokens.typography.scale.xs),
             None,
             TextWeight::Semibold,
         );
@@ -2435,21 +2501,21 @@ impl CaptureStudio {
         );
         let label_top = centered_text_top(
             tr,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(tr, theme.tokens.typography.scale.xs),
             TextWeight::Semibold,
             badge.center().y,
         );
         let shown = fit_label(
             tr,
             &label,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(tr, theme.tokens.typography.scale.xs),
             TextWeight::Semibold,
             badge.width() - 42.0,
         );
         tr.draw_text_weighted(
             scene,
             &shown,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(tr, theme.tokens.typography.scale.xs),
             if selected { c.text_primary } else { c.text_dim },
             t.pre_translate((badge.x0 + 34.0, label_top).into()),
             None,
@@ -2593,7 +2659,7 @@ impl CaptureStudio {
         text_renderer.draw_text_weighted(
             scene,
             &target.title,
-            theme.tokens.typography.scale.lg,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.lg),
             colors.text_primary,
             transform.pre_translate((card.x0 + 78.0, card.y0 + 22.0).into()),
             Some((card.width() - 100.0) as f32),
@@ -2617,7 +2683,7 @@ impl CaptureStudio {
                 full.width().round() as i64,
                 full.height().round() as i64
             ),
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             accent,
             transform.pre_translate((card.x0 + 78.0, card.y0 + 51.0).into()),
             None,
@@ -2627,7 +2693,7 @@ impl CaptureStudio {
         text_renderer.draw_text(
             scene,
             guidance,
-            theme.tokens.typography.scale.sm,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
             colors.text_dim,
             transform.pre_translate((card.x0 + 22.0, card.y0 + 94.0).into()),
             Some((card.width() - 44.0) as f32),
@@ -2677,19 +2743,23 @@ impl CaptureStudio {
             1.5,
         );
         if active {
+            // The count is a badge in the button's top-right corner, at the
+            // floor of the type scale rather than a 7 px glyph under it, and
+            // right-aligned by measurement so "3" and "10" share one edge
+            // instead of two hand-picked offsets. At 1× the badge and the
+            // 16 px icon (nudged 3 px left while armed) are disjoint; the
+            // slot itself is a fixed 36 px like the rest of this bar, so at
+            // 2× type the two meet — the bar's scaling is the shell's
+            // decision (see the F5 round-two report, R7).
             let label = seconds.to_string();
+            let size = theme.tokens.typography.scale.xs;
+            let (lw, _) = text_renderer.measure_weighted(&label, size, None, TextWeight::Semibold);
             text_renderer.draw_text_weighted(
                 scene,
                 &label,
-                7.0,
+                size,
                 colors.text_primary,
-                t.pre_translate(
-                    (
-                        rect.x1 - if seconds >= 10 { 12.0 } else { 9.5 },
-                        rect.y0 + 4.0,
-                    )
-                        .into(),
-                ),
+                t.pre_translate((rect.x1 - 3.0 - f64::from(lw), rect.y0 + 2.0).into()),
                 None,
                 TextWeight::Semibold,
             );
@@ -2726,7 +2796,7 @@ impl CaptureStudio {
             None,
             &RoundedRect::from_rect(rect, 9.0),
         );
-        let font_size = theme.tokens.typography.scale.sm;
+        let font_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let (text_w, text_h) = tr.measure_weighted(label, font_size, None, TextWeight::Medium);
         let icon_size = 15.0;
         let gap = 6.0;
@@ -2861,14 +2931,14 @@ impl CaptureStudio {
         );
         let count_top = centered_text_top(
             text_renderer,
-            theme.tokens.typography.scale.lg,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.lg),
             TextWeight::Semibold,
             pill.center().y,
         );
         text_renderer.draw_text_weighted(
             scene,
             &count.to_string(),
-            theme.tokens.typography.scale.lg,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.lg),
             colors.text_primary,
             transform.pre_translate((pill.x0 + 48.0, count_top).into()),
             None,
@@ -3086,21 +3156,21 @@ impl CaptureStudio {
         };
         let starting_top = centered_text_top(
             text_renderer,
-            theme.tokens.typography.scale.sm,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
             TextWeight::Semibold,
             pill.center().y,
         );
         let shown = fit_label(
             text_renderer,
             &format!("Starting · {scope}"),
-            theme.tokens.typography.scale.sm,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
             TextWeight::Semibold,
             (pill.width() - 98.0).max(40.0),
         );
         text_renderer.draw_text_weighted(
             scene,
             &shown,
-            theme.tokens.typography.scale.sm,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
             colors.text_primary,
             transform.pre_translate((pill.x0 + 45.0, starting_top).into()),
             None,
@@ -3157,10 +3227,12 @@ impl CaptureStudio {
             return;
         }
         if let Some(finished_at) = self.recording_finished_at {
+            self.reset_docked_content_widths();
             self.draw_recording_receipt(scene, transform, text_renderer, theme, finished_at);
             return;
         }
         if !self.recording_active {
+            self.reset_docked_content_widths();
             return;
         }
 
@@ -3174,6 +3246,83 @@ impl CaptureStudio {
         } else {
             self.recording_motion()
         };
+        let compact = self.status_rect().width() < 1000.0;
+
+        // The labels are built before the geometry so the pill can be sized
+        // around what it will carry (see `remember_docked_content_widths`).
+        let elapsed = self.recording_elapsed().as_secs();
+        // The compact clock replacement is wider than the separate wide-bar
+        // recorder, so it can carry a useful source name instead of showing
+        // the awkward "Selectio…" truncation in its most spacious variant.
+        let scope_limit = if compact { 12 } else { 10 };
+        let compact_scope = self.compact_recording_scope(scope_limit);
+        let compact_source = self
+            .recording_scope
+            .strip_suffix(" · app window")
+            .unwrap_or(&self.recording_scope);
+        let was_truncated = compact_source.chars().count() > compact_scope.chars().count();
+        let normal_label = || {
+            if compact_scope.is_empty() {
+                crate::format::timecode(elapsed)
+            } else {
+                format!(
+                    "{} · {}{}",
+                    crate::format::timecode(elapsed),
+                    compact_scope,
+                    if was_truncated { "…" } else { "" }
+                )
+            }
+        };
+        let settled_label = if self.stop_pending {
+            "Saving…".to_string()
+        } else if self.recording_paused {
+            format!("Paused · {}", crate::format::timecode(elapsed))
+        } else if self
+            .recording_state_changed_at
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(900))
+        {
+            format!("Resumed · {}", crate::format::timecode(elapsed))
+        } else {
+            normal_label()
+        };
+        let previous_label = self.recording_transition_from_paused.map(|was_paused| {
+            if was_paused {
+                format!("Paused · {}", crate::format::timecode(elapsed))
+            } else {
+                normal_label()
+            }
+        });
+        {
+            // Measured at the size the captions are painted with (the theme
+            // step handed to the renderer once), so the widths remembered
+            // below are the widths the painter lays down.
+            let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+            let mut label_w = text_renderer
+                .measure_weighted(&settled_label, size, None, TextWeight::Semibold)
+                .0;
+            if let Some(previous) = &previous_label {
+                label_w = label_w.max(
+                    text_renderer
+                        .measure_weighted(previous, size, None, TextWeight::Semibold)
+                        .0,
+                );
+            }
+            let stop_label_w = text_renderer
+                .measure_weighted("Stop", size, None, TextWeight::Semibold)
+                .0;
+            self.remember_docked_content_widths(
+                text_renderer,
+                theme,
+                f64::from(label_w),
+                f64::from(stop_label_w),
+            );
+        }
+        let docking_label = if p < 0.66 && !self.stop_pending && !self.recording_paused {
+            crate::format::timecode(elapsed)
+        } else {
+            settled_label
+        };
+
         let (pill, pause, stop) = self.recording_indicator_rects_at(p);
         let colors = &theme.tokens.colors;
         let radius = pill.height() / 2.0;
@@ -3188,7 +3337,6 @@ impl CaptureStudio {
             None,
             &RoundedRect::from_rect(pill, radius),
         );
-        let compact = self.status_rect().width() < 1000.0;
         let border_rect = if compact {
             pill
         } else {
@@ -3276,53 +3424,6 @@ impl CaptureStudio {
             draw_state_mark(self.recording_paused, 1.0);
         }
 
-        let elapsed = self.recording_elapsed().as_secs();
-        // The compact clock replacement is wider than the separate wide-bar
-        // recorder, so it can carry a useful source name instead of showing
-        // the awkward "Selectio…" truncation in its most spacious variant.
-        let scope_limit = if compact { 12 } else { 10 };
-        let compact_scope = self.compact_recording_scope(scope_limit);
-        let compact_source = self
-            .recording_scope
-            .strip_suffix(" · app window")
-            .unwrap_or(&self.recording_scope);
-        let was_truncated = compact_source.chars().count() > compact_scope.chars().count();
-        let normal_label = || {
-            if compact_scope.is_empty() {
-                crate::format::timecode(elapsed)
-            } else {
-                format!(
-                    "{} · {}{}",
-                    crate::format::timecode(elapsed),
-                    compact_scope,
-                    if was_truncated { "…" } else { "" }
-                )
-            }
-        };
-        let settled_label = if self.stop_pending {
-            "Saving…".to_string()
-        } else if self.recording_paused {
-            format!("Paused · {}", crate::format::timecode(elapsed))
-        } else if self
-            .recording_state_changed_at
-            .is_some_and(|at| at.elapsed() < Duration::from_millis(900))
-        {
-            format!("Resumed · {}", crate::format::timecode(elapsed))
-        } else {
-            normal_label()
-        };
-        let previous_label = self.recording_transition_from_paused.map(|was_paused| {
-            if was_paused {
-                format!("Paused · {}", crate::format::timecode(elapsed))
-            } else {
-                normal_label()
-            }
-        });
-        let docking_label = if p < 0.66 && !self.stop_pending && !self.recording_paused {
-            crate::format::timecode(elapsed)
-        } else {
-            settled_label
-        };
         // The explanatory sentence gives way to the compact timer while the
         // pill flies. Their staggered crossfade keeps at least one semantic
         // label visible at every frame; a twelve-pixel rolling separation
@@ -3333,13 +3434,13 @@ impl CaptureStudio {
         // measured line box, so neither needs a per-size offset.
         let intro_y = centered_text_top(
             text_renderer,
-            theme.tokens.typography.scale.sm,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
             TextWeight::Semibold,
             pill.center().y,
         );
         let settled_y = centered_text_top(
             text_renderer,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             TextWeight::Semibold,
             pill.center().y,
         );
@@ -3358,14 +3459,14 @@ impl CaptureStudio {
             let shown = fit_label(
                 text_renderer,
                 &intro_label,
-                theme.tokens.typography.scale.sm,
+                renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
                 TextWeight::Semibold,
                 (pause.x0 - intro_x - 8.0).max(40.0),
             );
             text_renderer.draw_text_weighted(
                 scene,
                 &shown,
-                theme.tokens.typography.scale.sm,
+                renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
                 colors.text_primary.with_alpha_factor(intro_alpha),
                 transform
                     .pre_translate((intro_x, intro_y - 12.0 * f64::from(settled_alpha)).into()),
@@ -3397,14 +3498,14 @@ impl CaptureStudio {
                 let shown = fit_label(
                     text_renderer,
                     &previous_label,
-                    theme.tokens.typography.scale.xs,
+                    renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                     TextWeight::Semibold,
                     (pause.x0 - pill.x0 - 51.0).max(20.0),
                 );
                 text_renderer.draw_text_weighted(
                     scene,
                     &shown,
-                    theme.tokens.typography.scale.xs,
+                    renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                     colors
                         .text_primary
                         .with_alpha_factor(settled_alpha * state_out_alpha as f32),
@@ -3417,14 +3518,14 @@ impl CaptureStudio {
             let shown = fit_label(
                 text_renderer,
                 &docking_label,
-                theme.tokens.typography.scale.xs,
+                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                 TextWeight::Semibold,
                 (pause.x0 - pill.x0 - 51.0).max(20.0),
             );
             text_renderer.draw_text_weighted(
                 scene,
                 &shown,
-                theme.tokens.typography.scale.xs,
+                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                 colors
                     .text_primary
                     .with_alpha_factor(settled_alpha * state_in_alpha as f32),
@@ -3525,14 +3626,14 @@ impl CaptureStudio {
             );
             let stop_top = centered_text_top(
                 text_renderer,
-                theme.tokens.typography.scale.xs,
+                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                 TextWeight::Semibold,
                 stop.center().y,
             );
             text_renderer.draw_text_weighted(
                 scene,
                 "Stop",
-                theme.tokens.typography.scale.xs,
+                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                 colors.semantic.danger,
                 transform.pre_translate((stop.x0 + 22.0, stop_top).into()),
                 None,
@@ -3642,21 +3743,21 @@ impl CaptureStudio {
         let duration = crate::format::timecode(self.recording_finished_duration.as_secs());
         let saved_top = centered_text_top(
             text_renderer,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             TextWeight::Semibold,
             pill.center().y,
         );
         let shown = fit_label(
             text_renderer,
             &format!("Saved · {duration}"),
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             TextWeight::Semibold,
             (pill.width() - 126.0).max(50.0),
         );
         text_renderer.draw_text_weighted(
             scene,
             &shown,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             colors.text_primary.with_alpha_factor(alpha),
             transform.pre_translate((pill.x0 + 32.0, saved_top).into()),
             None,
@@ -3857,7 +3958,7 @@ impl CaptureStudio {
         // over the dimensions, the pair centred as a block on the pill.
         let line_h = line_height(
             text_renderer,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             TextWeight::Semibold,
         );
         let label_top = if compact {
@@ -3869,14 +3970,14 @@ impl CaptureStudio {
         let shown = fit_label(
             text_renderer,
             &label,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             TextWeight::Semibold,
             label_budget,
         );
         text_renderer.draw_text_weighted(
             scene,
             &shown,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             colors.text_primary.with_alpha_factor(content_alpha),
             transform.pre_translate((label_x, label_top).into()),
             None,
@@ -3886,14 +3987,14 @@ impl CaptureStudio {
             let dims = fit_label(
                 text_renderer,
                 &format!("{} × {}", receipt.width, receipt.height),
-                theme.tokens.typography.scale.xs,
+                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                 TextWeight::Regular,
                 label_budget,
             );
             text_renderer.draw_text_weighted(
                 scene,
                 &dims,
-                theme.tokens.typography.scale.xs,
+                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                 colors.text_dim.with_alpha_factor(content_alpha),
                 transform.pre_translate((label_x, pill.center().y).into()),
                 None,
@@ -4078,21 +4179,21 @@ impl CaptureStudio {
         }
         let replay_top = centered_text_top(
             text_renderer,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             TextWeight::Semibold,
             pill.center().y,
         );
         let shown = fit_label(
             text_renderer,
             &label,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             TextWeight::Semibold,
             (audio_x - pill.x0 - 38.0).max(24.0),
         );
         text_renderer.draw_text_weighted(
             scene,
             &shown,
-            theme.tokens.typography.scale.xs,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             colors.text_primary,
             transform.pre_translate((pill.x0 + 32.0, replay_top).into()),
             None,
@@ -4166,14 +4267,14 @@ impl CaptureStudio {
             );
             let save_top = centered_text_top(
                 text_renderer,
-                theme.tokens.typography.scale.xs,
+                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                 TextWeight::Semibold,
                 save.center().y,
             );
             text_renderer.draw_text_weighted(
                 scene,
                 "Save",
-                theme.tokens.typography.scale.xs,
+                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                 if save_ready {
                     colors.text_primary
                 } else {
@@ -4469,7 +4570,7 @@ impl Widget for CaptureStudio {
                 // centre line, so they read as a single caption.
                 let badge_top = centered_text_top(
                     tr,
-                    theme.tokens.typography.scale.xs,
+                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
                     TextWeight::Semibold,
                     b.center().y,
                 );
@@ -4480,7 +4581,7 @@ impl Widget for CaptureStudio {
                     } else {
                         (i + 1).to_string()
                     },
-                    theme.tokens.typography.scale.xs,
+                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
                     c.text_primary,
                     t.pre_translate(
                         (
@@ -4503,7 +4604,7 @@ impl Widget for CaptureStudio {
                         r.width().round() as i64,
                         r.height().round() as i64
                     ),
-                    theme.tokens.typography.scale.xs,
+                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
                     c.text_primary,
                     t.pre_translate((b.x1 + 8.0, badge_top).into()),
                     None,
@@ -4552,10 +4653,8 @@ impl Widget for CaptureStudio {
         Self::symbol_button(
             s,
             top_t,
-            tr,
             theme,
             m0,
-            "",
             self.mode == CaptureMode::Screenshot,
             m0.contains(self.cursor),
             Icon::Camera,
@@ -4564,10 +4663,8 @@ impl Widget for CaptureStudio {
         Self::symbol_button(
             s,
             top_t,
-            tr,
             theme,
             m1,
-            "",
             self.mode == CaptureMode::Recording,
             m1.contains(self.cursor),
             Icon::Film,
@@ -4576,10 +4673,8 @@ impl Widget for CaptureStudio {
         Self::symbol_button(
             s,
             top_t,
-            tr,
             theme,
             m2,
-            "",
             self.mode == CaptureMode::Pip,
             m2.contains(self.cursor),
             Icon::PictureInPicture2,
@@ -4613,10 +4708,8 @@ impl Widget for CaptureStudio {
             Self::symbol_button(
                 s,
                 top_t,
-                tr,
                 theme,
                 r,
-                "",
                 self.source == m,
                 r.contains(self.cursor),
                 ic,
@@ -4721,21 +4814,21 @@ impl Widget for CaptureStudio {
                 };
                 let title_top = centered_text_top(
                     tr,
-                    theme.tokens.typography.scale.xs,
+                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
                     TextWeight::Medium,
                     rect.center().y,
                 );
                 let shown = fit_label(
                     tr,
                     &format!("{}{suffix}", target.title),
-                    theme.tokens.typography.scale.xs,
+                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
                     TextWeight::Medium,
                     rect.width() - 40.0,
                 );
                 tr.draw_text_weighted(
                     s,
                     &shown,
-                    theme.tokens.typography.scale.xs,
+                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
                     if selected || hovered {
                         c.text_primary
                     } else {
@@ -4749,7 +4842,7 @@ impl Widget for CaptureStudio {
         } else {
             let (context_w, _) = tr.measure_weighted(
                 &context,
-                theme.tokens.typography.scale.xs,
+                renderer_type_size(tr, theme.tokens.typography.scale.xs),
                 None,
                 TextWeight::Medium,
             );
@@ -4769,14 +4862,14 @@ impl Widget for CaptureStudio {
             );
             let context_top = centered_text_top(
                 tr,
-                theme.tokens.typography.scale.xs,
+                renderer_type_size(tr, theme.tokens.typography.scale.xs),
                 TextWeight::Medium,
                 context_rect.center().y,
             );
             tr.draw_text_weighted(
                 s,
                 &context,
-                theme.tokens.typography.scale.xs,
+                renderer_type_size(tr, theme.tokens.typography.scale.xs),
                 c.text_dim,
                 top_t.pre_translate((context_rect.x0 + 14.0, context_top).into()),
                 None,
@@ -4960,14 +5053,14 @@ impl Widget for CaptureStudio {
                 };
                 let label_top = centered_text_top(
                     tr,
-                    theme.tokens.typography.scale.xs,
+                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
                     TextWeight::Semibold,
                     r.center().y,
                 );
                 tr.draw_text_weighted(
                     s,
                     label,
-                    theme.tokens.typography.scale.xs,
+                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
                     foreground,
                     bottom_t.pre_translate((r.x0 + 32.0, label_top).into()),
                     None,
@@ -6411,6 +6504,147 @@ mod tests {
     /// The centring helper follows the renderer's measured line box — not
     /// the font size, not a fraction of it — so it holds when the renderer
     /// scales type. `(top + height / 2) == centre` at both scales.
+    /// Both top-bar groups hug their buttons: one inset before the first,
+    /// one after the last, one gap between neighbours — the source group
+    /// used to trail ~50 px of empty pill after its last button and the
+    /// mode group had no trailing inset at all.
+    #[test]
+    fn top_bar_groups_hug_their_buttons_with_one_inset() {
+        let mut s = CaptureStudio::default();
+        s.rect = Rect::new(0.0, 0.0, 1400.0, 900.0);
+        let groups = [
+            (s.mode_group_rect(), s.mode_rects().to_vec()),
+            (s.source_group_rect(), s.source_rects().to_vec()),
+        ];
+        for (group, buttons) in &groups {
+            let first = buttons.first().expect("a group has buttons");
+            let last = buttons.last().expect("a group has buttons");
+            assert!(
+                (first.x0 - group.x0 - TOP_GROUP_PAD).abs() < 1e-9,
+                "leading inset of {group:?} is {}",
+                first.x0 - group.x0
+            );
+            assert!(
+                (group.x1 - last.x1 - TOP_GROUP_PAD).abs() < 1e-9,
+                "trailing inset of {group:?} is {}",
+                group.x1 - last.x1
+            );
+            for pair in buttons.windows(2) {
+                assert!((pair[1].x0 - pair[0].x1 - TOP_BUTTON_GAP).abs() < 1e-9);
+            }
+            for b in buttons {
+                assert!((b.width() - TOP_BUTTON_W).abs() < 1e-9);
+                assert!(
+                    b.height() >= 32.0,
+                    "{b:?} is under the minimum pointer target"
+                );
+            }
+        }
+        let (mode, source) = (s.mode_group_rect(), s.source_group_rect());
+        assert!((source.x0 - mode.x1 - TOP_GROUP_GAP).abs() < 1e-9);
+        let bar = s.top_bar();
+        assert!((bar.x0 - mode.x0).abs() < 1e-9 && (bar.x1 - source.x1).abs() < 1e-9);
+    }
+
+    /// The bar's geometry is the tokens' arithmetic, not a restatement of
+    /// it: the buttons come out exactly one `bar_height` tall inside a bar
+    /// that is that plus an `s2` inset top and bottom, and the group inset
+    /// and gap are the same `s2`.
+    #[test]
+    fn top_bar_buttons_are_one_bar_height_tall_inside_token_insets() {
+        let theme = Theme::dark();
+        let tokens = &theme.tokens;
+        let mut s = CaptureStudio::default();
+        s.rect = Rect::new(0.0, 0.0, 1400.0, 900.0);
+        let bar = s.top_bar();
+        let button = s.mode_rects()[0];
+        assert!((button.height() - f64::from(tokens.metrics.bar_height)).abs() < 1e-9);
+        assert!((bar.height() - button.height() - 2.0 * f64::from(tokens.spacing.s2)).abs() < 1e-9);
+        assert!((TOP_GROUP_PAD - f64::from(tokens.spacing.s2)).abs() < 1e-9);
+        assert!((TOP_GROUP_GAP - f64::from(tokens.spacing.s2)).abs() < 1e-9);
+        assert!((TOP_BUTTON_W - bar.height()).abs() < 1e-9);
+    }
+
+    /// The docked recorder keeps its designed width at 1× and grows only
+    /// when the type does: at 2× the pill widens around its label and the
+    /// Stop button around its caption, and every control stays inside.
+    #[test]
+    fn docked_recording_pill_grows_with_its_content_above_one_x() {
+        let mut widths = Vec::new();
+        for scale in [1.0_f32, 2.0] {
+            // A matched host: the theme's type steps carry the scale the
+            // renderer is set to, so captions paint at 2x, not 4x (X1).
+            let theme = Theme::dark().with_reduce_motion(true).with_text_scale(scale);
+            let mut s = CaptureStudio::default();
+            s.rect = Rect::new(0.0, 0.0, 1400.0, 900.0);
+            s.open();
+            s.set_mode(CaptureMode::Recording);
+            s.recording_scope = "Terminal · app window".to_string();
+            s.set_recording_active(true);
+            s.set_recording_transition_progress(1000);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let mut scene = Scene::new();
+            s.draw_recording_indicator(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            let (pill, pause, stop) = s.recording_indicator_rects();
+            widths.push(pill.width());
+            assert!(
+                pause.x0 >= pill.x0 && stop.x1 <= pill.x1 && pause.x1 + 3.9 <= stop.x0,
+                "at {scale}x the controls left the pill: {pill:?} {pause:?} {stop:?}"
+            );
+            let (stop_w, _) = tr.measure_weighted(
+                "Stop",
+                renderer_type_size(&tr, theme.tokens.typography.scale.xs),
+                None,
+                TextWeight::Semibold,
+            );
+            assert!(
+                stop.width() >= 22.0 + f64::from(stop_w) + 8.0 - 1e-6,
+                "at {scale}x Stop {stop:?} cannot hold its {stop_w}px caption"
+            );
+        }
+        assert!(
+            (widths[0] - 252.0).abs() < 1e-9,
+            "the 1x pill must keep its designed width, got {}",
+            widths[0]
+        );
+        assert!(
+            widths[1] > widths[0],
+            "the 2x pill ({}) did not grow around its content",
+            widths[1]
+        );
+    }
+
+    /// The delay count is type, not a glyph decoration: nothing in the
+    /// button paints under the floor of the type scale.
+    #[test]
+    fn delay_count_is_painted_at_the_type_floor_or_above() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        for seconds in [3_u8, 10] {
+            let mut scene = Scene::new();
+            CaptureStudio::delay_button(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                Rect::new(0.0, 0.0, 36.0, 36.0),
+                seconds,
+                false,
+            );
+            let runs = &scene.encoding().resources.glyph_runs;
+            assert!(!runs.is_empty(), "the count {seconds} was not painted");
+            for run in runs {
+                assert!(
+                    run.font_size >= theme.tokens.typography.scale.xs - 1e-6,
+                    "count {seconds} painted at {}px, under the {}px floor",
+                    run.font_size,
+                    theme.tokens.typography.scale.xs
+                );
+            }
+        }
+    }
+
     #[test]
     fn label_centring_tracks_the_measured_line_box_at_every_text_scale() {
         let theme = Theme::dark();
