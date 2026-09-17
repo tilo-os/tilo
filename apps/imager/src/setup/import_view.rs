@@ -65,6 +65,7 @@ enum ImportCommand {
 pub struct ImportApp {
     continuation: Option<Continuation>,
     identity_ready: bool,
+    review_request: Option<(usize, mpsc::Receiver<Result<Continuation, String>>)>,
     gate_request: Option<(ImportCommand, mpsc::Receiver<Result<(), String>>)>,
     batch: Vec<usize>,
     store: Option<Arc<MigrationStore>>,
@@ -115,6 +116,7 @@ impl ImportApp {
             continuation: None,
             identity_ready: false,
             gate_request: None,
+            review_request: None,
             batch: Vec::new(),
             store: None,
             writer: None,
@@ -463,6 +465,7 @@ impl ImportApp {
             continuation,
             identity_ready: false,
             gate_request: None,
+            review_request: None,
             batch: Vec::new(),
             store: Some(store),
             writer: Some(writer),
@@ -615,28 +618,110 @@ impl ImportApp {
             .ok_or("Private migration state unavailable")?;
         // Persist resolution before materializing. A crash after the operation
         // write but before UI acknowledgement will find the same stable ID.
+        let prepared = c.prepare(index, store, &self.operations, self.identity_ready)?;
         c.save(store)?;
-        if let Some(op) = c.prepare(index, store, &self.operations, self.identity_ready)? {
-            self.operations.push(op);
+        if let Some(op) = prepared {
+            if let Some(existing) = self.operations.iter_mut().find(|old| old.id() == op.id()) {
+                *existing = op;
+            } else {
+                self.operations.push(op);
+            }
             self.persist()?;
         }
         Ok(())
     }
 
-    fn resolve_continued(&mut self, index: usize) -> Result<(), String> {
+    fn check_continued_review_allowed(&self, index: usize) -> Result<(), String> {
         if !self.identity_ready {
             return Err("Finish identity setup in qOS first.".into());
         }
-        let parent = dirs::data_local_dir()
-            .ok_or("No local user data directory")?
-            .join("qos")
-            .join("files");
-        super::migration_store::ensure_private_root(&parent).map_err(|e| e.to_string())?;
-        let c = self.continuation.as_mut().ok_or("No saved folder review")?;
-        c.resolve(index, &parent, self.identity_ready)?;
-        self.prepare_continued_folder(index)?;
-        self.status = "Review both paths below. Copy starts only when you choose Copy.".into();
+        if self.worker.is_some() || self.review_request.is_some() {
+            return Err("Wait for the active copy or folder review.".into());
+        }
+        let c = self.continuation.as_ref().ok_or("No saved folder review")?;
+        if let Some(op) = self
+            .operations
+            .iter()
+            .find(|op| op.id() == c.operation_id(index))
+        {
+            Continuation::can_replace_unpublished(op)?;
+        }
         Ok(())
+    }
+
+    fn resolve_continued(&mut self, index: usize) -> Result<(), String> {
+        self.request_continued_review(index, None)
+    }
+
+    fn request_continued_review(
+        &mut self,
+        index: usize,
+        selected: Option<PathBuf>,
+    ) -> Result<(), String> {
+        self.check_continued_review_allowed(index)?;
+        let mut c = self.continuation.clone().ok_or("No saved folder review")?;
+        let (sender, receiver) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("imager-folder-review".into())
+            .spawn(move || {
+                let result = (|| {
+                    let parent = if let Some(parent) = selected {
+                        c.select_destination_parent(index, &parent)?;
+                        parent
+                    } else {
+                        let parent = dirs::data_local_dir()
+                            .ok_or("No local user data directory")?
+                            .join("qos/files");
+                        super::migration_store::ensure_private_root(&parent)
+                            .map_err(|e| e.to_string())?;
+                        parent
+                    };
+                    c.resolve(index, &parent, true)?;
+                    Ok(c)
+                })();
+                let _ = sender.send(result);
+            })
+            .map_err(|e| e.to_string())?;
+        self.review_request = Some((index, receiver));
+        self.status = "Reviewing source changes and the destination…".into();
+        Ok(())
+    }
+
+    fn poll_continued_review(&mut self) -> bool {
+        let Some((index, receiver)) = &self.review_request else {
+            return false;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err("Folder review stopped; review again.".into())
+            }
+        };
+        let index = *index;
+        self.review_request = None;
+        let result = result.and_then(|c| {
+            self.check_continued_review_allowed(index)?;
+            let previous = self.continuation.replace(c);
+            if let Err(error) = self.prepare_continued_folder(index) {
+                self.continuation = previous;
+                return Err(error);
+            }
+            Ok(())
+        });
+        match result {
+            Ok(()) => {
+                self.status =
+                    "Review both paths below. Copy starts only when you choose Copy.".into();
+                self.status_is_error = false;
+            }
+            Err(error) => {
+                self.status = error;
+                self.status_is_error = true;
+            }
+        }
+        self.structure_dirty = true;
+        true
     }
 
     fn save_continued_mode(&mut self, index: usize, mode: ChoiceMode) -> Result<(), String> {
@@ -681,15 +766,19 @@ impl ImportApp {
                 "This copy already has an outcome; use its explicit retry action if needed.".into(),
             );
         }
-        if self.worker.is_some() {
+        if self.worker.is_some() || self.review_request.is_some() {
             return Err("another folder import is already running".into());
         }
         durable_copy_available()
             .map_err(|error| format!("Folder copying is unavailable on this platform: {error}"))?;
         let continued_index = self.continued_index(index);
-        let operation = self
+        if let (Some(c), Some(folder)) = (&self.continuation, continued_index) {
+            c.validate_fresh_destination(folder)?;
+        }
+        let mut operation = self
             .operations
-            .get_mut(index)
+            .get(index)
+            .cloned()
             .ok_or_else(|| "the selected migration operation no longer exists".to_string())?;
         operation.approve();
         let job = operation.start_job()?;
@@ -699,6 +788,10 @@ impl ImportApp {
             job
         };
         operation.mark_running()?;
+        *self
+            .operations
+            .get_mut(index)
+            .ok_or("copy operation disappeared")? = operation;
         self.detail_pages.remove(&index);
         self.detail_request = None;
         let writer = self
@@ -911,12 +1004,7 @@ impl ImportApp {
                         PickTarget::Source => self.source = Some(path),
                         PickTarget::DestinationParent => self.destination_parent = Some(path),
                         PickTarget::ContinuedDestination(index) => {
-                            let result = self
-                                .continuation
-                                .as_mut()
-                                .ok_or_else(|| "No saved folder review".to_string())
-                                .and_then(|c| c.select_destination_parent(index, &path))
-                                .and_then(|()| self.resolve_continued(index));
+                            let result = self.request_continued_review(index, Some(path));
                             if let Err(e) = result {
                                 self.status = e;
                                 self.status_is_error = true;
@@ -944,7 +1032,7 @@ impl ImportApp {
     }
 
     fn poll_background(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = self.poll_continued_review();
         self.poll_identity_gate(&mut changed);
         let mut terminal = false;
         // At most one latest progress update and one terminal event per frame.
@@ -1063,6 +1151,10 @@ impl ImportApp {
     }
 
     fn apply_authorized_command(&mut self, command: ImportCommand) {
+        if self.review_request.is_some() {
+            self.status = "Wait for the folder review to finish.".into();
+            return;
+        }
         let result = match command {
             ImportCommand::CheckIdentity => {
                 self.status =
@@ -1072,6 +1164,11 @@ impl ImportApp {
             }
             ImportCommand::ResolveContinued(index) => self.resolve_continued(index),
             ImportCommand::PickContinuedDestination(index) => {
+                if let Err(error) = self.check_continued_review_allowed(index) {
+                    self.status = error;
+                    self.status_is_error = true;
+                    return;
+                }
                 self.picker = Some((
                     PickTarget::ContinuedDestination(index),
                     folders::pick_folder(),
@@ -1330,7 +1427,8 @@ impl ImportApp {
     }
 
     fn can_start_continued_batch(&self) -> bool {
-        self.identity_ready
+        self.review_request.is_none()
+            && self.identity_ready
             && self.worker.is_none()
             && self.gate_request.is_none()
             && self.operations.iter().enumerate().any(|(index, op)| {
@@ -1342,6 +1440,26 @@ impl ImportApp {
                             .is_some_and(|folder| folder.mode == ChoiceMode::Copy)
                     })
             })
+    }
+
+    fn continued_review_controls(&self, row: Column, index: usize) -> Column {
+        let enabled = self.identity_ready && self.worker.is_none() && self.review_request.is_none();
+        row.push(Box::new(
+            self.button(
+                &format!("import.continued.{index}.review"),
+                "Review destination",
+                ImportCommand::ResolveContinued(index),
+            )
+            .with_enabled(enabled),
+        ))
+        .push(Box::new(
+            self.button(
+                &format!("import.continued.{index}.destination"),
+                "Choose another destination…",
+                ImportCommand::PickContinuedDestination(index),
+            )
+            .with_enabled(enabled),
+        ))
     }
 
     fn continuation_card(&self, c: &Continuation) -> Card {
@@ -1373,10 +1491,19 @@ impl ImportApp {
                 ChoiceMode::Later => "Decide later — retained in Add folders",
                 ChoiceMode::Connected => "Connected — unavailable; no sync or copy started",
             };
-            let operation = self
+            let can_review = self
                 .operations
                 .iter()
-                .any(|o| o.id() == c.operation_id(index));
+                .find(|o| o.id() == c.operation_id(index))
+                .is_none_or(|o| {
+                    matches!(
+                        o.state(),
+                        OperationState::AwaitingReview
+                            | OperationState::Failed
+                            | OperationState::Interrupted
+                            | OperationState::Cancelled
+                    )
+                });
             let mut row = Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
@@ -1398,18 +1525,8 @@ impl ImportApp {
                             ImportCommand::ContinuedMode(index, ChoiceMode::Later),
                         ))),
                 ));
-            if !operation && f.mode == ChoiceMode::Copy {
-                row = row
-                    .push(Box::new(self.button(
-                        &format!("import.continued.{index}.review"),
-                        "Review destination",
-                        ImportCommand::ResolveContinued(index),
-                    )))
-                    .push(Box::new(self.button(
-                        &format!("import.continued.{index}.destination"),
-                        "Choose another destination…",
-                        ImportCommand::PickContinuedDestination(index),
-                    )));
+            if can_review && f.mode == ChoiceMode::Copy {
+                row = self.continued_review_controls(row, index);
             }
             body = body.push(Box::new(Card::new(Box::new(row))));
         }
@@ -1731,6 +1848,7 @@ impl Widget for ImportApp {
 
     fn needs_idle_sync(&self) -> bool {
         self.worker.is_some()
+            || self.review_request.is_some()
             || self.gate_request.is_some()
             || self.picker.is_some()
             || !self.pending_saves.is_empty()
@@ -1792,6 +1910,181 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::yield_now();
         }
+    }
+
+    #[test]
+    fn mismatched_review_records_refuse_start_without_losing_rereview() {
+        let (_temp, mut app, source, parent) = fixture();
+        settle_index(&mut app);
+        let choice = super::super::controller::FolderChoice {
+            scan: super::super::folders::scan_folder(&source).unwrap(),
+            destination: super::super::controller::FolderDestination::Unresolved,
+            mode: super::super::model::FolderMode::Copy,
+            mode_overridden: false,
+        };
+        let mut old = Continuation::capture(&[choice]).unwrap();
+        old.resolve(0, &parent, true).unwrap();
+        let old_record = old
+            .prepare(0, app.store.as_ref().unwrap(), &[], true)
+            .unwrap()
+            .unwrap();
+        let another = parent.join("another");
+        fs::create_dir(&another).unwrap();
+        let mut new = old.clone();
+        new.select_destination_parent(0, &another).unwrap();
+        new.resolve(0, &another, true).unwrap();
+        let new_record = new
+            .prepare(0, app.store.as_ref().unwrap(), &[], true)
+            .unwrap()
+            .unwrap();
+        // Either ordering of the two durable writes may survive a crash.
+        for (continuation, record) in [(new, old_record), (old, new_record)] {
+            continuation.save(app.store.as_ref().unwrap()).unwrap();
+            app.store.as_ref().unwrap().save(&[record]).unwrap();
+            app.continuation = Continuation::load(app.store.as_ref().unwrap()).unwrap();
+            app.operations = app.store.as_ref().unwrap().load().unwrap();
+            app.identity_ready = true;
+            assert!(app.start_operation(0).is_err());
+            assert!(app.worker.is_none());
+            assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
+            assert!(app.check_continued_review_allowed(0).is_ok());
+            app.prepare_continued_folder(0).unwrap();
+            settle_index(&mut app);
+            assert_eq!(
+                app.operations[0].destination().unwrap(),
+                app.continuation.as_ref().unwrap().folders[0]
+                    .destination()
+                    .unwrap()
+                    .unwrap()
+            );
+        }
+        assert!(!parent.join("source").exists());
+        assert!(!another.join("source").exists());
+    }
+
+    #[test]
+    fn unpublished_continuation_can_review_another_destination_after_collision() {
+        for substitute_parent in [false, true] {
+            let (_temp, mut app, source, parent) = fixture();
+            settle_index(&mut app);
+            fs::write(source.join("hello"), b"original").unwrap();
+            let choice = super::super::controller::FolderChoice {
+                scan: super::super::folders::scan_folder(&source).unwrap(),
+                destination: super::super::controller::FolderDestination::Unresolved,
+                mode: super::super::model::FolderMode::Copy,
+                mode_overridden: false,
+            };
+            let mut c = Continuation::capture(&[choice]).unwrap();
+            c.resolve(0, &parent, true).unwrap();
+            app.continuation = Some(c);
+            app.identity_ready = true;
+            app.prepare_continued_folder(0).unwrap();
+            settle_index(&mut app);
+            if substitute_parent {
+                fs::rename(&parent, parent.with_extension("old")).unwrap();
+                fs::create_dir(&parent).unwrap();
+            }
+            fs::create_dir(parent.join("source")).unwrap();
+            fs::write(parent.join("source/existing"), b"keep").unwrap();
+            assert!(app.start_operation(0).is_err());
+            assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
+            assert!(!app.operations[0].journal().unwrap().exists());
+            let another = parent.join("another");
+            fs::create_dir(&another).unwrap();
+            app.request_continued_review(0, Some(another.clone()))
+                .unwrap();
+            assert!(
+                app.needs_idle_sync(),
+                "background review must keep native polling alive"
+            );
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while app.review_request.is_some() {
+                app.poll_background();
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            assert!(!app.status_is_error, "{}", app.status);
+            settle_index(&mut app);
+            assert_eq!(app.operations.len(), 1);
+            assert_eq!(
+                app.operations[0].destination().unwrap(),
+                another.join("source")
+            );
+            app.start_operation(0).unwrap();
+            wait_terminal(&mut app);
+            assert_eq!(
+                app.operations[0].state(),
+                OperationState::Complete,
+                "{}",
+                app.status
+            );
+            assert_eq!(fs::read(another.join("source/hello")).unwrap(), b"original");
+            assert_eq!(fs::read(parent.join("source/existing")).unwrap(), b"keep");
+            assert!(
+                app.request_continued_review(0, Some(parent.clone()))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn same_basename_folders_can_retarget_the_second_without_changing_first_output() {
+        let (_temp, mut app, source, parent) = fixture();
+        settle_index(&mut app);
+        let second = source.with_extension("other").join("source");
+        fs::create_dir_all(&second).unwrap();
+        fs::write(source.join("hello"), b"first").unwrap();
+        fs::write(second.join("hello"), b"second").unwrap();
+        let choices: Vec<_> = [&source, &second]
+            .into_iter()
+            .map(|path| super::super::controller::FolderChoice {
+                scan: super::super::folders::scan_folder(path).unwrap(),
+                destination: super::super::controller::FolderDestination::Unresolved,
+                mode: super::super::model::FolderMode::Copy,
+                mode_overridden: false,
+            })
+            .collect();
+        let mut c = Continuation::capture(&choices).unwrap();
+        c.resolve(0, &parent, true).unwrap();
+        c.resolve(1, &parent, true).unwrap();
+        app.continuation = Some(c);
+        app.identity_ready = true;
+        app.prepare_continued_folder(0).unwrap();
+        app.prepare_continued_folder(1).unwrap();
+        settle_index(&mut app);
+        app.start_operation(0).unwrap();
+        wait_terminal(&mut app);
+        assert_eq!(
+            app.operations[0].state(),
+            OperationState::Complete,
+            "{}",
+            app.status
+        );
+        assert!(app.start_operation(1).is_err());
+        assert_eq!(app.operations[1].state(), OperationState::AwaitingReview);
+        let another = parent.join("another");
+        fs::create_dir(&another).unwrap();
+        app.request_continued_review(1, Some(another.clone()))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.review_request.is_some() {
+            app.poll_background();
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(!app.status_is_error, "{}", app.status);
+        settle_index(&mut app);
+        app.start_operation(1).unwrap();
+        wait_terminal(&mut app);
+        assert_eq!(
+            app.operations[1].state(),
+            OperationState::Complete,
+            "{}",
+            app.status
+        );
+        assert_eq!(fs::read(parent.join("source/hello")).unwrap(), b"first");
+        assert_eq!(fs::read(another.join("source/hello")).unwrap(), b"second");
+        assert_eq!(app.operations.len(), 2);
     }
 
     #[test]
@@ -1921,6 +2214,14 @@ mod tests {
                 .expect(&SemanticExpectation::named("import.continued.start").enabled(enabled))
                 .unwrap();
             if enabled {
+                harness
+                    .expect(&SemanticExpectation::named("import.continued.0.review").enabled(true))
+                    .unwrap();
+                harness
+                    .expect(
+                        &SemanticExpectation::named("import.continued.0.destination").enabled(true),
+                    )
+                    .unwrap();
                 assert!(
                     !harness
                         .a11y_nodes()

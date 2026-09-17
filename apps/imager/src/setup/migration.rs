@@ -655,6 +655,9 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
             journal.validate_relative(relative)?;
         }
         let metadata = metadata_nofollow(&source.file, Path::new(name))?;
+        if let Some(journal) = &self.journal {
+            journal.validate_reviewed_entry(relative, &metadata)?;
+        }
         if metadata.is_symlink() || (!metadata.is_dir() && !metadata.is_file()) {
             self.report.skipped.push((
                 relative.to_path_buf(),

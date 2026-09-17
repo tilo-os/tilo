@@ -262,7 +262,7 @@ impl RelativePath {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Snapshot {
+pub(super) struct Snapshot {
     size: u64,
     modified: SystemTime,
     created: Option<SystemTime>,
@@ -271,7 +271,7 @@ struct Snapshot {
     changed: (i64, i64),
 }
 impl Snapshot {
-    fn new(m: &Metadata) -> io::Result<Self> {
+    pub(super) fn new(m: &Metadata) -> io::Result<Self> {
         use cap_fs_ext::MetadataExt;
         Ok(Self {
             size: m.len(),
@@ -373,6 +373,8 @@ struct Document {
     destination: NativeName,
     source_identity: Identity,
     destination_parent_identity: Identity,
+    #[serde(default)]
+    reviewed_revision: Option<[u8; 32]>,
     receipts: Vec<Receipt>,
     outcome: Option<Outcome>,
 }
@@ -389,6 +391,7 @@ pub struct MigrationJournal {
     resume: bool,
     seen: BTreeSet<PathBuf>,
     failure: Option<JournalFailure>,
+    reviewed: Option<super::migration_review::SourceInventory>,
 }
 
 fn directory_identity(directory: &PinnedDirectory) -> io::Result<Identity> {
@@ -434,7 +437,7 @@ impl MigrationJournal {
         source_path: &Path,
         destination_path: &Path,
         journal_path: &Path,
-        reviewed: Option<&(Identity, Identity)>,
+        reviewed: Option<&(Identity, Identity, [u8; 32])>,
     ) -> io::Result<Self> {
         durability::supported()?;
         let source = PinnedDirectory::open_absolute(source_path)?;
@@ -444,7 +447,7 @@ impl MigrationJournal {
                 .ok_or_else(|| changed("destination parent missing"))?,
         )?;
         destination_parent.validate_destination()?;
-        if let Some((expected_source, expected_parent)) = reviewed
+        if let Some((expected_source, expected_parent, _)) = reviewed
             && (directory_identity(&source)? != *expected_source
                 || directory_identity(&destination_parent)? != *expected_parent)
         {
@@ -452,6 +455,17 @@ impl MigrationJournal {
                 "reviewed source or destination parent changed before copy",
             ));
         }
+        let inventory = reviewed
+            .map(|(_, _, revision)| {
+                let inventory = super::migration_review::SourceInventory::capture(&source)?;
+                if inventory.revision()? != *revision {
+                    return Err(changed(
+                        "Source contents changed after review; explicitly review the folder again.",
+                    ));
+                }
+                Ok(inventory)
+            })
+            .transpose()?;
         let (parent, name) = journal_parent(journal_path)?;
         if parent.contains_identity(&source.identity)
             || source.contains_identity(&parent.identity)
@@ -472,6 +486,7 @@ impl MigrationJournal {
             destination: NativeName::encode(destination_path.as_os_str()),
             source_identity: directory_identity(&source)?,
             destination_parent_identity: directory_identity(&destination_parent)?,
+            reviewed_revision: reviewed.map(|r| r.2),
             receipts: Vec::new(),
             outcome: None,
         };
@@ -511,6 +526,7 @@ impl MigrationJournal {
             resume: false,
             seen: BTreeSet::new(),
             failure: None,
+            reviewed: inventory,
         })
     }
     fn open(path: &Path) -> io::Result<Self> {
@@ -593,8 +609,10 @@ impl MigrationJournal {
             resume: true,
             seen: BTreeSet::new(),
             failure: None,
+            reviewed: None,
         };
         result.validate()?;
+        result.load_reviewed_inventory()?;
         if modern {
             if end != result.file.metadata()?.len() {
                 result.validate_recovery_location()?;
@@ -610,6 +628,20 @@ impl MigrationJournal {
         }
         Ok(result)
     }
+    fn load_reviewed_inventory(&mut self) -> io::Result<()> {
+        if let Some(revision) = self.document.reviewed_revision {
+            let root = PinnedDirectory::open_absolute(&absolute(&self.document.source)?)?;
+            let inventory = super::migration_review::SourceInventory::capture(&root)?;
+            if inventory.revision()? != revision {
+                return Err(changed(
+                    "Source contents changed after review; explicitly review the folder again.",
+                ));
+            }
+            self.reviewed = Some(inventory);
+        }
+        Ok(())
+    }
+
     fn validate_outcome_paths(document: &Document) -> io::Result<()> {
         if let Some(outcome) = &document.outcome {
             for path in outcome
@@ -942,6 +974,16 @@ impl MigrationJournal {
             .get(path)
             .and_then(|position| self.document.receipts.get(*position))
     }
+    pub(super) fn validate_reviewed_entry(
+        &self,
+        path: &Path,
+        metadata: &Metadata,
+    ) -> io::Result<()> {
+        if let Some(inventory) = &self.reviewed {
+            inventory.check(path, metadata)?;
+        }
+        Ok(())
+    }
     pub(super) fn root(
         &mut self,
         source: &Arc<PinnedDirectory>,
@@ -955,6 +997,9 @@ impl MigrationJournal {
             return Err(changed(
                 "root identity changed or boot-bound identity expired; reselect folders and review conflicts",
             ));
+        }
+        if let Some(inventory) = &self.reviewed {
+            inventory.validate(source)?;
         }
         if self.resume {
             if self.lookup(Path::new("")).is_none() {
@@ -1183,6 +1228,16 @@ impl MigrationJournal {
         Ok(Some(bytes))
     }
     pub(super) fn finish(&mut self, report: &mut CopyReport) -> io::Result<()> {
+        if let Some(inventory) = &self.reviewed {
+            let validation = absolute(&self.document.source)
+                .and_then(|path| PinnedDirectory::open_absolute(&path))
+                .and_then(|root| inventory.validate(&root));
+            if let Err(error) = validation {
+                report.scan_completed = false;
+                report.failed.push((PathBuf::new(), error.to_string()));
+            }
+        }
+
         self.checkpoint(
             Path::new(""),
             PersistenceBoundary::PreviousCheckpoint,
@@ -1251,14 +1306,15 @@ pub(super) fn copy_reviewed(
     source: &Path,
     destination: &Path,
     journal_path: &Path,
-    reviewed: &(Identity, Identity),
+    reviewed: &(Identity, Identity, [u8; 32]),
     resume: bool,
     cancelled: &AtomicBool,
     progress: impl FnMut(CopyProgress),
 ) -> Result<CopyReport, String> {
     let journal = if resume {
         let journal = MigrationJournal::open(journal_path).map_err(|e| e.to_string())?;
-        if journal.document.source_identity != reviewed.0
+        if journal.document.reviewed_revision != Some(reviewed.2)
+            || journal.document.source_identity != reviewed.0
             || journal.document.destination_parent_identity != reviewed.1
             || absolute(&journal.document.source).map_err(|e| e.to_string())? != source
             || absolute(&journal.document.destination).map_err(|e| e.to_string())? != destination

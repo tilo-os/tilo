@@ -36,6 +36,7 @@ pub(super) struct MigrationJob {
     reviewed: Option<(
         migration_durability::Identity,
         migration_durability::Identity,
+        [u8; 32],
     )>,
 }
 
@@ -74,8 +75,9 @@ impl MigrationJob {
         mut self,
         source: migration_durability::Identity,
         parent: migration_durability::Identity,
+        revision: [u8; 32],
     ) -> Self {
-        self.reviewed = Some((source, parent));
+        self.reviewed = Some((source, parent, revision));
         self
     }
 
