@@ -2225,13 +2225,16 @@ dependencies = [
 name = "clocks"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "automerge",
  "chrono",
  "chrono-tz",
+ "private-fs",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tempfile",
  "tilo-actions",
  "tilo-app",
  "uuid",

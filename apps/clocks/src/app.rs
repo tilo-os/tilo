@@ -738,11 +738,19 @@ pub struct ClocksApp {
     generation: u64,
     last_saved: String,
     last_notification: Option<(uuid::Uuid, String, String)>,
+    persistent: bool,
+    next_clock_tick: std::time::Instant,
+    #[cfg(windows)]
+    native_notifications: Option<ui::host_notifications::HostNotifications>,
+    #[cfg(windows)]
+    pending_notifications: Vec<(uuid::Uuid, String, String)>,
+    #[cfg(windows)]
+    next_notification_attempt: std::time::Instant,
 }
 impl ClocksApp {
     #[must_use]
     pub fn new() -> Self {
-        Self::scenario("timers")
+        Self::with_mode("timers", true)
     }
     #[must_use]
     pub fn running_demo() -> Self {
@@ -750,19 +758,20 @@ impl ClocksApp {
     }
     #[must_use]
     pub fn scenario(name: &str) -> Self {
+        Self::with_mode(name, false)
+    }
+
+    fn with_mode(name: &str, persistent: bool) -> Self {
         let mode = match name {
             "world" => 0,
             "alarms" => 1,
             "stopwatch" => 3,
             _ => 2,
         };
-        let mut value = if matches!(
-            name,
-            "empty" | "running" | "world" | "alarms" | "stopwatch" | "timers"
-        ) {
-            ClockState::default()
-        } else {
+        let mut value = if persistent {
             ClockState::load()
+        } else {
+            ClockState::default()
         };
         if name == "running" {
             let mut t = Timer::new("Tea", Duration::from_secs(272));
@@ -777,6 +786,14 @@ impl ClocksApp {
             generation: 0,
             last_saved: String::new(),
             last_notification: None,
+            persistent,
+            next_clock_tick: std::time::Instant::now(),
+            #[cfg(windows)]
+            native_notifications: None,
+            #[cfg(windows)]
+            pending_notifications: Vec::new(),
+            #[cfg(windows)]
+            next_notification_attempt: std::time::Instant::now(),
         }
     }
 
@@ -791,7 +808,40 @@ impl ClocksApp {
             DueEvent::Alarm { label, .. } => ("Alarm".to_owned(), label),
             DueEvent::Timer { label, .. } => ("Timer finished".to_owned(), label),
         };
-        self.last_notification = Some((uuid::Uuid::new_v4(), title, body));
+        let notice = (uuid::Uuid::new_v4(), title, body);
+        #[cfg(windows)]
+        if self.persistent {
+            self.pending_notifications.push(notice.clone());
+        }
+        self.last_notification = Some(notice);
+    }
+
+    #[cfg(windows)]
+    fn deliver_native_notifications(&mut self) {
+        if self.pending_notifications.is_empty()
+            || std::time::Instant::now() < self.next_notification_attempt
+        {
+            return;
+        }
+        self.next_notification_attempt = std::time::Instant::now() + Duration::from_secs(5);
+        if self.native_notifications.is_none() {
+            match ui::host_notifications::HostNotifications::new("dev.tilo.clocks") {
+                Ok(host) => self.native_notifications = Some(host),
+                Err(error) => eprintln!("Windows Clocks notifications: {error}"),
+            }
+        }
+        if let Some(host) = &self.native_notifications {
+            self.pending_notifications.retain(|(id, title, body)| {
+                let tag: String = id.simple().to_string().chars().take(16).collect();
+                match host.show(&tag, title, body) {
+                    Ok(()) => false,
+                    Err(error) => {
+                        eprintln!("Windows Clocks notification delivery: {error}");
+                        true
+                    }
+                }
+            });
+        }
     }
 }
 impl Default for ClocksApp {
@@ -862,8 +912,13 @@ impl Widget for ClocksApp {
         crate::actions::ClockResources.resources(doc)
     }
     fn sync(&mut self, d: &mut AutoCommit, p: &ObjId) {
+        self.next_clock_tick = std::time::Instant::now() + Duration::from_secs(1);
         let now = Utc::now();
-        if let Some((cmd, activity_id)) = crate::transport::take_command() {
+        if let Some((cmd, activity_id)) = self
+            .persistent
+            .then(crate::transport::take_command)
+            .flatten()
+        {
             self.state
                 .update(|state| state.apply_shell_command(&cmd, activity_id, now));
         }
@@ -873,6 +928,8 @@ impl Widget for ClocksApp {
         for event in due {
             self.remember_due(event);
         }
+        #[cfg(windows)]
+        self.deliver_native_notifications();
         self.generation = self.generation.saturating_add(1);
         self.state.with(|s| {
             let activity = s.shell_activity(now);
@@ -913,15 +970,17 @@ impl Widget for ClocksApp {
                 snapshot.notification_title.clone_from(title);
                 snapshot.notification_body.clone_from(body);
             }
-            let _ = crate::transport::publish(&snapshot);
+            if self.persistent {
+                let _ = crate::transport::publish(&snapshot);
+            }
         });
         let encoded = self
             .state
             .with(|s| serde_json::to_string(s).unwrap_or_default());
-        if encoded != self.last_saved {
-            self.state.with(|s| {
-                let _ = s.save();
-            });
+        if self.persistent
+            && encoded != self.last_saved
+            && self.state.with(ClockState::save).is_ok()
+        {
             self.last_saved = encoded;
         }
         self.state.update(|_| {});
@@ -974,8 +1033,20 @@ impl Widget for ClocksApp {
     fn get_rect(&self) -> Rect {
         self.inner.get_rect()
     }
-    fn needs_idle_sync(&self) -> bool {
-        true
+    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+        Some(
+            self.inner
+                .next_wake_deadline()
+                .map_or(self.next_clock_tick, |inner| {
+                    inner.min(self.next_clock_tick)
+                }),
+        )
+    }
+    fn take_structure_dirty(&mut self) -> bool {
+        self.inner.take_structure_dirty()
+    }
+    fn take_focus_reset(&mut self) -> bool {
+        self.inner.take_focus_reset()
     }
 }
 
@@ -988,6 +1059,76 @@ mod tests {
     use chrono::Utc;
     use std::collections::BTreeSet;
     use std::time::Duration;
+
+    #[test]
+    fn timer_changes_request_layout_rebuild_and_wake_without_collaboration() {
+        use ui::widget::Widget;
+        let mut app = ClocksApp::scenario("empty");
+        let mut doc = automerge::AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let mut taffy = taffy::TaffyTree::new();
+        app.build_layout(
+            &mut taffy,
+            &ui::Theme::default(),
+            &mut std::collections::HashMap::new(),
+        );
+        let _ = app.take_structure_dirty();
+        app.state.update(|state| {
+            state
+                .timers
+                .push(Timer::new("Tea", Duration::from_secs(60)))
+        });
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            app.take_structure_dirty(),
+            "replaced timer controls must invalidate host pointers"
+        );
+        let deadline = app
+            .next_wake_deadline()
+            .expect("clock must wake with no peer or input");
+        assert!(deadline > std::time::Instant::now());
+        assert!(deadline <= std::time::Instant::now() + Duration::from_secs(1));
+    }
+
+    #[test]
+    fn live_start_restores_saved_timers_and_shots_leave_them_alone() {
+        const CHILD: &str = "TILO_CLOCKS_RESTORE_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            use ui::widget::Widget;
+            let app = ClocksApp::new();
+            assert!(app.persistent);
+            app.state.with(|state| {
+                assert_eq!(state.timers.len(), 1);
+                assert_eq!(state.timers[0].label, "Saved timer");
+            });
+            let mut shot = ClocksApp::scenario("running");
+            shot.sync(&mut automerge::AutoCommit::new(), &automerge::ROOT);
+            let mut unknown_shot = ClocksApp::scenario("live");
+            assert!(!unknown_shot.persistent);
+            unknown_shot.sync(&mut automerge::AutoCommit::new(), &automerge::ROOT);
+            assert_eq!(crate::ClockState::load().timers[0].label, "Saved timer");
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let mut saved = crate::ClockState::default();
+        saved
+            .timers
+            .push(Timer::new("Saved timer", Duration::from_secs(60)));
+        saved
+            .save_at(&directory.path().join("tilo/clocks.json"))
+            .unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app::tests::live_start_restores_saved_timers_and_shots_leave_them_alone",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .env("XDG_STATE_HOME", directory.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
 
     #[test]
     fn countdown_progress_visualizes_time_remaining() {
