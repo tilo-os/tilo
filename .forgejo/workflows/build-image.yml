@@ -600,10 +600,11 @@ jobs:
           # always empty. Without this, every failed rebuild redoes
           # all 65 stage-3 sub-steps + the rust compile from scratch
           # (~8 min). With it, only the layers past the fix rerun
-          # (~1-2 min).  mode=max exports intermediate layer caches
-          # too, not just the final image.
+          # (~1-2 min). Export only final-stage dependencies: mode=max
+          # duplicates the multi-gigabyte Rust build graph and can exhaust
+          # the runner before BuildKit can finish or clean up.
           cache-from: type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }},mode=max
+          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }},mode=min
 
       # Reproducibility is a release gate, not a statement inferred from pinned
       # inputs. Rebuild without the first build's layer cache and compare the

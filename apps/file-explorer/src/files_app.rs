@@ -42,6 +42,10 @@ use vello::peniko::ImageData as PenikoImage;
 /// way — the places list is navigation, so it never takes the window from it
 /// (`ui/HIG.md` §1a).
 const BODY_BREAKPOINT_PX: f64 = 640.0;
+/// Space kept clear at the bottom of the file viewport for the transient
+/// item/status pill. The pill includes its hover shadow, so this is larger
+/// than its measured text capsule: no file label or target may sit beneath it.
+const STATUS_BUBBLE_SAFE_INSET: f32 = 64.0;
 /// Long absolute paths clip at narrow widths and obscure the recovery action.
 /// Preserve the recognisable tail here; the full location stays in the path bar
 /// and the root accessibility description.
@@ -1208,6 +1212,11 @@ impl FileExplorerWidget {
                 .fill_parent_height()
                 .with_persisted_offset(self.scroll_offset.clone())
                 .with_cursor(self.last_cursor)
+                // The status pill is intentionally outside the scrollable's
+                // interactive viewport. Besides making the count easy to
+                // scan, that means it cannot obscure a file name, target, or
+                // keyboard focus ring at the bottom of a compact grid.
+                .with_bottom_content_inset(STATUS_BUBBLE_SAFE_INSET)
                 .with_child(view_child),
         ));
         Box::new(view_col)
@@ -8368,9 +8377,10 @@ impl Widget for FileExplorerWidget {
 
         let above_node = self.toolbar.build_layout(taffy, theme, node_map);
         let nav_node = self.nav.build_layout(taffy, theme, node_map);
-        // No footer band: the item count / selection status floats as a
-        // transient bubble (see `draw_status_bubble`), so the body spans to the
-        // window bottom.
+        // No permanent footer band: the item count / selection status floats
+        // in a reserved bottom lane inside the body (see
+        // `draw_status_bubble`), leaving the rest of the body available to
+        // the file viewport.
 
         // The body fills the height left below the top bar (the toolbar uses
         // `with_intrinsic_height`).
@@ -11838,7 +11848,7 @@ mod command_path_tests {
         .unwrap();
 
         let mut files = FileExplorerWidget::with_persistence(None, Some(temp.path().into()));
-        files.navigate(archive.clone());
+        files.navigate(archive);
         assert_eq!(files.entries_snapshot().len(), 2);
         assert!(
             files
@@ -12110,6 +12120,23 @@ mod responsive_body_tests {
         }
     }
 
+    fn first_scrollable_viewport(
+        widget: &mut dyn Widget,
+    ) -> Option<(vello::kurbo::Rect, vello::kurbo::Rect)> {
+        if let Some(scrollable) = widget
+            .as_any_mut()
+            .and_then(|value| value.downcast_mut::<Scrollable>())
+        {
+            return Some((scrollable.get_rect(), scrollable.content_viewport_rect()));
+        }
+        for child in widget.children_mut() {
+            if let Some(viewport) = first_scrollable_viewport(child) {
+                return Some(viewport);
+            }
+        }
+        None
+    }
+
     #[test]
     fn body_docks_wide_and_reflows_to_push_when_narrowed() {
         let mut h = H::new(None, 1200.0, 720.0);
@@ -12364,6 +12391,24 @@ mod responsive_body_tests {
         assert!(
             (h.w.debug_content_rect().width() - 600.0).abs() <= f64::EPSILON,
             "the content pane spans the whole narrow window",
+        );
+    }
+
+    #[test]
+    fn floating_status_bubble_reserves_a_noninteractive_bottom_lane() {
+        let dir = tempfile::tempdir().unwrap();
+        for index in 0..40 {
+            std::fs::write(dir.path().join(format!("item-{index}.txt")), b"x").unwrap();
+        }
+        let mut h = H::new(Some(dir.path()), 390.0, 720.0);
+        let (scrollable, content_viewport) = first_scrollable_viewport(&mut h.w)
+            .expect("Files content is wrapped in the shared scrollable");
+
+        assert!(
+            scrollable.y1 - content_viewport.y1
+                >= f64::from(STATUS_BUBBLE_SAFE_INSET) - f64::EPSILON,
+            "the item/status pill has a dedicated bottom lane rather than overlaying files: \
+             scrollable={scrollable:?} viewport={content_viewport:?}"
         );
     }
 

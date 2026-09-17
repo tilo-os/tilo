@@ -6,22 +6,17 @@
 
 use std::collections::HashSet;
 
-use automerge::{AutoCommit, ObjId};
 use chrono::{Duration, NaiveDate};
-use taffy::{NodeId, TaffyTree};
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
-use winit::event::WindowEvent;
 
 use ui::Widget;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::widget::Scrollable;
 
 use crate::app::{center_text, draw_checkbox};
 use crate::date;
-use crate::draw_util::{fill_rect, fill_round, stroke_line};
+use crate::draw_util::{PaintContext, fill_rect, fill_round, stroke_line};
+use crate::input_context::InputContext;
 use crate::model::{Id, Model, Priority};
 
 const DAYS_SHOWN: i64 = 21;
@@ -31,6 +26,25 @@ pub(crate) enum AgendaAction {
     OpenEvent(Id),
     OpenTask(Id),
     ToggleTask(Id),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct AgendaRenderModel<'a> {
+    pub(crate) area: Rect,
+    pub(crate) model: &'a Model,
+    pub(crate) anchor: NaiveDate,
+    pub(crate) today: NaiveDate,
+    pub(crate) hidden_calendars: &'a HashSet<String>,
+    pub(crate) calendar_filter: Option<&'a str>,
+    pub(crate) pointer: Point,
+}
+
+#[derive(Clone, Copy)]
+struct RowLayout {
+    area: Rect,
+    x0: f64,
+    pointer: Point,
+    scale: f64,
 }
 
 pub(crate) struct AgendaView {
@@ -59,74 +73,67 @@ impl AgendaView {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let mut handled = false;
-        let mut next_focus = *focus_target;
+    pub(crate) fn handle_event(&mut self, input: &mut InputContext<'_>) -> bool {
         self.scroll.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut handled,
-            &mut next_focus,
-            node_id,
-            taffy,
+            input.event,
+            input.scale_factor,
+            &input.modifiers,
+            input.state,
+            input.path,
+            input.handled,
+            input.focus_target,
+            input.node_id,
+            input.taffy,
         );
-        if handled {
-            *focus_target = next_focus;
-        }
-        handled
+        *input.handled
     }
 
     pub(crate) fn wants_pointer_capture(&self) -> bool {
         self.scroll.wants_pointer_capture()
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        model: &Model,
-        anchor: NaiveDate,
-        today: NaiveDate,
-        hidden_calendars: &HashSet<String>,
-        calendar_filter: Option<&str>,
-        pointer: Point,
+        paint: &mut PaintContext<'_>,
+        render: &AgendaRenderModel<'_>,
     ) -> Vec<(Rect, AgendaAction)> {
+        let AgendaRenderModel {
+            area,
+            model,
+            anchor,
+            today,
+            hidden_calendars,
+            calendar_filter,
+            pointer,
+        } = *render;
+        let transform = paint.transform;
+        let theme = paint.theme;
         let colors = &theme.tokens.colors;
         let mut hits = Vec::new();
-        fill_rect(scene, transform, colors.surfaces.base, area);
+        {
+            let scene = &mut *paint.scene;
+            fill_rect(scene, transform, colors.surfaces.base, area);
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &area,
+            );
+        }
 
         let end = anchor + Duration::days(DAYS_SHOWN);
         let x0 = area.x0 + 24.0;
         let show_location = area.width() >= 520.0;
         let scale = f64::from(theme.text_scale).max(1.0);
+        let row_layout = RowLayout {
+            area,
+            x0,
+            pointer,
+            scale,
+        };
         let mut y = area.y0 + 18.0 - f64::from(self.scroll.offset_y());
         let mut drew_any = false;
-
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &area,
-        );
 
         let mut day = anchor;
         while day <= end {
@@ -142,39 +149,24 @@ impl AgendaView {
             }
             drew_any = true;
 
-            draw_day_heading(
-                scene, transform, text, theme, area, x0, y, day, today, scale,
-            );
+            draw_day_heading(paint, row_layout, y, day, today);
             y += 30.0 * scale;
 
             for event in events {
-                draw_event_row(
-                    scene,
-                    transform,
-                    text,
-                    theme,
-                    area,
-                    x0,
-                    y,
-                    show_location,
-                    pointer,
-                    event,
-                    &mut hits,
-                    scale,
-                );
+                draw_event_row(paint, row_layout, y, show_location, event, &mut hits);
                 y += 38.0 * scale;
             }
 
             for task in tasks {
-                draw_task_row(
-                    scene, transform, text, theme, area, x0, y, pointer, task, &mut hits, scale,
-                );
+                draw_task_row(paint, row_layout, y, task, &mut hits);
                 y += 38.0 * scale;
             }
             y += 16.0 * scale;
             day += Duration::days(1);
         }
 
+        let scene = &mut *paint.scene;
+        let text = &mut *paint.text;
         scene.pop_layer();
         if !drew_any {
             center_text(
@@ -211,19 +203,20 @@ impl AgendaView {
 /// Draw one day's two-line heading (relative label + long date) at `y`,
 /// clipped to `area`. Split out of `AgendaView::draw` to keep it within the
 /// line-count lint.
-#[allow(clippy::too_many_arguments)]
 fn draw_day_heading(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    area: Rect,
-    x0: f64,
+    paint: &mut PaintContext<'_>,
+    layout: RowLayout,
     y: f64,
     day: NaiveDate,
     today: NaiveDate,
-    scale: f64,
 ) {
+    let scene = &mut *paint.scene;
+    let transform = paint.transform;
+    let text = &mut *paint.text;
+    let theme = paint.theme;
+    let RowLayout {
+        area, x0, scale, ..
+    } = layout;
     let colors = &theme.tokens.colors;
     if y + 28.0 * scale > area.y0 && y < area.y1 {
         let heading_color = if day == today {
@@ -253,21 +246,24 @@ fn draw_day_heading(
 /// Draw one event row at `y`, pushing its hit-rect into `hits` when the row
 /// is on screen. Split out of `AgendaView::draw` to keep it within the
 /// line-count lint.
-#[allow(clippy::too_many_arguments)]
 fn draw_event_row(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    area: Rect,
-    x0: f64,
+    paint: &mut PaintContext<'_>,
+    layout: RowLayout,
     y: f64,
     show_location: bool,
-    pointer: Point,
     event: &crate::model::Event,
     hits: &mut Vec<(Rect, AgendaAction)>,
-    scale: f64,
 ) {
+    let scene = &mut *paint.scene;
+    let transform = paint.transform;
+    let text = &mut *paint.text;
+    let theme = paint.theme;
+    let RowLayout {
+        area,
+        x0,
+        pointer,
+        scale,
+    } = layout;
     let colors = &theme.tokens.colors;
     let row = Rect::new(x0, y, area.x1 - 24.0, y + 34.0 * scale);
     if row.y1 > area.y0 && row.y0 < area.y1 {
@@ -331,20 +327,23 @@ fn draw_event_row(
 /// Draw one task row at `y`, pushing its open- and toggle-hit rects into
 /// `hits` when the row is on screen. Split out of `AgendaView::draw` to keep
 /// it within the line-count lint.
-#[allow(clippy::too_many_arguments)]
 fn draw_task_row(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    area: Rect,
-    x0: f64,
+    paint: &mut PaintContext<'_>,
+    layout: RowLayout,
     y: f64,
-    pointer: Point,
     task: &crate::model::Task,
     hits: &mut Vec<(Rect, AgendaAction)>,
-    scale: f64,
 ) {
+    let scene = &mut *paint.scene;
+    let transform = paint.transform;
+    let text = &mut *paint.text;
+    let theme = paint.theme;
+    let RowLayout {
+        area,
+        x0,
+        pointer,
+        scale,
+    } = layout;
     let colors = &theme.tokens.colors;
     let row = Rect::new(x0, y, area.x1 - 24.0, y + 34.0 * scale);
     if row.y1 > area.y0 && row.y0 < area.y1 {

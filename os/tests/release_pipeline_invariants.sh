@@ -43,6 +43,11 @@ grep -Fq 'qos-kernel-buildcache:latest,mode=min' "$workflows/build-kernel.yml" \
   && ok 'kernel cache export excludes its multi-gigabyte intermediate build tree' \
   || bad 'kernel cache export can duplicate the intermediate build tree and exhaust the runner'
 
+grep -Fq 'tilo-buildcache:${{ matrix.arch }},mode=min' "$workflows/build-image.yml" \
+  && ! grep -Fq 'tilo-buildcache:${{ matrix.arch }},mode=max' "$workflows/build-image.yml" \
+  && ok 'OS cache export excludes its multi-gigabyte intermediate build graph' \
+  || bad 'OS cache export can duplicate the intermediate build graph and exhaust the runner'
+
 grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && grep -Fq 'tags: ["apps-v*", "app-*-v*"]' "$apps" \
   && grep -Fq 'tags: ["v*"]' "$os" \

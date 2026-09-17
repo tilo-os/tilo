@@ -1,108 +1,173 @@
-//! Bounded global-search index for Camera's canonical capture resources.
+//! Bounded global search for Camera's canonical operations.
 //!
-//! The contextual resource page is intentionally small, while the retained
-//! catalog indexes the complete bounded library. Results point at the exact
-//! `open` handoff action exported by the corresponding photo/video resource;
-//! there is no parallel search-only navigation path or retired Camera preview.
+//! Camera does not index a photo/video collection. The catalog contains only
+//! its finite capture, scanner, document-scanner, navigation, and preference
+//! actions. Exact resources are materialized lazily from the same compact
+//! context generation, so search never retains duplicate `Resource` trees.
 
-use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
+use automerge::AutoCommit;
 use tilo_actions::{ActionAddress, Resource};
 use ui::icons::Icon;
 use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCatalogError,
+    SearchCursor, SearchPage, SearchProvider, SearchResult,
 };
 
-use crate::actions::{CaptureItem, capture_resource, capture_resource_id};
+use crate::actions::{
+    CameraResourceCtx, MAX_PUBLISHED_CAMERA_DEVICES, provide_resources, resolve_resource,
+};
 
-pub const CAMERA_SEARCH_KIND: &str = "Camera captures";
+pub const CAMERA_SEARCH_KIND: &str = "Camera actions";
+const MAX_CAMERA_SEARCH_RESOURCES: usize = 32;
 
-/// A retained index whose generation changes in place. Clones handed to the
-/// host share both the catalog and the exact-resource map, so continuation
-/// cursors cannot accidentally become current again after a same-size update.
 #[derive(Clone)]
 pub struct CameraSearchProvider {
+    state: Arc<RwLock<ProviderState>>,
+}
+
+struct ProviderState {
     catalog: SearchCatalog,
-    resources: Arc<RwLock<HashMap<String, Resource>>>,
+    context: CameraResourceCtx,
+    initialized: bool,
 }
 
 impl CameraSearchProvider {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            catalog: SearchCatalog::new(CAMERA_SEARCH_KIND),
-            resources: Arc::new(RwLock::new(HashMap::new())),
+            state: Arc::new(RwLock::new(ProviderState {
+                catalog: SearchCatalog::new(CAMERA_SEARCH_KIND),
+                context: CameraResourceCtx::default(),
+                initialized: false,
+            })),
         }
     }
 
-    pub fn sync(&self, items: &[CaptureItem]) {
-        let mut resources = self
-            .resources
+    /// Atomically replace the finite action directory and its compact exact
+    /// materialization context. A rejected catalog never publishes new state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the generated catalog is not canonical or
+    /// exceeds Camera's bounded published resource set. The previous complete
+    /// generation remains active.
+    pub fn sync(&self, context: &CameraResourceCtx) -> Result<(), SearchCatalogError> {
+        // Construct the retained seed directly from the bounded prefix. Do
+        // not clone then truncate: a hostile 100k-device input must not create
+        // a second 100k-element corpus, even transiently.
+        let context = CameraResourceCtx {
+            recent: context.recent.clone(),
+            mode: context.mode,
+            facing: context.facing,
+            recording: context.recording,
+            feed_available: context.feed_available,
+            camera_permission_denied: context.camera_permission_denied,
+            camera_devices: context
+                .camera_devices
+                .iter()
+                .take(MAX_PUBLISHED_CAMERA_DEVICES)
+                .cloned()
+                .collect(),
+            selected_camera: context.selected_camera.clone(),
+            settings: context.settings,
+            scan_import_pending: context.scan_import_pending,
+            document_scanner_available: context.document_scanner_available,
+            document_pages: context.document_pages,
+            document_selected: context.document_selected,
+            document_busy: context.document_busy,
+            document_has_text: context.document_has_text,
+        };
+        let unchanged = {
+            let state = self
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.initialized && state.context == context
+        };
+        if unchanged {
+            return Ok(());
+        }
+        let resources = provide_resources(&context, &AutoCommit::new());
+        let mut entries = Vec::new();
+        for resource in &resources {
+            Self::collect(resource, &mut entries);
+        }
+        if entries.len() > MAX_CAMERA_SEARCH_RESOURCES {
+            return Err(SearchCatalogError::NonCanonicalResult);
+        }
+        let mut state = self
+            .state
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // An index result must always resolve to a real open handoff. Captures
-        // without a portable identity remain visible in Camera's history but
-        // are not advertised as launchable media.
-        let next: HashSet<String> = items
-            .iter()
-            .filter(|item| {
-                item.media_id
-                    .as_deref()
-                    .is_some_and(crate::media::is_media_id)
-            })
-            .map(capture_resource_id)
-            .collect();
-        let stale: Vec<String> = resources
-            .keys()
-            .filter(|id| !next.contains(*id))
-            .cloned()
-            .collect();
-        for id in stale {
-            resources.remove(&id);
-            self.catalog.remove(&id);
-        }
-        for item in items {
-            if !item
-                .media_id
-                .as_deref()
-                .is_some_and(crate::media::is_media_id)
-            {
-                continue;
+        state.catalog.replace_all(entries)?;
+        state.context = context;
+        state.initialized = true;
+        drop(state);
+        Ok(())
+    }
+
+    fn collect(resource: &Resource, entries: &mut Vec<(String, String, SearchResult)>) {
+        if let Some(primary) = resource.actions.first() {
+            let mut searchable = format!("{}\0{}", resource.label, resource.kind);
+            for action in &resource.actions {
+                searchable.push('\0');
+                searchable.push_str(&action.id);
+                searchable.push('\0');
+                searchable.push_str(&action.label);
+                searchable.push('\0');
+                searchable.push_str(action.description.as_deref().unwrap_or_default());
             }
-            let id = capture_resource_id(item);
-            let media_kind = if item.is_video { "Video" } else { "Photo" };
-            let result = SearchResult::for_action(
-                CAMERA_SEARCH_KIND,
-                &item.label,
-                ActionAddress::new(&id, "open"),
-            )
-            .with_subtitle(if item.favorite {
-                format!("{media_kind} · Favorite")
-            } else {
-                media_kind.to_string()
-            })
-            .with_icon(Icon::Image);
-            let searchable = format!(
-                "{}\0{}\0{}\0open",
-                item.label,
-                item.id,
-                if item.is_video {
-                    "video recording"
-                } else {
-                    "photo image"
-                }
-            );
-            if self.catalog.upsert(&id, searchable, result).is_ok() {
-                resources.insert(id, capture_resource(item));
-            }
+            entries.push((
+                resource.id.as_str().to_owned(),
+                searchable,
+                SearchResult::for_action(
+                    CAMERA_SEARCH_KIND,
+                    &resource.label,
+                    ActionAddress::new(resource.id.as_str(), &primary.id),
+                )
+                .with_subtitle(primary.label.clone())
+                .with_icon(Icon::Camera),
+            ));
         }
+        for child in &resource.children {
+            Self::collect(child, entries);
+        }
+    }
+
+    fn resource(&self, id: &str) -> Option<Resource> {
+        let context = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .context
+            .clone();
+        resolve_resource(&context, &AutoCommit::new(), id)
     }
 
     #[cfg(test)]
     pub(crate) fn stats(&self) -> ui::search::SearchCatalogStats {
-        self.catalog.stats()
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .stats()
+    }
+
+    #[cfg(test)]
+    fn retained_resource_trees() -> usize {
+        0
+    }
+
+    #[cfg(test)]
+    fn retained_device_seeds(&self) -> usize {
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .context
+            .camera_devices
+            .len()
     }
 }
 
@@ -118,11 +183,22 @@ impl SearchProvider for CameraSearchProvider {
     }
 
     fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
+        Some(
+            self.state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .catalog
+                .stats()
+                .generation,
+        )
     }
 
     fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .cursor_is_current(cursor)
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
@@ -130,7 +206,11 @@ impl SearchProvider for CameraSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog.search_limited(query, limit)
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
     }
 
     fn search_page(
@@ -140,17 +220,20 @@ impl SearchProvider for CameraSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .query_page(
+                query,
+                cursor,
+                work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
+                result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+            )
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
-        let resources = self
-            .resources
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let resource = resources.get(address.resource.as_str())?.clone();
-        drop(resources);
+        let resource = self.resource(address.resource.as_str())?;
         resource
             .actions
             .iter()
@@ -162,42 +245,57 @@ impl SearchProvider for CameraSearchProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::CaptureItem;
 
-    fn item(id: &str, label: &str, favorite: bool) -> CaptureItem {
-        CaptureItem {
-            id: id.into(),
-            label: label.into(),
-            favorite,
-            is_video: false,
-            media_id: Some(format!("{}{:064x}", crate::media::MEDIA_PREFIX, 1)),
+    fn context() -> CameraResourceCtx {
+        CameraResourceCtx {
+            feed_available: true,
+            recent: Some(CaptureItem {
+                id: "latest.jpg".into(),
+                label: "Latest capture".into(),
+                is_video: false,
+                media_id: Some(format!("{}{:064x}", crate::media::MEDIA_PREFIX, 1)),
+            }),
+            ..CameraResourceCtx::default()
         }
     }
 
     #[test]
-    fn unicode_search_is_bounded_and_resolves_the_canonical_open_action() {
+    fn searches_canonical_actions_and_materializes_exact_resources_lazily() {
         let provider = CameraSearchProvider::new();
-        provider.sync(&[
-            item("munich.jpg", "München 夏", true),
-            item("coast.jpg", "Coast", false),
-        ]);
-        let hits = provider.search_limited("MÜNCHEN", 1);
+        provider.sync(&context()).unwrap();
+        let hits = provider.search_limited("scan existing image", usize::MAX);
         assert_eq!(hits.len(), 1);
         let address = hits[0].action_address().expect("canonical action");
         let resource = provider
             .resolve_action_resource(&address)
             .expect("exact resource");
-        assert_eq!(resource.id.as_str(), "camera.photo:munich.jpg");
-        assert!(resource.actions.iter().any(|action| action.id == "open"));
+        assert_eq!(resource.id.as_str(), "camera.scanner");
+        assert!(
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == "import-image")
+        );
+        assert_eq!(CameraSearchProvider::retained_resource_trees(), 0);
     }
 
     #[test]
-    fn syncing_removes_stale_resources_and_invalidates_the_generation() {
+    fn hostile_limits_and_over_100k_devices_cannot_expand_the_fixed_directory() {
         let provider = CameraSearchProvider::new();
-        provider.sync(&[item("old.jpg", "Old", false)]);
-        let before = provider.stats().generation;
-        provider.sync(&[item("new.jpg", "New", false)]);
-        assert!(provider.stats().generation > before);
-        assert!(provider.search("Old").is_empty());
-        assert_eq!(provider.search("New").len(), 1);
+        let mut context = context();
+        context.camera_devices = (0..100_001)
+            .map(|index| format!("/dev/video{index}"))
+            .collect();
+        provider.sync(&context).unwrap();
+        let page = provider.search_page("camera", None, usize::MAX, usize::MAX);
+        assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
+        assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
+        assert!(provider.stats().records <= MAX_CAMERA_SEARCH_RESOURCES);
+        assert_eq!(CameraSearchProvider::retained_resource_trees(), 0);
+        assert_eq!(
+            provider.retained_device_seeds(),
+            MAX_PUBLISHED_CAMERA_DEVICES
+        );
     }
 }

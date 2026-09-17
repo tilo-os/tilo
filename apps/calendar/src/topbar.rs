@@ -5,16 +5,17 @@
 //! the small [`Action`] values emitted here to the current view and anchor.
 
 use chrono::{Datelike, NaiveDate};
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 
 use ui::icons::{Icon, draw_icon};
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
+#[cfg(test)]
+use ui::{text_render::TextRenderer, theme::Theme};
+#[cfg(test)]
+use vello::Scene;
 
 use crate::app::{center_text, draw_chevron, draw_hamburger, draw_icon_button, draw_plus};
-use crate::draw_util::{fill_rect, fill_round, stroke_line, stroke_round};
+use crate::draw_util::{PaintContext, fill_rect, fill_round, stroke_line, stroke_round};
 use crate::{date, model::View};
 
 pub(crate) const HEIGHT: f64 = 60.0;
@@ -108,13 +109,9 @@ impl Topbar {
         self.view_rect
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         view: View,
         anchor: NaiveDate,
         pointer: Point,
@@ -124,7 +121,9 @@ impl Topbar {
             return &self.hits;
         }
 
-        let colors = &theme.tokens.colors;
+        let scene = &mut *paint.scene;
+        let transform = paint.transform;
+        let colors = &paint.theme.tokens.colors;
         fill_rect(scene, transform, colors.surfaces.base, self.rect);
         stroke_line(
             scene,
@@ -136,31 +135,22 @@ impl Topbar {
         );
 
         let center_y = self.rect.center().y;
-        let title_x = self.draw_navigation(scene, transform, text, theme, pointer, center_y);
-        let title_right = self.draw_actions(scene, transform, text, theme, view, pointer, center_y);
-        self.draw_title(
-            scene,
-            transform,
-            text,
-            theme,
-            view,
-            anchor,
-            center_y,
-            title_x,
-            title_right,
-        );
+        let title_x = self.draw_navigation(paint, pointer, center_y);
+        let title_right = self.draw_actions(paint, view, pointer, center_y);
+        self.draw_title(paint, view, anchor, center_y, title_x, title_right);
         &self.hits
     }
 
     fn draw_navigation(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         pointer: Point,
         center_y: f64,
     ) -> f64 {
+        let scene = &mut *paint.scene;
+        let transform = paint.transform;
+        let text = &mut *paint.text;
+        let theme = paint.theme;
         let colors = &theme.tokens.colors;
         let mut left = self.rect.x0 + 16.0;
         match self.leading {
@@ -234,17 +224,17 @@ impl Topbar {
         today.x1 + 14.0
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_actions(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         view: View,
         pointer: Point,
         center_y: f64,
     ) -> f64 {
+        let scene = &mut *paint.scene;
+        let transform = paint.transform;
+        let text = &mut *paint.text;
+        let theme = paint.theme;
         let colors = &theme.tokens.colors;
         let segmented_x0 = if self.switcher_visible {
             let x1 = self.rect.x1 - 14.0;
@@ -338,19 +328,19 @@ impl Topbar {
         new_event.x0 - 12.0
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_title(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         view: View,
         anchor: NaiveDate,
         center_y: f64,
         title_x: f64,
         title_right: f64,
     ) {
+        let scene = &mut *paint.scene;
+        let transform = paint.transform;
+        let text = &mut *paint.text;
+        let theme = paint.theme;
         let available = (title_right - title_x).max(0.0);
         // At 200% text a compact bar still needs to retain *which month* is
         // being shown. A modestly smaller base size leaves room for “Sep
@@ -482,11 +472,14 @@ mod tests {
         bar.layout(Rect::new(0.0, 0.0, 390.0, 844.0), LeadingControl::None);
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
+        let theme = Theme::dark();
         let hits = bar.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
+            &mut PaintContext {
+                scene: &mut scene,
+                transform: Affine::IDENTITY,
+                text: &mut text,
+                theme: &theme,
+            },
             View::Month,
             anchor,
             Point::ZERO,
@@ -514,12 +507,15 @@ mod tests {
         );
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
+        let theme = Theme::dark();
         let actions: Vec<_> = bar
             .draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                &Theme::dark(),
+                &mut PaintContext {
+                    scene: &mut scene,
+                    transform: Affine::IDENTITY,
+                    text: &mut text,
+                    theme: &theme,
+                },
                 View::Month,
                 NaiveDate::from_ymd_opt(2026, 8, 31).expect("valid test date"),
                 Point::ZERO,
@@ -557,11 +553,14 @@ mod tests {
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
         text.set_text_scale(2.0);
+        let theme = Theme::dark().with_text_scale(2.0);
         let hits = bar.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark().with_text_scale(2.0),
+            &mut PaintContext {
+                scene: &mut scene,
+                transform: Affine::IDENTITY,
+                text: &mut text,
+                theme: &theme,
+            },
             View::Month,
             NaiveDate::from_ymd_opt(2026, 9, 3).expect("valid test date"),
             Point::ZERO,
