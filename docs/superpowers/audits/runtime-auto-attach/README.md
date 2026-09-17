@@ -2,7 +2,7 @@
 
 The source implementation is shared by all47 inventoried GUI entry points, including six custom live handlers. The source inventory is not a native execution claim for all47. Ordinary app startup calls the shared attachment helper before construction; no app allowlist was added.
 
-Implementation commits: `c2d6045c8` and `6dce082e8`. Independent Task1 review found forced-offline bootstrap and stale ancestor descriptor metadata; both were fixed and passed scoped review. Focused checks: runtime-portal13, shared UI launch32, runtime host36; actual host build succeeded. Prior unrelated UI/compiler/shell lint warnings are disclosed in the task report.
+Implementation commits: `c2d6045c8`, `6dce082e8`, and `2acfd7d8c`. Independent Task1 review found forced-offline bootstrap and stale ancestor descriptor metadata; both were fixed and passed scoped review. Focused checks: runtime-portal14, shared UI launch32, runtime host36; actual host build succeeded. Prior unrelated UI/compiler/shell lint warnings are disclosed in the task report.
 
 ## Native proof
 
@@ -26,7 +26,14 @@ This is four-app macOS behavior, not frame-time qualification, Windows support, 
 | No manual host build required when missing | Serialized source-bootstrap regression; normal Cargo settings regression |
 | Private/local/diagnostic boundary | Launch tests and separately reviewed Browser private isolation |
 | Race/stale endpoint/private path handling | Host process tests and startup ownership review |
-| Reproducibility and owned cleanup | Native3 command/source/binary/PID artifacts,6 proof-harness tests |
+| Reproducibility and owned cleanup | Native3 command/source/binary/PID artifacts,8 proof-harness tests |
 | Setup/platform limits documented | docs/runtime-mcp.md |
 
-Task2 and final review records will be added after their gates finish.
+Task2 passed independent review after fixes for supported pre-build source capture and enforced temporary profile removal (`9c6de88b3`). The original native3 result remains valid; its profile was independently confirmed absent. Final whole-feature review found one configured-Cargo-target output discovery issue. Commit `2acfd7d8c` resolves it using the actual Cargo executable artifact, with deadline-bounded output collection and validated reuse. All14 portal tests and production portal Clippy pass; scoped final review is clean. Native3 predates this narrow missing-host bootstrap correction and remains the observed four-app behavior proof. The new configured-target branch has separate subprocess regression evidence.
+
+
+## Workspace recovery
+
+The final-fix worker accidentally invoked workspace-wide Cargo formatting. No unrelated formatting was staged or committed. Recovery preserved a full current diff and file copies, then restored218 paths from verified prior hashes, two more from token-level reconstruction matching prior hashes, and23 from existing Git blobs matching prior hashes. Every recovery also required that formatting the recovered bytes reproduced the current bytes exactly. The shared launch file was restored from the History owner’s exact approved snapshot. Browser recovered its three active files from its own known bases; Photos/ImageViewer were already unchanged; Imager explicitly retained its active source and resumed ownership. All source holds were released.
+
+Evidence remains under `target/runtime-proof/runtime-auto-attach/format-recovery/`, including backups, classification, exact restored-path lists and Git object/hash provenance. No concurrent semantic changes were discarded.
