@@ -599,11 +599,10 @@ impl Domain {
 
     fn from_range(range: AxisRange) -> Option<Self> {
         match range {
-            AxisRange::Auto => None,
             AxisRange::Fixed { min, max } if min.is_finite() && max.is_finite() && max > min => {
                 Some(Self { min, max })
             }
-            AxisRange::Fixed { .. } => None,
+            AxisRange::Auto | AxisRange::Fixed { .. } => None,
         }
     }
 
@@ -858,11 +857,12 @@ impl CartesianPlot {
                 .map(|datum| (series, datum))
         });
         self.hovered = target.and_then(|(series, datum)| {
+            let datum_ref = self.series.get(series)?.data.get(datum)?;
             self.map_datum(
                 self.plot_rect(),
                 self.domain(&self.style.x_axis, true),
                 self.domain(&self.style.y_axis, false),
-                &self.series[series].data[datum],
+                datum_ref,
             )
             .map(|point| Hovered {
                 series,
@@ -1080,7 +1080,7 @@ impl CartesianPlot {
                 self.rect.x1 - 12.0,
             )
         };
-        let legend = legend_rows as f64 * chart_legend::ROW_HEIGHT + 6.0;
+        let legend = crate::num::f64_of_usize(legend_rows) * chart_legend::ROW_HEIGHT + 6.0;
         let top = 30.0
             + if self.title.is_empty() { 0.0 } else { 24.0 }
             + if self.style.legend == LegendPosition::Top {
@@ -1427,20 +1427,26 @@ impl CartesianPlot {
 
     fn ticks(axis: &PlotAxis, domain: Domain, span: f64) -> Vec<AxisTick> {
         if !axis.ticks.is_empty() {
-            let available = ((span / axis.min_tick_spacing).floor() as usize).max(2);
+            let available = crate::num::usize_of_f64((span / axis.min_tick_spacing).floor()).max(2);
             if axis.ticks.len() <= available {
                 return axis.ticks.clone();
             }
-            let last = axis.ticks.len() - 1;
+            let last = axis.ticks.len().saturating_sub(1);
             return (0..available)
-                .map(|index| axis.ticks[index * last / (available - 1)].clone())
+                .filter_map(|index| {
+                    let position = index
+                        .saturating_mul(last)
+                        .checked_div(available.saturating_sub(1))?;
+                    axis.ticks.get(position).cloned()
+                })
                 .collect();
         }
-        let responsive_count = (span / axis.min_tick_spacing).floor() as u8 + 1;
+        let responsive_count =
+            crate::num::u8_of_f64((span / axis.min_tick_spacing).floor()).saturating_add(1);
         let count = axis.tick_count.clamp(2, 20).min(responsive_count.max(2));
         if axis.scale == AxisScale::Log10 {
-            let first = domain.min.log10().ceil() as i32;
-            let last = domain.max.log10().floor() as i32;
+            let first = crate::num::i32_of_f64(domain.min.log10().ceil());
+            let last = crate::num::i32_of_f64(domain.max.log10().floor());
             let decades = if last >= first {
                 (first..=last)
                     .map(|power| 10.0_f64.powi(power))
@@ -1450,11 +1456,18 @@ impl CartesianPlot {
             };
             if decades.len() >= 2 {
                 let available = usize::from(count);
-                let last = decades.len() - 1;
-                return (0..available.min(decades.len()))
-                    .map(|index| {
-                        let value = decades[index * last / (available.min(decades.len()) - 1)];
-                        AxisTick::new(value, format_axis_value(value, axis.label_format))
+                let sample_count = available.min(decades.len());
+                let last = decades.len().saturating_sub(1);
+                return (0..sample_count)
+                    .filter_map(|index| {
+                        let position = index
+                            .saturating_mul(last)
+                            .checked_div(sample_count.saturating_sub(1))?;
+                        let value = *decades.get(position)?;
+                        Some(AxisTick::new(
+                            value,
+                            format_axis_value(value, axis.label_format),
+                        ))
                     })
                     .collect();
             }
@@ -1760,11 +1773,14 @@ impl CartesianPlot {
     }
 
     fn fitted_axis_title(title: &str, available: f64) -> String {
-        let maximum = ((available.max(14.0) / 7.0).floor() as usize).max(2);
+        let maximum = crate::num::usize_of_f64((available.max(14.0) / 7.0).floor()).max(2);
         if title.chars().count() <= maximum {
             return title.to_owned();
         }
-        let mut fitted = title.chars().take(maximum - 1).collect::<String>();
+        let mut fitted = title
+            .chars()
+            .take(maximum.saturating_sub(1))
+            .collect::<String>();
         fitted.push('…');
         fitted
     }
@@ -2048,7 +2064,7 @@ impl CartesianPlot {
         );
         let count = series.data.len();
         let points_per_pixel = self.style.max_points_per_pixel.clamp(0.25, 16.0);
-        let target = (plot.width().max(1.0) * points_per_pixel).ceil() as usize;
+        let target = crate::num::usize_of_f64((plot.width().max(1.0) * points_per_pixel).ceil());
         let target = target.max(16);
         if !self.style.adaptive_sampling || !connected || count <= target || count <= 2 {
             return (0..count).collect();
@@ -2065,12 +2081,20 @@ impl CartesianPlot {
             let end = (start + bucket_size).min(count - 1);
             let mut min = start;
             let mut max = start;
-            for index in start + 1..end {
-                if series.data[index].y < series.data[min].y {
+            let Some(bucket) = series.data.get(start..end) else {
+                continue;
+            };
+            let mut min_y = bucket.first().map_or(0.0, |datum| datum.y);
+            let mut max_y = min_y;
+            for (offset, datum) in bucket.iter().enumerate().skip(1) {
+                let index = start.saturating_add(offset);
+                if datum.y < min_y {
                     min = index;
+                    min_y = datum.y;
                 }
-                if series.data[index].y > series.data[max].y {
+                if datum.y > max_y {
                     max = index;
+                    max_y = datum.y;
                 }
             }
             if min <= max {
@@ -2293,7 +2317,7 @@ impl CartesianPlot {
                 self.rect.x0 + 56.0,
                 self.rect.x1 - 12.0,
             );
-            self.rect.y1 - rows as f64 * chart_legend::ROW_HEIGHT
+            self.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT
         };
         let items = chart_legend::layout(
             self.series.iter().map(|series| series.name.as_str()),
@@ -2392,7 +2416,7 @@ impl CartesianPlot {
         let width = self
             .style
             .tooltip_width
-            .unwrap_or(content_width.max(self.style.tooltip_min_width) + padding * 2.0)
+            .unwrap_or_else(|| content_width.max(self.style.tooltip_min_width) + padding * 2.0)
             .clamp(80.0_f64.min(available_width), available_width);
         let anchor = match self.style.tooltip_anchor {
             CartesianTooltipAnchor::Pointer if self.rect.contains(self.pointer) => self.pointer,
@@ -2466,10 +2490,10 @@ impl CartesianPlot {
         let width = self
             .style
             .tooltip_width
-            .unwrap_or(
+            .unwrap_or_else(|| {
                 f64::from(title_width.max(detail_width)).max(self.style.tooltip_min_width)
-                    + padding * 2.0,
-            )
+                    + padding * 2.0
+            })
             .clamp(80.0_f64.min(available_width), available_width);
         let height = 38.0 + padding * 2.0;
         let rect = Self::tooltip_rect(
@@ -2610,7 +2634,7 @@ fn format_bytes(value: f64, places: u8) -> String {
     let signed = scaled.copysign(value);
     format!(
         "{signed:.places$} {}",
-        UNITS[unit],
+        UNITS.get(unit).copied().unwrap_or("PiB"),
         places = usize::from(places.min(8))
     )
 }

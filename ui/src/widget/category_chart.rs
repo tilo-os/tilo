@@ -302,7 +302,8 @@ impl CategoryChart {
             } else {
                 0
             };
-        let extra_legend_height = legend_rows.saturating_sub(1) as f64 * chart_legend::ROW_HEIGHT;
+        let extra_legend_height =
+            crate::num::f64_of_usize(legend_rows.saturating_sub(1)) * chart_legend::ROW_HEIGHT;
         Rect::new(
             self.rect.x0 + 58.0,
             self.rect.y0 + if self.title.is_empty() { 38.0 } else { 66.0 } + extra_legend_height,
@@ -970,11 +971,15 @@ impl Widget for CategoryChart {
                         },
                     )
                 })
-                .chain(self.series.iter().filter_map(|series| {
-                    (self.style.show_legend
-                        && self.style.layout != CategoryLayout::Waterfall
-                        && self.style.interactive_legend)
-                        .then(|| {
+                .chain(
+                    self.series
+                        .iter()
+                        .filter(|_| {
+                            self.style.show_legend
+                                && self.style.layout != CategoryLayout::Waterfall
+                                && self.style.interactive_legend
+                        })
+                        .map(|series| {
                             AccessNode::new(Role::Button)
                                 .with_action_target(format!("legend:{}", series.id))
                                 .with_name(format!("{} series", series.name))
@@ -987,8 +992,8 @@ impl Widget for CategoryChart {
                                     focusable: true,
                                     ..Default::default()
                                 })
-                        })
-                }))
+                        }),
+                )
                 .collect();
         Some(
             AccessNode::new(Role::Canvas)
