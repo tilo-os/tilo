@@ -233,6 +233,10 @@ RUN set -eux; \
         CONFIG_MODULE_SIG=y \
         '# CONFIG_MODULE_SIG_ALL is not set' \
         CONFIG_MODULE_SIG_FORCE=y \
+        '# CONFIG_MODULE_FORCE_LOAD is not set' \
+        '# CONFIG_MODULE_UNLOAD is not set' \
+        '# CONFIG_LIVEPATCH is not set' \
+        '# CONFIG_DEBUG_FS is not set' \
         CONFIG_USER_NS=y \
         CONFIG_SECCOMP_FILTER=y \
         CONFIG_SECURITY_LANDLOCK=y \
@@ -240,6 +244,9 @@ RUN set -eux; \
         CONFIG_SECURITY_LOCKDOWN_LSM=y \
         CONFIG_SECURITY_DMESG_RESTRICT=y \
         CONFIG_BPF_UNPRIV_DEFAULT_OFF=y \
+        '# CONFIG_ACPI_CUSTOM_METHOD is not set' \
+        '# CONFIG_ACPI_CONFIGFS is not set' \
+        '# CONFIG_EFI_CUSTOM_SSDT_OVERLAYS is not set' \
         CONFIG_PREEMPT=y \
         CONFIG_PREEMPT_DYNAMIC=y \
         CONFIG_HZ_1000=y \
@@ -302,6 +309,10 @@ RUN set -eux; \
           CONFIG_X86_AMD_PSTATE=y CONFIG_X86_AMD_PSTATE_DEFAULT_MODE=3 \
           CONFIG_X86_KERNEL_IBT=y CONFIG_LEGACY_VSYSCALL_NONE=y \
           CONFIG_RANDOMIZE_BASE=y CONFIG_RANDOMIZE_MEMORY=y \
+          CONFIG_IA32_EMULATION=y '# CONFIG_X86_X32_ABI is not set' \
+          '# CONFIG_USELIB is not set' \
+          '# CONFIG_DEVPORT is not set' '# CONFIG_X86_MSR is not set' \
+          '# CONFIG_X86_CPUID is not set' \
           CONFIG_SCHED_MC_PRIO=y; do \
         if grep -qx "$opt" .config; then echo "  ok      $opt"; \
         else echo "  MISSING $opt"; missing="$missing $opt"; fi; \

@@ -106,11 +106,17 @@ pub fn moved_index(current: Option<usize>, len: usize, action: ChartNavAction) -
     if len == 0 {
         return None;
     }
+    let last = len.saturating_sub(1);
     match action {
-        ChartNavAction::Previous => Some(current.unwrap_or(0).checked_sub(1).unwrap_or(len - 1)),
-        ChartNavAction::Next => Some(current.map_or(0, |index| (index + 1) % len)),
+        ChartNavAction::Previous => Some(current.unwrap_or(0).checked_sub(1).unwrap_or(last)),
+        ChartNavAction::Next => Some(
+            current
+                .and_then(|index| index.checked_add(1))
+                .and_then(|index| index.checked_rem(len))
+                .unwrap_or_default(),
+        ),
         ChartNavAction::First => Some(0),
-        ChartNavAction::Last => Some(len - 1),
+        ChartNavAction::Last => Some(last),
         ChartNavAction::Clear => None,
         ChartNavAction::Activate => current,
     }
@@ -138,6 +144,10 @@ mod tests {
         assert_eq!(moved_index(None, 0, ChartNavAction::Next), None);
         assert_eq!(moved_index(None, 3, ChartNavAction::Next), Some(0));
         assert_eq!(moved_index(Some(2), 3, ChartNavAction::Next), Some(0));
+        assert_eq!(
+            moved_index(Some(usize::MAX), 3, ChartNavAction::Next),
+            Some(0)
+        );
         assert_eq!(moved_index(Some(0), 3, ChartNavAction::Previous), Some(2));
         assert_eq!(
             super::moved_item(Some(4), &[2, 4, 8], ChartNavAction::Next),

@@ -197,8 +197,8 @@ impl CollaborationExperience {
         let person = self.people.get(id)?;
         let status = person.visible_status(now)?;
         match (&status.origin, self.sharing) {
-            (StatusOrigin::Manual, _) => Some(status),
-            (StatusOrigin::Inferred { .. }, StatusSharing::Automatic) => Some(status),
+            (StatusOrigin::Manual, _)
+            | (StatusOrigin::Inferred { .. }, StatusSharing::Automatic) => Some(status),
             _ => None,
         }
     }

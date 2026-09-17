@@ -39,9 +39,9 @@ pub fn layout<'a>(
 }
 
 pub fn rows<'a>(labels: impl IntoIterator<Item = &'a str>, left: f64, right: f64) -> usize {
-    layout(labels, left, right, 0.0)
-        .last()
-        .map_or(0, |rect| (rect.y0 / ROW_HEIGHT) as usize + 1)
+    layout(labels, left, right, 0.0).last().map_or(0, |rect| {
+        crate::num::usize_of_f64(rect.y0 / ROW_HEIGHT).saturating_add(1)
+    })
 }
 
 #[cfg(test)]
