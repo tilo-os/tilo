@@ -337,6 +337,13 @@ impl FileView {
     fn body_text(&self, theme: &Theme) -> f32 {
         (f64::from(theme.tokens.typography.scale.base / theme.text_scale) * self.scale) as f32
     }
+    /// Top of a measured `line_h`-tall text run centred in a band of height
+    /// `h` starting at `y0`. The one vertical rule for the list: header
+    /// labels and cell text both go through it, so a header never drifts
+    /// from its column when the text scale changes.
+    fn centered_line_top(y0: f64, h: f64, line_h: f32) -> f64 {
+        y0 + (h - f64::from(line_h)) / 2.0
+    }
     fn header_text(theme: &Theme) -> f32 {
         theme.tokens.typography.scale.sm / theme.text_scale
     }
@@ -628,6 +635,12 @@ impl FileView {
         let header_h = self.header_h();
         let hsize = Self::header_text(theme);
         let top = self.header_top(vp);
+        // The header centres its measured line box exactly as the rows
+        // beneath centre theirs (`draw_list_row_text`), so header and cell
+        // text share one vertical rhythm at every text scale — centring the
+        // nominal size put the labels a quarter line low at 200 %.
+        let (_, hheight) = tr.measure("Ag", hsize, None);
+        let ty = Self::centered_line_top(top, header_h, hheight);
         // Opaque band matching the content background so scrolled rows never
         // bleed through the (transparent-text) header.
         let band = Rect::new(self.rect.x0, top, self.rect.x1, top + header_h);
@@ -645,11 +658,6 @@ impl FileView {
                 continue;
             }
             let cr = self.header_col_rect(i);
-            // Same optical centring rule as the row labels beneath (see
-            // `crate::text_layout`), so header and cell text share one
-            // vertical rhythm instead of the header sitting a fifth of an em
-            // lower than its column.
-            let ty = crate::text_layout::centered_text_y(top, header_h, hsize);
             let header = t(col.header_key);
             tr.draw_text(
                 scene,
@@ -823,10 +831,11 @@ impl FileView {
             selected,
         } = layout;
         let size = self.body_text(theme);
-        // Optically center the row text so it lines up with the icon, which is
-        // centered by its box (see `crate::text_layout`).
+        // Centre the measured line box on the row, level with the icon, which
+        // is centred by its box. The header uses the same rule
+        // (`centered_line_top`), so both scale together.
         let (_, height) = tr.measure("Ag", size, None);
-        let text_y = row.y0 + (row.height() - f64::from(height)) / 2.0;
+        let text_y = Self::centered_line_top(row.y0, row.height(), height);
         if self.renaming == Some(i) {
             // Publish the name field's rect and omit the label; the host
             // draws the in-place rename editor here. The shared `TextInput`
