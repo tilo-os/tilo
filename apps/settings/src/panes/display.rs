@@ -288,6 +288,8 @@ pub struct DisplayPane {
     snapshot_stamp: Option<SystemTime>,
     hardware_probe: Option<std::sync::mpsc::Receiver<(f32, bool)>>,
     brightness_tx: Option<std::sync::mpsc::Sender<f32>>,
+    brightness_result_rx: Option<std::sync::mpsc::Receiver<Result<f32, String>>>,
+    pending_brightness: Option<(f32, f32)>,
     operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     needs_seed: bool,
     composed: Option<Box<dyn Widget>>,
@@ -315,14 +317,17 @@ impl DisplayPane {
             .ok();
         let dispatcher = dispatcher_or_real(None);
         let (brightness_tx, brightness_rx) = std::sync::mpsc::channel::<f32>();
+        let (brightness_result_tx, brightness_result_rx) = std::sync::mpsc::channel();
         let worker_dispatcher = Arc::clone(&dispatcher);
         std::thread::Builder::new()
             .name("settings-brightness-apply".into())
             .spawn(move || {
                 while let Ok(percent) = brightness_rx.recv() {
-                    if let Err(error) = worker_dispatcher.set_brightness(percent) {
-                        tracing::warn!(target: "tilo::settings", op = "set_brightness", %error, "display worker dispatch failed");
-                    }
+                    let result = worker_dispatcher
+                        .set_brightness(percent)
+                        .map(|()| percent / 100.0)
+                        .map_err(|error| error.to_string());
+                    let _ = brightness_result_tx.send(result);
                 }
             })
             .ok();
@@ -342,6 +347,8 @@ impl DisplayPane {
                 .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
             hardware_probe: Some(probe_rx),
             brightness_tx: Some(brightness_tx),
+            brightness_result_rx: Some(brightness_result_rx),
+            pending_brightness: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             needs_seed: true,
             composed: None,
@@ -395,6 +402,8 @@ impl DisplayPane {
             snapshot_stamp: None,
             hardware_probe: None,
             brightness_tx: None,
+            brightness_result_rx: None,
+            pending_brightness: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             needs_seed: true,
             composed: None,
@@ -503,7 +512,12 @@ impl DisplayPane {
                 "Automatic brightness",
                 Box::new(
                     Toggle::new("settings.display.auto_brightness", AUTO_BRIGHTNESS_KEY)
-                        .with_id("display.auto_brightness"),
+                        .with_id("display.auto_brightness")
+                        .on_action(
+                            crate::actions::display_bool_binding("auto_brightness").expect(
+                                "automatic brightness is part of the static resource contract",
+                            ),
+                        ),
                 ),
             )
         } else {
@@ -516,7 +530,11 @@ impl DisplayPane {
                     "Brightness",
                     Box::new(
                         Slider::new("settings.display.brightness", BRIGHTNESS_KEY)
-                            .with_id("display.brightness"),
+                            .with_id("display.brightness")
+                            .on_action(
+                                crate::actions::display_number_binding("brightness")
+                                    .expect("brightness is part of the static resource contract"),
+                            ),
                     ),
                 ),
                 automatic_brightness,
@@ -586,6 +604,29 @@ impl DisplayPane {
         let position_key = output_key(&output.connector, "position");
         let mirror_key = output_key(&output.connector, "mirror");
         let toggle_id = format!("settings.display.{}.primary", output.connector);
+        let scale_choices: Vec<String> = DISPLAY_SCALES
+            .iter()
+            .map(|(label, _)| (*label).into())
+            .collect();
+        let position_choices: Vec<String> = std::iter::once("Automatic".into())
+            .chain(
+                connected
+                    .iter()
+                    .filter(|candidate| candidate.connector != output.connector)
+                    .flat_map(|candidate| {
+                        ["Left", "Right", "Above", "Below"]
+                            .map(|side| format!("{side} of {}", candidate.label))
+                    }),
+            )
+            .collect();
+        let mirror_choices: Vec<String> = std::iter::once("Extend workspace".into())
+            .chain(
+                connected
+                    .iter()
+                    .filter(|candidate| candidate.connector != output.connector)
+                    .map(|candidate| format!("Mirror {}", candidate.label)),
+            )
+            .collect();
         let mirror_placeholder = config
             .mirror_of
             .as_ref()
@@ -606,61 +647,76 @@ impl DisplayPane {
                         &format!("settings.display.{}.enabled", output.connector),
                         &enabled_key,
                     )
-                    .with_id(&enabled_key),
+                    .with_id(&enabled_key)
+                    .on_action(
+                        crate::actions::display_output_bool_binding(
+                            "enabled",
+                            output.connector.clone(),
+                        )
+                        .expect("output enabled action is part of the resource contract"),
+                    ),
                 ),
             ),
             setting_row(
                 "Primary display",
-                Box::new(Toggle::new(&toggle_id, &primary_key).with_id(&primary_key)),
+                Box::new(
+                    Toggle::new(&toggle_id, &primary_key)
+                        .with_id(&primary_key)
+                        .on_action(
+                            crate::actions::display_output_bool_binding(
+                                "primary",
+                                output.connector.clone(),
+                            )
+                            .expect("primary output action is part of the resource contract"),
+                        ),
+                ),
             ),
             choice_row(
                 "Scale",
                 Box::new(
-                    Dropdown::new(
-                        DISPLAY_SCALES.iter().map(|(l, _)| (*l).into()).collect(),
-                        &scale_key,
-                    )
-                    .with_id(&scale_key)
-                    .with_placeholder(scale_label(config.scale)),
+                    Dropdown::new(scale_choices.clone(), &scale_key)
+                        .with_id(&scale_key)
+                        .on_action(
+                            crate::actions::display_output_choice_binding(
+                                "scale",
+                                output.connector.clone(),
+                                scale_choices,
+                            )
+                            .expect("output scale action is part of the resource contract"),
+                        )
+                        .with_placeholder(scale_label(config.scale)),
                 ),
             ),
             choice_row(
                 "Position",
                 Box::new(
-                    Dropdown::new(
-                        std::iter::once("Automatic".into())
-                            .chain(
-                                connected
-                                    .iter()
-                                    .filter(|candidate| candidate.connector != output.connector)
-                                    .flat_map(|candidate| {
-                                        ["Left", "Right", "Above", "Below"]
-                                            .map(|side| format!("{side} of {}", candidate.label))
-                                    }),
+                    Dropdown::new(position_choices.clone(), &position_key)
+                        .with_id(&position_key)
+                        .on_action(
+                            crate::actions::display_output_choice_binding(
+                                "position",
+                                output.connector.clone(),
+                                position_choices,
                             )
-                            .collect(),
-                        &position_key,
-                    )
-                    .with_id(&position_key)
-                    .with_placeholder("Automatic"),
+                            .expect("output position action is part of the resource contract"),
+                        )
+                        .with_placeholder("Automatic"),
                 ),
             ),
             choice_row(
                 "Mirroring",
                 Box::new(
-                    Dropdown::new(
-                        std::iter::once("Extend workspace".into())
-                            .chain(
-                                connected
-                                    .iter()
-                                    .filter(|candidate| candidate.connector != output.connector)
-                                    .map(|candidate| format!("Mirror {}", candidate.label)),
+                    Dropdown::new(mirror_choices.clone(), &mirror_key)
+                        .with_id(&mirror_key)
+                        .on_action(
+                            crate::actions::display_output_choice_binding(
+                                "mirror",
+                                output.connector.clone(),
+                                mirror_choices,
                             )
-                            .collect(),
-                        &mirror_key,
-                    )
-                    .with_id(&mirror_key)
-                    .with_placeholder(&mirror_placeholder),
+                            .expect("output mirror action is part of the resource contract"),
+                        )
+                        .with_placeholder(&mirror_placeholder),
                 ),
             ),
         ]
@@ -680,6 +736,12 @@ impl DisplayPane {
                 "Compositor capability data unavailable",
             ));
         } else {
+            let mode_choices: Vec<String> = output
+                .modes
+                .iter()
+                .copied()
+                .map(OutputMode::label)
+                .collect();
             let mode_placeholder = config
                 .mode
                 .or(output.current_mode)
@@ -687,17 +749,17 @@ impl DisplayPane {
             out_rows.push(choice_row(
                 "Resolution & refresh rate",
                 Box::new(
-                    Dropdown::new(
-                        output
-                            .modes
-                            .iter()
-                            .copied()
-                            .map(OutputMode::label)
-                            .collect(),
-                        &mode_key,
-                    )
-                    .with_id(&mode_key)
-                    .with_placeholder(&mode_placeholder),
+                    Dropdown::new(mode_choices.clone(), &mode_key)
+                        .with_id(&mode_key)
+                        .on_action(
+                            crate::actions::display_output_choice_binding(
+                                "mode",
+                                output.connector.clone(),
+                                mode_choices,
+                            )
+                            .expect("output mode action is part of the resource contract"),
+                        )
+                        .with_placeholder(&mode_placeholder),
                 ),
             ));
         }
@@ -712,6 +774,17 @@ impl DisplayPane {
                     &transform_key,
                 )
                 .with_id(&transform_key)
+                .on_action(
+                    crate::actions::display_output_choice_binding(
+                        "transform",
+                        output.connector.clone(),
+                        TRANSFORMS
+                            .iter()
+                            .map(|(label, _)| (*label).into())
+                            .collect(),
+                    )
+                    .expect("output transform action is part of the resource contract"),
+                )
                 .with_placeholder(transform_label(config.transform)),
             ),
         ));
@@ -733,7 +806,14 @@ impl DisplayPane {
                         &format!("settings.display.{}.hdr", output.connector),
                         &hdr_key,
                     )
-                    .with_id(&hdr_key),
+                    .with_id(&hdr_key)
+                    .on_action(
+                        crate::actions::display_output_bool_binding(
+                            "hdr",
+                            output.connector.clone(),
+                        )
+                        .expect("HDR action is part of the resource contract"),
+                    ),
                 ),
             ));
         } else {
@@ -757,7 +837,14 @@ impl DisplayPane {
                         &format!("settings.display.{}.vrr", output.connector),
                         &vrr_key,
                     )
-                    .with_id(&vrr_key),
+                    .with_id(&vrr_key)
+                    .on_action(
+                        crate::actions::display_output_bool_binding(
+                            "vrr",
+                            output.connector.clone(),
+                        )
+                        .expect("VRR action is part of the resource contract"),
+                    ),
                 ),
             ));
         } else {
@@ -799,8 +886,16 @@ impl DisplayPane {
             out_rows.push(choice_row(
                 "Colour profile",
                 Box::new(
-                    Dropdown::new(choices, &profile_key)
+                    Dropdown::new(choices.clone(), &profile_key)
                         .with_id(&profile_key)
+                        .on_action(
+                            crate::actions::display_output_choice_binding(
+                                "color-profile",
+                                output.connector.clone(),
+                                choices,
+                            )
+                            .expect("colour profile action is part of the resource contract"),
+                        )
                         .with_placeholder(&placeholder),
                 ),
             ));
@@ -904,12 +999,13 @@ impl DisplayPane {
     }
 
     /// Load prefs fresh, apply `f` to the display section, persist.
-    fn persist_display(f: impl FnOnce(&mut DisplayPrefs)) {
+    fn persist_display(f: impl FnOnce(&mut DisplayPrefs)) -> Result<(), String> {
         let mut p = SystemPrefs::load();
         f(&mut p.display);
-        if let Err(e) = p.save() {
+        p.save().map(|_| ()).map_err(|e| {
             warn!(target: "tilo::settings", op = "display_prefs_save", error = %e, "failed to persist display prefs");
-        }
+            format!("Display preference could not be saved: {e}")
+        })
     }
 
     fn write_output_controls(&self, state: &mut AutoCommit, root: &ObjId, config: &DisplayConfig) {
@@ -966,6 +1062,7 @@ pub fn build() -> Box<dyn Widget> {
 
 impl Widget for DisplayPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.poll_brightness_result(state, root);
         self.poll_hardware_probe(state, root);
         self.refresh_outputs_if_stale();
         if self.needs_seed {
@@ -1249,20 +1346,71 @@ impl DisplayPane {
     }
 
     /// Brightness → dispatcher, guarded so we don't shell out every frame.
-    fn sync_brightness(&mut self, state: &AutoCommit, root: &ObjId) {
+    fn sync_brightness(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Ok(Some((val, _))) = state.get(root, BRIGHTNESS_KEY)
             && let Value::Scalar(s) = val
             && let automerge::ScalarValue::F64(f) = s.as_ref()
         {
             let new = *f as f32;
-            if (new - self.last_brightness).abs() > 0.001 {
-                self.last_brightness = new;
+            if (new - self.last_brightness).abs() > 0.001 && self.pending_brightness.is_none() {
                 let percent = new.clamp(0.0, 1.0) * 100.0;
                 if let Some(sender) = &self.brightness_tx {
-                    let _ = sender.send(percent);
-                } else if let Err(e) = self.dispatcher.set_brightness(percent) {
-                    warn!(target: "tilo::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
+                    if sender.send(percent).is_ok() {
+                        self.pending_brightness = Some((self.last_brightness, new));
+                    } else {
+                        let _ = state.put(root, BRIGHTNESS_KEY, f64::from(self.last_brightness));
+                        self.finish_display_operation(Err(
+                            "Brightness worker is unavailable; the display was not changed.".into(),
+                        ));
+                    }
+                } else {
+                    match self.dispatcher.set_brightness(percent) {
+                        Ok(()) => {
+                            self.last_brightness = new;
+                            self.finish_display_operation(Ok(format!(
+                                "Brightness set to {}%.",
+                                percent.round()
+                            )));
+                        }
+                        Err(e) => {
+                            let _ =
+                                state.put(root, BRIGHTNESS_KEY, f64::from(self.last_brightness));
+                            self.finish_display_operation(Err(format!(
+                                "Brightness could not be changed: {e}"
+                            )));
+                            warn!(target: "tilo::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
+                        }
+                    }
                 }
+            }
+        }
+    }
+
+    fn poll_brightness_result(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let Some(receiver) = &self.brightness_result_rx else {
+            return;
+        };
+        let Ok(result) = receiver.try_recv() else {
+            return;
+        };
+        let Some((previous, requested)) = self.pending_brightness.take() else {
+            return;
+        };
+        match result {
+            Ok(applied) => {
+                self.last_brightness = applied;
+                self.finish_display_operation(Ok(format!(
+                    "Brightness set to {}%.",
+                    (applied * 100.0).round()
+                )));
+            }
+            Err(error) => {
+                self.last_brightness = previous;
+                let _ = state.put(root, BRIGHTNESS_KEY, f64::from(previous));
+                self.finish_display_operation(Err(format!(
+                    "Brightness could not be changed: {error}"
+                )));
+                warn!(target: "tilo::settings", op = "set_brightness", %error, requested, "display worker dispatch failed");
             }
         }
     }
@@ -1273,24 +1421,42 @@ impl DisplayPane {
             && b != self.last_prefs.auto_brightness
         {
             let effective = b && self.ambient_sensor_available;
-            self.last_prefs.auto_brightness = effective;
-            Self::persist_display(|d| d.auto_brightness = effective);
             if effective != b {
                 let _ = state.put(root, AUTO_BRIGHTNESS_KEY, false);
+                self.finish_display_operation(Err(
+                    "Automatic brightness is unavailable because this device has no ambient-light sensor."
+                        .into(),
+                ));
+            } else {
+                match Self::persist_display(|d| d.auto_brightness = effective) {
+                    Ok(()) => {
+                        self.last_prefs.auto_brightness = effective;
+                        self.finish_display_operation(Ok(if effective {
+                            "Automatic brightness enabled.".into()
+                        } else {
+                            "Automatic brightness disabled.".into()
+                        }));
+                    }
+                    Err(error) => {
+                        let _ =
+                            state.put(root, AUTO_BRIGHTNESS_KEY, self.last_prefs.auto_brightness);
+                        self.finish_display_operation(Err(error));
+                    }
+                }
             }
         }
         if let Some(b) = read_bool(state, root, NIGHT_LIGHT_KEY)
             && b != self.last_prefs.night_light
         {
             self.last_prefs.night_light = b;
-            Self::persist_display(|d| d.night_light = b);
+            let _ = Self::persist_display(|d| d.night_light = b);
         }
         if let Some(label) = read_str(state, root, NIGHT_LIGHT_TEMPERATURE_KEY)
             && let Some(kelvin) = temperature_from_label(&label)
             && kelvin != self.last_prefs.night_light_temperature
         {
             self.last_prefs.night_light_temperature = kelvin;
-            Self::persist_display(|d| d.night_light_temperature = kelvin);
+            let _ = Self::persist_display(|d| d.night_light_temperature = kelvin);
         }
         // Display scale → persist to the shared store on change. The
         // compositor reads `display.scale` at session start and advertises
@@ -1299,8 +1465,16 @@ impl DisplayPane {
             && let Some(v) = scale_factor_of(&label)
             && (v - self.last_prefs.scale).abs() > f64::EPSILON
         {
-            self.last_prefs.scale = v;
-            Self::persist_display(|d| d.scale = v);
+            match Self::persist_display(|d| d.scale = v) {
+                Ok(()) => {
+                    self.last_prefs.scale = v;
+                    self.finish_display_operation(Ok(format!("Display scale set to {label}.")));
+                }
+                Err(error) => {
+                    let _ = state.put(root, DISPLAY_SCALE_KEY, scale_label(self.last_prefs.scale));
+                    self.finish_display_operation(Err(error));
+                }
+            }
         }
     }
 
