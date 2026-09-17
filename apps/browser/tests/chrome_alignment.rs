@@ -76,13 +76,14 @@ fn a_tablet_width_window_keeps_a_readable_address_field() {
     let targets = targets_at(768, 1024);
     let url = targets[URL_INPUT];
     assert!(
-        url.width() >= 240.0,
+        url.width() >= 200.0,
         "the address field is starved at tablet width: {}",
         url.width()
     );
-    // The optional commands leave the row; navigation, protection, library,
-    // private window and settings stay.
-    for id in ["browser.bookmark", "browser.history-pause", "browser.pip", "browser.site.info"] {
+    // The commands with another route leave the row; navigation, both site
+    // launchers (site information has no action route yet), library, private
+    // window and settings stay.
+    for id in ["browser.bookmark", "browser.history-pause", "browser.pip"] {
         assert!(
             !targets.contains_key(id),
             "{id} should yield its width to the address field below 1000px"
@@ -92,6 +93,7 @@ fn a_tablet_width_window_keeps_a_readable_address_field() {
         "browser.back",
         "browser.forward",
         "browser.reload",
+        "browser.site.info",
         "browser.site.shield",
         "browser.library",
         "browser.private-window",
@@ -102,12 +104,44 @@ fn a_tablet_width_window_keeps_a_readable_address_field() {
 }
 
 #[test]
-fn the_find_bar_controls_share_the_find_fields_height() {
-    // The find bar is built from the same button helper as the toolbar's
-    // Find and zoom commands, so proving one height proves the other.
-    let targets = targets_at(1200, 800);
-    let find = targets["browser.find"];
-    let zoom = targets["browser.zoom.reset"];
-    assert!((find.height() - 40.0).abs() < 0.5, "{}", find.height());
-    assert!((zoom.height() - 40.0).abs() < 0.5, "{}", zoom.height());
+fn the_find_bar_controls_share_the_find_fields_height_and_centre_line() {
+    let mut widget = BrowserWidget::new_headless();
+    widget.debug_set_viewport_width(1200);
+    let mut harness = FrameHarness::new_with_theme(
+        ui::State::new(),
+        Box::new(widget),
+        (1200, 800),
+        ui::theme::Theme::dark(),
+    );
+    // Open the find bar the way a person does: through the toolbar's Find
+    // command, whose effect a following frame's sync turns into the bar.
+    harness
+        .perform_named("browser.find", &ui::a11y::Action::Activate)
+        .expect("the Find command is on the 1200px toolbar");
+    harness
+        .wait_for_named("browser.find.input", std::time::Duration::from_secs(2))
+        .expect("activating Find composes the find bar");
+    let targets = harness.targets();
+    let field = targets["browser.find.input"];
+    for id in [
+        "browser.find.previous",
+        "browser.find.next",
+        "browser.find.close",
+    ] {
+        let rect = targets
+            .get(id)
+            .unwrap_or_else(|| panic!("{id} is on the find bar"));
+        assert!(
+            (rect.height() - field.height()).abs() < 0.5,
+            "{id} is {} tall beside a {} tall find field",
+            rect.height(),
+            field.height()
+        );
+        assert!(
+            (rect.center().y - field.center().y).abs() < 0.5,
+            "{id} centre {} is off the find field's centre {}",
+            rect.center().y,
+            field.center().y
+        );
+    }
 }
