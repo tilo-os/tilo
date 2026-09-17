@@ -150,9 +150,12 @@ def retain(args):
             raise ValueError('registry publication returned an invalid manifest digest')
         reference = REPOSITORY + '@' + digest
         # Fetch only immutable manifest metadata; no duplicate layer download.
-        # Podman resolves the digest reference over authenticated TLS.
-        verify_manifest(source.command(['podman', 'manifest', 'inspect', '--tls-verify=true',
-                                        reference], environment), image_id)
+        # Podman manifest inspect only handles indexes, not single OCI images.
+        raw_manifest = source.command(['skopeo', 'inspect', '--raw', '--tls-verify=true',
+                                       'docker://' + reference], environment)
+        if 'sha256:' + hashlib.sha256(raw_manifest.encode('utf-8')).hexdigest() != digest:
+            raise ValueError('remote manifest bytes differ from the published digest')
+        verify_manifest(raw_manifest, image_id)
         source.command(['cosign', 'sign', '--yes', '--tlog-upload=false', '--key', str(key),
                         '--annotation', ANNOTATION + '=' + handoff_digest, reference], environment)
         verified = source.command(['cosign', 'verify', '--insecure-ignore-tlog=true',

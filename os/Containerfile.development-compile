@@ -1,7 +1,7 @@
 # Native tooling for provisional, unpublished full OS compilation in CI.
 ARG BUILDER_REF
 FROM ${BUILDER_REF}
-RUN dnf -y install podman python3 openssl sbsigntools /usr/bin/bootctl \
+RUN dnf -y install podman skopeo python3 openssl sbsigntools /usr/bin/bootctl \
  && dnf clean all
 COPY cosign /usr/local/bin/cosign
 # /var/lib/containers is a fresh Docker volume on the disposable CI guest.
