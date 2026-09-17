@@ -19,6 +19,22 @@ An empty result means the app has only its default screenshot state; it should
 not be taken as evidence that loading, empty, error, narrow, or modal states do
 not need visual coverage.
 
+Capture the default and every declared state at the phone, tablet, laptop, and
+desktop acceptance sizes with one command:
+
+```bash
+TILO_SHOTS_THEME=dark cargo run -q -p contacts -- \
+  --visual-matrix target/visual-review/contacts/dark
+TILO_SHOTS_THEME=light cargo run -q -p contacts -- \
+  --visual-matrix target/visual-review/contacts/light
+TILO_SHOTS_THEME=high-contrast cargo run -q -p contacts -- \
+  --visual-matrix target/visual-review/contacts/high-contrast
+```
+
+Add `--pseudo-locale` or `--text-scale 2` for the localization and large-type
+passes. Supplying `--scenario NAME` restricts the matrix to one state while
+retaining all four viewport classes.
+
 ## Layer 1: `shots` — pre-written scenarios
 
 Best for: regression captures, golden-image diffs, video walkthroughs of known UX flows.

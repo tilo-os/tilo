@@ -169,6 +169,19 @@ fn compact_content_rect(mode: ShowcaseMode, main: Rect) -> Rect {
     }
 }
 
+fn empty_access_explanation(compact: bool) -> &'static [&'static str] {
+    if compact {
+        &[
+            "Temporary access ends automatically.",
+            "You choose again when an app asks.",
+        ]
+    } else {
+        &[
+            "One-time and while-open access ends automatically. You stay in control when an app asks again.",
+        ]
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum VaultFilter {
     #[default]
@@ -3726,17 +3739,19 @@ impl PasswordsSurface {
                 empty.y0 + 26.0,
                 TextWeight::Bold,
             );
-            Self::text(
-                tr,
-                scene,
-                "One-time and while-open access ends automatically. You stay in control when an app asks again.",
-                13.0,
-                c.text_dim,
-                transform,
-                empty.x0 + 22.0,
-                empty.y0 + 62.0,
-                TextWeight::Regular,
-            );
+            for (line, text) in empty_access_explanation(compact).iter().enumerate() {
+                Self::text(
+                    tr,
+                    scene,
+                    text,
+                    13.0,
+                    c.text_dim,
+                    transform,
+                    empty.x0 + 22.0,
+                    empty.y0 + 62.0 + line as f64 * 22.0,
+                    TextWeight::Regular,
+                );
+            }
             return;
         }
         scene.push_clip_layer(Fill::NonZero, transform, &viewport);
@@ -5430,6 +5445,18 @@ mod tests {
             compact_content_rect(ShowcaseMode::Vault, main),
             Rect::new(84.0, 24.0, 366.0, 820.0)
         );
+    }
+
+    #[test]
+    fn app_access_empty_copy_is_compact_and_scannable_on_a_phone() {
+        assert_eq!(
+            empty_access_explanation(true),
+            [
+                "Temporary access ends automatically.",
+                "You choose again when an app asks."
+            ]
+        );
+        assert_eq!(empty_access_explanation(false).len(), 1);
     }
 
     #[test]

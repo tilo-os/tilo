@@ -368,7 +368,7 @@ impl SearchBox {
             );
             let text_x = r.x0 + 30.0;
             let distance = geo::fmt_distance(geo::haversine_m(place.pos, overlay.anchor));
-            let distance_w = draw::measure_w(text_renderer, &distance, 11.0) + 8.0;
+            let distance_w = draw::measure_w(text_renderer, &distance, 12.0) + 8.0;
             draw::text_clip(
                 scene,
                 text_renderer,
@@ -387,7 +387,7 @@ impl SearchBox {
                 &place.address,
                 text_x,
                 r.y0 + 24.0,
-                11.0,
+                12.0,
                 theme.text_dim,
                 r.x1 - text_x - distance_w,
             );
@@ -398,7 +398,7 @@ impl SearchBox {
                 &distance,
                 r.x1 - 8.0,
                 r.y0 + 8.0,
-                11.0,
+                12.0,
                 theme.accent_primary,
             );
             self.targets.push((r, SearchHit::Result(index)));

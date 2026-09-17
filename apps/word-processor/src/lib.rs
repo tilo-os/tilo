@@ -46,6 +46,7 @@ mod outline_pane;
 mod recovery_banner;
 mod review_overlay;
 mod ruler;
+pub mod search_provider;
 mod style_color_picker;
 mod style_menu;
 mod template_picker;

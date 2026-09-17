@@ -445,8 +445,9 @@ fn subscribe_pill_toggles_subscription_through_a_real_click() {
 
 #[test]
 fn autoplay_switch_toggles_the_setting_through_a_real_switch_click() {
-    // Exercise `Switch::handle_event` for real (not app.apply): click the
-    // autoplay switch on the Settings page and prove the setting flips.
+    // Exercise the shared `Toggle::handle_event` for real (not app.apply):
+    // click the autoplay switch and prove Tube's action adapter still flips
+    // the production model setting.
     let app = TubeApp::new()
         .with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1))
         .with_route_shot(Route::Settings);

@@ -3390,7 +3390,7 @@ impl MapsApp {
                 "RESULTS",
                 x,
                 y,
-                11.0,
+                12.0,
                 theme.text_dim,
                 TextWeight::Semibold,
             );
@@ -3413,7 +3413,7 @@ impl MapsApp {
                 "NEARBY",
                 x,
                 y,
-                11.0,
+                12.0,
                 theme.text_dim,
                 TextWeight::Semibold,
             );
@@ -3439,7 +3439,7 @@ impl MapsApp {
                 "SAVED",
                 x,
                 y,
-                11.0,
+                12.0,
                 theme.text_dim,
                 TextWeight::Semibold,
             );
@@ -3458,7 +3458,7 @@ impl MapsApp {
                 "RECENT SEARCHES",
                 x,
                 y,
-                11.0,
+                12.0,
                 theme.text_dim,
                 TextWeight::Semibold,
             );
@@ -3552,7 +3552,7 @@ impl MapsApp {
             &sub,
             tx,
             r.y0 + 24.0,
-            11.0,
+            12.0,
             theme.text_dim,
             r.x1 - tx - 50.0,
         );
@@ -3603,7 +3603,7 @@ impl MapsApp {
         canvas::draw_category_icon(scene, t, cc, 11.0, poi.category, theme.text_primary, marker);
 
         let dist = geo::fmt_distance(geo::haversine_m(poi.pos, anchor));
-        let dw = draw::measure_w(tr, &dist, 11.0) + 10.0;
+        let dw = draw::measure_w(tr, &dist, 12.0) + 10.0;
         let tx = r.x0 + 38.0;
         draw::text_clip(
             scene,
@@ -3630,7 +3630,7 @@ impl MapsApp {
             &sub,
             tx,
             r.y0 + 24.0,
-            11.0,
+            12.0,
             theme.text_dim,
             r.x1 - tx - dw,
         );
@@ -3641,7 +3641,7 @@ impl MapsApp {
             &dist,
             r.x1 - 8.0,
             r.y0 + 8.0,
-            11.0,
+            12.0,
             theme.accent_primary,
         );
         self.click_targets.push((r, Hit::SelectPoi(poi.id.clone())));
@@ -3683,7 +3683,9 @@ impl MapsApp {
         // compact, content-sized chip (not a full-width bar): it is a secondary
         // helper, so it stays quiet and lets the fields + mode read as the
         // primary controls.
-        let loc_h = 30.0;
+        // Secondary does not mean fiddly: retain a compact chip while meeting
+        // the toolkit's minimum comfortable pointer target.
+        let loc_h = 32.0;
         let loc_label = if self.locating {
             "Locating…"
         } else {
@@ -4093,7 +4095,8 @@ impl MapsApp {
         if !tt.is_now() {
             y += 8.0;
             let reset_w = draw::measure_w(tr, "Reset to now", 12.0) + 20.0;
-            let reset = Rect::new(x, y, x + reset_w, y + 26.0);
+            let reset_h = 32.0;
+            let reset = Rect::new(x, y, x + reset_w, y + reset_h);
             draw::fill_rrect(scene, t, reset, 8.0, c.surfaces.raised);
             draw::stroke_rrect(scene, t, reset, 8.0, 1.0, c.border_standard);
             draw::text_center(
@@ -4103,12 +4106,12 @@ impl MapsApp {
                 "Reset to now",
                 reset.x0,
                 reset.x1,
-                vmid(reset.y0, 26.0, 12.0),
+                vmid(reset.y0, reset_h, 12.0),
                 12.0,
                 theme.text_primary,
             );
             self.click_targets.push((reset, Hit::TransitTimeNow));
-            y += 26.0;
+            y += reset_h;
         }
 
         // Breathing space rather than a hairline — groups separate by space, not
@@ -4178,7 +4181,12 @@ impl MapsApp {
         let journeys = self.model.transit.clone();
         for (i, j) in journeys.iter().enumerate() {
             let selected = self.model.transit_choice == i;
-            let base_h = 86.0;
+            // Keep the complete three-option sample visible in a conventional
+            // 800 px-tall window. The previous 86 px cards pushed the final
+            // option below the panel edge, leaving a visibly clipped target.
+            // 72 px still gives the whole card a generous pointer target while
+            // fitting the two-line summary and 22 px route pills.
+            let base_h = 72.0;
             let jr = Rect::new(x, y, right, y + base_h);
             draw::fill_rrect(
                 scene,
@@ -4232,13 +4240,13 @@ impl MapsApp {
                 &xfer,
                 right - 12.0,
                 y + 30.0,
-                11.0,
+                12.0,
                 theme.text_dim,
             );
 
             // Leg pills — coloured in each line's authentic feed colour.
             let mut px = x + 12.0;
-            let py = y + 38.0;
+            let py = y + 42.0;
             for (li, leg) in j.legs.iter().enumerate() {
                 if li > 0 {
                     draw::text(scene, tr, t, "›", px, py + 2.0, 13.0, theme.text_dim);
@@ -4247,8 +4255,8 @@ impl MapsApp {
                 if leg.mode == TransitMode::Walk {
                     // Walk shown as a dashed segment with minutes.
                     let lbl = format!("walk {}m", leg.duration_min.max(1));
-                    let w = draw::measure_w(tr, &lbl, 11.0) + 6.0;
-                    draw::text(scene, tr, t, &lbl, px, py + 3.0, 11.0, theme.text_dim);
+                    let w = draw::measure_w(tr, &lbl, 12.0) + 6.0;
+                    draw::text(scene, tr, t, &lbl, px, py + 3.0, 12.0, theme.text_dim);
                     px += w + 4.0;
                 } else {
                     let col = canvas::leg_color(theme, leg);
@@ -4283,12 +4291,12 @@ impl MapsApp {
                 }
             }
             self.click_targets.push((jr, Hit::Journey(i)));
-            y += base_h + 10.0;
+            y += base_h + 6.0;
 
             // Expanded leg detail for the selected journey.
             if selected {
                 for leg in &j.legs {
-                    let lh = 36.0;
+                    let lh = 32.0;
                     let col = canvas::leg_color(theme, leg);
                     draw::line(
                         scene,
@@ -4333,7 +4341,7 @@ impl MapsApp {
                             "live",
                             bx + 9.0,
                             y + 1.0,
-                            10.0,
+                            11.0,
                             c.semantic.success,
                         );
                     }
@@ -4353,7 +4361,7 @@ impl MapsApp {
                         &sub,
                         x + 32.0,
                         y + 16.0,
-                        11.0,
+                        12.0,
                         theme.text_dim,
                         right - x - 90.0,
                     );
@@ -4364,12 +4372,12 @@ impl MapsApp {
                         &format!("{}–{}", leg.dep, leg.arr),
                         right - 8.0,
                         y + 4.0,
-                        11.0,
+                        12.0,
                         theme.text_dim,
                     );
                     y += lh + 2.0;
                 }
-                y += 6.0;
+                y += 2.0;
             }
         }
 
@@ -4406,7 +4414,7 @@ impl MapsApp {
             c.border_standard,
         );
         y += 10.0;
-        draw::text_clip(scene, tr, t, &src, x, y, 10.0, theme.text_dim, right - x);
+        draw::text_clip(scene, tr, t, &src, x, y, 11.0, theme.text_dim, right - x);
         y += 18.0;
         y
     }
@@ -8439,6 +8447,39 @@ mod tests {
                 || (a.model.center.lon - center0.lon).abs() > 1e-6,
             "a different itinerary reframes the map"
         );
+    }
+
+    /// A standard laptop-height panel must not advertise a partially clipped
+    /// itinerary. This guards the real draw/hit-test geometry, not a parallel
+    /// layout calculation.
+    #[test]
+    fn transit_options_fit_laptop_viewport_with_comfortable_targets() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 800.0);
+        a.set_travel_mode(TravelMode::Transit);
+
+        a.draw_app(&mut Scene::new(), Affine::IDENTITY, &mut tr, &theme);
+
+        let journey_targets: Vec<_> = a
+            .click_targets
+            .iter()
+            .filter_map(|(rect, hit)| matches!(hit, Hit::Journey(_)).then_some(*rect))
+            .collect();
+        assert_eq!(journey_targets.len(), a.model.transit.len());
+        assert!(
+            journey_targets
+                .iter()
+                .all(|rect| rect.height() >= 44.0 && rect.y1 <= 800.0),
+            "every itinerary is fully visible and comfortably clickable: {journey_targets:?}"
+        );
+
+        let location_target = a
+            .click_targets
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::UseMyLocation).then_some(*rect))
+            .expect("location target is drawn");
+        assert!(location_target.height() >= 32.0);
     }
 
     /// A fresh, isolated on-disk cache dir so a delete step never touches the

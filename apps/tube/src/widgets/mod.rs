@@ -3,8 +3,10 @@
 //! `ui` owns the canonical toolkit; these are Tube-specific primitives we
 //! either can't express with the stock widgets (a `SponsorBlock` seek bar, a
 //! gradient thumbnail, vector icons) or want clickable in our own
-//! [`ActionBus`] dialect (`Flex`, `Switch`). The free helpers at the bottom
-//! cut the boilerplate of wrapping `ui::Text` and building spacers.
+//! [`ActionBus`] dialect (`Flex`). [`action_toggle`] is only an action adapter
+//! around the shared `ui::widget::Toggle`; it owns no control behavior or
+//! visuals. The free helpers at the bottom cut the boilerplate of wrapping
+//! `ui::Text` and building spacers.
 
 pub mod channel_avatar;
 pub mod controls;
@@ -16,7 +18,7 @@ pub mod seek_bar;
 pub mod thumbnail;
 
 pub use channel_avatar::ChannelAvatar;
-pub use controls::Switch;
+pub use controls::action_toggle;
 pub use flex::{Align, Axis, Flex, IntoElement, Justify, Len, Surface};
 pub use image_box::ImageBox;
 pub use large_video_meta::LargeVideoMeta;

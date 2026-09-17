@@ -170,6 +170,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "--device-sync",
             ])
             .allowed_options(&["--route", "--palette-query"])
+            .scenarios(&[
+                "narrow", "palette", "playing", "empty", "loading", "settings",
+            ])
             .configure_app(configure_app),
     )?;
     Ok(())
@@ -194,21 +197,24 @@ fn configure_app(app: &mut ui::App) {
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     let (vw, vh) = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
     let mut app = tube::TubeApp::new().with_viewport(f64::from(vw), f64::from(vh));
-    if args.has("--empty") {
+    let scenario = args.scenario.as_deref();
+    if args.has("--empty") || scenario == Some("empty") {
         app = app.with_empty_home_shot();
-    } else if args.has("--loading") {
+    } else if args.has("--loading") || scenario == Some("loading") {
         app = app.with_loading_home_shot();
     } else if args.has("--device-sync") {
         #[cfg(feature = "grayjay-sync")]
         {
             app = app.with_device_sync_shot();
         }
-    } else if args.has("--palette") {
+    } else if args.has("--palette") || scenario == Some("palette") {
         app = app.with_palette_open_for_test(args.value("--palette-query").unwrap_or("rust"));
-    } else if args.has("--play-demo") {
+    } else if args.has("--play-demo") || scenario == Some("playing") {
         app = app.with_playing_demo_for_test();
-    } else if args.has("--narrow") {
+    } else if args.has("--narrow") || scenario == Some("narrow") {
         app = app.with_open_sidebar_shot();
+    } else if scenario == Some("settings") {
+        app = app.with_route_shot(route_from_spec("settings"));
     } else if let Some(route) = args.value("--route") {
         app = app.with_route_shot(route_from_spec(route));
     }

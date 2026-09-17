@@ -43,7 +43,7 @@ fn quick_start_button(id: &str, label: &str, f: impl FnMut() + 'static) -> Eleme
             .on_effect(f),
     )
 }
-fn duration(ms: u64) -> String {
+pub(crate) fn duration(ms: u64) -> String {
     let seconds = ms / 1_000;
     if seconds >= 3_600 {
         format!(
@@ -735,6 +735,8 @@ fn surface(mode: &ui::LocalState<usize>, state: &ui::LocalState<ClockState>) -> 
 pub struct ClocksApp {
     inner: Element,
     state: ui::LocalState<ClockState>,
+    mode: ui::LocalState<usize>,
+    search: crate::search_provider::ClocksSearchProvider,
     generation: u64,
     last_saved: String,
     last_notification: Option<(uuid::Uuid, String, String)>,
@@ -771,9 +773,13 @@ impl ClocksApp {
             value.timers.push(t);
         }
         let state = ui::LocalState::new(value);
+        let search = crate::search_provider::ClocksSearchProvider::new(&state.get());
+        let mode = ui::LocalState::new(mode);
         Self {
-            inner: surface(&ui::LocalState::new(mode), &state),
+            inner: surface(&mode, &state),
             state,
+            mode,
+            search,
             generation: 0,
             last_saved: String::new(),
             last_notification: None,
@@ -855,11 +861,39 @@ impl Widget for ClocksApp {
             crate::actions::ClockOperation::Lap => {
                 self.state.update(|s| s.stopwatch.lap(Utc::now()))
             }
+            crate::actions::ClockOperation::OpenWorldClock { id } => {
+                if self
+                    .state
+                    .with(|s| s.world_clocks.iter().any(|item| item.id == id))
+                {
+                    self.mode.set(0);
+                }
+            }
+            crate::actions::ClockOperation::OpenAlarm { id } => {
+                if self
+                    .state
+                    .with(|s| s.alarms.iter().any(|item| item.id == id))
+                {
+                    self.mode.set(1);
+                }
+            }
+            crate::actions::ClockOperation::OpenTimer { id } => {
+                if self
+                    .state
+                    .with(|s| s.timers.iter().any(|item| item.id == id))
+                {
+                    self.mode.set(2);
+                }
+            }
         };
         Ok(true)
     }
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         crate::actions::ClockResources.resources(doc)
+    }
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        self.search.refresh(&self.state.get());
+        vec![Box::new(self.search.clone())]
     }
     fn sync(&mut self, d: &mut AutoCommit, p: &ObjId) {
         let now = Utc::now();

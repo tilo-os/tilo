@@ -245,9 +245,9 @@ fn menu_layout(
     text_scale: f64,
 ) -> ToolbarToolsLayout {
     let scale = text_scale.clamp(1.0, 2.0);
-    let row_h = 34.0 * scale;
+    let row_h = 40.0 * scale;
     let pad = 8.0 * scale;
-    let gap = 6.0 * scale;
+    let gap = 4.0 * scale;
     let menu_w = hidden
         .iter()
         .filter_map(|&index| tools.get(index))

@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 pub mod actions;
 pub mod app;
+pub mod search_provider;
 pub use app::ClocksApp;
 
 #[must_use]

@@ -58,11 +58,33 @@ use crate::model::{HistoryEntry, Mode, PlotFn};
 pub const CALCULATOR_ACTION_TYPE: &str = "calculator.action";
 pub const CALCULATOR_OPERATION_TYPE: &str = "calculator.operation";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CalculatorOperation {
     ShowCalculator,
     ShowGraph2d,
     ShowGraph3d,
+    RecallExpression { expression: String },
+}
+
+pub fn recall_expression_address(resource_id: &str) -> tilo_actions::ActionAddress {
+    tilo_actions::ActionAddress::new(resource_id, "recall")
+}
+
+#[allow(clippy::expect_used, reason = "CalculatorOperation always serializes")]
+pub fn recall_expression_resource(resource_id: &str, label: &str, expression: &str) -> Resource {
+    Resource::new(resource_id, "calculator.history_entry", label).with_action(
+        ActionSpec::operation(
+            "recall",
+            "Recall expression",
+            OperationKind::View,
+            CALCULATOR_OPERATION_TYPE,
+            &CalculatorOperation::RecallExpression {
+                expression: expression.to_owned(),
+            },
+        )
+        .expect("CalculatorOperation serializes")
+        .retry_policy(RetryPolicy::Idempotent),
+    )
 }
 
 /// # Errors

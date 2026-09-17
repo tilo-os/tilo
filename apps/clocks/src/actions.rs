@@ -13,6 +13,38 @@ pub enum ClockOperation {
     ToggleOverlay,
     ResetStopwatch,
     Lap,
+    OpenWorldClock { id: uuid::Uuid },
+    OpenAlarm { id: uuid::Uuid },
+    OpenTimer { id: uuid::Uuid },
+}
+
+pub fn item_address(kind: &str, id: uuid::Uuid) -> tilo_actions::ActionAddress {
+    tilo_actions::ActionAddress::new(format!("clocks.{kind}:{id}"), "open")
+}
+
+#[allow(clippy::expect_used, reason = "ClockOperation always serializes")]
+pub fn item_resource(
+    kind: &str,
+    id: uuid::Uuid,
+    label: &str,
+    operation: ClockOperation,
+) -> Resource {
+    Resource::new(
+        format!("clocks.{kind}:{id}"),
+        format!("clocks.{kind}"),
+        label,
+    )
+    .with_action(
+        ActionSpec::operation(
+            "open",
+            "Open in Clocks",
+            OperationKind::View,
+            OPERATION_TYPE,
+            &operation,
+        )
+        .expect("ClockOperation serializes")
+        .retry_policy(RetryPolicy::Idempotent),
+    )
 }
 
 pub fn decode(type_id: &str, payload: &[u8]) -> Result<Option<ClockOperation>, String> {

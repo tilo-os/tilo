@@ -1697,6 +1697,9 @@ pub struct WordProcessorWidget {
     /// Framework-owned action dispatch: brackets the undo boundary and dispatches
     /// each action through the executor (so a test can prove parity with Ctrl+K).
     actions: ui::ActionHost,
+    /// Complete canonical body-text index used by system search. This is
+    /// intentionally independent of the bounded renderer cache.
+    search_provider: crate::search_provider::WordProcessorSearchProvider,
     pointer: Point,
     drag: DragSelect,
     path: Option<PathBuf>,
@@ -1920,6 +1923,7 @@ impl WordProcessorWidget {
             dirty: true,
             needs_commit: false,
             actions: ui::ActionHost::new(),
+            search_provider: crate::search_provider::WordProcessorSearchProvider::default(),
             pointer: Point::ZERO,
             drag: DragSelect::new(),
             path: None,
@@ -9385,6 +9389,9 @@ impl Widget for WordProcessorWidget {
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.inner.bind(state, root);
+        if let Some(containers) = self.inner.containers.as_ref() {
+            self.search_provider.update(state, containers);
+        }
         if let Some((invocation, open_path)) = self.pending_resource_open.take() {
             self.resource_file_result =
                 Some(match self.try_open_document_in_place(state, &open_path) {
@@ -10057,6 +10064,9 @@ impl Widget for WordProcessorWidget {
     /// [`crate::actions`]).
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
     }
     fn needs_redraw(&self) -> bool {
         self.dirty
@@ -11846,16 +11856,10 @@ impl WordProcessorWidget {
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
         row: Rect,
     ) {
-        self.zoom.draw(
-            scene,
-            transform,
-            tr,
-            row,
-            self.chrome.chip,
-            self.chrome.text,
-        );
+        self.zoom.draw(scene, transform, tr, row, theme);
     }
 
     /// Build the toolbar's button spec list (action, label, width,
@@ -12087,7 +12091,16 @@ impl WordProcessorWidget {
             if *s < e_btn
                 && let Some(row_items) = items.get(*s..e_btn)
             {
-                let rects = chrome::toolbar::draw(scene, transform, tr, theme, row_rect, row_items);
+                // A group divider only separates neighbouring groups. When a
+                // responsive wrap lands on a group boundary, retaining that
+                // item's `group_start` paints an orphan vertical rule at the
+                // row's leading edge (and wastes horizontal room).
+                let mut row_items = row_items.to_vec();
+                if let Some(first) = row_items.first_mut() {
+                    first.group_start = false;
+                }
+                let rects =
+                    chrome::toolbar::draw(scene, transform, tr, theme, row_rect, &row_items);
                 all_rects.extend(rects);
             }
         }
@@ -12119,7 +12132,7 @@ impl WordProcessorWidget {
         // as part of the trailing packer phantom below, so buttons never run under
         // it). The colour/highlight swatch strips pack to its left.
         let last_row = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
-        self.draw_zoom_control(scene, transform, tr, last_row);
+        self.draw_zoom_control(scene, transform, tr, theme, last_row);
         if !compact {
             let swatch_x1 =
                 (tb.x1 - ZoomControl::width(self.text_scale) - ZOOM_SWATCH_GAP * self.text_scale)
@@ -12426,6 +12439,49 @@ mod tests {
             wp.model().caret(),
             &before,
             "stale navigation changes nothing"
+        );
+    }
+
+    #[test]
+    fn system_search_opens_and_focuses_the_matching_range_on_production_path() {
+        use tilo_actions::ActionInput;
+
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut()
+            .insert_str(&mut state.doc, "before searchable phrase after");
+        wp.sync(&mut state.doc, &state.root);
+
+        let provider = wp.search_providers().remove(0);
+        let hit = provider.search("searchable").remove(0);
+        let address = hit.action_address().expect("canonical search address");
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("fresh range authority");
+        let action = resource
+            .actions
+            .iter()
+            .find(|action| action.id == address.action)
+            .expect("navigation action");
+        let ActionInput::Immediate(encoded) = &action.input else {
+            panic!("search navigation is immediate");
+        };
+        assert!(
+            wp.invoke_resource_operation(
+                action.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &state.doc,
+                &state.root,
+            )
+            .expect("operation is accepted")
+        );
+        assert_eq!(wp.model().caret().offset, 17);
+        assert_eq!(
+            wp.model().selection_text(&state.doc),
+            "searchable",
+            "the system result focuses its exact matching range"
         );
     }
 
@@ -14755,6 +14811,41 @@ mod tests {
             "clicking the % chip resets to 100%: {}",
             wp.zoom.factor()
         );
+    }
+
+    /// The zoom faces use the shared immediate-mode button painter. Exercise
+    /// that production draw path with every system palette and both responsive
+    /// toolbar compositions; a theme-specific or narrow-layout regression must
+    /// fail instead of leaving the control silently undrawn or unreachable.
+    #[test]
+    fn shared_zoom_faces_draw_in_every_theme_and_responsive_composition() {
+        for (width, height) in [(390, 844), (1200, 760)] {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let mut state = ui::State::new();
+                let mut wp = WordProcessorWidget::new();
+                pipeline_draw_themed(&mut wp, &mut state, width, height, &theme);
+
+                let rects = wp.zoom.hit_rects();
+                assert_eq!(rects.len(), 3, "shared −/%/+ faces register in {width}px");
+                assert!(
+                    rects.windows(2).all(|pair| pair[0].x1 <= pair[1].x0),
+                    "zoom faces do not overlap in {width}px layout: {rects:?}"
+                );
+                assert!(
+                    rects
+                        .iter()
+                        .all(|rect| rect.width() >= 32.0 && rect.height() >= 32.0),
+                    "zoom faces meet the toolkit's minimum pointer target: {rects:?}"
+                );
+                assert!(
+                    rects.iter().all(|rect| rect.x0 >= 0.0
+                        && rect.x1 <= f64::from(width)
+                        && rect.y0 >= 0.0
+                        && rect.y1 <= wp.toolbar_height(f64::from(width))),
+                    "zoom faces remain wholly inside {width}px toolbar: {rects:?}"
+                );
+            }
+        }
     }
 
     #[test]

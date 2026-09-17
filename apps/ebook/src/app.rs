@@ -1000,7 +1000,10 @@ impl BooksApp {
             chapter: 0,
             page: 0,
             toc_flap: FlapState::open_when_docked(),
-            notes_flap: FlapState::open_when_docked(),
+            // Annotations are an on-demand inspector, not primary navigation.
+            // Keeping an empty 326 px rail open by default leaves far too little
+            // room for the thing people opened the app to read.
+            notes_flap: FlapState::closed_by_default(),
             toc_scroll: 0.0,
             toc_max_scroll: 0.0,
             toc_scroll_to_active: true,
@@ -1427,6 +1430,7 @@ impl BooksApp {
             "long-annotations" => {
                 self.demo = false;
                 self.view = View::Reader;
+                self.notes_flap.snap(true);
                 self.shot_long_annotations = true;
             }
             _ => return false,
@@ -9339,6 +9343,11 @@ impl BooksApp {
         }
         self.notes_scroll = self.notes_scroll.clamp(0.0, self.notes_max_scroll);
 
+        if annos.is_empty() {
+            Self::draw_empty_notes(ctx, Rect::new(card_x0, list_y0, card_x1, list_y1));
+            return;
+        }
+
         let clip = Rect::new(x0, list_y0, panel_x1, list_y1);
         ctx.scene.push_layer(
             Fill::NonZero,
@@ -9369,20 +9378,20 @@ impl BooksApp {
         );
     }
 
-    /// "ANNOTATIONS" title + the count badge.
+    /// Annotations title + the count badge.
     fn draw_notes_header(ctx: &mut EbookPaintCtx<'_>, view: &NotesPanelView) {
         let c = &ctx.theme.tokens.colors;
         ctx.text.draw_text_weighted(
             ctx.scene,
-            "ANNOTATIONS",
-            11.0,
-            c.text_dim,
-            ctx.transform * Affine::translate((view.rect.x0 + 22.0, view.rect.y0 + 18.0)),
+            "Annotations",
+            14.0,
+            c.text_primary,
+            ctx.transform * Affine::translate((view.rect.x0 + 22.0, view.rect.y0 + 16.0)),
             None,
             TextWeight::Semibold,
         );
         let count = format!("{}", view.count);
-        let (cw, _) = ctx.text.measure(&count, 11.0, None);
+        let (cw, _) = ctx.text.measure(&count, 12.0, None);
         let badge = Rect::new(
             view.rect.x0 + 110.0,
             view.rect.y0 + 14.0,
@@ -9393,9 +9402,9 @@ impl BooksApp {
         ctx.text.draw_text(
             ctx.scene,
             &count,
-            11.0,
+            12.0,
             c.text_dim,
-            ctx.transform * Affine::translate((view.rect.x0 + 118.0, view.rect.y0 + 17.0)),
+            ctx.transform * Affine::translate((view.rect.x0 + 118.0, view.rect.y0 + 16.0)),
             None,
         );
     }
@@ -9415,7 +9424,7 @@ impl BooksApp {
             view.rect.x0 + 16.0,
             add_y,
             view.rect.x1 - 16.0,
-            add_y + 30.0,
+            add_y + 34.0,
         );
         let hover = has_sel && self.is_hover(add_rect);
         paint::fill_round(
@@ -9432,9 +9441,9 @@ impl BooksApp {
         ctx.text.draw_text_weighted(
             ctx.scene,
             add_label,
-            12.0,
+            13.0,
             if has_sel { c.text_primary } else { c.text_dim },
-            ctx.transform * Affine::translate((view.rect.x0 + 28.0, add_y + 8.0)),
+            ctx.transform * Affine::translate((view.rect.x0 + 28.0, add_y + 9.0)),
             None,
             TextWeight::Medium,
         );
@@ -9442,6 +9451,28 @@ impl BooksApp {
             self.push_hit(add_rect, Action::AddNote);
         }
         add_y
+    }
+
+    fn draw_empty_notes(ctx: &mut EbookPaintCtx<'_>, rect: Rect) {
+        let c = &ctx.theme.tokens.colors;
+        let centre_y = rect.y0 + (rect.height() * 0.34).min(150.0);
+        ctx.text.draw_text_weighted(
+            ctx.scene,
+            "No annotations yet",
+            15.0,
+            c.text_primary,
+            ctx.transform * Affine::translate((rect.x0 + 12.0, centre_y)),
+            Some((rect.width() - 24.0) as f32),
+            TextWeight::Semibold,
+        );
+        ctx.text.draw_text(
+            ctx.scene,
+            "Select a passage to highlight it or add a note.",
+            13.0,
+            c.text_dim,
+            ctx.transform * Affine::translate((rect.x0 + 12.0, centre_y + 28.0)),
+            Some((rect.width() - 24.0) as f32),
+        );
     }
 
     /// Paint one measured annotation card in the virtual notes list.
@@ -9592,19 +9623,27 @@ impl BooksApp {
             &loc,
             11.0,
             c.text_dim,
-            ctx.transform * Affine::translate((card_x1 - 30.0 - f64::from(lw), y + 12.0)),
+            // Reserve the full 32 px delete target plus breathing room. The
+            // old locator ended underneath the close icon on narrow rails.
+            ctx.transform * Affine::translate((card_x1 - 44.0 - f64::from(lw), y + 12.0)),
             None,
         );
         // Delete is always drawn and hit-registered, not gated on hover —
         // the only way to remove an annotation, so it must reach touch/keyboard.
-        let del = Rect::new(card_x1 - 26.0, y + 6.0, card_x1 - 6.0, y + 26.0);
+        let del = Rect::new(card_x1 - 36.0, y + 2.0, card_x1 - 4.0, y + 34.0);
         let del_hover = self.is_hover(del);
         let del_col = if del_hover {
             c.text_primary
         } else {
             c.text_dim.with_alpha_factor(0.55)
         };
-        paint::close(ctx.scene, ctx.transform, del, del_col, 1.4);
+        paint::close(
+            ctx.scene,
+            ctx.transform,
+            Rect::new(del.x0 + 6.0, del.y0 + 6.0, del.x1 - 6.0, del.y1 - 6.0),
+            del_col,
+            1.4,
+        );
         self.push_hit(del, Action::Delete(a.id));
     }
 
@@ -13516,13 +13555,20 @@ mod interaction_tests {
     }
 
     #[test]
-    fn rails_collapse_on_narrow_and_dock_on_wide() {
+    fn navigation_docks_wide_but_annotations_stay_on_demand() {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
-        // Wide: both rails docked-open by default.
+        // Wide: primary navigation docks, while the secondary annotations
+        // inspector stays closed until requested so the page keeps its width.
         frame(&mut app, &mut doc, 1280.0, 720.0);
         assert!(app.toc_open(), "contents docked+open at 1280");
-        assert!(app.notes_open(), "annotations docked+open at 1280");
+        assert!(!app.notes_open(), "annotations are on demand at 1280");
+        app.notes_flap.open();
+        frame(&mut app, &mut doc, 1280.0, 720.0);
+        assert!(
+            app.notes_open(),
+            "annotations can still be docked on request"
+        );
         // Narrow: both become closed overlays, so the page owns the width.
         frame(&mut app, &mut doc, 560.0, 720.0);
         assert_eq!(app.toc_layout(), SplitLayout::Overlay);
@@ -14168,10 +14214,23 @@ mod interaction_tests {
 
         // The delete (×) is registered without the pointer hovering the card
         // (the cursor is still over the swatch on the page), proving reachability.
+        app.notes_flap.snap(true);
         frame(&mut app, &mut doc, 1280.0, 800.0);
-        let del = find_hit(&app, |a| matches!(a, Action::Delete(_)))
+        let del_rect = app
+            .hits
+            .iter()
+            .rev()
+            .find(|hit| matches!(hit.action, Action::Delete(_)))
+            .map(|hit| hit.rect)
             .expect("delete affordance is present without hover");
-        assert!(click(&mut app, &mut doc, del), "delete click handled");
+        assert!(
+            del_rect.width() >= 32.0 && del_rect.height() >= 32.0,
+            "annotation delete is a usable pointer target: {del_rect:?}"
+        );
+        assert!(
+            click(&mut app, &mut doc, del_rect.center()),
+            "delete click handled"
+        );
         assert!(
             BooksDoc::list_annotations(&doc).is_empty(),
             "annotation removed"

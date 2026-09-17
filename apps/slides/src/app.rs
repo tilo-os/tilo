@@ -35,8 +35,8 @@ use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
-    ColorPicker, DEFAULT_BREAKPOINT, FlapState, NumberInput, PageSidebar, PageSidebarEvent,
-    SplitLayout, TextInput, Widget,
+    Button, ButtonFace, ButtonStyle, ColorPicker, DEFAULT_BREAKPOINT, FlapState, NumberInput,
+    PageSidebar, PageSidebarEvent, SplitLayout, TextInput, Widget,
 };
 
 use crate::actions;
@@ -571,6 +571,10 @@ pub struct SlidesApp {
     /// current drag live here so `draw` can paint them).
     active_guides: Vec<Guide>,
     last_mouse: Point,
+    /// Left-button state for immediate-mode chrome feedback. Document actions
+    /// still route through `Hit`; this is render-only state shared by every
+    /// standard [`ButtonFace`] below.
+    left_pointer_down: bool,
     drag: Drag,
     /// The slide-thumbnail rail — the shared [`PageSidebar`] widget. It owns the
     /// list geometry, the scroll offset, drag-to-reorder (live reflow gap +
@@ -780,6 +784,7 @@ impl SlidesApp {
             help_overlay: HelpOverlay::default(),
             active_guides: Vec::new(),
             last_mouse: Point::ZERO,
+            left_pointer_down: false,
             drag: Drag::None,
             page_sidebar: PageSidebar::new(SLIDE_H / SLIDE_W).with_panel(false),
             last_click: None,
@@ -1325,7 +1330,7 @@ impl SlidesApp {
     )]
     fn rail_viewport(&self, rail: Rect) -> Rect {
         let tpad = 14.0;
-        let rb_h = 30.0;
+        let rb_h = 34.0;
         let list_top = rail.y0 + tpad + 20.0;
         let list_bottom = (rail.y1 - tpad - rb_h - 12.0).max(list_top);
         Rect::new(rail.x0, list_top, rail.x1, list_bottom)
@@ -1942,7 +1947,7 @@ impl SlidesApp {
                 rail.x1 - tpad - close_w,
                 rail.y0 + 5.0,
                 rail.x1 - tpad,
-                rail.y0 + 35.0,
+                rail.y0 + 39.0,
             );
             buttons.push(UiButton {
                 rect: close,
@@ -1955,7 +1960,7 @@ impl SlidesApp {
             });
         }
         // Rail action buttons at the bottom.
-        let rb_h = 30.0;
+        let rb_h = 34.0;
         let rb_y = rail.y1 - tpad - rb_h;
         let rb_w = (rail.width() - 2.0 * tpad - 2.0 * 8.0) / 3.0;
         let mk = |idx: f64, label: &str, danger: bool, hit: Hit| -> UiButton {
@@ -2072,7 +2077,7 @@ impl SlidesApp {
         Self::push_inspector_header(labels, x0, &mut y, "FILL");
         y = self.swatch_grid(buttons, x0, inner_w, y, &FILL_ROLES, &el.fill, true);
         y += 8.0;
-        let custom = Rect::new(x0, y, x1, y + 26.0);
+        let custom = Rect::new(x0, y, x1, y + 32.0);
         buttons.push(UiButton {
             rect: custom,
             kind: ButtonKind::Text {
@@ -2087,7 +2092,7 @@ impl SlidesApp {
             },
             hit: Hit::OpenFillPicker,
         });
-        y += 26.0 + 10.0;
+        y += 32.0 + 10.0;
 
         // Stroke swatches.
         Self::push_inspector_header(labels, x0, &mut y, "STROKE");
@@ -2121,7 +2126,7 @@ impl SlidesApp {
     ) -> f64 {
         let mut y = y;
         Self::push_inspector_header(labels, x0, &mut y, "ARRANGE");
-        let bh = 30.0;
+        let bh = 34.0;
         let half = (inner_w - 8.0) / 2.0;
         let front = Rect::new(x0, y, x0 + half, y + bh);
         let back = Rect::new(x0 + half + 8.0, y, x1, y + bh);
@@ -2187,7 +2192,7 @@ impl SlidesApp {
     ) -> (f64, Option<Rect>) {
         let mut y = y;
         Self::push_inspector_header(labels, x0, &mut y, "TYPE");
-        let bh = 30.0;
+        let bh = 32.0;
         // The font size is a click-to-type NumberInput (with ± steppers)
         // — the widget draws itself, so we only reserve its rect here.
         let font_input_rect = Some(Rect::new(x0, y, x0 + 136.0, y + bh));
@@ -2407,7 +2412,7 @@ impl SlidesApp {
     /// the docked inspector at any width, instead of packing five fixed-width
     /// pills that clip their labels. Returns the y just past the last row.
     fn wrap_palette_pills(&self, buttons: &mut Vec<UiButton>, x0: f64, x1: f64, mut y: f64) -> f64 {
-        let bh = 28.0;
+        let bh = 32.0;
         let gap = 8.0;
         let mut x = x0;
         for p in &PaletteKind::ALL {
@@ -2443,7 +2448,7 @@ impl SlidesApp {
         mut y: f64,
         items: impl Iterator<Item = (String, bool, Hit)>,
     ) -> f64 {
-        let bh = 28.0;
+        let bh = 32.0;
         let gap = 8.0;
         let mut x = x0;
         for (label, active, hit) in items {
@@ -4382,14 +4387,52 @@ impl SlidesApp {
                 label,
                 active,
                 danger,
-            } => Self::draw_button_text(scene, t, tr, c, pal, b.rect, label, *active, *danger),
+            } => {
+                let style = if *danger {
+                    ButtonStyle::Danger
+                } else if *active {
+                    ButtonStyle::Primary
+                } else {
+                    ButtonStyle::Neutral
+                };
+                let face = ButtonFace::new(b.rect, label)
+                    .style(style)
+                    .text_size(13.0)
+                    .weight(TextWeight::Semibold)
+                    .hovered(b.rect.contains(self.last_mouse))
+                    .pressed(self.left_pointer_down && b.rect.contains(self.last_mouse));
+                Button::paint(scene, t, tr, theme, &face);
+            }
             ButtonKind::IconText {
                 icon,
                 label,
                 accent,
-            } => Self::draw_button_icon_text(scene, t, tr, c, pal, b.rect, *icon, label, *accent),
+            } => {
+                let face = ButtonFace::new(b.rect, label)
+                    .style(if *accent {
+                        ButtonStyle::Primary
+                    } else {
+                        ButtonStyle::Neutral
+                    })
+                    .icon(*icon)
+                    .text_size(13.0)
+                    .weight(TextWeight::Semibold)
+                    .hovered(b.rect.contains(self.last_mouse))
+                    .pressed(self.left_pointer_down && b.rect.contains(self.last_mouse));
+                Button::paint(scene, t, tr, theme, &face);
+            }
             ButtonKind::IconOnly { icon, active } => {
-                Self::draw_button_icon_only(scene, t, c, pal, b.rect, *icon, *active);
+                let face = ButtonFace::new(b.rect, "")
+                    .style(if *active {
+                        ButtonStyle::Primary
+                    } else {
+                        ButtonStyle::Neutral
+                    })
+                    .icon(*icon)
+                    .radius(7.0)
+                    .hovered(b.rect.contains(self.last_mouse))
+                    .pressed(self.left_pointer_down && b.rect.contains(self.last_mouse));
+                Button::paint(scene, t, tr, theme, &face);
             }
             ButtonKind::Swatch { role, selected } => {
                 Self::draw_button_swatch(scene, t, c, pal, b.rect, role, *selected);
@@ -4400,116 +4443,10 @@ impl SlidesApp {
             ButtonKind::Segment { label, active, pos } => {
                 Self::draw_button_segment(scene, t, tr, c, pal, b.rect, label, *active, *pos);
             }
-            ButtonKind::Hamburger => self.draw_button_hamburger(scene, t, c, pal, b.rect),
+            ButtonKind::Hamburger => {
+                self.draw_button_hamburger(scene, t, tr, theme, b.rect);
+            }
         }
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one arg per independent ButtonKind::Text field plus the shared draw context; \
-                  bundling them would only re-create this argument list as a throwaway struct"
-    )]
-    fn draw_button_text(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::Colors,
-        pal: &Palette,
-        rect: Rect,
-        label: &str,
-        active: bool,
-        danger: bool,
-    ) {
-        let (bg, fg) = if danger {
-            (render::with_alpha(c.semantic.danger, 38), c.semantic.danger)
-        } else if active {
-            (pal.accent, Color::WHITE)
-        } else {
-            (c.surfaces.base, c.text_primary)
-        };
-        chrome::fill_rrect(scene, t, rect, 8.0, bg);
-        chrome::stroke_rrect(
-            scene,
-            t,
-            rect,
-            8.0,
-            render::with_alpha(c.text_primary, 26),
-            1.0,
-        );
-        if !label.is_empty() {
-            chrome::text_centered(scene, t, tr, label, rect, 13.0, fg, TextWeight::Semibold);
-        }
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one arg per independent ButtonKind::IconText field plus the shared draw \
-                  context; bundling them would only re-create this argument list as a \
-                  throwaway struct"
-    )]
-    fn draw_button_icon_text(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::Colors,
-        pal: &Palette,
-        rect: Rect,
-        icon: Icon,
-        label: &str,
-        accent: bool,
-    ) {
-        let (bg, fg) = if accent {
-            (pal.accent, Color::WHITE)
-        } else {
-            (c.surfaces.base, c.text_primary)
-        };
-        chrome::fill_rrect(scene, t, rect, 8.0, bg);
-        if !accent {
-            chrome::stroke_rrect(
-                scene,
-                t,
-                rect,
-                8.0,
-                render::with_alpha(c.text_primary, 26),
-                1.0,
-            );
-        }
-        let ir = Rect::new(rect.x0 + 11.0, rect.y0 + 8.0, rect.x0 + 29.0, rect.y1 - 8.0);
-        draw_icon(scene, t, ir, icon, fg, 1.8);
-        chrome::text_vcenter(
-            scene,
-            t,
-            tr,
-            label,
-            rect,
-            ir.x1 + 5.0,
-            13.0,
-            fg,
-            TextWeight::Semibold,
-        );
-    }
-
-    fn draw_button_icon_only(
-        scene: &mut Scene,
-        t: Affine,
-        c: &ui::tokens::Colors,
-        pal: &Palette,
-        rect: Rect,
-        icon: Icon,
-        active: bool,
-    ) {
-        let bg = if active { pal.accent } else { c.surfaces.base };
-        chrome::fill_rrect(scene, t, rect, 7.0, bg);
-        chrome::stroke_rrect(
-            scene,
-            t,
-            rect,
-            7.0,
-            render::with_alpha(c.text_primary, 30),
-            1.0,
-        );
-        let ir = rect.inflate(-6.0, -6.0);
-        draw_icon(scene, t, ir, icon, c.text_primary, 1.8);
     }
 
     fn draw_button_swatch(
@@ -4523,15 +4460,10 @@ impl SlidesApp {
     ) {
         if let Some(col) = pal.resolve_role(role) {
             chrome::fill_rrect(scene, t, rect, 6.0, col);
-            // contrast border for light swatches
-            chrome::stroke_rrect(
-                scene,
-                t,
-                rect,
-                6.0,
-                render::with_alpha(Color::BLACK, 50),
-                1.0,
-            );
+            // The OS border token remains visible around both pale swatches
+            // and dark roles that would otherwise disappear into a dark or
+            // high-contrast inspector surface.
+            chrome::stroke_rrect(scene, t, rect, 6.0, c.border_standard, 1.0);
         } else {
             // "none" → hatched empty box
             chrome::fill_rrect(scene, t, rect, 6.0, c.surfaces.base);
@@ -4664,22 +4596,26 @@ impl SlidesApp {
         &self,
         scene: &mut Scene,
         t: Affine,
-        c: &ui::tokens::Colors,
-        pal: &Palette,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         rect: Rect,
     ) {
         let active = self.rail_open();
-        let bg = if active { pal.accent } else { c.surfaces.base };
-        let fg = if active { Color::WHITE } else { c.text_primary };
-        chrome::fill_rrect(scene, t, rect, 8.0, bg);
-        chrome::stroke_rrect(
-            scene,
-            t,
-            rect,
-            8.0,
-            render::with_alpha(c.text_primary, 30),
-            1.0,
-        );
+        let face = ButtonFace::new(rect, "")
+            .style(if active {
+                ButtonStyle::Primary
+            } else {
+                ButtonStyle::Neutral
+            })
+            .accessible_name(if active {
+                "Close slide list"
+            } else {
+                "Open slide list"
+            })
+            .hovered(rect.contains(self.last_mouse))
+            .pressed(self.left_pointer_down && rect.contains(self.last_mouse));
+        let (_, _, fg) = face.colors(theme);
+        Button::paint(scene, t, tr, theme, &face);
         // Three evenly-spaced horizontal lines.
         let cx0 = rect.x0 + 9.0;
         let cx1 = rect.x1 - 9.0;
@@ -5950,6 +5886,14 @@ impl Widget for SlidesApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if let WindowEvent::MouseInput {
+            state: pointer_state,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            self.left_pointer_down = *pointer_state == ElementState::Pressed;
+        }
         if matches!(
             event,
             WindowEvent::MouseInput {
@@ -8506,6 +8450,35 @@ mod tests {
     }
 
     #[test]
+    fn hamburger_pointer_path_tracks_pressed_state_and_keeps_action_routing() {
+        let mut app = app_sized(NARROW_BREAKPOINT - 200.0);
+        let mut doc = AutoCommit::new();
+        let hamburger = app
+            .compute_chrome()
+            .buttons
+            .into_iter()
+            .find(|button| matches!(button.kind, ButtonKind::Hamburger))
+            .expect("narrow editor exposes the slide-list button");
+
+        app_dispatch(&mut app, &mut doc, &cursor_ev(hamburger.rect.center()));
+        assert!(app_dispatch(&mut app, &mut doc, &left_press_ev()));
+        assert!(
+            app.left_pointer_down,
+            "press feedback stays active until release"
+        );
+        assert!(
+            app.rail_open(),
+            "the production Hit path still opens the rail"
+        );
+
+        app_dispatch(&mut app, &mut doc, &left_release_ev());
+        assert!(
+            !app.left_pointer_down,
+            "release clears shared button feedback"
+        );
+    }
+
+    #[test]
     fn wide_window_docks_the_inspector() {
         let app = app_sized(NARROW_BREAKPOINT + 200.0);
         assert_eq!(app.inspector_layout(), SplitLayout::Docked);
@@ -9582,6 +9555,13 @@ mod tests {
         WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+    fn left_release_ev() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
             button: MouseButton::Left,
         }
     }

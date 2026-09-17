@@ -76,6 +76,8 @@ pub struct CalculatorApp {
     /// test can prove an affordance and its [`ActionSpec`](tilo_actions::ActionSpec)
     /// build the identical action.
     actions: ui::ActionHost,
+    search: crate::search_provider::CalculatorSearchProvider,
+    history_ids: Vec<String>,
 }
 
 /// How long editing must pause before a burst of keystrokes is sealed into one
@@ -109,6 +111,7 @@ impl CalculatorApp {
     }
 
     fn with_model(model: CalcModel) -> Self {
+        let search = crate::search_provider::CalculatorSearchProvider::new(&model.history, &[]);
         Self {
             model,
             calc: CalcScreen::default(),
@@ -132,6 +135,8 @@ impl CalculatorApp {
             last_edit_time: None,
             node: None,
             actions: ui::ActionHost::new(),
+            search,
+            history_ids: Vec::new(),
         }
     }
 
@@ -1061,11 +1066,18 @@ impl Widget for CalculatorApp {
         // handler receives an immutable document reference, so stage the
         // visible mode here; the regular interaction path will materialize a
         // starter before editing. (A palette add action is always available.)
-        self.set_mode(match operation {
+        let mode = match operation {
             actions::CalculatorOperation::ShowCalculator => Mode::Calc,
             actions::CalculatorOperation::ShowGraph2d => Mode::Graph2d,
             actions::CalculatorOperation::ShowGraph3d => Mode::Graph3d,
-        });
+            actions::CalculatorOperation::RecallExpression { expression } => {
+                self.model.expr = expression;
+                self.model.after_equals = false;
+                self.model_dirty = true;
+                Mode::Calc
+            }
+        };
+        self.set_mode(mode);
         Ok(true)
     }
 
@@ -1077,6 +1089,7 @@ impl Widget for CalculatorApp {
                 crate::doc::store(state, &self.model);
             }
             self.seeded = true;
+            self.history_ids = crate::doc::visible_ids(state, "history");
             return;
         }
         // After the first frame the CRDT holds the source of truth for all
@@ -1091,6 +1104,7 @@ impl Widget for CalculatorApp {
         // `after_equals` is ephemeral (never persisted), so carry it across the
         // comparison to avoid a spurious reload after an `=`.
         let _ = crate::doc::load_into(state, &mut self.model);
+        self.history_ids = crate::doc::visible_ids(state, "history");
     }
 
     fn build_layout(
@@ -1606,6 +1620,11 @@ impl Widget for CalculatorApp {
     /// impl in [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        self.search.refresh(&self.model.history, &self.history_ids);
+        vec![Box::new(self.search.clone())]
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched

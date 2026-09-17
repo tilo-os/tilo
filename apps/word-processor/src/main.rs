@@ -124,6 +124,17 @@ fn main() {
                 "--error",
                 "--image-object",
             ])
+            .scenarios(&[
+                "history",
+                "styles",
+                "comments",
+                "threaded-comments",
+                "template-picker",
+                "toolbar-overflow",
+                "find",
+                "error",
+                "image-object",
+            ])
             .shot_handler(run_shot)
             .live_handler(run_live),
     );
@@ -146,7 +157,7 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
     let out = args.shots.as_deref().ok_or("missing screenshot output")?;
     let file = file_arg(args);
-    if args.has("--history") {
+    if shot_state(args, "history") {
         // The strip renders the document's own change graph, so a shot of it is
         // only worth anything over a document that has one. Give the document a
         // few authored revisions first, through the same editing path a user
@@ -168,29 +179,29 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
     // review representative rather than maintaining a second mock renderer.
     let (state, mut wp) = build_concrete(file)?;
     let mut state = state;
-    if args.has("--comments") || args.has("--threaded-comments") {
+    if shot_state(args, "comments") || shot_state(args, "threaded-comments") {
         seed_review(&mut state, &mut wp)?;
     }
-    if args.has("--threaded-comments") {
+    if shot_state(args, "threaded-comments") {
         seed_comment_thread(&mut state, &mut wp)?;
     }
-    if args.has("--find") {
+    if shot_state(args, "find") {
         wp.sync(&mut state.doc, &state.root);
         wp.stage_find_for_shot(&state.doc, "report");
     }
-    if args.has("--image-object") {
+    if shot_state(args, "image-object") {
         seed_selected_image(&mut state, &mut wp)?;
     }
-    if args.has("--styles") {
+    if shot_state(args, "styles") {
         wp.set_styles_panel_open(true);
     }
-    if args.has("--error") {
+    if shot_state(args, "error") {
         wp.stage_error_for_shot();
     }
-    if args.has("--template-picker") {
+    if shot_state(args, "template-picker") {
         wp.stage_template_picker_for_shot();
     }
-    if args.has("--toolbar-overflow") {
+    if shot_state(args, "toolbar-overflow") {
         wp.stage_toolbar_overflow_for_shot();
     }
     render_shot(
@@ -201,6 +212,10 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         out,
     )?;
     Ok(())
+}
+
+fn shot_state(args: &LaunchArgs, name: &str) -> bool {
+    args.scenario.as_deref() == Some(name) || args.has(format!("--{name}").as_str())
 }
 
 /// A real, selected document image for visual regression shots of the object

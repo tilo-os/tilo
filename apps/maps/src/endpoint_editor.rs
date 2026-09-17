@@ -503,7 +503,7 @@ impl EndpointEditor {
             );
             let text_x = rect.x0 + 30.0;
             let distance = geo::fmt_distance(geo::haversine_m(place.pos, distance_anchor));
-            let distance_w = draw::measure_w(text, &distance, 11.0) + 8.0;
+            let distance_w = draw::measure_w(text, &distance, 12.0) + 8.0;
             draw::text_clip(
                 scene,
                 text,
@@ -522,7 +522,7 @@ impl EndpointEditor {
                 &place.address,
                 text_x,
                 rect.y0 + 24.0,
-                11.0,
+                12.0,
                 theme.text_dim,
                 rect.x1 - text_x - distance_w,
             );
@@ -533,7 +533,7 @@ impl EndpointEditor {
                 &distance,
                 rect.x1 - 8.0,
                 rect.y0 + 8.0,
-                11.0,
+                12.0,
                 theme.accent_primary,
             );
             self.hits.push((rect, EndpointHit::Pick(endpoint, index)));

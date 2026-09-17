@@ -31,6 +31,8 @@ type CommandHandler = fn(&LaunchArgs) -> Result<bool, LaunchError>;
 pub struct LaunchArgs {
     pub shots: Option<PathBuf>,
     pub responsive_matrix: Option<PathBuf>,
+    /// Capture the default and every declared scenario at all acceptance sizes.
+    pub visual_matrix: Option<PathBuf>,
     pub viewport: Option<(u32, u32)>,
     pub scenario: Option<String>,
     pub headless: Option<headless::Spec>,
@@ -325,7 +327,7 @@ impl fmt::Display for LaunchError {
             Self::ConflictingModes => {
                 write!(
                     f,
-                    "choose only one of --shots, --responsive-matrix, --headless-drive, or --native-audit"
+                    "choose only one of --shots, --responsive-matrix, --visual-matrix, --headless-drive, or --native-audit"
                 )
             }
             Self::ShotsOnly(arg) => write!(
@@ -433,6 +435,34 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         return Ok(());
     }
 
+    if let Some(out_dir) = &args.visual_matrix {
+        std::fs::create_dir_all(out_dir).map_err(|error| {
+            LaunchError::Operation(format!(
+                "could not create visual-matrix directory {}: {error}",
+                out_dir.display()
+            ))
+        })?;
+        let scenarios = visual_matrix_scenarios(args.scenario.as_deref(), spec.scenarios);
+        for scenario in scenarios {
+            for (viewport_name, viewport) in RESPONSIVE_VIEWPORTS {
+                let state_name = scenario.as_deref().unwrap_or("default");
+                let out = out_dir.join(format!("{}-{state_name}-{viewport_name}.png", spec.app_id));
+                let mut matrix_args = args.clone();
+                matrix_args.visual_matrix = None;
+                matrix_args.shots = Some(out.clone());
+                matrix_args.viewport = Some(viewport);
+                matrix_args.scenario.clone_from(&scenario);
+                render_screenshot(spec, &matrix_args, &out, viewport)?;
+                println!(
+                    "{}: wrote {state_name} {viewport_name} visual shot to {}",
+                    spec.app_id,
+                    out.display()
+                );
+            }
+        }
+        return Ok(());
+    }
+
     if let Some(out_dir) = &args.responsive_matrix {
         std::fs::create_dir_all(out_dir).map_err(|error| {
             LaunchError::Operation(format!(
@@ -446,18 +476,7 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
             matrix_args.responsive_matrix = None;
             matrix_args.shots = Some(out.clone());
             matrix_args.viewport = Some(viewport);
-            if let Some(handler) = spec.shot_handler {
-                handler(&matrix_args)?;
-            } else {
-                let root = spec.screenshot_root(&matrix_args)?;
-                let harness = FrameHarness::new_with_theme(
-                    State::new(),
-                    root,
-                    viewport,
-                    shot_theme(&matrix_args),
-                );
-                harness.render_png(&out);
-            }
+            render_screenshot(spec, &matrix_args, &out, viewport)?;
             println!(
                 "{}: wrote {name} responsive shot to {}",
                 spec.app_id,
@@ -498,6 +517,32 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     }
 
     run_native_app(spec, &args)
+}
+
+fn render_screenshot(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    out: &std::path::Path,
+    viewport: (u32, u32),
+) -> Result<(), LaunchError> {
+    if let Some(handler) = spec.shot_handler {
+        return handler(args);
+    }
+    let root = spec.screenshot_root(args)?;
+    let harness = FrameHarness::new_with_theme(State::new(), root, viewport, shot_theme(args));
+    harness.render_png(out);
+    Ok(())
+}
+
+fn visual_matrix_scenarios(requested: Option<&str>, declared: &[&str]) -> Vec<Option<String>> {
+    requested.map_or_else(
+        || {
+            std::iter::once(None)
+                .chain(declared.iter().map(|scenario| Some((*scenario).to_owned())))
+                .collect()
+        },
+        |scenario| vec![Some(scenario.to_owned())],
+    )
 }
 
 fn run_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchError> {
@@ -599,6 +644,7 @@ fn parse_args_extended(
     let mut parsed = LaunchArgs {
         shots: None,
         responsive_matrix: None,
+        visual_matrix: None,
         viewport: None,
         scenario: None,
         headless: None,
@@ -623,6 +669,10 @@ fn parse_args_extended(
             "--responsive-matrix" => {
                 let value = take_value(args, &mut index, flag, inline)?;
                 set_once(&mut parsed.responsive_matrix, PathBuf::from(value), flag)?;
+            }
+            "--visual-matrix" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                set_once(&mut parsed.visual_matrix, PathBuf::from(value), flag)?;
             }
             "--pseudo-locale" if inline.is_none() => {
                 if parsed.pseudo_locale {
@@ -689,6 +739,7 @@ fn parse_args_extended(
     }
     let mode_count = usize::from(parsed.shots.is_some())
         .saturating_add(usize::from(parsed.responsive_matrix.is_some()))
+        .saturating_add(usize::from(parsed.visual_matrix.is_some()))
         .saturating_add(usize::from(parsed.headless.is_some()))
         .saturating_add(usize::from(parsed.native_audit));
     if mode_count > 1 {
@@ -697,7 +748,11 @@ fn parse_args_extended(
     if parsed.list_scenarios && mode_count > 0 {
         return Err(LaunchError::ConflictingModes);
     }
-    if parsed.shots.is_none() && parsed.responsive_matrix.is_none() && !parsed.native_audit {
+    if parsed.shots.is_none()
+        && parsed.responsive_matrix.is_none()
+        && parsed.visual_matrix.is_none()
+        && !parsed.native_audit
+    {
         if parsed.viewport.is_some() {
             return Err(LaunchError::ShotsOnly("--viewport".to_owned()));
         }
@@ -817,6 +872,53 @@ mod tests {
         assert!(parsed.pseudo_locale);
         assert_eq!(parsed.text_scale, Some(2.0));
         assert_eq!(parsed.scenario.as_deref(), Some("wide"));
+    }
+
+    #[test]
+    fn parses_visual_matrix_with_scenario_and_audit_options() {
+        let parsed = parse_args(
+            &strings(&[
+                "app",
+                "--visual-matrix=/tmp/review",
+                "--scenario=empty",
+                "--pseudo-locale",
+                "--text-scale=2",
+            ]),
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(parsed.visual_matrix, Some(PathBuf::from("/tmp/review")));
+        assert_eq!(parsed.scenario.as_deref(), Some("empty"));
+        assert!(parsed.pseudo_locale);
+        assert_eq!(parsed.text_scale, Some(2.0));
+
+        assert_eq!(
+            parse_args(
+                &strings(&[
+                    "app",
+                    "--visual-matrix=/tmp/review",
+                    "--responsive-matrix=/tmp/responsive",
+                ]),
+                &[],
+                &[],
+            )
+            .unwrap_err(),
+            LaunchError::ConflictingModes
+        );
+    }
+
+    #[test]
+    fn visual_matrix_includes_default_and_every_declared_state() {
+        assert_eq!(
+            visual_matrix_scenarios(None, &["empty", "error"]),
+            vec![None, Some("empty".to_owned()), Some("error".to_owned())]
+        );
+        assert_eq!(
+            visual_matrix_scenarios(Some("error"), &["empty", "error"]),
+            vec![Some("error".to_owned())]
+        );
+        assert_eq!(visual_matrix_scenarios(None, &[]), vec![None]);
     }
 
     #[test]

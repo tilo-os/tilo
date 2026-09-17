@@ -17,7 +17,7 @@ use crate::model::{Category, Channel, Playlist, Route, SearchType, SkipMode, Tub
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{
     Align, ChannelAvatar, Flex, ImageBox, IntoElement, Justify, LargeVideoMeta, Len, PlayerHost,
-    SharedPlayer, Surface, Switch, Thumbnail, card_surface, chip_surface, dim, divider, gap,
+    SharedPlayer, Surface, Thumbnail, action_toggle, card_surface, chip_surface, dim, divider, gap,
     hover_fill, hover_pill_surface, spring, subtle_fill, subtle_surface, text, text_c,
 };
 
@@ -1815,12 +1815,12 @@ fn autoplay_toggle(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .align(Align::Center)
         .push(dim(theme, "Autoplay", 12.5))
         .push(
-            Switch::new(
+            action_toggle(
                 model.settings.autoplay,
                 bus,
                 Action::ToggleSetting(SettingFlag::Autoplay),
             )
-            .accessible_name("Autoplay"),
+            .with_accessible_name("Autoplay"),
         )
 }
 
@@ -2060,37 +2060,37 @@ fn playback_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> 
                 theme,
                 "Autoplay next video",
                 "Play the up-next video when this one ends.",
-                Switch::new(
+                action_toggle(
                     s.autoplay,
                     bus,
                     Action::ToggleSetting(SettingFlag::Autoplay),
                 )
-                .id("switch_autoplay")
-                .accessible_name("Autoplay next video"),
+                .with_id("switch_autoplay")
+                .with_accessible_name("Autoplay next video"),
             ),
             setting_row(
                 theme,
                 "Show comments",
                 "Load the comment section on the watch page.",
-                Switch::new(
+                action_toggle(
                     s.show_comments,
                     bus,
                     Action::ToggleSetting(SettingFlag::ShowComments),
                 )
-                .id("switch_comments")
-                .accessible_name("Show comments"),
+                .with_id("switch_comments")
+                .with_accessible_name("Show comments"),
             ),
             setting_row(
                 theme,
                 "Show dislikes",
                 "Display the crowdsourced dislike count (Return YouTube Dislike).",
-                Switch::new(
+                action_toggle(
                     s.return_dislike_enabled,
                     bus,
                     Action::ToggleSetting(SettingFlag::ReturnDislike),
                 )
-                .id("switch_dislikes")
-                .accessible_name("Show dislikes"),
+                .with_id("switch_dislikes")
+                .with_accessible_name("Show dislikes"),
             ),
             setting_row(
                 theme,
@@ -2108,13 +2108,13 @@ fn sponsorblock_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus)
         theme,
         "Enable SponsorBlock",
         "Use community segment data to mark and skip parts of videos.",
-        Switch::new(
+        action_toggle(
             s.sponsorblock_enabled,
             bus,
             Action::ToggleSetting(SettingFlag::SponsorBlock),
         )
-        .id("switch_sponsorblock")
-        .accessible_name("Enable SponsorBlock"),
+        .with_id("switch_sponsorblock")
+        .with_accessible_name("Enable SponsorBlock"),
     )];
     for cat in Category::ALL {
         let (r, g, b) = cat.rgb();
@@ -2164,13 +2164,13 @@ fn dearrow_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> F
                 theme,
                 "Enable DeArrow",
                 "Use community branding in place of clickbait.",
-                Switch::new(
+                action_toggle(
                     s.dearrow_enabled,
                     bus,
                     Action::ToggleSetting(SettingFlag::DeArrow),
                 )
-                .id("switch_dearrow")
-                .accessible_name("Enable DeArrow"),
+                .with_id("switch_dearrow")
+                .with_accessible_name("Enable DeArrow"),
             ),
             // The two sub-toggles are gated by the master switch: they dim while
             // DeArrow is off (their stored choice is still shown + editable), and
@@ -2180,26 +2180,26 @@ fn dearrow_settings_card(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> F
                 theme,
                 "Replace clickbait titles",
                 "Show community-submitted, factual titles instead of clickbait.",
-                Switch::new(
+                action_toggle(
                     s.dearrow_titles,
                     bus,
                     Action::ToggleSetting(SettingFlag::DeArrowTitles),
                 )
-                .id("switch_dearrow_titles")
-                .accessible_name("Replace clickbait titles"),
+                .with_id("switch_dearrow_titles")
+                .with_accessible_name("Replace clickbait titles"),
                 s.dearrow_enabled,
             ),
             setting_row_gated(
                 theme,
                 "Replace thumbnails",
                 "Use neutral community thumbnails in place of clickbait frames.",
-                Switch::new(
+                action_toggle(
                     s.dearrow_thumbnails,
                     bus,
                     Action::ToggleSetting(SettingFlag::DeArrowThumbnails),
                 )
-                .id("switch_dearrow_thumbs")
-                .accessible_name("Replace thumbnails"),
+                .with_id("switch_dearrow_thumbs")
+                .with_accessible_name("Replace thumbnails"),
                 s.dearrow_enabled,
             ),
         ],
