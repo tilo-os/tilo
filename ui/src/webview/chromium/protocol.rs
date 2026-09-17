@@ -44,15 +44,18 @@ pub(super) fn read_packet(reader: &mut impl Read) -> io::Result<Option<Packet>> 
     reader.read_exact(&mut kind)?;
     match kind[0] {
         1 => {
-            let mut bytes = vec![0; (length - 1) as usize];
+            let payload_size = length
+                .checked_sub(1)
+                .ok_or_else(|| invalid("Invalid Chromium packet length"))?;
+            let mut bytes = vec![0; payload_size as usize];
             reader.read_exact(&mut bytes)?;
             Ok(Some(Packet::Json(serde_json::from_slice(&bytes)?)))
         }
         2 | 3 => {
             let header_size = if kind[0] == 3 { 13 } else { 9 };
-            if length < header_size {
-                return Err(invalid("Truncated Chromium frame header"));
-            }
+            let payload_size = length
+                .checked_sub(header_size)
+                .ok_or_else(|| invalid("Truncated Chromium frame header"))?;
             let tab = if kind[0] == 3 {
                 let mut bytes = [0; 4];
                 reader.read_exact(&mut bytes)?;
@@ -75,24 +78,30 @@ pub(super) fn read_packet(reader: &mut impl Read) -> io::Result<Option<Packet>> 
                 || height == 0
                 || width > 8192
                 || height > 8192
-                || size != Some(length - header_size)
+                || size != Some(payload_size)
             {
                 return Err(invalid("Invalid Chromium frame dimensions"));
             }
-            let mut pixels = vec![0; (length - header_size) as usize];
+            let mut pixels = vec![0; payload_size as usize];
             reader.read_exact(&mut pixels)?;
             for pixel in pixels.chunks_exact_mut(4) {
                 pixel.swap(0, 2);
             }
             let frame = Frame {
-                trace_id: crate::webview::frame_trace::received(tab.unwrap_or(1)),
+                trace_id: crate::webview::frame_trace::received(
+                    tab.unwrap_or(1),
+                    &pixels,
+                    width,
+                    height,
+                ),
                 width,
                 height,
                 rgba: Arc::new(pixels),
             };
-            Ok(Some(tab.map_or(Packet::Frame(frame.clone()), |id| {
-                Packet::TabFrame(id, frame)
-            })))
+            Ok(Some(match tab {
+                Some(id) => Packet::TabFrame(id, frame),
+                None => Packet::Frame(frame),
+            }))
         }
         _ => Err(invalid("Unknown Chromium packet kind")),
     }

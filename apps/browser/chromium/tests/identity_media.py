@@ -115,5 +115,16 @@ with tempfile.TemporaryDirectory(prefix="qos-identity-") as profile:
     send(op="navigate",url=base+"/next")
     until(lambda e:e["event"]=="uri" and e["url"].endswith("/next"))
     until(lambda e:e["event"]=="media_state" and not e["playing"] and e["page_url"].endswith("/next"))
+    # Cross-site replacement can overlap old/new CEF browser handles sharing
+    # a numeric ID. The replacement's iframe must still publish context-close.
+    cross_site=f"http://localhost:{server.server_port}/"
+    send(op="navigate",url=cross_site)
+    until(lambda e:e["event"]=="loaded" and e.get("url")==cross_site)
+    time.sleep(0.2)
+    send(op="mouse_button",button="left",down=True,x=25,y=62)
+    send(op="mouse_button",button="left",down=False,x=25,y=62)
+    cross_playing=until(lambda e:e["event"]=="media_state" and e["playing"] and e["page_url"]==cross_site)
+    send(op="scripts",scripts=["document.querySelector('iframe').remove()"])
+    until(lambda e:e["event"]=="media_state" and not e["playing"] and e["document_generation"]==cross_playing["document_generation"])
     send(op="shutdown");p.wait(timeout=15);print("PASS: bounded favicon/frame state, preload-none playback, lifecycle reset, media start/pause and native mute round-trip")
 server.shutdown();atexit.unregister(cleanup)

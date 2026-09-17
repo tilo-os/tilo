@@ -1523,3 +1523,178 @@ fn round1_top_level_frame_history_preserves_legacy_custody_and_stale_at_refusal(
     assert_eq!(fixture.replacement.read_history(&fixture.checkout.id, |_, history| history.revision()).unwrap(), replacement_revision+1);
     assert_eq!((driver.state_mut().doc.base_heads(), driver.state_mut().doc.pending_ops()), outer);
 }
+
+thread_local! {
+    static AUTOMATIC_MEDIA: std::cell::RefCell<Option<std::rc::Rc<DeferredMedia>>> = const { std::cell::RefCell::new(None) };
+}
+fn automatic_media_source() -> std::rc::Rc<dyn HistoricalAssetSource> {
+    let source = std::rc::Rc::new(DeferredMedia::default());
+    AUTOMATIC_MEDIA.with(|slot| *slot.borrow_mut() = Some(source.clone()));
+    source
+}
+static AUTOMATIC_MEDIA_DEFINITION: HistoryDefinition = HistoryDefinition {
+    app_id: APP,
+    scopes: &[HistoryScopeDefinition {
+        key: "document",
+        title: "Recorded media",
+        content_schema: None,
+        presentation: HistoryPresentation::DomainWithAssets {
+            create: super::host_tests::preview,
+            assets: automatic_media_source,
+        },
+    }],
+};
+fn check_automatic_media(mut driver: Driver, selected: automerge::ChangeHash) {
+    use automerge::ReadDoc;
+    let source = AUTOMATIC_MEDIA.with(|slot| slot.borrow_mut().take().unwrap());
+    assert!(
+        source.0.borrow().is_empty(),
+        "factory never reads before a selected request"
+    );
+    driver.click_named("history-open").unwrap();
+    let target = format!(
+        "timeline-entry:{}",
+        crate::widget::history_group::hex16(&crate::history_source::entry_id_from_hash(
+            &selected.to_string()
+        ))
+    );
+    driver
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&target),
+            &crate::a11y::Action::Activate,
+        )
+        .unwrap();
+    let old = source.0.borrow_mut().drain(..).collect::<Vec<_>>();
+    assert_eq!(old.len(), 2);
+    let after = old
+        .iter()
+        .find(|(r, _)| r.snapshot.side() == PreviewSide::After)
+        .unwrap();
+    let snapshot = automerge::AutoCommit::load(after.0.snapshot.bytes()).unwrap();
+    assert_eq!(
+        snapshot.get(ROOT, "body").unwrap().unwrap().0.to_str(),
+        Some("selected media")
+    );
+    assert_eq!(after.0.resource.app_id, APP);
+    driver.click_named("history-back-live").unwrap();
+    driver.click_named("history-open").unwrap();
+    driver
+        .perform_semantic_named(
+            "activity_timeline",
+            Some(&target),
+            &crate::a11y::Action::Activate,
+        )
+        .unwrap();
+    for (_, response) in old {
+        response.complete(Err("late automatic provider response".into()));
+    }
+    driver.key("Shift");
+    assert!(!format!("{:?}", driver.a11y_nodes()).contains("late automatic provider response"));
+    let current = source.0.borrow_mut().drain(..).collect::<Vec<_>>();
+    assert_eq!(current.len(), 2);
+    for (_, response) in current {
+        response.complete(Ok(Default::default()));
+    }
+    driver.key("Shift");
+    assert!(!format!("{:?}", driver.a11y_nodes()).contains("Loading historical media"));
+}
+#[test]
+fn automatic_asset_factory_delivers_selected_requests_in_standalone_registration() {
+    let mut state = State::new();
+    state.doc.put(ROOT, "body", "selected media").unwrap();
+    state.commit_action(None, None);
+    let selected = state.doc.base_heads()[0];
+    state.doc.put(ROOT, "body", "live media").unwrap();
+    state.commit_action(None, None);
+    let registration = HistoryRegistration::installed_app_state(
+        &AUTOMATIC_MEDIA_DEFINITION,
+        None,
+        uuid::Uuid::new_v4(),
+    )
+    .unwrap();
+    let driver = Driver::from_managed_root(
+        state,
+        ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
+        (900, 650),
+    )
+    .unwrap();
+    check_automatic_media(driver, selected);
+}
+#[test]
+fn automatic_asset_factory_delivers_selected_requests_in_owned_component() {
+    let host = ProbeHost::new();
+    let definition = runner_probe_definition();
+    let context = host
+        .prepare_with_permissions(definition, 978, &LaunchTarget::New, runner_permissions())
+        .unwrap();
+    let mut component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    let binding = component.callback_binding();
+    let selected = binding
+        .records
+        .with_history(&binding.checkout.id, |doc, history| {
+            doc.put(ROOT, "body", "selected media").unwrap();
+            history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
+            let selected = doc.base_heads()[0];
+            doc.put(ROOT, "body", "live media").unwrap();
+            history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
+            selected
+        })
+        .unwrap();
+    component
+        .register_document_history(&AUTOMATIC_MEDIA_DEFINITION)
+        .unwrap();
+    let driver = Driver::from_component(
+        component,
+        (900, 650),
+        crate::application::ComponentRunnerInputs {
+            theme: crate::Theme::dark(),
+            text_renderer: crate::font_catalog::fixture_renderer(),
+        },
+    )
+    .unwrap();
+    check_automatic_media(driver, selected);
+}
+#[test]
+fn automatic_asset_factory_delivers_selected_requests_in_bound_tile() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut owners = crate::record::RecordOwners::new(directory.path().to_path_buf());
+    let store = owners.open(APP, "automatic-media").unwrap();
+    let checkout = crate::record::RecordCheckout::new(
+        crate::RecordId::for_tab(979),
+        crate::record::RecordKind::new("deck"),
+    );
+    store
+        .reserve_record(&checkout)
+        .unwrap()
+        .initialize(|doc| {
+            doc.put(ROOT, "body", "selected media").unwrap();
+            Ok(())
+        })
+        .unwrap();
+    let selected = store
+        .with_history(&checkout.id, |doc, history| {
+            let selected = doc.base_heads()[0];
+            doc.put(ROOT, "body", "live media").unwrap();
+            history.commit_action_authored(
+                doc,
+                None,
+                None,
+                Some(crate::collaboration::local_user_id()),
+            );
+            selected
+        })
+        .unwrap();
+    let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
+        TileEditor(crate::widget::Text::new("Live")),
+    )));
+    tile.bind_record(store, checkout);
+    tile.register_document_history(&AUTOMATIC_MEDIA_DEFINITION)
+        .unwrap();
+    check_automatic_media(
+        Driver::new(State::new(), Box::new(tile), (900, 650)),
+        selected,
+    );
+}

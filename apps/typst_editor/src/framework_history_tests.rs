@@ -28,6 +28,10 @@ fn test_root() -> Box<dyn ui::widget::Widget> {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one isolated write/read subprocess custody test"
+)]
 fn production_library_persisted_restore_and_fresh_reopen() {
     if let Ok(stage) = std::env::var("QOS_SLICE5_TYPST_STAGE") {
         let (mut state, mut saver) = ui::persist::try_open("dev.qos.typst-editor").unwrap();
@@ -102,7 +106,14 @@ fn production_library_persisted_restore_and_fresh_reopen() {
             apply_prepared_content_restore(&mut driver.state_mut().doc, &plan).unwrap();
             driver.state_mut().doc.get_heads();
             driver.resize((950, 700)).unwrap();
-            assert_eq!(driver.state_mut().doc.text(&source).unwrap(), "");
+            let restored_source = driver
+                .state_mut()
+                .doc
+                .get(ROOT, "source")
+                .unwrap()
+                .unwrap()
+                .1;
+            assert_eq!(driver.state_mut().doc.text(&restored_source).unwrap(), "");
             saver.request(&mut driver.state_mut().doc);
             saver.try_flush().unwrap();
             std::fs::write(
@@ -182,6 +193,49 @@ fn absent_source_refuses_restore_but_empty_source_is_exact() {
     assert_eq!(doc.base_heads(), heads);
     assert_eq!(doc.pending_ops(), 0);
     assert_eq!(doc.text(&source).unwrap(), "Current source");
+    let mut driver = managed_driver(doc.clone(), absent);
+    let undo_before = format!("{:?}", driver.state_mut().undo_status(None));
+    let live_before = driver.state_mut().doc.base_heads();
+    driver.click_named("history-restore").unwrap();
+    driver.key("Enter");
+    assert_eq!(driver.state_mut().doc.base_heads(), live_before);
+    assert_eq!(driver.state_mut().doc.pending_ops(), 0);
+    assert_eq!(
+        format!("{:?}", driver.state_mut().undo_status(None)),
+        undo_before
+    );
+    assert_eq!(
+        driver.state_mut().doc.text(&source).unwrap(),
+        "Current source"
+    );
+    driver.key("Escape");
+    select_version(&mut driver, empty);
+    driver.click_named("history-restore").unwrap();
+    driver.key("Enter");
+    let restored = driver
+        .state_mut()
+        .doc
+        .get(ROOT, "source")
+        .unwrap()
+        .unwrap()
+        .1;
+    assert_eq!(driver.state_mut().doc.text(&restored).unwrap(), "");
+    assert!(driver.state_mut().can_undo_as(None));
+
+    select_version(&mut driver, heads[0]);
+    driver.click_named("history-restore").unwrap();
+    driver.key("Enter");
+    let restored = driver
+        .state_mut()
+        .doc
+        .get(ROOT, "source")
+        .unwrap()
+        .unwrap()
+        .1;
+    assert_eq!(
+        driver.state_mut().doc.text(&restored).unwrap(),
+        "Current source"
+    );
     let plan =
         prepare_content_restore(&doc, &crate::framework_history::SCHEMA, &heads, &[empty]).unwrap();
     apply_prepared_content_restore(&mut doc, &plan).unwrap();

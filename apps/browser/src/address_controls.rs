@@ -242,7 +242,6 @@ impl AddressControls {
             .on_effect(move || pending.set(Some(action.clone())))
     }
     pub fn panel(&self) -> Box<dyn Widget> {
-        let line = |text: &str| -> Box<dyn Widget> { Box::new(Text::new(text).with_size(13.0)) };
         let mut column=Column::new().with_intrinsic_height().push(line("Address profiles stay on this device. Filling requires your selection and confirmation."));
         if self.private {
             return Box::new(
@@ -258,8 +257,31 @@ impl AddressControls {
             },
             Action::Enable(!self.enabled),
         )));
+        column = self.profile_controls(column);
+        if let Some(id) = &self.delete {
+            let label = self
+                .profiles
+                .iter()
+                .find(|p| &p.id == id)
+                .map_or("selected address", |p| p.label.as_str());
+            column = column
+                .push(line(&format!("Delete {label}?")))
+                .push(Box::new(self.button(
+                    "browser.address.delete.confirm",
+                    "Confirm delete",
+                    Action::ConfirmDelete,
+                )))
+                .push(Box::new(self.button(
+                    "browser.address.delete.cancel",
+                    "Keep address",
+                    Action::CancelDelete,
+                )));
+        }
+        Box::new(column)
+    }
+    fn profile_controls(&self, mut column: Column) -> Column {
         if self.editing.is_some() {
-            for (i, label) in [
+            for (i, (label, field)) in [
                 "Profile label",
                 "Full name",
                 "Given name",
@@ -271,10 +293,11 @@ impl AddressControls {
                 "Country",
             ]
             .iter()
+            .zip(&self.fields)
             .enumerate()
             {
                 column = column.push(line(label)).push(Box::new(
-                    TextInput::from_state(&self.fields[i])
+                    TextInput::from_state(field)
                         .with_id(&format!("browser.address.field.{i}"))
                         .with_accessible_name(*label),
                 ));
@@ -332,28 +355,12 @@ impl AddressControls {
                 )));
             }
         }
-        if let Some(id) = &self.delete {
-            let label = self
-                .profiles
-                .iter()
-                .find(|p| &p.id == id)
-                .map(|p| p.label.as_str())
-                .unwrap_or("selected address");
-            column = column
-                .push(line(&format!("Delete {label}?")))
-                .push(Box::new(self.button(
-                    "browser.address.delete.confirm",
-                    "Confirm delete",
-                    Action::ConfirmDelete,
-                )))
-                .push(Box::new(self.button(
-                    "browser.address.delete.cancel",
-                    "Keep address",
-                    Action::CancelDelete,
-                )));
-        }
-        Box::new(column)
+        column
     }
+}
+
+fn line(text: &str) -> Box<dyn Widget> {
+    Box::new(Text::new(text).with_size(13.0))
 }
 
 #[cfg(test)]
@@ -363,7 +370,7 @@ mod tests {
     fn editor_requires_opt_in_saves_edits_and_confirms_deletion() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("addresses.json");
-        let mut editor = AddressControls::new(false, Some(path.clone()));
+        let mut editor = AddressControls::new(false, Some(path));
         editor.refresh();
         assert!(editor.profiles.is_empty());
         editor.act(Action::New);

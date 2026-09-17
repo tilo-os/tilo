@@ -4,6 +4,10 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
+/// Launch a separate browser process with isolated private storage.
+///
+/// # Errors
+/// Returns an error if the executable cannot be located or the child/reaper cannot be started.
 pub fn launch() -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     launch_executable(&executable)

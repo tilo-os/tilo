@@ -74,6 +74,10 @@ pub struct AutofillStore {
     saved: SavedProfiles,
 }
 impl AutofillStore {
+    /// Open normal address profiles, or an empty nonpersistent private store.
+    ///
+    /// # Errors
+    /// Returns an error if the normal profile file cannot be read or exceeds schema or size limits.
     pub fn open(mode: BrowsingMode, path: &Path) -> Result<Self, String> {
         // This return must precede metadata/read calls on a normal profile path.
         if mode.is_private() {
@@ -117,11 +121,19 @@ impl AutofillStore {
             .then(|| self.saved.profiles.iter().find(|profile| profile.id == id))
             .flatten()
     }
+    /// Persist the address-autofill preference.
+    ///
+    /// # Errors
+    /// Returns an error in private mode or if the updated store cannot be saved.
     pub fn set_enabled(&mut self, enabled: bool) -> Result<(), String> {
         let mut next = self.saved.clone();
         next.enabled = enabled;
         self.persist(next)
     }
+    /// Save a validated address profile.
+    ///
+    /// # Errors
+    /// Returns an error when autofill is disabled, fields or profile count exceed limits, or persistence fails.
     pub fn put(&mut self, profile: AddressProfile) -> Result<(), String> {
         if !self.enabled() {
             return Err("Enable address autofill before adding profiles".into());
@@ -140,6 +152,10 @@ impl AutofillStore {
         }
         self.persist(next)
     }
+    /// Delete a saved address profile by ID.
+    ///
+    /// # Errors
+    /// Returns an error in private mode or if the updated store cannot be saved.
     pub fn delete(&mut self, id: &str) -> Result<(), String> {
         let mut next = self.saved.clone();
         next.profiles.retain(|p| p.id != id);

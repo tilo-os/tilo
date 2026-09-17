@@ -100,13 +100,211 @@ fn parse(contents: &str) -> Result<Scenario, String> {
 }
 
 pub fn load_from_env() -> Result<Option<Scenario>, String> {
+    let gate = GateConfig::from_env()?;
     let Some(path) = std::env::var_os("QOS_NATIVE_SCENARIO") else {
-        return Ok(None);
+        return if gate.is_some() {
+            Err("native input gate requires a scenario file".into())
+        } else {
+            Ok(None)
+        };
     };
     let path = std::path::PathBuf::from(path);
     let contents = std::fs::read_to_string(&path)
         .map_err(|error| format!("cannot read native scenario {}: {error}", path.display()))?;
+    if let Some(gate) = gate {
+        gate.verify_source(&contents)?;
+    }
     parse(&contents).map(Some)
+}
+
+/// Opt-in diagnostic protocol only. Each non-hover step needs its own fresh
+/// collector reply; ordinary benchmark timelines do not create or use a gate.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GateConfig {
+    fd: i32,
+    run_nonce: String,
+    scenario_sha256: String,
+}
+
+impl GateConfig {
+    fn from_env() -> Result<Option<Self>, String> {
+        let contents = match std::env::var("QOS_NATIVE_INPUT_GATE") {
+            Ok(contents) => contents,
+            Err(std::env::VarError::NotPresent) => return Ok(None),
+            Err(error) => return Err(format!("invalid native input gate environment: {error}")),
+        };
+        let config: Self = serde_json::from_str(&contents)
+            .map_err(|error| format!("invalid native input gate configuration: {error}"))?;
+        let hex = |value: &str, size| {
+            value.len() == size
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        if config.fd < 3 || !hex(&config.run_nonce, 32) || !hex(&config.scenario_sha256, 64) {
+            return Err("invalid native input gate descriptor or identity".into());
+        }
+        Ok(Some(config))
+    }
+
+    fn verify_source(&self, contents: &str) -> Result<(), String> {
+        use sha2::{Digest, Sha256};
+        if format!("{:x}", Sha256::digest(contents.as_bytes())) != self.scenario_sha256 {
+            return Err("native input gate scenario byte hash mismatch".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct GateRequest {
+    pid: u32,
+    run_nonce: String,
+    scenario_sha256: String,
+    step_id: usize,
+    challenge: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GateReply {
+    request: GateRequest,
+    approved: bool,
+}
+
+struct InputGate {
+    #[cfg(unix)]
+    stream: std::os::unix::net::UnixStream,
+    config: GateConfig,
+}
+
+impl InputGate {
+    fn from_env(scenario: &Scenario) -> Result<Option<Self>, String> {
+        let Some(config) = GateConfig::from_env()? else {
+            return Ok(None);
+        };
+        // Re-read at thread creation: the exact bytes must match the collector
+        // hash, and those bytes must describe the scenario we will schedule.
+        let path = std::env::var_os("QOS_NATIVE_SCENARIO")
+            .ok_or("native input gate requires a scenario file")?;
+        let contents = std::fs::read_to_string(path)
+            .map_err(|error| format!("cannot read gated native scenario: {error}"))?;
+        config.verify_source(&contents)?;
+        let loaded = parse(&contents)?;
+        if serde_json::to_value(loaded).map_err(|error| error.to_string())?
+            != serde_json::to_value(scenario).map_err(|error| error.to_string())?
+        {
+            return Err("native input gate scenario differs from scheduling input".into());
+        }
+        #[cfg(not(unix))]
+        {
+            Err("native input gate requires Unix stream support".into())
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::{AsRawFd, FromRawFd};
+            // SAFETY: fcntl validates the integer descriptor. A successful dup
+            // gives this gate a distinct owned fd; the inherited original stays
+            // owned by the caller. Drop closes only our duplicate.
+            let duplicate = unsafe { libc::fcntl(config.fd, libc::F_DUPFD_CLOEXEC, 3) };
+            if duplicate < 0 {
+                return Err(format!(
+                    "cannot duplicate native gate descriptor: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            // SAFETY: duplicate is a freshly returned owned descriptor.
+            let stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(duplicate) };
+            let mut kind: libc::c_int = 0;
+            let mut size = std::mem::size_of_val(&kind) as libc::socklen_t;
+            // SAFETY: kind/size are live writable outputs with the exact stated
+            // size. This rejects files and datagram sockets before any traffic.
+            let status = unsafe {
+                libc::getsockopt(
+                    stream.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_TYPE,
+                    (&raw mut kind).cast(),
+                    &raw mut size,
+                )
+            };
+            if status != 0 || kind != libc::SOCK_STREAM || stream.peer_addr().is_err() {
+                return Err("native gate descriptor is not a connected Unix stream".into());
+            }
+            stream
+                .set_nonblocking(false)
+                .map_err(|error| error.to_string())?;
+            Ok(Some(Self { stream, config }))
+        }
+    }
+
+    /// The permit expires on the producer's monotonic clock. A stalled
+    /// collector cannot open the gate; a stale reply cannot revive it. Denial
+    /// or EOF revokes a pending request, but cannot retract an event already
+    /// released. This is not an atomic guarantee of the OS session lock state.
+    fn approve(&mut self, step_id: usize) -> Result<Instant, String> {
+        #[cfg(not(unix))]
+        {
+            let _ = step_id;
+            Err("native input gate unsupported".into())
+        }
+        #[cfg(unix)]
+        {
+            use std::io::{Read, Write};
+            let expires = Instant::now() + Duration::from_secs(3);
+            let request = GateRequest {
+                pid: std::process::id(),
+                run_nonce: self.config.run_nonce.clone(),
+                scenario_sha256: self.config.scenario_sha256.clone(),
+                step_id,
+                challenge: uuid::Uuid::new_v4().simple().to_string(),
+            };
+            let mut bytes = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
+            bytes.push(b'\n');
+            self.stream
+                .set_write_timeout(Some(Duration::from_secs(3)))
+                .map_err(|error| error.to_string())?;
+            self.stream
+                .write_all(&bytes)
+                .map_err(|error| error.to_string())?;
+            let mut reply = Vec::new();
+            loop {
+                let remaining = expires
+                    .checked_duration_since(Instant::now())
+                    .filter(|duration| !duration.is_zero())
+                    .ok_or("native gate permit timed out")?;
+                self.stream
+                    .set_read_timeout(Some(remaining))
+                    .map_err(|error| error.to_string())?;
+                let mut chunk = [0_u8; 512];
+                let count = self
+                    .stream
+                    .read(&mut chunk)
+                    .map_err(|error| error.to_string())?;
+                if count == 0 {
+                    return Err("native gate collector closed".into());
+                }
+                reply.extend_from_slice(&chunk[..count]);
+                if reply.len() > 4096 {
+                    return Err("native gate reply too large".into());
+                }
+                if let Some(end) = reply.iter().position(|byte| *byte == b'\n') {
+                    if end + 1 != reply.len() {
+                        return Err("native gate has extra queued replies".into());
+                    }
+                    break;
+                }
+            }
+            let reply: GateReply =
+                serde_json::from_slice(&reply).map_err(|error| error.to_string())?;
+            if !reply.approved || reply.request != request || Instant::now() >= expires {
+                return Err("native gate permit denied, stale, or mismatched".into());
+            }
+            Ok(expires)
+        }
+    }
 }
 
 /// Compute an absolute deadline without wrapping either duration or clock range.
@@ -132,6 +330,7 @@ pub fn spawn(
     mut deliver: impl FnMut(Packet) -> bool + Send + 'static,
 ) -> Result<std::thread::JoinHandle<()>, String> {
     scenario.validate()?;
+    let mut gate = InputGate::from_env(&scenario)?;
     let origin = Instant::now();
     // Resolve every checked deadline before starting: no partial timeline on error.
     let packets = scenario
@@ -164,7 +363,25 @@ pub fn spawn(
                     }
                     std::thread::sleep(remaining);
                 }
+                let expires = if !matches!(packet.input, Input::Hover { .. })
+                    && let Some(gate) = gate.as_mut() {
+                    match gate.approve(packet.id) {
+                        Ok(expires) => Some(expires),
+                        Err(error) => {
+                            log::emit_json("qos-native-gate", serde_json::json!({
+                                "event":"denied", "step_id":packet.id, "reason":error }));
+                            break;
+                        }
+                    }
+                } else { None };
                 (packet.sent_at, packet.sent_host) = host_clock::sample();
+                // Recheck immediately before the callback, including time spent
+                // descheduled after receipt or sampling the diagnostic clock.
+                if expires.is_some_and(|expires| Instant::now() >= expires) {
+                    log::emit_json("qos-native-gate", serde_json::json!({
+                        "event":"denied", "step_id":packet.id, "reason":"permit expired before delivery" }));
+                    break;
+                }
                 if !deliver(packet) {
                     break;
                 }
@@ -177,6 +394,264 @@ pub fn spawn(
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    // A subprocess isolates opt-in environment and descriptor ownership from
+    // concurrently running tests. This is the real public load/spawn path.
+    #[cfg(unix)]
+    #[test]
+    fn gate_subprocess_fixture() {
+        if std::env::var_os("QOS_NATIVE_GATE_TEST_CHILD").is_none() {
+            return;
+        }
+        let result = load_from_env().and_then(|scenario| {
+            let mut scenario = scenario.expect("fixture scenario");
+            if std::env::var("QOS_NATIVE_GATE_TEST_CHILD").as_deref()
+                == Ok("changed-scheduling-input")
+            {
+                scenario.name = "different scheduling input".into();
+            }
+            spawn(scenario, |packet| {
+                println!("gate-test-delivered {}", packet.id);
+                true
+            })
+        });
+        match result {
+            Ok(thread) => thread.join().unwrap(),
+            Err(error) => println!("gate-test-refused {error}"),
+        }
+    }
+
+    #[cfg(unix)]
+    struct GateChild {
+        child: std::process::Child,
+        socket: std::os::unix::net::UnixStream,
+        output: std::path::PathBuf,
+        _directory: tempfile::TempDir,
+    }
+
+    #[cfg(unix)]
+    impl GateChild {
+        fn start(interval_us: u64, mutate: impl FnOnce(&mut serde_json::Value)) -> Self {
+            Self::start_mode(interval_us, mutate, "1")
+        }
+
+        fn start_mode(
+            interval_us: u64,
+            mutate: impl FnOnce(&mut serde_json::Value),
+            mode: &str,
+        ) -> Self {
+            use sha2::{Digest, Sha256};
+            use std::os::fd::AsRawFd;
+            use std::os::unix::process::CommandExt;
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("scenario.json");
+            let contents = format!(
+                r#"{{"name":"gate fixture","interval_us":{interval_us},"warmup_steps":1,"steps":[{{"kind":"hover","x":1,"y":1}},{{"kind":"click","x":2,"y":2}},{{"kind":"key","key":"enter"}}]}}"#
+            );
+            std::fs::write(&path, &contents).unwrap();
+            let (socket, inherited) = std::os::unix::net::UnixStream::pair().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let non_socket = std::fs::File::open(&path).unwrap();
+            let fd = if mode == "non-socket" {
+                non_socket.as_raw_fd()
+            } else {
+                inherited.as_raw_fd()
+            };
+            let mut config = serde_json::json!({"fd":fd,"run_nonce":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","scenario_sha256":format!("{:x}", Sha256::digest(contents.as_bytes()))});
+            mutate(&mut config);
+            let output = directory.path().join("output.log");
+            let file = std::fs::File::create(&output).unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "native_scenario::tests::gate_subprocess_fixture",
+                    "--nocapture",
+                ])
+                .env("QOS_NATIVE_GATE_TEST_CHILD", mode)
+                .env("QOS_NATIVE_SCENARIO", &path)
+                .env("QOS_NATIVE_INPUT_GATE", config.to_string())
+                .stdout(file.try_clone().unwrap())
+                .stderr(file);
+            // SAFETY: in the forked child, clear CLOEXEC only on our live socket;
+            // the parent retains its own descriptor flags and ownership.
+            unsafe {
+                command.pre_exec(move || {
+                    let flags = libc::fcntl(fd, libc::F_GETFD);
+                    if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let child = command.spawn().unwrap();
+            drop(inherited);
+            Self {
+                child,
+                socket,
+                output,
+                _directory: directory,
+            }
+        }
+
+        fn request(&self) -> serde_json::Value {
+            use std::io::BufRead;
+            let mut line = String::new();
+            std::io::BufReader::new(&self.socket)
+                .read_line(&mut line)
+                .unwrap();
+            serde_json::from_str(&line).expect("real producer must request permission before input")
+        }
+
+        fn reply(&mut self, request: serde_json::Value, approved: bool) {
+            use std::io::Write;
+            let reply = serde_json::json!({"request":request,"approved":approved});
+            writeln!(self.socket, "{reply}").unwrap();
+        }
+
+        fn finish(&mut self) -> String {
+            let until = Instant::now() + Duration::from_secs(6);
+            while self.child.try_wait().unwrap().is_none() {
+                assert!(Instant::now() < until, "child must finish boundedly");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::fs::read_to_string(&self.output).unwrap()
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for GateChild {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    #[cfg(unix)]
+    fn delivered_ids(output: &str) -> Vec<usize> {
+        output
+            .lines()
+            .filter_map(|line| line.strip_prefix("gate-test-delivered "))
+            .map(|id| id.parse().unwrap())
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stalled_collector_cannot_release_click_after_old_twelve_second_cadence() {
+        let mut child = GateChild::start(12_000_000, |_| {});
+        let startup_deadline = Instant::now() + Duration::from_secs(5);
+        while delivered_ids(&std::fs::read_to_string(&child.output).unwrap()).is_empty() {
+            assert!(
+                Instant::now() < startup_deadline,
+                "fixture must deliver its initial hover"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // No collector reads or approval writes for longer than the original
+        // 12s cadence. Removing the producer gate delivers click1 in this gap.
+        std::thread::sleep(Duration::from_millis(12_250));
+        let _ = child.child.kill();
+        child.child.wait().unwrap();
+        assert_eq!(
+            delivered_ids(&std::fs::read_to_string(&child.output).unwrap()),
+            [0]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_current_step_approvals_release_each_non_hover_once() {
+        let mut child = GateChild::start(1_000, |_| {});
+        let first = child.request();
+        assert_eq!(first["step_id"], 1);
+        assert_eq!(first["pid"], child.child.id());
+        child.reply(first.clone(), true);
+        let second = child.request();
+        assert_eq!(second["step_id"], 2);
+        assert_ne!(first["challenge"], second["challenge"]);
+        child.reply(second, true);
+        assert_eq!(delivered_ids(&child.finish()), [0, 1, 2]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn revoked_wrong_or_replayed_permits_never_release_the_pending_step() {
+        for field in [
+            "approved",
+            "run_nonce",
+            "scenario_sha256",
+            "pid",
+            "step_id",
+            "challenge",
+        ] {
+            let mut child = GateChild::start(1_000, |_| {});
+            let mut request = child.request();
+            if field != "approved" {
+                request[field] = serde_json::Value::Null;
+            }
+            child.reply(request, field != "approved");
+            assert_eq!(delivered_ids(&child.finish()), [0], "{field}");
+        }
+        let mut child = GateChild::start(1_000, |_| {});
+        let first = child.request();
+        child.reply(first.clone(), true);
+        let _second = child.request();
+        child.reply(first, true);
+        assert_eq!(delivered_ids(&child.finish()), [0, 1]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_gate_configuration_and_unverified_source_hash_fail_closed() {
+        for (field, value) in [
+            ("fd", serde_json::json!(-1)),
+            ("fd", serde_json::json!(1)),
+            ("run_nonce", serde_json::json!("")),
+            ("scenario_sha256", serde_json::json!("0".repeat(64))),
+        ] {
+            let mut child = GateChild::start(1_000, |config| config[field] = value);
+            let output = child.finish();
+            assert!(output.contains("gate-test-refused"), "{output}");
+            assert!(delivered_ids(&output).is_empty());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn closed_malformed_oversized_or_expired_gate_never_delivers_non_hover() {
+        use std::io::Write;
+        for bytes in [
+            b"not json\n".to_vec(),
+            vec![b'x'; 4097],
+            b"{\"approved\":".to_vec(),
+        ] {
+            let mut child = GateChild::start(1_000, |_| {});
+            let _request = child.request();
+            let _ = child.socket.write_all(&bytes);
+            child.socket.shutdown(std::net::Shutdown::Write).unwrap();
+            assert_eq!(delivered_ids(&child.finish()), [0]);
+        }
+        let mut child = GateChild::start(1_000, |_| {});
+        let request = child.request();
+        std::thread::sleep(Duration::from_millis(3_100));
+        let reply = serde_json::json!({"request":request,"approved":true});
+        let _ = writeln!(child.socket, "{reply}");
+        assert_eq!(delivered_ids(&child.finish()), [0]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gate_rejects_non_socket_and_changed_scheduling_input() {
+        for mode in ["non-socket", "changed-scheduling-input"] {
+            let mut child = GateChild::start_mode(1_000, |_| {}, mode);
+            let output = child.finish();
+            assert!(output.contains("gate-test-refused"), "{output}");
+            assert!(delivered_ids(&output).is_empty());
+        }
+    }
 
     #[test]
     fn effect_probe_reads_current_fixture_state_without_changing_it() {

@@ -21,11 +21,10 @@ fn cached_rules(directory: &Path) -> String {
     let mut rules = BASELINE.to_string();
     for (name, _) in crate::blocker::LISTS {
         let path = directory.join(name);
-        if std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() <= MAX_LIST) {
-            if let Some(text) = crate::blocker::read_cached_list(&path) {
+        if std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() <= MAX_LIST)
+            && let Some(text) = crate::blocker::read_cached_list(&path) {
                 append_bounded(&mut rules, &text);
             }
-        }
     }
     rules
 }
@@ -250,13 +249,13 @@ pub(crate) fn start(engine: SharedEngine) {
 }
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
     use super::*;
 
     #[test]
     #[ignore = "child entry point for private refresh/root lifecycle regression"]
     #[cfg(unix)]
     fn private_refresh_does_not_recreate_root_after_helper_exit_child() {
-        use std::io::{Read, Write};
         use std::os::unix::fs::PermissionsExt;
 
         let root = std::path::PathBuf::from(std::env::var_os("QOS_TEST_PRIVATE_ROOT").unwrap());
@@ -274,7 +273,10 @@ mod tests {
         framed.extend_from_slice(&u32::try_from(ready.len() + 1).unwrap().to_le_bytes());
         framed.push(1);
         framed.extend_from_slice(&ready);
-        let encoded: String = framed.iter().map(|byte| format!("\\{:03o}", byte)).collect();
+        let mut encoded = String::new();
+        for byte in framed {
+            std::fmt::Write::write_fmt(&mut encoded, format_args!("\\{byte:03o}")).unwrap();
+        }
         std::fs::write(
             &host,
             format!(
@@ -381,7 +383,6 @@ mod tests {
     }
     #[test]
     fn refresh_cache_failure_and_retry_preserve_valid_rules() {
-        use std::io::{Read, Write};
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("fixture.txt"), "||cached.test^").unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -434,7 +435,6 @@ mod tests {
             assert!(cached_rules(&directory).contains("cached.fixture.test"));
             return;
         }
-        use std::io::{Read, Write};
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().join("cache/filters");
         std::fs::create_dir_all(&directory).unwrap();
@@ -486,6 +486,7 @@ mod tests {
     #[test]
     fn concurrent_refresh_requests_admit_only_one_worker() {
         let state = Arc::new(std::sync::Mutex::new(Status::default()));
+        #[allow(clippy::needless_collect, reason = "spawn all workers before joining any, preserving the concurrent admission race")]
         let threads = (0..16)
             .map(|_| {
                 let state = state.clone();

@@ -103,6 +103,11 @@ impl CheckedHistoryRequestV1 {
         Ok(value)
     }
 
+    /// Validate the protocol version and required request identifiers.
+    ///
+    /// # Errors
+    /// Returns an error for an unsupported version, a nil intent or operation
+    /// identifier, or an invalid restore review.
     pub fn validate(&self) -> Result<(), CheckedHistoryProtocolError> {
         if self.schema_version != CHECKED_HISTORY_VERSION || self.intent_id.is_nil() {
             return Err(CheckedHistoryProtocolError);
@@ -121,6 +126,11 @@ impl CheckedHistoryRequestV1 {
 }
 
 impl FileRestoreReviewV1 {
+    /// Validate the protocol version and the reviewed file's identity.
+    ///
+    /// # Errors
+    /// Returns an error for an unsupported version or a nil workspace, mount
+    /// lifetime, or record identifier.
     pub fn validate(&self) -> Result<(), CheckedHistoryProtocolError> {
         if self.schema_version != CHECKED_HISTORY_VERSION
             || self.workspace_id.is_nil()

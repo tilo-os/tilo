@@ -37,19 +37,28 @@ fn enabled() -> bool {
 }
 /// Unique within this Rust process, including across native helpers and tabs.
 /// Receipt is after transport/decode; it is not the CEF paint timestamp.
-pub(crate) fn received(tab: u32) -> Option<u64> {
+pub(crate) fn received(tab: u32, rgba: &[u8], width: u32, height: u32) -> Option<u64> {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    static SCROLL_MARKER: OnceLock<bool> = OnceLock::new();
     if !enabled() {
         return None;
     }
-    static NEXT: AtomicU64 = AtomicU64::new(1);
     let id = NEXT
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
         .ok()?;
     let (_, host) = crate::native_scenario::host_clock::sample();
+    let scroll_marker_delta = if *SCROLL_MARKER
+        .get_or_init(|| std::env::var("QOS_WEBVIEW_SCROLL_MARKER").is_ok_and(|v| v == "1"))
+    {
+        super::scroll_marker::decode(rgba, width, height)
+    } else {
+        None
+    };
     crate::native_scenario::log::emit_json(
         "qos-webview-received",
         serde_json::json!({
             "frame_id": id, "tab_id": tab, "process_id": std::process::id(),
+            "scroll_marker_delta": scroll_marker_delta,
             "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
             "received_host_lo_s": host.map(|h| h.lo_s), "received_host_hi_s": host.map(|h| h.hi_s),
         }),

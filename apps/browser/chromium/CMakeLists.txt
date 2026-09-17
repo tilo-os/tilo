@@ -120,3 +120,8 @@ add_executable(qos-credential-commands-test tests/credential_commands_test.cc)
 target_include_directories(qos-credential-commands-test PRIVATE src)
 target_compile_options(qos-credential-commands-test PRIVATE -UNDEBUG)
 add_test(NAME credential-commands COMMAND qos-credential-commands-test)
+
+add_executable(qos-renderer-media-lifetime-test tests/renderer_media_lifetime_test.cc)
+target_include_directories(qos-renderer-media-lifetime-test PRIVATE src)
+target_compile_options(qos-renderer-media-lifetime-test PRIVATE -UNDEBUG)
+add_test(NAME renderer-media-lifetime COMMAND qos-renderer-media-lifetime-test)
