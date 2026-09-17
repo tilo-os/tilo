@@ -18,10 +18,98 @@ use crate::draw;
 use crate::model::{DiffLine, DiffLineKind, FileDiff};
 use crate::settings::{DiffLayout, Settings};
 
-/// Fixed monospace row height for diff lines, in logical px.
+/// Minimum monospace row height for diff lines, in logical px. The painted
+/// pitch is [`Metrics::row_h`]: this value at 1×, the measured line plus
+/// leading once the text scale outgrows it.
 pub const ROW_H: f64 = 18.0;
 const FONT: f32 = 12.5;
+/// Minimum unified gutter width (two line-number columns + divider).
 const GUTTER_W: f64 = 96.0;
+
+/// Row geometry measured from the renderer the diff paints with.
+///
+/// Refreshed at the top of every draw and handed back to the owner with the
+/// hunk buttons, so scrolling, hit rects and paint share one pitch: a text
+/// scale that grows the glyphs grows the rows and the gutter with them
+/// instead of letting 30 px glyphs overprint 18 px rows. `Default` is the
+/// 1× geometry the view has always painted (columns right-aligned at 40 and
+/// 84, a 4 px inset around each number and the divider); `measure` returns
+/// exactly that until the line height or the widest line number outgrows it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Metrics {
+    /// Row pitch.
+    pub row_h: f64,
+    /// Offset from a row's top that centres a `FONT`-sized monospace line.
+    text_dy: f64,
+    /// Right edge of the old-line-number column, relative to the pane.
+    old_col_right: f64,
+    /// Right edge of the new-line-number column, relative to the pane.
+    new_col_right: f64,
+    /// Unified gutter width (both columns, divider and its inset).
+    gutter_w: f64,
+    /// Air kept before each line number and around the gutter divider.
+    inset: f64,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            row_h: ROW_H,
+            text_dy: (ROW_H - 15.625) / 2.0,
+            old_col_right: 40.0,
+            new_col_right: 84.0,
+            gutter_w: GUTTER_W,
+            inset: 4.0,
+        }
+    }
+}
+
+impl Metrics {
+    /// Measure the pitch and gutter for `diff` with the exact mono style the
+    /// rows are painted in. At 1× every value equals `Default`; the columns
+    /// widen only when the widest line number no longer fits.
+    pub fn measure(tr: &mut TextRenderer, diff: &FileDiff, theme: &Theme) -> Self {
+        let one = Self::default();
+        let (_, line_h) = tr.measure_styled("M", FONT, None, TextWeight::Regular, false, true);
+        let line_h = f64::from(line_h);
+        // 1 px of leading either side: a 12.5 px mono line measures 15.625 px,
+        // so 18 px rows keep ~1.2 px and only a larger text scale grows them.
+        let row_h = (line_h + 2.0).max(ROW_H);
+        // Line numbers are monotonic within a diff, so the last numbered line
+        // of each column carries its maximum — two O(1) reverse scans rather
+        // than a walk over every line on every frame.
+        let last_old = diff.lines.iter().rev().find_map(|l| l.old_lineno);
+        let last_new = diff.lines.iter().rev().find_map(|l| l.new_lineno);
+        let digits = last_old
+            .max(last_new)
+            .map_or(2, |n| n.to_string().len().max(2));
+        let widest = "0".repeat(digits);
+        let num_w = f64::from(
+            tr.measure_styled(&widest, FONT, None, TextWeight::Regular, false, true)
+                .0,
+        );
+        let inset = f64::from(theme.tokens.spacing.s1);
+        let old_col_right = (num_w + 2.0 * inset).max(one.old_col_right);
+        let col_pitch = (num_w + 2.0 * inset).max(one.new_col_right - one.old_col_right);
+        let new_col_right = old_col_right + col_pitch;
+        let gutter_w = (new_col_right + 3.0 * inset).max(GUTTER_W);
+        Self {
+            row_h,
+            text_dy: (row_h - line_h) / 2.0,
+            old_col_right,
+            new_col_right,
+            gutter_w,
+            inset,
+        }
+    }
+}
+
+/// What one [`DiffView::draw`] pass produced: the hunk-action hit rects and
+/// the row metrics the owner needs to clamp scrolling to the same pitch.
+pub struct DiffDraw {
+    pub buttons: Vec<HunkButton>,
+    pub metrics: Metrics,
+}
 
 /// What a hunk-action button does when clicked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,21 +135,15 @@ pub struct HunkButton {
 pub struct DiffView;
 
 impl DiffView {
-    /// Total content height for `diff` (used to clamp scrolling).
-    pub fn content_height(diff: &FileDiff) -> f64 {
-        diff.lines.len() as f64 * ROW_H + 8.0
-    }
-
-    /// Offset from a row's top that centres a `FONT`-sized monospace line in
-    /// `ROW_H` (measured once per draw pass, not the old fixed `+ 2.0`).
-    fn text_dy(tr: &mut TextRenderer) -> f64 {
-        let (_, h) = tr.measure_styled("M", FONT, None, TextWeight::Regular, false, true);
-        (ROW_H - f64::from(h)) / 2.0
+    /// Total content height for `diff` at the row pitch of the last draw
+    /// (used to clamp scrolling).
+    pub fn content_height(diff: &FileDiff, metrics: &Metrics) -> f64 {
+        diff.lines.len() as f64 * metrics.row_h + 8.0
     }
 
     /// Draw the diff into `viewport`, scrolled down by `scroll` px.
     /// `hover_hunk` highlights the stage button on that hunk. Returns the
-    /// hunk-stage button rects for hit-testing.
+    /// hunk-stage button rects for hit-testing and the row metrics painted.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         scene: &mut Scene,
@@ -75,6 +157,29 @@ impl DiffView {
         hover_hunk: Option<usize>,
         staged_side: bool,
         armed_hunk: Option<usize>,
+    ) -> DiffDraw {
+        let metrics = Metrics::measure(tr, diff, theme);
+        let buttons = Self::draw_rows(
+            scene, tr, t, theme, viewport, diff, scroll, settings, hover_hunk, staged_side,
+            armed_hunk, &metrics,
+        );
+        DiffDraw { buttons, metrics }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_rows(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        viewport: Rect,
+        diff: &FileDiff,
+        scroll: f64,
+        settings: &Settings,
+        hover_hunk: Option<usize>,
+        staged_side: bool,
+        armed_hunk: Option<usize>,
+        m: &Metrics,
     ) -> Vec<HunkButton> {
         let c = &theme.tokens.colors;
         // Pane background.
@@ -119,7 +224,7 @@ impl DiffView {
         );
 
         let result = if settings.diff_layout == DiffLayout::SideBySide {
-            Self::draw_split(scene, tr, t, theme, viewport, diff, scroll, *settings)
+            Self::draw_split(scene, tr, t, theme, viewport, diff, scroll, *settings, m)
         } else {
             Self::draw_unified(
                 scene,
@@ -133,6 +238,7 @@ impl DiffView {
                 hover_hunk,
                 staged_side,
                 armed_hunk,
+                m,
             )
         };
 
@@ -153,20 +259,20 @@ impl DiffView {
         hover_hunk: Option<usize>,
         staged_side: bool,
         armed_hunk: Option<usize>,
+        m: &Metrics,
     ) -> Vec<HunkButton> {
         let mut buttons: Vec<HunkButton> = Vec::new();
         let x0 = viewport.x0;
         let top = viewport.y0 - scroll;
         let mut last_hunk: Option<usize> = None;
-        let text_dy = Self::text_dy(tr);
 
         for (i, line) in diff.lines.iter().enumerate() {
-            let y = top + i as f64 * ROW_H;
-            if y + ROW_H < viewport.y0 || y > viewport.y1 {
+            let y = top + i as f64 * m.row_h;
+            if y + m.row_h < viewport.y0 || y > viewport.y1 {
                 continue; // cull off-screen rows
             }
-            let row = Rect::new(x0, y, viewport.x1, y + ROW_H);
-            Self::draw_unified_row_background(
+            let row = Rect::new(x0, y, viewport.x1, y + m.row_h);
+            let text_limit = Self::draw_unified_row_background(
                 scene,
                 tr,
                 t,
@@ -180,7 +286,7 @@ impl DiffView {
                 &mut buttons,
             );
             Self::draw_unified_row_content(
-                scene, tr, t, theme, diff, line, x0, y, settings, text_dy,
+                scene, tr, t, theme, diff, line, x0, y, settings, m, text_limit,
             );
         }
         buttons
@@ -188,7 +294,9 @@ impl DiffView {
 
     /// The row's tinted background, and — on a hunk's first row — its
     /// stage/unstage (+ worktree-side discard) buttons (part of
-    /// [`Self::draw_unified`]).
+    /// [`Self::draw_unified`]). Returns the x the row's text must end before
+    /// when buttons occupy its right end, so a long `@@ … @@` header elides
+    /// instead of running under `Unstage hunk`.
     #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_unified_row_background(
         scene: &mut Scene,
@@ -202,7 +310,7 @@ impl DiffView {
         armed_hunk: Option<usize>,
         last_hunk: &mut Option<usize>,
         buttons: &mut Vec<HunkButton>,
-    ) {
+    ) -> Option<f64> {
         let c = &theme.tokens.colors;
         match line.kind {
             DiffLineKind::Addition => draw::fill_rect(scene, t, row, draw::add_tint(theme)),
@@ -219,7 +327,11 @@ impl DiffView {
                     } else {
                         "Stage hunk"
                     };
-                    let mut right = row.x1 - 8.0;
+                    // Buttons sit one spacing step from the pane edge and
+                    // from each other; the header text ends the same step
+                    // before the leftmost button.
+                    let gap = f64::from(theme.tokens.spacing.s2);
+                    let mut right = row.x1 - gap;
                     let toggle = Self::draw_hunk_button(
                         scene,
                         tr,
@@ -232,7 +344,8 @@ impl DiffView {
                         toggle_label,
                         hovered,
                     );
-                    right = toggle.rect.x0 - 8.0;
+                    right = toggle.rect.x0 - gap;
+                    let mut leftmost = toggle.rect.x0;
                     buttons.push(toggle);
                     if !staged_side {
                         let armed = armed_hunk == Some(line.hunk);
@@ -249,18 +362,23 @@ impl DiffView {
                             dlabel,
                             hovered || armed,
                         );
+                        leftmost = discard.rect.x0;
                         buttons.push(discard);
                     }
                     *last_hunk = Some(line.hunk);
+                    return Some(leftmost - gap);
                 }
             }
             DiffLineKind::Meta => draw::fill_rect(scene, t, row, c.surfaces.raised),
             DiffLineKind::Context => {}
         }
+        None
     }
 
     /// The line-number gutter, marker glyph, and syntax-highlighted (or
     /// plain) content for one row (part of [`Self::draw_unified`]).
+    /// `text_limit` is the x a hunk header must end before (the first hunk
+    /// button); code rows are clipped by the pane instead.
     #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_unified_row_content(
         scene: &mut Scene,
@@ -272,14 +390,15 @@ impl DiffView {
         x0: f64,
         y: f64,
         settings: Settings,
-        text_dy: f64,
+        m: &Metrics,
+        text_limit: Option<f64>,
     ) {
         let c = &theme.tokens.colors;
-        let ty = y + text_dy;
-        Self::draw_linenos(scene, tr, t, theme, x0, y, line, text_dy);
+        let ty = y + m.text_dy;
+        Self::draw_linenos(scene, tr, t, theme, x0, y, line, m);
 
         // Marker glyph + content.
-        let content_x = x0 + GUTTER_W;
+        let content_x = x0 + m.gutter_w;
         let marker = match line.kind {
             DiffLineKind::Addition => "+",
             DiffLineKind::Deletion => "-",
@@ -295,11 +414,15 @@ impl DiffView {
         let text_x = content_x + 14.0;
         match line.kind {
             DiffLineKind::Hunk => {
+                let header = match text_limit {
+                    Some(limit) => draw::elide_mono(tr, &line.content, FONT, limit - content_x),
+                    None => line.content.clone(),
+                };
                 draw::mono(
                     scene,
                     tr,
                     t,
-                    &line.content,
+                    &header,
                     FONT,
                     c.semantic.info,
                     content_x,
@@ -342,23 +465,23 @@ impl DiffView {
         diff: &FileDiff,
         scroll: f64,
         settings: Settings,
+        m: &Metrics,
     ) -> Vec<HunkButton> {
         let c = &theme.tokens.colors;
         let mid = f64::midpoint(viewport.x0, viewport.x1);
         draw::vline(scene, t, mid, viewport.y0, viewport.y1, c.border_standard);
 
         let top = viewport.y0 - scroll;
-        let text_dy = Self::text_dy(tr);
         // Pair deletions/additions into aligned rows. We walk lines and
         // emit left (old) / right (new) cells; context spans both.
         let rows = pair_rows(&diff.lines);
         for (i, pr) in rows.iter().enumerate() {
-            let y = top + i as f64 * ROW_H;
-            if y + ROW_H < viewport.y0 || y > viewport.y1 {
+            let y = top + i as f64 * m.row_h;
+            if y + m.row_h < viewport.y0 || y > viewport.y1 {
                 continue;
             }
-            let left = Rect::new(viewport.x0, y, mid, y + ROW_H);
-            let right = Rect::new(mid, y, viewport.x1, y + ROW_H);
+            let left = Rect::new(viewport.x0, y, mid, y + m.row_h);
+            let right = Rect::new(mid, y, viewport.x1, y + m.row_h);
 
             // `pr.left`/`pr.right` are always valid indices into this same
             // `diff.lines` (`pair_rows` builds them from it), but `.get`
@@ -372,9 +495,7 @@ impl DiffView {
                 } else if line.kind == DiffLineKind::Hunk || line.kind == DiffLineKind::Meta {
                     draw::fill_rect(scene, t, left, c.surfaces.raised);
                 }
-                Self::draw_half(
-                    scene, tr, t, theme, line, viewport.x0, y, settings, true, text_dy,
-                );
+                Self::draw_half(scene, tr, t, theme, line, viewport.x0, y, settings, true, m);
             }
             if let Some(ri) = pr.right
                 && let Some(line) = diff.lines.get(ri)
@@ -384,7 +505,7 @@ impl DiffView {
                 } else if line.kind == DiffLineKind::Hunk || line.kind == DiffLineKind::Meta {
                     draw::fill_rect(scene, t, right, c.surfaces.raised);
                 }
-                Self::draw_half(scene, tr, t, theme, line, mid, y, settings, false, text_dy);
+                Self::draw_half(scene, tr, t, theme, line, mid, y, settings, false, m);
             }
         }
         Vec::new()
@@ -405,21 +526,24 @@ impl DiffView {
         y: f64,
         settings: Settings,
         is_left: bool,
-        text_dy: f64,
+        m: &Metrics,
     ) {
         let c = &theme.tokens.colors;
-        let ty = y + text_dy;
+        let ty = y + m.text_dy;
         let no = if is_left {
             line.old_lineno
         } else {
             line.new_lineno
         };
+        // One number column per half: as wide as the unified old column plus
+        // its inset (44 px at 1×), growing with the widest line number.
+        let col_right = x0 + m.old_col_right + m.inset;
         if let Some(n) = no {
             let s = n.to_string();
             let w = f64::from(draw::mono_width(tr, &s, FONT));
-            draw::mono(scene, tr, t, &s, FONT, c.text_dim, x0 + 44.0 - w, ty);
+            draw::mono(scene, tr, t, &s, FONT, c.text_dim, col_right - w, ty);
         }
-        let text_x = x0 + 54.0;
+        let text_x = col_right + 10.0;
         match line.kind {
             DiffLineKind::Hunk => {
                 draw::mono(
@@ -467,10 +591,10 @@ impl DiffView {
         x0: f64,
         y: f64,
         line: &DiffLine,
-        text_dy: f64,
+        m: &Metrics,
     ) {
         let c = &theme.tokens.colors;
-        let ty = y + text_dy;
+        let ty = y + m.text_dy;
         let old = line.old_lineno.map(|n| n.to_string()).unwrap_or_default();
         let new = line.new_lineno.map(|n| n.to_string()).unwrap_or_default();
         // Right-align both columns within the gutter.
@@ -483,7 +607,7 @@ impl DiffView {
             &old,
             FONT,
             c.text_dim,
-            x0 + 40.0 - ow,
+            x0 + m.old_col_right - ow,
             ty,
         );
         draw::mono(
@@ -493,15 +617,15 @@ impl DiffView {
             &new,
             FONT,
             c.text_dim,
-            x0 + 84.0 - nw,
+            x0 + m.new_col_right - nw,
             ty,
         );
         draw::vline(
             scene,
             t,
-            x0 + GUTTER_W - 4.0,
+            x0 + m.gutter_w - m.inset,
             y,
-            y + ROW_H,
+            y + m.row_h,
             c.border_standard,
         );
     }
@@ -548,6 +672,8 @@ impl DiffView {
         hovered: bool,
     ) -> HunkButton {
         let c = &theme.tokens.colors;
+        // 11 px Medium label with 10 px of padding either side, inset 2 px
+        // from the row's top and bottom (the button is as tall as its row).
         let size = 11.0f32;
         let (tw, th) = tr.measure_weighted(label, size, None, TextWeight::Medium);
         let tw = f64::from(tw);
@@ -708,6 +834,90 @@ mod tests {
     #[test]
     fn content_height_scales_with_lines() {
         let d = parse_unified("x.rs", "rust", "@@ -1,1 +1,1 @@\n+a\n+b\n");
-        assert!(DiffView::content_height(&d) > ROW_H * 2.0);
+        assert!(DiffView::content_height(&d, &Metrics::default()) > ROW_H * 2.0);
+    }
+
+    /// The measured metrics reproduce the historical constants at 1× — the
+    /// scaled path changes nothing for a user who has not enlarged text — and
+    /// grow the pitch and gutter with the glyphs at 2×.
+    #[test]
+    fn metrics_match_the_constants_at_1x_and_follow_the_text_scale() {
+        let d = parse_unified("x.rs", "rust", "@@ -10,3 +10,4 @@\n a\n-b\n+c\n+d\n");
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let one = Metrics::measure(&mut tr, &d, &theme);
+        assert_eq!(one, Metrics::default(), "1× measures exactly the historical geometry");
+        assert_eq!(one.row_h, ROW_H);
+        assert_eq!(one.gutter_w, GUTTER_W);
+
+        tr.set_text_scale(2.0);
+        let (_, line_h) = tr.measure_styled("M", FONT, None, TextWeight::Regular, false, true);
+        let two = Metrics::measure(&mut tr, &d, &theme);
+        assert!(
+            two.row_h >= f64::from(line_h) + 2.0,
+            "2× rows ({}) must hold a {line_h}px line plus leading",
+            two.row_h
+        );
+        assert!(two.row_h > one.row_h && two.gutter_w >= one.gutter_w);
+        // The content height the owner clamps scrolling to follows the pitch.
+        assert!(DiffView::content_height(&d, &two) > DiffView::content_height(&d, &one));
+    }
+
+    /// The gutter takes its digit count from the last numbered line of each
+    /// column, so a deletion tail with a larger old number than the final
+    /// addition's new number is not missed.
+    #[test]
+    fn gutter_digits_come_from_the_widest_column_tail() {
+        let d = parse_unified("x.rs", "rust", "@@ -998,3 +1,2 @@\n a\n-b\n-c\n+d\n");
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let wide = Metrics::measure(&mut tr, &d, &theme);
+        let narrow = Metrics::measure(
+            &mut tr,
+            &parse_unified("x.rs", "rust", "@@ -1,3 +1,2 @@\n a\n-b\n-c\n+d\n"),
+            &theme,
+        );
+        assert!(wide.gutter_w > narrow.gutter_w, "four-digit old numbers widen the gutter");
+    }
+
+    /// A long `@@ … @@` header must end before the hunk's first action button
+    /// in a phone-width pane instead of running under it.
+    #[test]
+    fn hunk_header_elides_before_the_unstage_button() {
+        let d = parse_unified(
+            "x.rs",
+            "rust",
+            "@@ -12,9 +12,11 @@ impl Scene for a very long context that overflows\n a\n-b\n+c\n",
+        );
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let theme = Theme::dark();
+        let viewport = Rect::new(0.0, 0.0, 390.0, 600.0);
+        let settings = Settings::default();
+        let out = DiffView::draw(
+            &mut scene, &mut tr, Affine::IDENTITY, &theme, viewport, &d, 0.0, &settings, None,
+            true, None,
+        );
+        let toggle = out
+            .buttons
+            .iter()
+            .find(|b| b.action == HunkAction::Toggle)
+            .expect("staged side emits an unstage button");
+        let m = out.metrics;
+        let content_x = viewport.x0 + m.gutter_w;
+        let limit = toggle.rect.x0 - f64::from(theme.tokens.spacing.s2);
+        let header = &d.lines[0].content;
+        let elided = draw::elide_mono(&mut tr, header, FONT, limit - content_x);
+        assert!(elided.ends_with('\u{2026}'), "header {header:?} should elide at 390px");
+        let painted_w = f64::from(draw::mono_width(&mut tr, &elided, FONT));
+        assert!(
+            content_x + painted_w <= limit + 0.01,
+            "header ends at {} but the button starts at {}",
+            content_x + painted_w,
+            toggle.rect.x0
+        );
+        // The button sits inside its row at the row's pitch (2 px inset).
+        assert!((toggle.rect.height() - (m.row_h - 4.0)).abs() < 0.01);
     }
 }
