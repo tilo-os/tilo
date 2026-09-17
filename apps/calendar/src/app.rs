@@ -62,6 +62,7 @@ use crate::event_popovers::{
     EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover,
 };
 use crate::ics;
+use crate::input_context::InputContext;
 use crate::mini_month::{MiniMonth, Outcome as MiniMonthOutcome};
 use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
 use crate::sidebar::{Action as SidebarAction, Mode as SidebarMode, Sidebar};
@@ -289,21 +290,6 @@ impl FormRects {
         self.chips_y += offset;
         self.notes_top += offset;
     }
-}
-
-/// The shared widget-system inputs needed by Calendar's internal event
-/// handlers. Keeping them together preserves the dispatch contract while the
-/// individual handlers expose only their own semantic arguments.
-struct InputContext<'a> {
-    event: &'a WindowEvent,
-    scale_factor: f64,
-    modifiers: winit::event::Modifiers,
-    state: &'a mut AutoCommit,
-    path: &'a ObjId,
-    handled: &'a mut bool,
-    focus_target: &'a mut Option<NodeId>,
-    node_id: NodeId,
-    taffy: &'a TaffyTree<()>,
 }
 
 /// Payload delivered by a finished background `CalDAV` sync worker: the pull
