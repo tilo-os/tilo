@@ -76,7 +76,17 @@
 - [ ] Restore only app content through checked canonical owned action frame; preserve runtime metadata, report unsupported patch cases truthfully, refresh stale review and recheck authority at execution.
 - [ ] Verify lifecycle, pending work, nested components and local view persistence; run relevant existing bound dispatch and application tests plus new regressions. Save report/diff for independent review.
 
-### Task 4: Complete application migration
+### Task 4a: Checked filesystem restore backend
+
+**Discovery:** Files restore currently appends repository/history state before its namespace comparison, and its request carries only a selected version. Connecting that path to a reviewed dialog would not satisfy stale-review rejection or undo/durability.
+
+- [ ] Add a bounded checked restore protocol backed by the existing filesystem record/history/publisher/transaction owners. The backend issues and validates an exact reviewed resource/frontier precondition; the shared host never falls back to unchecked restore.
+- [ ] Validate current authority, resource binding, supported codec, pending writes and the full reviewed frontier before durable admission. Reuse existing journaled transaction machinery; reject stale/denied requests without authored mutation and distinguish failures after durable admission as recovery-pending outcomes.
+- [ ] Preserve exact result identity and new restore provenance, make unchanged content a true no-op, provide backend-owned undo/redo, and prove durable reopen/idempotent retry. Never undo the incidental Files app State.
+- [ ] Refuse plain-byte rewind for both legacy and signed codec-backed documents; route supported restoration to the actual document owner with a fresh review, or show the precise unsupported mapping.
+- [ ] Add real race/late-revocation/ABA/concurrent-head/fault-recovery tests, then independent review. Audit source and protocol details in the task-specific brief before implementation.
+
+### Task 4b: Complete application migration
 
 **Files:** all managed application registration/root files identified by /tmp/qos-history-migration-inventory.md; existing Writer history_panel/widget and File Explorer history integration; docs explaining the enforced contract.
 
