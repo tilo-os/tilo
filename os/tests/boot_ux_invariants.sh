@@ -10,7 +10,13 @@ script="$root/os/usr/share/plymouth/themes/qos/qos.script"
 
 grep -Fq -- '--splash /out/qos-splash.bmp' "$uki"
 grep -Fq 'make-boot-splash.py /out/qos-splash.bmp' "$uki"
-grep -Fq 'COPY os/dev/make-boot-splash.py' "$containerfile"
+# Check the installed path, including grouped COPY instructions.
+# shellcheck source=lib/containerfile.sh
+. "$root/os/tests/lib/containerfile.sh"
+if ! containerfile_has_copy "$containerfile" os/dev/make-boot-splash.py /usr/local/bin/make-boot-splash.py; then
+  printf 'image must install the boot splash generator at its runtime path\n' >&2
+  exit 1
+fi
 grep -Fq 'plymouth-plugin-script' "$containerfile"
 if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth qos-rollback"' "$containerfile"; then
   printf 'initramfs must explicitly include crypt, TPM, Plymouth, and qOS rollback unlock modules\n' >&2
