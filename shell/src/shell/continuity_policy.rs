@@ -160,6 +160,7 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::GamepadForwardGrant { .. }
             | PersonalFabricAction::GamepadForwardEvent { .. }
             | PersonalFabricAction::GamepadForwardStop { .. } => ContinuityCapability::TypedGamepad,
+            PersonalFabricAction::Tethering { .. } => ContinuityCapability::WifiSettings,
             PersonalFabricAction::SetDisplayPlacement { .. }
             | PersonalFabricAction::DeviceHealthProbe { .. }
             | PersonalFabricAction::DeviceHealthReport { .. }
