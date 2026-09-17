@@ -27,10 +27,11 @@ use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    ContextMenu, EditOutcome, EditableLabel, FlapState, MenuItem, SplitLayout, Widget,
+    ContextMenu, EditOutcome, EditableLabel, FlapState, MenuItem, ModalAction, ModalFrame,
+    ModalHit, ModalLayout, ModalSpec, SplitLayout, Widget,
 };
 
 use crate::actions::{
@@ -107,19 +108,24 @@ const MAX_SCRUBBER_W: f64 = 560.0;
 /// a curtain. Deliberately a number here rather than the alpha of
 /// `surfaces.scrim`: that token is opaque in every theme.
 const SCRIM_ALPHA: f64 = 0.55;
-/// How dark the export modal's backdrop gets. Heavier than the bin flap's
-/// veil — a modal really does take the whole app — but still a veil: the user
-/// keeps their place in the timeline behind it.
-const MODAL_SCRIM_ALPHA: f64 = 0.72;
-/// Vertical space the export card's header (title + filename) needs before
-/// the first section label can start.
-const EXPORT_HEADER_H: f64 = 76.0;
-/// Space the card's footer needs: size estimate, status line, buttons.
-const EXPORT_FOOTER_H: f64 = 104.0;
-/// A section label's own height, above its row of segments.
-const EXPORT_LABEL_H: f64 = 18.0;
-/// The least a label-plus-segments group can be squeezed to.
-const EXPORT_GROUP_H: f64 = 50.0;
+/// The widest the export dialog's card is drawn. The three option groups
+/// read as one column at this width; wider, and the segments stretch into
+/// bars whose labels sit in empty space. The shared frame clamps it to the
+/// window with its own margin, so a small window never puts a button outside
+/// the surface.
+const EXPORT_CARD_W: f64 = 460.0;
+/// The widest the unsaved-work question's card is drawn: two short lines of
+/// body and three verbs in a row.
+const DISCARD_CARD_W: f64 = 420.0;
+/// The widest the shortcut sheet's card is drawn when it has room for two
+/// columns of shortcuts side by side.
+const HELP_CARD_W: f64 = 700.0;
+/// Below this window width the shortcut sheet lays its groups out in one
+/// column rather than two, so the sheet is readable rather than clipped at
+/// the phone-ish sizes the rest of the editor already adapts to.
+const HELP_TWO_COLUMN_MIN_W: f64 = 780.0;
+/// The widest the go-to-timecode field is drawn.
+const GOTO_CARD_W: f64 = 260.0;
 
 /// What the editor says, in plain words, when a source's bytes are not on this
 /// device — the reference replicated but the content has not been hydrated
@@ -1671,6 +1677,13 @@ pub struct VideoEditorApp {
     /// A project waiting for the user to say what to do about unsaved work.
     /// Opening a file must never silently discard an unsaved project.
     pending_open: Option<PendingOpen>,
+    /// Where the last paint put each dialog. The dialogs sit on the shared
+    /// [`ModalFrame`], which measures its title and action labels, so their
+    /// geometry exists only where a `TextRenderer` does — the draw pass. The
+    /// hit-test reads what was painted, which is also the only rect a pointer
+    /// can be over; a press that arrives before the first frame lands on
+    /// nothing and the scrim keeps it, exactly as it would on screen.
+    dialogs: DialogGeometry,
     /// What a `Save` should do once the destination comes back: just save, or
     /// save and then continue into the open that was interrupted.
     save_then_open: Option<PathBuf>,
@@ -1878,6 +1891,7 @@ impl VideoEditorApp {
             project_menu_items: Vec::new(),
             recents: crate::project_file::recents::load(),
             pending_open: None,
+            dialogs: DialogGeometry::default(),
             save_then_open: None,
             pending_save: false,
             // Filled on the first `sync`, from whatever project the document
@@ -6784,88 +6798,145 @@ impl VideoEditorApp {
         (self.inspector_layout(r).content_height - r.inspector.height()).max(0.0)
     }
 
-    fn export_layout(&self, r: &Regions) -> ExportLayout {
-        // Clamp to the window: a fixed 460x360 hung off both edges of a small
-        // one, putting the Cancel and Export buttons outside the surface.
-        let card_w = 460.0_f64.min(self.rect.width() - 32.0).max(240.0);
-        let card_h = 360.0_f64.min(self.rect.height() - 32.0).max(200.0);
-        let cx = (r.timeline.x0 + r.timeline.x1) / 2.0;
-        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
-        let card = Rect::new(
-            cx - card_w / 2.0,
-            cy - card_h / 2.0,
-            cx + card_w / 2.0,
-            cy + card_h / 2.0,
+    /// The export dialog's actions in authoring order: the way out first,
+    /// the verb second. Shared by the layout, the paint and the hit-test so
+    /// the three cannot disagree about which action is which.
+    fn export_actions(&self) -> [ModalAction<'static>; 2] {
+        let running = self.export_running();
+        [
+            // A render in flight turns Close into Cancel — the only way to
+            // stop it.
+            ModalAction::secondary(if running { "Cancel" } else { "Close" }),
+            // Export is offered only when it can actually happen. The dialog
+            // used to say "Export needs the GStreamer build" and put a
+            // bright, enabled Export button directly underneath it.
+            ModalAction::primary(if running { "Rendering…" } else { "Export" })
+                .enabled(self.export_is_offered()),
+        ]
+    }
+
+    /// Lay the export dialog out on the shared modal frame.
+    ///
+    /// The body is stacked from measured line boxes and spacing steps —
+    /// filename, the levels' verdict, three captioned option groups, the
+    /// size line, a status slot sized for its tallest occupant, and the
+    /// flow's own notice under it — so nothing in it is placed from a fixed
+    /// offset off the card's edges. The card is then as tall as that stack
+    /// needs, and the frame clamps it to the window with its own margin.
+    fn export_layout(&self, tr: &mut TextRenderer, theme: &Theme) -> ExportLayout {
+        let type_sizes = dialog_type(tr, theme);
+        let sp = &theme.tokens.spacing;
+        let (s1, s2, s3, s4) = (
+            f64::from(sp.s1),
+            f64::from(sp.s2),
+            f64::from(sp.s3),
+            f64::from(sp.s4),
         );
-        let x0 = card.x0 + 24.0;
-        let x1 = card.x1 - 24.0;
-        let mut l = ExportLayout {
-            card,
-            ..Default::default()
-        };
-        // The three groups are spaced within the band between the header and
-        // the footer rather than from fixed offsets off the card top. The old
-        // constants assumed a 360px card AND that the header was one line: the
-        // filename subtitle and the RESOLUTION label were both computed to land
-        // at the same place, and drew through each other.
-        let content_top = card.y0 + EXPORT_HEADER_H;
-        let footer_top = (card.y1 - EXPORT_FOOTER_H).max(content_top + EXPORT_GROUP_H);
-        let step = ((footer_top - content_top) / 3.0).clamp(EXPORT_GROUP_H, 64.0);
-        let seg = |x0: f64, x1: f64, n: usize, y: f64| -> Vec<Rect> {
-            let w = (x1 - x0) / n as f64;
+        let line_sm = line_height(tr, type_sizes.sm);
+        let line_xs = line_height(tr, type_sizes.xs);
+        // Every option is a pointer target: the theme's minimum, or taller
+        // when its label needs the room.
+        let seg_h = f64::from(theme.tokens.metrics.min_pointer_target).max(line_sm + s3);
+        let has_mix = self.mix_words().is_some();
+        let has_notice = self.export_notice.is_some();
+        // The status slot holds a progress bar over its line, or two lines
+        // of failure, whichever is taller — so it does not move as the
+        // render changes state.
+        let status_h = (s2 + s1 + line_xs).max(2.0 * line_xs);
+
+        // The body's height, top to bottom, in the renderer's pixels; the
+        // frame takes it unscaled and applies the text scale itself.
+        let mut body_h = line_sm;
+        if has_mix {
+            body_h += s1 + line_xs;
+        }
+        body_h += s4;
+        body_h += 3.0 * (line_xs + s1 + seg_h + s3);
+        body_h += s1 + line_sm + s2 + status_h;
+        if has_notice {
+            body_h += s1 + line_xs;
+        }
+        let actions = self.export_actions();
+        let spec = ModalSpec::new("Export Project")
+            .actions(&actions)
+            .max_width(EXPORT_CARD_W);
+        let modal = modal_layout_with_stacking_actions(
+            self.rect,
+            &spec,
+            body_h / f64::from(theme.text_scale),
+            tr,
+            theme,
+        );
+
+        let body = modal.body;
+        let (x0, x1) = (body.x0, body.x1);
+        let mut y = body.y0;
+        let filename_top = y;
+        y += line_sm;
+        let mix_top = has_mix.then(|| {
+            y += s1;
+            let top = y;
+            y += line_xs;
+            top
+        });
+        y += s4;
+        // `n` equal segments across the body, one spacing step apart — the
+        // same gapped convention the inspector's segmented rows use.
+        let seg = |n: usize, y: f64| -> Vec<Rect> {
+            let w = (x1 - x0 + s1) / n as f64;
             (0..n)
-                .map(|i| {
-                    Rect::new(
-                        x0 + i as f64 * w,
-                        y,
-                        x0 + (i as f64 + 1.0) * w - 4.0,
-                        y + 32.0,
-                    )
-                })
+                .map(|i| Rect::new(x0 + i as f64 * w, y, x0 + (i as f64 + 1.0) * w - s1, y + seg_h))
                 .collect()
         };
-        // Each group's label is drawn 18px above its segments, so the segment
-        // row starts one label-height into the group's slot.
-        let mut y = content_top + EXPORT_LABEL_H;
-        for (resolution, rect) in
-            Resolution::ALL
-                .iter()
-                .copied()
-                .zip(seg(x0, x1, Resolution::ALL.len(), y))
-        {
-            l.resolution.push((resolution, rect));
+        let mut captions = [0.0; 3];
+        let mut group = |caption: &mut f64, n: usize| -> Vec<Rect> {
+            *caption = y;
+            y += line_xs + s1;
+            let rects = seg(n, y);
+            y += seg_h + s3;
+            rects
+        };
+        let resolution = Resolution::ALL
+            .iter()
+            .copied()
+            .zip(group(&mut captions[0], Resolution::ALL.len()))
+            .collect();
+        let container = Container::ALL
+            .iter()
+            .copied()
+            .zip(group(&mut captions[1], Container::ALL.len()))
+            .collect();
+        let fps = FrameRate::ALL
+            .iter()
+            .copied()
+            .zip(group(&mut captions[2], FrameRate::ALL.len()))
+            .collect();
+        y += s1;
+        let info_top = y;
+        y += line_sm + s2;
+        let status = Rect::new(x0, y, x1, y + status_h);
+        y += status_h;
+        let notice_top = has_notice.then(|| {
+            y += s1;
+            y
+        });
+        let cancel = modal.actions.first().copied().unwrap_or_default();
+        let confirm = modal.actions.get(1).copied().unwrap_or_default();
+        ExportLayout {
+            modal,
+            type_sizes,
+            filename_top,
+            mix_top,
+            captions,
+            resolution,
+            container,
+            fps,
+            info_top,
+            status,
+            notice_top,
+            cancel,
+            confirm,
         }
-        y += step;
-        for (container, rect) in
-            Container::ALL
-                .iter()
-                .copied()
-                .zip(seg(x0, x1, Container::ALL.len(), y))
-        {
-            l.container.push((container, rect));
-        }
-        y += step;
-        for (frame_rate, rect) in
-            FrameRate::ALL
-                .iter()
-                .copied()
-                .zip(seg(x0, x1, FrameRate::ALL.len(), y))
-        {
-            l.fps.push((frame_rate, rect));
-        }
-        l.cancel = Rect::new(
-            x0,
-            card.y1 - 50.0,
-            f64::midpoint(x0, x1) - 6.0,
-            card.y1 - 18.0,
-        );
-        l.confirm = Rect::new(
-            f64::midpoint(x0, x1) + 6.0,
-            card.y1 - 50.0,
-            x1,
-            card.y1 - 18.0,
-        );
-        l
     }
 
     /// Deterministically arrange editor state for a `--shots` scenario. Real
@@ -7998,14 +8069,118 @@ fn rate_words(fps: f64) -> String {
     format!("{fps:.2}")
 }
 
-#[derive(Default)]
+/// The dialogs' painted geometry — see `VideoEditorApp::dialogs`.
+#[derive(Clone, Debug, Default)]
+struct DialogGeometry {
+    export: Option<ExportLayout>,
+    discard: Option<DiscardLayout>,
+    help: Option<HelpLayout>,
+    goto: Option<GotoLayout>,
+}
+
+/// The type sizes a dialog draws with, as the renderer base sizes the legacy
+/// `text` helpers take: the theme's type-scale steps put through
+/// [`TextRenderer::renderer_input_style`] once, so the renderer's own
+/// accessibility multiplier is applied exactly once on top. Held on the
+/// layout so the draw paints with the sizes the layout measured.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct DialogType {
+    /// The type scale's `sm` step: body lines, segment labels.
+    sm: f32,
+    /// The type scale's `xs` step: captions, status lines, hints.
+    xs: f32,
+    /// The type scale's `xl` step: the go-to field's timecode entry.
+    xl: f32,
+}
+
+/// Where the export dialog put everything. One description feeds the paint,
+/// the pointer and the cursor shape, so a click lands on the segment that
+/// was drawn. Every vertical position is measured — a line box at the
+/// dialog's type size, a spacing step between lines — rather than a fixed
+/// offset off the card's edges, which is what let the failure reason share
+/// its slot with the flow notice and end a pixel above the buttons.
+#[derive(Clone, Debug, PartialEq)]
 struct ExportLayout {
-    card: Rect,
+    /// The shared frame: scrim, card, title band, close control, action row.
+    modal: ModalLayout,
+    type_sizes: DialogType,
+    /// Top of the filename line under the title.
+    filename_top: f64,
+    /// Top of the mix-words line, when the levels have something to say.
+    mix_top: Option<f64>,
+    /// Top of each group's caption — RESOLUTION, FORMAT, FRAME RATE.
+    captions: [f64; 3],
     resolution: Vec<(Resolution, Rect)>,
     container: Vec<(Container, Rect)>,
     fps: Vec<(FrameRate, Rect)>,
+    /// Top of the size / frame / duration line.
+    info_top: f64,
+    /// The status slot: a progress bar over its line, a two-line failure,
+    /// or a one-line outcome. Sized for the tallest of those so the slot
+    /// does not move as the render changes state.
+    status: Rect,
+    /// Top of the flow's own notice line — under the status, never in it.
+    notice_top: Option<f64>,
+    /// Close, or Cancel while a render is running: the first action.
     cancel: Rect,
+    /// Export, or "Rendering…" while a render is running: the second action.
     confirm: Rect,
+}
+
+/// Where the unsaved-work question put its two lines and three verbs.
+#[derive(Clone, Debug, PartialEq)]
+struct DiscardLayout {
+    modal: ModalLayout,
+    type_sizes: DialogType,
+    /// Top of each body line.
+    lines: [f64; 2],
+    cancel: Rect,
+    discard: Rect,
+    save: Rect,
+}
+
+/// Where the shortcut sheet put its hint and every shortcut row.
+#[derive(Clone, Debug, PartialEq)]
+struct HelpLayout {
+    modal: ModalLayout,
+    type_sizes: DialogType,
+    /// Top of the "Esc or ? to close" line.
+    hint_top: f64,
+    /// One entry per group, in `SHORTCUTS` order.
+    groups: Vec<HelpGroupLayout>,
+    /// Where a row's description starts, measured from its column's left
+    /// edge: the widest key combination in the table plus one spacing step,
+    /// so no description ever starts inside a combination.
+    what_dx: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct HelpGroupLayout {
+    /// The group's heading band, spanning its column.
+    heading: Rect,
+    /// One band per shortcut row, in table order.
+    rows: Vec<Rect>,
+}
+
+/// Where the go-to-timecode field put its three lines.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GotoLayout {
+    card: Rect,
+    type_sizes: DialogType,
+    label_top: f64,
+    entry_top: f64,
+    hint_top: f64,
+}
+
+/// The measured heights the shortcut sheet lays a group out with.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HelpMetrics {
+    /// A group heading's line and the step down to its first row.
+    header_h: f64,
+    /// One shortcut row: its line and the step to the next.
+    row_h: f64,
+    /// The gap after a group's last row.
+    group_gap: f64,
 }
 
 // ==========================================================================
@@ -8864,12 +9039,15 @@ impl Widget for VideoEditorApp {
         use winit::window::CursorIcon;
         let r = self.regions();
         if self.show_export {
-            let l = self.export_layout(&r);
-            let over_btn = l.cancel.contains(point)
-                || l.confirm.contains(point)
-                || l.resolution.iter().any(|(_, rc)| rc.contains(point))
-                || l.container.iter().any(|(_, rc)| rc.contains(point))
-                || l.fps.iter().any(|(_, rc)| rc.contains(point));
+            // What was painted is what the pointer can be over — see `dialogs`.
+            let over_btn = self.dialogs.export.as_ref().is_some_and(|l| {
+                matches!(
+                    l.modal.hit(point),
+                    Some(ModalHit::Close | ModalHit::Action(_))
+                ) || l.resolution.iter().any(|(_, rc)| rc.contains(point))
+                    || l.container.iter().any(|(_, rc)| rc.contains(point))
+                    || l.fps.iter().any(|(_, rc)| rc.contains(point))
+            });
             return Some(if over_btn {
                 CursorIcon::Pointer
             } else {
@@ -10927,17 +11105,25 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
     ),
 ];
 
-/// Where the shortcut table starts inside its card, below the title and the
-/// "Esc or ? to close" line.
-const HELP_TOP: f64 = 76.0;
-/// One group header, one row, and the gap after a group, in pixels.
-const HELP_HEADER_H: f64 = 20.0;
-const HELP_ROW_H: f64 = 19.0;
-const HELP_GROUP_GAP: f64 = 10.0;
+impl HelpMetrics {
+    /// The sheet's row metrics at the dialog's type sizes: a heading is one
+    /// `xs` line and a row one `sm` line, each followed by the theme's
+    /// smallest spacing step; a group ends with the next step up. Measured,
+    /// so the rows grow with the text and never draw through each other at a
+    /// large text scale, where the fixed 20 / 19 / 10 they replace did.
+    fn measure(tr: &mut TextRenderer, theme: &Theme, type_sizes: DialogType) -> Self {
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        Self {
+            header_h: line_height(tr, type_sizes.xs) + s1,
+            row_h: line_height(tr, type_sizes.sm) + s1,
+            group_gap: f64::from(theme.tokens.spacing.s2),
+        }
+    }
+}
 
 /// How tall each shortcut group draws.
-fn help_group_h(rows: usize) -> f64 {
-    HELP_HEADER_H + rows as f64 * HELP_ROW_H + HELP_GROUP_GAP
+fn help_group_h(rows: usize, m: HelpMetrics) -> f64 {
+    m.header_h + rows as f64 * m.row_h + m.group_gap
 }
 
 /// Which group starts the second column, and how tall the taller column is.
@@ -10950,10 +11136,10 @@ fn help_group_h(rows: usize) -> f64 {
     clippy::indexing_slicing,
     reason = "the shortcut label prefix is split only at the ASCII command separator emitted by this module"
 )]
-fn help_columns(two_col: bool) -> (usize, f64) {
+fn help_columns(two_col: bool, m: HelpMetrics) -> (usize, f64) {
     let heights: Vec<f64> = SHORTCUTS
         .iter()
-        .map(|(_, rows)| help_group_h(rows.len()))
+        .map(|(_, rows)| help_group_h(rows.len(), m))
         .collect();
     let total: f64 = heights.iter().sum();
     if !two_col {
@@ -12276,12 +12462,36 @@ impl VideoEditorApp {
     /// Shared rather than derived twice: a click has to land on the card that
     /// was actually drawn, or dismiss-on-click-away fires while the pointer
     /// is over the field.
-    fn goto_layout(&self, r: &Regions) -> Rect {
-        let w = 260.0_f64.min(self.rect.width() - 32.0);
-        Rect::from_center_size(
-            Point::new(self.rect.center().x, r.transport.y0 - 46.0),
-            (w, 76.0),
-        )
+    fn goto_layout(&self, r: &Regions, tr: &mut TextRenderer, theme: &Theme) -> GotoLayout {
+        let type_sizes = dialog_type(tr, theme);
+        let sp = &theme.tokens.spacing;
+        let (s1, s2, s3, s4) = (
+            f64::from(sp.s1),
+            f64::from(sp.s2),
+            f64::from(sp.s3),
+            f64::from(sp.s4),
+        );
+        let line_xs = line_height(tr, type_sizes.xs);
+        let line_xl = line_height(tr, type_sizes.xl);
+        // Three measured lines — caption, the timecode, the hint — each one
+        // spacing step apart, inside the card's inset; so the field grows
+        // with the text instead of drawing its 2× timecode through its hint.
+        let h = s3 + line_xs + s1 + line_xl + s1 + line_xs + s3;
+        let w = GOTO_CARD_W.min(self.rect.width() - 2.0 * s4);
+        // Anchored just above the transport, whose playhead time it edits.
+        let y1 = r.transport.y0 - s2;
+        let cx = self.rect.center().x;
+        let card = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
+        let label_top = card.y0 + s3;
+        let entry_top = label_top + line_xs + s1;
+        let hint_top = entry_top + line_xl + s1;
+        GotoLayout {
+            card,
+            type_sizes,
+            label_top,
+            entry_top,
+            hint_top,
+        }
     }
 
     /// Whether a full-window scrim is up — the editor behind it is
@@ -12299,18 +12509,25 @@ impl VideoEditorApp {
         // Modals own all clicks. The unsaved-work question is asked over the
         // export dialog too (Ctrl+O works while it is up), so it is first.
         if self.pending_open.is_some() {
-            let (_, cancel, discard, save) = self.discard_layout();
-            if cancel.contains(p) {
-                self.resolve_pending_open(state, DiscardChoice::Cancel);
-            } else if discard.contains(p) {
-                self.resolve_pending_open(state, DiscardChoice::Discard);
-            } else if save.contains(p) {
-                self.resolve_pending_open(state, DiscardChoice::Save);
-            }
+            // Only what was painted can be pressed — see `dialogs`. The
+            // question has no scrim dismissal and no close control: its way
+            // out is the Cancel it shows.
+            let hit = self
+                .dialogs
+                .discard
+                .as_ref()
+                .and_then(|l| l.modal.hit(p));
+            let choice = match hit {
+                Some(ModalHit::Action(0)) => DiscardChoice::Cancel,
+                Some(ModalHit::Action(1)) => DiscardChoice::Discard,
+                Some(ModalHit::Action(2)) => DiscardChoice::Save,
+                _ => return,
+            };
+            self.resolve_pending_open(state, choice);
             return;
         }
         if self.show_export {
-            self.press_export(state, r, p);
+            self.press_export(state, p);
             return;
         }
         // The shortcut sheet and the go-to-timecode field paint the same
@@ -12318,13 +12535,26 @@ impl VideoEditorApp {
         // same way. Before this, a click "on" the dimmed background reached
         // the clip, slider or Export button underneath — a real edit, made
         // invisibly, through a surface that said the editor was unavailable.
-        // Clicking away dismisses, which is what a scrim invites.
+        // Clicking away dismisses, which is what a scrim invites; the card
+        // itself keeps the click, as every modal card in the fleet does.
         if self.show_help {
-            self.show_help = false;
+            if self
+                .dialogs
+                .help
+                .as_ref()
+                .is_none_or(|l| l.modal.dismisses(p))
+            {
+                self.show_help = false;
+            }
             return;
         }
         if self.goto_entry.is_some() {
-            if !self.goto_layout(r).contains(p) {
+            if self
+                .dialogs
+                .goto
+                .as_ref()
+                .is_none_or(|l| !l.card.contains(p))
+            {
                 self.goto_entry = None;
             }
             return;
@@ -13078,53 +13308,50 @@ impl VideoEditorApp {
         self.drag = Some(Drag::CurvePoint { channel: ch, idx });
     }
 
-    fn press_export(&mut self, state: &mut AutoCommit, r: &Regions, p: Point) {
-        let l = self.export_layout(r);
-        if !l.card.contains(p) {
-            // Click outside the card dismisses. A render in flight is not
-            // abandoned by that: it keeps reporting from the topbar chip and
-            // its own live region, and the chip is the way back in here.
-            self.show_export = false;
+    fn press_export(&mut self, state: &mut AutoCommit, p: Point) {
+        // Only what was painted can be pressed — see `dialogs`.
+        let Some(l) = self.dialogs.export.clone() else {
             return;
-        }
-        for (res, rect) in &l.resolution {
-            if rect.contains(p) {
-                self.export.resolution = *res;
-                return;
-            }
-        }
-        for (c, rect) in &l.container {
-            if rect.contains(p) {
-                self.export.container = *c;
-                return;
-            }
-        }
-        for (f, rect) in &l.fps {
-            if rect.contains(p) {
-                self.export.frame_rate = *f;
-                return;
-            }
-        }
-        if l.cancel.contains(p) {
-            if self.export_running() {
-                // A render in flight: this is Cancel, not Close. Stop it and
-                // leave the dialog up so the outcome is visible here as well
-                // as in the chip.
-                if let Some(job) = self.export_job.as_ref() {
-                    job.cancel();
-                }
-            } else {
+        };
+        match l.modal.hit(p) {
+            // The close control, or a click outside the card, dismisses. A
+            // render in flight is not abandoned by that: it keeps reporting
+            // from the topbar chip and its own live region, and the chip is
+            // the way back in here.
+            Some(ModalHit::Close | ModalHit::Scrim) => {
                 self.show_export = false;
             }
-            return;
-        }
-        if l.confirm.contains(p) {
-            // Matches what the button paints: a disabled Export refuses rather
-            // than starting something that can only fail.
-            if self.export_is_offered() {
-                self.request_export();
+            Some(ModalHit::Action(0)) => {
+                if self.export_running() {
+                    // A render in flight: this is Cancel, not Close. Stop it
+                    // and leave the dialog up so the outcome is visible here
+                    // as well as in the chip.
+                    if let Some(job) = self.export_job.as_ref() {
+                        job.cancel();
+                    }
+                } else {
+                    self.show_export = false;
+                }
             }
-            let _ = state;
+            Some(ModalHit::Action(_)) => {
+                // Matches what the button paints: a disabled Export refuses
+                // rather than starting something that can only fail.
+                if self.export_is_offered() {
+                    self.request_export();
+                }
+                let _ = state;
+            }
+            Some(ModalHit::Card) => {
+                if let Some((res, _)) = l.resolution.iter().find(|(_, rect)| rect.contains(p)) {
+                    self.export.resolution = *res;
+                } else if let Some((c, _)) = l.container.iter().find(|(_, rect)| rect.contains(p))
+                {
+                    self.export.container = *c;
+                } else if let Some((f, _)) = l.fps.iter().find(|(_, rect)| rect.contains(p)) {
+                    self.export.frame_rate = *f;
+                }
+            }
+            None => {}
         }
     }
 
@@ -14413,113 +14640,112 @@ impl VideoEditorApp {
         }
     }
 
-    /// Card and buttons for the unsaved-work question.
-    fn discard_layout(&self) -> (Rect, Rect, Rect, Rect) {
-        let w = 420.0_f64.min(self.rect.width() - 48.0).max(240.0);
-        let h = 172.0;
-        let ctr = self.rect.center();
-        let card = Rect::new(
-            ctr.x - w / 2.0,
-            ctr.y - h / 2.0,
-            ctr.x + w / 2.0,
-            ctr.y + h / 2.0,
+    /// The unsaved-work question's verbs in authoring order — Cancel, Open
+    /// anyway, Save… — shared by the layout, the paint and the hit-test so
+    /// the three cannot disagree about which action is which.
+    fn discard_actions() -> [ModalAction<'static>; 3] {
+        [
+            ModalAction::secondary("Cancel"),
+            ModalAction::secondary("Open anyway"),
+            ModalAction::primary("Save…"),
+        ]
+    }
+
+    /// What the unsaved-work question says, as its title and two body lines.
+    fn discard_words(pending: &PendingOpen) -> (String, [String; 2]) {
+        (
+            format!("Save “{}” first?", pending.losing),
+            // Say what is true: the work is not gone if they open anyway,
+            // because the open is undoable. A dialog that overstates the
+            // danger trains people to click through it.
+            [
+                "It has never been saved to a file.".to_string(),
+                format!(
+                    "Opening {} replaces it. Ctrl+Z brings it back.",
+                    crate::project_file::recents::label(&pending.path)
+                ),
+            ],
+        )
+    }
+
+    /// Lay the unsaved-work question out on the shared modal frame: two
+    /// measured body lines and its three verbs. No close control and no
+    /// scrim dismissal — its way out is the Cancel it shows, and a stray
+    /// click must not answer a question about losing work.
+    fn discard_layout(&self, tr: &mut TextRenderer, theme: &Theme) -> Option<DiscardLayout> {
+        let pending = self.pending_open.as_ref()?;
+        let type_sizes = dialog_type(tr, theme);
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        let line_sm = line_height(tr, type_sizes.sm);
+        let (title, _) = Self::discard_words(pending);
+        let actions = Self::discard_actions();
+        let spec = ModalSpec::new(&title)
+            .actions(&actions)
+            .max_width(DISCARD_CARD_W)
+            .closable(false)
+            .dismiss_on_scrim(false);
+        let body_h = line_sm * 2.0 + s1;
+        let modal = modal_layout_with_stacking_actions(
+            self.rect,
+            &spec,
+            body_h / f64::from(theme.text_scale),
+            tr,
+            theme,
         );
-        let by1 = card.y1 - 20.0;
-        let by0 = by1 - 32.0;
-        let save = Rect::new(card.x1 - 20.0 - 110.0, by0, card.x1 - 20.0, by1);
-        let discard = Rect::new(save.x0 - 10.0 - 104.0, by0, save.x0 - 10.0, by1);
-        let cancel = Rect::new(discard.x0 - 10.0 - 84.0, by0, discard.x0 - 10.0, by1);
-        (card, cancel, discard, save)
+        let lines = [modal.body.y0, modal.body.y0 + line_sm + s1];
+        let at = |i: usize| modal.actions.get(i).copied().unwrap_or_default();
+        Some(DiscardLayout {
+            cancel: at(0),
+            discard: at(1),
+            save: at(2),
+            modal,
+            type_sizes,
+            lines,
+        })
     }
 
     /// Ask before an Open replaces a project that exists nowhere else.
     fn draw_discard_dialog(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(pending) = &self.pending_open else {
+        let Some(l) = self.discard_layout(tr, theme) else {
             return;
         };
-        let c = &theme.tokens.colors;
-        fill_rect(
-            scene,
-            tf,
-            with_alpha(c.surfaces.scrim, MODAL_SCRIM_ALPHA),
-            self.rect,
-        );
-        let (card, cancel, discard, save) = self.discard_layout();
-        fill_rrect(scene, tf, c.surfaces.raised, card, 14.0);
-        stroke_rrect(scene, tf, c.border_standard, card, 14.0, 1.0);
-        let x0 = card.x0 + 24.0;
-        text_w(
-            scene,
-            tr,
-            tf,
-            &format!("Save “{}” first?", pending.losing),
-            17.0,
-            c.text_primary,
-            x0,
-            card.y0 + 22.0,
-            TextWeight::Bold,
-        );
-        // Say what is true: the work is not gone if they open anyway, because
-        // the open is undoable. A dialog that overstates the danger trains
-        // people to click through it.
-        for (i, line) in [
-            "It has never been saved to a file.".to_string(),
-            format!(
-                "Opening {} replaces it. Ctrl+Z brings it back.",
-                crate::project_file::recents::label(&pending.path)
-            ),
-        ]
-        .iter()
-        .enumerate()
-        {
-            let shown = elide_at(line, (card.width() - 48.0) as f32, 12.5, tr);
+        let Some((title, lines)) = self.pending_open.as_ref().map(Self::discard_words) else {
+            return;
+        };
+        let hit = l.modal.hit(self.last_mouse);
+        let mut actions = Self::discard_actions();
+        for (i, action) in actions.iter_mut().enumerate() {
+            action.hovered = hit == Some(ModalHit::Action(i));
+        }
+        let spec = ModalSpec::new(&title)
+            .actions(&actions)
+            .max_width(DISCARD_CARD_W)
+            .closable(false)
+            .dismiss_on_scrim(false);
+        ModalFrame::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
+        let (_, dim) = ModalFrame::ink(theme);
+        let width = l.modal.body.width() as f32;
+        for (line, top) in lines.iter().zip(l.lines) {
+            let shown = elide_at(line, width, l.type_sizes.sm, tr);
             text(
                 scene,
                 tr,
                 tf,
                 &shown,
-                12.5,
-                c.text_dim,
-                x0,
-                card.y0 + 56.0 + i as f64 * 20.0,
+                l.type_sizes.sm,
+                dim,
+                l.modal.body.x0,
+                top,
             );
         }
-        draw_button(
-            scene,
-            tf,
-            tr,
-            theme,
-            cancel,
-            "Cancel",
-            false,
-            cancel.contains(self.last_mouse),
-        );
-        draw_button(
-            scene,
-            tf,
-            tr,
-            theme,
-            discard,
-            "Open anyway",
-            false,
-            discard.contains(self.last_mouse),
-        );
-        draw_button(
-            scene,
-            tf,
-            tr,
-            theme,
-            save,
-            "Save…",
-            true,
-            save.contains(self.last_mouse),
-        );
+        ModalFrame::paint_actions(scene, tf, tr, theme, &l.modal, &spec);
+        self.dialogs.discard = Some(l);
     }
 
     /// Three-bar hamburger that summons the collapsed media bin. Highlights
@@ -17895,117 +18121,154 @@ impl VideoEditorApp {
     /// the product, so the only way to learn one was to be told. The sheet is
     /// also how a reader user learns the editor has shortcuts at all, which is
     /// why it is an accessibility affordance rather than a convenience.
+    /// Lay the shortcut sheet out on the shared modal frame.
+    ///
+    /// The hint line, then the groups in two columns on a window wide enough
+    /// and one column otherwise. Which group starts the second column and
+    /// how tall the card has to be are both computed from the table with the
+    /// measured row metrics, because a fixed height and a fixed split
+    /// silently *cut rows off* the moment a group is added — which is exactly
+    /// what happened when the project shortcuts arrived and the last two View
+    /// rows stopped being drawn at all.
+    fn help_layout(&self, tr: &mut TextRenderer, theme: &Theme) -> HelpLayout {
+        let type_sizes = dialog_type(tr, theme);
+        let sp = &theme.tokens.spacing;
+        let (s3, s4) = (f64::from(sp.s3), f64::from(sp.s4));
+        let m = HelpMetrics::measure(tr, theme, type_sizes);
+        let line_sm = line_height(tr, type_sizes.sm);
+        let two_col = self.rect.width() >= HELP_TWO_COLUMN_MIN_W;
+        let (split, tallest) = help_columns(two_col, m);
+        let body_h = line_sm + s3 + tallest;
+        let mut spec = ModalSpec::new("Keyboard shortcuts")
+            .body_height(body_h / f64::from(theme.text_scale));
+        if two_col {
+            spec = spec.max_width(HELP_CARD_W);
+        }
+        let modal = ModalFrame::layout(self.rect, &spec, tr, theme);
+        let body = modal.body;
+        let hint_top = body.y0;
+        let groups_top = hint_top + line_sm + s3;
+        let col_w = if two_col {
+            (body.width() - s4) / 2.0
+        } else {
+            body.width()
+        };
+        let what_dx = SHORTCUTS
+            .iter()
+            .flat_map(|(_, rows)| rows.iter())
+            .map(|(combo, _)| {
+                f64::from(
+                    tr.measure_weighted(combo, type_sizes.sm, None, TextWeight::Bold)
+                        .0,
+                )
+            })
+            .fold(0.0, f64::max)
+            + s3;
+        let mut groups = Vec::with_capacity(SHORTCUTS.len());
+        let mut x = body.x0;
+        let mut y = groups_top;
+        for (gi, (_, rows)) in SHORTCUTS.iter().enumerate() {
+            if two_col && gi == split {
+                x = body.x0 + col_w + s4;
+                y = groups_top;
+            }
+            let heading = Rect::new(x, y, x + col_w, y + m.header_h);
+            y += m.header_h;
+            let rows = rows
+                .iter()
+                .map(|_| {
+                    let row = Rect::new(x, y, x + col_w, y + m.row_h);
+                    y += m.row_h;
+                    row
+                })
+                .collect();
+            y += m.group_gap;
+            groups.push(HelpGroupLayout { heading, rows });
+        }
+        HelpLayout {
+            modal,
+            type_sizes,
+            hint_top,
+            groups,
+            what_dx,
+        }
+    }
+
     fn draw_help_sheet(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         _r: &Regions,
     ) {
+        let l = self.help_layout(tr, theme);
+        let hit = l.modal.hit(self.last_mouse);
+        let spec = ModalSpec::new("Keyboard shortcuts").close_hovered(hit == Some(ModalHit::Close));
+        ModalFrame::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
+        let (ink, dim) = ModalFrame::ink(theme);
         let c = &theme.tokens.colors;
-        fill_rect(
-            scene,
+        let ty = l.type_sizes;
+        let body = l.modal.body;
+        // Clipped to the body: on a window too short for the table the frame
+        // clamps the card and reports the overflow, and the rows must not
+        // paint through the card's foot.
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
             tf,
-            with_alpha(c.surfaces.scrim, MODAL_SCRIM_ALPHA),
-            self.rect,
-        );
-        // Two columns on anything wide enough, one on a narrow window, so the
-        // sheet is readable rather than clipped at the phone-ish sizes the rest
-        // of the editor already adapts to.
-        let two_col = self.rect.width() >= 780.0;
-        let w = if two_col {
-            700.0
-        } else {
-            (self.rect.width() - 48.0).max(280.0)
-        };
-        // Where the second column starts, and how tall the card has to be to
-        // hold the taller of the two. Both are computed from the table rather
-        // than fixed, because a fixed height and a fixed split silently *cut
-        // rows off* the moment a group is added — which is exactly what
-        // happened when the project shortcuts arrived and the last two View
-        // rows stopped being drawn at all.
-        let (split, content_h) = help_columns(two_col);
-        let h = if two_col {
-            (HELP_TOP + content_h + 16.0).min(self.rect.height() - 32.0)
-        } else {
-            (self.rect.height() - 48.0).max(320.0)
-        };
-        let card = Rect::from_center_size(self.rect.center(), (w, h));
-        fill_rrect(scene, tf, c.surfaces.raised, card, 14.0);
-        stroke_rrect(scene, tf, c.border_standard, card, 14.0, 1.0);
-        text_w(
-            scene,
-            tr,
-            tf,
-            "Keyboard shortcuts",
-            18.0,
-            c.text_primary,
-            card.x0 + 24.0,
-            card.y0 + 20.0,
-            TextWeight::Bold,
+            &body,
         );
         text(
             scene,
             tr,
             tf,
             "Esc or ? to close",
-            12.0,
-            c.text_dim,
-            card.x0 + 24.0,
-            card.y0 + 44.0,
+            ty.sm,
+            dim,
+            body.x0,
+            l.hint_top,
         );
-
-        let col_w = if two_col { (w - 64.0) / 2.0 } else { w - 48.0 };
-        let mut x = card.x0 + 24.0;
-        let mut y = card.y0 + HELP_TOP;
-        let bottom = card.y1 - 16.0;
-        for (gi, (group, rows)) in SHORTCUTS.iter().enumerate() {
-            if two_col && gi == split {
-                x = card.x0 + 24.0 + col_w + 16.0;
-                y = card.y0 + HELP_TOP;
-            }
+        for ((group, rows), g) in SHORTCUTS.iter().zip(&l.groups) {
             text_w(
                 scene,
                 tr,
                 tf,
                 group,
-                11.0,
-                c.text_dim,
-                x,
-                y,
+                ty.xs,
+                dim,
+                g.heading.x0,
+                g.heading.y0,
                 TextWeight::Bold,
             );
-            y += 20.0;
-            for (combo, what) in rows.iter() {
-                if y > bottom {
-                    break;
-                }
+            for ((combo, what), row) in rows.iter().zip(&g.rows) {
                 text_w(
                     scene,
                     tr,
                     tf,
                     combo,
-                    12.0,
+                    ty.sm,
                     c.accent[6],
-                    x,
-                    y,
+                    row.x0,
+                    row.y0,
                     TextWeight::Bold,
                 );
+                let shown = elide_at(what, (row.width() - l.what_dx) as f32, ty.sm, tr);
                 text(
                     scene,
                     tr,
                     tf,
-                    what,
-                    12.0,
-                    c.text_primary,
-                    x + 120.0_f64.min(col_w * 0.45),
-                    y,
+                    &shown,
+                    ty.sm,
+                    ink,
+                    row.x0 + l.what_dx,
+                    row.y0,
                 );
-                y += 19.0;
             }
-            y += 10.0;
         }
+        scene.pop_layer();
+        self.dialogs.help = Some(l);
     }
 
     /// The go-to-timecode field: type a time, press Enter, land there.
@@ -18015,19 +18278,21 @@ impl VideoEditorApp {
     /// cannot be read keeps the field open and says so, rather than closing and
     /// silently going nowhere.
     fn draw_goto(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         r: &Regions,
     ) {
-        let Some(entry) = self.goto_entry.as_ref() else {
+        let Some(entry) = self.goto_entry.clone() else {
             return;
         };
         let c = &theme.tokens.colors;
-        let card = self.goto_layout(r);
-        fill_rrect(scene, tf, c.surfaces.raised, card, 12.0);
+        let l = self.goto_layout(r, tr, theme);
+        let ty = l.type_sizes;
+        let radius = f64::from(theme.tokens.radii.lg);
+        fill_rrect(scene, tf, c.surfaces.raised, l.card, radius);
         stroke_rrect(
             scene,
             tf,
@@ -18036,19 +18301,20 @@ impl VideoEditorApp {
             } else {
                 c.accent[6]
             },
-            card,
-            12.0,
+            l.card,
+            radius,
             1.5,
         );
+        let x = l.card.x0 + f64::from(theme.tokens.spacing.s4);
         text(
             scene,
             tr,
             tf,
             "Go to timecode",
-            11.0,
+            ty.xs,
             c.text_dim,
-            card.x0 + 16.0,
-            card.y0 + 12.0,
+            x,
+            l.label_top,
         );
         let shown = if entry.is_empty() {
             "0:00"
@@ -18065,25 +18331,28 @@ impl VideoEditorApp {
             tr,
             tf,
             shown,
-            20.0,
+            ty.xl,
             col,
-            card.x0 + 16.0,
-            card.y0 + 32.0,
+            x,
+            l.entry_top,
             TextWeight::Bold,
         );
         // A caret, so an empty field reads as "type here" rather than as a
-        // placeholder someone forgot to remove.
-        let (tw, _) = tr.measure(shown, 20.0, None);
+        // placeholder someone forgot to remove. Measured at the weight the
+        // digits are drawn in, so it stands at their end rather than inside
+        // the last one.
         if !entry.is_empty() {
+            let (tw, th) = tr.measure_weighted(shown, ty.xl, None, TextWeight::Bold);
+            let caret_x = x + f64::from(tw) + f64::from(theme.tokens.spacing.s1) / 2.0;
             fill_rect(
                 scene,
                 tf,
                 c.accent[6],
                 Rect::new(
-                    card.x0 + 18.0 + tw as f64,
-                    card.y0 + 32.0,
-                    card.x0 + 20.0 + tw as f64,
-                    card.y0 + 54.0,
+                    caret_x,
+                    l.entry_top,
+                    caret_x + theme.caret_width,
+                    l.entry_top + f64::from(th),
                 ),
             );
         }
@@ -18097,16 +18366,8 @@ impl VideoEditorApp {
         } else {
             c.text_dim
         };
-        text(
-            scene,
-            tr,
-            tf,
-            hint,
-            10.0,
-            hc,
-            card.x0 + 16.0,
-            card.y1 - 16.0,
-        );
+        text(scene, tr, tf, hint, ty.xs, hc, x, l.hint_top);
+        self.dialogs.goto = Some(l);
     }
 
     #[allow(
@@ -18114,79 +18375,71 @@ impl VideoEditorApp {
         reason = "the export dialog paint pass shares one geometry calculation across its presets, status, and controls"
     )]
     fn draw_export_modal(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        r: &Regions,
+        _r: &Regions,
     ) {
+        let l = self.export_layout(tr, theme);
+        let hit = l.modal.hit(self.last_mouse);
+        let mut actions = self.export_actions();
+        for (i, action) in actions.iter_mut().enumerate() {
+            action.hovered = hit == Some(ModalHit::Action(i));
+        }
+        let spec = ModalSpec::new("Export Project")
+            .actions(&actions)
+            .max_width(EXPORT_CARD_W)
+            .close_hovered(hit == Some(ModalHit::Close));
+        ModalFrame::paint_backdrop(scene, tf, tr, theme, &l.modal, &spec);
+        let (_, dim) = ModalFrame::ink(theme);
         let c = &theme.tokens.colors;
-        // Backdrop. `surfaces.overlay` is the opaque deep-menu surface — using
-        // it here painted solid black and deleted the editor behind the dialog.
-        // The scrim token carries the theme's hue; the strength is ours.
-        fill_rect(
-            scene,
+        let ty = l.type_sizes;
+        let body = l.modal.body;
+        let x0 = body.x0;
+        let width = body.width() as f32;
+        let sp = &theme.tokens.spacing;
+        let (s1, s2) = (f64::from(sp.s1), f64::from(sp.s2));
+        let line_xs = line_height(tr, ty.xs);
+        // Clipped to the body: on a window too small for the card the frame
+        // clamps it and reports the overflow, and the content must not paint
+        // through the action row.
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
             tf,
-            with_alpha(c.surfaces.scrim, MODAL_SCRIM_ALPHA),
-            self.rect,
+            &body,
         );
-        let l = self.export_layout(r);
-        let card = l.card;
-        fill_rrect(scene, tf, c.surfaces.raised, card, 14.0);
-        stroke_rrect(scene, tf, c.border_standard, card, 14.0, 1.0);
-        let x0 = card.x0 + 24.0;
-        text_w(
-            scene,
-            tr,
-            tf,
-            "Export Project",
-            18.0,
-            c.text_primary,
-            x0,
-            card.y0 + 20.0,
-            TextWeight::Bold,
-        );
-        text(
-            scene,
-            tr,
-            tf,
+        let filename = elide_at(
             &self.export.suggested_filename(&self.project.name),
-            12.0,
-            c.text_dim,
-            x0,
-            card.y0 + 44.0,
+            width,
+            ty.sm,
+            tr,
         );
+        text(scene, tr, tf, &filename, ty.sm, dim, x0, l.filename_top);
         // What the levels did, stated **here**, before the button that
         // renders them. A mix that clipped and only said so in the file is
         // the fault this whole surface exists to end, and the dialog is the
         // last place before it becomes one.
-        if let Some(words) = self.mix_words() {
+        if let (Some(words), Some(top)) = (self.mix_words(), l.mix_top) {
             let tint = if self.mix.clipped() {
                 c.semantic.danger
             } else {
-                c.text_dim
+                dim
             };
-            let words = elide_w(&words, (card.width() - 48.0) as f32, tr);
-            text(scene, tr, tf, &words, 10.5, tint, x0, card.y0 + 60.0);
+            let words = elide_at(&words, width, ty.xs, tr);
+            text(scene, tr, tf, &words, ty.xs, tint, x0, top);
         }
 
+        let cursor = self.last_mouse;
         let seg_group = |scene: &mut Scene,
                          tr: &mut TextRenderer,
-                         label: &str,
+                         caption: &str,
+                         top: f64,
                          items: &[(String, Rect, bool)]| {
-            if let Some((_, first, _)) = items.first() {
-                text(
-                    scene,
-                    tr,
-                    tf,
-                    label,
-                    11.0,
-                    c.text_dim,
-                    first.x0,
-                    first.y0 - 18.0,
-                );
-            }
+            text(scene, tr, tf, caption, ty.xs, dim, x0, top);
             // The shared segmented face, as the inspector's transition and
             // preset rows already use — so the dialog's option groups look
             // like every other segmented control in the fleet instead of a
@@ -18198,20 +18451,22 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(_, _, on)| *on)
                 .unwrap_or(usize::MAX);
-            draw_segmented(scene, tf, tr, theme, &rects, &labels, selected, self.last_mouse);
+            draw_segmented_sized(
+                scene, tf, tr, theme, &rects, &labels, selected, cursor, ty.sm,
+            );
         };
         let res: Vec<_> = l
             .resolution
             .iter()
             .map(|(v, r)| (v.label().to_string(), *r, *v == self.export.resolution))
             .collect();
-        seg_group(scene, tr, "RESOLUTION", &res);
+        seg_group(scene, tr, "RESOLUTION", l.captions[0], &res);
         let con: Vec<_> = l
             .container
             .iter()
             .map(|(v, r)| (v.label().to_string(), *r, *v == self.export.container))
             .collect();
-        seg_group(scene, tr, "FORMAT", &con);
+        seg_group(scene, tr, "FORMAT", l.captions[1], &con);
         let fps: Vec<_> = l
             .fps
             .iter()
@@ -18223,7 +18478,7 @@ impl VideoEditorApp {
                 )
             })
             .collect();
-        seg_group(scene, tr, "FRAME RATE", &fps);
+        seg_group(scene, tr, "FRAME RATE", l.captions[2], &fps);
 
         // Estimate + status.
         // One source of truth for the size line: the export module knows which
@@ -18245,39 +18500,43 @@ impl VideoEditorApp {
                 ""
             }
         );
-        text(scene, tr, tf, &info, 12.0, c.text_dim, x0, card.y1 - 96.0);
+        let info = elide_at(&info, width, ty.sm, tr);
+        text(scene, tr, tf, &info, ty.sm, dim, x0, l.info_top);
+        let status = l.status;
         match &self.export_status {
             ExportStatus::Rendering { progress } => {
-                let bar = Rect::new(x0, card.y1 - 74.0, card.x1 - 24.0, card.y1 - 66.0);
-                fill_rrect(scene, tf, c.neutral[3], bar, 4.0);
+                let bar = Rect::new(status.x0, status.y0, status.x1, status.y0 + s2);
+                let radius = f64::from(theme.tokens.radii.sm);
+                fill_rrect(scene, tf, c.neutral[3], bar, radius);
                 let f = Rect::new(
                     bar.x0,
                     bar.y0,
                     bar.x0 + bar.width() * progress.max(0.04),
                     bar.y1,
                 );
-                fill_rrect(scene, tf, c.accent[5], f, 4.0);
+                fill_rrect(scene, tf, c.accent[5], f, radius);
                 text(
                     scene,
                     tr,
                     tf,
                     "Rendering…",
-                    10.5,
-                    c.text_dim,
+                    ty.xs,
+                    dim,
                     x0,
-                    card.y1 - 62.0,
+                    bar.y1 + s1,
                 );
             }
             ExportStatus::Done { path } => {
+                let done = elide_at(&format!("Done: {path}"), width, ty.xs, tr);
                 text(
                     scene,
                     tr,
                     tf,
-                    &format!("Done: {path}"),
-                    11.0,
+                    &done,
+                    ty.xs,
                     c.semantic.success,
                     x0,
-                    card.y1 - 68.0,
+                    status.y0,
                 );
             }
             ExportStatus::Failed { reason } => {
@@ -18285,17 +18544,17 @@ impl VideoEditorApp {
                 // slot is deliberately bounded so an encoder's untrusted
                 // error cannot paint through the buttons; the full, unelided
                 // reason remains in the dialog's accessible static-text node.
-                let lines = tr.clamp_to_lines(reason, 10.5, (card.width() - 48.0) as f32, 2);
+                let lines = tr.clamp_to_lines(reason, ty.xs, width, 2);
                 for (line, words) in lines.iter().enumerate() {
                     text(
                         scene,
                         tr,
                         tf,
                         words,
-                        10.5,
+                        ty.xs,
                         c.semantic.danger,
                         x0,
-                        card.y1 - 80.0 + line as f64 * 14.0,
+                        status.y0 + line as f64 * line_xs,
                     );
                 }
             }
@@ -18303,43 +18562,20 @@ impl VideoEditorApp {
                 // One source of truth for the availability copy — the export
                 // module knows what it can actually do, this dialog does not.
                 if let Some(reason) = crate::export::unavailable_reason() {
-                    text(scene, tr, tf, reason, 10.5, c.text_dim, x0, card.y1 - 68.0);
+                    let reason = elide_at(reason, width, ty.xs, tr);
+                    text(scene, tr, tf, &reason, ty.xs, dim, x0, status.y0);
                 }
             }
         }
         // The flow's own status (choosing a destination, a portal refusal)
         // sits under the render status, so an action is never silent.
-        if let Some(notice) = &self.export_notice {
-            let shown = elide_w(notice, (card.width() - 48.0) as f32, tr);
-            text(scene, tr, tf, &shown, 10.5, c.text_dim, x0, card.y1 - 82.0);
+        if let (Some(notice), Some(top)) = (&self.export_notice, l.notice_top) {
+            let shown = elide_at(notice, width, ty.xs, tr);
+            text(scene, tr, tf, &shown, ty.xs, dim, x0, top);
         }
-        // A render in flight turns Close into Cancel — the only way to stop it.
-        let running = self.export_running();
-        draw_button(
-            scene,
-            tf,
-            tr,
-            theme,
-            l.cancel,
-            if running { "Cancel" } else { "Close" },
-            false,
-            l.cancel.contains(self.last_mouse),
-        );
-        // Export is offered only when it can actually happen. The dialog used
-        // to say "Export needs the GStreamer build" and put a bright, enabled
-        // Export button directly underneath it.
-        let can_export = self.export_is_offered();
-        draw_button_enabled(
-            scene,
-            tf,
-            tr,
-            theme,
-            l.confirm,
-            if running { "Rendering…" } else { "Export" },
-            true,
-            l.confirm.contains(self.last_mouse),
-            can_export,
-        );
+        scene.pop_layer();
+        ModalFrame::paint_actions(scene, tf, tr, theme, &l.modal, &spec);
+        self.dialogs.export = Some(l);
     }
 }
 
@@ -18364,6 +18600,76 @@ fn on_fill(theme: &Theme, fill: Color) -> (Color, Color) {
 fn text_baseline(rect: Rect, size: f32, tr: &mut TextRenderer) -> f64 {
     let (_, h) = tr.measure("Hg", size, None);
     rect.center().y - h as f64 / 2.0
+}
+
+/// A theme type-scale step as the renderer base size the legacy [`text`]
+/// helpers take: through [`TextRenderer::renderer_input_style`] once, so the
+/// renderer's own accessibility multiplier is applied exactly once on top.
+/// The theme's tokens already carry the text and UI scales; the renderer
+/// applies its text scale to every base size it is handed.
+fn type_size(tr: &TextRenderer, px: f32) -> f32 {
+    tr.renderer_input_style(&TextStyle::new(px)).size
+}
+
+/// The type sizes the dialogs draw with — see [`DialogType`].
+fn dialog_type(tr: &TextRenderer, theme: &Theme) -> DialogType {
+    let scale = &theme.tokens.typography.scale;
+    DialogType {
+        sm: type_size(tr, scale.sm),
+        xs: type_size(tr, scale.xs),
+        xl: type_size(tr, scale.xl),
+    }
+}
+
+/// The measured height of one line box at `size`, in the renderer's pixels —
+/// what a row built around that line has to be, at any text scale.
+fn line_height(tr: &mut TextRenderer, size: f32) -> f64 {
+    f64::from(tr.measure("Hg", size, None).1)
+}
+
+/// The shared frame's layout for `spec` with a body `body_height` tall (in
+/// the frame's own unscaled units), with the action row stacked when it is
+/// wider than the card.
+///
+/// The frame lays its actions out in one row and leaves wrapping to its
+/// owner. Three verbs on a phone-width card, or two at a large text scale,
+/// can be wider than the card; then the card grows by the extra rows and the
+/// actions stack full-width in authoring order, so none is laid outside the
+/// surface. Paint and hit-test read the same result.
+fn modal_layout_with_stacking_actions(
+    viewport: Rect,
+    spec: &ModalSpec<'_>,
+    body_height: f64,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+) -> ModalLayout {
+    let spec = spec.clone().body_height(body_height);
+    let mut layout = ModalFrame::layout(viewport, &spec, tr, theme);
+    let overflows = layout
+        .actions
+        .iter()
+        .any(|r| r.x0 < layout.body.x0 - 0.5);
+    if !overflows || layout.actions.len() < 2 {
+        return layout;
+    }
+    let gap = f64::from(theme.tokens.spacing.s2);
+    let n = layout.actions.len() as f64;
+    let height = layout.actions.first().map_or(0.0, Rect::height);
+    let extra = (height + gap) * (n - 1.0);
+    layout = ModalFrame::layout(
+        viewport,
+        &spec.body_height(body_height + extra / f64::from(theme.text_scale)),
+        tr,
+        theme,
+    );
+    let bottom = layout.actions.first().map_or(layout.card.y1, |r| r.y1);
+    let top = bottom - height * n - gap * (n - 1.0);
+    layout.body.y1 = (top - gap).max(layout.body.y0);
+    for (i, rect) in layout.actions.iter_mut().enumerate() {
+        let y = top + i as f64 * (height + gap);
+        *rect = Rect::new(layout.body.x0, y, layout.body.x1, y + height);
+    }
+    layout
 }
 
 /// Top-left corner for `s` drawn centred both ways inside `rect`.
@@ -18748,11 +19054,31 @@ fn draw_segmented(
     selected: usize,
     cursor: Point,
 ) {
+    draw_segmented_sized(
+        scene, tf, tr, theme, segments, labels, selected, cursor, 11.5,
+    );
+}
+
+/// [`draw_segmented`] at an explicit renderer base size — the export dialog
+/// labels its segments at the theme's `sm` step, while the inspector keeps
+/// its base sizes (see `INSPECTOR_LABEL_SIZE`).
+#[allow(clippy::too_many_arguments)]
+fn draw_segmented_sized(
+    scene: &mut Scene,
+    tf: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    segments: &[Rect],
+    labels: &[&str],
+    selected: usize,
+    cursor: Point,
+    text_size: f32,
+) {
     let hovered = segments.iter().position(|r| r.contains(cursor));
     let face = ui::widget::SegmentedFace::new(segments, labels, selected)
         .hovered(hovered)
         .radius(6.0)
-        .text_size(11.5);
+        .text_size(text_size);
     ui::widget::ToggleGroup::paint(scene, tf, tr, theme, &face);
 }
 
@@ -21550,26 +21876,38 @@ mod tests {
         app.export_status = ExportStatus::Failed {
             reason: reason.into(),
         };
-        let r = app.regions();
-        let layout = app.export_layout(&r);
+        // The geometry the draw pass painted, read back rather than
+        // re-derived: the failure lines fill the status slot, which sits
+        // clear of the size line above it and the action row below it.
+        render(&mut app);
+        let layout = app
+            .dialogs
+            .export
+            .clone()
+            .expect("the draw pass laid the export dialog out");
         let mut tr = TextRenderer::new();
-        let lines = tr.clamp_to_lines(reason, 10.5, (layout.card.width() - 48.0) as f32, 2);
+        let ty = layout.type_sizes;
+        let lines = tr.clamp_to_lines(reason, ty.xs, layout.modal.body.width() as f32, 2);
         assert_eq!(lines.len(), 2, "the long reason occupies the two-line slot");
-        let line_h = f64::from(tr.measure("Hg", 10.5, None).1);
-        let info_bottom = layout.card.y1 - 96.0 + f64::from(tr.measure("Hg", 12.0, None).1);
-        let error_top = layout.card.y1 - 80.0;
-        let error_bottom = layout.card.y1 - 80.0 + 14.0 + line_h;
+        let line_h = f64::from(tr.measure("Hg", ty.xs, None).1);
+        let info_bottom = layout.info_top + f64::from(tr.measure("Hg", ty.sm, None).1);
+        let error_top = layout.status.y0;
+        let error_bottom = layout.status.y0 + 2.0 * line_h;
         assert!(
             error_top >= info_bottom,
             "the wrapped failure overlaps the footer metadata: {error_top} < {info_bottom}"
         );
         assert!(
-            error_bottom <= layout.cancel.y0,
-            "the wrapped failure overlaps the footer buttons: {error_bottom} > {}",
+            error_bottom <= layout.status.y1 + 1e-6,
+            "two failure lines do not fit the status slot: {error_bottom} > {}",
+            layout.status.y1
+        );
+        assert!(
+            layout.status.y1 <= layout.cancel.y0,
+            "the status slot overlaps the footer buttons: {} > {}",
+            layout.status.y1,
             layout.cancel.y0
         );
-        // Exercise the real Vello draw pass as well as its layout math.
-        render(&mut app);
     }
 
     #[test]
@@ -21800,37 +22138,61 @@ mod tests {
         // silently, with no error and no clipped glyph to notice. A sheet that
         // is missing shortcuts is worse than no sheet, because it is the one
         // place a user goes to find out what exists.
-        let (split, content_h) = help_columns(true);
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        let ty = dialog_type(&tr, &theme);
+        let m = HelpMetrics::measure(&mut tr, &theme, ty);
+        let (split, _) = help_columns(true, m);
         assert!(
             split > 0 && split < SHORTCUTS.len(),
             "both columns carry groups"
         );
 
-        // The card is sized from that, and every row must land above its foot.
-        let card_h = HELP_TOP + content_h + 16.0;
-        for (col, groups) in [(0, &SHORTCUTS[..split]), (1, &SHORTCUTS[split..])] {
-            let mut y = HELP_TOP;
-            for (group, rows) in groups {
-                y += HELP_HEADER_H;
-                for (combo, _) in rows.iter() {
-                    y += HELP_ROW_H;
-                    assert!(
-                        y <= card_h - 16.0,
-                        "column {col}: {group} / {combo} falls off the card \
-                         ({y} past {})",
-                        card_h - 16.0,
-                    );
-                }
-                y += HELP_GROUP_GAP;
+        // The card is sized from that, and every row must land inside the
+        // body the frame gave it — read back from the geometry the draw pass
+        // painted, not re-derived from the table.
+        let mut app = app_with_sample();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.show_help = true;
+        render(&mut app);
+        let layout = app
+            .dialogs
+            .help
+            .clone()
+            .expect("the draw pass laid the shortcut sheet out");
+        assert!(
+            !layout.modal.body_overflows,
+            "a 1280x800 window holds the whole sheet"
+        );
+        assert_eq!(layout.groups.len(), SHORTCUTS.len());
+        let body = layout.modal.body;
+        let mut columns = std::collections::BTreeSet::new();
+        for ((group, rows), g) in SHORTCUTS.iter().zip(&layout.groups) {
+            columns.insert(g.heading.x0.to_bits());
+            assert!(
+                g.heading.y0 >= body.y0 && g.heading.y1 <= body.y1 + 1e-6,
+                "{group}: the heading falls off the body ({:?} vs {body:?})",
+                g.heading,
+            );
+            assert_eq!(g.rows.len(), rows.len(), "{group}: one band per row");
+            for ((combo, _), row) in rows.iter().zip(&g.rows) {
+                assert!(
+                    row.y0 >= body.y0 && row.y1 <= body.y1 + 1e-6,
+                    "{group} / {combo} falls off the body ({row:?} vs {body:?})",
+                );
+                assert!(
+                    row.x0 + layout.what_dx < row.x1,
+                    "{group} / {combo}: the description column starts past the row",
+                );
             }
         }
+        assert_eq!(columns.len(), 2, "a 1280px sheet lays out two columns");
 
         // And the sheet a reader hears is the same list, whole — plus the one
         // extra node the screen has no equivalent element for: the sheet's
         // "Esc or ? to close" line is an instruction to the eye and a real
         // Close button to a reader, which is the same affordance, not a
         // tidier claim.
-        let app = app_with_sample();
         let node = app.a11y_help_sheet();
         let rows: usize = SHORTCUTS.iter().map(|(_, r)| r.len()).sum();
         assert_eq!(
@@ -23256,29 +23618,39 @@ mod tests {
     #[test]
     fn the_export_dialog_header_never_collides_with_the_first_section() {
         let mut tr = TextRenderer::new();
-        let subtitle_h = tr.measure("Hg", 12.0, None).1 as f64;
+        let theme = Theme::dark();
         for (w, h) in SIZES {
             let (mut app, _doc) = app_sized(w, h);
             app.show_export = true;
-            let r = app.regions();
-            let l = app.export_layout(&r);
-            let subtitle_bottom = l.card.y0 + 44.0 + subtitle_h;
-            let first_label_top = l
-                .resolution
-                .first()
-                .expect("the dialog always offers a resolution")
-                .1
-                .y0
-                - 18.0;
-            assert!(
-                first_label_top >= subtitle_bottom,
-                "{w}x{h}: RESOLUTION starts at {first_label_top} but the filename \
-                 runs to {subtitle_bottom} — they overlap",
+            let l = app.export_layout(&mut tr, &theme);
+            let ty = l.type_sizes;
+            let header_bottom = l.mix_top.map_or(
+                l.filename_top + f64::from(tr.measure("Hg", ty.sm, None).1),
+                |top| top + f64::from(tr.measure("Hg", ty.xs, None).1),
             );
+            let first_label_top = l.captions[0];
+            assert!(
+                first_label_top >= header_bottom,
+                "{w}x{h}: RESOLUTION starts at {first_label_top} but the header \
+                 runs to {header_bottom} — they overlap",
+            );
+            let caption_h = f64::from(tr.measure("Hg", ty.xs, None).1);
+            for (caption, rects) in l.captions.iter().zip([
+                l.resolution.iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+                l.container.iter().map(|(_, r)| *r).collect(),
+                l.fps.iter().map(|(_, r)| *r).collect(),
+            ]) {
+                let first = rects.first().expect("every group offers an option");
+                assert!(
+                    caption + caption_h <= first.y0,
+                    "{w}x{h}: a caption at {caption} runs into its segments at {}",
+                    first.y0,
+                );
+            }
             // …and the groups still stop before the footer they share the card with.
             let last = l.fps.last().expect("frame rates are offered").1;
             assert!(
-                last.y1 <= l.card.y1 - 96.0,
+                last.y1 <= l.info_top,
                 "{w}x{h}: the frame-rate row runs into the size estimate",
             );
         }
@@ -23291,8 +23663,13 @@ mod tests {
     fn the_export_button_is_only_offered_when_export_can_actually_run() {
         let (mut app, mut doc) = app_sized(1280.0, 800.0);
         app.show_export = true;
-        let r = app.regions();
-        let l = app.export_layout(&r);
+        // The press lands on what was painted, so paint first.
+        render(&mut app);
+        let l = app
+            .dialogs
+            .export
+            .clone()
+            .expect("the draw pass laid the export dialog out");
         assert_eq!(
             app.export_is_offered(),
             crate::export::unavailable_reason().is_none(),
@@ -23300,7 +23677,7 @@ mod tests {
         );
         if !app.export_is_offered() {
             // Pressing it must do nothing at all — no job, no status change.
-            app.press_export(&mut doc, &r, l.confirm.center());
+            app.press_export(&mut doc, l.confirm.center());
             assert!(
                 matches!(app.export_status, ExportStatus::Idle),
                 "a refused Export must not move the status",
@@ -23771,7 +24148,13 @@ mod tests {
             let r = app.regions();
             let px = render_pixels(&mut app, 1280, 800, &theme);
             // The timeline lanes stretch well past the card on both sides.
-            let card = app.export_layout(&r).card;
+            let card = app
+                .dialogs
+                .export
+                .as_ref()
+                .expect("the draw pass laid the export dialog out")
+                .modal
+                .card;
             let left = Rect::new(r.lanes.x0, r.lanes.y0, card.x0 - 8.0, r.lanes.y1);
             let colours = region_colours(&px, 1280, 800, left);
             assert!(
@@ -23786,20 +24169,20 @@ mod tests {
     fn the_export_dialog_stays_inside_the_window() {
         // Regression: a fixed 460x360 card hung off both edges of a small
         // window, putting Cancel and Export outside the surface.
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
         for (w, h) in SIZES {
             let (mut app, _doc) = app_sized(w, h);
             app.show_export = true;
-            let r = app.regions();
-            let l = app.export_layout(&r);
+            let l = app.export_layout(&mut tr, &theme);
+            let card = l.modal.card;
             assert!(
-                l.card.x0 >= app.rect.x0 && l.card.x1 <= app.rect.x1,
-                "the export card fits horizontally at {w}x{h}: {:?}",
-                l.card,
+                card.x0 >= app.rect.x0 && card.x1 <= app.rect.x1,
+                "the export card fits horizontally at {w}x{h}: {card:?}",
             );
             assert!(
-                l.card.y0 >= app.rect.y0 && l.card.y1 <= app.rect.y1,
-                "the export card fits vertically at {w}x{h}: {:?}",
-                l.card,
+                card.y0 >= app.rect.y0 && card.y1 <= app.rect.y1,
+                "the export card fits vertically at {w}x{h}: {card:?}",
             );
             for (name, btn) in [("cancel", l.cancel), ("confirm", l.confirm)] {
                 assert!(
