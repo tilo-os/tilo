@@ -140,10 +140,10 @@ impl ChatApp {
         self.realtime.requests.push(request);
     }
 
-    /// Called only after the target obtained fresh local capture permission.
-    /// A restored checkpoint alone never reaches this edge.
-    pub fn accept_realtime_offer(&mut self, capture_authorized: bool) -> bool {
-        if !capture_authorized {
+    /// Called only with fresh opaque capabilities issued by the target-local
+    /// capture broker. A restored checkpoint alone never reaches this edge.
+    pub fn accept_realtime_offer(&mut self, capture_authorizations: Vec<String>) -> bool {
+        if capture_authorizations.is_empty() {
             return false;
         }
         let Some((session, offered)) = self.realtime.offer.clone() else {
@@ -154,7 +154,10 @@ impl ChatApp {
         }
         let request = self
             .realtime
-            .request(ui::realtime_continuity::RealtimeCommand::Accept { session });
+            .request(ui::realtime_continuity::RealtimeCommand::Accept {
+                session,
+                capture_authorizations,
+            });
         self.realtime.requests.push(request);
         true
     }
@@ -295,9 +298,11 @@ mod tests {
         };
         assert!(app.restore_call_continuation(&metadata, &doc));
         app.realtime.offer = Some(("session-1".into(), projection));
-        assert!(!app.accept_realtime_offer(false));
+        assert!(!app.accept_realtime_offer(Vec::new()));
         assert!(app.realtime.requests.is_empty());
-        assert!(app.accept_realtime_offer(true));
+        assert!(app.accept_realtime_offer(vec![
+            "ab".repeat(ui::realtime_continuity::OPAQUE_CAPTURE_AUTHORIZATION_BYTES,)
+        ]));
         assert!(matches!(
             app.realtime.requests.pop(),
             Some(ui::collaboration::CollabRequest::RealtimeCommand {
