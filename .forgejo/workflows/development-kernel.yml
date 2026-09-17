@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_revision:
-        description: Reviewed installation-preparation source commit (fixed for this candidate)
+        description: Exact reviewed kernel source commit (40 lowercase hex characters)
         default: 230b61273a677421512074e0f087fdb46a9c3cc7
         required: true
         type: string
@@ -34,7 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(uname -m)" = aarch64
-          test "$SOURCE_REVISION" = 230b61273a677421512074e0f087fdb46a9c3cc7
+          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$BASE_REF" =~ ^code\.podesta\.ai/qos/fedora-bootc@sha256:[0-9a-f]{64}$ ]]
           [[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/(rpms|tilo-development-rpms-aarch64)@sha256:[0-9a-f]{64}$ ]]
           [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
