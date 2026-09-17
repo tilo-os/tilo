@@ -1,12 +1,46 @@
-//! Shared prepaint solve for retained widgets with allocation-dependent styles.
+//! Shared prepaint solve for retained widgets with allocation-dependent styles,
+//! and the small inset helpers every `Style` builder used to spell by hand.
 
 use std::collections::HashMap;
 
-use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use taffy::style_helpers::length;
+use taffy::{AvailableSpace, LengthPercentage, NodeId, Size, TaffyTree};
 
 use super::Widget;
 use crate::bound_dispatch::{BoundNodeMap, mutate_bound_node};
 use crate::text_render::TextRenderer;
+
+/// Uniform padding on all four sides, in logical pixels. Pass a token
+/// (`theme.padding_standard`, `theme.tokens.spacing.s4`), not a number.
+///
+/// taffy's own `length(px)` also infers a uniform `Rect` when assigned to a
+/// padding field; this named form states the intent at the call site and,
+/// like the other two helpers, clamps a negative value to zero instead of
+/// handing taffy an undefined inset.
+#[must_use]
+pub fn insets_all(px: f32) -> taffy::Rect<LengthPercentage> {
+    insets(px, px, px, px)
+}
+
+/// Symmetric padding: `horizontal` on left and right, `vertical` on top and
+/// bottom — the toolbar / action-row shape.
+#[must_use]
+pub fn insets_xy(horizontal: f32, vertical: f32) -> taffy::Rect<LengthPercentage> {
+    insets(vertical, horizontal, vertical, horizontal)
+}
+
+/// Padding per side in CSS order (top, right, bottom, left). Negative values
+/// are clamped to zero: taffy treats a negative inset as undefined and a
+/// caller subtracting an overlap can otherwise drift below it.
+#[must_use]
+pub fn insets(top: f32, right: f32, bottom: f32, left: f32) -> taffy::Rect<LengthPercentage> {
+    taffy::Rect {
+        left: length(left.max(0.0)),
+        right: length(right.max(0.0)),
+        top: length(top.max(0.0)),
+        bottom: length(bottom.max(0.0)),
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum WidgetLayoutError {
