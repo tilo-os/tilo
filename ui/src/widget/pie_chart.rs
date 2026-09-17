@@ -395,15 +395,18 @@ impl PieChart {
             self.sectors_at(Instant::now())
                 .into_iter()
                 .find(|sector| self.hovered == Some(sector.index))
-                .map_or(self.rect.center(), |sector| {
-                    let (center, outer, inner) = self.geometry();
-                    let angle = sector.start.midpoint(sector.end);
-                    let radius = inner.midpoint(outer);
-                    Point::new(
-                        center.x + radius * angle.cos(),
-                        center.y + radius * angle.sin(),
-                    )
-                })
+                .map_or_else(
+                    || self.rect.center(),
+                    |sector| {
+                        let (center, outer, inner) = self.geometry();
+                        let angle = sector.start.midpoint(sector.end);
+                        let radius = inner.midpoint(outer);
+                        Point::new(
+                            center.x + radius * angle.cos(),
+                            center.y + radius * angle.sin(),
+                        )
+                    },
+                )
         };
         let anchor = match self.style.tooltip_anchor {
             PieTooltipAnchor::Pointer if self.rect.contains(self.pointer) => self.pointer,
@@ -426,7 +429,9 @@ impl PieChart {
         let width = self
             .style
             .tooltip_width
-            .unwrap_or(f64::from(tw.max(dw)).max(self.style.tooltip_min_width) + padding * 2.0)
+            .unwrap_or_else(|| {
+                f64::from(tw.max(dw)).max(self.style.tooltip_min_width) + padding * 2.0
+            })
             .clamp(80.0, available_width);
         let height = 38.0 + padding * 2.0;
         let safe_right = (self.rect.x1 - self.style.tooltip_right_inset.max(0.0))
