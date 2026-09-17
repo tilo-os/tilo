@@ -58,6 +58,10 @@ esac
 # entry — which fails as "authentication required" and looks like a permissions
 # problem rather than a lookup one.
 TILO_REGISTRY_CREDS="${TILO_REGISTRY_CREDS:-}"
+# A validation-only bootstrap may treat an authenticated registry's exact
+# "name unknown" response as an empty series. Publication never sets this:
+# auth, transport and every other lookup failure remain fatal.
+TILO_ALLOW_EMPTY_SERIES="${TILO_ALLOW_EMPTY_SERIES:-0}"
 
 # Cosign performs separate registry requests after tag discovery. Give it the
 # same explicit credential in a private Docker config instead of relying on a
@@ -174,12 +178,25 @@ list_tags() {
   return $rc
 }
 
-tags="$(list_tags)" || die "could not list tags of
+tag_error="$(mktemp)"
+if tags="$(list_tags 2>"$tag_error")"; then
+  cat "$tag_error" >&2
+elif [ "$TILO_ALLOW_EMPTY_SERIES" = 1 ] \
+    && grep -Fq 'fetching tags list: name unknown' "$tag_error" \
+    && ! grep -Eiq 'unauthorized|denied|authentication required' "$tag_error"; then
+  echo "[tilo] validation bootstrap: $TILO_PUBLISH_REPO has no published series yet" >&2
+  tags='{"Tags":[]}'
+else
+  lookup_error="$(cat "$tag_error")"
+  rm -f "$tag_error"
+  die "could not list tags of
   $TILO_PUBLISH_REPO — the published generation series is unreadable, and guessing
   it would produce an image whose generation collides with one already published.
   Log in (podman login code.podesta.ai) or pass TILO_GENERATION=<N> explicitly.
   The tag listing said:
-$(printf '%s' "$tags" | sed 's/^/    /')"
+$(printf '%s' "$lookup_error" | sed 's/^/    /')"
+fi
+rm -f "$tag_error"
 
 # The highest gen<N> tag. `sort -n | tail -1` rather than a max in the pipeline,
 # because a lexical sort makes gen9 the newest of gen9..gen10.
