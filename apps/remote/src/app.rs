@@ -776,9 +776,11 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            cancel,
-            "Cancel",
-            false,
+            ButtonSpec {
+                rect: cancel,
+                label: "Cancel",
+                primary: false,
+            },
         );
         if is_delete {
             Button::paint(
@@ -798,9 +800,11 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                confirm,
-                primary,
-                true,
+                ButtonSpec {
+                    rect: confirm,
+                    label: primary,
+                    primary: true,
+                },
             );
         }
         self.push_hit(cancel, Action::CancelPending);
@@ -2100,6 +2104,63 @@ struct FormPaintContext<'a> {
     card_width: f64,
 }
 
+struct ButtonSpec<'a> {
+    rect: Rect,
+    label: &'a str,
+    primary: bool,
+}
+
+struct RailButtonSpec<'a> {
+    rail: Rect,
+    index: usize,
+    glyph: &'a str,
+    active: bool,
+}
+
+struct ToolSpec<'a> {
+    right_x: f64,
+    bar: Rect,
+    label: &'a str,
+}
+
+#[derive(Clone, Copy)]
+struct SessionSpec {
+    content: Rect,
+    id: ConnectionId,
+    immersive: bool,
+}
+
+struct StatusSessionSpec<'a> {
+    content: Rect,
+    connection: &'a Connection,
+    title: &'a str,
+    body: &'a [String],
+    tone: StatusTone,
+    show_edit: bool,
+}
+
+struct StatusIdentitySpec<'a> {
+    card: Rect,
+    accent: Color,
+    connection: &'a Connection,
+}
+
+struct StatusBodySpec<'a> {
+    card: Rect,
+    accent: Color,
+    title: &'a str,
+    body: &'a [String],
+    y: f64,
+}
+
+struct StatusActionsSpec<'a> {
+    card: Rect,
+    tone: StatusTone,
+    connection: &'a Connection,
+    y: f64,
+    show_edit: bool,
+}
+
 // ===========================================================================
 // Widget impl
 // ===========================================================================
@@ -2741,9 +2802,11 @@ impl Widget for RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                content,
-                id,
-                immersive,
+                SessionSpec {
+                    content,
+                    id,
+                    immersive,
+                },
             ),
         }
 
@@ -4045,11 +4108,12 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            rail,
-            0,
-            "≡",
-            "Connections",
-            on_list,
+            RailButtonSpec {
+                rail,
+                index: 0,
+                glyph: "≡",
+                active: on_list,
+            },
         );
         self.push_hit(home_btn, Action::GoList);
 
@@ -4058,11 +4122,12 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            rail,
-            1,
-            "+",
-            "Add",
-            false,
+            RailButtonSpec {
+                rail,
+                index: 1,
+                glyph: "+",
+                active: false,
+            },
         );
         self.push_hit(new_btn, Action::NewConnection);
     }
@@ -4136,24 +4201,19 @@ impl RemoteApp {
         self.push_hit(btn, Action::ToggleRail);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_rail_button(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        rail: Rect,
-        index: usize,
-        glyph: &str,
-        _label: &str,
-        active: bool,
+        spec: RailButtonSpec<'_>,
     ) -> Rect {
         let tokens = &theme.tokens;
-        let top = rail.y0 + 72.0 + index as f64 * 56.0;
-        let btn = Rect::new(rail.x0 + 12.0, top, rail.x1 - 12.0, top + 40.0);
+        let top = spec.rail.y0 + 72.0 + spec.index as f64 * 56.0;
+        let btn = Rect::new(spec.rail.x0 + 12.0, top, spec.rail.x1 - 12.0, top + 40.0);
         let hovered = btn.contains(self.pointer);
-        let bg = if active {
+        let bg = if spec.active {
             tokens.colors.accent[5].at_alpha(0.20)
         } else if hovered {
             tokens.colors.lift(0.72)
@@ -4169,15 +4229,15 @@ impl RemoteApp {
                 &RoundedRect::from_rect(btn, 8.0),
             );
         }
-        let color = if active {
+        let color = if spec.active {
             tokens.colors.accent[6]
         } else {
             tokens.colors.text_dim
         };
-        let (gw, _) = text_renderer.measure(glyph, 22.0, None);
+        let (gw, _) = text_renderer.measure(spec.glyph, 22.0, None);
         text_renderer.draw_text(
             scene,
-            glyph,
+            spec.glyph,
             22.0,
             color,
             transform * Affine::translate((btn.center().x - f64::from(gw) / 2.0, btn.y0 + 6.0)),
@@ -4254,13 +4314,15 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            add,
-            if compact_header {
-                "+ New"
-            } else {
-                "+ New connection"
+            ButtonSpec {
+                rect: add,
+                label: if compact_header {
+                    "+ New"
+                } else {
+                    "+ New connection"
+                },
+                primary: true,
             },
-            true,
         );
         self.push_hit(add, Action::NewConnection);
 
@@ -4433,9 +4495,11 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            btn,
-            "+ New connection",
-            true,
+            ButtonSpec {
+                rect: btn,
+                label: "+ New connection",
+                primary: true,
+            },
         );
         self.push_hit(btn, Action::NewConnection);
     }
@@ -4616,9 +4680,11 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                connect,
-                "Connect",
-                true,
+                ButtonSpec {
+                    rect: connect,
+                    label: "Connect",
+                    primary: true,
+                },
             );
             self.push_hit(connect, Action::RequestConnect(c.id));
         } else {
@@ -4626,7 +4692,17 @@ impl RemoteApp {
         }
 
         let edit = Rect::new(connect.x0 - 86.0, connect.y0, connect.x0 - 10.0, connect.y1);
-        self.draw_button(scene, transform, text_renderer, theme, edit, "Edit", false);
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            ButtonSpec {
+                rect: edit,
+                label: "Edit",
+                primary: false,
+            },
+        );
         self.push_hit(edit, Action::EditConnection(c.id));
 
         // last_used, right-aligned just left of the Edit button.
@@ -4726,23 +4802,20 @@ impl RemoteApp {
 
     /// Generic button using the shared immediate-mode face while this canvas
     /// retains ownership of pointer routing.
-    #[allow(clippy::too_many_arguments)]
     fn draw_button(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        rect: Rect,
-        label: &str,
-        primary: bool,
+        spec: ButtonSpec<'_>,
     ) {
-        let hovered = rect.contains(self.pointer);
-        let face = ButtonFace::new(rect, label)
+        let hovered = spec.rect.contains(self.pointer);
+        let face = ButtonFace::new(spec.rect, spec.label)
             .hovered(hovered)
             .text_size(13.0)
             .weight(TextWeight::Semibold);
-        let face = if primary { face.primary() } else { face };
+        let face = if spec.primary { face.primary() } else { face };
         Button::paint(scene, transform, text_renderer, theme, &face);
     }
 
@@ -5291,7 +5364,17 @@ impl RemoteApp {
 
         // -- Save + Cancel --
         let save = Rect::new(card_x + card_w - 120.0, y, card_x + card_w, y + 40.0);
-        self.draw_button(scene, transform, text_renderer, theme, save, "Save", true);
+        self.draw_button(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            ButtonSpec {
+                rect: save,
+                label: "Save",
+                primary: true,
+            },
+        );
         self.push_hit(save, Action::SaveForm);
         let cancel = Rect::new(save.x0 - 110.0, y, save.x0 - 12.0, y + 40.0);
         self.draw_button(
@@ -5299,9 +5382,11 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            cancel,
-            "Cancel",
-            false,
+            ButtonSpec {
+                rect: cancel,
+                label: "Cancel",
+                primary: false,
+            },
         );
         self.push_hit(cancel, Action::Back);
 
@@ -5418,7 +5503,6 @@ impl RemoteApp {
 
     /// Draw the session surface for a connection.
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "the live-state match deliberately composes all session status surfaces beside the shared toolbar and canvas geometry"
     )]
@@ -5428,10 +5512,11 @@ impl RemoteApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        content: Rect,
-        id: ConnectionId,
-        immersive: bool,
+        spec: SessionSpec,
     ) {
+        let content = spec.content;
+        let id = spec.id;
+        let immersive = spec.immersive;
         let tokens = &theme.tokens;
         let Some(c) = self.workspace.get(id).cloned() else {
             // Connection vanished — bounce home.
@@ -5455,15 +5540,17 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                content,
-                &c,
-                "Not connected",
-                &[
-                    "This transport is unavailable in this build.".to_string(),
-                    "Your saved connection is unchanged.".to_string(),
-                ],
-                StatusTone::Neutral,
-                false,
+                StatusSessionSpec {
+                    content,
+                    connection: &c,
+                    title: "Not connected",
+                    body: &[
+                        "This transport is unavailable in this build.".to_string(),
+                        "Your saved connection is unchanged.".to_string(),
+                    ],
+                    tone: StatusTone::Neutral,
+                    show_edit: false,
+                },
             );
             return;
         };
@@ -5487,12 +5574,14 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    content,
-                    &c,
-                    title,
-                    &[detail.to_string()],
-                    StatusTone::Pending,
-                    false,
+                    StatusSessionSpec {
+                        content,
+                        connection: &c,
+                        title,
+                        body: &[detail.to_string()],
+                        tone: StatusTone::Pending,
+                        show_edit: false,
+                    },
                 );
             }
             SessionStatus::Failed(err) => {
@@ -5501,15 +5590,17 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    content,
-                    &c,
-                    "Connection failed",
-                    &[
-                        err,
-                        "This is the real error — nothing is simulated.".to_string(),
-                    ],
-                    StatusTone::Error,
-                    false,
+                    StatusSessionSpec {
+                        content,
+                        connection: &c,
+                        title: "Connection failed",
+                        body: &[
+                            err,
+                            "This is the real error — nothing is simulated.".to_string(),
+                        ],
+                        tone: StatusTone::Error,
+                        show_edit: false,
+                    },
                 );
             }
             SessionStatus::Unavailable(detail) => {
@@ -5527,12 +5618,14 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    content,
-                    &c,
-                    "Connection not available",
-                    &[detail, recovery.to_string()],
-                    StatusTone::Neutral,
-                    true,
+                    StatusSessionSpec {
+                        content,
+                        connection: &c,
+                        title: "Connection not available",
+                        body: &[detail, recovery.to_string()],
+                        tone: StatusTone::Neutral,
+                        show_edit: true,
+                    },
                 );
             }
             SessionStatus::Closed => {
@@ -5541,12 +5634,14 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    content,
-                    &c,
-                    "Session ended",
-                    &["The remote closed the session.".to_string()],
-                    StatusTone::Neutral,
-                    false,
+                    StatusSessionSpec {
+                        content,
+                        connection: &c,
+                        title: "Session ended",
+                        body: &["The remote closed the session.".to_string()],
+                        tone: StatusTone::Neutral,
+                        show_edit: false,
+                    },
                 );
             }
             SessionStatus::Connected => {
@@ -5580,57 +5675,57 @@ impl RemoteApp {
     /// identity, a status pill, an explanation, and real actions. The state
     /// has a visible form (the emblem ring + pill colour), not just a label.
     /// Never draws a fabricated terminal or desktop.
-    #[allow(clippy::too_many_arguments)]
     fn draw_status_session(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        content: Rect,
-        c: &Connection,
-        title: &str,
-        body: &[String],
-        tone: StatusTone,
-        show_edit: bool,
+        spec: StatusSessionSpec<'_>,
     ) {
         let tokens = &theme.tokens;
-        let accent = match tone {
+        let accent = match spec.tone {
             StatusTone::Neutral => tokens.colors.neutral[4],
             StatusTone::Pending => tokens.colors.semantic.warning,
             StatusTone::Error => tokens.colors.semantic.danger,
         };
-        let card = Self::draw_status_session_card(scene, transform, theme, content, body);
+        let card = Self::draw_status_session_card(scene, transform, theme, spec.content, spec.body);
         let y = Self::draw_status_session_identity(
             scene,
             transform,
             text_renderer,
             theme,
-            card,
-            accent,
-            c,
+            StatusIdentitySpec {
+                card,
+                accent,
+                connection: spec.connection,
+            },
         );
         let y = Self::draw_status_session_pill_and_body(
             scene,
             transform,
             text_renderer,
             theme,
-            card,
-            accent,
-            title,
-            body,
-            y,
+            StatusBodySpec {
+                card,
+                accent,
+                title: spec.title,
+                body: spec.body,
+                y,
+            },
         );
         self.draw_status_session_actions(
             scene,
             transform,
             text_renderer,
             theme,
-            card,
-            tone,
-            c,
-            y,
-            show_edit,
+            StatusActionsSpec {
+                card,
+                tone: spec.tone,
+                connection: spec.connection,
+                y,
+                show_edit: spec.show_edit,
+            },
         );
     }
 
@@ -5680,20 +5775,16 @@ impl RemoteApp {
 
     /// `draw_status_session`'s state emblem, machine name, and address line.
     /// Returns the `y` the status pill should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_status_session section threading the card geometry \
-                  and tone accent through the emblem + identity lines"
-    )]
     fn draw_status_session_identity(
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        card: Rect,
-        accent: Color,
-        c: &Connection,
+        spec: StatusIdentitySpec<'_>,
     ) -> f64 {
+        let card = spec.card;
+        let accent = spec.accent;
+        let c = spec.connection;
         let tokens = &theme.tokens;
         let mid = card.center().x;
         let mut y = card.y0 + 34.0;
@@ -5759,26 +5850,20 @@ impl RemoteApp {
 
     /// `draw_status_session`'s status pill and explanation body. Returns the
     /// `y` the action row should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_status_session section threading the card geometry, \
-                  tone accent, and running layout cursor `y` through the pill \
-                  and body lines"
-    )]
     fn draw_status_session_pill_and_body(
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        card: Rect,
-        accent: Color,
-        title: &str,
-        body: &[String],
-        y: f64,
+        spec: StatusBodySpec<'_>,
     ) -> f64 {
+        let card = spec.card;
+        let accent = spec.accent;
+        let title = spec.title;
+        let body = spec.body;
         let tokens = &theme.tokens;
         let mid = card.center().x;
-        let mut y = y;
+        let mut y = spec.y;
 
         // Status pill — the state as a labelled, tone-coloured form.
         let (pw, _) = text_renderer.measure_weighted(title, 13.0, None, TextWeight::Semibold);
@@ -5828,23 +5913,19 @@ impl RemoteApp {
 
     /// `draw_status_session`'s action row: a primary "Back to list", plus
     /// "Retry" where the tone is an actual failure.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one draw_status_session section threading the card geometry, \
-                  tone, and settled layout cursor `y` through the action row"
-    )]
     fn draw_status_session_actions(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        card: Rect,
-        tone: StatusTone,
-        c: &Connection,
-        y: f64,
-        show_edit: bool,
+        spec: StatusActionsSpec<'_>,
     ) {
+        let card = spec.card;
+        let tone = spec.tone;
+        let c = spec.connection;
+        let y = spec.y;
+        let show_edit = spec.show_edit;
         let mid = card.center().x;
         // Retry only makes sense after a real failure. An unavailable saved
         // profile gets a direct edit recovery instead; it must never look as
@@ -5881,9 +5962,11 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                retry,
-                "Retry",
-                false,
+                ButtonSpec {
+                    rect: retry,
+                    label: "Retry",
+                    primary: false,
+                },
             );
             self.push_hit(retry, Action::RequestConnect(c.id));
             bx += retry_w + gap;
@@ -5895,9 +5978,11 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                recover,
-                label,
-                false,
+                ButtonSpec {
+                    rect: recover,
+                    label,
+                    primary: false,
+                },
             );
             self.push_hit(recover, action);
             bx += retry_w + gap;
@@ -5909,9 +5994,11 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                edit,
-                "Edit profile",
-                false,
+                ButtonSpec {
+                    rect: edit,
+                    label: "Edit profile",
+                    primary: false,
+                },
             );
             self.push_hit(edit, Action::EditConnection(c.id));
             bx += retry_w + gap;
@@ -5922,9 +6009,11 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            back,
-            "Back to list",
-            true,
+            ButtonSpec {
+                rect: back,
+                label: "Back to list",
+                primary: true,
+            },
         );
         self.push_hit(back, Action::Disconnect);
     }
@@ -6069,9 +6158,11 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            disconnect,
-            "Disconnect",
-            false,
+            ButtonSpec {
+                rect: disconnect,
+                label: "Disconnect",
+                primary: false,
+            },
         );
         // Override the outlined style with a danger tint for disconnect.
         scene.stroke(
@@ -6089,7 +6180,17 @@ impl RemoteApp {
         // channel; a clickable no-op would lie about a security-sensitive
         // capability.
         if c.kind.streams_framebuffer() {
-            let fs = self.draw_tool(scene, transform, text_renderer, theme, x, bar, "Fullscreen");
+            let fs = self.draw_tool(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                ToolSpec {
+                    right_x: x,
+                    bar,
+                    label: "Fullscreen",
+                },
+            );
             self.push_hit(fs, Action::ToggleFullscreen);
             x = fs.x0 - 8.0;
 
@@ -6098,31 +6199,38 @@ impl RemoteApp {
             } else {
                 "Scale: 1:1"
             };
-            let sc = self.draw_tool(scene, transform, text_renderer, theme, x, bar, scale_label);
+            let sc = self.draw_tool(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                ToolSpec {
+                    right_x: x,
+                    bar,
+                    label: scale_label,
+                },
+            );
             self.push_hit(sc, Action::ToggleScale);
         }
     }
 
     /// Draw a compact toolbar tool button ending at `right_x`; returns its rect.
-    #[allow(clippy::too_many_arguments)]
     fn draw_tool(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        right_x: f64,
-        bar: Rect,
-        label: &str,
+        spec: ToolSpec<'_>,
     ) -> Rect {
         let tokens = &theme.tokens;
-        let (tw, _) = text_renderer.measure(label, 12.5, None);
+        let (tw, _) = text_renderer.measure(spec.label, 12.5, None);
         let w = f64::from(tw) + 24.0;
         let rect = Rect::new(
-            right_x - w,
-            bar.center().y - 16.0,
-            right_x,
-            bar.center().y + 16.0,
+            spec.right_x - w,
+            spec.bar.center().y - 16.0,
+            spec.right_x,
+            spec.bar.center().y + 16.0,
         );
         let hovered = rect.contains(self.pointer);
         let rr = RoundedRect::from_rect(rect, 8.0);
@@ -6141,7 +6249,7 @@ impl RemoteApp {
         );
         text_renderer.draw_text(
             scene,
-            label,
+            spec.label,
             12.5,
             tokens.colors.text_primary,
             transform * Affine::translate((rect.x0 + 12.0, rect.center().y - 8.0)),
@@ -6503,6 +6611,44 @@ mod tests {
             assert_eq!(pair[0].y0, pair[1].y0);
             assert_eq!(pair[0].y1, pair[1].y1);
         }
+    }
+
+    #[test]
+    fn failed_status_surface_exposes_retry_and_exit_actions() {
+        let mut app = RemoteApp::new_demo();
+        lay_out(&mut app, 1280.0, 800.0);
+        app.dev_preview_session(
+            ConnectionKind::Ssh,
+            SessionStatus::Failed("Connection refused".into()),
+        );
+        let id = app.session_for.expect("preview connection");
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        Widget::draw(
+            &mut app,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+
+        assert!(
+            app.hits
+                .iter()
+                .any(|hit| hit.action == Action::RequestConnect(id)),
+            "a genuine failure offers retry"
+        );
+        assert!(
+            app.hits.iter().any(|hit| hit.action == Action::Disconnect),
+            "every status card offers a route back to the list"
+        );
+        assert!(
+            !app.hits
+                .iter()
+                .any(|hit| matches!(hit.action, Action::EditConnection(_))),
+            "ordinary transport failures do not masquerade as profile errors"
+        );
     }
 
     #[test]
