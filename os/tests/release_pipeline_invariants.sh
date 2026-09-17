@@ -38,8 +38,8 @@ else
   bad 'a registry cache workflow still uses the default docker driver'
 fi
 
-grep -Fq 'tilo-kernel-buildcache:latest,mode=min' "$workflows/build-kernel.yml" \
-  && ! grep -Fq 'tilo-kernel-buildcache:latest,mode=max' "$workflows/build-kernel.yml" \
+grep -Fq 'qos-kernel-buildcache:latest,mode=min' "$workflows/build-kernel.yml" \
+  && ! grep -Fq 'qos-kernel-buildcache:latest,mode=max' "$workflows/build-kernel.yml" \
   && ok 'kernel cache export excludes its multi-gigabyte intermediate build tree' \
   || bad 'kernel cache export can duplicate the intermediate build tree and exhaust the runner'
 
