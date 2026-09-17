@@ -2528,8 +2528,10 @@ mod version_tests {
     /// down over the band. At 1× both lines still paint, inside.
     #[test]
     fn popover_text_stays_inside_its_box_at_every_text_scale() {
-        let theme = Theme::dark();
         for (scale, expected_lines) in [(1.0_f32, 2_usize), (2.0, 1)] {
+            // A matched host: the theme's type steps carry the scale the
+            // renderer is set to, so the glyphs paint at 2x, not 4x (X1).
+            let theme = Theme::dark().with_text_scale(scale);
             let mut s = scrubber(1000.0, 20);
             s.set_groups(vec![
                 group(0, 9, Some("Costs section")),
