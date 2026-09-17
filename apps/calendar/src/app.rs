@@ -81,10 +81,9 @@ const EMPTY_ONBOARDING_HINT: &str = "Click a day to add your first event";
 
 const DETAIL_PAD: f64 = 22.0;
 const NOTES_TOP_OFFSET: f64 = 296.0;
-/// Authored 1× height of a metadata chip (repeat / reminder / colour). The
-/// painted pill grows past this only when the measured label needs it.
-const EVENT_FORM_CHIP_MIN_H: f64 = 28.0;
-/// Base label size of a metadata chip; the renderer applies the text scale.
+/// Base label size of a metadata chip (repeat / reminder / colour); the
+/// renderer applies the text scale. The chip's height is the theme's compact
+/// selector height, see `event_form_chip_h`.
 const EVENT_FORM_CHIP_TEXT: f32 = 12.0;
 /// Base size of the "EVENT · SAVES AUTOMATICALLY" / "NOTES" section labels.
 const SECTION_LABEL_TEXT: f32 = 11.0;
@@ -138,10 +137,16 @@ impl MonthMetrics {
         let sp = &theme.tokens.spacing;
         let label_h = metrics::line_h(MONTH_LABEL_TEXT, text_scale);
         let chip_text_h = metrics::line_h(MONTH_CHIP_TEXT, text_scale);
-        let header_h = metrics::at_least(MONTH_HEADER_MIN_H, label_h + f64::from(sp.s3));
-        let pill_r = metrics::at_least(MONTH_TODAY_PILL_R, label_h / 2.0 + f64::from(sp.s1));
+        // Every band is the authored 1× height, or its measured line plus the
+        // same theme gap the painter leaves — rounded up — once scaled type
+        // needs more; at 1× the design is reproduced exactly and every value
+        // is a whole pixel at every scale.
+        let header_h = metrics::at_least_whole(MONTH_HEADER_MIN_H, label_h + f64::from(sp.s3));
+        let pill_r = metrics::at_least_whole(MONTH_TODAY_PILL_R, label_h / 2.0 + f64::from(sp.s1));
+        // The first chip starts an `s1` below the day-number band (6 + 24 + 4
+        // = 34 at 1×), the gap the painter keeps between pill and chip.
         let chips_top = MONTH_NUM_TOP + 2.0 * pill_r + f64::from(sp.s1);
-        let chip_h = metrics::at_least(MONTH_CHIP_MIN_H, chip_text_h + f64::from(sp.s1));
+        let chip_h = metrics::at_least_whole(MONTH_CHIP_MIN_H, chip_text_h + f64::from(sp.s1));
         Self {
             header_h,
             label_h,
@@ -432,6 +437,10 @@ pub struct CalendarApp {
     /// The theme's spacing scale, cached alongside `text_scale` so the
     /// renderer-less layout pass reads the same tokens paint does.
     spacing: ui::tokens::spacing::Spacing,
+    /// The theme's density metrics (selector / control heights), cached in
+    /// `build_layout` so the renderer-less layout pass reads the same tokens
+    /// the painters do.
+    tokens_metrics: ui::tokens::Metrics,
     /// Which narrow screen is showing (only meaningful when the editor is
     /// full-screen, i.e. below [`EDITOR_OVERLAY_MIN`]).
     narrow_screen: NarrowScreen,
@@ -620,6 +629,7 @@ impl CalendarApp {
             topbar: Topbar::new(),
             text_scale: 1.0,
             spacing: ui::tokens::spacing::Spacing::default(),
+            tokens_metrics: ui::tokens::Metrics::BASE,
             narrow_screen: if detail_open {
                 NarrowScreen::Detail
             } else {
@@ -2973,7 +2983,11 @@ impl CalendarApp {
         // gap. `draw_detail_notes_header` paints from `notes_top` back up with
         // the same three terms, so label, rule and editor cannot drift apart.
         let s4 = f64::from(self.spacing.s4);
-        y += event_form_chip_h(self.text_scale, f64::from(self.spacing.s3));
+        y += event_form_chip_h(
+            f64::from(self.tokens_metrics.selector_height),
+            f64::from(self.spacing.s3),
+            self.text_scale,
+        );
         y += s4;
         y += self.notes_header_h();
 
@@ -3025,19 +3039,23 @@ impl CalendarApp {
     /// the authored 22px at 1×, or the measured label line plus a token gap
     /// once scaled type needs more. Layout and paint both read this.
     fn detail_header_h(&self) -> f64 {
-        metrics::at_least(
+        metrics::at_least_whole(
             DETAIL_HEADER_MIN_H,
             metrics::line_h(SECTION_LABEL_TEXT, self.text_scale) + f64::from(self.spacing.s2),
         )
     }
 
     /// Vertical extent of the NOTES section header measured from the label's
-    /// top to the editor's first line: label line, label→rule gap, rule→editor
-    /// gap. `form_layout` reserves it; `draw_detail_notes_header` paints it.
+    /// top to the editor's first line: label line, label→rule gap (`s1`),
+    /// rule→editor gap (`s2`), rounded up to a whole pixel (26 at 1×).
+    /// `form_layout` reserves it; `draw_detail_notes_header` walks back from
+    /// the editor origin with the same two theme gaps plus the measured label,
+    /// so reserve and paint read one set of tokens and cannot drift apart.
     fn notes_header_h(&self) -> f64 {
-        metrics::line_h(SECTION_LABEL_TEXT, self.text_scale)
+        (metrics::line_h(SECTION_LABEL_TEXT, self.text_scale)
             + f64::from(self.spacing.s1)
-            + f64::from(self.spacing.s2)
+            + f64::from(self.spacing.s2))
+        .ceil()
     }
 
     #[allow(
@@ -3734,7 +3752,7 @@ impl CalendarApp {
                     let pc = cal.palette().color(theme);
                     if cal.visible {
                         fill_round(scene, t, pc, sw, 4.0);
-                        draw_check(scene, t, Color::WHITE, sw);
+                        draw_check(scene, t, ui::widget::Avatar::initial_ink(pc), sw);
                     } else {
                         stroke_round(scene, t, pc.with_alpha(0.6), sw, 4.0, 1.4);
                     }
@@ -4067,7 +4085,7 @@ impl CalendarApp {
                 tr,
                 &num,
                 MONTH_LABEL_TEXT,
-                Color::WHITE,
+                c.on_accent(4.5),
                 Rect::from_center_size(pill_c, (2.0 * m.pill_r, 2.0 * m.pill_r)),
                 t,
             );
@@ -4201,7 +4219,7 @@ impl CalendarApp {
                     scene,
                     &line,
                     MONTH_CHIP_TEXT,
-                    Color::WHITE,
+                    ui::widget::Avatar::initial_ink(col),
                     t * Affine::translate((chip.x0 + MONTH_CHIP_INSET, chip.y0 + text_y)),
                     None,
                 );
@@ -4355,12 +4373,24 @@ impl CalendarApp {
     ) {
         let c = &theme.tokens.colors;
         if modal {
-            // Dim the calendar behind the card; a click on the dim closes the
-            // editor. The card is a floating panel, not a docked strip.
-            fill_rect(scene, t, c.surfaces.overlay, self.content_rect);
+            // Dim the calendar behind the card — the shared modal scrim at the
+            // toolkit's modal strength, so the grid stays visible beneath the
+            // editor instead of vanishing under an opaque popover surface. A
+            // click on the dim closes the editor. The card is a floating
+            // panel, not a docked strip.
+            ui::chrome::fill_scrim(
+                scene,
+                t,
+                self.content_rect,
+                ui::widget::modal_frame::MODAL_SCRIM_ALPHA,
+                theme,
+            );
             hits.push((self.content_rect, Action::CloseDetail));
             let shadow = r.inflate(6.0, 10.0);
-            fill_round(scene, t, Color::from_rgba8(0, 0, 0, 90), shadow, 18.0);
+            // The card's drop shadow is the theme's scrim tint, faded: it
+            // recedes into the chrome's colour family in every preset instead
+            // of punching a fixed black under a light card.
+            fill_round(scene, t, c.surfaces.scrim.with_alpha(0.35), shadow, 18.0);
             fill_round(scene, t, c.surfaces.raised, r, 14.0);
             stroke_round(scene, t, c.border_standard, r, 14.0, 1.0);
             // Backing guard so a press on the card padding is absorbed rather
@@ -6031,7 +6061,9 @@ impl Widget for CalendarApp {
     ) -> NodeId {
         self.text_scale = theme.text_scale;
         self.spacing = theme.tokens.spacing.clone();
-        self.timeline.set_text_scale(theme.text_scale);
+        self.tokens_metrics = theme.tokens.metrics;
+        self.timeline
+            .set_layout_tokens(theme.text_scale, &theme.tokens.spacing);
         let editor_node = self.notes_editor.build_layout(taffy, theme, node_map);
         let notes_w = self.detail_body_w();
         self.built_notes_w = notes_w;
@@ -6998,13 +7030,14 @@ fn chip(
     chip_with_lead(scene, t, tr, theme, x, y, label, filled, 0.0)
 }
 
-/// Height of a metadata chip for the current text scale: the authored 28px
-/// pill at 1×, growing with the measured label line so scaled type never
-/// spills out of its fill. Shared by `form_layout` (no renderer) and `chip`
+/// Height of a metadata chip for the current text scale: the theme's compact
+/// selector height (28px at 1×), or the measured label line plus the `s3`
+/// pad the painter leaves — rounded up — once scaled type needs more. Shared
+/// by `form_layout` (no renderer; reads the cached theme tokens) and `chip`
 /// (renderer) so the reserved row and the painted pill agree.
-fn event_form_chip_h(text_scale: f32, pad_y: f64) -> f64 {
-    metrics::at_least(
-        EVENT_FORM_CHIP_MIN_H,
+fn event_form_chip_h(selector_h: f64, pad_y: f64, text_scale: f32) -> f64 {
+    metrics::at_least_whole(
+        selector_h,
         metrics::line_h(EVENT_FORM_CHIP_TEXT, text_scale) + pad_y,
     )
 }
@@ -7035,7 +7068,11 @@ fn chip_with_lead(
     let c = &theme.tokens.colors;
     let pad = f64::from(theme.tokens.spacing.s3);
     let (tw, th) = tr.measure(label, EVENT_FORM_CHIP_TEXT, None);
-    let h = event_form_chip_h(tr.text_scale(), pad);
+    let h = event_form_chip_h(
+        f64::from(theme.tokens.metrics.selector_height),
+        pad,
+        tr.text_scale(),
+    );
     let r = Rect::new(x, y, x + pad + lead + f64::from(tw) + pad, y + h);
     let radius = f64::from(theme.tokens.radii.md);
     if filled {
@@ -7709,9 +7746,29 @@ mod tests {
         assert_eq!(one.pill_r, MONTH_TODAY_PILL_R);
         assert_eq!(one.chip_h, MONTH_CHIP_MIN_H);
         assert_eq!(one.chip_pitch, 20.0);
+        // The authored 1× design: chips start an `s1` below the 24px
+        // day-number band, at 6 + 24 + 4 = 34, the gap the painter keeps
+        // between the today pill and the first chip.
+        let sp = &theme.tokens.spacing;
+        assert_eq!(
+            one.chips_top,
+            MONTH_NUM_TOP + 2.0 * MONTH_TODAY_PILL_R + f64::from(sp.s1)
+        );
 
         let two = MonthMetrics::new(&theme, 2.0);
-        let sp = &theme.tokens.spacing;
+        for value in [
+            two.header_h,
+            two.pill_r,
+            two.chips_top,
+            two.chip_h,
+            two.chip_pitch,
+        ] {
+            assert_eq!(
+                value.fract(),
+                0.0,
+                "scaled month metrics land on whole pixels"
+            );
+        }
         assert!(two.header_h >= two.label_h + f64::from(sp.s3));
         assert!(two.chip_h >= two.chip_text_h + f64::from(sp.s1));
         assert!(two.chip_pitch > two.chip_h);
@@ -7749,8 +7806,19 @@ mod tests {
             "title field must clear the header row"
         );
 
-        let chip_h = event_form_chip_h(2.0, f64::from(sp.s3));
+        let selector_h = f64::from(app.tokens_metrics.selector_height);
+        let chip_h = event_form_chip_h(selector_h, f64::from(sp.s3), 2.0);
         assert!(chip_h >= metrics::line_h(EVENT_FORM_CHIP_TEXT, 2.0) + f64::from(sp.s3));
+        assert_eq!(
+            chip_h.fract(),
+            0.0,
+            "a scaled chip row lands on a whole pixel"
+        );
+        assert_eq!(
+            event_form_chip_h(selector_h, f64::from(sp.s3), 1.0),
+            selector_h,
+            "at 1× the chip is the theme's selector height"
+        );
         let notes_top = app.detail_rect.y0 + app.form.notes_top;
         let rule_y = notes_top - f64::from(sp.s2);
         let label_y = rule_y - f64::from(sp.s1) - label_h;
