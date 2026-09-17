@@ -129,6 +129,8 @@ mod tests {
             apps: BTreeSet::new(),
             priority: 0,
             latency_ms: 12,
+            power: tilo_relay::PowerAvailability::External,
+            energy_saver: false,
             active_assignments: 0,
             assignment_capacity: 8,
             online: true,
