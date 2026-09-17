@@ -129,3 +129,9 @@ Resume revalidates file handles and names after destination hashing and blocking
 The fix passed 95 focused regressions, 20 native-contract tests, two real-image diagnostics, and the generated-fixture lookup regression. Host/Linux scoped lint, Linux backend/command cross-linking and Windows compilation completed; inherited harness warnings remain disclosed. The full host Imager check also completed. Behavioral failure logs precede the fixes, including file edits, changed directory timestamps, journal relocation, unbounded history and cancelled replay/append. Production runtime tests remain unrun.
 
 Source design for the planned durable Connected store is next. It must preserve endpoint capability gates, retain conflicts and recoverable versions, and fence disconnected connections across restart. Native write/durability proof remains required before public synchronization can be enabled.
+
+### Connected store implementation in progress
+
+The accepted source design now has an active implementation under `connection/store`. Five actual Imager tests passed in 74.49 seconds: private store initialization and exclusive locking, connection/absent-baseline persistence, refusal to finish disconnect with pending intent, disconnect fencing and stale acknowledgements across reopen, and bounded paging through 4,097 durable connection records. This is an implementation checkpoint, not independent source acceptance or native durability proof.
+
+Two following tests expose the still-missing recovery reservation/byte-preservation behavior. Recovery files, cancellation, retention accounting, corruption and crash-boundary coverage, platform checks and independent review remain in progress. Production receipt-to-publication authority is intentionally absent until real native displacement/write-epoch evidence exists. Windows durability and all previously listed runtime/integration requirements remain open.
