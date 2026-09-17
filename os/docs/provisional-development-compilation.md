@@ -1,10 +1,42 @@
 # Full provisional development compilation
 
-`development-compile.yml` is a manual, feature-branch-only x86-64 job. It invokes
+`development-compile.yml` is a manual, feature-branch-only x86-64 job. Its default
+`cache-only` mode tests remote compiler-cache access and stops before creating
+signing identities or compiling the OS. Select `full-build` explicitly to invoke
 the actual `os/dev/build-image.sh` development path with browser support enabled
 and all applications and desktop components compiled from source. Supply the
 reviewed immutable x86-64 WPE buildroot candidate and an explicit positive test
 generation. The committed base, RPM snapshot and kernel snapshot remain inputs.
+
+## Reuse and timing
+
+The full build requires the existing S3 compiler cache to start successfully.
+Credentials enter through secret mounts, never build arguments or image layers.
+Run 7000 verified a remote hit after restarting the cache server with an empty
+local cache, plus invalidation after changing a tracked compiler input. Its
+11.85-second duration measures that tiny probe, not OS compilation. Inspect the
+nested build's own sccache statistics to assess actual Rust reuse.
+
+The WPE stage has a separate native Buildah registry cache and stable dependency
+epoch. Source commits and development signing identities do not change that
+epoch; recipe, asset and dependency changes still invalidate the stage. Both
+native architectures passed fresh-store reuse and invalidation fixtures in run
+6992. The full build uses the resulting immutable local stage ID. This proves
+the cache mechanism; actual WebKit compilation and its warm duration remain to
+be measured.
+
+Build logs report individual phase durations and compiler-cache statistics,
+including on failure. Missing Rust outputs fail with their names instead of
+triggering another complete compile. A separate raw-rootfs handoff allows
+retention before signing and sealing, but publication is not yet enabled in
+this workflow. Do not count a local raw image as a retained artifact.
+
+The 170-minute full-build timeout is a ceiling inside the existing runner limit,
+not a measured build duration. No measured ten-hour build justifies increasing
+infrastructure timeouts. Use phase measurements and cache misses to choose the
+next performance change.
+
+## Capacity and evidence
 
 **Capacity experiment:** `runner-disk-100g` provides 100 GiB; `runner-large`
 provides only 50 GiB despite its larger CPU/RAM allocation. Run 6815 completed
