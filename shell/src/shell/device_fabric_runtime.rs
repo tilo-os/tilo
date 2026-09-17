@@ -42,6 +42,8 @@ const PRESENCE_HEARTBEAT: Duration = Duration::from_secs(10);
 const MAX_QUEUED_SPATIAL_INPUT: usize = 256;
 const MAX_SPATIAL_INPUT_FLUSH_PER_FRAME: usize = 32;
 const MAX_PENDING_INCOMING_MEDIA: usize = 16;
+const MAX_NEARBY_STAGING_JOBS: usize = 4;
+const MAX_NEARBY_STAGING_JOBS_PER_OWNER: usize = 2;
 const INCOMING_MEDIA_WAIT: Duration = Duration::from_secs(60 * 60);
 const BLUETOOTH_HANDOFF_WAIT: Duration = Duration::from_secs(75);
 const BLUETOOTH_HANDOFF_DISCOVERY: Duration = Duration::from_secs(6);
@@ -460,6 +462,86 @@ struct NearbyStagingResult {
     target: crate::shell::personal_continuity::DeviceId,
     name: String,
     result: Result<(), String>,
+}
+
+#[derive(Default)]
+struct NearbyStagingAdmission {
+    owners: BTreeMap<String, usize>,
+    generation: u64,
+}
+
+impl NearbyStagingAdmission {
+    fn acquire(&mut self, owner: &str) -> bool {
+        let total = self.owners.values().sum::<usize>();
+        let owned = self.owners.get(owner).copied().unwrap_or_default();
+        if total >= MAX_NEARBY_STAGING_JOBS || owned >= MAX_NEARBY_STAGING_JOBS_PER_OWNER {
+            return false;
+        }
+        self.owners.insert(owner.to_string(), owned + 1);
+        true
+    }
+
+    fn release(&mut self, owner: &str) {
+        let Some(owned) = self.owners.get_mut(owner) else {
+            return;
+        };
+        *owned = owned.saturating_sub(1);
+        if *owned == 0 {
+            self.owners.remove(owner);
+        }
+    }
+
+    fn release_if_generation(&mut self, owner: &str, generation: u64) {
+        if self.generation == generation {
+            self.release(owner);
+        }
+    }
+
+    fn invalidate(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.owners.clear();
+    }
+}
+
+fn nearby_staging_admission() -> &'static Mutex<NearbyStagingAdmission> {
+    static ADMISSION: OnceLock<Mutex<NearbyStagingAdmission>> = OnceLock::new();
+    ADMISSION.get_or_init(|| Mutex::new(NearbyStagingAdmission::default()))
+}
+
+struct NearbyStagingPermit {
+    owner: String,
+    generation: u64,
+}
+
+impl NearbyStagingPermit {
+    fn acquire(owner: &str) -> Result<Self, String> {
+        let mut admission = nearby_staging_admission()
+            .lock()
+            .map_err(|_| "Nearby Send staging admission is unavailable".to_string())?;
+        let admitted = admission.acquire(owner);
+        admitted
+            .then(|| Self {
+                owner: owner.to_string(),
+                generation: admission.generation,
+            })
+            .ok_or_else(|| {
+                "Nearby Send staging is busy; retry when another transfer finishes".into()
+            })
+    }
+
+    fn valid(&self) -> bool {
+        nearby_staging_admission()
+            .lock()
+            .is_ok_and(|admission| admission.generation == self.generation)
+    }
+}
+
+impl Drop for NearbyStagingPermit {
+    fn drop(&mut self) {
+        if let Ok(mut admission) = nearby_staging_admission().lock() {
+            admission.release_if_generation(&self.owner, self.generation);
+        }
+    }
 }
 
 fn nearby_staging_queue() -> &'static (
@@ -1944,6 +2026,11 @@ fn resume_nearby_transfers(network: &ShellNetwork) {
         }
     }
     let entries = try_outbox_entries();
+    if let Ok(mut state) = nearby_drop_state().lock() {
+        state
+            .last_offer
+            .retain(|transfer_id, _| entries.iter().any(|entry| entry.id == *transfer_id));
+    }
     for entry in entries {
         let Ok(target) = crate::shell::personal_continuity::DeviceId::new(entry.target.clone())
         else {
@@ -3097,6 +3184,7 @@ pub fn request_nearby_drop(
     if metadata.is_dir()
         || metadata.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64
     {
+        let permit = NearbyStagingPermit::acquire("shell:spatial-drop")?;
         let target = target.clone();
         let worker_target = target.clone();
         let source = path.to_path_buf();
@@ -3109,6 +3197,7 @@ pub fn request_nearby_drop(
         std::thread::Builder::new()
             .name("tilo-nearby-stage".into())
             .spawn(move || {
+                let permit = permit;
                 let result = with_nearby_transfer_store(|store| {
                     store
                         .stage_with_id(
@@ -3119,6 +3208,13 @@ pub fn request_nearby_drop(
                         )
                         .map(|_| ())
                 });
+                if !permit.valid() {
+                    if result.is_ok() {
+                        let _ =
+                            with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
+                    }
+                    return;
+                }
                 let _ = sender.send(NearbyStagingResult {
                     transfer_id,
                     target: worker_target,
@@ -3182,6 +3278,7 @@ pub fn request_nearby_drop_secure(
     network: &ShellNetwork,
     target: &crate::shell::personal_continuity::DeviceId,
     source: crate::shell::nearby_transfer::SecureNearbySource,
+    staging_owner: &str,
 ) -> Result<[u8; 16], String> {
     require_continuity(ContinuityCapability::FileTransfer)?;
     let metadata = source.metadata()?;
@@ -3189,6 +3286,7 @@ pub fn request_nearby_drop_secure(
     if metadata.is_dir()
         || metadata.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64
     {
+        let permit = NearbyStagingPermit::acquire(staging_owner)?;
         let target = target.clone();
         let worker_target = target.clone();
         let name = file_name.clone();
@@ -3200,6 +3298,7 @@ pub fn request_nearby_drop_secure(
         std::thread::Builder::new()
             .name("tilo-nearby-stage".into())
             .spawn(move || {
+                let permit = permit;
                 let result = with_nearby_transfer_store(|store| {
                     store
                         .stage_secure_with_id(
@@ -3210,6 +3309,13 @@ pub fn request_nearby_drop_secure(
                         )
                         .map(|_| ())
                 });
+                if !permit.valid() {
+                    if result.is_ok() {
+                        let _ =
+                            with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
+                    }
+                    return;
+                }
                 let _ = sender.send(NearbyStagingResult {
                     transfer_id,
                     target: worker_target,
@@ -5066,6 +5172,9 @@ fn tear_down_display_and_input(network: &ShellNetwork) {
 }
 
 fn tear_down_nearby_transfers(network: &ShellNetwork) {
+    if let Ok(mut admission) = nearby_staging_admission().lock() {
+        admission.invalidate();
+    }
     let active = nearby_drop_state().lock().map_or_else(
         |_| Vec::new(),
         |state| {
@@ -5145,6 +5254,31 @@ fn unix_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::shell::personal_continuity::DeviceId;
+
+    #[test]
+    fn nearby_staging_admission_bounds_global_and_per_owner_work() {
+        let mut admission = NearbyStagingAdmission::default();
+        assert!(admission.acquire("workspace-a"));
+        assert!(admission.acquire("workspace-a"));
+        assert!(!admission.acquire("workspace-a"));
+        assert!(admission.acquire("workspace-b"));
+        assert!(admission.acquire("workspace-c"));
+        assert!(!admission.acquire("workspace-d"));
+        admission.release("workspace-a");
+        assert!(admission.acquire("workspace-d"));
+        admission.release("workspace-a");
+        assert!(!admission.owners.contains_key("workspace-a"));
+        let generation = admission.generation;
+        admission.invalidate();
+        assert!(admission.owners.is_empty());
+        assert_ne!(admission.generation, generation);
+        assert!(admission.acquire("workspace-a"));
+        admission.release_if_generation("workspace-a", generation);
+        assert_eq!(admission.owners.get("workspace-a"), Some(&1));
+        let current_generation = admission.generation;
+        admission.release_if_generation("workspace-a", current_generation);
+        assert!(!admission.owners.contains_key("workspace-a"));
+    }
 
     #[test]
     fn nearby_consent_queue_is_bounded_and_requires_explicit_resolution() {
