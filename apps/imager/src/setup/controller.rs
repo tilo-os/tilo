@@ -17,9 +17,16 @@ pub enum SetupPage {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FolderDestination {
+    /// Task 5 resolves and revalidates the actual qOS-managed local target.
+    Unresolved,
+    Resolved(PathBuf),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FolderChoice {
     pub scan: FolderScan,
-    pub destination: PathBuf,
+    pub destination: FolderDestination,
     pub mode: FolderMode,
     pub mode_overridden: bool,
 }
@@ -73,6 +80,11 @@ impl SetupController {
         true
     }
 
+    /// Replace live capability facts without discarding the reviewed choices.
+    pub fn set_capabilities(&mut self, capabilities: Capabilities) {
+        self.capabilities = capabilities;
+    }
+
     #[must_use]
     pub fn page(&self) -> SetupPage {
         self.page
@@ -115,7 +127,7 @@ impl SetupController {
         }
         self.remembered_folders.push(FolderChoice {
             scan,
-            destination,
+            destination: FolderDestination::Resolved(destination),
             mode: self.default_mode,
             mode_overridden: false,
         });
@@ -124,13 +136,28 @@ impl SetupController {
         Ok(())
     }
 
+    /// Remember a selected source while leaving its actual local target for
+    /// the trusted first-login flow to resolve and review.
+    pub fn add_folder_unresolved(&mut self, scan: FolderScan) {
+        self.remembered_folders.push(FolderChoice {
+            scan,
+            destination: FolderDestination::Unresolved,
+            mode: self.default_mode,
+            mode_overridden: false,
+        });
+        self.invalidate_folder_review();
+        self.rebuild_effective_folders();
+    }
+
     /// Whether a proposed destination duplicates or nests with a remembered
     /// destination. This is a lexical planning guard, not a filesystem grant.
     #[must_use]
     pub fn destination_conflicts(&self, destination: &Path) -> bool {
         self.remembered_folders.iter().any(|folder| {
-            folder.destination.starts_with(destination)
-                || destination.starts_with(&folder.destination)
+            let FolderDestination::Resolved(existing) = &folder.destination else {
+                return false;
+            };
+            existing.starts_with(destination) || destination.starts_with(existing)
         })
     }
 
@@ -224,6 +251,23 @@ impl SetupController {
         &self.remembered_folders
     }
 
+    /// Count selected source bytes independently of whether a destination has
+    /// been resolved. This is an estimate, never copy authorization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the selected byte estimates overflow `u64`.
+    pub fn selected_folder_bytes(&self) -> Result<u64, String> {
+        self.remembered_folders
+            .iter()
+            .filter(|folder| folder.mode != FolderMode::Later)
+            .try_fold(0_u64, |total, folder| {
+                total
+                    .checked_add(folder.scan.bytes)
+                    .ok_or_else(|| "selected folder estimate overflowed".to_string())
+            })
+    }
+
     fn invalidate_folder_review(&mut self) {
         if self.page == SetupPage::Review {
             self.page = SetupPage::Folders;
@@ -234,14 +278,18 @@ impl SetupController {
         self.plan.folders = self
             .remembered_folders
             .iter()
-            .filter(|remembered| remembered.mode != FolderMode::Later)
-            .map(|remembered| FolderSelection {
-                source: remembered.scan.source.clone(),
-                destination: remembered.destination.clone(),
-                bytes: remembered.scan.bytes,
-                mode: remembered.mode,
-                readable: true,
-                safe_sync: false,
+            .filter_map(|remembered| {
+                let FolderDestination::Resolved(destination) = &remembered.destination else {
+                    return None;
+                };
+                (remembered.mode != FolderMode::Later).then(|| FolderSelection {
+                    source: remembered.scan.source.clone(),
+                    destination: destination.clone(),
+                    bytes: remembered.scan.bytes,
+                    mode: remembered.mode,
+                    readable: true,
+                    safe_sync: false,
+                })
             })
             .collect();
     }
@@ -439,5 +487,43 @@ mod tests {
         }
 
         assert_eq!(setup.folders().len(), 1);
+    }
+
+    #[test]
+    fn live_capability_loss_blocks_navigation_without_forgetting_choices() {
+        let mut setup = SetupController::new(linux_desktop());
+        assert!(setup.choose_experience(Experience::Desktop));
+        setup.next().unwrap();
+        setup
+            .add_folder(scan("source/Documents", 12), test_path("qos/Documents"))
+            .unwrap();
+        setup.back();
+
+        setup.set_capabilities(Capabilities {
+            host: HostOs::Linux,
+            desktop_session: false,
+            internal_dual_boot: false,
+        });
+
+        assert!(setup.next().is_err());
+        assert_eq!(setup.folders().len(), 1);
+        assert_eq!(setup.default_mode(), FolderMode::Copy);
+    }
+
+    #[test]
+    fn unresolved_destination_retains_reviewed_folder_intent_without_authorizing_copy() {
+        let mut setup = SetupController::new(linux_desktop());
+        assert!(setup.choose_experience(Experience::Desktop));
+        setup.next().unwrap();
+
+        setup.add_folder_unresolved(scan("source/Documents", 12));
+
+        assert_eq!(setup.folders().len(), 1);
+        assert!(matches!(
+            &setup.folders()[0].destination,
+            FolderDestination::Unresolved
+        ));
+        assert!(setup.plan().folders.is_empty());
+        assert_eq!(setup.selected_folder_bytes(), Ok(12));
     }
 }

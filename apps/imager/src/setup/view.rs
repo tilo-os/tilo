@@ -22,7 +22,9 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 use winit::event::{Modifiers, WindowEvent};
 
-use super::controller::{SetupController, SetupPage};
+use super::controller::{FolderDestination, SetupController, SetupPage};
+use super::desktop_catalog::{DesktopRelease, PackageFormat, RuntimeEvidence};
+use super::desktop_flow::{DesktopFailureKind, DesktopFlow, DesktopFlowState, DesktopSelection};
 use super::folders::{self, FolderScan, SkipReason, SkippedEntry};
 use super::import_view::ImportApp;
 use super::known_folders::{self, KnownFolder, KnownFolderKind};
@@ -33,7 +35,7 @@ type WorkerTask = Box<dyn FnOnce() + Send + 'static>;
 type WorkerLauncher = fn(&str, WorkerTask) -> Result<(), String>;
 type ImportLauncher = fn() -> ImportApp;
 
-const INSTALL_UNAVAILABLE: &str = "Installation is not available in this build yet.";
+const FULL_OS_UNAVAILABLE: &str = "Full qOS installation is not available in this build yet.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SetupCapabilities {
@@ -54,13 +56,16 @@ enum SetupCommand {
     ToggleHelp,
     Next,
     Back,
+    InstallDesktop,
+    CancelDesktopDownload,
+    RetryDesktop,
 }
 
 #[derive(Debug)]
 enum WorkerMessage {
     KnownFolders(Vec<KnownFolder>),
     ScanFinished {
-        destination: PathBuf,
+        destination: Option<PathBuf>,
         result: Result<FolderScan, String>,
     },
 }
@@ -98,6 +103,8 @@ pub struct SetupApp {
     import_requested: bool,
     import_launcher: ImportLauncher,
     import_app: Option<ImportApp>,
+    desktop_flow: DesktopFlow,
+    desktop_revision: u64,
 }
 
 impl Default for SetupApp {
@@ -129,6 +136,7 @@ impl SetupApp {
             },
             launch_worker,
         );
+        app.desktop_flow = DesktopFlow::new_live();
         app.start_known_folder_lookup();
         app
     }
@@ -144,6 +152,7 @@ impl SetupApp {
         worker_launcher: WorkerLauncher,
     ) -> Self {
         let (worker_tx, worker_rx) = mpsc::channel();
+        let desktop_flow = fixture_desktop_flow(capabilities.platform.desktop_session);
         Self {
             controller: Rc::new(RefCell::new(SetupController::new(capabilities.platform))),
             capabilities,
@@ -165,6 +174,8 @@ impl SetupApp {
             import_requested: false,
             import_launcher: ImportApp::new,
             import_app: None,
+            desktop_flow,
+            desktop_revision: 0,
         }
     }
 
@@ -198,11 +209,11 @@ impl SetupApp {
                 });
             }
             app.apply_worker_message(WorkerMessage::ScanFinished {
-                destination: PathBuf::from("/home/qos/Documents"),
+                destination: None,
                 result: Ok(documents),
             });
             app.apply_worker_message(WorkerMessage::ScanFinished {
-                destination: PathBuf::from("/home/qos/Pictures"),
+                destination: None,
                 result: Ok(shot_scan("Pictures", 814, 6_820_000_000)),
             });
         }
@@ -210,8 +221,19 @@ impl SetupApp {
             app.apply_command(SetupCommand::SetMode(FolderMode::Later));
         } else if scenario == "setup-folders-connected" {
             app.apply_command(SetupCommand::SetMode(FolderMode::Connected));
-        } else if scenario == "setup-review" {
+        } else if matches!(scenario, "setup-review" | "setup-desktop-installed") {
             app.apply_command(SetupCommand::Next);
+        }
+        if scenario == "setup-desktop-installed" {
+            app.desktop_flow = DesktopFlow::from_fixture_state(DesktopFlowState::Installed {
+                selection: fixture_desktop_selection(false),
+                result: super::desktop_install::InstalledDesktop {
+                    version: "0.1.9-1.fc44".into(),
+                    session_entry: "/usr/share/wayland-sessions/qos.desktop".into(),
+                },
+            });
+            app.status =
+                "qOS Desktop is installed and verified. Sign out when you are ready.".into();
         }
         app
     }
@@ -314,6 +336,25 @@ impl SetupApp {
                 self.controller.borrow_mut().back();
                 self.status = "Your choices are retained while you make changes.".into();
             }
+            SetupCommand::InstallDesktop => match self.desktop_flow.start_install() {
+                Ok(()) => self.status = "Rechecking this host before download…".into(),
+                Err(error) => {
+                    self.status = error;
+                    self.status_is_error = true;
+                }
+            },
+            SetupCommand::CancelDesktopDownload => {
+                if self.desktop_flow.cancel_download() {
+                    self.status = "Cancelling the package download…".into();
+                }
+            }
+            SetupCommand::RetryDesktop => match self.desktop_flow.retry() {
+                Ok(()) => self.status = "Rechecking this host before retry…".into(),
+                Err(error) => {
+                    self.status = error;
+                    self.status_is_error = true;
+                }
+            },
         }
         self.structure_dirty = true;
     }
@@ -325,11 +366,6 @@ impl SetupApp {
             self.structure_dirty = true;
             return;
         }
-        let destination = PathBuf::from("/home/qos").join(
-            source
-                .file_name()
-                .unwrap_or_else(|| std::ffi::OsStr::new("Imported folder")),
-        );
         let source_label = source.display().to_string();
         let tx = self.worker_tx.clone();
         self.pending_scans = self.pending_scans.saturating_add(1);
@@ -339,7 +375,7 @@ impl SetupApp {
             Box::new(move || {
                 let result = folders::scan_folder(&source);
                 let _ = tx.send(WorkerMessage::ScanFinished {
-                    destination,
+                    destination: None,
                     result,
                 });
             }),
@@ -433,17 +469,18 @@ impl SetupApp {
                             self.structure_dirty = true;
                             return;
                         }
-                        let destination = match self.distinct_suggested_destination(&destination) {
-                            Ok(destination) => destination,
-                            Err(error) => {
-                                self.status = error;
-                                self.status_is_error = true;
-                                self.structure_dirty = true;
-                                return;
-                            }
-                        };
                         let skipped_count = scan.skipped.len();
-                        match self.controller.borrow_mut().add_folder(scan, destination) {
+                        let added = if let Some(destination) = destination {
+                            self.distinct_suggested_destination(&destination).and_then(
+                                |destination| {
+                                    self.controller.borrow_mut().add_folder(scan, destination)
+                                },
+                            )
+                        } else {
+                            self.controller.borrow_mut().add_folder_unresolved(scan);
+                            Ok(())
+                        };
+                        match added {
                             Ok(()) => {
                                 if skipped_count == 0 {
                                     self.status =
@@ -490,6 +527,31 @@ impl SetupApp {
                     self.status_is_error = true;
                 }
             }
+        }
+        changed |= self.desktop_flow.poll();
+        if self.desktop_revision != self.desktop_flow.revision() {
+            self.desktop_revision = self.desktop_flow.revision();
+            let mut platform = self.capabilities.platform;
+            platform.desktop_session = self.desktop_flow.desktop_available();
+            self.capabilities.platform = platform;
+            self.controller.borrow_mut().set_capabilities(platform);
+            if self.controller.borrow().page() == SetupPage::Review {
+                match self.desktop_flow.state() {
+                    DesktopFlowState::Installed { .. } => {
+                        self.status =
+                            "qOS Desktop is installed and verified. Sign out when you are ready."
+                                .into();
+                        self.status_is_error = false;
+                    }
+                    DesktopFlowState::Failed { message, .. } => {
+                        self.status = message.clone();
+                        self.status_is_error = true;
+                    }
+                    _ => {}
+                }
+            }
+            self.structure_dirty = true;
+            changed = true;
         }
         changed
     }
@@ -649,7 +711,12 @@ impl SetupApp {
             folder.scan.file_count,
             format_bytes(folder.scan.bytes)
         );
-        let destination = folder.destination.display().to_string();
+        let destination = match &folder.destination {
+            FolderDestination::Resolved(path) => path.display().to_string(),
+            FolderDestination::Unresolved => {
+                "Pending — choose and review a qOS-managed destination after login".into()
+            }
+        };
         let destination_field = TextInput::local()
             .with_initial_value(&destination)
             .with_accessible_name(format!("Destination for {source}"))
@@ -808,9 +875,9 @@ impl SetupApp {
 
     fn review_copy_status(&self, experience: Experience) -> Card {
         let pending = if experience == Experience::FullOs {
-            "Full qOS folder copying remains pending until target-side migration can resolve retained volume identities after installation. The host path shown above is an estimate, not a mounted qOS destination or write grant."
+            "Full qOS folder copying remains pending until target-side migration resolves and reviews retained volume identities after installation. No destination or copy is authorized yet."
         } else {
-            "Setup folder copying remains pending until a real destination is selected and granted. The path shown above is an estimate, not permission to write."
+            "Your folder choices are retained. After the first qOS login, setup will resolve and show each qOS-managed destination for review before any copy begins."
         };
         Card::titled(
             "Folder copy status",
@@ -828,6 +895,78 @@ impl SetupApp {
         )
     }
 
+    fn desktop_install_card(&self) -> Card {
+        let detail = match self.desktop_flow.state() {
+            DesktopFlowState::Checking => {
+                "Checking the live host and authenticated Desktop catalog…".to_string()
+            }
+            DesktopFlowState::Unavailable { host, reasons } => {
+                format!("Host: {host}\n{}", reasons.join("\n"))
+            }
+            DesktopFlowState::Ready(selection) => {
+                let action = if selection.already_installed {
+                    "The matching package is already installed. Continue to verify the qOS login session. Approve verification when asked."
+                } else {
+                    "Continue to download the authenticated package. Approve installation when asked."
+                };
+                format!(
+                    "Host: {}\nSelected package version: {}\n{action}",
+                    selection.host, selection.release.version
+                )
+            }
+            DesktopFlowState::Downloading(selection) => format!(
+                "Downloading and verifying qOS Desktop {} for {}. Cancellation here stops before native authorization.",
+                selection.release.version, selection.host
+            ),
+            DesktopFlowState::Authorizing(selection) => format!(
+                "Waiting for authorization for qOS Desktop {} on {}. No native transaction has been reported yet.",
+                selection.release.version, selection.host
+            ),
+            DesktopFlowState::Preparing(selection) => format!(
+                "The helper is independently rechecking qOS Desktop {} for {}.",
+                selection.release.version, selection.host
+            ),
+            DesktopFlowState::Installing(selection) => format!(
+                "The native package manager is installing qOS Desktop {} on {}. Closing this view will not cancel the transaction.",
+                selection.release.version, selection.host
+            ),
+            DesktopFlowState::Verifying(selection) => format!(
+                "Verifying the installed package and qOS login session for {}.",
+                selection.host
+            ),
+            DesktopFlowState::Installed { selection, result } => format!(
+                "qOS Desktop {} is verified on {}. Save your work and sign out when you are ready, then choose qOS on the login screen. Setup will not sign you out or change the default session. Selected folders remain pending for first-login review.",
+                result.version, selection.host
+            ),
+            DesktopFlowState::Failed { kind, message, .. } => {
+                let prefix = match kind {
+                    DesktopFailureKind::DownloadCancelled => "Download cancelled",
+                    DesktopFailureKind::AuthorizationCancelled => "Authorization cancelled",
+                    DesktopFailureKind::AuthorizationRefused => "Authorization refused",
+                    DesktopFailureKind::WorkerLost => "Worker connection lost",
+                    DesktopFailureKind::Readiness => "Readiness check failed",
+                    DesktopFailureKind::Download => "Download failed",
+                    DesktopFailureKind::NativeTransaction => "Native installation failed",
+                };
+                format!(
+                    "{prefix}. {message} Your folder choices are retained; Retry rechecks the host."
+                )
+            }
+        };
+        Card::titled(
+            "qOS Desktop readiness",
+            Box::new(
+                Text::new(&detail)
+                    .with_id("setup.desktop.status")
+                    .with_live(Politeness::Polite),
+            ),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one declarative review composition keeps its card order and accessibility labels visible"
+    )]
     fn review_body(&self) -> Box<dyn Widget> {
         let controller = self.controller();
         let plan = controller.plan();
@@ -847,10 +986,16 @@ impl SetupApp {
             scheduled
                 .iter()
                 .map(|folder| {
+                    let destination = match &folder.destination {
+                        FolderDestination::Resolved(path) => path.display().to_string(),
+                        FolderDestination::Unresolved => {
+                            "Destination pending review after login".into()
+                        }
+                    };
                     let summary = format!(
                         "{} → {} · {} · {}",
                         folder.scan.source.display(),
-                        folder.destination.display(),
+                        destination,
                         mode_label(folder.mode),
                         format_bytes(folder.scan.bytes)
                     );
@@ -866,7 +1011,7 @@ impl SetupApp {
             .iter()
             .map(|folder| folder.scan.skipped.len())
             .sum::<usize>();
-        let estimate = plan.required_bytes().map_or_else(
+        let estimate = controller.selected_folder_bytes().map_or_else(
             |_| "Space estimate is unavailable because the total overflowed.".to_string(),
             |bytes| {
                 if skipped_count == 0 {
@@ -883,27 +1028,45 @@ impl SetupApp {
                 }
             },
         );
-        let connected_blocker = plan
-            .folders
+        let connected_blocker = controller
+            .folders()
             .iter()
             .any(|folder| folder.mode == FolderMode::Connected)
             .then_some("Folder syncing is not available in this build yet.");
-        let mut blockers = INSTALL_UNAVAILABLE.to_string();
+        let mut blockers = match plan.experience {
+            Experience::FullOs => FULL_OS_UNAVAILABLE.to_string(),
+            Experience::Desktop => match self.desktop_flow.state() {
+                DesktopFlowState::Unavailable { reasons, .. } => reasons.join("\n"),
+                DesktopFlowState::Failed { message, .. } => message.clone(),
+                DesktopFlowState::Checking => "Live Desktop readiness is being checked.".into(),
+                _ => "No Desktop installation blockers are currently reported.".into(),
+            },
+        };
         if let Some(blocker) = connected_blocker {
             blockers.push('\n');
             blockers.push_str(blocker);
         }
         let copy_status = self.review_copy_status(plan.experience);
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(
-                    Text::new("Review qOS setup")
-                        .with_role(TextRole::Title)
-                        .with_heading_level(1),
-                ))
-                .push(Box::new(Card::titled(
+        let installed = matches!(
+            self.desktop_flow.state(),
+            DesktopFlowState::Installed { .. }
+        );
+        let mut body = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(
+                Text::new(if installed {
+                    "qOS Desktop is installed"
+                } else {
+                    "Review qOS setup"
+                })
+                .with_role(TextRole::Title)
+                .with_heading_level(1),
+            ));
+        if plan.experience == Experience::Desktop {
+            body = body.push(Box::new(self.desktop_install_card()));
+        }
+        body = body.push(Box::new(Card::titled(
                     "Operating systems",
                     Box::new(Text::new(&format!(
                         "{retained}. qOS setup uses {}. Your existing OS stays the startup default initially.",
@@ -921,9 +1084,8 @@ impl SetupApp {
                 .push(Box::new(Card::titled(
                     "Current blockers",
                     Box::new(Text::new(&blockers).with_live(Politeness::Polite)),
-                )))
-                .push(Box::new(copy_status)),
-        )
+                )));
+        Box::new(body.push(Box::new(copy_status)))
     }
 
     fn ensure_import_app(&mut self) {
@@ -933,6 +1095,10 @@ impl SetupApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the wizard shell declares its body, status, and state-dependent navigation together"
+    )]
     fn build_composition(&self) -> Box<dyn Widget> {
         let page = self.controller().page();
         let body = match page {
@@ -978,11 +1144,52 @@ impl SetupApp {
         }
         nav = nav.push(Box::new(Spacer::new()));
         if page == SetupPage::Review {
+            let experience = self.controller().plan().experience;
+            let (id, label, command, enabled) = if experience == Experience::FullOs {
+                (
+                    "setup.install",
+                    "Install qOS",
+                    SetupCommand::InstallDesktop,
+                    false,
+                )
+            } else {
+                match self.desktop_flow.state() {
+                    DesktopFlowState::Ready(_) => (
+                        "setup.install",
+                        "Install qOS Desktop",
+                        SetupCommand::InstallDesktop,
+                        true,
+                    ),
+                    DesktopFlowState::Downloading(_) => (
+                        "setup.cancel-download",
+                        "Cancel download",
+                        SetupCommand::CancelDesktopDownload,
+                        true,
+                    ),
+                    DesktopFlowState::Failed { .. } | DesktopFlowState::Unavailable { .. } => (
+                        "setup.retry-desktop",
+                        "Retry host check",
+                        SetupCommand::RetryDesktop,
+                        true,
+                    ),
+                    DesktopFlowState::Installed { .. } => (
+                        "setup.install",
+                        "qOS Desktop installed",
+                        SetupCommand::InstallDesktop,
+                        false,
+                    ),
+                    _ => (
+                        "setup.install",
+                        "Desktop setup in progress…",
+                        SetupCommand::InstallDesktop,
+                        false,
+                    ),
+                }
+            };
             nav = nav.push(Box::new(
-                Button::new("setup.install", "Install qOS", None)
-                    .fit_content(40.0)
-                    .with_enabled(false)
-                    .with_accessible_name(INSTALL_UNAVAILABLE),
+                self.button(id, label, command)
+                    .primary()
+                    .with_enabled(enabled),
             ));
         } else {
             let next_enabled = page != SetupPage::Experience
@@ -1162,6 +1369,51 @@ fn shot_scan(name: &str, file_count: u64, bytes: u64) -> FolderScan {
         empty_directories: Vec::new(),
         skipped: Vec::new(),
     }
+}
+
+fn fixture_desktop_release() -> DesktopRelease {
+    let sha256 = "a".repeat(64);
+    DesktopRelease {
+        id: "fedora-44-aarch64-fixture".into(),
+        version: "0.1.9-1.fc44".into(),
+        distro_id: "fedora".into(),
+        distro_version: "44".into(),
+        architecture: "aarch64".into(),
+        package_format: PackageFormat::Rpm,
+        url: "https://code.podesta.ai/qos/releases/fixture.rpm".into(),
+        byte_size: 7,
+        sha256: sha256.clone(),
+        verified_runtime: Some(RuntimeEvidence {
+            schema: 1,
+            reference: "nonproduction screenshot fixture".into(),
+            package_sha256: sha256,
+            graphical_login: true,
+            return_to_prior_session: true,
+            identity_setup: true,
+            selected_folder_import: true,
+            source_intact: true,
+        }),
+    }
+}
+
+fn fixture_desktop_selection(already_installed: bool) -> DesktopSelection {
+    DesktopSelection {
+        host: "fedora 44 (aarch64)".into(),
+        release: fixture_desktop_release(),
+        already_installed,
+    }
+}
+
+fn fixture_desktop_flow(available: bool) -> DesktopFlow {
+    let state = if available {
+        DesktopFlowState::Ready(fixture_desktop_selection(false))
+    } else {
+        DesktopFlowState::Unavailable {
+            host: "fixture host".into(),
+            reasons: vec!["No reviewed Desktop release matches this fixture.".into()],
+        }
+    };
+    DesktopFlow::from_fixture_state(state)
 }
 
 impl Widget for SetupApp {
@@ -1357,6 +1609,7 @@ impl Widget for SetupApp {
             || self.known_folder_lookup_pending
             || self.pending_scans > 0
             || self.picker_rx.is_some()
+            || self.desktop_flow.has_pending_operation()
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1381,6 +1634,7 @@ pub fn app_root() -> Box<dyn Widget> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::{Arc, atomic::AtomicBool, mpsc};
 
     use ui::a11y::Action;
     use ui::headless::{FrameHarness, SemanticExpectation};
@@ -1467,7 +1721,7 @@ mod tests {
         app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
         app.apply_command(SetupCommand::Next);
         app.apply_worker_message(WorkerMessage::ScanFinished {
-            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
             result: Ok(scan("Documents", 4096)),
         });
 
@@ -1490,7 +1744,7 @@ mod tests {
         app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
         app.apply_command(SetupCommand::Next);
         app.apply_worker_message(WorkerMessage::ScanFinished {
-            destination: PathBuf::from(TEST_DEST_ROOT).join("Pictures"),
+            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Pictures")),
             result: Ok(scan("Pictures", 12)),
         });
         app.apply_command(SetupCommand::SetMode(FolderMode::Copy));
@@ -1511,7 +1765,7 @@ mod tests {
         app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
         app.apply_command(SetupCommand::Next);
         app.apply_worker_message(WorkerMessage::ScanFinished {
-            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
             result: Ok(scan("Documents", 12)),
         });
         app.apply_command(SetupCommand::Next);
@@ -1561,7 +1815,7 @@ mod tests {
     fn failed_scan_worker_never_becomes_a_completed_folder() {
         let mut app = supported_fixture();
         app.apply_worker_message(WorkerMessage::ScanFinished {
-            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
             result: Err("permission denied while reading a long redirected folder path".into()),
         });
 
@@ -1576,7 +1830,7 @@ mod tests {
         app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
         app.apply_command(SetupCommand::Next);
         app.apply_worker_message(WorkerMessage::ScanFinished {
-            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
             result: Ok(scan_with_warnings("Documents", 4096)),
         });
 
@@ -1632,11 +1886,11 @@ mod tests {
         let mut app = supported_fixture();
         let destination = PathBuf::from(TEST_DEST_ROOT).join("Documents");
         app.apply_worker_message(WorkerMessage::ScanFinished {
-            destination: destination.clone(),
+            destination: Some(destination.clone()),
             result: Ok(scan("account-a/Documents", 12)),
         });
         app.apply_worker_message(WorkerMessage::ScanFinished {
-            destination,
+            destination: Some(destination),
             result: Ok(scan("account-b/Documents", 8)),
         });
 
@@ -1644,11 +1898,11 @@ mod tests {
         assert_eq!(folders.folders().len(), 2);
         assert_eq!(
             folders.folders()[0].destination,
-            PathBuf::from(TEST_DEST_ROOT).join("Documents")
+            FolderDestination::Resolved(PathBuf::from(TEST_DEST_ROOT).join("Documents"))
         );
         assert_eq!(
             folders.folders()[1].destination,
-            PathBuf::from(TEST_DEST_ROOT).join("Documents (2)")
+            FolderDestination::Resolved(PathBuf::from(TEST_DEST_ROOT).join("Documents (2)"))
         );
     }
 
@@ -1687,7 +1941,7 @@ mod tests {
         let mut overlapping =
             SetupApp::with_worker_launcher(supported_fixture().capabilities, fail_worker_launch);
         overlapping.apply_worker_message(WorkerMessage::ScanFinished {
-            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
             result: Ok(scan("Documents", 12)),
         });
         overlapping.start_scan(PathBuf::from(TEST_SOURCE_ROOT).join("Documents/Projects"));
@@ -1701,11 +1955,11 @@ mod tests {
     fn overlapping_scan_is_deduplicated_with_an_explanation() {
         let mut app = supported_fixture();
         app.apply_worker_message(WorkerMessage::ScanFinished {
-            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
             result: Ok(scan("Documents", 12)),
         });
         app.apply_worker_message(WorkerMessage::ScanFinished {
-            destination: PathBuf::from(TEST_DEST_ROOT).join("Projects"),
+            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Projects")),
             result: Ok(scan("Documents/Projects", 8)),
         });
 
@@ -1717,7 +1971,7 @@ mod tests {
     fn system_folder_scan_is_refused() {
         let mut app = supported_fixture();
         app.apply_worker_message(WorkerMessage::ScanFinished {
-            destination: PathBuf::from(TEST_DEST_ROOT).join("system"),
+            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("system")),
             result: Ok(FolderScan {
                 source: PathBuf::from(TEST_SYSTEM_ROOT),
                 file_count: 4,
@@ -1736,7 +1990,7 @@ mod tests {
     fn var_home_user_folder_is_accepted() {
         let mut app = supported_fixture();
         app.apply_worker_message(WorkerMessage::ScanFinished {
-            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
             result: Ok(FolderScan {
                 source: PathBuf::from("/var/home/qos/Documents"),
                 file_count: 4,
@@ -1756,7 +2010,7 @@ mod tests {
         inherited.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
         inherited.apply_command(SetupCommand::Next);
         inherited.apply_worker_message(WorkerMessage::ScanFinished {
-            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
             result: Ok(scan("Documents", 12)),
         });
         let mut harness = FrameHarness::new(ui::State::new(), Box::new(inherited), (1180, 820));
@@ -1772,7 +2026,7 @@ mod tests {
         overridden.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
         overridden.apply_command(SetupCommand::Next);
         overridden.apply_worker_message(WorkerMessage::ScanFinished {
-            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
             result: Ok(scan("Documents", 12)),
         });
         overridden.apply_command(SetupCommand::SetFolderMode(0, FolderMode::Connected));
@@ -1815,5 +2069,147 @@ mod tests {
             .unwrap();
 
         assert_eq!(observed.borrow().plan().experience, Experience::FullOs);
+    }
+
+    fn disconnected_desktop_probe() -> Result<super::super::desktop_flow::ProbeReceiver, String> {
+        let (_tx, rx) = mpsc::channel();
+        Ok(rx)
+    }
+
+    fn disconnected_desktop_download(
+        _: DesktopRelease,
+        _: Arc<AtomicBool>,
+    ) -> Result<super::super::desktop_flow::DownloadReceiver, String> {
+        let (_tx, rx) = mpsc::channel();
+        Ok(rx)
+    }
+
+    fn disconnected_desktop_install(
+        _: super::super::desktop_install::DesktopInstallRequest,
+    ) -> Result<super::super::desktop_flow::InstallReceiver, String> {
+        let (_tx, rx) = mpsc::channel();
+        Ok(rx)
+    }
+
+    #[test]
+    fn desktop_review_shows_exact_host_version_and_pending_destination_before_authorization() {
+        let mut app = supported_fixture();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+        app.apply_command(SetupCommand::Next);
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: None,
+            result: Ok(scan("Documents", 4096)),
+        });
+        app.apply_command(SetupCommand::Next);
+        let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
+
+        harness
+            .expect(
+                &SemanticExpectation::named("setup.desktop.status").name_contains("0.1.9-1.fc44"),
+            )
+            .unwrap();
+        harness
+            .expect(
+                &SemanticExpectation::named("setup.desktop.status")
+                    .name_contains("fedora 44 (aarch64)"),
+            )
+            .unwrap();
+        harness
+            .expect(
+                &SemanticExpectation::named("setup.review.folders")
+                    .name_contains("Destination pending review after login"),
+            )
+            .unwrap();
+        harness
+            .expect(&SemanticExpectation::named("setup.install").enabled(true))
+            .unwrap();
+        let labels = harness
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| node.label().map(str::to_string))
+            .collect::<Vec<_>>();
+        let desktop = labels
+            .iter()
+            .position(|label| label == "qOS Desktop readiness")
+            .unwrap();
+        let operating_systems = labels
+            .iter()
+            .position(|label| label == "Operating systems")
+            .unwrap();
+        assert!(desktop < operating_systems);
+    }
+
+    #[test]
+    fn installed_review_leads_with_login_guidance_and_completion_status() {
+        let app = SetupApp::for_shot("setup-desktop-installed");
+        let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
+
+        assert!(
+            harness
+                .a11y_node_named("qOS Desktop is installed")
+                .is_some()
+        );
+        assert!(
+            harness
+                .a11y_node_named(
+                    "qOS Desktop is installed and verified. Sign out when you are ready."
+                )
+                .is_some()
+        );
+        harness
+            .expect(
+                &SemanticExpectation::named("setup.desktop.status")
+                    .name_contains("choose qOS on the login screen"),
+            )
+            .unwrap();
+        let labels = harness
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| node.label().map(str::to_string))
+            .collect::<Vec<_>>();
+        assert!(
+            labels
+                .iter()
+                .position(|label| label == "qOS Desktop readiness")
+                .unwrap()
+                < labels
+                    .iter()
+                    .position(|label| label == "Folder policies")
+                    .unwrap()
+        );
+    }
+
+    #[test]
+    fn native_failure_and_retry_retain_folder_choice_and_mode() {
+        let mut app = supported_fixture();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+        app.apply_command(SetupCommand::Next);
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: None,
+            result: Ok(scan("Documents", 4096)),
+        });
+        app.apply_command(SetupCommand::SetMode(FolderMode::Copy));
+        let selection = fixture_desktop_selection(false);
+        app.desktop_flow = DesktopFlow::with_runtime_and_state(
+            super::super::desktop_flow::DesktopRuntime {
+                launch_probe: disconnected_desktop_probe,
+                launch_download: disconnected_desktop_download,
+                launch_install: disconnected_desktop_install,
+            },
+            DesktopFlowState::Failed {
+                selection: Some(selection),
+                kind: DesktopFailureKind::NativeTransaction,
+                message: "package manager failed".into(),
+            },
+        );
+
+        app.apply_command(SetupCommand::RetryDesktop);
+
+        assert!(matches!(
+            app.desktop_flow.state(),
+            DesktopFlowState::Checking
+        ));
+        assert_eq!(app.controller().folders().len(), 1);
+        assert_eq!(app.controller().default_mode(), FolderMode::Copy);
     }
 }
