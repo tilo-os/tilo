@@ -31,6 +31,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+use std::time::Instant;
 
 use crate::model::{
     Action, InstallProfile, JobPhase, Progress, Source, SourceIdentity, TargetDrive,
@@ -1707,9 +1709,9 @@ fn prepare_target(target: &TargetDrive) -> io::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn prepare_target(target: &TargetDrive) -> io::Result<()> {
-    let status = std::process::Command::new("diskutil")
-        .args(["unmountDisk", &format!("/dev/{}", target.name)])
-        .status()?;
+    let mut command = Command::new("diskutil");
+    command.args(["unmountDisk", &format!("/dev/{}", target.name)]);
+    let status = run_finite_status(command, Duration::from_secs(10))?;
     status
         .success()
         .then_some(())
@@ -1723,9 +1725,9 @@ fn prepare_target(target: &TargetDrive) -> io::Result<()> {
         .strip_prefix("PhysicalDrive")
         .ok_or_else(|| io::Error::other("invalid Windows physical-drive name"))?;
     let script = format!("Set-Disk -Number {number} -IsOffline $true -ErrorAction Stop");
-    let status = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .status()?;
+    let mut command = Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    let status = run_finite_status(command, Duration::from_secs(10))?;
     status
         .success()
         .then_some(())
@@ -1746,9 +1748,9 @@ fn finish_target(target: &TargetDrive, result: &JobResult) {
     // also the safe state for another raw-write attempt. Successful media is
     // ejected so it can be removed immediately.
     if macos_should_eject(result) {
-        let _ = std::process::Command::new("diskutil")
-            .args(["eject", &format!("/dev/{}", target.name)])
-            .status();
+        let mut command = Command::new("diskutil");
+        command.args(["eject", &format!("/dev/{}", target.name)]);
+        let _ = run_finite_status(command, Duration::from_secs(10));
     }
 }
 
@@ -1764,9 +1766,38 @@ fn finish_target(target: &TargetDrive, _result: &JobResult) {
     if let Some(number) = target.name.strip_prefix("PhysicalDrive") {
         let script =
             format!("Set-Disk -Number {number} -IsOffline $false -ErrorAction SilentlyContinue");
-        let _ = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .status();
+        let mut command = Command::new("powershell.exe");
+        command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        let _ = run_finite_status(command, Duration::from_secs(10));
+    }
+}
+
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+fn run_finite_status(
+    mut command: Command,
+    timeout: Duration,
+) -> io::Result<std::process::ExitStatus> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = command.spawn()?;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "platform media command timed out",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -2079,6 +2110,18 @@ mod tests {
 
         assert_ne!(error.kind(), io::ErrorKind::NotFound);
         assert!(child.try_wait().unwrap().is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn finite_platform_command_is_reaped_at_its_deadline() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 10"]);
+        let started = Instant::now();
+        let error = run_finite_status(command, Duration::from_millis(20)).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
