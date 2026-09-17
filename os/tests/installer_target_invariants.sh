@@ -128,7 +128,7 @@ else
   bad "installer Wi-Fi profiles are not safely preserved for first boot"
 fi
 
-if grep -Fq 'code.sandbox.example/tilo/tilo:*|code.sandbox.example/tilo/tilo@sha256:*' "$backend"; then
+if grep -Fq 'code.sandbox.example/qos/tilo:*|code.sandbox.example/qos/tilo@sha256:*' "$backend"; then
   ok "installed update origin is restricted to the signature-required repository"
 else
   bad "installer can record an update origin outside the signature-required policy"

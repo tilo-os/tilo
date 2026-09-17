@@ -115,12 +115,12 @@ jobs:
           file: os/Containerfile.rpms
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: code.sandbox.example/tilo/rpms:${{ github.sha }}
+          tags: code.sandbox.example/qos/rpms:${{ github.sha }}
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
             PACKAGES=${{ env.PACKAGES }}
-          cache-from: type=registry,ref=code.sandbox.example/tilo/tilo-rpms-buildcache:latest
-          cache-to: type=registry,ref=code.sandbox.example/tilo/tilo-rpms-buildcache:latest,mode=max
+          cache-from: type=registry,ref=code.sandbox.example/qos/tilo-rpms-buildcache:latest
+          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-rpms-buildcache:latest,mode=max
           provenance: false
 
       - name: Report the pinned RPMS_REF to commit
@@ -128,7 +128,7 @@ jobs:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
         run: |
           set -euo pipefail
-          ref="code.sandbox.example/tilo/rpms@${{ steps.rpms.outputs.digest }}"
+          ref="code.sandbox.example/qos/rpms@${{ steps.rpms.outputs.digest }}"
           platforms="$(docker buildx imagetools inspect --raw "$ref" | jq -c \
             '[.manifests[].platform | {os,architecture}] | sort_by(.architecture)')"
           expected='[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]'
@@ -142,7 +142,7 @@ jobs:
           esac
           package_set_sha256="$(printf '%s\n' $PACKAGES | sort -u | sha256sum | cut -d' ' -f1)"
           digest='${{ steps.rpms.outputs.digest }}'
-          jq -n --arg source "git+ssh://code.sandbox.example/tilo/tilo@$GITHUB_SHA" \
+          jq -n --arg source "git+ssh://code.sandbox.example/qos/tilo@$GITHUB_SHA" \
             --arg digest "$digest" --arg base "$BASE_REF" \
             --arg package_set_sha256 "$package_set_sha256" '
               {
@@ -156,7 +156,7 @@ jobs:
                   resolvedDependencies: [{uri: $source}, {uri: $base}]
                 },
                 runDetails: {
-                  builder: {id: "https://code.sandbox.example/tilo/forgejo/actions/rpm-snapshot-v1"},
+                  builder: {id: "https://code.sandbox.example/qos/forgejo/actions/rpm-snapshot-v1"},
                   metadata: {invocationId: env.GITHUB_RUN_ID}
                 }
               }
@@ -193,7 +193,7 @@ jobs:
         env:
           RPMS_DIGEST: ${{ steps.rpms.outputs.digest }}
         run: |
-          ref="code.sandbox.example/tilo/rpms@${RPMS_DIGEST}"
+          ref="code.sandbox.example/qos/rpms@${RPMS_DIGEST}"
           printf '%s\n' \
             '# Digest-pinned frozen RPM repository used by os/Containerfile.' \
             '# Updated by the snapshot-rpms workflow when the package set changes.' \
