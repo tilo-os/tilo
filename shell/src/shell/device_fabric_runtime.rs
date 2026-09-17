@@ -3170,6 +3170,31 @@ fn bluetooth_authorization_views(
     authorizations
 }
 
+fn gamepad_authorization_views(
+    fabric: &crate::shell::device_fabric::DeviceFabric,
+) -> Vec<crate::shell::overlay_host::GamepadAuthorizationView> {
+    let mut authorizations = pending_typed_gamepad_authorizations()
+        .into_iter()
+        .map(
+            |request| crate::shell::overlay_host::GamepadAuthorizationView {
+                forwarding_id: request.forwarding_id,
+                controller_label: request.label,
+                source_label: fabric.snapshots().get(&request.source).map_or_else(
+                    || request.source.as_str().to_string(),
+                    |snapshot| snapshot.presence.label.clone(),
+                ),
+                app_id: request.app_id,
+            },
+        )
+        .collect::<Vec<_>>();
+    authorizations.sort_by(|left, right| {
+        left.source_label
+            .cmp(&right.source_label)
+            .then_with(|| left.controller_label.cmp(&right.controller_label))
+    });
+    authorizations
+}
+
 fn active_spatial_control_devices(
     now_unix_ms: u64,
 ) -> (
@@ -3298,9 +3323,15 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
     } else {
         Vec::new()
     };
+    let gamepad_authorizations = if policy.permits(ContinuityCapability::TypedGamepad) {
+        gamepad_authorization_views(&fabric)
+    } else {
+        Vec::new()
+    };
 
     DeviceFabricView {
         bluetooth_authorizations,
+        gamepad_authorizations,
         devices,
         local_media,
         local_outputs,

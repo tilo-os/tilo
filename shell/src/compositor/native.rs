@@ -3277,6 +3277,15 @@ fn install_device_fabric_bridge(
                         approved,
                     )?;
                 }
+                DeviceFabricUiAction::AuthorizeGamepadForwarding {
+                    forwarding_id,
+                    approved,
+                } => {
+                    crate::shell::device_fabric_runtime::authorize_typed_gamepad_forwarding(
+                        forwarding_id,
+                        approved,
+                    )?;
+                }
                 DeviceFabricUiAction::Place { device, edge } => {
                     crate::shell::device_fabric_runtime::place_device(&fabric_net, &device, edge)?;
                 }
