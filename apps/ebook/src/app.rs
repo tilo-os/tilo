@@ -145,6 +145,7 @@ impl ImportWorker {
         ));
         let (result_tx, results) = mpsc::sync_channel(1);
         let worker_mailbox = Arc::clone(&mailbox);
+        let ui_wake = ui::wake::WakeHandle::new();
         thread::Builder::new()
             .name("ebook-import-worker".into())
             .spawn(move || {
@@ -188,6 +189,7 @@ impl ImportWorker {
                     {
                         return;
                     }
+                    ui_wake.wake();
                 }
             })
             .map_err(|error| format!("couldn't start the book importer: {error}"))?;
@@ -5190,6 +5192,10 @@ impl Widget for BooksApp {
             .rev()
             .any(|hit| self.semantic_target(&hit.action).is_some() && hit.rect.contains(point))
             .then_some(winit::window::CursorIcon::Pointer)
+    }
+
+    fn has_pending_visual_work(&self) -> bool {
+        self.import_loading.is_some()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -12033,6 +12039,14 @@ mod interaction_tests {
         app.reconcile_flaps();
         let theme = Theme::dark();
         let presence = PresenceCtx::empty();
+        #[cfg(windows)]
+        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/assets/fonts"),
+            "en-US",
+        );
+        #[cfg(windows)]
+        let mut tr = TextRenderer::with_font_catalog(&catalog).expect("checked-in font catalog");
+        #[cfg(not(windows))]
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
         app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
@@ -12842,19 +12856,17 @@ mod interaction_tests {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         let scene = render_scene(&mut app, &mut doc, f64::from(width), f64::from(height));
-        let mut renderer = match OffscreenRenderer::try_new(width, height) {
-            Ok(renderer) => renderer,
-            Err(error) => {
-                eprintln!("offscreen: {error} — skipping ebook typography baseline");
-                return;
-            }
-        };
+        let mut renderer = OffscreenRenderer::try_new(width, height)
+            .expect("typography baseline requires an offscreen renderer");
         // A typography-heavy first submission can grow Vello's bump budget;
         // compare only the confirmed-fit frame so missing glyph-atlas spans
         // cannot masquerade as a legitimate baseline change.
         let actual = renderer.render_rgba_resilient(&scene);
-        let baseline = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/typography/serif-reader.png");
+        let baseline = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
+            "tests/fixtures/typography/serif-reader-windows.png"
+        } else {
+            "tests/fixtures/typography/serif-reader.png"
+        });
         if std::env::var_os("UPDATE_EBOOK_TYPOGRAPHY_BASELINE").is_some() {
             if let Some(parent) = baseline.parent() {
                 std::fs::create_dir_all(parent).expect("create ebook typography baseline dir");
@@ -12879,6 +12891,10 @@ mod interaction_tests {
             "ebook typography baseline changed dimensions"
         );
         let differing = OffscreenRenderer::pixels_differing_beyond_aa(&actual, expected.as_raw());
+        if differing != 0 {
+            let output = std::env::temp_dir().join(baseline.file_name().unwrap());
+            image::save_buffer(output, &actual, width, height, image::ColorType::Rgba8).unwrap();
+        }
         assert_eq!(
             differing, 0,
             "serif reader differs from typography baseline in {differing} pixels"
@@ -12895,16 +12911,14 @@ mod interaction_tests {
         let mut app = app_with_math_sample();
         let mut doc = AutoCommit::new();
         let scene = render_scene(&mut app, &mut doc, f64::from(width), f64::from(height));
-        let mut renderer = match OffscreenRenderer::try_new(width, height) {
-            Ok(renderer) => renderer,
-            Err(error) => {
-                eprintln!("offscreen: {error} — skipping ebook math baseline");
-                return;
-            }
-        };
+        let mut renderer = OffscreenRenderer::try_new(width, height)
+            .expect("typography baseline requires an offscreen renderer");
         let actual = renderer.render_rgba_resilient(&scene);
-        let baseline = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/typography/math-reader.png");
+        let baseline = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
+            "tests/fixtures/typography/math-reader-windows.png"
+        } else {
+            "tests/fixtures/typography/math-reader.png"
+        });
         if std::env::var_os("UPDATE_EBOOK_MATH_BASELINE").is_some() {
             if let Some(parent) = baseline.parent() {
                 std::fs::create_dir_all(parent).expect("create ebook math baseline dir");
@@ -12925,6 +12939,10 @@ mod interaction_tests {
             .to_rgba8();
         assert_eq!(expected.dimensions(), (width, height));
         let differing = OffscreenRenderer::pixels_differing_beyond_aa(&actual, expected.as_raw());
+        if differing != 0 {
+            let output = std::env::temp_dir().join(baseline.file_name().unwrap());
+            image::save_buffer(output, &actual, width, height, image::ColorType::Rgba8).unwrap();
+        }
         assert_eq!(
             differing, 0,
             "mathematical reader differs from baseline in {differing} pixels"
@@ -13677,6 +13695,37 @@ mod interaction_tests {
             1,
             "the opened book is recorded in the library"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn completed_import_wakes_its_idle_host() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _workspace = WorkspaceEnvGuard::set(tmp.path());
+        let path = tmp.path().join("wake.epub");
+        std::fs::write(&path, crate::content::SAMPLE_EPUB).unwrap();
+        let mut scope = ui::wake::WakeScope::new();
+        let _entry = scope.enter();
+        let (sender, receiver) = mpsc::channel();
+        scope
+            .bind(move |event| {
+                let _ = sender.send(event);
+            })
+            .unwrap();
+        let worker = ImportWorker::new().unwrap();
+        worker
+            .request(ImportRequest {
+                generation: 1,
+                path,
+                kind: ImportKind::Open,
+                delay: Duration::ZERO,
+            })
+            .unwrap();
+        let event = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("completion wakes the host without an input event or polling frames");
+        assert!(scope.accepts(&event));
+        assert!(matches!(worker.try_recv(), Ok(result) if result.result.is_ok()));
     }
 
     /// A book chosen through the host file picker loads through the per-frame

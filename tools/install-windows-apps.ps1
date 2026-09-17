@@ -2,8 +2,8 @@
 # Cap'n Proto and the pinned Rust/MSVC toolchain must be available on PATH.
 [CmdletBinding()]
 param(
-    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer')]
-    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer'),
+    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook')]
+    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook'),
     [ValidateSet('dev', 'release')]
     [string]$Profile = 'dev'
 )
@@ -47,6 +47,11 @@ $installDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationDat
 $menuDirectory = Join-Path ([Environment]::GetFolderPath('Programs')) 'Tilo'
 New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $menuDirectory -Force | Out-Null
+$fontDirectory = Join-Path $installDirectory 'fonts'
+New-Item -ItemType Directory -Path $fontDirectory -Force | Out-Null
+Get-ChildItem -LiteralPath (Join-Path $repository 'ui/assets/fonts') | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $fontDirectory -Recurse -Force
+}
 $shortcutShell = New-Object -ComObject WScript.Shell
 if ('pdf-viewer' -in $applications -or 'file-explorer' -in $applications) {
     & (Join-Path $PSScriptRoot 'install-windows-pdfium.ps1')
@@ -58,6 +63,7 @@ foreach ($application in $applications) {
         'file-explorer' { 'Files' }
         'word-processor' { 'Word Processor' }
         'pdf-viewer' { 'PDF Viewer' }
+        'ebook' { 'Books' }
         default { (Get-Culture).TextInfo.ToTitleCase($application) }
     }
     $shortcutPath = Join-Path $menuDirectory "$title.lnk"
