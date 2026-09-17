@@ -9,21 +9,15 @@
 //! This module is only exercised in the live binary; `--shots` never calls it,
 //! so the screenshot stays deterministic offline.
 
-#[cfg(target_os = "macos")]
-use std::io::Write;
 use std::path::Path;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::process::Command;
-#[cfg(target_os = "macos")]
-use std::process::Stdio;
 
 use serde_json::Value;
 
 use crate::model::{Source, SourceIdentity, SourceKind, TargetDrive, TargetKind, TargetPartition};
 
-#[cfg(target_os = "linux")]
 const PROBE_OUTPUT_LIMIT: usize = 1024 * 1024;
-#[cfg(target_os = "linux")]
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[cfg(not(target_os = "linux"))]
@@ -241,10 +235,14 @@ fn udisks_object_path(device_name: &str) -> String {
 /// creation operation; the live Tilo installer handles internal installation.
 #[cfg(target_os = "macos")]
 fn probe_platform() -> Option<Vec<TargetDrive>> {
-    let plist = Command::new("diskutil")
-        .args(["list", "-plist", "external", "physical"])
-        .output()
-        .ok()?;
+    let plist = bounded_command::run(
+        "diskutil",
+        &["list", "-plist", "external", "physical"],
+        None,
+        PROBE_OUTPUT_LIMIT,
+        PROBE_TIMEOUT,
+    )
+    .ok()?;
     if !plist.status.success() {
         return None;
     }
@@ -254,14 +252,11 @@ fn probe_platform() -> Option<Vec<TargetDrive>> {
 
 #[cfg(target_os = "macos")]
 fn plist_to_json(plist: &[u8]) -> Option<Value> {
-    let mut child = Command::new("plutil")
-        .args(["-convert", "json", "-o", "-", "--", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .ok()?;
-    child.stdin.take()?.write_all(plist).ok()?;
-    let out = child.wait_with_output().ok()?;
+    let mut command = Command::new("plutil");
+    command.args(["-convert", "json", "-o", "-", "--", "-"]);
+    let out =
+        bounded_command::run_prepared(command, Some(plist), PROBE_OUTPUT_LIMIT, PROBE_TIMEOUT)
+            .ok()?;
     out.status
         .success()
         .then(|| serde_json::from_slice(&out.stdout).ok())
@@ -330,10 +325,14 @@ fn probe_platform() -> Option<Vec<TargetDrive>> {
   [PSCustomObject]@{Number=$disk.Number;FriendlyName=$disk.FriendlyName;UniqueId=$disk.UniqueId;Size=$disk.Size;BusType=$disk.BusType;IsBoot=$disk.IsBoot;IsSystem=$disk.IsSystem;IsReadOnly=$disk.IsReadOnly;Partitions=$partitions}
 })
 $disks | ConvertTo-Json -Compress -Depth 4"#;
-    let out = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .output()
-        .ok()?;
+    let out = bounded_command::run(
+        "powershell.exe",
+        &["-NoProfile", "-NonInteractive", "-Command", script],
+        None,
+        PROBE_OUTPUT_LIMIT,
+        PROBE_TIMEOUT,
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }
