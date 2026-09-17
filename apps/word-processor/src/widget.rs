@@ -1764,20 +1764,40 @@ fn cell_rc(b: &BlockView) -> (usize, usize) {
     (get("row"), get("col"))
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independent, unrelated flag on the top-level editor \
-              state (focus/dirty/undo-commit bookkeeping, per-panel visibility, \
-              spell-check/markup view toggles, --shots staging) — not a set of \
-              options that combine, so a sub-struct or bitflags wouldn't read any \
-              better; matches the same call made for MailApp/TubeApp/CodeApp"
-)]
-pub struct WordProcessorWidget {
-    inner: WordProcessor,
-    rect: Rect,
+struct EditorLifecycle {
     focused: bool,
     dirty: bool,
     needs_commit: bool,
+}
+
+struct ViewPreferences {
+    ruler_visible: bool,
+    styles_panel_visible: bool,
+    auto_fit_page: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DocumentSaveStatus {
+    Clean,
+    Modified,
+}
+
+struct ProofingPreferences {
+    enabled: bool,
+    language: String,
+}
+
+#[derive(Default)]
+struct StagedOverlays {
+    template_picker: bool,
+    toolbar_overflow: bool,
+}
+
+pub struct WordProcessorWidget {
+    inner: WordProcessor,
+    rect: Rect,
+    lifecycle: EditorLifecycle,
+    save_status: DocumentSaveStatus,
     /// Framework-owned action dispatch: brackets the undo boundary and dispatches
     /// each action through the executor (so a test can prove parity with Ctrl+K).
     actions: ui::ActionHost,
@@ -1785,8 +1805,6 @@ pub struct WordProcessorWidget {
     drag: DragSelect,
     path: Option<PathBuf>,
     format: Option<WpFormat>,
-    /// Unsaved changes since the last save (drives the status-bar `●` indicator).
-    modified: bool,
     /// Find & Replace owns its query modes, match cursor, drawing, and hit map.
     find: FindBar,
     /// Image blobs (blake3 hash → bytes), refreshed from the document, plus a
@@ -1851,7 +1869,7 @@ pub struct WordProcessorWidget {
     /// Whether the horizontal ruler band is shown (toggled via the toolbar
     /// "Ruler" button + the View bottom-bar chip). Default ON — it is the primary
     /// surface for margin / indent / tab-stop editing.
-    ruler_on: bool,
+    view: ViewPreferences,
     /// Horizontal ruler component: painting, geometry and marker drag lifecycle.
     ruler: Ruler,
     /// The page rect in screen space (post-scroll), cached each frame so the
@@ -1861,7 +1879,6 @@ pub struct WordProcessorWidget {
     layout_chips: Vec<(LayoutMode, Rect)>,
     /// Whether the contextual styles panel is shown (dismissable via the toolbar
     /// "Styles" toggle).
-    styles_panel_open: bool,
     /// The styles panel rect in screen space, cached each frame for hit-testing.
     panel_rect: Rect,
     /// Clickable targets inside the styles panel, rebuilt each draw.
@@ -1876,11 +1893,8 @@ pub struct WordProcessorWidget {
     zoom: ZoomControl,
     /// Follow the available canvas width until the user explicitly operates a
     /// zoom control. This makes a narrow/tiled editor readable on first open.
-    auto_fit_page: bool,
-    /// One-shot headless staging, deferred until toolbar geometry is laid out.
-    stage_template_picker: bool,
-    /// One-shot headless staging for the compact-toolbar overflow menu.
-    stage_toolbar_overflow: bool,
+    /// One-shot headless staging deferred until toolbar geometry is laid out.
+    staged: StagedOverlays,
     /// Number of toolbar rows the controls wrapped into this frame (>=1). Drives
     /// the canvas top offset so no control is ever clipped.
     toolbar_rows: usize,
@@ -1895,9 +1909,8 @@ pub struct WordProcessorWidget {
     /// user words are layered in via `with_user_dict` on first build.
     dict: Option<spellcheck::Dictionary>,
     /// Whether spell-checking (the red squiggles) is enabled. Default ON.
-    spellcheck_on: bool,
     /// Document/session dictionary selected for multilingual checking.
-    spell_language: String,
+    proofing: ProofingPreferences,
     last_autocorrection: Option<DocumentAutocorrection>,
     /// Per-block spell-check cache: block id → (text, misspelled byte spans). Keyed
     /// by the block's text so an edit (which changes the text) invalidates the
@@ -2014,15 +2027,17 @@ impl WordProcessorWidget {
         Self {
             inner: WordProcessor::new(),
             rect: Rect::ZERO,
-            focused: true,
-            dirty: true,
-            needs_commit: false,
+            lifecycle: EditorLifecycle {
+                focused: true,
+                dirty: true,
+                needs_commit: false,
+            },
+            save_status: DocumentSaveStatus::Clean,
             actions: ui::ActionHost::new(),
             pointer: Point::ZERO,
             drag: DragSelect::new(),
             path: None,
             format: None,
-            modified: false,
             find: FindBar::default(),
             blobs: std::collections::BTreeMap::new(),
             image_cache: std::collections::HashMap::new(),
@@ -2050,28 +2065,31 @@ impl WordProcessorWidget {
             layout_mode: LayoutMode::None,
             guide_drag: None,
             object_drag: None,
-            ruler_on: true,
+            view: ViewPreferences {
+                ruler_visible: true,
+                styles_panel_visible: false,
+                auto_fit_page: true,
+            },
             ruler: Ruler::default(),
             page_rect: Rect::ZERO,
             layout_chips: Vec::new(),
             // Keep the writing surface primary on first launch. The complete
             // style inspector is one click away and becomes an overlay on a
             // narrow tile rather than permanently consuming half the canvas.
-            styles_panel_open: false,
             panel_rect: Rect::ZERO,
             panel_hits: Vec::new(),
             editing_field: None,
             edit_buf: String::new(),
             scrub: None,
             zoom: ZoomControl::new(),
-            auto_fit_page: true,
-            stage_template_picker: false,
-            stage_toolbar_overflow: false,
+            staged: StagedOverlays::default(),
             toolbar_rows: 1,
             notes: Vec::new(),
             dict: None,
-            spellcheck_on: true,
-            spell_language: spellcheck::default_language(),
+            proofing: ProofingPreferences {
+                enabled: true,
+                language: spellcheck::default_language(),
+            },
             last_autocorrection: None,
             spell_cache: HashMap::new(),
             context_menu: ContextMenu::new(),
@@ -2845,7 +2863,7 @@ impl WordProcessorWidget {
         {
             return spans.clone();
         }
-        let language = self.spell_language.clone();
+        let language = self.proofing.language.clone();
         let dict = self.dictionary();
         let spans = spell_spans(dict, &language, text);
         self.spell_cache
@@ -2856,19 +2874,19 @@ impl WordProcessorWidget {
     /// Toggle the spell-check squiggles on/off (default ON). View-only; forces a
     /// redraw.
     pub fn toggle_spellcheck(&mut self) {
-        self.spellcheck_on = !self.spellcheck_on;
-        self.dirty = true;
+        self.proofing.enabled = !self.proofing.enabled;
+        self.lifecycle.dirty = true;
     }
 
     /// Whether the spell-check squiggles are currently enabled.
     pub fn spellcheck_enabled(&self) -> bool {
-        self.spellcheck_on && ui::text_assistance::preferences().check_spelling
+        self.proofing.enabled && ui::text_assistance::preferences().check_spelling
     }
 
     pub fn set_spell_language(&mut self, language: &str) {
-        self.spell_language = language.to_string();
+        self.proofing.language = language.to_string();
         self.spell_cache.clear();
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     /// Toggle comment + tracked-change markup on/off (default ON). View-only;
@@ -2880,7 +2898,7 @@ impl WordProcessorWidget {
         // Shaping depends on review visibility because it changes per-run
         // colours, so force every block to reshape next frame.
         self.layout_cache.clear();
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     /// Whether comment + tracked-change markup is currently drawn.
@@ -2912,26 +2930,26 @@ impl WordProcessorWidget {
     /// Put the responsive style inspector in a deterministic state for
     /// examples, visual regression shots and embedders.
     pub fn set_styles_panel_open(&mut self, open: bool) {
-        self.styles_panel_open = open;
-        self.dirty = true;
+        self.view.styles_panel_visible = open;
+        self.lifecycle.dirty = true;
     }
 
     /// Stage a representative non-destructive error toast for visual/a11y
     /// regression shots. Runtime failures use the same toast surface.
     pub fn stage_error_for_shot(&mut self) {
         self.toast = Some((t("toast-save-failed"), ToastKind::Error));
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     /// Stage the template picker for the next headless overlay pass.
     pub fn stage_template_picker_for_shot(&mut self) {
-        self.stage_template_picker = true;
+        self.staged.template_picker = true;
     }
 
     /// Stage the compact-toolbar overflow menu for the next headless overlay
     /// pass.
     pub fn stage_toolbar_overflow_for_shot(&mut self) {
-        self.stage_toolbar_overflow = true;
+        self.staged.toolbar_overflow = true;
     }
 
     /// Put the production Find bar into a deterministic populated state for
@@ -2942,7 +2960,7 @@ impl WordProcessorWidget {
         let blocks = self.search_blocks(state);
         let effect = self.find.open(Some(query), &blocks);
         self.apply_find_effect(state, effect);
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     /// Open one materialized durable comment thread for visual/a11y review.
@@ -2952,7 +2970,7 @@ impl WordProcessorWidget {
         self.thread_comment = Some(comment.id.clone());
         self.thread_snapshot = Some(comment);
         Widget::set_focus(&mut self.thread_reply, true);
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     pub fn model_mut(&mut self) -> &mut WordProcessor {
@@ -3002,9 +3020,9 @@ impl WordProcessorWidget {
                     self.inner.clear_anchor();
                 }
                 self.refresh_blocks(state);
-                self.modified = true;
-                self.needs_commit = true;
-                self.dirty = true;
+                self.save_status = DocumentSaveStatus::Modified;
+                self.lifecycle.needs_commit = true;
+                self.lifecycle.dirty = true;
                 eprintln!(
                     "word-processor: inserted image from {} ({} bytes)",
                     path.display(),
@@ -3222,9 +3240,9 @@ impl WordProcessorWidget {
         self.layout_cache.clear();
         self.spell_cache.clear();
         // A freshly-opened document is not "modified" — it matches its file.
-        self.modified = false;
-        self.needs_commit = true;
-        self.dirty = true;
+        self.save_status = DocumentSaveStatus::Clean;
+        self.lifecycle.needs_commit = true;
+        self.lifecycle.dirty = true;
         self.clear_recovery();
         Ok(())
     }
@@ -3262,7 +3280,7 @@ impl WordProcessorWidget {
                         self.toast = Some((t("toast-save-failed"), ToastKind::Error));
                         format!("could not write {}: {e}", path.display())
                     })?;
-                    self.modified = false;
+                    self.save_status = DocumentSaveStatus::Clean;
                     self.toast = Some((t("toast-saved"), ToastKind::Success));
                 }
                 Err(e) => {
@@ -3306,9 +3324,9 @@ impl WordProcessorWidget {
     /// Set the zoom factor (clamped) and request a repaint. Returns whether it
     /// changed.
     fn set_zoom(&mut self, z: f64) -> bool {
-        self.auto_fit_page = false;
+        self.view.auto_fit_page = false;
         if self.zoom.set(z) {
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             true
         } else {
             false
@@ -3316,9 +3334,9 @@ impl WordProcessorWidget {
     }
 
     fn zoom_by(&mut self, delta: f64) -> bool {
-        self.auto_fit_page = false;
+        self.view.auto_fit_page = false;
         let changed = self.zoom.step(delta);
-        self.dirty |= changed;
+        self.lifecycle.dirty |= changed;
         changed
     }
 
@@ -3389,7 +3407,7 @@ impl WordProcessorWidget {
             });
         }
         self.scroll_to_block(block);
-        self.dirty = true;
+        self.lifecycle.dirty = true;
         Ok(())
     }
 
@@ -3432,7 +3450,7 @@ impl WordProcessorWidget {
                     &replacement,
                 );
                 self.refresh_blocks(state);
-                self.needs_commit = true;
+                self.lifecycle.needs_commit = true;
                 let blocks = self.search_blocks(state);
                 let effect = self.find.refresh(&blocks);
                 self.apply_find_effect(state, effect);
@@ -3454,7 +3472,7 @@ impl WordProcessorWidget {
                     );
                 }
                 self.refresh_blocks(state);
-                self.needs_commit = true;
+                self.lifecycle.needs_commit = true;
                 let blocks = self.search_blocks(state);
                 let effect = self.find.refresh(&blocks);
                 self.apply_find_effect(state, effect);
@@ -3590,7 +3608,7 @@ impl WordProcessorWidget {
                 self.inner.clear_anchor();
             }
             self.inner.set_caret(Caret { block, offset });
-            self.dirty = true;
+            self.lifecycle.dirty = true;
         }
     }
 
@@ -3652,7 +3670,7 @@ impl WordProcessorWidget {
                 self.inner.clear_anchor();
             }
             self.inner.set_caret(Caret { block, offset });
-            self.dirty = true;
+            self.lifecycle.dirty = true;
         }
     }
 }
@@ -3940,7 +3958,7 @@ impl WordProcessorWidget {
     /// band caret mirrors the body caret (same `caret_geometry` machinery) so it
     /// blinks-free but lands exactly between glyphs.
     fn draw_band_caret(&self, scene: &mut Scene, ctf: Affine) {
-        if !self.focused {
+        if !self.lifecycle.focused {
             return;
         }
         let caret = self.inner.caret();
@@ -4222,8 +4240,8 @@ impl WordProcessorWidget {
                 );
             }
             self.refresh_blocks(state);
-            self.needs_commit = true;
-            self.modified = true;
+            self.lifecycle.needs_commit = true;
+            self.save_status = DocumentSaveStatus::Modified;
             self.note_edit_for_autosave(state);
         }
     }
@@ -4291,8 +4309,8 @@ impl WordProcessorWidget {
             _ => return,
         }
         self.refresh_blocks(state);
-        self.needs_commit = true;
-        self.modified = true;
+        self.lifecycle.needs_commit = true;
+        self.save_status = DocumentSaveStatus::Modified;
         self.note_edit_for_autosave(state);
     }
 
@@ -4538,14 +4556,14 @@ impl WordProcessorWidget {
 
     /// Whether the styles panel is drawn this frame.
     fn styles_panel_visible(&self) -> bool {
-        self.styles_panel_open
+        self.view.styles_panel_visible
     }
 
     /// Narrow tiles present the inspector as a temporary rail over the page;
     /// wide windows reserve space for it. This keeps the document useful at
     /// phone/three-column widths without making advanced formatting unreachable.
     fn styles_panel_overlay(&self) -> bool {
-        self.styles_panel_open
+        self.view.styles_panel_visible
             && self.rect.width() < self.styles_panel_width() + MAX_PAGE_W + 48.0 * self.text_scale
     }
 
@@ -5525,14 +5543,14 @@ impl WordProcessorWidget {
         if entries.is_empty() {
             // Nothing to build a TOC from — tell the user *why* nothing happened.
             self.toast = Some((t("toast-toc-empty"), ToastKind::Info));
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             return;
         }
         let n = entries.len();
         self.perform_action(state, &crate::actions::generate_toc_action(entries));
         self.refresh_blocks(state);
-        self.needs_commit = true;
-        self.dirty = true;
+        self.lifecycle.needs_commit = true;
+        self.lifecycle.dirty = true;
         // Scroll the freshly-inserted TOC (always at the document top) into view
         // and surface a confirmation toast, so the action has a visible result.
         self.scroll_y = 0.0;
@@ -5888,8 +5906,8 @@ impl WordProcessorWidget {
                             ToolAction::Strike => self.mark_active_in_selection("strike"),
                             ToolAction::Super => self.mark_active_in_selection("super"),
                             ToolAction::Sub => self.mark_active_in_selection("sub"),
-                            ToolAction::ToggleStyles => self.styles_panel_open,
-                            ToolAction::ToggleRuler => self.ruler_on,
+                            ToolAction::ToggleStyles => self.view.styles_panel_visible,
+                            ToolAction::ToggleRuler => self.view.ruler_visible,
                             ToolAction::ToggleOutline => self.outline.is_open(),
                             ToolAction::ToggleHistory => self.history.is_open(),
                             _ => false,
@@ -6035,7 +6053,7 @@ impl WordProcessorWidget {
         A11yTreeNode {
             node: AccessNode::new(Role::Document).with_state(AccessState {
                 focusable: true,
-                focused: self.focused,
+                focused: self.lifecycle.focused,
                 multiline: true,
                 ..Default::default()
             }),
@@ -6237,7 +6255,7 @@ impl WordProcessorWidget {
         }
         let mobile_page = available < 600.0;
         let accessible_page = self.text_scale > 1.01;
-        if self.auto_fit_page {
+        if self.view.auto_fit_page {
             // Phone-sized tiles use a responsive editing sheet instead of
             // shrinking an entire Letter page until its body copy is 7 px.
             // Wider canvases retain print-faithful page sizing and auto-fit.
@@ -6286,7 +6304,11 @@ impl WordProcessorWidget {
         // the find bar. It is drawn with the *unscaled* `transform` so it stays a
         // fixed-height strip while the page scrolls/zooms; its tick + marker
         // positions are mapped through the zoom so they track the page edge.
-        let ruler_h = if self.ruler_on { RULER_H } else { 0.0 };
+        let ruler_h = if self.view.ruler_visible {
+            RULER_H
+        } else {
+            0.0
+        };
         let canvas = Rect::new(
             canvas_left,
             full.y0 + tb_h + recovery_h + find_h + ruler_h,
@@ -7599,7 +7621,10 @@ impl WordProcessorWidget {
                 },
             );
 
-            if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
+            if self.lifecycle.focused
+                && l.id == self.inner.caret.block
+                && !self.inner.has_selection()
+            {
                 let byte = char_to_byte(&l.text, self.inner.caret.offset);
                 let (cx, cy, ch) = layout.caret_geometry(byte);
                 let caret = Rect::new(
@@ -8326,7 +8351,7 @@ impl WordProcessorWidget {
             .history
             .handle_event(event, scale_factor, &modifiers, state, path);
         if outcome.restored {
-            self.needs_commit = true;
+            self.lifecycle.needs_commit = true;
             self.history.follow_document();
             self.refresh_blocks(state);
         }
@@ -8334,7 +8359,7 @@ impl WordProcessorWidget {
             // Naming a version is a document write; it commits with the
             // same author and timestamp as an edit, and lands on the undo
             // stack so it can be taken back the usual way.
-            self.needs_commit = true;
+            self.lifecycle.needs_commit = true;
         }
         outcome.handled
     }
@@ -8357,7 +8382,7 @@ impl WordProcessorWidget {
             let tb_h = self.toolbar_height(self.rect.width());
             let over_body = self.pointer.y >= self.rect.y0 + tb_h
                 && self.pointer.y <= self.rect.y1 - self.layout_bar_height()
-                && !(self.styles_panel_open && self.panel_rect.contains(self.pointer))
+                && !(self.view.styles_panel_visible && self.panel_rect.contains(self.pointer))
                 && !self.outline.contains(self.pointer);
             if over_body {
                 self.caret_from_pointer(self.pointer_to_content(self.pointer), false);
@@ -8396,7 +8421,7 @@ impl WordProcessorWidget {
         // tolerance that could mask a real change.
         if new.to_bits() != self.scroll_y.to_bits() {
             self.scroll_y = new;
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
         }
     }
@@ -8425,7 +8450,7 @@ impl WordProcessorWidget {
         };
         if new_hover != self.hover_tool {
             self.hover_tool = new_hover;
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
         }
         if let Some(sc) = self.scrub {
@@ -8444,7 +8469,7 @@ impl WordProcessorWidget {
                 {
                     sc.field.set(st, v);
                 }
-                self.dirty = true;
+                self.lifecycle.dirty = true;
             }
             *handled = true;
         } else if self.object_drag.is_some() {
@@ -8459,20 +8484,20 @@ impl WordProcessorWidget {
             }
             drag.x = (drag.start_x + dx).clamp(0.0, 100_000.0);
             drag.y = (drag.start_y + dy).clamp(0.0, 100_000.0);
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
         } else if self.ruler.is_dragging() {
             // Live-drag a ruler marker (margin / indent / tab). Updates the
             // value for an instant preview; persisted on release.
             self.ruler_drag_move();
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
         } else if let Some(gd) = self.guide_drag {
             // Live-drag a layout guide (margin / border / spacing). Guides
             // live in unscaled page space, so map the pointer through the
             // inverse zoom first.
             self.apply_guide_drag(gd, self.pointer_to_content(self.pointer));
-            self.dirty = true; // repaint every move so the preview is live
+            self.lifecycle.dirty = true; // repaint every move so the preview is live
             *handled = true;
         } else if self.drag.drag().is_some() {
             // Extend the selection: keep the anchor, move the caret. The
@@ -8492,21 +8517,21 @@ impl WordProcessorWidget {
         if !self.rect.contains(self.pointer) {
             return;
         }
-        self.focused = true;
+        self.lifecycle.focused = true;
         // A right-click on a style chip in the styles panel opens the
         // style-management menu (Delete / Duplicate) before the generic
         // "panel is chrome, ignore" rule kicks in.
-        if self.styles_panel_open && self.panel_rect.contains(self.pointer) {
+        if self.view.styles_panel_visible && self.panel_rect.contains(self.pointer) {
             if let Some(id) = self.style_chip_at(self.pointer) {
                 self.style_menu.open(&id, self.pointer);
-                self.dirty = true;
+                self.lifecycle.dirty = true;
                 *handled = true;
             }
             return;
         }
         let in_chrome = self.pointer.y < self.rect.y0 + tb_h
             || self.pointer.y > self.rect.y1 - self.layout_bar_height()
-            || (self.styles_panel_open && self.panel_rect.contains(self.pointer))
+            || (self.view.styles_panel_visible && self.panel_rect.contains(self.pointer))
             || self.outline.contains(self.pointer);
         if !in_chrome {
             let cp = self.pointer_to_content(self.pointer);
@@ -8537,12 +8562,12 @@ impl WordProcessorWidget {
         }
         // Any left press dismisses a staged toast (a transient cue).
         if self.toast.take().is_some() {
-            self.dirty = true;
+            self.lifecycle.dirty = true;
         }
         if !self.rect.contains(self.pointer) {
             return;
         }
-        self.focused = true;
+        self.lifecycle.focused = true;
         if self.handle_left_press_recovery_and_panels(state, handled) {
             return;
         }
@@ -8571,7 +8596,7 @@ impl WordProcessorWidget {
             } else {
                 self.context_menu.close();
             }
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
@@ -8580,7 +8605,7 @@ impl WordProcessorWidget {
             if let Some(template) = self.template_picker.click(self.pointer) {
                 self.apply_template(state, template);
             }
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
@@ -8590,7 +8615,7 @@ impl WordProcessorWidget {
             if let Some(action) = self.style_menu.click(self.pointer) {
                 self.dispatch_style_menu(action, state);
             }
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
@@ -8613,10 +8638,10 @@ impl WordProcessorWidget {
                 self.refresh_blocks(state);
                 self.layout_cache.clear();
                 self.spell_cache.clear();
-                self.modified = true;
-                self.needs_commit = true;
+                self.save_status = DocumentSaveStatus::Modified;
+                self.lifecycle.needs_commit = true;
             }
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
@@ -8627,13 +8652,13 @@ impl WordProcessorWidget {
         // A narrow-window inspector is a modal-ish rail: clicking the dimmed
         // document dismisses it instead of placing a caret through the overlay.
         if self.styles_panel_overlay() && !self.panel_rect.contains(self.pointer) {
-            self.styles_panel_open = false;
-            self.dirty = true;
+            self.view.styles_panel_visible = false;
+            self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
         // Styles panel (right side): dispatch a click on its controls.
-        if self.styles_panel_open && self.panel_rect.contains(self.pointer) {
+        if self.view.styles_panel_visible && self.panel_rect.contains(self.pointer) {
             if let Some(hit) = self
                 .panel_hits
                 .iter()
@@ -8643,7 +8668,7 @@ impl WordProcessorWidget {
             {
                 self.apply_panel_hit(state, hit);
             }
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
@@ -8653,7 +8678,7 @@ impl WordProcessorWidget {
             if let Some(block_id) = self.outline.heading_at(self.pointer).map(str::to_owned) {
                 self.scroll_to_block(&block_id);
             }
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
@@ -8679,24 +8704,24 @@ impl WordProcessorWidget {
             if self.pointer.y >= fbar_top && self.pointer.y < fbar_bot {
                 let effect = self.find.click(self.pointer, &self.blocks);
                 self.apply_find_effect_mut(state, effect);
-                self.dirty = true;
+                self.lifecycle.dirty = true;
                 *handled = true;
                 return true;
             }
         }
         // Ruler band (when on): grab a marker to drag, else a click in the
         // page span adds a tab stop on the current paragraph.
-        if self.ruler_on && self.ruler.rect().contains(self.pointer) {
+        if self.view.ruler_visible && self.ruler.rect().contains(self.pointer) {
             self.ruler_press(state);
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
         if self.pointer.y < self.rect.y0 + tb_h {
             // The right-aligned zoom component owns its hit targets and scale.
             if self.zoom.click(self.pointer) {
-                self.auto_fit_page = false;
-                self.dirty = true;
+                self.view.auto_fit_page = false;
+                self.lifecycle.dirty = true;
                 *handled = true;
                 return true;
             }
@@ -8711,7 +8736,7 @@ impl WordProcessorWidget {
             if let Some(action) = clicked {
                 self.apply_tool(state, action);
                 self.refresh_blocks(state);
-                self.dirty = true;
+                self.lifecycle.dirty = true;
                 // View toggles (panels) + opening the New menu are not undo
                 // points; everything else (including TOC generation) is.
                 if !matches!(
@@ -8722,8 +8747,8 @@ impl WordProcessorWidget {
                         | ToolAction::ToggleHistory
                         | ToolAction::NewMenu
                 ) {
-                    self.needs_commit = true;
-                    self.modified = true;
+                    self.lifecycle.needs_commit = true;
+                    self.save_status = DocumentSaveStatus::Modified;
                     self.note_edit_for_autosave(state);
                 }
             }
@@ -8741,7 +8766,7 @@ impl WordProcessorWidget {
             {
                 self.toggle_layout_mode(mode);
             }
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
@@ -8767,7 +8792,7 @@ impl WordProcessorWidget {
         // click before it can start a text selection.
         if let Some(action) = self.review.action_at(cp) {
             self.dispatch_review_action(action, state);
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return;
         }
@@ -8788,7 +8813,7 @@ impl WordProcessorWidget {
                 side,
                 kind,
             });
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return;
         }
@@ -8833,7 +8858,7 @@ impl WordProcessorWidget {
                 y,
                 moved: false,
             });
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return;
         }
@@ -8852,8 +8877,8 @@ impl WordProcessorWidget {
                 self.inner.focus_region(state, region);
                 self.refresh_blocks(state);
                 self.drag.press(self.pointer, shift);
-                self.dirty = true;
-                self.needs_commit = true;
+                self.lifecycle.dirty = true;
+                self.lifecycle.needs_commit = true;
                 *handled = true;
                 return;
             }
@@ -8874,7 +8899,7 @@ impl WordProcessorWidget {
             Granularity::Line => self.select_all_in_block(state),
             Granularity::Char => {}
         }
-        self.dirty = true;
+        self.lifecycle.dirty = true;
         *handled = true;
     }
 
@@ -8886,7 +8911,7 @@ impl WordProcessorWidget {
             if sc.moved {
                 // A scrub persists the style edit (every instance follows).
                 self.persist_stylesheet_via_actions(state);
-                self.needs_commit = true;
+                self.lifecycle.needs_commit = true;
             } else {
                 // A plain click (no drag) focuses the field for typing.
                 self.editing_field = Some(sc.field);
@@ -8895,7 +8920,7 @@ impl WordProcessorWidget {
                     .map_or(0.0, |k| sc.field.get(&self.sheet.get(&k)));
                 self.edit_buf = fmt_num(cur);
             }
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
         } else if let Some(drag) = self.object_drag.take() {
             if drag.moved {
@@ -8911,16 +8936,16 @@ impl WordProcessorWidget {
                     ),
                 );
                 self.refresh_blocks(state);
-                self.needs_commit = true;
-                self.modified = true;
+                self.lifecycle.needs_commit = true;
+                self.save_status = DocumentSaveStatus::Modified;
             }
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
         } else if self.ruler.is_dragging() {
             // A ruler-marker drag persists on release (margins → page meta,
             // indents / tab stops → the caret block's attrs).
             self.ruler_drag_release(state);
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
         } else if let Some(gd) = self.guide_drag.take() {
             // A layout edit persists into the document on release: spacing
@@ -8928,18 +8953,18 @@ impl WordProcessorWidget {
             match gd.mode {
                 LayoutMode::Spacing => {
                     self.persist_stylesheet_via_actions(state);
-                    self.needs_commit = true;
+                    self.lifecycle.needs_commit = true;
                 }
                 LayoutMode::Margins => {
                     self.persist_margins(state);
-                    self.needs_commit = true;
+                    self.lifecycle.needs_commit = true;
                 }
                 LayoutMode::None => {}
             }
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
         } else if self.drag.release() {
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
         }
     }
@@ -8975,7 +9000,7 @@ impl WordProcessorWidget {
         if dict.contains(&original) {
             return None;
         }
-        let replacement = spellcheck::probable_correction(&self.spell_language, &original)?;
+        let replacement = spellcheck::probable_correction(&self.proofing.language, &original)?;
         let block = self.inner.caret.block.clone();
         let region = self.inner.region_kind();
         self.splice_via_action(state, region, &block, start, end, &replacement);
@@ -9107,12 +9132,12 @@ impl WordProcessorWidget {
                 self.inner.clear_anchor();
                 // A real content edit (not caret motion) advances the
                 // autosave debounce — may write a recovery copy.
-                self.modified = true;
+                self.save_status = DocumentSaveStatus::Modified;
                 self.note_edit_for_autosave(state);
             }
             self.refresh_blocks(state);
-            self.dirty = true;
-            self.needs_commit = true;
+            self.lifecycle.dirty = true;
+            self.lifecycle.needs_commit = true;
             *handled = true;
         }
     }
@@ -9259,7 +9284,7 @@ impl WordProcessorWidget {
         ctrl: bool,
         handled: &mut bool,
     ) -> bool {
-        if !self.focused {
+        if !self.lifecycle.focused {
             return true;
         }
         // A free-object drag is a preview until release. Escape discards that
@@ -9267,7 +9292,7 @@ impl WordProcessorWidget {
         // document/action history untouched.
         if matches!(logical_key, Key::Named(NamedKey::Escape)) && self.object_drag.is_some() {
             self.object_drag = None;
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
@@ -9280,7 +9305,7 @@ impl WordProcessorWidget {
             self.context_menu.close();
             self.style_menu.close();
             self.template_picker.close();
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
@@ -9288,7 +9313,7 @@ impl WordProcessorWidget {
         if self.inner.in_running_region() && matches!(logical_key, Key::Named(NamedKey::Escape)) {
             self.inner.focus_body(state);
             self.refresh_blocks(state);
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
@@ -9322,7 +9347,7 @@ impl WordProcessorWidget {
                     self.apply_edit_buf_live();
                 }
             }
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return true;
         }
@@ -9332,8 +9357,8 @@ impl WordProcessorWidget {
         if ctrl && matches!(logical_key, Key::Named(NamedKey::Enter)) {
             self.page_break_via_action(state);
             self.refresh_blocks(state);
-            self.dirty = true;
-            self.needs_commit = true;
+            self.lifecycle.dirty = true;
+            self.lifecycle.needs_commit = true;
             *handled = true;
             return true;
         }
@@ -9364,7 +9389,7 @@ impl WordProcessorWidget {
             } else {
                 self.save(state);
             }
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return;
         }
@@ -9372,7 +9397,7 @@ impl WordProcessorWidget {
         // place of the current one.
         if s.eq_ignore_ascii_case("o") {
             self.request_open_document();
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return;
         }
@@ -9382,7 +9407,7 @@ impl WordProcessorWidget {
             } else {
                 self.open_find(state);
             }
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
             return;
         }
@@ -9407,9 +9432,9 @@ impl WordProcessorWidget {
         if shift && s.eq_ignore_ascii_case("p") {
             self.insert_page_number_via_action(state);
             self.refresh_blocks(state);
-            self.dirty = true;
-            self.needs_commit = true;
-            self.modified = true;
+            self.lifecycle.dirty = true;
+            self.lifecycle.needs_commit = true;
+            self.save_status = DocumentSaveStatus::Modified;
             self.note_edit_for_autosave(state);
             *handled = true;
             return;
@@ -9464,9 +9489,9 @@ impl WordProcessorWidget {
             _ => {}
         }
         self.refresh_blocks(state);
-        self.dirty = true;
-        self.needs_commit = true;
-        self.modified = true;
+        self.lifecycle.dirty = true;
+        self.lifecycle.needs_commit = true;
+        self.save_status = DocumentSaveStatus::Modified;
         self.note_edit_for_autosave(state);
         *handled = true;
     }
@@ -9509,9 +9534,11 @@ impl Widget for WordProcessorWidget {
             WordProcessorOperation::ToggleSpellcheck => self.toggle_spellcheck(),
             WordProcessorOperation::ToggleMarkup => self.toggle_markup(),
             WordProcessorOperation::ToggleStyles => {
-                self.styles_panel_open = !self.styles_panel_open;
+                self.view.styles_panel_visible = !self.view.styles_panel_visible;
             }
-            WordProcessorOperation::ToggleRuler => self.ruler_on = !self.ruler_on,
+            WordProcessorOperation::ToggleRuler => {
+                self.view.ruler_visible = !self.view.ruler_visible;
+            }
             WordProcessorOperation::ToggleOutline => self.outline.toggle(),
             WordProcessorOperation::ToggleHistory => self.history.toggle(),
             WordProcessorOperation::NavigateTo { block, start, end } => {
@@ -9524,7 +9551,7 @@ impl Widget for WordProcessorWidget {
                 self.pending_history_revision = Some(index);
             }
         }
-        self.dirty = true;
+        self.lifecycle.dirty = true;
         Ok(true)
     }
 
@@ -9672,7 +9699,7 @@ impl Widget for WordProcessorWidget {
                 self.history.set_current_tick(index);
             }
         }
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     fn build_layout(
@@ -9869,7 +9896,7 @@ impl Widget for WordProcessorWidget {
         // second text editor. Feed it raw events first so IME, selection and
         // clipboard shortcuts retain the toolkit's exact behavior. Ctrl+F is
         // deliberately left for the editor-level toggle below.
-        if self.focused && self.find.is_open() {
+        if self.lifecycle.focused && self.find.is_open() {
             let mut find_handled = false;
             let effect = self.find.handle_event(
                 event,
@@ -9887,7 +9914,7 @@ impl Widget for WordProcessorWidget {
             );
             self.apply_find_effect_mut(state, effect);
             if find_handled {
-                self.dirty = true;
+                self.lifecycle.dirty = true;
                 *handled = true;
                 // Cursor movement still feeds the editor below so its shared
                 // pointer coordinate remains current for subsequent clicks.
@@ -9948,12 +9975,12 @@ impl Widget for WordProcessorWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.stage_template_picker {
-            self.stage_template_picker = false;
+        if self.staged.template_picker {
+            self.staged.template_picker = false;
             self.open_template_picker();
         }
-        if self.stage_toolbar_overflow {
-            self.stage_toolbar_overflow = false;
+        if self.staged.toolbar_overflow {
+            self.staged.toolbar_overflow = false;
             self.open_toolbar_overflow();
         }
         // Toast first, so an open menu stacks above it.
@@ -10001,7 +10028,7 @@ impl Widget for WordProcessorWidget {
     /// the receiver feeds them straight into `RichTextLayout::caret_geometry`/
     /// `selection_rects`.
     fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
-        if !self.focused {
+        if !self.lifecycle.focused {
             return None;
         }
         let caret_block = &self.inner.caret.block;
@@ -10071,7 +10098,7 @@ impl Widget for WordProcessorWidget {
                 if let Some(id) = palette_target
                     && self.compact_swatch_palette.focus_target(&id, state, path)
                 {
-                    self.dirty = true;
+                    self.lifecycle.dirty = true;
                     return true;
                 }
             }
@@ -10107,7 +10134,7 @@ impl Widget for WordProcessorWidget {
                 .then(|| review_action.clone())
         }) {
             self.dispatch_review_action(review_action, state);
-            self.modified = true;
+            self.save_status = DocumentSaveStatus::Modified;
             self.note_edit_for_autosave(state);
             return true;
         }
@@ -10137,7 +10164,7 @@ impl Widget for WordProcessorWidget {
         // be second-class collaboration events.
         self.apply_tool(state, tool);
         self.refresh_blocks(state);
-        self.dirty = true;
+        self.lifecycle.dirty = true;
         if !matches!(
             tool,
             ToolAction::ToggleStyles
@@ -10146,8 +10173,8 @@ impl Widget for WordProcessorWidget {
                 | ToolAction::ToggleHistory
                 | ToolAction::NewMenu
         ) {
-            self.needs_commit = true;
-            self.modified = true;
+            self.lifecycle.needs_commit = true;
+            self.save_status = DocumentSaveStatus::Modified;
             self.note_edit_for_autosave(state);
         }
         true
@@ -10163,7 +10190,7 @@ impl Widget for WordProcessorWidget {
         true
     }
     fn set_focus(&mut self, focused: bool) {
-        self.focused = focused;
+        self.lifecycle.focused = focused;
         self.find.set_host_focused(focused);
         if !focused {
             // Blur any in-progress numeric edit; the next sync reloads the
@@ -10172,10 +10199,10 @@ impl Widget for WordProcessorWidget {
             self.edit_buf.clear();
             self.scrub = None;
         }
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
     fn is_focused(&self) -> bool {
-        self.focused
+        self.lifecycle.focused
     }
     fn ime_cursor_rect(&self) -> Option<Rect> {
         if self.find.is_open() {
@@ -10192,10 +10219,10 @@ impl Widget for WordProcessorWidget {
         }
     }
     fn needs_commit(&self) -> bool {
-        self.needs_commit
+        self.lifecycle.needs_commit
     }
     fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-        self.needs_commit.then(|| {
+        self.lifecycle.needs_commit.then(|| {
             let resource_id = self.path.as_ref().map_or_else(
                 || "word-processor.document:untitled".to_string(),
                 |path| format!("word-processor.document:{}", path.display()),
@@ -10216,8 +10243,8 @@ impl Widget for WordProcessorWidget {
         })
     }
     fn on_commit(&mut self) {
-        self.needs_commit = false;
-        self.modified = true;
+        self.lifecycle.needs_commit = false;
+        self.save_status = DocumentSaveStatus::Modified;
     }
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// a [`WordProcessorAction`](crate::actions) through
@@ -10237,10 +10264,10 @@ impl Widget for WordProcessorWidget {
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
     fn needs_redraw(&self) -> bool {
-        self.dirty
+        self.lifecycle.dirty
     }
     fn mark_drawn(&mut self) {
-        self.dirty = false;
+        self.lifecycle.dirty = false;
     }
 }
 
@@ -10870,44 +10897,15 @@ impl WordProcessorWidget {
             }
             ToolAction::InsertImage => self.request_image_insert(state),
             ToolAction::InsertTable => self.insert_table_via_action(state, 2, 2),
-            ToolAction::TableRowAdd => {
-                if let Some((_, row, _, _, _)) = self.caret_table_target() {
-                    self.edit_table_via_action(
-                        state,
-                        crate::actions::TableEdit::InsertRow {
-                            at: row.saturating_add(1),
-                        },
-                    );
-                }
+            table_action @ (ToolAction::TableRowAdd
+            | ToolAction::TableRowDel
+            | ToolAction::TableColAdd
+            | ToolAction::TableColDel
+            | ToolAction::TableDelete) => self.apply_table_tool(state, table_action),
+            ToolAction::ToggleStyles => {
+                self.view.styles_panel_visible = !self.view.styles_panel_visible;
             }
-            ToolAction::TableRowDel => {
-                if let Some((_, row, _, _, _)) = self.caret_table_target() {
-                    self.edit_table_via_action(state, crate::actions::TableEdit::DeleteRow { row });
-                }
-            }
-            ToolAction::TableColAdd => {
-                if let Some((_, _, column, _, _)) = self.caret_table_target() {
-                    self.edit_table_via_action(
-                        state,
-                        crate::actions::TableEdit::InsertColumn {
-                            at: column.saturating_add(1),
-                        },
-                    );
-                }
-            }
-            ToolAction::TableColDel => {
-                if let Some((_, _, column, _, _)) = self.caret_table_target() {
-                    self.edit_table_via_action(
-                        state,
-                        crate::actions::TableEdit::DeleteColumn { column },
-                    );
-                }
-            }
-            ToolAction::TableDelete => {
-                self.edit_table_via_action(state, crate::actions::TableEdit::Delete);
-            }
-            ToolAction::ToggleStyles => self.styles_panel_open = !self.styles_panel_open,
-            ToolAction::ToggleRuler => self.ruler_on = !self.ruler_on,
+            ToolAction::ToggleRuler => self.view.ruler_visible = !self.view.ruler_visible,
             ToolAction::ToggleOutline => self.outline.toggle(),
             ToolAction::ToggleHistory => {
                 self.history.toggle();
@@ -10921,6 +10919,28 @@ impl WordProcessorWidget {
             ToolAction::NewMenu => self.open_template_picker(),
             ToolAction::More => self.open_toolbar_overflow(),
         }
+    }
+
+    fn apply_table_tool(&mut self, state: &mut AutoCommit, action: ToolAction) {
+        let Some((_, row, column, _, _)) = self.caret_table_target() else {
+            if action == ToolAction::TableDelete {
+                self.edit_table_via_action(state, crate::actions::TableEdit::Delete);
+            }
+            return;
+        };
+        let edit = match action {
+            ToolAction::TableRowAdd => crate::actions::TableEdit::InsertRow {
+                at: row.saturating_add(1),
+            },
+            ToolAction::TableRowDel => crate::actions::TableEdit::DeleteRow { row },
+            ToolAction::TableColAdd => crate::actions::TableEdit::InsertColumn {
+                at: column.saturating_add(1),
+            },
+            ToolAction::TableColDel => crate::actions::TableEdit::DeleteColumn { column },
+            ToolAction::TableDelete => crate::actions::TableEdit::Delete,
+            _ => return,
+        };
+        self.edit_table_via_action(state, edit);
     }
 
     /// Open the compact toolbar's lower-frequency command menu. The action
@@ -10977,7 +10997,7 @@ impl WordProcessorWidget {
         menu.open_at([num::f32_of_f64(anchor.x), num::f32_of_f64(anchor.y)]);
         self.context_menu = menu;
         self.context_actions = actions;
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     /// Mutate the focused block's style in the live widget sheet (component-
@@ -10994,10 +11014,10 @@ impl WordProcessorWidget {
         if let Some(st) = self.sheet.styles.get_mut(&key) {
             f(st);
         }
-        self.dirty = true;
+        self.lifecycle.dirty = true;
         if persist {
             self.persist_stylesheet_via_actions(state);
-            self.needs_commit = true;
+            self.lifecycle.needs_commit = true;
         }
     }
 
@@ -11023,7 +11043,7 @@ impl WordProcessorWidget {
         if let Some(st) = self.sheet.styles.get_mut(&key) {
             field.set(st, v);
         }
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     /// Commit the typed numeric edit to the document and blur the field.
@@ -11033,20 +11053,20 @@ impl WordProcessorWidget {
         }
         self.apply_edit_buf_live();
         self.persist_stylesheet_via_actions(state);
-        self.needs_commit = true;
+        self.lifecycle.needs_commit = true;
         self.editing_field = None;
         self.edit_buf.clear();
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     /// Dispatch a click on a styles-panel target.
     fn apply_panel_hit(&mut self, state: &mut AutoCommit, hit: PanelHit) {
         match hit {
             PanelHit::Close => {
-                self.styles_panel_open = false;
+                self.view.styles_panel_visible = false;
                 self.editing_field = None;
                 self.scrub = None;
-                self.dirty = true;
+                self.lifecycle.dirty = true;
             }
             PanelHit::Pick(id) => {
                 // A built-in style implies a structural kind, applied together as one
@@ -11055,9 +11075,9 @@ impl WordProcessorWidget {
                 // styled body text. Custom styles are pure visual presets; kind stays untouched.
                 self.dispatch_apply_named_style(state, &id);
                 self.refresh_blocks(state);
-                self.needs_commit = true;
-                self.modified = true;
-                self.dirty = true;
+                self.lifecycle.needs_commit = true;
+                self.save_status = DocumentSaveStatus::Modified;
+                self.lifecycle.dirty = true;
             }
             PanelHit::CycleFont => {
                 self.edit_focused_style(state, true, |st| {
@@ -11082,9 +11102,9 @@ impl WordProcessorWidget {
                     crate::actions::AttrVal::Str(a.to_string()),
                 );
                 self.refresh_blocks(state);
-                self.needs_commit = true;
-                self.modified = true;
-                self.dirty = true;
+                self.lifecycle.needs_commit = true;
+                self.save_status = DocumentSaveStatus::Modified;
+                self.lifecycle.dirty = true;
             }
             PanelHit::ParaLineSpacing => {
                 let next = next_line_spacing(self.inner.caret_line_spacing(state));
@@ -11094,9 +11114,9 @@ impl WordProcessorWidget {
                     crate::actions::AttrVal::Float(next),
                 );
                 self.refresh_blocks(state);
-                self.needs_commit = true;
-                self.modified = true;
-                self.dirty = true;
+                self.lifecycle.needs_commit = true;
+                self.save_status = DocumentSaveStatus::Modified;
+                self.lifecycle.dirty = true;
             }
             PanelHit::SetColor(c) => self.edit_focused_style(state, true, |st| st.color = c),
             PanelHit::OpenColorPicker => self.open_color_picker(),
@@ -11139,7 +11159,7 @@ impl WordProcessorWidget {
             start_val,
             moved: false,
         });
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     /// `PanelHit::NewStyle`: duplicate the focused style under a fresh id.
@@ -11155,8 +11175,8 @@ impl WordProcessorWidget {
         self.persist_stylesheet_via_actions(state);
         self.dispatch_apply_named_style(state, &new_id);
         self.refresh_blocks(state);
-        self.needs_commit = true;
-        self.dirty = true;
+        self.lifecycle.needs_commit = true;
+        self.lifecycle.dirty = true;
     }
 
     /// `PanelHit::ImageScale`: scale the *current on-screen* size (aspect
@@ -11181,9 +11201,9 @@ impl WordProcessorWidget {
             &crate::actions::set_image_size_action(&id, width, height),
         );
         self.refresh_blocks(state);
-        self.needs_commit = true;
-        self.modified = true;
-        self.dirty = true;
+        self.lifecycle.needs_commit = true;
+        self.save_status = DocumentSaveStatus::Modified;
+        self.lifecycle.dirty = true;
     }
 
     /// `PanelHit::ImageFlipH`/`ImageFlipV`: mirror the selected image about
@@ -11208,9 +11228,9 @@ impl WordProcessorWidget {
             ),
         );
         self.refresh_blocks(state);
-        self.needs_commit = true;
-        self.modified = true;
-        self.dirty = true;
+        self.lifecycle.needs_commit = true;
+        self.save_status = DocumentSaveStatus::Modified;
+        self.lifecycle.dirty = true;
     }
 
     /// Crop or reset the selected image through one atomic action. The panel and
@@ -11253,9 +11273,9 @@ impl WordProcessorWidget {
             &crate::actions::set_image_crop_action(&id, left, top, right, bottom),
         );
         self.refresh_blocks(state);
-        self.needs_commit = true;
-        self.modified = true;
-        self.dirty = true;
+        self.lifecycle.needs_commit = true;
+        self.save_status = DocumentSaveStatus::Modified;
+        self.lifecycle.dirty = true;
     }
 
     /// Choose one of the image's canonical placement modes. The free mode is
@@ -11275,9 +11295,9 @@ impl WordProcessorWidget {
             &crate::actions::set_image_placement_action(&id, anchor, wrap, 0, 0, 0),
         );
         self.refresh_blocks(state);
-        self.needs_commit = true;
-        self.modified = true;
-        self.dirty = true;
+        self.lifecycle.needs_commit = true;
+        self.save_status = DocumentSaveStatus::Modified;
+        self.lifecycle.dirty = true;
     }
 
     // ---- colour picker popover --------------------------------------------
@@ -11288,7 +11308,7 @@ impl WordProcessorWidget {
             .focused_style_key()
             .map_or([0x1c, 0x1c, 0x20], |k| self.sheet.get(&k).color);
         self.color_picker.open(seed, self.pointer);
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     /// While the colour picker is open, route input to it (drag the SV square /
@@ -11322,7 +11342,7 @@ impl WordProcessorWidget {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.pointer = Point::new(position.x / scale, position.y / scale);
             }
-            self.dirty = true;
+            self.lifecycle.dirty = true;
             *handled = true;
         }
         result.consumed
@@ -11377,7 +11397,7 @@ impl WordProcessorWidget {
             anchor,
             host: self.rect,
         });
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     /// Route compact swatch-grid input ahead of the page. A picked colour still
@@ -11404,7 +11424,7 @@ impl WordProcessorWidget {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Point::new(position.x / scale, position.y / scale);
         }
-        self.dirty = true;
+        self.lifecycle.dirty = true;
         *handled = true;
         true
     }
@@ -11427,10 +11447,10 @@ impl WordProcessorWidget {
         };
         self.apply_tool(state, action);
         self.refresh_blocks(state);
-        self.needs_commit = true;
-        self.modified = true;
+        self.lifecycle.needs_commit = true;
+        self.save_status = DocumentSaveStatus::Modified;
         self.note_edit_for_autosave(state);
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     /// The next/previous cell id within the caret cell's table, if any.
@@ -11576,7 +11596,7 @@ impl WordProcessorWidget {
         if word.is_empty() {
             return None;
         }
-        let language = self.spell_language.clone();
+        let language = self.proofing.language.clone();
         let dict = self.dictionary();
         if dict.contains(word) || spellcheck::spans_for_language(&language, word).is_empty() {
             return None;
@@ -11623,7 +11643,7 @@ impl WordProcessorWidget {
         menu.open_at(pos);
         self.context_menu = menu;
         self.context_actions = actions;
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     /// Context-menu rows offering Accept/Reject for a tracked-change range or
@@ -11775,12 +11795,12 @@ impl WordProcessorWidget {
             CtxAction::Cut => {
                 self.clipboard_copy(state);
                 self.insert_text_via_action(state, "");
-                self.needs_commit = true;
+                self.lifecycle.needs_commit = true;
             }
             CtxAction::Copy => self.clipboard_copy(state),
             CtxAction::Paste => {
                 self.clipboard_paste(state);
-                self.needs_commit = true;
+                self.lifecycle.needs_commit = true;
             }
             CtxAction::SelectAll => self.inner.select_all(state),
             CtxAction::AddToDictionary(word) => {
@@ -11804,7 +11824,7 @@ impl WordProcessorWidget {
                 self.refresh_blocks(state);
                 // The block text changed; its cache entry is stale.
                 self.spell_cache.remove(&block);
-                self.needs_commit = true;
+                self.lifecycle.needs_commit = true;
             }
             CtxAction::Review(action) => self.dispatch_review_action(action, state),
             CtxAction::CompactPalette(kind) => self.open_compact_swatch_palette(kind),
@@ -11820,14 +11840,14 @@ impl WordProcessorWidget {
                         | ToolAction::More
                         | ToolAction::NewMenu
                 ) {
-                    self.needs_commit = true;
-                    self.modified = true;
+                    self.lifecycle.needs_commit = true;
+                    self.save_status = DocumentSaveStatus::Modified;
                     self.note_edit_for_autosave(state);
                 }
             }
         }
         self.context_menu.close();
-        self.dirty = true;
+        self.lifecycle.dirty = true;
         true
     }
 
@@ -11851,8 +11871,8 @@ impl WordProcessorWidget {
                 if self.sheet.remove(&id) {
                     self.persist_stylesheet_via_actions(state);
                     self.refresh_blocks(state);
-                    self.needs_commit = true;
-                    self.modified = true;
+                    self.lifecycle.needs_commit = true;
+                    self.save_status = DocumentSaveStatus::Modified;
                     self.toast = Some((t("toast-style-deleted"), ToastKind::Success));
                 }
             }
@@ -11865,13 +11885,13 @@ impl WordProcessorWidget {
                     // Apply the copy to the caret block so the panel focuses it.
                     self.dispatch_apply_named_style(state, &new_id);
                     self.refresh_blocks(state);
-                    self.needs_commit = true;
-                    self.modified = true;
+                    self.lifecycle.needs_commit = true;
+                    self.save_status = DocumentSaveStatus::Modified;
                     self.toast = Some((t("toast-style-duplicated"), ToastKind::Success));
                 }
             }
         }
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     // ---- new-from-template picker -----------------------------------------
@@ -11888,7 +11908,7 @@ impl WordProcessorWidget {
             .set_text_scale(crate::num::f32_of_f64(self.text_scale));
         self.template_picker.set_viewport(self.rect);
         self.template_picker.open_at(Point::new(anchor_x, anchor_y));
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     /// Replace the open document's content with `template`'s Markdown, **in place**
@@ -11902,9 +11922,9 @@ impl WordProcessorWidget {
         // The whole body changed; per-block caches keyed by id/text are stale.
         self.layout_cache.clear();
         self.spell_cache.clear();
-        self.modified = true;
-        self.needs_commit = true;
-        self.dirty = true;
+        self.save_status = DocumentSaveStatus::Modified;
+        self.lifecycle.needs_commit = true;
+        self.lifecycle.dirty = true;
         // A wholesale content swap is a strong autosave trigger.
         self.note_edit_for_autosave(state);
     }
@@ -11945,7 +11965,7 @@ impl WordProcessorWidget {
     pub fn check_for_recovery(&mut self) -> bool {
         let staged = self.recovery.check(self.path.as_deref());
         if staged {
-            self.dirty = true;
+            self.lifecycle.dirty = true;
         }
         staged
     }
@@ -11959,7 +11979,7 @@ impl WordProcessorWidget {
         self.thread_snapshot = None;
         self.thread_reply.set_text("");
         Widget::set_focus(&mut self.thread_reply, true);
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     fn close_comment_thread(&mut self) {
@@ -11969,7 +11989,7 @@ impl WordProcessorWidget {
         self.thread_submit = Rect::ZERO;
         self.thread_cancel = Rect::ZERO;
         Widget::set_focus(&mut self.thread_reply, false);
-        self.dirty = true;
+        self.lifecycle.dirty = true;
     }
 
     fn submit_comment_reply(&mut self, state: &mut AutoCommit) {
@@ -11984,8 +12004,8 @@ impl WordProcessorWidget {
         self.perform_action(state, &action);
         self.thread_reply.set_text("");
         self.refresh_blocks(state);
-        self.needs_commit = true;
-        self.dirty = true;
+        self.lifecycle.needs_commit = true;
+        self.lifecycle.dirty = true;
     }
 
     fn handle_comment_thread_event(
@@ -12108,8 +12128,8 @@ impl WordProcessorWidget {
         // text so affected blocks re-check on the next draw — clear it wholesale
         // (cheap, and these are infrequent review actions).
         self.spell_cache.clear();
-        self.needs_commit = true;
-        self.dirty = true;
+        self.lifecycle.needs_commit = true;
+        self.lifecycle.dirty = true;
     }
 
     /// Test-visible labels of the currently-open context menu's rows
@@ -12205,7 +12225,7 @@ impl WordProcessorWidget {
                     ToolAction::ToggleStyles,
                     t("toolbar-styles"),
                     64.0,
-                    self.styles_panel_open,
+                    self.view.styles_panel_visible,
                 ),
                 toolbar_item(
                     ToolAction::More,
@@ -12321,13 +12341,13 @@ impl WordProcessorWidget {
                 ToolAction::ToggleStyles,
                 t("toolbar-styles"),
                 64.0,
-                self.styles_panel_open,
+                self.view.styles_panel_visible,
             ),
             toolbar_item(
                 ToolAction::ToggleRuler,
                 t("toolbar-ruler"),
                 60.0,
-                self.ruler_on,
+                self.view.ruler_visible,
             ),
         ]);
         // Navigation: outline pane toggle + table-of-contents generator.
@@ -12773,7 +12793,7 @@ mod tests {
     #[test]
     fn native_document_edit_has_writer_provenance() {
         let mut wp = WordProcessorWidget::new();
-        wp.needs_commit = true;
+        wp.lifecycle.needs_commit = true;
 
         let context = wp.take_commit_context().expect("native edit provenance");
         assert_eq!(context.action_label, "Edit document");
@@ -13356,11 +13376,11 @@ mod tests {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "A paragraph");
-        wp.styles_panel_open = true;
+        wp.view.styles_panel_visible = true;
         pipeline_draw(&mut wp, &mut state, 1000, 700);
 
         // An explicitly-open panel renders clickable targets.
-        assert!(wp.styles_panel_open);
+        assert!(wp.view.styles_panel_visible);
         assert!(
             !wp.panel_hits.is_empty(),
             "panel rendered clickable targets"
@@ -13459,13 +13479,19 @@ mod tests {
         let mut state = ui::State::new();
         let mut wp = WordProcessorWidget::new();
         assert!(
-            !wp.styles_panel_open,
+            !wp.view.styles_panel_visible,
             "the first-launch writing surface is uncluttered"
         );
         wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
-        assert!(wp.styles_panel_open, "toolbar toggle reveals the panel");
+        assert!(
+            wp.view.styles_panel_visible,
+            "toolbar toggle reveals the panel"
+        );
         wp.apply_tool(&mut state.doc, ToolAction::ToggleStyles);
-        assert!(!wp.styles_panel_open, "toolbar toggle dismisses the panel");
+        assert!(
+            !wp.view.styles_panel_visible,
+            "toolbar toggle dismisses the panel"
+        );
     }
 
     // ---- toolbar ⇄ panel reorganization: paragraph controls belong to the
@@ -14131,7 +14157,7 @@ mod tests {
 
         // The canvas top sits below the (wrapped) toolbar AND the ruler band
         // (on by default) — the real offset the pagination cursor starts from.
-        let ruler_h = if wp.ruler_on { RULER_H } else { 0.0 };
+        let ruler_h = if wp.view.ruler_visible { RULER_H } else { 0.0 };
         let page_top = wp.toolbar_height(1000.0) + ruler_h + PAGE_TOP;
         let pct = |i: usize| page_top + num::f64_of_usize(i) * page_pitch + mar; // page content top
         let pcb = |i: usize| page_top + num::f64_of_usize(i) * page_pitch + letter_h - mar; // bottom margin
@@ -14200,7 +14226,7 @@ mod tests {
         wp.model_mut().insert_str(&mut state.doc, &para);
         pipeline_draw(&mut wp, &mut state, 1000, 700);
 
-        let ruler_h = if wp.ruler_on { RULER_H } else { 0.0 };
+        let ruler_h = if wp.view.ruler_visible { RULER_H } else { 0.0 };
         let page_top = wp.toolbar_height(1000.0) + ruler_h + PAGE_TOP;
         let pct = |i: usize| page_top + num::f64_of_usize(i) * page_pitch + mar; // page content top
         let pcb = |i: usize| page_top + num::f64_of_usize(i) * page_pitch + letter_h - mar; // bottom margin
@@ -14375,7 +14401,7 @@ mod tests {
             1,
             "the footer block is materialized into the widget"
         );
-        let ruler_h = if wp.ruler_on { RULER_H } else { 0.0 };
+        let ruler_h = if wp.view.ruler_visible { RULER_H } else { 0.0 };
         let max_page = wp
             .laid
             .iter()
@@ -14652,7 +14678,7 @@ mod tests {
             .insert_str(&mut state.doc, "This paragraph is forced onto page two.");
         pipeline_draw(&mut wp, &mut state, 1000, 700);
 
-        let ruler_h = if wp.ruler_on { RULER_H } else { 0.0 };
+        let ruler_h = if wp.view.ruler_visible { RULER_H } else { 0.0 };
         let page_top = wp.toolbar_height(1000.0) + ruler_h + PAGE_TOP;
         let pct = |i: usize| page_top + num::f64_of_usize(i) * page_pitch + mar; // page content top
         let page_of = |y: f64| num::i64_of_f64(((y - page_top) / page_pitch).floor());
@@ -15282,7 +15308,7 @@ mod tests {
     fn document_status_stays_in_bottom_chrome_at_narrow_and_wide_zoomed_widths() {
         let (mut state, mut wp) = populated();
         for (width, zoom) in [(700_u32, 0.81), (1100, 1.0)] {
-            wp.auto_fit_page = false;
+            wp.view.auto_fit_page = false;
             wp.zoom.set(zoom);
             pipeline_draw(&mut wp, &mut state, width, 900);
             let bar = Rect::new(0.0, 868.0, f64::from(width), 900.0);
@@ -16601,7 +16627,7 @@ mod tests {
             toc.iter().any(|b| b.text.contains("Conclusion")),
             "every heading is listed"
         );
-        assert!(wp.needs_commit, "TOC generation is an undo point");
+        assert!(wp.lifecycle.needs_commit, "TOC generation is an undo point");
     }
 
     #[test]
@@ -16717,7 +16743,10 @@ mod tests {
             !all_text.contains("rough draft"),
             "the prior content was replaced, not appended"
         );
-        assert!(wp.modified, "a template swap marks the document modified");
+        assert!(
+            wp.save_status == DocumentSaveStatus::Modified,
+            "a template swap marks the document modified"
+        );
     }
 
     // ---- autosave / crash-recovery ----------------------------------------
@@ -16812,9 +16841,9 @@ mod tests {
     fn caret_navigation_is_handled_without_marking_the_document_modified() {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "move");
-        wp.focused = true;
-        wp.modified = false;
-        wp.needs_commit = false;
+        wp.lifecycle.focused = true;
+        wp.save_status = DocumentSaveStatus::Clean;
+        wp.lifecycle.needs_commit = false;
         let before = wp.model().caret().offset;
         let mut handled = false;
 
@@ -16829,8 +16858,14 @@ mod tests {
 
         assert!(handled);
         assert_eq!(wp.model().caret().offset, before - 1);
-        assert!(!wp.modified, "caret motion is not a content edit");
-        assert!(wp.needs_commit, "caret presence still needs publishing");
+        assert!(
+            wp.save_status == DocumentSaveStatus::Clean,
+            "caret motion is not a content edit"
+        );
+        assert!(
+            wp.lifecycle.needs_commit,
+            "caret presence still needs publishing"
+        );
     }
 
     /// A document editor shows the document. The contextual styles panel
@@ -16855,10 +16890,10 @@ mod tests {
         // narrow end, and is where the panel currently wins.
         for (w, h) in [(1400_u32, 900_u32), (960, 800), (640, 700), (426, 700)] {
             let (mut state, mut wp) = bound();
-            wp.styles_panel_open = true;
+            wp.view.styles_panel_visible = true;
             pipeline_draw(&mut wp, &mut state, w, h);
             assert!(
-                wp.styles_panel_open,
+                wp.view.styles_panel_visible,
                 "precondition: the explicitly-open panel is the one under test",
             );
             assert!(
@@ -17081,11 +17116,11 @@ mod tests {
     #[test]
     fn ruler_defaults_on_and_toggles() {
         let (mut state, mut wp) = bound();
-        assert!(wp.ruler_on, "ruler defaults ON (discoverable)");
+        assert!(wp.view.ruler_visible, "ruler defaults ON (discoverable)");
         wp.apply_tool(&mut state.doc, ToolAction::ToggleRuler);
-        assert!(!wp.ruler_on, "toolbar toggle hides the ruler");
+        assert!(!wp.view.ruler_visible, "toolbar toggle hides the ruler");
         wp.apply_tool(&mut state.doc, ToolAction::ToggleRuler);
-        assert!(wp.ruler_on, "toggles back on");
+        assert!(wp.view.ruler_visible, "toggles back on");
     }
 
     /// The ruler computes correct marker x-positions from the margins + the caret
@@ -17597,7 +17632,7 @@ mod tests {
     fn accessibility_activation_uses_the_real_toolbar_path() {
         let (mut state, mut wp) = populated();
         pipeline_draw(&mut wp, &mut state, 1100, 760);
-        assert!(!wp.styles_panel_open);
+        assert!(!wp.view.styles_panel_visible);
         let target = "word-processor.toolbar:toggle-styles".to_string();
         assert!(Widget::perform_action_at(
             &mut wp,
@@ -17607,7 +17642,7 @@ mod tests {
             &state.root,
         ));
         assert!(
-            wp.styles_panel_open,
+            wp.view.styles_panel_visible,
             "AT activation reaches the same view toggle as a pointer click"
         );
     }
@@ -18139,13 +18174,16 @@ mod tests {
     fn failed_save_is_visible_and_keeps_the_document_modified() {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "unsaved work");
-        wp.modified = true;
+        wp.save_status = DocumentSaveStatus::Modified;
         // Writing bytes to a directory reliably fails without relying on file
         // permissions (the test suite may run as a privileged user).
         wp.set_file(std::env::temp_dir(), WpFormat::Markdown);
         wp.write_to_current_path(&state.doc);
 
-        assert!(wp.modified, "a failed save never clears the dirty state");
+        assert!(
+            wp.save_status == DocumentSaveStatus::Modified,
+            "a failed save never clears the dirty state"
+        );
         assert!(
             matches!(wp.toast.as_ref(), Some((_, ToastKind::Error))),
             "the user sees an error toast instead of an stderr-only failure"
@@ -18557,7 +18595,7 @@ mod tests {
     fn font_size_lives_in_exactly_one_place() {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "Body text");
-        wp.styles_panel_open = true;
+        wp.view.styles_panel_visible = true;
         pipeline_draw(&mut wp, &mut state, 1800, 700);
 
         let panel_size_fields = wp
@@ -18618,7 +18656,7 @@ mod tests {
     fn color_picker_popover_applies_a_colour_to_the_focused_style() {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "colour me");
-        wp.styles_panel_open = true;
+        wp.view.styles_panel_visible = true;
         pipeline_draw(&mut wp, &mut state, 1000, 700);
 
         // Click the "Custom…" affordance to open the picker.
@@ -18694,7 +18732,7 @@ mod tests {
     fn color_picker_popover_dismisses_on_outside_click() {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "x");
-        wp.styles_panel_open = true;
+        wp.view.styles_panel_visible = true;
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         wp.open_color_picker();
         assert!(wp.color_picker.is_open());
@@ -18854,7 +18892,7 @@ mod tests {
             let (mut state, mut wp) = bound();
             wp.model_mut()
                 .insert_str(&mut state.doc, "colour this paragraph");
-            wp.styles_panel_open = true;
+            wp.view.styles_panel_visible = true;
             pipeline_draw(&mut wp, &mut state, w, h);
             wp.open_color_picker();
             render_review_png(&mut wp, &mut state, w, h, &dir, "color-picker");
