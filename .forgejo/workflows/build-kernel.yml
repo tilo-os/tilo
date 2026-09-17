@@ -47,7 +47,9 @@ jobs:
             platform: linux/arm64
             runner: runner-disk-100g-arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 360
+    # Finish before the existing three-hour runner/server deadline, leaving
+    # room for cleanup and reporting. Measure/cache builds within this budget.
+    timeout-minutes: 170
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
