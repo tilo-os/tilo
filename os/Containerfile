@@ -438,6 +438,7 @@ ARG TILO_WITH_BROWSER
 ARG TILO_PREBUILT_APPS=0
 ARG TILO_PREBUILT_DESKTOP=0
 ARG TILO_CARGO_BUILD_JOBS=4
+ARG TILO_REQUIRE_COMPILER_CACHE=0
 ENV CARGO_BUILD_JOBS=${TILO_CARGO_BUILD_JOBS}
 ARG TILO_APP_COLLECTION_PUBLISHER=""
 RUN --mount=type=cache,target=/build/.cargo-home \
@@ -454,7 +455,15 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          phase=$1; started=$now; \
        } \
     && trap 'status=$?; printf "TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=%s\n" "$phase" "$(( $(date +%s) - started ))" "$status"; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
+    && case "$TILO_REQUIRE_COMPILER_CACHE" in \
+         0) ;; \
+         1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;; \
+         *) printf '%s\n' 'TILO_REQUIRE_COMPILER_CACHE must be 0 or 1' >&2; exit 1 ;; \
+       esac \
     && if ! sccache --start-server; then \
+         if [ "$TILO_REQUIRE_COMPILER_CACHE" = 1 ]; then \
+           printf '%s\n' 'Required compiler cache is unavailable; refusing an uncached build' >&2; exit 1; \
+         fi; \
          export RUSTC_WRAPPER=; \
          printf '%s\n' 'sccache backend unavailable; compiling normally' >&2; \
        fi \
