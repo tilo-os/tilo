@@ -12,11 +12,11 @@ libexec_dir=${QOS_LIBEXEC_DIR:-/usr/libexec}
     exit 2
 }
 
-for file in /usr/bin/qos-shell /usr/bin/qos-launcher \
+for file in /usr/bin/qos-shell /usr/bin/qos-launcher /usr/bin/qos-import-folders \
             "$libexec_dir/qos-unlock-helper" "$libexec_dir/qos-session"; do
     [[ -x $(path "$file") ]] || { echo "missing executable: $file" >&2; exit 1; }
 done
-for file in /etc/pam.d/qos-unlock \
+for file in /usr/share/applications/qos-import-folders.desktop /etc/pam.d/qos-unlock \
             /usr/share/wayland-sessions/qos.desktop \
             /usr/share/xdg-desktop-portal/portals/qos.portal \
             /usr/share/xdg-desktop-portal/nirios-portals.conf \
@@ -50,7 +50,11 @@ grep -Fqx 'PropagatesStopTo=graphical-session.target graphical-session-pre.targe
 [[ ! -e $(path /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service) ]]
 [[ ! -e $(path /usr/lib/systemd/user/qos-portal.service) ]]
 
-for elf in /usr/bin/qos-shell /usr/bin/qos-launcher "$libexec_dir/qos-unlock-helper"; do
+grep -Fxq "Exec=/usr/bin/qos-import-folders --import-folders" "$(path /usr/share/applications/qos-import-folders.desktop)"
+grep -Fxq "TryExec=/usr/bin/qos-import-folders" "$(path /usr/share/applications/qos-import-folders.desktop)"
+"$(path /usr/bin/qos-import-folders)" --qos-package-smoke
+
+for elf in /usr/bin/qos-shell /usr/bin/qos-launcher /usr/bin/qos-import-folders "$libexec_dir/qos-unlock-helper"; do
     elf_description=$(file "$(path "$elf")")
     case ${QOS_EXPECT_ARCH:-} in
         amd64) grep -Eq 'ELF 64-bit.*x86-64' <<<"$elf_description" ;;
@@ -58,7 +62,13 @@ for elf in /usr/bin/qos-shell /usr/bin/qos-launcher "$libexec_dir/qos-unlock-hel
         "") grep -Eq 'ELF 64-bit.*(x86-64|ARM aarch64)' <<<"$elf_description" ;;
         *) echo "unsupported QOS_EXPECT_ARCH: $QOS_EXPECT_ARCH" >&2; exit 2 ;;
     esac
-    if ldd "$(path "$elf")" | tee /dev/stderr | grep -q 'not found'; then
+    if ! ldd_output=$(ldd "$(path "$elf")" 2>&1); then
+        printf '%s\n' "$ldd_output" >&2
+        echo "shared-library inspection failed for $elf" >&2
+        exit 1
+    fi
+    printf '%s\n' "$ldd_output" >&2
+    if grep -q 'not found' <<<"$ldd_output"; then
         echo "unresolved shared library in $elf" >&2
         exit 1
     fi

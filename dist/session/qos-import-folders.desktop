@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Add folders to qOS
+Comment=Review saved setup folders and copy files without changing originals
+Exec=/usr/bin/qos-import-folders --import-folders
+TryExec=/usr/bin/qos-import-folders
+Icon=folder
+Terminal=false
+Categories=Utility;FileTools;
+Keywords=import;folders;setup;copy;
+StartupWMClass=dev.qos.imager

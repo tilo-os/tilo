@@ -23,8 +23,9 @@ stage=$work/stage
 
 main=$work/qos-session
 dev=$work/qos-session-devel
-mkdir -p "$main"/{DEBIAN,etc/pam.d,usr/bin,usr/libexec,usr/lib/systemd/user,usr/share/wayland-sessions,usr/share/xdg-desktop-portal/portals,usr/share/doc/qos-session}
-install -pm 0755 "$stage/bin/qos-shell" "$stage/bin/qos-launcher" "$main/usr/bin/"
+mkdir -p "$main"/{DEBIAN,etc/pam.d,usr/bin,usr/libexec,usr/lib/systemd/user,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/doc/qos-session}
+install -pm 0755 "$stage/bin/qos-shell" "$stage/bin/qos-launcher" "$stage/bin/qos-import-folders" "$main/usr/bin/"
+install -pm 0644 "$stage/applications/qos-import-folders.desktop" "$main/usr/share/applications/"
 install -pm 0755 "$stage/libexec/qos-unlock-helper" "$stage/libexec/qos-session" "$main/usr/libexec/"
 install -pm 0644 "$stage/pam/qos-unlock" "$main/etc/pam.d/"
 install -pm 0644 "$stage/wayland-sessions/qos.desktop" "$main/usr/share/wayland-sessions/"
@@ -54,6 +55,7 @@ shlib_line=$(
     dpkg-shlibdeps -O \
         -e"$main/usr/bin/qos-shell" \
         -e"$main/usr/bin/qos-launcher" \
+        -e"$main/usr/bin/qos-import-folders" \
         -e"$main/usr/libexec/qos-unlock-helper"
 )
 shlib_deps=${shlib_line#shlibs:Depends=}

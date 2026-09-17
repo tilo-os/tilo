@@ -131,6 +131,8 @@ makes before it execs anything, and DEVELOPMENT.md for the threat model.
 # Deliberately empty — see the header. The payload arrives prebuilt.
 
 %install
+install -Dpm 0755 bin/qos-import-folders %{buildroot}%{_bindir}/qos-import-folders
+install -Dpm 0644 applications/qos-import-folders.desktop %{buildroot}%{_datadir}/applications/qos-import-folders.desktop
 install -Dpm 0755 bin/qos-shell             %{buildroot}%{_bindir}/qos-shell
 install -Dpm 0755 bin/qos-launcher          %{buildroot}%{_bindir}/qos-launcher
 # /usr/libexec, not on $PATH: only the compositor invokes it, and the path is
@@ -159,6 +161,9 @@ install -Dpm 0644 wayland-sessions/qos-dev.desktop \
                   %{buildroot}%{_datadir}/wayland-sessions/qos-dev.desktop
 
 %check
+test -x %{buildroot}%{_bindir}/qos-import-folders
+grep -Fxq "Exec=/usr/bin/qos-import-folders --import-folders" %{buildroot}%{_datadir}/applications/qos-import-folders.desktop
+%{buildroot}%{_bindir}/qos-import-folders --qos-package-smoke
 # A session entry that names a binary the package does not install is the
 # failure mode this whole package exists to avoid, so prove the two agree
 # rather than trusting the spec to have been edited consistently.
@@ -199,6 +204,8 @@ test ! -e %{buildroot}%{_userunitdir}/qos-portal.service
 %files
 %{_bindir}/qos-shell
 %{_bindir}/qos-launcher
+%{_bindir}/qos-import-folders
+%{_datadir}/applications/qos-import-folders.desktop
 %{_libexecdir}/qos-unlock-helper
 %{_libexecdir}/qos-session
 %config(noreplace) %{_sysconfdir}/pam.d/qos-unlock

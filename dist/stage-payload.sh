@@ -13,7 +13,7 @@ stage=$2
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 [[ ! -e $stage ]] || { echo "stage path already exists: $stage" >&2; exit 1; }
-for bin in shell qos-launcher qos-unlock-helper; do
+for bin in shell qos-launcher qos-unlock-helper imager; do
     [[ -x $bin_dir/$bin ]] || { echo "missing executable: $bin_dir/$bin" >&2; exit 1; }
 done
 
@@ -23,7 +23,9 @@ if LC_ALL=C grep -q -a -F -e "$marker" "$bin_dir/shell"; then
     exit 1
 fi
 
-mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,portal,systemd-user,license}
+mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,applications,portal,systemd-user,license}
+install -pm 0755 "$bin_dir/imager" "$stage/bin/qos-import-folders"
+install -pm 0644 "$repo_root/dist/session/qos-import-folders.desktop" "$stage/applications/qos-import-folders.desktop"
 install -pm 0755 "$bin_dir/shell"             "$stage/bin/qos-shell"
 install -pm 0755 "$bin_dir/qos-launcher"      "$stage/bin/qos-launcher"
 install -pm 0755 "$bin_dir/qos-unlock-helper" "$stage/libexec/qos-unlock-helper"

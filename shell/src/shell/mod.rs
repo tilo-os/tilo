@@ -34,6 +34,8 @@ pub mod color_pipeline;
 pub mod crdt_text;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
+#[cfg(target_os = "linux")]
+pub(crate) mod desktop_continuation;
 pub mod doc_open;
 pub mod editor_app;
 mod file_picker_overlay;
