@@ -30,6 +30,7 @@ pub mod collab_presence;
 mod collaboration_launchpad;
 mod collaborators_overlay;
 pub mod color_pipeline;
+pub mod continuity_policy;
 pub mod crdt_text;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
