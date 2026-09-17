@@ -2,6 +2,11 @@
 set -euo pipefail
 engine="${1:-podman}"
 command -v "$engine" >/dev/null
+case "$(basename "$engine")" in
+  podman) pull_flag=--pull=never ;;
+  docker) pull_flag=--pull=false ;;
+  *) echo 'fixture supports podman or docker' >&2; exit 2 ;;
+esac
 fixture=$(mktemp -d)
 images=()
 containers=()
@@ -25,7 +30,7 @@ for mode in official development; do
   if [[ "$mode" == development ]]; then
     args+=(--build-context "public-trust=$fixture/development")
   fi
-  "$engine" build --pull=never --network=none --no-cache --iidfile "$fixture/$mode.iid" "${args[@]}" -f "$fixture/context/Containerfile" "$fixture/context"
+  "$engine" build "$pull_flag" --network=none --no-cache --iidfile "$fixture/$mode.iid" "${args[@]}" -f "$fixture/context/Containerfile" "$fixture/context"
   image=$(cat "$fixture/$mode.iid")
   images+=("$image")
   container=$("$engine" create "$image" /bin/true)
