@@ -272,12 +272,47 @@ pub struct ServerAdvertisement {
     pub priority: i32,
     /// Smoothed round-trip latency in milliseconds.
     pub latency_ms: u32,
+    /// Locally observed energy state. This is a routing hint, never trusted
+    /// authority: a lying peer can only attract work it was already certified
+    /// and sandboxed to run.
+    pub power: PowerAvailability,
+    /// Whether the device has asked the mesh to avoid discretionary work.
+    pub energy_saver: bool,
     /// Active assignments observed for this server.
     pub active_assignments: u32,
     /// Maximum concurrent assignments. Zero makes the server ineligible.
     pub assignment_capacity: u32,
     /// Whether liveness is fresh enough to route new work.
     pub online: bool,
+}
+
+/// Coarse power information used to keep continuity from unexpectedly draining
+/// a portable device. Exact battery telemetry remains local to the observer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PowerAvailability {
+    /// No reliable power observation is available.
+    #[default]
+    Unknown,
+    /// Stable external power with no battery constraint.
+    External,
+    /// Connected to external power and charging at the given percentage.
+    Charging(u8),
+    /// Running from a battery at the given percentage.
+    Battery(u8),
+}
+
+impl PowerAvailability {
+    fn normalized_percent(self) -> u8 {
+        match self {
+            Self::Unknown => 50,
+            Self::External => 100,
+            Self::Charging(percent) | Self::Battery(percent) => percent.min(100),
+        }
+    }
+
+    const fn is_critically_constrained(self) -> bool {
+        matches!(self, Self::Battery(percent) if percent <= 15)
+    }
 }
 
 /// Work that needs an always-on serving peer.
@@ -412,6 +447,13 @@ fn eligible(request: &PlacementRequest, server: &ServerAdvertisement) -> bool {
     {
         return false;
     }
+    if matches!(
+        &request.workload,
+        Workload::App { .. } | Workload::Compute { .. }
+    ) && (server.energy_saver || server.power.is_critically_constrained())
+    {
+        return false;
+    }
     match &request.workload {
         Workload::WorkspaceReplication => server.services.workspace_replication,
         Workload::ContentReplication => server.services.full_content_replication,
@@ -466,6 +508,13 @@ fn score(request: &PlacementRequest, server: &ServerAdvertisement) -> u128 {
     let priority_weight = u128::try_from(priority)
         .unwrap_or_default()
         .saturating_mul(u128::from(u64::MAX) / 32_000);
+    let power_weight =
+        u128::from(server.power.normalized_percent()).saturating_mul(u128::from(u64::MAX) / 800);
+    let saver_penalty = if server.energy_saver {
+        u128::from(u64::MAX) / 8
+    } else {
+        0
+    };
 
     // Rendezvous affinity remains the largest term, while health can move a
     // materially saturated/high-latency server behind a healthy alternative.
@@ -473,6 +522,8 @@ fn score(request: &PlacementRequest, server: &ServerAdvertisement) -> u128 {
         .saturating_add(capacity_weight)
         .saturating_add(latency_weight)
         .saturating_add(priority_weight)
+        .saturating_add(power_weight)
+        .saturating_sub(saver_penalty)
 }
 
 #[cfg(test)]
@@ -488,6 +539,8 @@ mod tests {
             apps: BTreeSet::from(["dev.tilo.word".to_string()]),
             priority: 0,
             latency_ms: 10,
+            power: PowerAvailability::External,
+            energy_saver: false,
             active_assignments: 0,
             assignment_capacity: 100,
             online: true,
@@ -594,6 +647,41 @@ mod tests {
             replicas: 1,
         };
         assert_eq!(place(&request, &[wrong_app, right]).servers, vec![[2; 32]]);
+    }
+
+    #[test]
+    fn discretionary_work_avoids_low_power_and_energy_saver_devices() {
+        let mut low_battery = server(1);
+        low_battery.power = PowerAvailability::Battery(9);
+        let mut saver = server(2);
+        saver.energy_saver = true;
+        let available = server(3);
+        let request = PlacementRequest {
+            client: [99; 32],
+            workspace_id: 7,
+            workload: Workload::Compute {
+                app_id: "dev.tilo.word".to_string(),
+            },
+            replicas: 3,
+        };
+        assert_eq!(
+            place(&request, &[low_battery, saver, available]).servers,
+            vec![[3; 32]]
+        );
+    }
+
+    #[test]
+    fn essential_relay_work_can_still_use_a_battery_peer() {
+        let mut battery = server(4);
+        battery.power = PowerAvailability::Battery(10);
+        battery.energy_saver = true;
+        let request = PlacementRequest {
+            client: [99; 32],
+            workspace_id: 7,
+            workload: Workload::InboundRelay,
+            replicas: 1,
+        };
+        assert_eq!(place(&request, &[battery]).servers, vec![[4; 32]]);
     }
 
     #[test]

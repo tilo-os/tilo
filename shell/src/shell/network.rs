@@ -1356,6 +1356,8 @@ impl ShellNetwork {
                 apps: std::collections::BTreeSet::new(),
                 priority: 0,
                 latency_ms: 0,
+                power: tilo_relay::PowerAvailability::Unknown,
+                energy_saver: false,
                 active_assignments: 0,
                 assignment_capacity: u32::MAX,
                 online: true,
