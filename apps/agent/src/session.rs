@@ -318,6 +318,12 @@ impl Session {
         link.join_route(RouteSpec::cluster(cfg.cluster));
         // The broker directs the late-join request to one existing holder.
         ask_for_document(&mut link)?;
+        link.send(&CollabRequest::Presence {
+            key: PresenceKey::Workspace {
+                id: cfg.cluster.to_string(),
+            },
+            payload: PresencePayload::Arrived,
+        })?;
         tracing::info!(
             transport = if cfg.endpoint.is_some() { "typed-endpoint" } else { "QOS_SVC_COLLAB_FD" },
             app = %cfg.app_id,
