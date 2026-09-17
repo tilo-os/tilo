@@ -93,6 +93,8 @@ pub struct WorkspaceRuntime {
     /// store-and-forward path as offline devices — reuses
     /// `store.enqueue_pending` verbatim; no new persistence code.
     pub known_peer_relays: HashSet<[u8; 32]>,
+    /// Ephemeral eligible workers plus durable exact-route job bindings.
+    pub compute: crate::compute_transport::ComputeTransportState,
 }
 
 impl WorkspaceRuntime {
@@ -138,6 +140,7 @@ impl WorkspaceRuntime {
             admitted_users: HashSet::new(),
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),
+            compute: crate::compute_transport::ComputeTransportState::default(),
         })
     }
 

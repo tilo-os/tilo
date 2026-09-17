@@ -151,7 +151,8 @@ pub fn admit_compute_job(
     Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ComputeJobPhase {
     Pending,
     Running,
@@ -160,7 +161,8 @@ pub enum ComputeJobPhase {
     Cancelled,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ComputeJobLifecycle {
     pub job_id: [u8; 16],
     pub sequence: u64,
