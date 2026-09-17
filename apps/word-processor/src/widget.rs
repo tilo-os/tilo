@@ -3636,6 +3636,25 @@ struct PanelDrawCtx<'a> {
     cc: ChromeColors,
 }
 
+struct RunningBand<'a> {
+    blocks: &'a [BlockView],
+    page_no: usize,
+    rect: Rect,
+    is_footer: bool,
+    editing: bool,
+}
+
+struct EditorEventCtx<'a> {
+    scale_factor: f64,
+    modifiers: Modifiers,
+    state: &'a mut AutoCommit,
+    path: &'a ObjId,
+    handled: &'a mut bool,
+    focus_target: &'a mut Option<NodeId>,
+    node_id: NodeId,
+    taffy: &'a TaffyTree<()>,
+}
+
 impl WordProcessorWidget {
     /// Toggle a layout-edit mode from a chip click.
     fn toggle_layout_mode(&mut self, mode: LayoutMode) {
@@ -3668,17 +3687,19 @@ impl WordProcessorWidget {
     /// runs so click-to-caret lines up with the model, and per-block laid geometry is
     /// returned for the caller to stash. Returns `(drew_anything, laid)`; `laid` is
     /// empty unless `editing`.
-    #[allow(clippy::too_many_arguments)]
     fn draw_running_band(
         scene: &mut Scene,
         ctf: Affine,
         tr: &mut TextRenderer,
-        blocks: &[BlockView],
-        page_no: usize,
-        band: Rect,
-        is_footer: bool,
-        editing: bool,
+        band: RunningBand<'_>,
     ) -> (bool, Vec<RegionLaid>) {
+        let RunningBand {
+            blocks,
+            page_no,
+            rect: band,
+            is_footer,
+            editing,
+        } = band;
         if blocks.is_empty() || band.height() <= 2.0 {
             return (false, Vec::new());
         }
@@ -7201,21 +7222,25 @@ impl WordProcessorWidget {
             scene,
             fg.ctf,
             text_renderer,
-            header,
-            page_no,
-            head_band,
-            false,
-            head_editing,
+            RunningBand {
+                blocks: header,
+                page_no,
+                rect: head_band,
+                is_footer: false,
+                editing: head_editing,
+            },
         );
         let (drew_footer, foot_laid) = Self::draw_running_band(
             scene,
             fg.ctf,
             text_renderer,
-            footer,
-            page_no,
-            foot_band,
-            true,
-            foot_editing,
+            RunningBand {
+                blocks: footer,
+                page_no,
+                rect: foot_band,
+                is_footer: true,
+                editing: foot_editing,
+            },
         );
         if head_editing {
             self.region_laid = head_laid;
@@ -9689,17 +9714,20 @@ impl Widget for WordProcessorWidget {
         // The expanded comment thread owns its reply field and modal-like
         // button surface. Keep it ahead of the editor and Find bar so typing
         // never leaks into the document beneath it.
-        if self.handle_comment_thread_event(
+        let comment_thread_handled = self.handle_comment_thread_event(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+            &mut EditorEventCtx {
+                scale_factor,
+                modifiers: *modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
+        );
+        if comment_thread_handled {
             return;
         }
         // The version-history strip captures pointer input over its own band (and
@@ -11681,38 +11709,27 @@ impl WordProcessorWidget {
         self.dirty = true;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the embedded Find bar input route"
-    )]
     fn handle_comment_thread_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut EditorEventCtx<'_>,
     ) -> bool {
         if self.thread_comment.is_none() {
             return false;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             Widget::handle_event(
                 &mut self.thread_reply,
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+                ctx.focus_target,
+                ctx.node_id,
+                ctx.taffy,
             );
             return false;
         }
@@ -11728,13 +11745,14 @@ impl WordProcessorWidget {
         {
             if matches!(logical_key, Key::Named(NamedKey::Escape)) {
                 self.close_comment_thread();
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
-            if matches!(logical_key, Key::Named(NamedKey::Enter)) && modifiers.state().control_key()
+            if matches!(logical_key, Key::Named(NamedKey::Enter))
+                && ctx.modifiers.state().control_key()
             {
-                self.submit_comment_reply(state);
-                *handled = true;
+                self.submit_comment_reply(ctx.state);
+                *ctx.handled = true;
                 return true;
             }
         }
@@ -11747,34 +11765,34 @@ impl WordProcessorWidget {
             }
         ) {
             if self.thread_submit.contains(self.pointer) {
-                self.submit_comment_reply(state);
-                *handled = true;
+                self.submit_comment_reply(ctx.state);
+                *ctx.handled = true;
                 return true;
             }
             if self.thread_cancel.contains(self.pointer) {
                 self.close_comment_thread();
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
             if !self.thread_panel.contains(self.pointer) {
                 self.close_comment_thread();
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
         }
         Widget::handle_event(
             &mut self.thread_reply,
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            ctx.scale_factor,
+            &ctx.modifiers,
+            ctx.state,
+            ctx.path,
+            ctx.handled,
+            ctx.focus_target,
+            ctx.node_id,
+            ctx.taffy,
         );
-        *handled = true;
+        *ctx.handled = true;
         true
     }
 
