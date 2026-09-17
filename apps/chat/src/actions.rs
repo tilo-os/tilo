@@ -70,7 +70,7 @@ use tilo_actions::{
     OperationKind, Resource, ResourceProvider,
 };
 
-use crate::doc::{ChatDoc, NewMessage};
+use crate::doc::{ChatDoc, NewMessage, VoiceState};
 use crate::model::{Attachment, ChannelKind};
 
 /// Registry `type_id` for every Chat action.
@@ -650,10 +650,12 @@ impl ChatAction {
                     doc,
                     channel,
                     user,
-                    *talking,
-                    *muted,
-                    *deafened,
-                    *audio_only,
+                    VoiceState {
+                        talking: *talking,
+                        muted: *muted,
+                        deafened: *deafened,
+                        audio_only: *audio_only,
+                    },
                 );
             }
             ChatAction::SetScreenShare {
@@ -704,7 +706,10 @@ pub fn encode(action: &ChatAction) -> EncodedAction {
 // affordances (see `crate::events`) and the Ctrl+K resource tree below.
 // ===========================================================================
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "canonical leaf constructor mirrors the replayable SendMessage action payload; callers must supply every authored field before dispatch"
+)]
 pub fn send_message_action(
     channel: &str,
     id: &str,
