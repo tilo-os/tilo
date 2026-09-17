@@ -454,7 +454,7 @@ jobs:
             aarch64) ref="$KERNEL_RPMS_AARCH64_REF"; expected_arch=arm64 ;;
             *) printf 'unsupported kernel architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
           esac
-          [[ "$ref" =~ ^code\.podesta\.ai/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]] || {
+          [[ "$ref" =~ ^code\.podesta\.ai/qos/qos-kernel@sha256:[0-9a-f]{64}$ ]] || {
             printf 'no digest-pinned native Tilo kernel for %s\n' "$(uname -m)" >&2
             exit 1
           }
@@ -602,7 +602,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: code.podesta.ai/tilo/tilo
+          images: code.podesta.ai/qos/tilo
           tags: |
             type=raw,value=latest,enable=${{ steps.release-mode.outputs.publish == 'true' }}
             type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
@@ -699,7 +699,7 @@ jobs:
           file: os/Containerfile
           push: false
           outputs: type=oci,dest=/var/tmp/tilo-image-repro.tar
-          tags: code.podesta.ai/tilo/tilo:repro-${{ github.sha }}
+          tags: code.podesta.ai/qos/tilo:repro-${{ github.sha }}
           build-args: |
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
             BASE_REF=${{ env.BASE_REF }}
@@ -830,7 +830,7 @@ jobs:
           # build-image may add a deterministic /boot-only UKI reseal layer.
           # Reproduce that exact final layer on the independent image and gate
           # the artifact that will actually be published, not merely its base.
-          repro_image="code.podesta.ai/tilo/tilo:repro-${GITHUB_SHA}"
+          repro_image="code.podesta.ai/qos/tilo:repro-${GITHUB_SHA}"
           podman load --input /var/tmp/tilo-image-repro.tar
           rm -f /var/tmp/tilo-image-repro.tar
           if [[ -s "$TILO_RESEALED_DIGEST_FILE" ]]; then
@@ -929,7 +929,7 @@ jobs:
             # verification, so update clients cannot observe a half-published
             # release through a channel tag.
             digest_file="$(mktemp /var/tmp/tilo-push-digest.XXXXXX)"
-            candidate="code.podesta.ai/tilo/tilo:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ matrix.arch }}"
+            candidate="code.podesta.ai/qos/tilo:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ matrix.arch }}"
             podman tag "$TILO_IMAGE" "$candidate"
             podman push --digestfile "$digest_file" "$candidate"
             digest="$(tr -d '[:space:]' < "$digest_file")"
@@ -959,7 +959,7 @@ jobs:
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
           cosign sign --yes --key "$COSIGN_KEY_REF" \
-            "code.podesta.ai/tilo/tilo@${{ steps.release.outputs.digest }}"
+            "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
 
       - name: Install checksum-pinned Syft from the persistent asset cache
         if: steps.release-mode.outputs.publish == 'true'
@@ -973,7 +973,7 @@ jobs:
         if: steps.release-mode.outputs.publish == 'true'
         run: |
           syft \
-            "code.podesta.ai/tilo/tilo@${{ steps.release.outputs.digest }}" \
+            "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}" \
             --output spdx-json=sbom.spdx.json
 
       - name: Attest the SBOM to the image (signed)
@@ -984,7 +984,7 @@ jobs:
           cosign attest --yes \
             --predicate sbom.spdx.json --type spdxjson \
             --key "$COSIGN_KEY_REF" \
-            "code.podesta.ai/tilo/tilo@${{ steps.release.outputs.digest }}"
+            "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
 
       - name: Generate and attest SLSA provenance
         if: steps.release-mode.outputs.publish == 'true'
@@ -996,7 +996,7 @@ jobs:
           cosign attest --yes \
             --predicate provenance.json --type slsaprovenance1 \
             --key "$COSIGN_KEY_REF" \
-            "code.podesta.ai/tilo/tilo@${{ steps.release.outputs.digest }}"
+            "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
 
       # A short-lived, digest-bound statement makes release freshness an
       # authenticated value instead of an inference from mutable registry tags.
@@ -1014,13 +1014,13 @@ jobs:
           cosign attest --yes \
             --predicate freshness.json --type https://tilo.dev/security/release-freshness/v1 \
             --key "$COSIGN_KEY_REF" \
-            "code.podesta.ai/tilo/tilo@${{ steps.release.outputs.digest }}"
+            "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
 
       - name: Verify and describe the native release child
         if: steps.release-mode.outputs.publish == 'true'
         run: |
           set -euo pipefail
-          image="code.podesta.ai/tilo/tilo@${{ steps.release.outputs.digest }}"
+          image="code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
           cosign verify --key keys/cosign.pub "$image" >/dev/null
           cosign verify-attestation --key keys/cosign.pub \
             --type spdxjson "$image" >/dev/null
@@ -1037,7 +1037,7 @@ jobs:
               [.[].payload | @base64d | fromjson | .predicate]
               | any(
                   .schema == "https://tilo.dev/security/release-freshness/v1"
-                  and .repository == "code.podesta.ai/tilo/tilo"
+                  and .repository == "code.podesta.ai/qos/tilo"
                   and .digest == $digest
                   and .sourceRevision == $source
                   and .generation == $generation
@@ -1146,7 +1146,7 @@ jobs:
           child_dependencies='[]'
           for arch in x86_64 aarch64; do
             digest="$(jq -er --arg arch "$arch" '.[] | select(.architecture == $arch) | .digest' <<<"$children")"
-            image="code.podesta.ai/tilo/tilo@$digest"
+            image="code.podesta.ai/qos/tilo@$digest"
             case "$arch" in x86_64) expected_registry_arch=amd64 ;; aarch64) expected_registry_arch=arm64 ;; esac
             actual_registry_arch="$(skopeo inspect "docker://$image" | jq -er .Architecture)"
             [[ "$actual_registry_arch" == "$expected_registry_arch" ]] || {
@@ -1161,7 +1161,7 @@ jobs:
                 [.[].payload | @base64d | fromjson | .predicate]
                 | any(.buildDefinition.externalParameters.generation == $generation
                       and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
-                      and any(.buildDefinition.resolvedDependencies[]?; .uri == ("git+ssh://code.podesta.ai/tilo/tilo@" + $source)))
+                      and any(.buildDefinition.resolvedDependencies[]?; .uri == ("git+ssh://code.podesta.ai/qos/tilo@" + $source)))
               ' >/dev/null || {
                 echo "::error::$arch child provenance does not bind its digest, source, and generation"
                 exit 1
@@ -1170,18 +1170,18 @@ jobs:
               '. + [{architecture:$arch,digest:$digest}]' <<<"$child_dependencies")"
           done
 
-          candidate="code.podesta.ai/tilo/tilo:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          candidate="code.podesta.ai/qos/tilo:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
           manifest="tilo-release-index-${GITHUB_RUN_ID}"
           podman manifest create "$manifest"
           for arch in x86_64 aarch64; do
             digest="$(jq -er --arg arch "$arch" '.[] | select(.architecture == $arch) | .digest' <<<"$children")"
-            podman manifest add "$manifest" "docker://code.podesta.ai/tilo/tilo@$digest"
+            podman manifest add "$manifest" "docker://code.podesta.ai/qos/tilo@$digest"
           done
           digest_file="$(mktemp /var/tmp/tilo-index-digest.XXXXXX)"
           podman manifest push --all --digestfile "$digest_file" "$manifest" "docker://$candidate"
           index_digest="$(tr -d '[:space:]' < "$digest_file")"
           [[ "$index_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          index_image="code.podesta.ai/tilo/tilo@$index_digest"
+          index_image="code.podesta.ai/qos/tilo@$index_digest"
           expected_index="$(jq -c 'sort_by(.architecture)' <<<"$child_dependencies")"
           actual_index="$(skopeo inspect --raw "docker://$index_image" | jq -ce '
             [.manifests[] | {
@@ -1240,17 +1240,17 @@ jobs:
           # with different bytes, tolerate an exact retry, and verify every
           # registry write. `latest` is the sole mutable commit point and moves
           # only after all durable names are present.
-          durable_tags=("code.podesta.ai/tilo/tilo:gen$generation")
+          durable_tags=("code.podesta.ai/qos/tilo:gen$generation")
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
             version="${GITHUB_REF_NAME#v}"
             [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
               echo '::error::OS release tag must be vMAJOR.MINOR.PATCH'
               exit 1
             }
-            durable_tags+=("code.podesta.ai/tilo/tilo:$version")
+            durable_tags+=("code.podesta.ai/qos/tilo:$version")
           fi
           if [[ $GITHUB_REF == refs/heads/main ]]; then
-            durable_tags+=("code.podesta.ai/tilo/tilo:main-${GITHUB_SHA:0:7}")
+            durable_tags+=("code.podesta.ai/qos/tilo:main-${GITHUB_SHA:0:7}")
           fi
 
           manifest_digest() {
@@ -1285,7 +1285,7 @@ jobs:
           for tag in "${durable_tags[@]}"; do
             promote_immutable "$tag"
           done
-          latest="code.podesta.ai/tilo/tilo:latest"
+          latest="code.podesta.ai/qos/tilo:latest"
           skopeo copy --all "docker://$index_image" "docker://$latest"
           [[ "$(manifest_digest "$latest")" == "$index_digest" ]] || {
             echo "::error::registry did not commit latest as $index_digest"

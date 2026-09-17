@@ -6,6 +6,14 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 workflows="$repo/.forgejo/workflows"
 fail=0
+
+if grep -Rqs --include='*.yml' --include='*.yaml' --include='*.env' \
+    'code\.podesta\.ai/tilo/' "$repo/.forgejo" "$repo/os"; then
+  printf 'registry references use the product name as a nonexistent Forgejo owner\n' >&2
+  fail=1
+else
+  printf 'ok    registry artifacts remain under the repository owner namespace\n'
+fi
 manifest="$repo/os/external-assets/github-assets.tsv"
 package_workflow="$workflows/package-desktop.yml"
 check_workflow="$workflows/check.yml"
@@ -71,11 +79,11 @@ else
 fi
 
 nightly_visual_image="$({
-  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/tilo\/tilo-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
+  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/qos-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
     "$nightly_workflow"
 } | head -n 1)"
 refresh_visual_image="$({
-  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/tilo\/tilo-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
+  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/qos-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
     "$visual_refresh_workflow"
 } | head -n 1)"
 if [[ "$nightly_visual_image" =~ @sha256:[0-9a-f]{64}$ ]] \
