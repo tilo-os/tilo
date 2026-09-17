@@ -70,7 +70,7 @@ use tilo_actions::{
     OperationKind, Resource, ResourceProvider,
 };
 
-use crate::doc::{ChatDoc, NewMessage};
+use crate::doc::{ChatDoc, NewMessage, VoiceState};
 use crate::model::{Attachment, ChannelKind};
 
 /// Registry `type_id` for every Chat action.
@@ -650,10 +650,12 @@ impl ChatAction {
                     doc,
                     channel,
                     user,
-                    *talking,
-                    *muted,
-                    *deafened,
-                    *audio_only,
+                    VoiceState {
+                        talking: *talking,
+                        muted: *muted,
+                        deafened: *deafened,
+                        audio_only: *audio_only,
+                    },
                 );
             }
             ChatAction::SetScreenShare {
