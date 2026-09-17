@@ -22,7 +22,9 @@ jobs:
     # An explicit capacity experiment: full browser compilation has not yet
     # been measured. The driver samples space and stops at an 8 GiB reserve.
     runs-on: runner-disk-100g
-    timeout-minutes: 600
+    # Leave evidence-cleanup headroom inside the existing 180-minute runner cap.
+    # This is a limit, not an estimate of full compilation duration.
+    timeout-minutes: 170
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -53,11 +55,12 @@ jobs:
           set -euo pipefail
           name="tilo-provisional-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           context=$(mktemp -d)
+          cache_secrets=$(mktemp -d)
           evidence="$RUNNER_TEMP/provisional-evidence"
           mkdir "$evidence"
           cleanup() {
             # Export an explicit public allowlist, never the private workspace.
-            for file in inputs.json tools.json workspace.json result.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json base-installation-tooling.json final-installation-tooling.json; do
+            for file in inputs.json tools.json workspace.json result.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json cache-configuration.json base-installation-tooling.json final-installation-tooling.json; do
               docker cp "$name:/evidence/$file" "$evidence/$file" >/dev/null 2>&1 || true
             done
             mkdir -p "$evidence/public-trust"
@@ -65,26 +68,40 @@ jobs:
               docker cp "$name:/evidence/public-trust/$file" "$evidence/public-trust/$file" >/dev/null 2>&1 || true
             done
             docker rm --force "$name" >/dev/null 2>&1 || true
-            docker volume rm "$name-work" "$name-storage" >/dev/null 2>&1 || true
+            docker volume rm "$name-work" "$name-storage" "$name-cache-secrets" >/dev/null 2>&1 || true
             docker image rm "$name:tools" >/dev/null 2>&1 || true
-            rm -rf -- "$context"
+            rm -rf -- "$context" "$cache_secrets"
           }
           trap cleanup EXIT
+          # Existing runner credentials enter only a private disposable volume,
+          # then Podman secret mounts. They never enter a build context or ARG.
+          python3 - "$cache_secrets" <<'PY'
+          import importlib.util, sys
+          spec = importlib.util.spec_from_file_location('compile', 'os/dev/compile-development-os.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          module.stage_cache_credentials(sys.argv[1])
+          PY
           cp "$(command -v cosign)" "$context/cosign"
           cp os/Containerfile.development-compile "$context/Containerfile"
           docker build --file "$context/Containerfile" --tag "$name:tools" \
             --build-arg BUILDER_REF=code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9 "$context"
           docker volume create "$name-work"
           docker volume create "$name-storage"
+          docker volume create "$name-cache-secrets"
           # These volumes and privileges exist only in the disposable Kata CI
           # guest. No physical disk, TPM, host directory or Docker socket is mounted.
           docker create --name "$name" --privileged --memory=9g --memory-swap=9g \
             --mount "type=volume,src=$name-work,dst=/work" \
             --mount "type=volume,src=$name-storage,dst=/var/lib/containers" \
+            --mount "type=volume,src=$name-cache-secrets,dst=/run/tilo-cache-secrets" \
+            --env SCCACHE_ENDPOINT --env SCCACHE_BUCKET --env SCCACHE_REGION \
+            --env SCCACHE_S3_USE_SSL --env SCCACHE_S3_KEY_PREFIX \
             --env REGISTRY_AUTH_FILE=/registry-auth.json \
             "$name:tools" --wpe "$WPE_CANDIDATE" --generation "$TEST_GENERATION" \
               --revision "$GITHUB_SHA" --branch "$GITHUB_REF"
           docker cp . "$name:/work/repo"
+          docker cp "$cache_secrets/." "$name:/run/tilo-cache-secrets/"
           python3 - "${DOCKER_CONFIG:-$HOME/.docker}/config.json" "$context/registry-auth.json" <<'PY'
           import json, os, sys
           registry = 'code.podesta.ai'
