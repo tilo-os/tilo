@@ -19,7 +19,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -2415,6 +2415,13 @@ impl PlayerApp {
             // theme, particularly high contrast where an unfilled text row
             // reads as sparse decoration rather than an actionable item.
             fill_rect(scene, transform, row, colors.surfaces.base);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                colors.border_standard,
+                None,
+                &row,
+            );
             panel_text(
                 scene,
                 text_renderer,
