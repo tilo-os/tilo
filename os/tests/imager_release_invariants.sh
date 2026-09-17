@@ -360,7 +360,7 @@ if grep -Fq 'TILO_INSTALLER_OS_IMAGE' "$workflow" \
    && grep -Fq 'published_os_image' "$workflow" \
    && grep -Fq './os/dev/use-published-image.sh "$TILO_PUBLISHED_OS_IMAGE"' "$workflow" \
    && ! grep -Fq './os/dev/build-image.sh' "$workflow" \
-   && grep -Fq 'code.podesta.ai/tilo/tilo@sha256:' "$published_image" \
+   && grep -Fq 'code.podesta.ai/qos/tilo@sha256:' "$published_image" \
    && grep -Fq 'cosign verify --key "$verify_key" "$image"' "$published_image" \
    && grep -Fq 'cosign verify-attestation --key "$verify_key"' "$published_image" \
    && grep -Fq 'externalParameters.generation' "$published_image" \
@@ -369,7 +369,7 @@ if grep -Fq 'TILO_INSTALLER_OS_IMAGE' "$workflow" \
    && grep -Fq 'trap cleanup_auth EXIT' "$published_image" \
    && grep -Fq 'podman manifest inspect "${manifest_args[@]}" "$image"' "$published_image" \
    && grep -Fq 'externalParameters.children | sort_by(.architecture)' "$published_image" \
-   && grep -Fq 'generation_image="code.podesta.ai/tilo/tilo:gen$generation"' "$published_image" \
+   && grep -Fq 'generation_image="code.podesta.ai/qos/tilo:gen$generation"' "$published_image" \
    && grep -Fq 'generation_digest' "$published_image" \
    && grep -Fq 'published generation tag gen$generation binds' "$published_image" \
    && grep -Fq 'TILO_EXPECTED_OS_SOURCE_REVISION: ${{ github.sha }}' "$workflow" \

@@ -65,7 +65,7 @@ jobs:
           # blips a ~1 GB four-architecture push hits on the runner; a
           # half-copied image would otherwise leave a tag that resolves but is
           # missing blobs.
-          dst="code.podesta.ai/tilo/fedora-bootc:${BASE_SOURCE##*:}-$(date -u +%Y%m%d)"
+          dst="code.podesta.ai/qos/fedora-bootc:${BASE_SOURCE##*:}-$(date -u +%Y%m%d)"
           skopeo copy --all --preserve-digests --retry-times 5 \
             --dest-authfile /tmp/mirror-auth.json \
             "docker://$BASE_SOURCE" "docker://$dst"
@@ -98,7 +98,7 @@ jobs:
           # back through the digest we are about to publish, not the tag.
           want="fc${BASE_SOURCE##*:}"
           osver="$(skopeo inspect --no-tags --authfile /tmp/mirror-auth.json \
-            "docker://code.podesta.ai/tilo/fedora-bootc@${digest}" \
+            "docker://code.podesta.ai/qos/fedora-bootc@${digest}" \
             | jq -r '.Labels["ostree.linux"] // ""')"
           case "$osver" in
             *"$want"*) ;;
@@ -112,7 +112,7 @@ jobs:
 
       - name: Report the pinned BASE_REF to commit
         run: |
-          ref="code.podesta.ai/tilo/fedora-bootc@${BASE_DIGEST}"
+          ref="code.podesta.ai/qos/fedora-bootc@${BASE_DIGEST}"
           echo "::notice::Base image mirrored. Set os/base-snapshot.env to: BASE_REF=$ref"
           {
             echo "## Base image mirrored"

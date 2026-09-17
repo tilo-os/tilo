@@ -90,7 +90,7 @@ if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
    && grep -Fq 'externalParameters.children == $children' "$workflow" \
    && grep -Fq 'tilo-buildcache:${{ matrix.arch }}' "$workflow" \
    && grep -Fq 'promote_immutable "$tag"' "$workflow" \
-   && grep -Fq 'latest="code.podesta.ai/tilo/tilo:latest"' "$workflow" \
+   && grep -Fq 'latest="code.podesta.ai/qos/tilo:latest"' "$workflow" \
    && grep -Fq 'registry did not commit latest as $index_digest' "$workflow"; then
   ok 'OS publication promotes one signed two-architecture index after both native gates'
 else
@@ -98,7 +98,7 @@ else
 fi
 
 durable_promotion_line="$(grep -n 'for tag in "${durable_tags\[@\]}"' "$workflow" | head -1 | cut -d: -f1)"
-latest_promotion_line="$(grep -n 'latest="code.podesta.ai/tilo/tilo:latest"' "$workflow" | head -1 | cut -d: -f1)"
+latest_promotion_line="$(grep -n 'latest="code.podesta.ai/qos/tilo:latest"' "$workflow" | head -1 | cut -d: -f1)"
 if [ -n "$durable_promotion_line" ] && [ -n "$latest_promotion_line" ] \
    && [ "$durable_promotion_line" -lt "$latest_promotion_line" ] \
    && grep -Fq 'bad semver/source name cannot strand a newly written genN' "$workflow" \

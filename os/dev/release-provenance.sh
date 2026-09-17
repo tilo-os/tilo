@@ -57,7 +57,7 @@ printf '%s' "$release_children" | jq -e '
 }
 
 jq -n \
-  --arg source "git+ssh://code.podesta.ai/tilo/tilo@$GITHUB_SHA" \
+  --arg source "git+ssh://code.podesta.ai/qos/tilo@$GITHUB_SHA" \
   --arg digest "$RELEASE_DIGEST" \
   --arg base "$BASE_REF" \
   --arg rpms "$RPMS_REF" \
@@ -89,7 +89,7 @@ jq -n \
       )
     },
     runDetails: {
-      builder: {id: "https://code.podesta.ai/tilo/forgejo/actions/bootc-release-v1"},
+      builder: {id: "https://code.podesta.ai/qos/forgejo/actions/bootc-release-v1"},
       metadata: {invocationId: (env.GITHUB_RUN_ID // "local")},
       byproducts: [{
         name: "independent-rebuild",
