@@ -56,6 +56,7 @@ _tilo_podman_args=()
 _tilo_trust_args=(--build-arg TILO_PUBLIC_TRUST_MODE=production --build-arg TILO_PUBLIC_TRUST_MANIFEST_SHA256=)
 case "${TILO_PUBLIC_TRUST_MODE:-production}" in
   production)
+    [ -z "${TILO_RAW_ROOTFS_RECEIPT:-}" ] || die "raw rootfs handoff is development-only"
     [ -z "${TILO_PUBLIC_TRUST_BUNDLE:-}${TILO_PUBLIC_TRUST_MANIFEST_SHA256:-}" ] \
       || die "development bundle inputs require TILO_PUBLIC_TRUST_MODE=development"
     ;;
@@ -337,6 +338,14 @@ else
     build_image "$TILO_PROVISIONAL_CFS_DIGEST" "" --target rootfs --iidfile "$_tilo_signing_work/raw.iid"
     _tilo_raw_rootfs=$(cat "$_tilo_signing_work/raw.iid")
     [[ "$_tilo_raw_rootfs" =~ ^sha256:[0-9a-f]{64}$ ]] || die "rootfs build did not return an immutable image ID"
+    if [ -n "${TILO_RAW_ROOTFS_RECEIPT:-}" ]; then
+      python3 "$TILO_OS_DIR/dev/raw-rootfs-receipt.py" \
+        --output "$TILO_RAW_ROOTFS_RECEIPT" --raw-rootfs-id "$_tilo_raw_rootfs" \
+        --revision "$_tilo_development_revision" --source-date-epoch "$SOURCE_DATE_EPOCH" \
+        --architecture "$TILO_WINDOWS_ARCH" --generation "$TILO_GENERATION" \
+        --target-update-ref "$TILO_TARGET_IMGREF" \
+        --public-manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256"
+    fi
     python3 "$TILO_OS_DIR/dev/sign-development-rootfs.py" \
       --rootfs-id "$_tilo_raw_rootfs" --architecture "$TILO_WINDOWS_ARCH" \
       --revision "$_tilo_development_revision" --public-bundle "$TILO_PUBLIC_TRUST_BUNDLE" \
