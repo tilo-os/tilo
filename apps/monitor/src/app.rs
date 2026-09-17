@@ -43,7 +43,7 @@ use ui::widget::{
     Button, ButtonFace, ButtonStyle, ModalDialog, Text, TextInput, Toggle, ToggleFace, Widget,
 };
 
-use crate::charts::{self, Series, with_alpha};
+use crate::charts::{self, Series, ts, with_alpha};
 use crate::layout;
 use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo, Ring, fmt_rate, fmt_uptime};
 use crate::prefs::Prefs;
@@ -220,6 +220,85 @@ const DETAIL_ACTION_H: f64 = 46.0;
 const DETAIL_STAT_COUNT: usize = 6;
 const DETAIL_STAT_COLS: usize = 2;
 const DETAIL_STAT_ROW_H: f64 = 48.0;
+
+/// Vertical pitches of every text-bearing band, derived once per frame from
+/// the measured line boxes of the type sizes each band stacks. The `*_H`
+/// constants above are the 1× design; each band grows by exactly the extra
+/// height its lines gain at the current accessibility scale, so layout,
+/// paint and hit-testing (`rows_per_page`, wheel-to-rows, the seeded context
+/// menu anchor) all read one pitch. At 1× this is [`Density::ONE`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Density {
+    /// Process-table row (`sm` cells).
+    row_h: f64,
+    /// Process-table header row (`xs` labels).
+    table_header_h: f64,
+    /// One toolbar row (search box / pill row, `sm` labels).
+    toolbar_row_h: f64,
+    /// Top header card: clock (`lg`) over uptime (`xs`).
+    header_h: f64,
+    /// Wide-layout detail strip: name (`lg`), identity (`xs`), chip label
+    /// (`xs`) and chip value (`base`) stacked.
+    detail_h: f64,
+    /// Tall-detail stat grid row: `xs` label over `base` value.
+    stat_row_h: f64,
+    /// Summary-strip cell: an `xs` label and an `sm` value (stacked when the
+    /// cell is tight) over a sparkline.
+    strip_cell_h: f64,
+    /// Extra height one per-core gauge row needs for its `xs` label.
+    core_extra: f64,
+    /// Growth of one `sm` line over its 1× box — what a 1×-designed control
+    /// (header segment, pill) adds to keep seating its label.
+    sm_extra: f64,
+    /// The renderer's accessibility text scale. Glyph-budgeted widths (the
+    /// process-table columns) are laid out in 1× space and scaled by this, so
+    /// a column that seats `622.0 MiB` at 1× still seats it at 200 %.
+    text_k: f64,
+}
+
+impl Density {
+    /// The 1× design metrics — also what the constructor seeds before the
+    /// first frame has measured anything.
+    const ONE: Self = Self {
+        row_h: ROW_H,
+        table_header_h: TABLE_HEADER_H,
+        toolbar_row_h: TOOLBAR_ROW_H,
+        header_h: HEADER_H,
+        detail_h: DETAIL_H,
+        stat_row_h: DETAIL_STAT_ROW_H,
+        strip_cell_h: layout::STRIP_CELL_H,
+        core_extra: 0.0,
+        sm_extra: 0.0,
+        text_k: 1.0,
+    };
+
+    /// Measure with the renderer that will paint this frame. A line's growth
+    /// over its 1× box is `line − line / scale`; a band gains one growth per
+    /// line it stacks.
+    fn measure(tr: &mut TextRenderer, theme: &Theme) -> Self {
+        let scale = f64::from(tr.text_scale()).max(f32::EPSILON.into());
+        let grow = |line: f64| (line - line / scale).max(0.0);
+        let ty = &theme.tokens.typography.scale;
+        let xs = grow(charts::line_h(tr, ty.xs));
+        let sm = grow(charts::line_h(tr, ty.sm));
+        let base = grow(charts::line_h(tr, ty.base));
+        let lg = grow(charts::line_h(tr, ty.lg));
+        Self {
+            row_h: ROW_H + sm,
+            table_header_h: TABLE_HEADER_H + xs,
+            toolbar_row_h: TOOLBAR_ROW_H + sm,
+            header_h: HEADER_H + lg + xs,
+            detail_h: DETAIL_H + lg + xs + xs + base,
+            stat_row_h: DETAIL_STAT_ROW_H + xs + base,
+            // The tight branch stacks the `xs` label over the `sm` value, so the
+            // cell grows by both lines and the sparkline keeps its 1× height.
+            strip_cell_h: layout::STRIP_CELL_H + xs + sm,
+            core_extra: xs,
+            sm_extra: sm,
+            text_k: scale,
+        }
+    }
+}
 
 /// Human label for a refresh cadence in ms: `1s`, `1.5s`, `2s`. Whole seconds
 /// drop the decimal. Mirrors [`crate::prefs::Prefs::interval_label`] so the
@@ -483,6 +562,8 @@ pub struct MonitorApp {
     /// process table underneath whatever is reading them.
     sample_only: bool,
     rows_per_page: usize,
+    /// Text-derived band pitches for this frame (see [`Density`]).
+    density: Density,
     /// The process table's clipped row viewport — wheel events over it scroll
     /// the rows/columns; outside it (and on the Resources tab) the wheel
     /// scrolls the whole page. Recorded during `draw_process_table`.
@@ -588,6 +669,7 @@ impl MonitorApp {
             last_refresh,
             sample_only: false,
             rows_per_page: 1,
+            density: Density::ONE,
             table_viewport: Rect::ZERO,
             table_content_w: 0.0,
             table_cols_w: 0.0,
@@ -1129,7 +1211,7 @@ impl MonitorApp {
     fn resources_natural_h(&self, w: f64) -> f64 {
         let n = self.model.metrics.cores.len().max(1);
         let grid = layout::per_core_grid(n, w - 2.0 * layout::RAIL_CARD_PAD);
-        let core_h = layout::per_core_card_h(grid);
+        let core_h = self.core_card_h(grid);
         let rows = layout::charts_rows(w);
         let min_chart_h = 150.0;
         let charts_h = rows as f64 * min_chart_h + (rows as f64 - 1.0) * GAP;
@@ -1157,7 +1239,7 @@ impl MonitorApp {
     fn resources_scroll_for_stat(&self, i: usize, body_w: f64, viewport_h: f64) -> f32 {
         let n = self.model.metrics.cores.len().max(1);
         let grid = layout::per_core_grid(n, body_w - 2.0 * layout::RAIL_CARD_PAD);
-        let core_h = layout::per_core_card_h(grid);
+        let core_h = self.core_card_h(grid);
         let charts_top = layout::overview_h(body_w) + GAP + core_h + GAP;
         let cols = layout::charts_cols(body_w);
         let row = (i / cols) as f64;
@@ -1172,8 +1254,21 @@ impl MonitorApp {
     /// frame into header + body).
     fn body_metrics(&self) -> (f64, f64) {
         let body_w = (self.rect.width() - 2.0 * OUTER_PAD).max(1.0);
-        let viewport_h = (self.rect.height() - 2.0 * OUTER_PAD - HEADER_H - GAP).max(1.0);
+        let viewport_h =
+            (self.rect.height() - 2.0 * OUTER_PAD - self.density.header_h - GAP).max(1.0);
         (body_w, viewport_h)
+    }
+
+    /// Height of the summary strip wrapped to `g` — `layout::summary_strip_h`
+    /// with each row grown by this frame's measured cell height.
+    fn strip_h(&self, g: layout::StripGrid) -> f64 {
+        g.rows as f64 * self.density.strip_cell_h + (g.rows as f64 - 1.0) * GAP
+    }
+
+    /// Height of the per-core card for `grid` — `layout::per_core_card_h` with
+    /// every gauge row grown by its measured label height.
+    fn core_card_h(&self, grid: layout::CoreGrid) -> f64 {
+        layout::per_core_card_h(grid) + grid.rows as f64 * self.density.core_extra
     }
 
     /// Whether the "PID copied" toast should currently show — true for a short
@@ -1314,8 +1409,12 @@ impl MonitorApp {
     ) {
         let c = &theme.tokens.colors;
         let inner = charts::panel(scene, t, r, theme, 12.0);
-        let xs = theme.tokens.typography.scale.xs;
-        let seg_h = 30.0;
+        let xs = ts(tr, theme.tokens.typography.scale.xs);
+        let sm = ts(tr, theme.tokens.typography.scale.sm);
+        // Segment/pill height: the 1× 30 px control grown by its `sm` label's
+        // measured line growth, so the tabs and the interval pill keep seating
+        // their text at every accessibility scale.
+        let seg_h = 30.0 + self.density.sm_extra;
         let cy = inner.y0 + (inner.height() - seg_h) / 2.0;
 
         // The header lays out two groups: centred tabs and the clock/interval
@@ -1327,7 +1426,7 @@ impl MonitorApp {
 
         // ---- right block: clock (top) + uptime caption (bottom) + pill ----
         let clock = Self::clock();
-        let cs = theme.tokens.typography.scale.lg;
+        let cs = ts(tr, theme.tokens.typography.scale.lg);
         let (clw, _) = tr.measure_weighted(&clock, cs, None, TextWeight::Bold);
         let up = fmt_uptime(self.model.metrics.uptime_secs);
         let up_caption = format!("uptime {up}");
@@ -1335,8 +1434,10 @@ impl MonitorApp {
         let right_block_w = f64::from(clw).max(f64::from(upw));
         let right_block_x0 = inner.x1 - right_block_w;
 
+        // Measured at the size the pill draws its label (`sm` below), so the
+        // capsule always seats it.
         let il = format!("⟳ {}", self.prefs.interval_label());
-        let iw = f64::from(tr.measure_weighted(&il, xs, None, TextWeight::Medium).0) + 22.0;
+        let iw = f64::from(tr.measure_weighted(&il, sm, None, TextWeight::Medium).0) + 22.0;
         let pill_x1 = right_block_x0 - 16.0;
         let pill_x0 = pill_x1 - iw;
         // One-shot refresh and pause/resume stay beside the cadence chooser:
@@ -1355,7 +1456,7 @@ impl MonitorApp {
                 f64::from(
                     tr.measure_weighted(
                         label,
-                        theme.tokens.typography.scale.sm,
+                        ts(tr, theme.tokens.typography.scale.sm),
                         None,
                         TextWeight::Medium,
                     )
@@ -1393,8 +1494,16 @@ impl MonitorApp {
         let gap_l = brand_right + 16.0;
         let gap_r = auto_refresh_r.x0 - 12.0;
         let avail_tabs = (gap_r - gap_l).max(0.0);
-        let want_seg_w = 124.0_f64;
-        let compact = avail_tabs < 2.0 * 96.0 + 6.0;
+        // The 1× design: 124 px segments that fold to icon-only pills below a
+        // 96 px pair. Both grow by exactly the labels' measured growth over
+        // their 1× width, so the 1× thresholds are untouched and a 200 % bar
+        // still seats `Processes` / `Resources` before it folds.
+        let (pw, _) = tr.measure_weighted("Processes", sm, None, TextWeight::Semibold);
+        let (rw, _) = tr.measure_weighted("Resources", sm, None, TextWeight::Semibold);
+        let label_w = f64::from(pw.max(rw));
+        let label_growth = (label_w - label_w / self.density.text_k).max(0.0);
+        let want_seg_w = 124.0 + label_growth;
+        let compact = avail_tabs < 2.0 * (96.0 + label_growth) + 6.0;
         let seg_w = if compact {
             ((avail_tabs - 6.0) / 2.0).clamp(40.0, 64.0)
         } else {
@@ -1444,14 +1553,16 @@ impl MonitorApp {
             None,
             TextWeight::Bold,
         );
-        // Uptime caption (second line) — dropped when space is tight.
+        // Uptime caption (second line) — dropped when space is tight. It
+        // stacks on the clock's measured line box so the pair never overlaps.
         if show_uptime {
+            let caption_top = inner.y0 + 1.0 + charts::line_box(tr, cs) + 1.0;
             tr.draw_text(
                 scene,
                 &up_caption,
                 xs,
                 c.text_dim,
-                t * Affine::translate((inner.x1 - f64::from(upw), inner.y0 + 22.0)),
+                t * Affine::translate((inner.x1 - f64::from(upw), caption_top)),
                 None,
             );
         }
@@ -1462,14 +1573,14 @@ impl MonitorApp {
         charts::stroke_rrect(scene, t, interval_r, seg_h / 2.0, c.border_standard, 1.0);
         let (tw, th) = tr.measure_weighted(
             &il,
-            theme.tokens.typography.scale.sm,
+            ts(tr, theme.tokens.typography.scale.sm),
             None,
             TextWeight::Medium,
         );
         tr.draw_text_weighted(
             scene,
             &il,
-            theme.tokens.typography.scale.sm,
+            ts(tr, theme.tokens.typography.scale.sm),
             c.text_primary,
             t * Affine::translate((
                 interval_r.x0 + (interval_r.width() - f64::from(tw)) / 2.0,
@@ -1525,14 +1636,14 @@ impl MonitorApp {
             if show_tool_labels {
                 let (_, th) = tr.measure_weighted(
                     label,
-                    theme.tokens.typography.scale.sm,
+                    ts(tr, theme.tokens.typography.scale.sm),
                     None,
                     TextWeight::Medium,
                 );
                 tr.draw_text_weighted(
                     scene,
                     label,
-                    theme.tokens.typography.scale.sm,
+                    ts(tr, theme.tokens.typography.scale.sm),
                     c.text_primary,
                     t * Affine::translate((icon_r.x1 + 5.0, rect.center().y - f64::from(th) / 2.0)),
                     None,
@@ -1589,7 +1700,7 @@ impl MonitorApp {
             r.center().y + 8.0,
         );
         icons::draw_icon(scene, t, icon_r, icon, text_color, 1.6);
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = ts(tr, theme.tokens.typography.scale.sm);
         let (_, th) = tr.measure_weighted(label, fs, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
@@ -1680,14 +1791,14 @@ impl MonitorApp {
         self.hit.summary_cells.clear();
         let cols = g.cols;
         let cell_w = (r.width() - (cols as f64 - 1.0) * GAP) / cols as f64;
-        let xs = theme.tokens.typography.scale.xs;
-        let sm = theme.tokens.typography.scale.sm;
+        let xs = ts(tr, theme.tokens.typography.scale.xs);
+        let sm = ts(tr, theme.tokens.typography.scale.sm);
         for (i, cell) in cells.iter().enumerate() {
             let col = i % cols;
             let row = i / cols;
             let x0 = r.x0 + col as f64 * (cell_w + GAP);
-            let y0 = r.y0 + row as f64 * (layout::STRIP_CELL_H + GAP);
-            let rect = Rect::new(x0, y0, x0 + cell_w, y0 + layout::STRIP_CELL_H);
+            let y0 = r.y0 + row as f64 * (self.density.strip_cell_h + GAP);
+            let rect = Rect::new(x0, y0, x0 + cell_w, y0 + self.density.strip_cell_h);
             let inner = charts::panel(scene, t, rect, theme, layout::STRIP_CELL_PAD);
             // Label (dim, left). The single-row strip keeps a constant height so
             // the table below never loses height; the cell instead adapts
@@ -1706,6 +1817,8 @@ impl MonitorApp {
                 t * Affine::translate((inner.x0, line_c - f64::from(lh) / 2.0)),
                 None,
             );
+            // Both branches step by the measured line boxes (22 / 34 px at 1×),
+            // so the sparkline clears the text at every accessibility scale.
             let spark_top = if f64::from(lw) + 8.0 + f64::from(vw) <= inner.width() {
                 // Roomy: headline value right-aligned on the label's line.
                 tr.draw_text_weighted(
@@ -1717,20 +1830,21 @@ impl MonitorApp {
                     None,
                     TextWeight::Bold,
                 );
-                inner.y0 + 22.0
+                inner.y0 + f64::from(lh.max(vh)) + 7.0
             } else {
                 // Tight: value drops onto its own line under the label so the
                 // two never collide, and the sparkline shifts down to clear it.
+                let value_top = inner.y0 + f64::from(lh) + 1.5;
                 tr.draw_text_weighted(
                     scene,
                     &cell.value,
                     sm,
                     cell.vcolor,
-                    t * Affine::translate((inner.x0, inner.y0 + 14.0)),
+                    t * Affine::translate((inner.x0, value_top)),
                     None,
                     TextWeight::Bold,
                 );
-                inner.y0 + 34.0
+                value_top + f64::from(vh) + 5.0
             };
             // Sparkline fills the remaining lower portion of the cell.
             let sr = Rect::new(inner.x0, spark_top.min(inner.y1), inner.x1, inner.y1);
@@ -1757,15 +1871,15 @@ impl MonitorApp {
         tr.draw_text_weighted(
             scene,
             "Processor",
-            theme.tokens.typography.scale.sm,
+            ts(tr, theme.tokens.typography.scale.sm),
             c.text_primary,
             t * Affine::translate((inner.x0, inner.y0)),
             None,
             TextWeight::Semibold,
         );
         let overall = m.cpu_overall();
-        let xs = theme.tokens.typography.scale.xs;
-        let sm = theme.tokens.typography.scale.sm;
+        let xs = ts(tr, theme.tokens.typography.scale.xs);
+        let sm = ts(tr, theme.tokens.typography.scale.sm);
         if inner.width() >= 300.0 {
             // Ring on the left, stats column on the right.
             let center = Point::new(inner.x0 + 62.0, inner.center().y + 8.0);
@@ -1866,7 +1980,7 @@ impl MonitorApp {
         tr.draw_text_weighted(
             scene,
             "Memory",
-            theme.tokens.typography.scale.sm,
+            ts(tr, theme.tokens.typography.scale.sm),
             c.text_primary,
             t * Affine::translate((mi.x0, mi.y0)),
             None,
@@ -1928,13 +2042,13 @@ impl MonitorApp {
         tr.draw_text_weighted(
             scene,
             "System",
-            theme.tokens.typography.scale.sm,
+            ts(tr, theme.tokens.typography.scale.sm),
             c.text_primary,
             t * Affine::translate((ii.x0, ii.y0)),
             None,
             TextWeight::Semibold,
         );
-        let fs = theme.tokens.typography.scale.xs;
+        let fs = ts(tr, theme.tokens.typography.scale.xs);
         let mut y = ii.y0 + 24.0;
         let line = |scene: &mut Scene, tr: &mut TextRenderer, k: &str, v: String, y: &mut f64| {
             tr.draw_text(
@@ -1992,7 +2106,7 @@ impl MonitorApp {
         tr.draw_text_weighted(
             scene,
             &format!("Per-Core Utilisation  ·  {n} threads"),
-            theme.tokens.typography.scale.sm,
+            ts(tr, theme.tokens.typography.scale.sm),
             c.text_primary,
             t * Affine::translate((ci.x0, ci.y0)),
             None,
@@ -2005,7 +2119,7 @@ impl MonitorApp {
             let col = i % cols;
             let rowi = i / cols;
             let x0 = ci.x0 + col as f64 * (cell_w + layout::CORE_GAP);
-            let y0 = grid_top + rowi as f64 * layout::CORE_ROW_STRIDE;
+            let y0 = grid_top + rowi as f64 * (layout::CORE_ROW_STRIDE + self.density.core_extra);
             charts::bar_gauge(
                 scene,
                 t,
@@ -2036,7 +2150,7 @@ impl MonitorApp {
         r: Rect,
     ) {
         let strip_g = layout::summary_grid(r.width());
-        let strip_h = layout::summary_strip_h(strip_g);
+        let strip_h = self.strip_h(strip_g);
 
         if !self.is_narrow() {
             // Wide: summary strip, toolbar, table, detail strip stacked.
@@ -2046,7 +2160,7 @@ impl MonitorApp {
             let toolbar = Rect::new(r.x0, strip.y1 + GAP, r.x1, strip.y1 + GAP + toolbar_h);
             self.draw_toolbar(scene, t, tr, theme, toolbar);
             let table_top = toolbar.y1 + GAP;
-            let table_bottom = r.y1 - DETAIL_H - GAP;
+            let table_bottom = r.y1 - self.density.detail_h - GAP;
             let table_panel = Rect::new(r.x0, table_top, r.x1, table_bottom);
             self.draw_process_table(scene, t, tr, theme, table_panel);
             let detail = Rect::new(r.x0, table_bottom + GAP, r.x1, r.y1);
@@ -2121,7 +2235,17 @@ impl MonitorApp {
         let cols_right = ti.x1 - pad;
         let avail_w = (cols_right - cols_left).max(1.0);
 
-        let columns = layout::process_columns(avail_w);
+        // Column widths are glyph budgets designed at 1×: lay the set out in
+        // 1× space and scale it by the text scale, so a column that seats
+        // `622.0 MiB` at 1× still seats it at 200 % (and the width-dependent
+        // column set folds exactly as it would in a proportionally narrower
+        // 1× window). Header and cell hit rects read these scaled columns.
+        let k = self.density.text_k;
+        let mut columns = layout::process_columns(avail_w / k);
+        for col in &mut columns {
+            col.x0 *= k;
+            col.w *= k;
+        }
         let content_w = layout::process_columns_total_w(&columns);
         self.table_content_w = content_w;
         // The columns' viewport width is the padded band (`avail_w`), NOT the
@@ -2140,7 +2264,7 @@ impl MonitorApp {
         // padded column band so an overflowing column (e.g. THR when narrow)
         // is hidden past the right edge instead of overlapping the border.
         let band = Rect::new(cols_left, ti.y0, cols_right, ti.y1);
-        let hdr = Rect::new(ti.x0, ti.y0, ti.x1, ti.y0 + TABLE_HEADER_H);
+        let hdr = Rect::new(ti.x0, ti.y0, ti.x1, ti.y0 + self.density.table_header_h);
         // Rows region (above any horizontal scrollbar).
         let view = Rect::new(ti.x0, hdr.y1, ti.x1, ti.y1 - hbar_h);
         let geom = TableGeom {
@@ -2180,7 +2304,7 @@ impl MonitorApp {
             None,
             &Line::new((hdr.x0, hdr.y1), (hdr.x1, hdr.y1)),
         );
-        let hfs = theme.tokens.typography.scale.xs;
+        let hfs = ts(tr, theme.tokens.typography.scale.xs);
         self.hit.sort_headers.clear();
         let hdr_clip = Rect::new(geom.band.x0, hdr.y0, geom.band.x1, hdr.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &hdr_clip);
@@ -2244,7 +2368,7 @@ impl MonitorApp {
         columns: &[layout::Column],
         geom: &TableGeom,
     ) -> usize {
-        self.rows_per_page = (geom.view.height() / ROW_H).floor().max(1.0) as usize;
+        self.rows_per_page = (geom.view.height() / self.density.row_h).floor().max(1.0) as usize;
         let rows = self.visible_rows();
         let max_scroll = rows.len().saturating_sub(self.rows_per_page) as f32;
         self.scroll_off = self.scroll_off.clamp(0.0, max_scroll);
@@ -2292,18 +2416,19 @@ impl MonitorApp {
                     false,
                 )
             };
-            let base = theme.tokens.typography.scale.base;
-            let sm = theme.tokens.typography.scale.sm;
+            let base = ts(tr, theme.tokens.typography.scale.base);
+            let sm = ts(tr, theme.tokens.typography.scale.sm);
             let (tw, _) = tr.measure_weighted(title, base, None, TextWeight::Semibold);
             let (bw, _) = tr.measure(body, sm, None);
             let cx = geom.view.center().x;
             let cy = geom.view.center().y;
+            let title_top = cy - charts::line_box(tr, base) - 0.5;
             tr.draw_text_weighted(
                 scene,
                 title,
                 base,
                 c.text_primary,
-                t * Affine::translate((cx - f64::from(tw) / 2.0, cy - f64::from(base) - 4.0)),
+                t * Affine::translate((cx - f64::from(tw) / 2.0, title_top)),
                 None,
                 TextWeight::Semibold,
             );
@@ -2360,8 +2485,8 @@ impl MonitorApp {
         for i in 0..self.rows_per_page {
             let idx = start + i;
             let Some(p) = rows.get(idx) else { break };
-            let y0 = geom.view.y0 + i as f64 * ROW_H;
-            let row = Rect::new(geom.view.x0, y0, geom.view.x1, y0 + ROW_H);
+            let y0 = geom.view.y0 + i as f64 * self.density.row_h;
+            let row = Rect::new(geom.view.x0, y0, geom.view.x1, y0 + self.density.row_h);
             self.draw_table_row(scene, t, tr, theme, columns, geom, p, row, idx % 2 == 1);
         }
         scene.pop_layer();
@@ -2411,7 +2536,7 @@ impl MonitorApp {
             charts::fill_rrect(scene, t, row, 0.0, c.neutral[2]);
         }
 
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = ts(tr, theme.tokens.typography.scale.sm);
         let ty = Self::row_text_top(tr, row, fs);
         let txt = if selected { c.text_primary } else { c.text_dim };
 
@@ -2513,7 +2638,7 @@ impl MonitorApp {
             return;
         };
         let c = &theme.tokens.colors;
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = ts(tr, theme.tokens.typography.scale.sm);
         let ty = Self::row_text_top(tr, row, fs);
         let col_abs = |x: f64| geom.cols_left + x - geom.sx;
         let indent = p.depth as f64 * TREE_INDENT;
@@ -2651,7 +2776,7 @@ impl MonitorApp {
 
         // Back chip: chevron + "Processes", top-left of the pushed detail pane.
         let label = "Processes";
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = ts(tr, theme.tokens.typography.scale.sm);
         let (lw, lh) = tr.measure_weighted(label, fs, None, TextWeight::Semibold);
         let back_x0 = r.x0;
         let back = Rect::new(
@@ -2704,7 +2829,7 @@ impl MonitorApp {
     /// the two never overlap, and the toolbar stacks when even a minimum-width
     /// search box won't fit beside it.
     fn pills_cluster_width(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = ts(tr, theme.tokens.typography.scale.sm);
         // Kernel-threads toggle (switch knob + label).
         let mut w = f64::from(tr.measure("kernel threads", fs, None).0) + 44.0;
         // Sum-mode pill exists only in tree mode.
@@ -2738,7 +2863,7 @@ impl MonitorApp {
     /// below this pair, which prevents the long labelled controls from being
     /// squeezed or painted past the left edge on phone-sized windows.
     fn primary_filter_row_width(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = ts(tr, theme.tokens.typography.scale.sm);
         let tree_text = if self.tree_mode {
             "⊟ Tree"
         } else {
@@ -2755,14 +2880,14 @@ impl MonitorApp {
 
     fn kernel_filter_width(tr: &mut TextRenderer, theme: &Theme) -> f64 {
         f64::from(
-            tr.measure("kernel threads", theme.tokens.typography.scale.sm, None)
+            tr.measure("kernel threads", ts(tr, theme.tokens.typography.scale.sm), None)
                 .0,
         ) + 44.0
     }
 
     fn confirm_filter_width(tr: &mut TextRenderer, theme: &Theme) -> f64 {
         f64::from(
-            tr.measure("Confirm kills", theme.tokens.typography.scale.sm, None)
+            tr.measure("Confirm kills", ts(tr, theme.tokens.typography.scale.sm), None)
                 .0,
         ) + 24.0
     }
@@ -2784,11 +2909,11 @@ impl MonitorApp {
     /// and pills fit side by side, two rows (search above pills) when narrow.
     fn toolbar_height(&self, tr: &mut TextRenderer, theme: &Theme, avail_w: f64) -> f64 {
         if self.toolbar_compact_filters(tr, theme, avail_w) {
-            3.0 * TOOLBAR_ROW_H + 2.0 * TOOLBAR_ROW_GAP
+            3.0 * self.density.toolbar_row_h + 2.0 * TOOLBAR_ROW_GAP
         } else if self.toolbar_stacked(tr, theme, avail_w) {
-            2.0 * TOOLBAR_ROW_H + TOOLBAR_ROW_GAP
+            2.0 * self.density.toolbar_row_h + TOOLBAR_ROW_GAP
         } else {
-            TOOLBAR_ROW_H
+            self.density.toolbar_row_h
         }
     }
 
@@ -2806,7 +2931,7 @@ impl MonitorApp {
         on: bool,
     ) {
         let c = &theme.tokens.colors;
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = ts(tr, theme.tokens.typography.scale.sm);
         let radius = rect.height() / 2.0;
         charts::fill_rrect(
             scene,
@@ -2828,6 +2953,7 @@ impl MonitorApp {
             1.0,
         );
         let (lw, _) = tr.measure(label, fs, None);
+        let label_top = rect.center().y - charts::line_box(tr, fs) / 2.0;
         tr.draw_text(
             scene,
             label,
@@ -2835,7 +2961,7 @@ impl MonitorApp {
             if on { c.text_primary } else { c.text_dim },
             t * Affine::translate((
                 rect.center().x - f64::from(lw) / 2.0,
-                rect.center().y - f64::from(fs) / 2.0 - 1.0,
+                label_top,
             )),
             None,
         );
@@ -2852,7 +2978,7 @@ impl MonitorApp {
         pills_row: Rect,
     ) -> Rect {
         let c = &theme.tokens.colors;
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = ts(tr, theme.tokens.typography.scale.sm);
         let kt_label = "kernel threads";
         let ktw = f64::from(tr.measure(kt_label, fs, None).0) + 44.0;
         let kt_r = Rect::new(
@@ -2895,6 +3021,7 @@ impl MonitorApp {
             theme,
             &ToggleFace::new(knob_track, on).on_color(c.accent[5]),
         );
+        let kt_label_top = kt_r.center().y - charts::line_box(tr, fs) / 2.0;
         tr.draw_text(
             scene,
             kt_label,
@@ -2902,7 +3029,7 @@ impl MonitorApp {
             if on { c.text_primary } else { c.text_dim },
             t * Affine::translate((
                 knob_track.x1 + 6.0,
-                kt_r.center().y - f64::from(fs) / 2.0 - 1.0,
+                kt_label_top,
             )),
             None,
         );
@@ -2926,7 +3053,7 @@ impl MonitorApp {
             self.hit.sum_toggle = Rect::ZERO;
             return next_x1;
         }
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = ts(tr, theme.tokens.typography.scale.sm);
         let sum_label = self.sum_mode.label();
         let sum_text = format!("Σ {sum_label}");
         let sw = f64::from(tr.measure(&sum_text, fs, None).0) + 24.0;
@@ -2953,7 +3080,7 @@ impl MonitorApp {
         pills_row: Rect,
         next_x1: f64,
     ) -> Rect {
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = ts(tr, theme.tokens.typography.scale.sm);
         let tree_text = if self.tree_mode {
             "⊟ Tree"
         } else {
@@ -2987,7 +3114,7 @@ impl MonitorApp {
         pills_row: Rect,
         tree_r: Rect,
     ) -> f64 {
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = ts(tr, theme.tokens.typography.scale.sm);
         let confirm_text = "Confirm kills";
         let cfw = f64::from(tr.measure(confirm_text, fs, None).0) + 24.0;
         let confirm_x1 = tree_r.x0 - TOOLBAR_PILL_GAP;
@@ -3089,7 +3216,7 @@ impl MonitorApp {
         cluster_left: f64,
     ) {
         let c = &theme.tokens.colors;
-        let fs = theme.tokens.typography.scale.sm;
+        let fs = ts(tr, theme.tokens.typography.scale.sm);
         let total = self
             .model
             .processes
@@ -3131,18 +3258,18 @@ impl MonitorApp {
         let stacked = self.toolbar_stacked(tr, theme, r.width());
         let compact_filters = self.toolbar_compact_filters(tr, theme, r.width());
         if compact_filters {
-            let search_row = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_ROW_H);
+            let search_row = Rect::new(r.x0, r.y0, r.x1, r.y0 + self.density.toolbar_row_h);
             let view_row = Rect::new(
                 r.x0,
                 search_row.y1 + TOOLBAR_ROW_GAP,
                 r.x1,
-                search_row.y1 + TOOLBAR_ROW_GAP + TOOLBAR_ROW_H,
+                search_row.y1 + TOOLBAR_ROW_GAP + self.density.toolbar_row_h,
             );
             let kernel_row = Rect::new(
                 r.x0,
                 view_row.y1 + TOOLBAR_ROW_GAP,
                 r.x1,
-                view_row.y1 + TOOLBAR_ROW_GAP + TOOLBAR_ROW_H,
+                view_row.y1 + TOOLBAR_ROW_GAP + self.density.toolbar_row_h,
             );
 
             // The per-process view controls retain their relationship, while
@@ -3155,12 +3282,12 @@ impl MonitorApp {
             return;
         }
         let pills_row = if stacked {
-            Rect::new(r.x0, r.y1 - TOOLBAR_ROW_H, r.x1, r.y1)
+            Rect::new(r.x0, r.y1 - self.density.toolbar_row_h, r.x1, r.y1)
         } else {
-            Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_ROW_H)
+            Rect::new(r.x0, r.y0, r.x1, r.y0 + self.density.toolbar_row_h)
         };
         let search_row = if stacked {
-            Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_ROW_H)
+            Rect::new(r.x0, r.y0, r.x1, r.y0 + self.density.toolbar_row_h)
         } else {
             pills_row
         };
@@ -3202,7 +3329,7 @@ impl MonitorApp {
         self.hit.stop_btn = Rect::ZERO;
         let Some(p) = self.selected_process() else {
             let hint = "Select a process to view details and actions.";
-            let sm = theme.tokens.typography.scale.sm;
+            let sm = ts(tr, theme.tokens.typography.scale.sm);
             let (_, hint_h) = tr.measure(hint, sm, None);
             tr.draw_text(
                 scene,
@@ -3237,7 +3364,7 @@ impl MonitorApp {
         let content = Rect::new(inner.x0, inner.y0, inner.x1, bar.y0 - 12.0);
         let y = Self::draw_detail_header(scene, t, tr, theme, content, p);
         let y = self.draw_detail_sparkline(scene, t, tr, theme, content, p, y);
-        Self::draw_detail_stat_grid(scene, t, tr, theme, content, p, y);
+        Self::draw_detail_stat_grid(scene, t, tr, theme, content, p, y, self.density.stat_row_h);
 
         // Reserved action bar: hairline top, right-aligned Stop + Kill.
         scene.stroke(
@@ -3261,9 +3388,9 @@ impl MonitorApp {
         p: &ProcessInfo,
     ) -> f64 {
         let c = &theme.tokens.colors;
-        let xs = theme.tokens.typography.scale.xs;
-        let sm = theme.tokens.typography.scale.sm;
-        let lg = theme.tokens.typography.scale.lg;
+        let xs = ts(tr, theme.tokens.typography.scale.xs);
+        let sm = ts(tr, theme.tokens.typography.scale.sm);
+        let lg = ts(tr, theme.tokens.typography.scale.lg);
         let ppid = p.ppid.map_or_else(|| "—".into(), |x| x.to_string());
         let mut y = content.y0;
 
@@ -3276,7 +3403,7 @@ impl MonitorApp {
             None,
             TextWeight::Bold,
         );
-        y += f64::from(lg) + 8.0;
+        y += charts::line_box(tr, lg) + 4.0;
         let ident = format!("PID {}   ·   PPID {}   ·   {}", p.pid, ppid, p.user);
         tr.draw_text(
             scene,
@@ -3286,7 +3413,7 @@ impl MonitorApp {
             t * Affine::translate((content.x0, y)),
             None,
         );
-        y += f64::from(xs) + 14.0;
+        y += charts::line_box(tr, xs) + 11.5;
 
         tr.draw_text_weighted(
             scene,
@@ -3297,7 +3424,7 @@ impl MonitorApp {
             None,
             TextWeight::Semibold,
         );
-        y += f64::from(xs) + 4.0;
+        y += charts::line_box(tr, xs) + 1.5;
         let cmd = Self::truncate(tr, &p.cmd, sm, content.width());
         tr.draw_text(
             scene,
@@ -3307,7 +3434,7 @@ impl MonitorApp {
             t * Affine::translate((content.x0, y)),
             None,
         );
-        y += f64::from(sm) + 14.0;
+        y += charts::line_box(tr, sm) + 11.0;
 
         scene.stroke(
             &Stroke::new(1.0),
@@ -3335,8 +3462,8 @@ impl MonitorApp {
         y: f64,
     ) -> f64 {
         let c = &theme.tokens.colors;
-        let xs = theme.tokens.typography.scale.xs;
-        let base = theme.tokens.typography.scale.base;
+        let xs = ts(tr, theme.tokens.typography.scale.xs);
+        let base = ts(tr, theme.tokens.typography.scale.base);
         let cpu_col = charts::load_color(theme, (p.cpu / 100.0).clamp(0.0, 1.0));
 
         tr.draw_text_weighted(
@@ -3359,8 +3486,8 @@ impl MonitorApp {
             None,
             TextWeight::Bold,
         );
-        let y = y + f64::from(base) + 6.0;
-        let grid_h = DETAIL_STAT_COUNT.div_ceil(DETAIL_STAT_COLS) as f64 * DETAIL_STAT_ROW_H;
+        let y = y + charts::line_box(tr, base) + 2.5;
+        let grid_h = DETAIL_STAT_COUNT.div_ceil(DETAIL_STAT_COLS) as f64 * self.density.stat_row_h;
         // Sparkline fills the space between the CPU value line and the grid
         // (minus the two 14px divider gaps around it), floored so it stays
         // legible on a short pane.
@@ -3404,10 +3531,11 @@ impl MonitorApp {
         content: Rect,
         p: &ProcessInfo,
         y: f64,
+        stat_row_h: f64,
     ) {
         let c = &theme.tokens.colors;
-        let xs = theme.tokens.typography.scale.xs;
-        let base = theme.tokens.typography.scale.base;
+        let xs = ts(tr, theme.tokens.typography.scale.xs);
+        let base = ts(tr, theme.tokens.typography.scale.base);
         let stats: [(&str, String, Color); DETAIL_STAT_COUNT] = [
             ("MEMORY (RSS)", format_bytes(p.mem_bytes), c.text_primary),
             ("VIRTUAL", format_bytes(p.virt_bytes), c.text_primary),
@@ -3427,7 +3555,7 @@ impl MonitorApp {
             let col = idx % DETAIL_STAT_COLS;
             let row = idx / DETAIL_STAT_COLS;
             let cx = content.x0 + col as f64 * (cell_w + col_gap);
-            let cy = y + row as f64 * DETAIL_STAT_ROW_H;
+            let cy = y + row as f64 * stat_row_h;
             tr.draw_text(
                 scene,
                 label,
@@ -3437,12 +3565,13 @@ impl MonitorApp {
                 None,
             );
             let v = Self::truncate(tr, value, base, cell_w);
+            let value_top = cy + charts::line_box(tr, xs) + 2.5;
             tr.draw_text_weighted(
                 scene,
                 &v,
                 base,
                 *color,
-                t * Affine::translate((cx, cy + f64::from(xs) + 5.0)),
+                t * Affine::translate((cx, value_top)),
                 None,
                 TextWeight::Semibold,
             );
@@ -3461,9 +3590,9 @@ impl MonitorApp {
         p: &ProcessInfo,
     ) {
         let c = &theme.tokens.colors;
-        let xs = theme.tokens.typography.scale.xs;
-        let base = theme.tokens.typography.scale.base;
-        let lg = theme.tokens.typography.scale.lg;
+        let xs = ts(tr, theme.tokens.typography.scale.xs);
+        let base = ts(tr, theme.tokens.typography.scale.base);
+        let lg = ts(tr, theme.tokens.typography.scale.lg);
         let ppid = p.ppid.map_or_else(|| "—".into(), |x| x.to_string());
         let cpu_col = charts::load_color(theme, (p.cpu / 100.0).clamp(0.0, 1.0));
 
@@ -3485,16 +3614,21 @@ impl MonitorApp {
             p.pid, ppid, p.user, p.status
         );
         let ident = Self::truncate(tr, &ident, xs, chips_right - inner.x0);
+        let ident_top = inner.y0 + charts::line_box(tr, lg);
         tr.draw_text(
             scene,
             &ident,
             xs,
             c.text_dim,
-            t * Affine::translate((inner.x0, inner.y0 + f64::from(lg) + 4.0)),
+            t * Affine::translate((inner.x0, ident_top)),
             None,
         );
 
-        // Chip row along the bottom, stopping before the button cluster.
+        // Chip row along the bottom, stopping before the button cluster. The
+        // value line sits on the card's bottom edge and the label stacks on
+        // its measured line box, so the pair stays a pair at every text scale.
+        let value_top = inner.y1 - charts::line_box(tr, base) + 1.5;
+        let label_top = value_top - charts::line_box(tr, xs) - 1.5;
         let chip = |scene: &mut Scene,
                     tr: &mut TextRenderer,
                     x: f64,
@@ -3510,7 +3644,7 @@ impl MonitorApp {
                 label,
                 xs,
                 c.text_dim,
-                t * Affine::translate((x, inner.y1 - 30.0)),
+                t * Affine::translate((x, label_top)),
                 None,
             );
             tr.draw_text_weighted(
@@ -3518,7 +3652,7 @@ impl MonitorApp {
                 value,
                 base,
                 color,
-                t * Affine::translate((x, inner.y1 - 16.0)),
+                t * Affine::translate((x, value_top)),
                 None,
                 TextWeight::Bold,
             );
@@ -3611,7 +3745,7 @@ impl MonitorApp {
             theme,
             &ButtonFace::new(rect, spec.label)
                 .radius(f64::from(theme.tokens.radii.md))
-                .text_size(theme.tokens.typography.scale.sm)
+                .text_size(ts(tr, theme.tokens.typography.scale.sm))
                 .weight(TextWeight::Semibold)
                 .icon(spec.icon)
                 .style(spec.style)
@@ -3639,7 +3773,7 @@ impl MonitorApp {
         // ---- per-core utilisation grid (full width) -----------------------
         let n = self.model.metrics.cores.len().max(1);
         let grid = layout::per_core_grid(n, r.width() - 2.0 * layout::RAIL_CARD_PAD);
-        let core_h = layout::per_core_card_h(grid);
+        let core_h = self.core_card_h(grid);
         self.draw_per_core(
             scene,
             t,
@@ -5012,13 +5146,23 @@ impl Widget for MonitorApp {
         // The shared reduced-motion policy snaps it to its requested pane.
         self.proc_push.tick(theme.reduce_motion);
 
+        // Every text-bearing band takes its pitch from this frame's measured
+        // line boxes; the event path (wheel-to-rows, hit rows) reads the same
+        // cached values, so paint and pointer routing never disagree.
+        self.density = Density::measure(text_renderer, theme);
+
         let content = Rect::new(
             r.x0 + OUTER_PAD,
             r.y0 + OUTER_PAD,
             r.x1 - OUTER_PAD,
             r.y1 - OUTER_PAD,
         );
-        let header = Rect::new(content.x0, content.y0, content.x1, content.y0 + HEADER_H);
+        let header = Rect::new(
+            content.x0,
+            content.y0,
+            content.x1,
+            content.y0 + self.density.header_h,
+        );
         let body_top = header.y1 + GAP;
         let body = Rect::new(content.x0, body_top, content.x1, content.y1);
 
@@ -5521,7 +5665,7 @@ impl MonitorApp {
             .or_else(|| self.hit.rows.first())
             .map(|(rp, rect)| (*rp, *rect));
         if let Some((pid, rect)) = target {
-            let anchor = Point::new(rect.x0 + 60.0, rect.y0 + ROW_H);
+            let anchor = Point::new(rect.x0 + 60.0, rect.y0 + self.density.row_h);
             self.open_context_menu(pid, anchor);
             // Rest the pointer inside the last action row (Kill), near its
             // leading edge so it stays within the row once the primitive has
@@ -5773,7 +5917,7 @@ impl MonitorApp {
                 let max_x = (self.table_content_w - self.table_cols_w).max(0.0) as f32;
                 self.table_scroll_x = (self.table_scroll_x + dx).clamp(0.0, max_x);
             } else {
-                let rows = px_y / ROW_H as f32;
+                let rows = px_y / self.density.row_h as f32;
                 self.scroll_off = (self.scroll_off + rows).max(0.0);
                 self.clamp_scroll();
             }
@@ -5831,6 +5975,83 @@ mod tests {
         let x1 = a.x1.min(b.x1);
         let y1 = a.y1.min(b.y1);
         x1 > x0 + 0.5 && y1 > y0 + 0.5
+    }
+
+    /// `draw_at` under a 200 % accessibility text scale: the theme carries the
+    /// scaled tokens and the renderer carries the same multiplier, exactly as
+    /// the live `ui::App` configures them.
+    fn draw_at_scaled(a: &mut MonitorApp, w: f64, h: f64, scale: f32) {
+        a.rect = Rect::new(0.0, 0.0, w, h);
+        let theme = Theme::dark().with_text_scale(scale);
+        let presence = PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(scale);
+        let mut scene = Scene::new();
+        a.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    /// The 1× design is exact: at text scale 1 the measured density is the
+    /// constant set, so nothing about the 1× frame moved when the bands
+    /// started following the measured line boxes.
+    #[test]
+    fn density_at_1x_is_the_design_constants() {
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        let d = Density::measure(&mut tr, &theme);
+        assert_eq!(d, Density::ONE, "1× density must equal the design constants");
+    }
+
+    /// At 200 % every text-bearing band grows by at least the extra height of
+    /// the lines it stacks, and the row pitch the table pages by is the same
+    /// pitch the rows were painted at — layout, paint and the wheel-to-rows
+    /// hit math read one number.
+    #[test]
+    fn density_at_2x_grows_rows_by_their_measured_lines_and_rows_stay_seated() {
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let theme = Theme::dark().with_text_scale(2.0);
+        let d = Density::measure(&mut tr, &theme);
+        let sm = ts(&tr, theme.tokens.typography.scale.sm);
+        let sm_line = charts::line_box(&mut tr, sm);
+        assert!(
+            (sm - theme.tokens.typography.scale.sm / 2.0).abs() < 1e-4,
+            "the token is fed to the renderer at half size so it paints once at 2×: {sm}"
+        );
+        assert!(
+            d.row_h >= sm_line + 2.0,
+            "a 2× row ({}) must seat its 2× line ({sm_line}) with padding",
+            d.row_h
+        );
+        assert!(d.row_h > ROW_H && d.table_header_h > TABLE_HEADER_H);
+        assert!(d.toolbar_row_h > TOOLBAR_ROW_H && d.header_h > HEADER_H);
+        assert!(d.detail_h > DETAIL_H && d.strip_cell_h > layout::STRIP_CELL_H);
+        assert!((d.text_k - 2.0).abs() < 1e-6);
+
+        // The production frame: rows_per_page and every recorded row rect use
+        // the measured pitch, and no two row hit rects overlap.
+        let mut a = MonitorApp::new();
+        a.seed_shot_scenario("detail");
+        draw_at_scaled(&mut a, 800.0, 900.0, 2.0);
+        assert_eq!(a.density, d, "draw caches the density it painted with");
+        let rows: Vec<Rect> = a.hit.rows.iter().map(|(_, r)| *r).collect();
+        assert!(rows.len() >= 2, "the seeded table paints rows: {}", rows.len());
+        for pair in rows.windows(2) {
+            let (top, next) = (pair[0], pair[1]);
+            assert!(
+                (top.height() - d.row_h).abs() < 1e-6,
+                "row height {} must be the measured pitch {}",
+                top.height(),
+                d.row_h
+            );
+            assert!(
+                !rects_overlap(top, next),
+                "adjacent rows must not overlap: {top:?} vs {next:?}"
+            );
+        }
+        assert!(
+            a.rows_per_page as f64 * d.row_h <= a.table_viewport.height() + 1e-6,
+            "the page count is derived from the same pitch the rows are painted at"
+        );
     }
 
     #[test]
