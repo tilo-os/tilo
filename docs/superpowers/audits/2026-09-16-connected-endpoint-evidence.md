@@ -91,3 +91,13 @@ These hashes identify the locally retained artifacts; they do not imply the file
 | `task-2-windows-backend-check.log` | `e923dfbe12df1eba8cdc705ec4a9c28b790b69972671b146054e3ef9305ddefb` |
 | `native-proof3-harness/source-sha256.json` | `3de419c93f25377c8f2a7583182e83bb140f3bbdc21a57aabc2582a0e81b0e30` |
 | `native-proof4-harness/source-sha256.json` | `0aaa61c465910c3f5970e0c07e6432df43a46baff01065ca3199e4e1bea1f533` |
+
+## Native Copy timestamp prerequisite — review pending
+
+The timestamp prerequisite is implemented in the owned paths within mixed checkpoint `057457312`, with scoped cleanup `8449209aa`. Its exact owned review diff excludes the checkpoint’s unrelated peer changes (SHA-256 `cceca644caadc6226fa21656d7cdf661984ad1ff5ee74538d50af2110a6b9204`). Independent spec and quality review is pending.
+
+Wire schema 3 carries exact signed 100 ns access/data-change values or a typed unavailable reason. Native parser reports remain schema 2. Extraction accepts positively covered, uniquely identified unnamed STANDARD_INFORMATION with supported 48/72-byte layouts; malformed-report tests supplement the actual-image extraction tests. Public support gates remain unchanged.
+
+Verified evidence: protocol 5, helper unit 5, native image 21 and native session 15 tests passed. Real v5 images cover both layouts, fractional timestamps and a time before 1970, with full-image hashes unchanged. The controller independently verified both 64 MiB fixture hashes against the committed receipt. Host and Linux strict helper/protocol lint, Linux cross-build, Windows no-native-activation check, standalone package extraction/build, 42 host endpoint tests and endpoint platform checks passed. Full host Imager test compilation passed again in 35.37 seconds, with the existing unrelated UI `next_wake` warning. Endpoint harness warnings remain separately recorded; these are not native platform runtime tests.
+
+This supplies timestamp facts only. Shared Copy staging, two independent native source passes, native V3 durable receipts, explicit fresh-selection resume and the administrative production command still require implementation. Native Linux/Windows runtime acceptance, broader Connected behavior, installed Desktop lifecycle and Full OS staging/dual boot remain open. The held VMs were not operated.
