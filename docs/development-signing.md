@@ -9,7 +9,7 @@ the host. A development image must remain visibly identified as such.
 
 | Identity | Current input and consumer | Development gap |
 |---|---|---|
-| OS image | `keys/cosign.pub` is copied by `os/Containerfile` to `/usr/share/tilo/cosign.pub`. `os/etc/containers/policy.json` requires its signature for `code.podesta.ai/qos/tilo`. Release verification also reads the tracked public key. | No public-key build-context override exists. A separate test repository needs an explicit signature policy and test-only update-origin binding. |
+| OS image | `keys/cosign.pub` is copied by `os/Containerfile` to `/usr/share/tilo/cosign.pub`. `os/etc/containers/policy.json` requires its signature for `code.podesta.ai/qos/tilo`. Release verification also reads the tracked public key. | The development named context supplies independent public trust, signature policy and a bound update origin. Signed disk/VM integration remains required. |
 | PCR authorization | `keys/tpm2-pcr-signing.public.pem` is copied into the image and initramfs. `sign-target-prediction.sh` verifies signatures over the exact UKI and generation-bound PCR11 policy with the image's public key. | Test PCR trust must be injected before initramfs/UKI construction, not merely replaced in the final root filesystem. |
 | EFI/UKI | `TILO_PCR_PREDICTION_SIGNER` exports its certificate; `TILO_EFI_SIGNING_CERT_SHA256` independently pins the SHA-256 of its DER bytes. Returned signatures and the unchanged Authenticode payload are checked. | A test certificate is trusted only in a disposable VM variable store. Its fingerprint alone does not make stock firmware trust it. |
 | Marketplace registry owner | `TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY`, a nonzero 32-byte Ed25519 public key in hex, becomes `/usr/share/tilo/trust/tilo-main-registry-owner.pub`. | Branch CI can use the explicit RFC 8032 test-vector public key. It is not an independently held production owner identity. |
@@ -110,7 +110,7 @@ context precedence using scratch images without network access or downloaded
 base images. It passed on Podman 5.8.1; BuildKit execution is still required
 before claiming that backend is verified.
 
-## Isolated development-image design — implementation still required
+## Isolated development-image boundaries and remaining integration
 
 Do not overwrite tracked public keys or reuse production aliases to get a test
 image through the current checks. Implement a dedicated development path with
@@ -153,6 +153,8 @@ these boundaries:
    directory. Keep the same root-ownership, canonical-path, signature and
    payload-preservation checks as the existing interface. Do not add a bypass
    for those checks or let an untrusted artifact select its own verifier key.
+   The rootful provider below implements this interface; connecting final image
+   sealing to the signed disk/VM pipeline remains separate work.
 6. Before any VM boot test, use a unique cycle with disposable QCOW2 disks,
    software TPM state and a private firmware variable store. Never pass through
    a host block device, physical TPM, or efivarfs. Enrollment is permitted only
@@ -190,6 +192,46 @@ bash os/dev/sign-target-prediction.sh "$TILO_IMAGE" "$TILO_PCR_PREDICTION_SIGNER
 is an invocation opt-in, **not** a key-injection mechanism or a firmware-trust
 override. Do not set it on the current production-key image expecting a new
 test key to work.
+
+### Provisioning the rootful development signer
+
+On an isolated Linux preparation host, provision a fresh directory from the
+reviewed source revision:
+
+```sh
+sudo python3 os/dev/setup-development-signer.py /var/lib/tilo-development-signer
+```
+
+The parent must already exist, be root-owned and not group/world writable. The
+new directory must be outside the checkout, runner temporary directory and
+artifact upload paths. Provisioning refuses an existing destination. It creates
+independent 3072-bit RSA EFI and PCR keys with owner-only permissions, a visibly
+named development certificate, a purpose marker and the standalone signer.
+It returns only public input paths, the signer path and the EFI certificate's
+SHA-256 over its DER bytes. A failed provision leaves an incomplete directory;
+it never silently replaces an identity on retry.
+
+The provider requires an already-root caller. It grants no privileges and is
+not a network signing service. Use the same rootful Podman store throughout this
+development build/seal/verify path. Do not mix a rootless build store with this
+rootful provider. Cosign and marketplace owner identities remain separate;
+copy only the exported certificate and PCR public key into the independently
+pinned public bundle using `development-trust.py`.
+
+Set `TILO_PCR_PREDICTION_SIGNER` to the installed `signer` path and independently
+record its returned `efi_certificate_sha256` as
+`TILO_EFI_SIGNING_CERT_SHA256`. The provider accepts the three existing signer
+operations, rejects redirected inputs and unsafe private-key permissions, and
+creates outputs exclusively. The existing image-sealing caller must still
+verify the signatures, certificate fingerprint and unchanged Authenticode
+payload. No operation enrolls firmware keys or makes the development certificate
+trusted by physical hardware.
+
+The native CI fixture `os/tests/development_signer.py` provisions disposable keys,
+verifies real PCR signatures and signs the native systemd-boot EFI executable.
+It checks certificate identity and preserved executable contents, plus rejection
+of changed messages, redirected inputs, unsafe key permissions and reused output
+paths. It removes its private fixture directory afterward.
 
 ## Independent development source verification
 
