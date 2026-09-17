@@ -6,7 +6,7 @@ on:
       proof:
         description: Native proof to run; full runs every fixture
         type: choice
-        options: [full, prediction]
+        options: [full, prediction, retention]
         default: full
   push:
     branches: [main]
@@ -16,6 +16,10 @@ on:
       - os/dev/development_prediction.py
       - os/tests/test_development_prediction.py
       - os/tests/development_prediction_native.py
+      - os/dev/retain-development-rootfs.py
+      - os/tests/test_retain_development_rootfs.py
+      - os/tests/development_retention_native.py
+      - os/tests/tls_registry_fixture.py
       - os/tests/test_development_boot.py
       - os/tests/test_development_source.py
       - os/dev/development-trust.py
@@ -79,6 +83,8 @@ jobs:
           cp os/dev/{verify-development-source.py,development_boot.py,development_prediction.py,development-trust.py,install-public-trust.py,hardware_profile.py,development-signer.py,setup-development-signer.py,verify-authenticode-envelope.py,verify-development-loader.py,sign-development-rootfs.py,private_disk_image.py,prepare-wpe-stage.py} "$context/dev/"
           cp os/tests/{development_source_registry.py,development_signer.py,test_development_signer.py,test_development_loader.py,test_development_boot.py,test_development_prediction.py,development_prediction_native.py,test_development_source.py,development_stage_reuse.py,development_rootfs.py,test_sign_development_rootfs.py,test_private_disk_image.py,test_prepare_wpe_stage.py,wpe_stage_cache.py} "$context/"
           cp os/Containerfile.development-loader "$context/"
+          cp os/dev/retain-development-rootfs.py "$context/dev/"
+          cp os/tests/{test_retain_development_rootfs.py,development_retention_native.py,tls_registry_fixture.py} "$context/"
           cp "$(command -v cosign)" "$context/cosign"
           cp os/tests/Containerfile.development-source "$context/Containerfile"
           docker build --file "$context/Containerfile" --tag "$image" "$context"
@@ -89,5 +95,8 @@ jobs:
             prediction)
               docker run --rm --privileged --tmpfs /tmp --tmpfs /run --entrypoint python3 \
                 "$image" /fixture/os/tests/development_prediction_native.py ;;
+            retention)
+              docker run --rm --privileged --tmpfs /tmp --tmpfs /run --entrypoint bash \
+                "$image" -euc 'python3 /fixture/os/tests/test_retain_development_rootfs.py; python3 /fixture/os/tests/development_retention_native.py' ;;
             *) echo 'Unknown native proof selection' >&2; exit 2 ;;
           esac
