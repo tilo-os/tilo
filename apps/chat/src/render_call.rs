@@ -21,7 +21,8 @@ use crate::app::{ChatApp, Hit};
 use crate::emoji;
 use crate::model::{self, Presence, VoiceMember};
 use crate::paint::{
-    fill_circle, fill_rect, fill_round, hline, label, stroke_circle, stroke_round, text,
+    PaintContext, fill_circle, fill_rect, fill_round, hline, label, stroke_circle, stroke_round,
+    text,
 };
 use crate::render_chat::draw_avatar;
 
@@ -144,10 +145,7 @@ impl ChatApp {
         let cx = rect.center().x;
         let cy = rect.center().y - r * 0.35;
         draw_avatar(
-            scene,
-            tf,
-            tr,
-            theme,
+            PaintContext::new(scene, tf, tr, theme),
             Point::new(cx, cy),
             r,
             &initials,
@@ -405,10 +403,7 @@ impl ChatApp {
                     stroke_circle(scene, tf, cc, radius + 3.0, c.semantic.success, 2.0);
                 }
                 draw_avatar(
-                    scene,
-                    tf,
-                    tr,
-                    theme,
+                    PaintContext::new(scene, tf, tr, theme),
                     cc,
                     radius,
                     &u.initials,
@@ -1051,10 +1046,7 @@ impl ChatApp {
             let cx = rect.center().x;
             let cy = rect.center().y - radius * 0.3;
             draw_avatar(
-                scene,
-                tf,
-                tr,
-                theme,
+                PaintContext::new(scene, tf, tr, theme),
                 Point::new(cx, cy),
                 radius,
                 &u.initials,
