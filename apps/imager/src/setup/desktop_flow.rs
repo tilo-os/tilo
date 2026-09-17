@@ -361,6 +361,11 @@ impl DesktopFlow {
         self.cancel = None;
         let cancel_requested = std::mem::take(&mut self.cancel_requested);
         match (selection, result) {
+            (Some(selection), Ok(_)) if cancel_requested => self.fail(
+                Some(selection),
+                DesktopFailureKind::DownloadCancelled,
+                "Desktop package download cancelled before native authorization began.".into(),
+            ),
             (Some(selection), Ok(package_input)) => {
                 let request = DesktopInstallRequest {
                     schema: 1,
@@ -523,7 +528,11 @@ fn launch_live_download(
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::{Arc, atomic::AtomicBool, mpsc};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    };
 
     use super::*;
     use crate::setup::desktop_catalog::{DesktopRelease, PackageFormat, RuntimeEvidence};
@@ -593,6 +602,15 @@ mod tests {
 
     fn disconnected_install(_: DesktopInstallRequest) -> Result<InstallReceiver, String> {
         let (_tx, rx) = mpsc::channel();
+        Ok(rx)
+    }
+
+    static INSTALL_LAUNCHES: AtomicUsize = AtomicUsize::new(0);
+
+    fn counting_install(_: DesktopInstallRequest) -> Result<InstallReceiver, String> {
+        INSTALL_LAUNCHES.fetch_add(1, Ordering::SeqCst);
+        let (tx, rx) = mpsc::channel();
+        drop(tx);
         Ok(rx)
     }
 
@@ -704,6 +722,33 @@ mod tests {
         assert!(flow.cancel_download());
         flow.apply_download(Err("Desktop package download cancelled.".into()));
 
+        assert!(matches!(
+            flow.state(),
+            DesktopFlowState::Failed {
+                kind: DesktopFailureKind::DownloadCancelled,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn accepted_download_cancellation_wins_over_a_queued_success() {
+        INSTALL_LAUNCHES.store(0, Ordering::SeqCst);
+        let mut flow = DesktopFlow::without_start(DesktopRuntime {
+            launch_probe: disconnected_probe,
+            launch_download: disconnected_download,
+            launch_install: counting_install,
+        });
+        flow.apply_probe(Ok(DesktopProbeSnapshot {
+            host: host(InstalledPackage::Absent),
+            releases: vec![release("0.1.9-1.fc44")],
+        }));
+        flow.begin_download_for_test();
+
+        assert!(flow.cancel_download());
+        flow.apply_download(Ok(PathBuf::from("/tmp/already-queued.rpm")));
+
+        assert_eq!(INSTALL_LAUNCHES.load(Ordering::SeqCst), 0);
         assert!(matches!(
             flow.state(),
             DesktopFlowState::Failed {
