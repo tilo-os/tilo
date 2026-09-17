@@ -1,15 +1,23 @@
-name: Development / full provisional OS compilation
+name: Development / cache proof and provisional OS compilation
 
 on:
   workflow_dispatch:
     inputs:
-      wpe_candidate:
-        description: 'Reviewed native x86-64 tilo-wpe-buildroot@sha256 candidate'
+      mode:
+        description: 'Cache proof only, or explicitly compile every OS component'
         required: true
+        type: choice
+        default: cache-only
+        options:
+          - cache-only
+          - full-build
+      wpe_candidate:
+        description: 'Full-build only: reviewed native x86-64 tilo-wpe-buildroot@sha256 candidate'
+        required: false
         type: string
       generation:
-        description: 'Explicit positive test generation; no release generation is allocated'
-        required: true
+        description: 'Full-build only: explicit positive test generation'
+        required: false
         type: string
 
 concurrency:
@@ -24,7 +32,8 @@ jobs:
     runs-on: runner-disk-100g
     # Leave evidence-cleanup headroom inside the existing 180-minute runner cap.
     # This is a limit, not an estimate of full compilation duration.
-    timeout-minutes: 170
+    # Cache-only includes tools image setup, then bounded compiler probes.
+    timeout-minutes: ${{ inputs.mode == 'cache-only' && 30 || 170 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -32,13 +41,14 @@ jobs:
           persist-credentials: false
       - name: Validate manual inputs and native execution
         env:
+          COMPILE_MODE: ${{ inputs.mode }}
           WPE_CANDIDATE: ${{ inputs.wpe_candidate }}
           TEST_GENERATION: ${{ inputs.generation }}
         run: |
           set -euo pipefail
           bash os/dev/assert-native-arch.sh x86_64
           python3 os/tests/test_development_compile.py
-          python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("compile", "os/dev/compile-development-os.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_inputs(os.environ["WPE_CANDIDATE"], os.environ["TEST_GENERATION"], os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"])'
+          python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("compile", "os/dev/compile-development-os.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_inputs(os.environ["WPE_CANDIDATE"], os.environ["TEST_GENERATION"], os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"], os.environ["COMPILE_MODE"])'
           bash os/dev/install-cached-cosign.sh
       - name: Authenticate input pulls
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -46,8 +56,9 @@ jobs:
           registry: code.podesta.ai
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
-      - name: Build every OS component with isolated ephemeral test trust
+      - name: Run selected cache proof or full compilation
         env:
+          COMPILE_MODE: ${{ inputs.mode }}
           WPE_CANDIDATE: ${{ inputs.wpe_candidate }}
           TEST_GENERATION: ${{ inputs.generation }}
         shell: bash
@@ -98,7 +109,7 @@ jobs:
             --env SCCACHE_ENDPOINT --env SCCACHE_BUCKET --env SCCACHE_REGION \
             --env SCCACHE_S3_USE_SSL --env SCCACHE_S3_KEY_PREFIX \
             --env REGISTRY_AUTH_FILE=/registry-auth.json \
-            "$name:tools" --wpe "$WPE_CANDIDATE" --generation "$TEST_GENERATION" \
+            "$name:tools" --mode "$COMPILE_MODE" --wpe "$WPE_CANDIDATE" --generation "$TEST_GENERATION" \
               --revision "$GITHUB_SHA" --branch "$GITHUB_REF"
           docker cp . "$name:/work/repo"
           docker cp "$cache_secrets/." "$name:/run/tilo-cache-secrets/"
