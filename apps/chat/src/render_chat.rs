@@ -59,6 +59,19 @@ struct AttachmentLayout {
     max_width: f32,
 }
 
+#[derive(Clone, Copy)]
+struct MessageColumn {
+    area: Rect,
+    text_x: f64,
+    text_width: f32,
+}
+
+#[derive(Clone, Copy)]
+struct MessageBodyLayout {
+    column: MessageColumn,
+    content_top: f64,
+}
+
 impl AttachmentLayout {
     fn new(x: f64, y: f64, max_width: f32) -> Self {
         Self {
@@ -1652,19 +1665,26 @@ impl ChatApp {
     }
 
     // ------------------------------------------------------------ messages
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_messages(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
         area: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let text_x = area.x0 + 16.0 + AVATAR + 14.0;
         let text_w = (area.x1 - text_x - 18.0).max(80.0) as f32;
+        let column = MessageColumn {
+            area,
+            text_x,
+            text_width: text_w,
+        };
 
         // Empty channel: a quiet start-of-conversation marker rather than a
         // blank void, so a fresh channel reads as ready, not broken.
@@ -1699,11 +1719,21 @@ impl ChatApp {
         }
         let y = (start_y + self.scroll).clamp(min_start, max_start);
 
-        let mut y = self.draw_messages_date_divider(scene, tf, tr, theme, area, y, divider_h);
+        let mut y = self.draw_messages_date_divider(
+            PaintContext::new(scene, tf, tr, theme),
+            area,
+            y,
+            divider_h,
+        );
 
         for rm in &rows {
             self.draw_row(
-                scene, tf, tr, theme, presence, rm, area, text_x, text_w, &mut y, hits,
+                PaintContext::new(scene, tf, tr, theme),
+                presence,
+                rm,
+                column,
+                &mut y,
+                hits,
             );
         }
     }
@@ -1799,20 +1829,19 @@ impl ChatApp {
 
     /// The "Today"/date divider above the first row. Returns the cursor `y`
     /// for the first message row beneath it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_messages_date_divider(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         area: Rect,
         y: f64,
         divider_h: f64,
     ) -> f64 {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let dl = self.messages.first().map_or_else(
             || "Today".into(),
@@ -1908,25 +1937,22 @@ impl ChatApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_row(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
         rm: &RowM,
-        area: Rect,
-        text_x: f64,
-        text_w: f32,
+        column: MessageColumn,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let area = column.area;
         let Some(m) = self.message(&rm.idx_id).cloned() else {
             return;
         };
@@ -1946,44 +1972,47 @@ impl ChatApp {
         let content_top = *y;
 
         if rm.show_header {
-            self.draw_row_header(scene, tf, tr, theme, area, text_x, &m, y);
+            self.draw_row_header(PaintContext::new(scene, tf, tr, theme), column, &m, y);
         }
 
         self.draw_row_body(
-            scene,
-            tf,
-            tr,
-            theme,
+            PaintContext::new(scene, tf, tr, theme),
             presence,
             rm,
             &m,
-            area,
-            text_x,
-            text_w,
-            content_top,
+            MessageBodyLayout {
+                column,
+                content_top,
+            },
             y,
             hits,
         );
-        self.draw_row_footer(scene, tf, tr, theme, rm, &m, text_x, text_w, y, hits);
+        self.draw_row_footer(
+            PaintContext::new(scene, tf, tr, theme),
+            rm,
+            &m,
+            column,
+            y,
+            hits,
+        );
     }
 
     /// A message group's header: avatar, author name (in their palette
     /// colour), and the timestamp. Advances `*y` past it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_row_header(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        text_x: f64,
+        paint: PaintContext<'_>,
+        column: MessageColumn,
         m: &Message,
         y: &mut f64,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let MessageColumn { area, text_x, .. } = column;
         let c = &theme.tokens.colors;
         let u = self.user(&m.author).cloned();
         let (initials, cidx, status) = u.as_ref().map_or_else(
@@ -2030,29 +2059,41 @@ impl ChatApp {
     /// The editor (while editing) or the plain/mention-attributed body text,
     /// plus the right-click hit region over the header+body block for your
     /// own messages. Advances `*y` past the body.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_row_body(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
         rm: &RowM,
         m: &Message,
-        area: Rect,
-        text_x: f64,
-        text_w: f32,
-        content_top: f64,
+        layout: MessageBodyLayout,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let MessageBodyLayout {
+            column:
+                MessageColumn {
+                    area,
+                    text_x,
+                    text_width: text_w,
+                },
+            content_top,
+        } = layout;
         let c = &theme.tokens.colors;
         if rm.editing {
-            self.draw_message_editor(scene, tf, tr, theme, presence, text_x, text_w, rm, y, hits);
+            self.draw_message_editor(
+                PaintContext::new(scene, tf, tr, theme),
+                presence,
+                layout.column,
+                rm,
+                y,
+                hits,
+            );
             return;
         }
         if !m.text.is_empty() {
@@ -2099,23 +2140,26 @@ impl ChatApp {
     /// The "(edited)" label, attachment, reactions, and thread affordance
     /// below the body — each only when present. Advances `*y` past all of
     /// them, plus the row's trailing gap.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_row_footer(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         rm: &RowM,
         m: &Message,
-        text_x: f64,
-        text_w: f32,
+        column: MessageColumn,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let MessageColumn {
+            text_x,
+            text_width: text_w,
+            ..
+        } = column;
         let c = &theme.tokens.colors;
         if m.edited && !rm.editing {
             let edited_label = "(edited) · view history";
@@ -2149,12 +2193,18 @@ impl ChatApp {
         // Empty reaction strip still gets an add affordance on header rows —
         // handled elsewhere, so there is nothing to draw when it's empty.
         if !m.reactions.is_empty() {
-            self.draw_reactions(scene, tf, tr, theme, m, text_x, *y, hits);
+            self.draw_reactions(PaintContext::new(scene, tf, tr, theme), m, text_x, *y, hits);
             *y += rm.react_h;
         }
 
         if rm.thread_h > 0.0 {
-            self.draw_thread_affordance(scene, tf, tr, theme, m, text_x, *y, text_w, hits);
+            self.draw_thread_affordance(
+                PaintContext::new(scene, tf, tr, theme),
+                m,
+                column,
+                *y,
+                hits,
+            );
             *y += rm.thread_h;
         }
         *y += 4.0;
@@ -2165,20 +2215,26 @@ impl ChatApp {
     /// (a keyboard hint plus Cancel / Save). Advances `*y` past the whole
     /// editor. The wrap width matches [`Self::measure_row`] so the timeline
     /// height stays exact as the text grows.
-    #[allow(clippy::too_many_arguments)]
     fn draw_message_editor(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
-        text_x: f64,
-        text_w: f32,
+        column: MessageColumn,
         rm: &RowM,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let MessageColumn {
+            text_x,
+            text_width: text_w,
+            ..
+        } = column;
         let c = &theme.tokens.colors;
         let box_h = rm.body_h + EDIT_BOX_PAD;
         let er = Rect::new(
@@ -2248,18 +2304,20 @@ impl ChatApp {
         *y += rm.edit_ctrl_h;
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_reactions(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         m: &Message,
         text_x: f64,
         y: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let mut x = text_x;
         let chip_h = 26.0;
@@ -2323,19 +2381,25 @@ impl ChatApp {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_thread_affordance(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         m: &Message,
-        text_x: f64,
+        column: MessageColumn,
         y: f64,
-        text_w: f32,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let MessageColumn {
+            text_x,
+            text_width: text_w,
+            ..
+        } = column;
         let c = &theme.tokens.colors;
         let count = model::reply_count(&self.messages, &m.id);
         let parts = model::thread_participants(&self.messages, &m.id);
