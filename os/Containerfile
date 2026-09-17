@@ -431,6 +431,8 @@ COPY . /build
 ARG TILO_WITH_BROWSER
 ARG TILO_PREBUILT_APPS=0
 ARG TILO_PREBUILT_DESKTOP=0
+ARG TILO_CARGO_BUILD_JOBS=4
+ENV CARGO_BUILD_JOBS=${TILO_CARGO_BUILD_JOBS}
 ARG TILO_APP_COLLECTION_PUBLISHER=""
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
