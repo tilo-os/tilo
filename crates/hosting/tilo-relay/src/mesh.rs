@@ -268,6 +268,8 @@ pub struct ServerAdvertisement {
     pub workspaces: BTreeSet<u64>,
     /// Apps whose backend can run here. Empty means none, not "all".
     pub apps: BTreeSet<String>,
+    /// Optional execution hardware available to sandboxed compute jobs.
+    pub accelerators: BTreeSet<ComputeAccelerator>,
     /// Operator preference; higher is preferred before load balancing.
     pub priority: i32,
     /// Smoothed round-trip latency in milliseconds.
@@ -284,6 +286,14 @@ pub struct ServerAdvertisement {
     pub assignment_capacity: u32,
     /// Whether liveness is fresh enough to route new work.
     pub online: bool,
+}
+
+/// Hardware class a compute worker can expose through the normal package
+/// sandbox. Advertising hardware grants no additional identity authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ComputeAccelerator {
+    /// A sandbox-approved render/compute node selected by the launcher.
+    Gpu,
 }
 
 /// Coarse power information used to keep continuity from unexpectedly draining
@@ -537,6 +547,7 @@ mod tests {
             services: ServiceCapabilities::personal_server(),
             workspaces: BTreeSet::from([7]),
             apps: BTreeSet::from(["dev.tilo.word".to_string()]),
+            accelerators: BTreeSet::from([ComputeAccelerator::Gpu]),
             priority: 0,
             latency_ms: 10,
             power: PowerAvailability::External,

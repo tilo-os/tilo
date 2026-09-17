@@ -1354,6 +1354,7 @@ impl ShellNetwork {
                 services: tilo_relay::ServiceCapabilities::relay_only(),
                 workspaces: std::collections::BTreeSet::from([workspace]),
                 apps: std::collections::BTreeSet::new(),
+                accelerators: std::collections::BTreeSet::new(),
                 priority: 0,
                 latency_ms: 0,
                 power: tilo_relay::PowerAvailability::Unknown,
