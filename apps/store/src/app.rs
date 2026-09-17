@@ -227,6 +227,12 @@ fn device_state_label(item: &StoreItem) -> String {
     }
 }
 
+/// Minimum compact hero band that clears the artwork and grows with readable
+/// type. Kept pure so the responsive invariant is cheap to regression-test.
+fn compact_identity_height(text_scale: f32) -> f32 {
+    88.0 * text_scale.clamp(1.0, 2.0)
+}
+
 /// Render a readable, stable publisher identity summary. The full identity is
 /// retained in the canonical app resource and report envelope; the detail
 /// page intentionally avoids turning a human decision surface into a wall of
@@ -1981,12 +1987,21 @@ impl StoreApp {
                             .with_child(back),
                     ))
                     .push(Box::new(
-                        Row::new().no_wrap().push(artwork).push(Box::new(
-                            Container::new()
-                                .with_no_padding()
-                                .with_flex_grow()
-                                .with_child(summary),
-                        )),
+                        // Give the identity row an explicit band. Its intrinsic
+                        // height used to collapse below the 56px artwork, so
+                        // the following description painted through the icon
+                        // on a phone. Scale the reserve with large type too.
+                        Container::new()
+                            .with_no_padding()
+                            .with_height(compact_identity_height(self.text_scale))
+                            .with_child(Box::new(
+                                Row::new().no_wrap().push(artwork).push(Box::new(
+                                    Container::new()
+                                        .with_no_padding()
+                                        .with_flex_grow()
+                                        .with_child(summary),
+                                )),
+                            )),
                     ))
                     .push(Box::new(
                         Text::new(&item.description).with_scaled_size(14.0),
@@ -4690,6 +4705,13 @@ impl Widget for StoreApp {
 mod tests {
     use super::*;
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
+
+    #[test]
+    fn compact_detail_identity_band_clears_artwork_and_scales_with_type() {
+        assert_eq!(compact_identity_height(1.0), 88.0);
+        assert_eq!(compact_identity_height(1.5), 132.0);
+        assert_eq!(compact_identity_height(3.0), 176.0);
+    }
 
     fn item(name: &str, source: StoreSource, cat: &str, installed: InstalledState) -> StoreItem {
         let trust = match &source {

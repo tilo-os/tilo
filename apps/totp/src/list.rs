@@ -24,16 +24,20 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use ui::color_compat::ColorCompat;
+use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Avatar, Widget};
+use ui::widget::{Avatar, Button, ButtonFace, ButtonStyle, Widget};
 
 use crate::model::{Account, AccountId, account_color};
 use crate::ring::CountdownRing;
 use crate::totp;
 
-const ROW_HEIGHT: f64 = 76.0;
+// Three vertically stacked row actions each need a real 32px target. Keeping
+// the wide card at 96px prevents reorder/delete from collapsing into 25px
+// slivers while leaving the identity and rotating code comfortably aligned.
+const ROW_HEIGHT: f64 = 96.0;
 /// Narrow cards deliberately give the code its own second line.  Shrinking a
 /// six/eight-digit credential beside the account identity makes both harder to
 /// scan, and at phone-ish widths the old single-line geometry overlapped them.
@@ -42,7 +46,9 @@ const ROW_GAP: f64 = 10.0;
 const PAD: f64 = 16.0;
 const AVATAR_R: f64 = 24.0;
 const RING_R: f64 = 22.0;
-const ACTION_W: f64 = 26.0;
+/// Reorder/delete controls share one vertical action rail. Keep the rail wide
+/// enough to remain a deliberate pointer target instead of three tiny glyphs.
+const ACTION_W: f64 = 34.0;
 const COPY_ZONE_W: f64 = 210.0;
 
 /// What the user did in the list, drained by the app each frame.
@@ -298,57 +304,42 @@ impl AccountList {
     fn draw_action_icons(
         scene: &mut Scene,
         transform: Affine,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
         l: &RowLayout,
         r: Rect,
         hovered_zone: Option<Zone>,
     ) {
-        use vello::kurbo::BezPath;
-        let cx = f64::midpoint(l.actions_x0, l.actions_x1);
         let third = r.height() / 3.0;
-        let centers = [
-            (Zone::Up, r.y0 + third * 0.5),
-            (Zone::Down, r.y0 + third * 1.5),
-            (Zone::Delete, r.y0 + third * 2.5),
+        let controls = [
+            (Zone::Up, Icon::ChevronUp, "Move up"),
+            (Zone::Down, Icon::ChevronDown, "Move down"),
+            (Zone::Delete, Icon::Trash2, "Delete account"),
         ];
-        for (zone, cy) in centers {
-            let active = hovered_zone == Some(zone);
-            let color = if active {
-                if zone == Zone::Delete {
-                    theme.tokens.colors.semantic.danger
-                } else {
-                    theme.tokens.colors.text_primary
-                }
+        for (index, (zone, icon, name)) in controls.into_iter().enumerate() {
+            let rect = Rect::new(
+                l.actions_x0,
+                r.y0 + index as f64 * third,
+                l.actions_x1,
+                r.y0 + (index + 1) as f64 * third,
+            );
+            let hovered = hovered_zone == Some(zone);
+            let style = if zone == Zone::Delete && hovered {
+                ButtonStyle::Danger
             } else {
-                theme.tokens.colors.text_dim.with_alpha_factor(0.7)
+                ButtonStyle::Ghost
             };
-            let s = 4.0;
-            let mut path = BezPath::new();
-            match zone {
-                Zone::Up => {
-                    path.move_to((cx - s, cy + s * 0.6));
-                    path.line_to((cx, cy - s * 0.6));
-                    path.line_to((cx + s, cy + s * 0.6));
-                    scene.stroke(&stroke(1.6), transform, color, None, &path);
-                }
-                Zone::Down => {
-                    path.move_to((cx - s, cy - s * 0.6));
-                    path.line_to((cx, cy + s * 0.6));
-                    path.line_to((cx + s, cy - s * 0.6));
-                    scene.stroke(&stroke(1.6), transform, color, None, &path);
-                }
-                Zone::Delete => {
-                    // a small trash glyph: lid + body lines
-                    path.move_to((cx - s, cy - s * 0.7));
-                    path.line_to((cx + s, cy - s * 0.7));
-                    path.move_to((cx - s * 0.7, cy - s * 0.7));
-                    path.line_to((cx - s * 0.55, cy + s));
-                    path.line_to((cx + s * 0.55, cy + s));
-                    path.line_to((cx + s * 0.7, cy - s * 0.7));
-                    scene.stroke(&stroke(1.6), transform, color, None, &path);
-                }
-                _ => {}
-            }
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(rect, "")
+                    .icon(icon)
+                    .accessible_name(name)
+                    .style(style)
+                    .hovered(hovered),
+            );
         }
     }
 
@@ -509,10 +500,10 @@ impl AccountList {
             self.ring.draw_arc(scene, transform, text_renderer, theme);
         }
 
-        // Hover action icons.
-        if is_hovered {
-            Self::draw_action_icons(scene, transform, theme, &l, r, hovered_zone);
-        }
+        // Keep row actions visible: hidden-on-hover controls are undiscoverable
+        // for touch and keyboard users. Shared faces provide consistent icon
+        // contrast and hover feedback across themes.
+        Self::draw_action_icons(scene, transform, text_renderer, theme, &l, r, hovered_zone);
     }
 
     /// Paint the row background card, tinted for selection/hover, plus the
@@ -593,12 +584,6 @@ struct RowLayout {
     code_right: f64,
     avatar_c: Point,
     text_x: f64,
-}
-
-fn stroke(w: f64) -> vello::kurbo::Stroke {
-    vello::kurbo::Stroke::new(w)
-        .with_caps(vello::kurbo::Cap::Round)
-        .with_join(vello::kurbo::Join::Round)
 }
 
 impl Widget for AccountList {
@@ -794,6 +779,14 @@ mod tests {
             r.y1 - 6.0,
         );
         assert_eq!(l.hit(del_p), Some((0, Zone::Delete)));
+        assert!(
+            layout.actions_x1 - layout.actions_x0 >= 32.0,
+            "the action rail keeps a usable horizontal target"
+        );
+        assert!(
+            r.height() / 3.0 >= 32.0,
+            "each stacked action keeps a usable vertical target"
+        );
     }
 
     #[test]

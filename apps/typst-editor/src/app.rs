@@ -290,7 +290,10 @@ impl TypstApp {
     /// labels.  Keeping this calculation beside layout prevents a 200% font
     /// from painting outside a 100%-sized toolbar.
     fn pill_height(&self) -> f64 {
-        PILL_H * self.layout_text_scale
+        let compact =
+            self.rect.width() > 0.0 && self.rect.width() < COMPACT_W * self.layout_text_scale;
+        let scaled = PILL_H * self.layout_text_scale;
+        if compact { scaled.max(44.0) } else { scaled }
     }
 
     fn toolbar_height(&self) -> f64 {
@@ -2739,6 +2742,10 @@ mod tests {
         // Narrow → compact: a single pane, no divider.
         app.layout_in(Rect::new(0.0, 0.0, 560.0, 720.0));
         assert!(app.compact);
+        assert!(
+            app.pill_height() >= 44.0,
+            "compact controls are touch-sized"
+        );
         assert_eq!(app.divider_rect.area(), 0.0);
         assert!(app.editor_rect.area() > 0.0, "editor pane shown");
         assert_eq!(app.preview_rect.area(), 0.0, "preview hidden in compact");

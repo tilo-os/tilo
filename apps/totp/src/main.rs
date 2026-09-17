@@ -43,7 +43,10 @@ const SCREENS: &[&str] = &[
 ];
 
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    match args.value("--screen") {
+    // `--scenario` powers the shared visual-matrix/discovery tooling. Keep the
+    // legacy `--screen` spelling for existing scripts while they migrate.
+    let screen = args.scenario.as_deref().or_else(|| args.value("--screen"));
+    match screen {
         None => Ok(totp::app_root_demo()),
         Some("add") => Ok(totp::app_root_add_screen()),
         Some("add-advanced") => Ok(totp::app_root_add_advanced_screen()),
@@ -75,6 +78,7 @@ pub fn main() {
         &LaunchSpec::new(APP_ID, totp::app_root)
             .shot_root(shot_root)
             .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
+            .scenarios(SCREENS)
             .allowed_options(&["--screen"])
             .configure_app(configure),
     );

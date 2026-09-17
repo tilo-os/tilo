@@ -22,7 +22,7 @@ use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -35,7 +35,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::tilo_actions::OperationKind;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use ui::widget::{TextInput, Widget};
+use ui::widget::{Button, ButtonFace, ButtonStyle, TextInput, Widget};
 
 use crate::add_panel::{AddAccountPanel, AddPanelEvent};
 use crate::doc::AuthDoc;
@@ -900,27 +900,6 @@ impl AuthenticatorApp {
 
         // Add button.
         let can_edit = self.selected.is_some_and(|id| self.vault.get(id).is_some());
-        let edit_hovered = can_edit && self.edit_btn_rect.contains(self.last_mouse);
-        let edit_shape =
-            RoundedRect::from_rect(self.edit_btn_rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            if edit_hovered {
-                theme.tokens.colors.lift(0.72)
-            } else {
-                theme.tokens.colors.surfaces.raised
-            },
-            None,
-            &edit_shape,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &edit_shape,
-        );
         let selected_has_secret = self
             .selected
             .and_then(|id| self.vault.get(id))
@@ -936,52 +915,35 @@ impl AuthenticatorApp {
         } else {
             "Set up selected"
         };
-        let edit_color = if can_edit {
-            theme.tokens.colors.text_primary
-        } else {
-            theme.tokens.colors.text_dim.with_alpha_factor(0.55)
-        };
-        let (edit_w, edit_h) =
-            text_renderer.measure_weighted(edit_label, 14.0, None, TextWeight::Medium);
-        text_renderer.draw_text_weighted(
-            scene,
-            edit_label,
-            14.0,
-            edit_color,
-            transform
-                * Affine::translate((
-                    self.edit_btn_rect.center().x - f64::from(edit_w) / 2.0,
-                    self.edit_btn_rect.center().y - f64::from(edit_h) / 2.0,
-                )),
-            None,
-            TextWeight::Medium,
-        );
+        if can_edit {
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(self.edit_btn_rect, edit_label)
+                    .style(ButtonStyle::Neutral)
+                    .text_size(14.0)
+                    .weight(TextWeight::Medium)
+                    .hovered(self.edit_btn_rect.contains(self.last_mouse)),
+            );
+        }
         let hovered = self.add_btn_rect.contains(self.last_mouse);
-        let shape = RoundedRect::from_rect(self.add_btn_rect, f64::from(theme.tokens.radii.md));
-        let bg = if hovered {
-            theme.accent_hover
-        } else {
-            theme.accent_primary
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
         let label = if self.rect.width() < 420.0 {
             "+ Add"
         } else {
             "+  Add account"
         };
-        let (tw, th) = text_renderer.measure_weighted(label, 14.0, None, TextWeight::Semibold);
-        text_renderer.draw_text_weighted(
+        Button::paint(
             scene,
-            label,
-            14.0,
-            Color::WHITE,
-            transform
-                * Affine::translate((
-                    self.add_btn_rect.center().x - f64::from(tw) / 2.0,
-                    self.add_btn_rect.center().y - f64::from(th) / 2.0,
-                )),
-            None,
-            TextWeight::Semibold,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(self.add_btn_rect, label)
+                .style(ButtonStyle::Primary)
+                .text_size(14.0)
+                .weight(TextWeight::Semibold)
+                .hovered(hovered),
         );
 
         // Search field (TextInput draws its own chrome + focus ring).
@@ -1198,7 +1160,7 @@ impl Widget for AuthenticatorApp {
                 &RoundedRect::from_rect(banner, f64::from(theme.tokens.radii.md)),
             );
             let banner_message = if self.rect.width() < 480.0 {
-                "Vault not saved — retry"
+                "Vault changes aren't saved"
             } else {
                 self.persistence_message
                     .as_deref()
@@ -1212,31 +1174,16 @@ impl Widget for AuthenticatorApp {
                 transform * Affine::translate((banner.x0 + 12.0, banner.center().y - 8.0)),
                 Some((self.persistence_retry_rect.x0 - banner.x0 - 24.0) as f32),
             );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.accent_primary,
-                None,
-                &RoundedRect::from_rect(
-                    self.persistence_retry_rect,
-                    f64::from(theme.tokens.radii.sm),
-                ),
-            );
-            text_renderer.draw_text_weighted(
+            Button::paint(
                 scene,
-                "Retry",
-                13.0,
-                theme
-                    .tokens
-                    .colors
-                    .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
-                transform
-                    * Affine::translate((
-                        self.persistence_retry_rect.x0 + 23.0,
-                        self.persistence_retry_rect.center().y - 8.0,
-                    )),
-                None,
-                TextWeight::Semibold,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(self.persistence_retry_rect, "Retry")
+                    .style(ButtonStyle::Primary)
+                    .text_size(13.0)
+                    .weight(TextWeight::Semibold)
+                    .hovered(self.persistence_retry_rect.contains(self.last_mouse)),
             );
         }
         // Hairline under the header.
@@ -1507,35 +1454,41 @@ impl Widget for AuthenticatorApp {
         }
         let visible = self.vault.search(self.search.value());
         let total = visible.len();
-        let controls = vec![
+        let mut controls = vec![
             AccessNode::new(Role::Button)
                 .with_name("Add account")
                 .with_description("Add an authenticator account")
                 .with_state(AccessState::new().focusable(true))
                 .with_bounds(self.add_btn_rect)
                 .with_action_target("totp.add"),
-            AccessNode::new(Role::Button)
-                .with_name(
-                    if self.selected.is_some_and(|id| self.has_local_secret(id)) {
-                        "Edit selected account"
-                    } else {
-                        "Set up selected account"
-                    },
-                )
-                .with_description(
-                    if self.selected.is_some_and(|id| self.has_local_secret(id)) {
-                        "Edit the selected account; shortcut Control+E"
-                    } else {
-                        "Set up the selected account's local secret; shortcut Control+E"
-                    },
-                )
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .disabled(self.selected.is_none()),
-                )
-                .with_bounds(self.edit_btn_rect)
-                .with_action_target("totp.edit"),
+        ];
+        if self.selected.is_some() {
+            controls.push(
+                AccessNode::new(Role::Button)
+                    .with_name(
+                        if self.selected.is_some_and(|id| self.has_local_secret(id)) {
+                            "Edit selected account"
+                        } else {
+                            "Set up selected account"
+                        },
+                    )
+                    .with_description(
+                        if self.selected.is_some_and(|id| self.has_local_secret(id)) {
+                            "Edit the selected account; shortcut Control+E"
+                        } else {
+                            "Set up the selected account's local secret; shortcut Control+E"
+                        },
+                    )
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .disabled(self.selected.is_none()),
+                    )
+                    .with_bounds(self.edit_btn_rect)
+                    .with_action_target("totp.edit"),
+            );
+        }
+        controls.push(
             AccessNode::new(Role::TextInput)
                 .with_name("Search accounts")
                 .with_value(self.search.value())
@@ -1546,7 +1499,7 @@ impl Widget for AuthenticatorApp {
                 )
                 .with_bounds(self.search_rect)
                 .with_action_target("totp.search"),
-        ];
+        );
         let mut children = vec![
             AccessNode::new(Role::Toolbar)
                 .with_name("Authenticator actions")
