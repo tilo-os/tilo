@@ -93,11 +93,20 @@ exit {BUILD_INTERCEPTED}
         self.write("os/dev/development-trust.py", 'import json; print(json.dumps({"identities":{"registry-owner.pub":"' + 'a' * 64 + '"}}))\n')
         public = self.root / "public bundle"
         public.mkdir()
+        self.write('.gitignore', 'podman-arguments\nscratch/\nos/output/\n__pycache__/\n')
+        subprocess.run(['git', 'init', '-q', str(self.root)], env=self.env, check=True)
+        self.commit_fixture()
         return {"TILO_PUBLIC_TRUST_MODE": "development",
                 "TILO_PUBLIC_TRUST_BUNDLE": str(public),
                 "TILO_PUBLIC_TRUST_MANIFEST_SHA256": "b" * 64,
                 "TILO_IMAGE": "localhost/tilo-development:fixture",
                 "TILO_TARGET_IMGREF": "127.0.0.1:5000/tilo-development/os:fixture"}
+
+    def commit_fixture(self):
+        subprocess.run(['git', 'add', '-A'], cwd=self.root, env=self.env, check=True)
+        subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                        '-c', 'commit.gpgsign=false', 'commit', '-qm', 'Record fixture inputs'],
+                       cwd=self.root, env=self.env, check=True)
 
     def test_development_forwards_pinned_public_context(self):
         result = self.run_builder(**self.development_inputs())
@@ -106,14 +115,28 @@ exit {BUILD_INTERCEPTED}
         self.assertIn("public-trust=" + str(self.root / "public bundle"), args)
         self.assertIn("TILO_PUBLIC_TRUST_MODE=development", args)
         self.assertIn("TILO_PUBLIC_TRUST_MANIFEST_SHA256=" + "b" * 64, args)
+        revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=self.root,
+                                           env=self.env, text=True).strip()
+        self.assertIn('org.opencontainers.image.revision=' + revision, args)
 
     def test_development_stops_before_disk_imaging(self):
         inputs = self.development_inputs()
         self.write("bin/podman", "#!/bin/sh\n[ \"$1\" = build ] || exit 72\nexit 0\n", executable=True)
+        self.commit_fixture()
         result = self.run_builder(**inputs)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Development container staged", result.stderr)
         self.assertNotIn("2/2 disk image", result.stderr)
+
+    def test_development_rejects_uncommitted_source_before_build(self):
+        inputs = self.development_inputs()
+        for path in ('os/dev/_common.sh', 'untracked-source.py'):
+            self.write(path, '# uncommitted source\n' + (self.root / path).read_text()
+                       if (self.root / path).exists() else '# new source\n')
+            result = self.run_builder(**inputs)
+            self.assertIn('commit development source changes', result.stderr)
+            self.assertFalse(self.log.exists())
+            self.commit_fixture()
 
     def test_development_rejects_skip_build_and_production_alias(self):
         inputs = self.development_inputs()
