@@ -19,8 +19,8 @@ use ui::widget::Avatar;
 use crate::app::{AVATAR, ChatApp, Hit, MenuTarget};
 use crate::model::{self, Attachment, ChannelKind, Message, Presence};
 use crate::paint::{
-    band_at_least, blend_toward, fill_circle, fill_rect, fill_round, hline, label, legible_on,
-    palette_color, push_clip, stroke_circle, stroke_round, text, truncate_to,
+    PaintContext, band_at_least, blend_toward, fill_circle, fill_rect, fill_round, hline, label,
+    legible_on, palette_color, push_clip, stroke_circle, stroke_round, text, truncate_to,
 };
 
 /// Body text size for a message. Shared by the measure and the draw so a
@@ -51,6 +51,48 @@ struct ChannelRowCtx<'a> {
     y: f64,
     is_active: bool,
     ch: &'a crate::model::Channel,
+}
+
+#[derive(Clone, Copy)]
+struct ChannelRowInput<'a> {
+    side: Rect,
+    channel: &'a crate::model::Channel,
+    y: f64,
+    swipe_dx: f64,
+}
+
+#[derive(Clone, Copy)]
+struct AttachmentLayout {
+    origin: Point,
+    max_width: f32,
+}
+
+#[derive(Clone, Copy)]
+struct MessageColumn {
+    area: Rect,
+    text_x: f64,
+    text_width: f32,
+}
+
+#[derive(Clone, Copy)]
+struct MessageBodyLayout {
+    column: MessageColumn,
+    content_top: f64,
+}
+
+#[derive(Clone, Copy)]
+struct MessageRowRef<'a> {
+    measurement: &'a RowM,
+    message: &'a Message,
+}
+
+impl AttachmentLayout {
+    fn new(x: f64, y: f64, max_width: f32) -> Self {
+        Self {
+            origin: Point::new(x, y),
+            max_width,
+        }
+    }
 }
 
 /// How a mention of `user` is painted on `ground`: an optional filled band, and
@@ -177,18 +219,20 @@ pub(crate) fn shape_body(
 }
 
 /// Draw a circular initials avatar with an optional presence dot.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_avatar(
-    scene: &mut Scene,
-    tf: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
+    paint: PaintContext<'_>,
     center: Point,
     r: f64,
     initials: &str,
     color_idx: usize,
     status: Option<Presence>,
 ) {
+    let PaintContext {
+        scene,
+        transform: tf,
+        text: tr,
+        theme,
+    } = paint;
     // Peer colour comes from the per-peer palette index (deliberately distinct
     // per identity, and shared with the workspace-tint colouring), so it's
     // passed straight through; the disc + centred monogram are painted by the
@@ -368,7 +412,13 @@ impl ChatApp {
         }
 
         let header = self.draw_sidebar_header(scene, tf, tr, theme, side, hits);
-        self.draw_sidebar_tree(scene, tf, tr, theme, presence, side, header, hits);
+        self.draw_sidebar_tree(
+            PaintContext::new(scene, tf, tr, theme),
+            presence,
+            side,
+            header,
+            hits,
+        );
         // Tilo stays calm while a workspace is private. The shell already owns
         // the current person's identity; repeating an "Available" row in a
         // one-person Chat workspace only turns an empty conversation into
@@ -647,27 +697,33 @@ impl ChatApp {
 
     /// The channel tree: an uncategorised group first, then each category
     /// with a collapse caret, a "+" to add a channel, and its channels.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_sidebar_tree(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
         side: Rect,
         header: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let mut y = header.y1 + 38.0;
         let body_bottom = side.y1 - 60.0;
 
         // Uncategorised channels (category id "").
-        y = self.draw_channel_group(scene, tf, tr, theme, presence, side, None, y, hits);
+        y = self.draw_channel_group(
+            PaintContext::new(scene, tf, tr, theme),
+            presence,
+            side,
+            None,
+            y,
+            hits,
+        );
 
         let categories: Vec<_> = self.ws_categories().into_iter().cloned().collect();
         for cat in categories {
@@ -692,10 +748,7 @@ impl ChatApp {
                 matches!(&self.rename, Some(MenuTarget::Category(id)) if id == &cat.id);
             if renaming_cat {
                 self.draw_inline_rename(
-                    scene,
-                    tf,
-                    tr,
-                    theme,
+                    PaintContext::new(scene, tf, tr, theme),
                     presence,
                     hrow.x0 + 18.0,
                     y + 4.0,
@@ -738,10 +791,7 @@ impl ChatApp {
 
             if !cat.collapsed {
                 y = self.draw_channel_group(
-                    scene,
-                    tf,
-                    tr,
-                    theme,
+                    PaintContext::new(scene, tf, tr, theme),
                     presence,
                     side,
                     Some(&cat.id),
@@ -791,10 +841,7 @@ impl ChatApp {
             return;
         };
         draw_avatar(
-            scene,
-            tf,
-            tr,
-            theme,
+            PaintContext::new(scene, tf, tr, theme),
             Point::new(bar.x0 + 28.0, bar.center().y),
             16.0,
             &me.initials,
@@ -912,19 +959,21 @@ impl ChatApp {
     /// click + right-click context-menu hits, applies the active row swipe
     /// offset, and renders voice-channel presence (members + speaking) under
     /// each voice channel — Discord-style.
-    #[allow(clippy::too_many_arguments)]
     fn draw_channel_group(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
         side: Rect,
         category: Option<&str>,
         mut y: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let cat_key = category.unwrap_or("");
         let channels: Vec<_> = self
             .category_channels(cat_key)
@@ -942,11 +991,26 @@ impl ChatApp {
                     ws_channel_ids.get(s.channel_index).map(String::as_str) == Some(ch.id.as_str())
                 })
                 .map_or(0.0, |s| s.dx());
-            y = self.draw_channel_row(scene, tf, tr, theme, presence, side, ch, y, swipe_dx, hits);
+            y = self.draw_channel_row(
+                PaintContext::new(scene, tf, tr, theme),
+                presence,
+                ChannelRowInput {
+                    side,
+                    channel: ch,
+                    y,
+                    swipe_dx,
+                },
+                hits,
+            );
 
             // Voice presence: list connected members under a voice channel.
             if ch.kind == ChannelKind::Voice {
-                y = self.draw_voice_presence_rows(scene, tf, tr, theme, side, &ch.id, y);
+                y = self.draw_voice_presence_rows(
+                    PaintContext::new(scene, tf, tr, theme),
+                    side,
+                    &ch.id,
+                    y,
+                );
             }
         }
         y
@@ -955,23 +1019,25 @@ impl ChatApp {
     /// One channel row: swipe-to-delete affordance, active/live indicators,
     /// the glyph + name (or its inline rename editor), and the unread badge.
     /// Returns the cursor `y` for the row after this one.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_channel_row(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
-        side: Rect,
-        ch: &crate::model::Channel,
-        y: f64,
-        swipe_dx: f64,
+        input: ChannelRowInput<'_>,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let ChannelRowInput {
+            side,
+            channel: ch,
+            y,
+            swipe_dx,
+        } = input;
         let row = Rect::new(
             side.x0 + 8.0 - swipe_dx,
             y,
@@ -989,7 +1055,12 @@ impl ChatApp {
 
         Self::draw_channel_row_swipe_delete(scene, tf, tr, theme, &ctx, swipe_dx);
         Self::draw_channel_row_glyph(scene, tf, tr, theme, &ctx);
-        self.draw_channel_row_label(scene, tf, tr, theme, presence, &ctx, hits);
+        self.draw_channel_row_label(
+            PaintContext::new(scene, tf, tr, theme),
+            presence,
+            &ctx,
+            hits,
+        );
         self.draw_channel_row_status(scene, tf, tr, theme, &ctx);
 
         // Click joins/opens; right-click (resolved against this row's
@@ -1074,25 +1145,24 @@ impl ChatApp {
 
     /// The channel's inline rename editor when it is the rename target,
     /// otherwise its (possibly truncated) name.
-    #[allow(clippy::too_many_arguments)]
     fn draw_channel_row_label(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
         ctx: &ChannelRowCtx<'_>,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let renaming = matches!(&self.rename, Some(MenuTarget::Channel(id)) if id == &ctx.ch.id);
         if renaming {
             self.draw_inline_rename(
-                scene,
-                tf,
-                tr,
-                theme,
+                PaintContext::new(scene, tf, tr, theme),
                 presence,
                 ctx.row.x0 + 32.0,
                 ctx.y + 6.0,
@@ -1171,17 +1241,19 @@ impl ChatApp {
     /// Connected members listed under a voice channel, Discord-style: an
     /// avatar with a speaking ring, their name, and a mic/audio-only glyph.
     /// Returns the cursor `y` after the last member row.
-    #[allow(clippy::too_many_arguments)]
     fn draw_voice_presence_rows(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         side: Rect,
         channel_id: &str,
         mut y: f64,
     ) -> f64 {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         for m in self.voice_in(channel_id) {
             if let Some(u) = self.user(&m.user) {
@@ -1192,10 +1264,7 @@ impl ChatApp {
                     stroke_circle(scene, tf, cc, radius + 2.5, c.semantic.success, 2.0);
                 }
                 draw_avatar(
-                    scene,
-                    tf,
-                    tr,
-                    theme,
+                    PaintContext::new(scene, tf, tr, theme),
                     cc,
                     radius,
                     &u.initials,
@@ -1250,19 +1319,21 @@ impl ChatApp {
 
     /// Draw the inline rename editor field (a bordered box + the working
     /// text + a caret), recording a confirm hit on it.
-    #[allow(clippy::too_many_arguments)]
     fn draw_inline_rename(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
         x: f64,
         y: f64,
         w: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let box_r = Rect::new(x - 4.0, y - 3.0, x + w, y + 19.0);
         fill_round(scene, tf, box_r, 5.0, c.neutral[2]);
@@ -1324,10 +1395,7 @@ impl ChatApp {
         // cluster and can never overlap it, even on a very narrow header.
         let cluster_left = self.draw_header_action_buttons(scene, tf, tr, theme, h, hits);
         Self::draw_header_title(
-            scene,
-            tf,
-            tr,
-            theme,
+            PaintContext::new(scene, tf, tr, theme),
             h,
             left_inset,
             cluster_left,
@@ -1434,15 +1502,8 @@ impl ChatApp {
 
     /// The channel glyph + name + topic, truncated to stop before
     /// `cluster_left` so nothing runs under the action buttons.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_header_title(
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         h: Rect,
         left_inset: f64,
         cluster_left: f64,
@@ -1450,6 +1511,12 @@ impl ChatApp {
         topic: &str,
         glyph: &str,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let cy = h.center().y;
         label(
@@ -1609,19 +1676,26 @@ impl ChatApp {
     }
 
     // ------------------------------------------------------------ messages
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_messages(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
         area: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let text_x = area.x0 + 16.0 + AVATAR + 14.0;
         let text_w = (area.x1 - text_x - 18.0).max(80.0) as f32;
+        let column = MessageColumn {
+            area,
+            text_x,
+            text_width: text_w,
+        };
 
         // Empty channel: a quiet start-of-conversation marker rather than a
         // blank void, so a fresh channel reads as ready, not broken.
@@ -1656,11 +1730,21 @@ impl ChatApp {
         }
         let y = (start_y + self.scroll).clamp(min_start, max_start);
 
-        let mut y = self.draw_messages_date_divider(scene, tf, tr, theme, area, y, divider_h);
+        let mut y = self.draw_messages_date_divider(
+            PaintContext::new(scene, tf, tr, theme),
+            area,
+            y,
+            divider_h,
+        );
 
         for rm in &rows {
             self.draw_row(
-                scene, tf, tr, theme, presence, rm, area, text_x, text_w, &mut y, hits,
+                PaintContext::new(scene, tf, tr, theme),
+                presence,
+                rm,
+                column,
+                &mut y,
+                hits,
             );
         }
     }
@@ -1756,20 +1840,19 @@ impl ChatApp {
 
     /// The "Today"/date divider above the first row. Returns the cursor `y`
     /// for the first message row beneath it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_messages_date_divider(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         area: Rect,
         y: f64,
         divider_h: f64,
     ) -> f64 {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let dl = self.messages.first().map_or_else(
             || "Today".into(),
@@ -1831,16 +1914,9 @@ impl ChatApp {
             let spans = body_spans(self, m, theme, theme.tokens.colors.surfaces.base);
             f64::from(shape_body(tr, &spans, text_w).height())
         };
-        let att_h = match &m.attachment {
-            None => 0.0,
-            Some(Attachment::File { .. }) => 70.0 * scale,
-            Some(Attachment::Image { w, h, .. }) => {
-                image_thumb_size(*w, *h, f64::from(text_w)).1 + 24.0 * scale
-            }
-            Some(Attachment::Video { w, h, .. }) => {
-                video_card_size(*w, *h, f64::from(text_w)).1 + 24.0 * scale
-            }
-        };
+        let att_h = m.attachment.as_ref().map_or(0.0, |attachment| {
+            attachment_flow_height(attachment, f64::from(text_w), scale)
+        });
         let react_h = if m.reactions.is_empty() {
             0.0
         } else {
@@ -1872,25 +1948,22 @@ impl ChatApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_row(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
         rm: &RowM,
-        area: Rect,
-        text_x: f64,
-        text_w: f32,
+        column: MessageColumn,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let area = column.area;
         let Some(m) = self.message(&rm.idx_id).cloned() else {
             return;
         };
@@ -1910,44 +1983,49 @@ impl ChatApp {
         let content_top = *y;
 
         if rm.show_header {
-            self.draw_row_header(scene, tf, tr, theme, area, text_x, &m, y);
+            self.draw_row_header(PaintContext::new(scene, tf, tr, theme), column, &m, y);
         }
 
         self.draw_row_body(
-            scene,
-            tf,
-            tr,
-            theme,
+            PaintContext::new(scene, tf, tr, theme),
             presence,
-            rm,
-            &m,
-            area,
-            text_x,
-            text_w,
-            content_top,
+            MessageRowRef {
+                measurement: rm,
+                message: &m,
+            },
+            MessageBodyLayout {
+                column,
+                content_top,
+            },
             y,
             hits,
         );
-        self.draw_row_footer(scene, tf, tr, theme, rm, &m, text_x, text_w, y, hits);
+        self.draw_row_footer(
+            PaintContext::new(scene, tf, tr, theme),
+            rm,
+            &m,
+            column,
+            y,
+            hits,
+        );
     }
 
     /// A message group's header: avatar, author name (in their palette
     /// colour), and the timestamp. Advances `*y` past it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_row_header(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        text_x: f64,
+        paint: PaintContext<'_>,
+        column: MessageColumn,
         m: &Message,
         y: &mut f64,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let MessageColumn { area, text_x, .. } = column;
         let c = &theme.tokens.colors;
         let u = self.user(&m.author).cloned();
         let (initials, cidx, status) = u.as_ref().map_or_else(
@@ -1955,10 +2033,7 @@ impl ChatApp {
             |u| (u.initials.clone(), u.color_idx, Some(u.status)),
         );
         draw_avatar(
-            scene,
-            tf,
-            tr,
-            theme,
+            PaintContext::new(scene, tf, tr, theme),
             Point::new(area.x0 + 16.0 + AVATAR / 2.0, *y + AVATAR / 2.0),
             AVATAR / 2.0,
             &initials,
@@ -1994,29 +2069,44 @@ impl ChatApp {
     /// The editor (while editing) or the plain/mention-attributed body text,
     /// plus the right-click hit region over the header+body block for your
     /// own messages. Advances `*y` past the body.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_row_body(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
-        rm: &RowM,
-        m: &Message,
-        area: Rect,
-        text_x: f64,
-        text_w: f32,
-        content_top: f64,
+        row: MessageRowRef<'_>,
+        layout: MessageBodyLayout,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let MessageRowRef {
+            measurement: rm,
+            message: m,
+        } = row;
+        let MessageBodyLayout {
+            column:
+                MessageColumn {
+                    area,
+                    text_x,
+                    text_width: text_w,
+                },
+            content_top,
+        } = layout;
         let c = &theme.tokens.colors;
         if rm.editing {
-            self.draw_message_editor(scene, tf, tr, theme, presence, text_x, text_w, rm, y, hits);
+            self.draw_message_editor(
+                PaintContext::new(scene, tf, tr, theme),
+                presence,
+                layout.column,
+                rm,
+                y,
+                hits,
+            );
             return;
         }
         if !m.text.is_empty() {
@@ -2063,23 +2153,26 @@ impl ChatApp {
     /// The "(edited)" label, attachment, reactions, and thread affordance
     /// below the body — each only when present. Advances `*y` past all of
     /// them, plus the row's trailing gap.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_row_footer(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         rm: &RowM,
         m: &Message,
-        text_x: f64,
-        text_w: f32,
+        column: MessageColumn,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let MessageColumn {
+            text_x,
+            text_width: text_w,
+            ..
+        } = column;
         let c = &theme.tokens.colors;
         if m.edited && !rm.editing {
             let edited_label = "(edited) · view history";
@@ -2102,19 +2195,29 @@ impl ChatApp {
         }
 
         if let Some(att) = &m.attachment {
-            self.draw_attachment(scene, tf, tr, theme, att, text_x, *y, text_w);
+            self.draw_attachment(
+                PaintContext::new(scene, tf, tr, theme),
+                att,
+                AttachmentLayout::new(text_x, *y, text_w),
+            );
             *y += rm.att_h;
         }
 
         // Empty reaction strip still gets an add affordance on header rows —
         // handled elsewhere, so there is nothing to draw when it's empty.
         if !m.reactions.is_empty() {
-            self.draw_reactions(scene, tf, tr, theme, m, text_x, *y, hits);
+            self.draw_reactions(PaintContext::new(scene, tf, tr, theme), m, text_x, *y, hits);
             *y += rm.react_h;
         }
 
         if rm.thread_h > 0.0 {
-            self.draw_thread_affordance(scene, tf, tr, theme, m, text_x, *y, text_w, hits);
+            self.draw_thread_affordance(
+                PaintContext::new(scene, tf, tr, theme),
+                m,
+                column,
+                *y,
+                hits,
+            );
             *y += rm.thread_h;
         }
         *y += 4.0;
@@ -2125,20 +2228,26 @@ impl ChatApp {
     /// (a keyboard hint plus Cancel / Save). Advances `*y` past the whole
     /// editor. The wrap width matches [`Self::measure_row`] so the timeline
     /// height stays exact as the text grows.
-    #[allow(clippy::too_many_arguments)]
     fn draw_message_editor(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
-        text_x: f64,
-        text_w: f32,
+        column: MessageColumn,
         rm: &RowM,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let MessageColumn {
+            text_x,
+            text_width: text_w,
+            ..
+        } = column;
         let c = &theme.tokens.colors;
         let box_h = rm.body_h + EDIT_BOX_PAD;
         let er = Rect::new(
@@ -2208,18 +2317,20 @@ impl ChatApp {
         *y += rm.edit_ctrl_h;
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_reactions(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         m: &Message,
         text_x: f64,
         y: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let mut x = text_x;
         let chip_h = 26.0;
@@ -2283,19 +2394,25 @@ impl ChatApp {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_thread_affordance(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         m: &Message,
-        text_x: f64,
+        column: MessageColumn,
         y: f64,
-        text_w: f32,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let MessageColumn {
+            text_x,
+            text_width: text_w,
+            ..
+        } = column;
         let c = &theme.tokens.colors;
         let count = model::reply_count(&self.messages, &m.id);
         let parts = model::thread_participants(&self.messages, &m.id);
@@ -2333,10 +2450,7 @@ impl ChatApp {
                     c.surfaces.raised,
                 );
                 draw_avatar(
-                    scene,
-                    tf,
-                    tr,
-                    theme,
+                    PaintContext::new(scene, tf, tr, theme),
                     Point::new(ax + 11.0, bar.center().y),
                     11.0,
                     &u.initials,
@@ -2380,39 +2494,31 @@ impl ChatApp {
         ChatApp::push_hit(hits, bar, Hit::OpenThread(m.id.clone()));
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw_attachment(
+    fn draw_attachment(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        mut paint: PaintContext<'_>,
         att: &Attachment,
-        x: f64,
-        y: f64,
-        text_w: f32,
+        layout: AttachmentLayout,
     ) {
         // Permission boundary: an embed this peer hasn't been granted access to
         // renders as a locked card and never requests its shared bytes. Same
         // footprint as the real embed so the timeline layout is
         // identical whether granted or gated.
         if !self.embed_allowed(att.blob()) {
-            Self::draw_gated_embed(scene, tf, tr, theme, att, x, y, text_w);
+            Self::draw_gated_embed(paint, att, layout);
             return;
         }
         match att {
             Attachment::Image { name, blob, w, h } => {
-                self.draw_image_attachment(scene, tf, tr, theme, name, blob, *w, *h, x, y, text_w);
+                self.draw_image_attachment(paint.reborrow(), name, blob, (*w, *h), layout);
             }
             Attachment::Video {
                 name, w, h, size, ..
             } => {
-                Self::draw_video_attachment(
-                    scene, tf, tr, theme, name, *w, *h, *size, x, y, text_w,
-                );
+                Self::draw_video_attachment(paint, name, (*w, *h), *size, layout);
             }
             Attachment::File { name, size, .. } => {
-                Self::draw_file_attachment(scene, tf, tr, theme, name, *size, x, y, text_w);
+                Self::draw_file_attachment(paint, name, *size, layout);
             }
         }
     }
@@ -2420,24 +2526,23 @@ impl ChatApp {
     /// The image attachment card: a decoded thumbnail (or a neutral
     /// placeholder while it hydrates), a caption scrim with the filename,
     /// and its pixel dimensions beneath.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_image_attachment(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         name: &str,
         blob: &str,
-        img_w: u32,
-        img_h: u32,
-        x: f64,
-        y: f64,
-        text_w: f32,
+        dimensions: (u32, u32),
+        layout: AttachmentLayout,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let (img_w, img_h) = dimensions;
+        let Point { x, y } = layout.origin;
+        let text_w = layout.max_width;
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale);
         let (tw, th) = image_thumb_size(img_w, img_h, f64::from(text_w));
@@ -2527,23 +2632,22 @@ impl ChatApp {
     /// The video attachment card: a poster surface with a centred play
     /// glyph, a caption scrim with the filename, and dimensions + size
     /// metadata beneath.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_video_attachment(
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         name: &str,
-        vid_w: u32,
-        vid_h: u32,
+        dimensions: (u32, u32),
         size: u64,
-        x: f64,
-        y: f64,
-        text_w: f32,
+        layout: AttachmentLayout,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let (vid_w, vid_h) = dimensions;
+        let Point { x, y } = layout.origin;
+        let text_w = layout.max_width;
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale);
         let (tw, th) = video_card_size(vid_w, vid_h, f64::from(text_w));
@@ -2628,21 +2732,20 @@ impl ChatApp {
 
     /// The generic file attachment chip: an icon tile, filename, and human
     /// metadata (kind/size) beneath it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_file_attachment(
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         name: &str,
         size: u64,
-        x: f64,
-        y: f64,
-        text_w: f32,
+        layout: AttachmentLayout,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let Point { x, y } = layout.origin;
+        let text_w = layout.max_width;
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale);
         let chip = Rect::new(x, y, x + f64::from(text_w).min(360.0), y + 58.0 * scale);
@@ -2695,24 +2798,18 @@ impl ChatApp {
     /// Render an embed this peer isn't permitted to open: a neutral locked card
     /// with the filename but no hydrated content. Sized to match the granted
     /// embed's footprint so the timeline layout is identical either way.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_gated_embed(
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        att: &Attachment,
-        x: f64,
-        y: f64,
-        text_w: f32,
-    ) {
+    fn draw_gated_embed(paint: PaintContext<'_>, att: &Attachment, layout: AttachmentLayout) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let Point { x, y } = layout.origin;
+        let text_w = layout.max_width;
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale);
-        let (card_w, card_h) = match att {
-            Attachment::Image { w, h, .. } => image_thumb_size(*w, *h, f64::from(text_w)),
-            Attachment::Video { w, h, .. } => video_card_size(*w, *h, f64::from(text_w)),
-            Attachment::File { .. } => (f64::from(text_w).min(360.0), 58.0 * scale),
-        };
+        let (card_w, card_h) = attachment_card_size(att, f64::from(text_w), scale);
         let rect = Rect::new(x, y, x + card_w, y + card_h);
         fill_round(scene, tf, rect, 12.0, c.neutral[1]);
         stroke_round(scene, tf, rect, 12.0, c.border_standard, 1.0);
@@ -2783,10 +2880,7 @@ impl ChatApp {
         let focused = matches!(self.focus, crate::app::Focus::Main) && self.editing.is_none();
         let send_enabled = !self.composer_main.value().trim().is_empty();
         let inner = Self::draw_input_box(
-            scene,
-            tf,
-            tr,
-            theme,
+            PaintContext::new(scene, tf, tr, theme),
             rect,
             send_enabled,
             focused,
@@ -2828,12 +2922,8 @@ impl ChatApp {
     /// emoji + send buttons — and record their hit regions. Returns the inner
     /// rect the caller lays the composer [`TextInput`] into; the widget owns
     /// the text, caret, selection, and placeholder inside it.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_input_box(
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         rect: Rect,
         send_enabled: bool,
         focused: bool,
@@ -2841,6 +2931,12 @@ impl ChatApp {
         attach: bool,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> Rect {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         fill_round(scene, tf, rect, 14.0, c.neutral[2]);
         stroke_round(
@@ -2883,7 +2979,33 @@ impl ChatApp {
             tx = plus.x1 + 8.0;
         }
 
-        // right cluster: emoji + send
+        let emoji = Self::draw_input_actions(
+            PaintContext::new(scene, tf, tr, theme),
+            rect,
+            send_enabled,
+            hits,
+        );
+
+        // Inner rect for the composer widget: from just after the attach glyph
+        // to just before the emoji button, filling the box vertically.
+        Rect::new(tx - 4.0, rect.y0 + 4.0, emoji.x0 - 8.0, rect.y1 - 4.0)
+    }
+
+    /// Paint the composer's trailing emoji and send actions, returning the
+    /// emoji hit target that bounds the editable text region.
+    fn draw_input_actions(
+        paint: PaintContext<'_>,
+        rect: Rect,
+        send_enabled: bool,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) -> Rect {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let c = &theme.tokens.colors;
         let send = Rect::new(
             rect.x1 - 56.0,
             rect.center().y - 22.0,
@@ -2944,10 +3066,7 @@ impl ChatApp {
             emoji,
             Hit::ComposerEmoji(Point::new(emoji.x0 - 140.0, rect.y0 - 8.0)),
         );
-
-        // Inner rect for the composer widget: from just after the attach glyph
-        // to just before the emoji button, filling the box vertically.
-        Rect::new(tx - 4.0, rect.y0 + 4.0, emoji.x0 - 8.0, rect.y1 - 4.0)
+        emoji
     }
 
     // ---------------------------------------------------------------- thread
@@ -2980,7 +3099,12 @@ impl ChatApp {
         );
 
         let head = self.draw_thread_header(scene, tf, tr, theme, panel, hits);
-        self.draw_thread_body(scene, tf, tr, theme, panel, head, &parent_id, hits);
+        self.draw_thread_body(
+            PaintContext::new(scene, tf, tr, theme),
+            panel,
+            head,
+            &parent_id,
+        );
 
         // thread composer
         let comp = Rect::new(
@@ -2997,10 +3121,7 @@ impl ChatApp {
         let focused = matches!(self.focus, crate::app::Focus::Thread) && self.editing.is_none();
         let send_enabled = !self.composer_thread.value().trim().is_empty();
         let inner = Self::draw_input_box(
-            scene,
-            tf,
-            tr,
-            theme,
+            PaintContext::new(scene, tf, tr, theme),
             comp,
             send_enabled,
             focused,
@@ -3105,21 +3226,13 @@ impl ChatApp {
     /// The thread body: the parent message, a "N replies" divider, then
     /// every reply in order — clipped to the scrollable region between the
     /// header and the thread composer.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
-    fn draw_thread_body(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        panel: Rect,
-        head: Rect,
-        parent_id: &str,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) {
+    fn draw_thread_body(&self, paint: PaintContext<'_>, panel: Rect, head: Rect, parent_id: &str) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let scale = f64::from(self.layout_text_scale);
         let body = Rect::new(panel.x0, head.y1, panel.x1, panel.y1 - 70.0 * scale);
@@ -3131,16 +3244,12 @@ impl ChatApp {
         // parent message
         if let Some(parent) = self.message(parent_id).cloned() {
             y = self.draw_thread_message(
-                scene,
-                tf,
-                tr,
-                theme,
+                PaintContext::new(scene, tf, tr, theme),
                 &parent,
                 panel.x0 + 16.0 * scale.min(1.2),
                 tx,
                 tw,
                 y,
-                hits,
             );
             // replies divider
             let n = model::reply_count(&self.messages, parent_id);
@@ -3183,44 +3292,38 @@ impl ChatApp {
             .collect();
         for r in &replies {
             y = self.draw_thread_message(
-                scene,
-                tf,
-                tr,
-                theme,
+                PaintContext::new(scene, tf, tr, theme),
                 r,
                 panel.x0 + 16.0 * scale.min(1.2),
                 tx,
                 tw,
                 y,
-                hits,
             );
         }
         scene.pop_layer();
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_thread_message(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         m: &Message,
         avx: f64,
         tx: f64,
         tw: f32,
         y: f64,
-        _hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let scale = f64::from(self.layout_text_scale);
         let mut yy = y;
         if let Some(u) = self.user(&m.author) {
             draw_avatar(
-                scene,
-                tf,
-                tr,
-                theme,
+                PaintContext::new(scene, tf, tr, theme),
                 Point::new(avx + 16.0 * scale.min(1.2), yy + 14.0 * scale),
                 14.0 * scale.min(1.2),
                 &u.initials,
@@ -3268,16 +3371,12 @@ impl ChatApp {
             yy += h + 4.0 * scale;
         }
         if let Some(att) = &m.attachment {
-            self.draw_attachment(scene, tf, tr, theme, att, tx, yy, tw);
-            yy += match att {
-                Attachment::File { .. } => 66.0 * scale,
-                Attachment::Image { w, h, .. } => {
-                    image_thumb_size(*w, *h, f64::from(tw)).1 + 24.0 * scale
-                }
-                Attachment::Video { w, h, .. } => {
-                    video_card_size(*w, *h, f64::from(tw)).1 + 24.0 * scale
-                }
-            };
+            self.draw_attachment(
+                PaintContext::new(scene, tf, tr, theme),
+                att,
+                AttachmentLayout::new(tx, yy, tw),
+            );
+            yy += attachment_flow_height(att, f64::from(tw), scale);
         }
         if !m.reactions.is_empty() {
             let mut x = tx;
@@ -3333,28 +3432,37 @@ impl ChatApp {
         );
 
         let rows = self.roster_rows();
-        let head_y1 = self.draw_members_header(scene, tf, tr, theme, panel, rows.len(), hits);
-        self.draw_members_rows(scene, tf, tr, theme, panel, head_y1, &rows);
+        let head_y1 = self.draw_members_header(
+            PaintContext::new(scene, tf, tr, theme),
+            panel,
+            rows.len(),
+            hits,
+        );
+        self.draw_members_rows(
+            PaintContext::new(scene, tf, tr, theme),
+            panel,
+            head_y1,
+            &rows,
+        );
     }
 
     /// A precise People/Collaborators label, the workspace name and roster
     /// count, plus the
     /// close control. Returns the y-coordinate the scrollable roster starts
     /// beneath.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_members_header(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         panel: Rect,
         people_count: usize,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         label(
             scene,
@@ -3430,20 +3538,19 @@ impl ChatApp {
 
     /// The scrollable roster list beneath the header: each member's avatar,
     /// display name, and presence/voice status.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_members_rows(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         panel: Rect,
         head_y1: f64,
         rows: &[(crate::model::User, Option<String>)],
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let body = Rect::new(panel.x0, head_y1, panel.x1, panel.y1);
         push_clip(scene, tf, body);
@@ -3464,10 +3571,7 @@ impl ChatApp {
             }
             let avc = Point::new(panel.x0 + 16.0 + 16.0, y + row_h / 2.0);
             draw_avatar(
-                scene,
-                tf,
-                tr,
-                theme,
+                PaintContext::new(scene, tf, tr, theme),
                 avc,
                 16.0,
                 &u.initials,
@@ -3549,7 +3653,7 @@ impl ChatApp {
             self.draw_attach_picker_empty(scene, tf, tr, theme, panel, head_h);
             return;
         }
-        self.draw_attach_picker_rows(scene, tf, tr, theme, panel, head_h, hits);
+        self.draw_attach_picker_rows(PaintContext::new(scene, tf, tr, theme), panel, head_h, hits);
     }
 
     /// The picker panel's rect, anchored above the composer's "+" and
@@ -3697,20 +3801,22 @@ impl ChatApp {
     /// size — plus a "+N more" footer note when the workspace has more than
     /// that.
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
-        reason = "draw-context bundle and one bounded picker-row presentation, not incidental coupling"
+        reason = "one bounded picker-row presentation, not incidental coupling"
     )]
     fn draw_attach_picker_rows(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         panel: Rect,
         head_h: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let scale = f64::from(self.layout_text_scale);
         let row_h = 52.0 * scale;
@@ -3888,6 +3994,29 @@ fn video_card_size(w: u32, h: u32, max_w: f64) -> (f64, f64) {
     }
 }
 
+/// Painted card dimensions shared by granted and permission-gated embeds.
+/// Keeping this independent from the paint path guarantees access control
+/// cannot change timeline geometry.
+fn attachment_card_size(att: &Attachment, max_w: f64, scale: f64) -> (f64, f64) {
+    match att {
+        Attachment::Image { w, h, .. } => image_thumb_size(*w, *h, max_w),
+        Attachment::Video { w, h, .. } => video_card_size(*w, *h, max_w),
+        Attachment::File { .. } => (max_w.min(360.0), 58.0 * scale),
+    }
+}
+
+/// Vertical space consumed by an attachment, including metadata and the gap
+/// before the following message content.
+fn attachment_flow_height(att: &Attachment, max_w: f64, scale: f64) -> f64 {
+    let (_, card_h) = attachment_card_size(att, max_w, scale);
+    card_h
+        + if matches!(att, Attachment::File { .. }) {
+            12.0 * scale
+        } else {
+            24.0 * scale
+        }
+}
+
 /// The user-facing metadata line for a file-attachment chip: the file type
 /// (derived from the display name's extension) and a human-readable size.
 ///
@@ -3913,7 +4042,12 @@ const RAIL_W_CENTER: f64 = crate::app::RAIL_W / 2.0;
 
 #[cfg(test)]
 mod tests {
-    use super::file_chip_meta;
+    use super::{attachment_card_size, attachment_flow_height, file_chip_meta};
+    use crate::model::Attachment;
+
+    fn close(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < f64::EPSILON);
+    }
 
     /// Defect regression: the attachment chip must never leak the internal
     /// mount path. The demo's shared note lives at
@@ -3955,5 +4089,42 @@ mod tests {
     #[test]
     fn attachment_size_uses_canonical_binary_units() {
         assert_eq!(file_chip_meta("archive.zip", 1536), "ZIP · 1.5 KiB");
+    }
+
+    #[test]
+    fn attachment_geometry_reserves_card_metadata_and_following_gap() {
+        let file = Attachment::File {
+            name: "notes.md".into(),
+            blob: "sha256:file".into(),
+            size: 512,
+        };
+        let image = Attachment::Image {
+            name: "wide.png".into(),
+            blob: "sha256:image".into(),
+            w: 800,
+            h: 400,
+        };
+        let unknown_video = Attachment::Video {
+            name: "clip.mp4".into(),
+            blob: "sha256:video".into(),
+            w: 0,
+            h: 0,
+            size: 1024,
+        };
+
+        let (file_w, file_h) = attachment_card_size(&file, 420.0, 1.0);
+        close(file_w, 360.0);
+        close(file_h, 58.0);
+        close(attachment_flow_height(&file, 420.0, 1.0), 70.0);
+
+        let (image_w, image_h) = attachment_card_size(&image, 300.0, 1.0);
+        close(image_w, 300.0);
+        close(image_h, 150.0);
+        close(attachment_flow_height(&image, 300.0, 1.0), 174.0);
+
+        let (video_w, video_h) = attachment_card_size(&unknown_video, 320.0, 1.0);
+        close(video_w, 320.0);
+        close(video_h, 180.0);
+        close(attachment_flow_height(&unknown_video, 320.0, 1.0), 204.0);
     }
 }

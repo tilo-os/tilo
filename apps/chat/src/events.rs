@@ -47,6 +47,32 @@ fn now_secs() -> i64 {
         .map_or(NOW, |d| d.as_secs() as i64)
 }
 
+struct EventDispatch<'a> {
+    event: &'a WindowEvent,
+    scale: f64,
+    modifiers: Modifiers,
+    doc: &'a mut AutoCommit,
+    handled: &'a mut bool,
+}
+
+impl<'a> EventDispatch<'a> {
+    fn new(
+        event: &'a WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &'a mut AutoCommit,
+        handled: &'a mut bool,
+    ) -> Self {
+        Self {
+            event,
+            scale,
+            modifiers,
+            doc,
+            handled,
+        }
+    }
+}
+
 /// Feed one raw winit event into an embedded [`TextInput`]. The composers live
 /// outside the taffy tree (the app lays them out by hand), so a throwaway leaf
 /// node satisfies the `Widget::handle_event` signature; the input only uses it
@@ -106,7 +132,10 @@ impl ChatApp {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let last_mouse = Point::new(position.x / scale, position.y / scale);
-                self.handle_cursor_moved(last_mouse, event, scale, modifiers, doc, handled);
+                self.handle_cursor_moved(
+                    last_mouse,
+                    EventDispatch::new(event, scale, modifiers, doc, handled),
+                );
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
@@ -149,7 +178,10 @@ impl ChatApp {
                     },
                 ..
             } => {
-                self.handle_keyboard_input(logical_key, event, scale, modifiers, doc, handled);
+                self.handle_keyboard_input(
+                    logical_key,
+                    EventDispatch::new(event, scale, modifiers, doc, handled),
+                );
             }
             WindowEvent::Ime(_) => {
                 *handled |= self.handle_text_input_event(event, scale, modifiers, doc);
@@ -160,19 +192,14 @@ impl ChatApp {
 
     /// A pointer move: live-drags the floating call overlay or an in-progress
     /// channel-row swipe, then forwards hover state to both composers.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "event-dispatch context bundle, not real parameter coupling"
-    )]
-    fn handle_cursor_moved(
-        &mut self,
-        last_mouse: Point,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        handled: &mut bool,
-    ) {
+    fn handle_cursor_moved(&mut self, last_mouse: Point, dispatch: EventDispatch<'_>) {
+        let EventDispatch {
+            event,
+            scale,
+            modifiers,
+            doc,
+            handled,
+        } = dispatch;
         self.last_mouse = last_mouse;
         let tooltip_target = self.hover_tooltip_target(last_mouse);
         if self
@@ -331,19 +358,14 @@ impl ChatApp {
 
     /// A pressed key: inline shared inputs win while open; otherwise the
     /// focused composer receives it unless a popover owns the keyboard.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "event-dispatch context bundle, not real parameter coupling"
-    )]
-    fn handle_keyboard_input(
-        &mut self,
-        logical_key: &Key,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        handled: &mut bool,
-    ) {
+    fn handle_keyboard_input(&mut self, logical_key: &Key, dispatch: EventDispatch<'_>) {
+        let EventDispatch {
+            event,
+            scale,
+            modifiers,
+            doc,
+            handled,
+        } = dispatch;
         if self.rename.is_some() {
             if matches!(logical_key, Key::Named(NamedKey::Escape)) {
                 self.cancel_rename();
