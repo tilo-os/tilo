@@ -43,7 +43,9 @@ container if you build in one, since that is the `/usr` the sandbox binds.
 
 For image-based hosts (Silverblue, Bazzite) where `/usr` is read-only and the
 libraries cannot be installed without `rpm-ostree` layering plus a reboot per base
-update. Put the container name in `.build-container` and install `tools/cargo-shim`
+update. Create a local `.build-container` containing your distrobox name (for
+example, `printf '%s\n' tilo-build > .build-container`). This file is ignored by
+Git; there is no shared machine-specific default. Install `tools/cargo-shim`
 as `cargo` on PATH; every invocation from the tree or a worktree routes into it.
 
 It also selects the sccache server, which this route requires: sccache's server
