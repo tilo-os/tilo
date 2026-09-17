@@ -4,17 +4,13 @@
 //! with the controls that operate that state. Calendar-specific lists and
 //! tasks remain in `CalendarApp`; the mini-month is its own footer component.
 
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
-
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 
 use crate::app::{
     center_text, draw_chevron, draw_cross, draw_download, draw_icon_button, draw_upload,
 };
-use crate::draw_util::{fill_rect, fill_round, stroke_line, stroke_round};
+use crate::draw_util::{PaintContext, fill_rect, fill_round, stroke_line, stroke_round};
 use crate::model::View;
 
 const WIDTH: f64 = 252.0;
@@ -43,6 +39,26 @@ pub(crate) enum Action {
 pub(crate) struct Chrome {
     pub(crate) body_y: f64,
     pub(crate) hits: Vec<(Rect, Action)>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ChromeModel {
+    pub(crate) window: Rect,
+    pub(crate) content: Rect,
+    pub(crate) detail: Rect,
+    pub(crate) switcher_in_topbar: bool,
+    pub(crate) view: View,
+    pub(crate) pointer: Point,
+}
+
+#[derive(Clone, Copy)]
+struct ChromeLayout {
+    rect: Rect,
+    window: Rect,
+    overlay: bool,
+    pointer: Point,
+    pad: f64,
+    y: f64,
 }
 
 pub(crate) struct Sidebar {
@@ -135,24 +151,25 @@ impl Sidebar {
         self.collapsed = !self.collapsed;
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_chrome(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        window: Rect,
-        content: Rect,
-        detail: Rect,
-        switcher_in_topbar: bool,
-        view: View,
-        pointer: Point,
+        paint: &mut PaintContext<'_>,
+        model: ChromeModel,
     ) -> Option<Chrome> {
+        let ChromeModel {
+            window,
+            content,
+            detail,
+            switcher_in_topbar,
+            view,
+            pointer,
+        } = model;
         if !self.visible() {
             return None;
         }
-        let colors = &theme.tokens.colors;
+        let scene = &mut *paint.scene;
+        let transform = paint.transform;
+        let colors = &paint.theme.tokens.colors;
         let mut hits = Vec::new();
         let overlay = self.mode == Mode::Overlay;
         if overlay && (content.area() > 0.0 || detail.area() > 0.0) {
@@ -187,20 +204,24 @@ impl Sidebar {
 
         let pad = 18.0;
         let mut y = rect.y0 + 22.0;
-        Self::draw_chrome_collapse_or_dismiss(
-            scene, transform, theme, rect, window, overlay, pointer, pad, y, &mut hits,
-        );
+        let mut layout = ChromeLayout {
+            rect,
+            window,
+            overlay,
+            pointer,
+            pad,
+            y,
+        };
+        Self::draw_chrome_collapse_or_dismiss(paint, layout, &mut hits);
         y += 30.0;
+        layout.y = y;
 
         if overlay && !switcher_in_topbar {
-            y += Self::draw_chrome_view_switcher(
-                scene, transform, text, theme, rect, view, pointer, y, &mut hits,
-            );
+            y += Self::draw_chrome_view_switcher(paint, layout, view, &mut hits);
+            layout.y = y;
         }
 
-        Self::draw_chrome_footer_buttons(
-            scene, transform, text, theme, rect, y, pointer, &mut hits,
-        );
+        Self::draw_chrome_footer_buttons(paint, layout, &mut hits);
 
         Some(Chrome {
             body_y: y + 46.0,
@@ -212,22 +233,22 @@ impl Sidebar {
     /// drawer covers the full window) button, top-right of the sidebar
     /// header. Split out of [`Self::draw_chrome`] to keep that under the
     /// line cap.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_chrome_collapse_or_dismiss(
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        rect: Rect,
-        window: Rect,
-        overlay: bool,
-        pointer: Point,
-        pad: f64,
-        y: f64,
+        paint: &mut PaintContext<'_>,
+        layout: ChromeLayout,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let scene = &mut *paint.scene;
+        let transform = paint.transform;
+        let theme = paint.theme;
+        let ChromeLayout {
+            rect,
+            window,
+            overlay,
+            pointer,
+            pad,
+            y,
+        } = layout;
         let colors = &theme.tokens.colors;
         if !overlay {
             let button = Rect::new(rect.x1 - pad - 24.0, y - 3.0, rect.x1 - pad, y + 21.0);
@@ -248,21 +269,19 @@ impl Sidebar {
     /// when the switcher doesn't already live in the top bar. Returns the
     /// vertical space it consumed (`0.0` if not drawn). Split out of
     /// [`Self::draw_chrome`] to keep that under the line cap.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_chrome_view_switcher(
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
+        paint: &mut PaintContext<'_>,
+        layout: ChromeLayout,
         view: View,
-        pointer: Point,
-        y: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
+        let scene = &mut *paint.scene;
+        let transform = paint.transform;
+        let text = &mut *paint.text;
+        let theme = paint.theme;
+        let ChromeLayout {
+            rect, pointer, y, ..
+        } = layout;
         let colors = &theme.tokens.colors;
         let segmented = Rect::new(rect.x0 + 12.0, y, rect.x1 - 12.0, y + 36.0);
         fill_round(scene, transform, colors.surfaces.base, segmented, 9.0);
@@ -320,20 +339,18 @@ impl Sidebar {
     /// The Export/Import footer buttons, side by side at the bottom of the
     /// sidebar header. Split out of [`Self::draw_chrome`] to keep that under
     /// the line cap.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_chrome_footer_buttons(
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        y: f64,
-        pointer: Point,
+        paint: &mut PaintContext<'_>,
+        layout: ChromeLayout,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let scene = &mut *paint.scene;
+        let transform = paint.transform;
+        let text = &mut *paint.text;
+        let theme = paint.theme;
+        let ChromeLayout {
+            rect, pointer, y, ..
+        } = layout;
         let colors = &theme.tokens.colors;
         let button_width = (rect.width() - 24.0 - 8.0) / 2.0;
         let export = Rect::new(rect.x0 + 12.0, y, rect.x0 + 12.0 + button_width, y + 32.0);
