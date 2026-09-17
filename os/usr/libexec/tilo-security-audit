@@ -163,6 +163,12 @@ if grep -Fqx '# CONFIG_HIBERNATION is not set' "$running_kernel_config" 2>/dev/n
 else
   warn "kernel hibernation remains compiled despite zram-only swap"
 fi
+if grep -Fqx '# CONFIG_MODULE_UNLOAD is not set' "$running_kernel_config" 2>/dev/null \
+   && grep -Fqx '# CONFIG_LIVEPATCH is not set' "$running_kernel_config" 2>/dev/null; then
+  ok "running kernel cannot unload modules or install live patches"
+else
+  warn "running kernel retains module-unload or livepatch mutation paths"
+fi
 for interface in \
   DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER \
   FW_LOADER_USER_HELPER_FALLBACK TLS CRYPTO_USER_API; do
