@@ -126,6 +126,11 @@ pub struct Scrollable {
     /// `mark_drawn`.
     scroll_dirty: bool,
     show_scrollbar: bool,
+    /// Whether an overflowing viewport itself participates in sequential
+    /// keyboard focus. Forms generally want Tab to enter their first control
+    /// directly; document viewers may keep the viewport stop for arrow/Page
+    /// navigation.
+    sequential_focus: bool,
     /// Lets `MouseInput::Pressed` hit-test the thumb/track without a prior
     /// hover edge.
     last_cursor: Point,
@@ -199,6 +204,7 @@ impl Scrollable {
             rect: Rect::ZERO,
             scroll_dirty: false,
             show_scrollbar: true,
+            sequential_focus: true,
             last_cursor: Point::ZERO,
             cursor_initialized: false,
             vbar: Scrollbar::vertical(),
@@ -240,6 +246,14 @@ impl Scrollable {
     #[must_use]
     pub fn with_scrollbar(mut self, show: bool) -> Self {
         self.show_scrollbar = show;
+        self
+    }
+
+    /// Keep scrolling, pointer bars, wheel input and descendant focus intact,
+    /// but skip the viewport itself in sequential Tab traversal.
+    #[must_use]
+    pub fn without_sequential_focus(mut self) -> Self {
+        self.sequential_focus = false;
         self
     }
 
@@ -1298,7 +1312,7 @@ impl Widget for Scrollable {
 
     /// Non-overflowing wrappers stay out of the tab order.
     fn is_focusable(&self) -> bool {
-        self.show_scrollbar && (self.vbar_active() || self.hbar_active())
+        self.sequential_focus && self.show_scrollbar && (self.vbar_active() || self.hbar_active())
     }
     fn set_focus(&mut self, focused: bool) {
         if self.focused != focused {
@@ -1395,6 +1409,24 @@ impl Widget for Scrollable {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+
+    fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
+        let Some(child) = &mut self.child else {
+            return false;
+        };
+        if !child.reveal_descendant(target) {
+            return false;
+        }
+        let rect = child.get_rect();
+        let viewport = self.content_viewport_rect();
+        self.scroll_into_view(
+            (rect.x0 - viewport.x0 + f64::from(self.offset_x)) as f32,
+            (rect.y0 - viewport.y0 + f64::from(self.offset_y)) as f32,
+            rect.width() as f32,
+            rect.height() as f32,
+        );
+        true
     }
 
     /// The meaningful label belongs to whatever it wraps.
