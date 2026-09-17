@@ -1015,9 +1015,16 @@ impl FrameHarness {
         // A failed attempt mutates the tree as well as the requested viewport.
         // Only a successful complete frame may restore this validity marker.
         self.last_layout_viewport = None;
-        // SAFETY: the current admitted maps belong to this exclusive runner.
-        let focus =
-            unsafe { CompositionFocus::capture(self.focused, &self.node_map, &self.bindings) };
+        // Event dispatch may replace controls before this frame starts. Old
+        // node pointers are invalid in that case; retained controls carry their
+        // own focus until the fresh map below recovers it.
+        let structure_changed = self.root.take_structure_dirty();
+        let focus = if structure_changed {
+            CompositionFocus::capture_live(self.root.as_ref())
+        } else {
+            // SAFETY: no structural mutation since these maps were admitted.
+            unsafe { CompositionFocus::capture(self.focused, &self.node_map, &self.bindings) }
+        };
         self.drain_component_wakes();
         if let Some(wake) = &self.component_wake {
             wake.dirty.set(false);
@@ -1071,7 +1078,23 @@ impl FrameHarness {
                 if let Some(view) = &view {
                     self.root.restore_view_state(view);
                 }
-                if let Some(focus) = &focus {
+                // Retained app controls own their ordinary event focus (some
+                // intentionally focus both sidebar and editor). Restore after
+                // replacement only when the new tree has lost that focus, or
+                // when viewport recomposition requires identity matching.
+                // SAFETY: every pointer belongs to the freshly admitted tree.
+                let retained_focus = self.node_map.keys().any(|&node| unsafe {
+                    crate::bound_dispatch::inspect_bound_node(
+                        &self.bindings,
+                        &self.node_map,
+                        node,
+                        |widget| widget.is_focusable() && widget.is_focused(),
+                    )
+                    .unwrap_or(false)
+                });
+                if let Some(focus) = &focus
+                    && (viewport_changed || !retained_focus)
+                {
                     // SAFETY: freshly admitted stable tree, exclusively owned.
                     self.focused = unsafe { focus.restore(&self.node_map, &self.bindings, None) };
                 }
@@ -1140,24 +1163,30 @@ impl FrameHarness {
             p.record_since(crate::profiling::Pass::Draw, t_draw);
         }
 
-        // The taffy tree was rebuilt, so the previous `focused` NodeId is
-        // stale; recover it by scanning the fresh node map for whichever
-        // widget still reports `is_focused()`.
-        self.focused = self.node_map.keys().find_map(|&n| {
-            // SAFETY: same node_map contract the measure closure uses — the
-            // pointers alias `self.root`, which is live and not otherwise
-            // borrowed here.
-            unsafe {
+        // Walk owners before descendants: compound editors intentionally focus
+        // both themselves and their inner text control. A HashMap scan can pick
+        // the anonymous child and lose the stable owner on the next rebuild.
+        self.focused = None;
+        let mut pending = vec![self.child_node];
+        while let Some(node) = pending.pop() {
+            // SAFETY: this frame's stable topology has been freshly admitted.
+            let focused = unsafe {
                 crate::bound_dispatch::inspect_bound_node(
                     &self.bindings,
                     &self.node_map,
-                    n,
-                    |widget| widget.is_focused(),
+                    node,
+                    |widget| widget.is_focusable() && widget.is_focused(),
                 )
             }
-            .unwrap_or(false)
-            .then_some(n)
-        });
+            .unwrap_or(false);
+            if focused {
+                self.focused = Some(node);
+                break;
+            }
+            if let Ok(children) = self.taffy.children(node) {
+                pending.extend(children.into_iter().rev());
+            }
+        }
 
         // One `relayout` is one rendered frame; commit it, folding in any
         // `handle_event` time banked by a preceding `send`.

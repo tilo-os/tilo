@@ -332,7 +332,11 @@ fn admit_record(
 ) -> Result<(), crate::record::RecordOpenError> {
     match store.open_record_checked(checkout) {
         Ok(()) => Ok(()),
-        Err(crate::record::RecordOpenError::MissingRecord) => {
+        // Only an implicit scratch tab authorizes creating a new record.
+        // Named/minted canonical checkouts refer to an existing identity.
+        Err(crate::record::RecordOpenError::MissingRecord)
+            if checkout.id.as_str().starts_with("tab:") =>
+        {
             let mut reservation = store.reserve_record(checkout)?;
             reservation.initialize(|_| Ok(()))
         }
@@ -812,6 +816,9 @@ impl Widget for TileHost {
         }
         // Resolve a requested legacy binding before exposing any document.
         // Failure must not advance/announce its scope or fall back to the host.
+        if self.pending_binding.is_some() {
+            self.resolve_record().map_err(|error| error.to_string())?;
+        }
         let live = match &mut self.binding {
             Some(binding) => {
                 let want = match &self.content {
