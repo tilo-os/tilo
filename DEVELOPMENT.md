@@ -1,7 +1,7 @@
 # Development Guide
 
 Machine and environment notes: getting a working build on a host, and running the
-result. What Tilo *is* and how to work in the code is in `CLAUDE.md`.
+result. What Tilo *is* and how to work in the code is in `AGENTS.md`.
 
 ## What the build needs
 
@@ -361,7 +361,7 @@ anything able to write a file in your home decide what unlocks your screen. See
 
 ## Headless testing
 
-`CLAUDE.md` covers the entry points. The full guide is
+`AGENTS.md` covers the entry points. The full guide is
 [`docs/headless-testing.md`](docs/headless-testing.md), and
 [`scripts/headless-examples/`](scripts/headless-examples/) holds working scripts —
 `spawn-headless.sh` starts a compositor and prints `READY <socket>`,
