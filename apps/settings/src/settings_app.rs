@@ -466,8 +466,9 @@ impl SettingsApp {
     /// availability checks, progress UI, and final notice. The collaborative
     /// document is intentionally absent from this transport.
     #[allow(
+        clippy::match_same_arms,
         clippy::too_many_lines,
-        reason = "the three device-local protocols are kept together to audit their pane-latch routing"
+        reason = "the closed device-local protocols stay together for auditable validation; identical no-op validation arms document explicitly supported variants"
     )]
     fn start_local_device_operation(
         &mut self,
@@ -518,10 +519,10 @@ impl SettingsApp {
                 let operation: crate::actions::UpdateOperation =
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 self.select(Category::Updates);
-                if let crate::actions::UpdateOperation::SetSchedule { schedule } = &operation {
-                    if !["System schedule", "Daily", "Weekly"].contains(&schedule.as_str()) {
-                        return Err("unsupported update schedule".into());
-                    }
+                if let crate::actions::UpdateOperation::SetSchedule { schedule } = &operation
+                    && !["System schedule", "Daily", "Weekly"].contains(&schedule.as_str())
+                {
+                    return Err("unsupported update schedule".into());
                 }
                 self.local_pane_command
                     .set(Some(crate::actions::LocalPaneCommand::Updates(operation)));
@@ -534,7 +535,7 @@ impl SettingsApp {
                 match &operation {
                     crate::actions::PowerOperation::SetChargeLimit { percent } => {
                         let available = os_actions::charge_capability()
-                            .is_some_and(|capability| capability.choices.contains(&percent));
+                            .is_some_and(|capability| capability.choices.contains(percent));
                         if !available {
                             return Err(
                                 "battery charge-cap control is unavailable on this device".into()
@@ -594,17 +595,9 @@ impl SettingsApp {
                             _ => return Err("unsupported power profile timeout".into()),
                         }
                     }
-                    crate::actions::PowerOperation::SetLidAction { action } => {
-                        if !["Suspend", "Lock screen", "Do nothing"].contains(&action.as_str()) {
-                            return Err("unsupported power action".into());
-                        }
-                    }
-                    crate::actions::PowerOperation::SetPowerKeyAction { action } => {
-                        if !["Suspend", "Lock screen", "Do nothing"].contains(&action.as_str()) {
-                            return Err("unsupported power action".into());
-                        }
-                    }
-                    crate::actions::PowerOperation::SetCriticalAction { action } => {
+                    crate::actions::PowerOperation::SetLidAction { action }
+                    | crate::actions::PowerOperation::SetPowerKeyAction { action }
+                    | crate::actions::PowerOperation::SetCriticalAction { action } => {
                         if !["Suspend", "Lock screen", "Do nothing"].contains(&action.as_str()) {
                             return Err("unsupported power action".into());
                         }
@@ -652,7 +645,11 @@ impl SettingsApp {
                                 (path, "disconnect")
                             }
                             crate::actions::BluetoothOperation::Forget { path } => (path, "forget"),
-                            _ => unreachable!(),
+                            crate::actions::BluetoothOperation::SetPowered { .. }
+                            | crate::actions::BluetoothOperation::StartScan
+                            | crate::actions::BluetoothOperation::Refresh => {
+                                return Err("Bluetooth operation does not address a device".into());
+                            }
                         };
                         let device = os_actions::bluez::devices()?
                             .into_iter()
@@ -843,7 +840,7 @@ impl SettingsApp {
                         Ok(())
                     }
                 };
-                validated.map_err(|error| error.to_string())?;
+                validated?;
                 self.local_pane_command
                     .set(Some(crate::actions::LocalPaneCommand::Audio(operation)));
                 Ok(())
@@ -995,7 +992,7 @@ impl SettingsApp {
                     | crate::actions::DisplayOperation::Confirm
                     | crate::actions::DisplayOperation::Revert => Ok(()),
                 };
-                validated.map_err(|error| error.to_string())?;
+                validated?;
                 self.local_pane_command
                     .set(Some(crate::actions::LocalPaneCommand::Display(operation)));
                 Ok(())
@@ -1061,7 +1058,7 @@ impl SettingsApp {
                         Ok(())
                     }
                 };
-                validated.map_err(|error| error.to_string())?;
+                validated?;
                 self.local_pane_command
                     .set(Some(crate::actions::LocalPaneCommand::Printer(operation)));
                 Ok(())
@@ -1249,7 +1246,7 @@ impl SettingsApp {
                         "the maximum number of keyboard input sources is already active".into(),
                     );
                 }
-                prefs.input.keyboard_layout = source.id.clone();
+                prefs.input.keyboard_layout.clone_from(&source.id);
                 prefs.input.keyboard_layouts.push(source.id);
                 "keyboard input source added"
             }
@@ -1275,9 +1272,12 @@ impl SettingsApp {
                 }
                 let removed = prefs.input.keyboard_layouts.remove(index);
                 if removed == prefs.input.keyboard_layout {
-                    prefs.input.keyboard_layout = prefs.input.keyboard_layouts
-                        [index.min(prefs.input.keyboard_layouts.len() - 1)]
-                    .clone();
+                    prefs.input.keyboard_layout = prefs
+                        .input
+                        .keyboard_layouts
+                        .get(index.min(prefs.input.keyboard_layouts.len() - 1))
+                        .cloned()
+                        .ok_or_else(|| "no keyboard source remains active".to_string())?;
                 }
                 "keyboard input source removed"
             }
@@ -2195,6 +2195,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table-driven proof visibly enumerates the complete device-local operation set"
+    )]
     fn hardware_effect_admission_never_mutates_the_collaborative_document() {
         use std::collections::BTreeSet;
 

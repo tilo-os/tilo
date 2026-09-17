@@ -1,3 +1,9 @@
+#![allow(
+    clippy::items_after_statements,
+    clippy::needless_pass_by_value,
+    reason = "network commands are closed typed values and remain beside their validation and dispatch"
+)]
+
 //! Network pane — Wi-Fi radio toggle, scanned network list, refresh
 //! button, connection-status row.
 //!
@@ -2529,7 +2535,7 @@ impl Widget for NetworkPane {
         self.sync_profile_autoconnect_and_forget(&mut state, &root);
         self.sync_hotspot_apply(&mut state, &root);
         self.sync_hotspot_qr(&mut state, &root);
-        self.sync_profile_selectors(&mut state, &root);
+        self.sync_profile_selectors(&state, &root);
         self.sync_ipv4_apply(&mut state, &root);
         self.sync_mobile_create(&mut state, &root);
         self.sync_advanced_toggle(&mut state, &root);

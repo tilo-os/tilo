@@ -1,3 +1,8 @@
+#![allow(
+    clippy::unreachable,
+    reason = "static control builders accept only their matching closed InputOperation variant"
+)]
+
 //! Mouse & Keyboard pane — pointer behaviour and keyboard layout.
 //!
 //! Every control drives real, durable state:
