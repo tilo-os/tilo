@@ -2491,11 +2491,13 @@ mod tests {
             now,
             10_000,
         ));
-        let state = target_adapter.state.lock().unwrap();
-        assert!(state.authorizations.is_empty());
+        let broker = {
+            let state = target_adapter.state.lock().unwrap();
+            assert!(state.authorizations.is_empty());
+            Arc::clone(&state.broker)
+        };
         assert!(
-            state
-                .broker
+            broker
                 .lock()
                 .unwrap()
                 .session(fabric_id.into_broker_id())
@@ -2557,11 +2559,13 @@ mod tests {
         assert_eq!(target_adapter.state.lock().unwrap().authorizations.len(), 1);
 
         target_adapter.tick(now + Duration::from_secs(3));
-        let state = target_adapter.state.lock().unwrap();
-        assert!(state.authorizations.is_empty());
+        let broker = {
+            let state = target_adapter.state.lock().unwrap();
+            assert!(state.authorizations.is_empty());
+            Arc::clone(&state.broker)
+        };
         assert!(
-            state
-                .broker
+            broker
                 .lock()
                 .unwrap()
                 .session(fabric_id.into_broker_id())

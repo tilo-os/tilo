@@ -290,7 +290,7 @@ mod tests {
                 microphone: true,
                 ..Default::default()
             },
-            controls: Default::default(),
+            controls: ui::realtime_continuity::RealtimeControlIntent::default(),
         };
         let metadata = ui::collaboration::ContinuationMetadata {
             schema_version: CHAT_CONTINUATION_SCHEMA,
