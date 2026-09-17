@@ -72,5 +72,8 @@ tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread"
 # yt-dlp / JS runtime binary. Gated behind `live`; off the `--shots` path.
 rustypipe = { workspace = true, optional = true, features = ["rustls-tls-webpki-roots"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+bounded-command = { path = "../../crates/system/bounded-command" }
+
 [lints]
 workspace = true
