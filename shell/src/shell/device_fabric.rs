@@ -324,6 +324,35 @@ pub enum PersonalFabricAction {
     RealtimeCancel {
         session_id: crate::shell::realtime_session::RealtimeFabricSessionId,
     },
+    /// Request one fixed-profile virtual gamepad on the exact target. The
+    /// payload contains semantic controls only: descriptors, HID reports,
+    /// serials, and arbitrary evdev codes are not representable.
+    GamepadForwardRequest {
+        forwarding_id: [u8; 16],
+        app_id: String,
+        workspace_id: String,
+        session_id: String,
+        label: String,
+    },
+    /// Target acknowledgement. A nonzero lease nonce is minted only after
+    /// the constrained virtual device exists on that certified target.
+    GamepadForwardGrant {
+        forwarding_id: [u8; 16],
+        accepted: bool,
+        lease_nonce: [u8; 16],
+    },
+    /// One logical event for the exact target-issued lease. Replay and rate
+    /// checks are enforced again by the target's privileged broker.
+    GamepadForwardEvent {
+        forwarding_id: [u8; 16],
+        lease_nonce: [u8; 16],
+        sequence: u64,
+        event: os_actions::ForwardedGamepadEvent,
+    },
+    GamepadForwardStop {
+        forwarding_id: [u8; 16],
+        lease_nonce: [u8; 16],
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -723,6 +752,58 @@ impl PersonalFabricActionEnvelope {
             | PersonalFabricAction::RealtimeStopSource { session_id }
             | PersonalFabricAction::RealtimeCancel { session_id } => {
                 if !session_id.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::GamepadForwardRequest {
+                forwarding_id,
+                app_id,
+                workspace_id,
+                session_id,
+                label,
+            } => {
+                if forwarding_id == &[0; 16]
+                    || !valid_identifier(app_id, 256)
+                    || !valid_identifier(workspace_id, 128)
+                    || !valid_identifier(session_id, 256)
+                    || label.is_empty()
+                    || label.len() > 128
+                    || label.chars().any(char::is_control)
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::GamepadForwardGrant {
+                forwarding_id,
+                accepted,
+                lease_nonce,
+            } => {
+                if forwarding_id == &[0; 16]
+                    || (*accepted && lease_nonce == &[0; 16])
+                    || (!*accepted && lease_nonce != &[0; 16])
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::GamepadForwardEvent {
+                forwarding_id,
+                lease_nonce,
+                sequence,
+                event,
+            } => {
+                if forwarding_id == &[0; 16]
+                    || lease_nonce == &[0; 16]
+                    || *sequence == 0
+                    || !event.is_valid()
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::GamepadForwardStop {
+                forwarding_id,
+                lease_nonce,
+            } => {
+                if forwarding_id == &[0; 16] || lease_nonce == &[0; 16] {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -2418,6 +2499,96 @@ mod tests {
             assert_eq!(
                 postcard::to_allocvec(&action).unwrap().first(),
                 Some(&index)
+            );
+        }
+        for (action, index) in [
+            (
+                PersonalFabricAction::GamepadForwardRequest {
+                    forwarding_id: [3; 16],
+                    app_id: "dev.tilo.game".into(),
+                    workspace_id: "workspace".into(),
+                    session_id: "session".into(),
+                    label: "Controller".into(),
+                },
+                29,
+            ),
+            (
+                PersonalFabricAction::GamepadForwardGrant {
+                    forwarding_id: [3; 16],
+                    accepted: true,
+                    lease_nonce: [4; 16],
+                },
+                30,
+            ),
+            (
+                PersonalFabricAction::GamepadForwardEvent {
+                    forwarding_id: [3; 16],
+                    lease_nonce: [4; 16],
+                    sequence: 1,
+                    event: os_actions::ForwardedGamepadEvent::Hat { x: 0, y: -1 },
+                },
+                31,
+            ),
+            (
+                PersonalFabricAction::GamepadForwardStop {
+                    forwarding_id: [3; 16],
+                    lease_nonce: [4; 16],
+                },
+                32,
+            ),
+        ] {
+            assert_eq!(
+                postcard::to_allocvec(&action).unwrap().first(),
+                Some(&index)
+            );
+        }
+    }
+
+    #[test]
+    fn gamepad_actions_are_typed_exact_bound_and_nonzero() {
+        let source = id("source");
+        let target = id("target");
+        let envelope = |action| PersonalFabricActionEnvelope {
+            request_id: [8; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action,
+        };
+        assert!(
+            envelope(PersonalFabricAction::GamepadForwardEvent {
+                forwarding_id: [1; 16],
+                lease_nonce: [2; 16],
+                sequence: 1,
+                event: os_actions::ForwardedGamepadEvent::Button {
+                    button: os_actions::GamepadButton::South,
+                    pressed: true,
+                },
+            })
+            .validate_at(&source, &target, 10_001)
+            .is_ok()
+        );
+        for action in [
+            PersonalFabricAction::GamepadForwardGrant {
+                forwarding_id: [1; 16],
+                accepted: true,
+                lease_nonce: [0; 16],
+            },
+            PersonalFabricAction::GamepadForwardGrant {
+                forwarding_id: [1; 16],
+                accepted: false,
+                lease_nonce: [2; 16],
+            },
+            PersonalFabricAction::GamepadForwardEvent {
+                forwarding_id: [1; 16],
+                lease_nonce: [2; 16],
+                sequence: 2,
+                event: os_actions::ForwardedGamepadEvent::Hat { x: 2, y: 0 },
+            },
+        ] {
+            assert_eq!(
+                envelope(action).validate_at(&source, &target, 10_001),
+                Err(FabricError::InvalidAction)
             );
         }
     }
