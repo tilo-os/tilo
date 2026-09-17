@@ -27,6 +27,7 @@ signature = ""
 
 [continuity]
 required = ["presentation", "semantic"]
+semantic-schema = "publication-position-v1"
 
 [[trust.attested_by]]
 attestor  = "tilo-demo/2026.07"
