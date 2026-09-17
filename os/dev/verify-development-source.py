@@ -6,6 +6,7 @@ The JSON result is an audit receipt, not an authorization token: installation
 must repeat verification and enforce the image's container signature policy.
 """
 import argparse
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
@@ -15,6 +16,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from typing import NamedTuple
 
 import hardware_profile as hardware
 
@@ -22,6 +24,13 @@ spec = importlib.util.spec_from_file_location('development_trust', Path(__file__
 trust = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(trust)
 ARCHITECTURES = {'x86_64': 'amd64', 'aarch64': 'arm64'}
+
+
+class VerifiedSource(NamedTuple):
+    image_id: str
+    root: Path
+    public_bundle: Path
+    receipt: dict
 
 
 def inputs(source, target, architecture, revision):
@@ -87,7 +96,14 @@ def command(argv, env):
     return result.stdout.decode('utf-8')
 
 
-def verify(args):
+@contextmanager
+def verified_source(args):
+    """Hold the verified image mount and pinned public snapshot for a consumer.
+
+    Consumers must use image_id, never resolve the mutable update tag again.
+    This authenticates source identity only; it does not validate boot artifacts,
+    native execution eligibility, generation, a disk, or firmware acceptance.
+    """
     selected = inputs(args.source, args.target, args.architecture, args.revision)
     if os.getuid() != 0:
         raise ValueError('run in podman unshare, or as root, to inspect mounted image ownership')
@@ -124,13 +140,21 @@ def verify(args):
             if not root.is_absolute() or '\n' in root_text:
                 raise ValueError('invalid local image mount result')
             profile = mounted_identity(root, args.target, args.manifest_sha256, args.architecture)
+            canonical_id = 'sha256:' + image_id.removeprefix('sha256:')
+            receipt = {'schema': 1, 'purpose': 'tilo-development-source-verification',
+                       'source': args.source, 'target_update_ref': args.target,
+                       'architecture': args.architecture, 'revision': args.revision,
+                       'manifest_sha256': args.manifest_sha256, 'hardware_profile': profile,
+                       'image_id': canonical_id,
+                       'transparency_log_required': not args.offline_key_signature}
+            yield VerifiedSource(canonical_id, root, bundle, receipt)
         finally:
             command(['podman', 'image', 'unmount', image_id], env)
-    return {'schema': 1, 'purpose': 'tilo-development-source-verification',
-            'source': args.source, 'target_update_ref': args.target,
-            'architecture': args.architecture, 'revision': args.revision,
-            'manifest_sha256': args.manifest_sha256, 'hardware_profile': profile,
-            'transparency_log_required': not args.offline_key_signature}
+
+
+def verify(args):
+    with verified_source(args) as verified:
+        return verified.receipt
 
 
 def main():
