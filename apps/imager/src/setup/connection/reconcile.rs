@@ -1,5 +1,9 @@
 //! Deterministic proposals, never execution or durable success.
-use super::model::*;
+use super::model::{
+    Conflict, ConnectionStatus, Decision, Endpoint, EndpointIdentity, EntryState, MAX_PLAN_ENTRIES,
+    NamePolicy, Observation, ObservedTree, PathProposal, PendingReason, ReconcilePlan,
+    RelativePath, ScopeIssue, Side, VerifiedBaseline,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -81,11 +85,14 @@ pub fn reconcile(
             let b = base.get(&path);
             let s = source_entries.get(&path);
             let d = destination_entries.get(&path);
-            let decision = if let Some((_, issue)) = issues
-                .iter()
-                .find(|(_, i)| i.path.as_ref().is_none_or(|scope| scope.overlaps(&path)))
-            {
-                Decision::Pending(issue.reason)
+            let decision = if let Some(reason) = issues.iter().find_map(|(side, issue)| {
+                let endpoint = match side {
+                    Side::Source => &source.endpoint,
+                    Side::Destination => &destination.endpoint,
+                };
+                scope_pending_reason(&path, issue, endpoint)
+            }) {
+                Decision::Pending(reason)
             } else if let Some((_, block)) =
                 blockers.iter().find(|(scope, _)| scope.overlaps(&path))
             {
@@ -111,6 +118,38 @@ pub fn reconcile(
         proposals,
         requires_durable_verification: true,
         initial_comparison: baseline.entries.is_none(),
+    }
+}
+
+/// A failed observation is expressed in the failing endpoint's namespace,
+/// including issue-only spellings absent from the entry/baseline candidate set.
+/// Without both canonical keys we cannot prove a candidate is outside its scope.
+fn scope_pending_reason(
+    path: &RelativePath,
+    issue: &ScopeIssue,
+    endpoint: &Endpoint,
+) -> Option<PendingReason> {
+    let Some(scope) = &issue.path else {
+        return Some(issue.reason);
+    };
+    if scope.overlaps(path) {
+        return Some(issue.reason);
+    }
+    match &endpoint.names {
+        NamePolicy::Exact => None,
+        NamePolicy::Canonical(keys) => {
+            let key_for = |path: &RelativePath| {
+                path.to_encoding(endpoint.encoding)
+                    .ok()
+                    .and_then(|native| keys.get(&native))
+            };
+            match (key_for(path), key_for(scope)) {
+                (Some(path_key), Some(scope_key)) => (path_key.starts_with(scope_key)
+                    || scope_key.starts_with(path_key))
+                .then_some(issue.reason),
+                _ => Some(PendingReason::MissingNameEvidence),
+            }
+        }
     }
 }
 
@@ -230,6 +269,7 @@ fn compare_entry(
 
 #[cfg(test)]
 mod tests {
+    use super::super::model::{ConnectionId, Encoding, MAX_ENTRIES};
     use super::*;
     use std::collections::BTreeMap;
     fn p(s: &str) -> RelativePath {
@@ -293,6 +333,157 @@ mod tests {
             Decision::Propagate { .. } | Decision::RecoverDeletion { .. }
         )));
         assert_ne!(plan.status, ConnectionStatus::UpToDate);
+    }
+    #[test]
+    fn canonical_unavailable_file_aliases_never_propose_deletion_on_either_side() {
+        for (name, alias) in [("A", "a"), ("é", "e\u{301}")] {
+            let b = [(name, file(1))];
+            for unavailable_side in [Side::Source, Side::Destination] {
+                let n = if unavailable_side == Side::Source {
+                    1
+                } else {
+                    2
+                };
+                let names = NamePolicy::Canonical(BTreeMap::from([
+                    (p(name), vec![b"same".to_vec()]),
+                    (p(alias), vec![b"same".to_vec()]),
+                ]));
+                let incomplete = ObservedTree::new(
+                    Endpoint {
+                        names,
+                        ..endpoint(n)
+                    },
+                    [],
+                    Observation::Incomplete(vec![ScopeIssue {
+                        path: Some(p(alias)),
+                        reason: PendingReason::PermissionDenied,
+                    }]),
+                )
+                .unwrap();
+                let plan = match unavailable_side {
+                    Side::Source => reconcile(&base(&b), &incomplete, &tree(2, &b)),
+                    Side::Destination => reconcile(&base(&b), &tree(1, &b), &incomplete),
+                };
+                assert_eq!(
+                    decision(&plan, name),
+                    Decision::Pending(PendingReason::PermissionDenied)
+                );
+                no_writes(&plan);
+            }
+        }
+    }
+    #[test]
+    fn canonical_unavailable_directory_scope_protects_descendants() {
+        let b = [("A", EntryState::Directory), ("A/child", file(1))];
+        let names = NamePolicy::Canonical(BTreeMap::from([
+            (p("A"), vec![b"a".to_vec()]),
+            (p("a"), vec![b"a".to_vec()]),
+            (p("A/child"), vec![b"a".to_vec(), b"child".to_vec()]),
+        ]));
+        let source = ObservedTree::new(
+            Endpoint {
+                names,
+                ..endpoint(1)
+            },
+            [],
+            Observation::Incomplete(vec![ScopeIssue {
+                path: Some(p("a")),
+                reason: PendingReason::PermissionDenied,
+            }]),
+        )
+        .unwrap();
+        let plan = reconcile(&base(&b), &source, &tree(2, &b));
+        assert_eq!(
+            decision(&plan, "A"),
+            Decision::Pending(PendingReason::PermissionDenied)
+        );
+        assert_eq!(
+            decision(&plan, "A/child"),
+            Decision::Pending(PendingReason::PermissionDenied)
+        );
+        no_writes(&plan);
+    }
+    #[test]
+    fn canonical_unavailable_descendant_scope_protects_ancestor_recovery() {
+        let b = [("A", EntryState::Directory), ("A/child", file(1))];
+        let names = NamePolicy::Canonical(BTreeMap::from([
+            (p("A"), vec![b"a".to_vec()]),
+            (p("a"), vec![b"a".to_vec()]),
+            (p("A/child"), vec![b"a".to_vec(), b"child".to_vec()]),
+            (p("a/child"), vec![b"a".to_vec(), b"child".to_vec()]),
+        ]));
+        let source = ObservedTree::new(
+            Endpoint {
+                names,
+                ..endpoint(1)
+            },
+            [],
+            Observation::Incomplete(vec![ScopeIssue {
+                path: Some(p("a/child")),
+                reason: PendingReason::Unstable,
+            }]),
+        )
+        .unwrap();
+        let plan = reconcile(&base(&b), &source, &tree(2, &b));
+        assert_eq!(
+            decision(&plan, "A"),
+            Decision::Pending(PendingReason::Unstable)
+        );
+        assert_eq!(
+            decision(&plan, "A/child"),
+            Decision::Pending(PendingReason::Unstable)
+        );
+        no_writes(&plan);
+    }
+    #[test]
+    fn canonical_unavailable_scope_without_key_evidence_fails_closed() {
+        let b = [("A", file(1))];
+        let names = NamePolicy::Canonical(BTreeMap::from([(p("A"), vec![b"a".to_vec()])]));
+        let source = ObservedTree::new(
+            Endpoint {
+                names,
+                ..endpoint(1)
+            },
+            [],
+            Observation::Incomplete(vec![ScopeIssue {
+                path: Some(p("a")),
+                reason: PendingReason::PermissionDenied,
+            }]),
+        )
+        .unwrap();
+        let plan = reconcile(&base(&b), &source, &tree(2, &b));
+        assert_eq!(
+            decision(&plan, "A"),
+            Decision::Pending(PendingReason::MissingNameEvidence)
+        );
+        no_writes(&plan);
+    }
+    #[test]
+    fn canonical_unavailable_disjoint_scope_allows_verified_other_scope() {
+        let b = [("A", file(1))];
+        let names = NamePolicy::Canonical(BTreeMap::from([
+            (p("A"), vec![b"a".to_vec()]),
+            (p("b"), vec![b"b".to_vec()]),
+        ]));
+        let source = ObservedTree::new(
+            Endpoint {
+                names,
+                ..endpoint(1)
+            },
+            [],
+            Observation::Incomplete(vec![ScopeIssue {
+                path: Some(p("b")),
+                reason: PendingReason::PermissionDenied,
+            }]),
+        )
+        .unwrap();
+        let plan = reconcile(&base(&b), &source, &tree(2, &b));
+        assert_eq!(
+            decision(&plan, "A"),
+            Decision::RecoverDeletion {
+                at: Side::Destination
+            }
+        );
     }
     #[test]
     fn windows_non_unicode_child_keeps_ancestor_conflict_and_scope_relationships() {
