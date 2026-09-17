@@ -279,7 +279,7 @@ pub enum NearbyDropEvent {
 #[derive(Default)]
 struct NearbyDropState {
     events: VecDeque<NearbyDropEvent>,
-    pending: BTreeMap<[u8; 16], (crate::shell::personal_continuity::DeviceId, String)>,
+    pending: BTreeMap<[u8; 16], (crate::shell::personal_continuity::DeviceId, String, u64)>,
     large_offers: BTreeMap<
         [u8; 16],
         (
@@ -1991,7 +1991,12 @@ fn handle_nearby_drop_action(
             accepted,
         } => {
             if let Ok(mut state) = nearby_drop_state().lock()
-                && state.pending.remove(&request_id) == Some((source.clone(), file_name.clone()))
+                && state
+                    .pending
+                    .remove(&request_id)
+                    .is_some_and(|(peer, pending_name, _)| {
+                        peer == source && pending_name == file_name
+                    })
             {
                 state.events.push_back(if accepted {
                     NearbyDropEvent::Sent {
@@ -3067,9 +3072,14 @@ pub fn request_nearby_drop(
         {
             state.pending.remove(&oldest);
         }
-        state
-            .pending
-            .insert(request, (target.clone(), file_name.clone()));
+        state.pending.insert(
+            request,
+            (
+                target.clone(),
+                file_name.clone(),
+                u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            ),
+        );
         state.events.push_back(NearbyDropEvent::Sending {
             file_name,
             peer: target.clone(),
@@ -3249,6 +3259,23 @@ pub fn nearby_transfer_statuses(
             },
         )
         .collect::<Vec<_>>();
+    statuses.extend(
+        state
+            .pending
+            .iter()
+            .map(|(transfer_id, (target, name, total_bytes))| {
+                runtime_collab::NearbyTransferStatus {
+                    transfer_id: *transfer_id,
+                    name: name.clone(),
+                    device_label: label(target),
+                    direction: runtime_collab::NearbyTransferDirection::Sending,
+                    phase: runtime_collab::NearbyTransferPhase::Queued,
+                    transferred_bytes: 0,
+                    total_bytes: *total_bytes,
+                }
+            }),
+    );
+    statuses.truncate(runtime_collab::MAX_NEARBY_TRANSFER_STATUSES);
     for entry in try_inbox_entries() {
         if statuses.len() >= runtime_collab::MAX_NEARBY_TRANSFER_STATUSES {
             break;
