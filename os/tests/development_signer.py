@@ -61,6 +61,14 @@ def main():
         run(signer, 'sign-sha256-rsa-pkcs1', str(message), str(failed_output), success=False)
         assert not failed_output.exists()
         key.chmod(0o600)
+        shared = root / 'shared-output'
+        shared.mkdir(mode=0o755)
+        run(signer, 'export-efi-cert', str(shared / 'output'), success=False)
+        assert not (shared / 'output').exists()
+        output_link = root / 'output-link'
+        output_link.symlink_to(root, target_is_directory=True)
+        run(signer, 'export-efi-cert', str(output_link / 'output'), success=False)
+        assert not (root / 'output').exists()
         machine = {'aarch64': 'aa64', 'x86_64': 'x64'}[platform.machine()]
         original = Path('/usr/lib/systemd/boot/efi') / f'systemd-boot{machine}.efi'
         signed = root / 'signed.efi'
@@ -75,7 +83,8 @@ def main():
         print(json.dumps({'result': 'pass', 'architecture': platform.machine(),
                           'checks': ['certificate fingerprint', 'PCR signature', 'changed payload rejected',
                                      'native EFI signature and preserved envelope', 'private key permissions',
-                                     'exclusive output', 'redirected input rejected', 'wrong purpose rejected']}))
+                                     'exclusive private output', 'redirected output rejected',
+                                     'redirected input rejected', 'wrong purpose rejected']}))
 
 
 if __name__ == '__main__':
