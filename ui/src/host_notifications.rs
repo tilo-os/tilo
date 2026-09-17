@@ -8,6 +8,7 @@ use std::{
     marker::PhantomData,
     path::Path,
     rc::Rc,
+    sync::OnceLock,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use windows::Data::Xml::Dom::XmlDocument;
@@ -18,7 +19,7 @@ use windows::UI::Notifications::{
 use windows::Win32::Foundation::{PROPERTYKEY, RPC_E_CHANGED_MODE};
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READWRITE,
+    CLSCTX_INPROC_SERVER, CoCreateInstance, CoIncrementMTAUsage, IPersistFile, STGM_READWRITE,
 };
 use windows::Win32::System::Variant::VT_LPWSTR;
 use windows::Win32::System::WinRT::{RO_INIT_SINGLETHREADED, RoInitialize, RoUninitialize};
@@ -34,6 +35,21 @@ struct Apartment {
 
 impl Apartment {
     fn new() -> windows::core::Result<Self> {
+        // windows-core caches agile activation factories for the process lifetime.
+        // Keep the COM runtime alive for that same lifetime, even when the final
+        // thread-local STA guard goes away between notifications. This matches
+        // windows-core's implicit CoIncrementMTAUsage initialization path.
+        static RUNTIME: OnceLock<Result<(), windows::core::HRESULT>> = OnceLock::new();
+        let initialized = RUNTIME.get_or_init(|| {
+            // SAFETY: once per process. The opaque usage cookie is intentionally
+            // retained until process exit, just like the binding's factory cache.
+            unsafe { CoIncrementMTAUsage() }
+                .map(|_cookie| ())
+                .map_err(|error| error.code())
+        });
+        if let Err(code) = initialized {
+            return Err(windows::core::Error::from_hresult(*code));
+        }
         // SAFETY: thread-bound guard balances each successful initialization.
         let result = unsafe { RoInitialize(RO_INIT_SINGLETHREADED) };
         let acquired = match result {
@@ -60,6 +76,7 @@ impl Drop for Apartment {
 pub struct HostNotifications {
     notifier: ToastNotifier,
     app_id: HSTRING,
+    activation_uri: Option<String>,
     // Drop COM interfaces before releasing the apartment.
     _apartment: Apartment,
 }
@@ -79,8 +96,37 @@ impl HostNotifications {
         Ok(Self {
             notifier,
             app_id,
+            activation_uri: None,
             _apartment: apartment,
         })
+    }
+
+    /// Let Windows open the application's registered URI when an alert is
+    /// activated, including after the submitting process has exited.
+    pub fn with_protocol_activation(mut self, uri: &str) -> windows::core::Result<Self> {
+        let uri = url::Url::parse(uri).map_err(|_| {
+            windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG)
+        })?;
+        self.activation_uri = Some(uri.into());
+        Ok(self)
+    }
+
+    fn notification_xml(&self, title: &str, body: &str) -> windows::core::Result<XmlDocument> {
+        let activation = self
+            .activation_uri
+            .as_deref()
+            .map_or_else(String::new, |uri| {
+                format!(
+                    " activationType=\"protocol\" launch=\"{}\"",
+                    escape_xml(uri)
+                )
+            });
+        let xml = XmlDocument::new()?;
+        xml.LoadXml(&HSTRING::from(format!(
+            "<toast{activation}><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
+            escape_xml(title), escape_xml(body)
+        )))?;
+        Ok(xml)
     }
 
     /// A stable tag replaces a previous submission instead of duplicating it.
@@ -91,11 +137,7 @@ impl HostNotifications {
                 windows::Win32::Foundation::E_INVALIDARG,
             ));
         }
-        let xml = XmlDocument::new()?;
-        xml.LoadXml(&HSTRING::from(format!(
-            "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
-            escape_xml(title), escape_xml(body)
-        )))?;
+        let xml = self.notification_xml(title, body)?;
         let toast = ToastNotification::CreateToastNotification(&xml)?;
         toast.SetTag(&HSTRING::from(tag))?;
         toast.SetGroup(&HSTRING::from("tilo"))?;
@@ -147,11 +189,7 @@ impl HostNotifications {
             ));
         }
         let delivery = to_windows_time(delivery_time)?;
-        let xml = XmlDocument::new()?;
-        xml.LoadXml(&HSTRING::from(format!(
-            "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
-            escape_xml(title), escape_xml(body)
-        )))?;
+        let xml = self.notification_xml(title, body)?;
         let expected_xml = xml.GetXml()?;
         for pending in self.pending()? {
             if pending.Id()?.to_string() == id {
@@ -308,6 +346,54 @@ pub fn register_shortcut(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_hosts_can_be_recreated_on_successive_threads() {
+        for _ in 0..4 {
+            std::thread::spawn(|| {
+                let host = HostNotifications::new("dev.tilo.clocks").unwrap();
+                let xml = host.notification_xml("Timer", "Ready").unwrap();
+                assert!(xml.GetXml().unwrap().to_string().contains("Ready"));
+            })
+            .join()
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn notification_activation_uri_is_preserved_without_xml_injection() {
+        let uri = "tilo-clocks:open?one=1&two=2";
+        let host = HostNotifications::new("dev.tilo.clocks")
+            .unwrap()
+            .with_protocol_activation(uri)
+            .unwrap();
+        let xml = host.notification_xml("Tea <ready>", "A & B").unwrap();
+        let root = xml.DocumentElement().unwrap();
+        assert_eq!(
+            root.GetAttribute(&HSTRING::from("activationType"))
+                .unwrap()
+                .to_string(),
+            "protocol"
+        );
+        assert_eq!(
+            root.GetAttribute(&HSTRING::from("launch"))
+                .unwrap()
+                .to_string(),
+            uri
+        );
+        assert_eq!(
+            xml.GetElementsByTagName(&HSTRING::from("text"))
+                .unwrap()
+                .Length()
+                .unwrap(),
+            2
+        );
+        // The failing builder consumes the host and releases its apartment.
+        // Release the test's private COM inspection objects first.
+        drop(root);
+        drop(xml);
+        assert!(host.with_protocol_activation("not a URI").is_err());
+    }
 
     #[test]
     fn repeated_shortcut_registration_owns_its_property_string() {
