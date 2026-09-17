@@ -403,27 +403,31 @@ pub fn stop(network: &ShellNetwork, session_id: [u8; 16]) -> Result<(), String> 
             .lock()
             .map_err(|_| "remote audio service is unavailable".to_string())?;
         if let Some(route) = state.outbound.remove(&session_id) {
-            route
-                .authorization
-                .map(|authorization| (route.target, authorization))
+            let action = route.authorization.map_or(
+                PersonalFabricAction::RemoteAudioCancel { session_id },
+                |authorization| PersonalFabricAction::RemoteAudioStop {
+                    session_id,
+                    authorization,
+                },
+            );
+            Some((route.target, action))
         } else {
-            state
-                .inbound
-                .remove(&session_id)
-                .map(|route| (route.source, route.authorization))
+            state.inbound.remove(&session_id).map(|route| {
+                (
+                    route.source,
+                    PersonalFabricAction::RemoteAudioStop {
+                        session_id,
+                        authorization: route.authorization,
+                    },
+                )
+            })
         }
     };
-    let Some((peer, authorization)) = stopped else {
+    let Some((peer, action)) = stopped else {
         return Err("that remote audio route is no longer active".into());
     };
     network
-        .send_personal_fabric_action(
-            &peer,
-            PersonalFabricAction::RemoteAudioStop {
-                session_id,
-                authorization,
-            },
-        )
+        .send_personal_fabric_action(&peer, action)
         .map(|_| ())
 }
 
@@ -553,6 +557,25 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
             }
             true
         }
+        PersonalFabricAction::RemoteAudioCancel { session_id } => {
+            if let Ok(mut state) = state().lock() {
+                let remove_pending = state
+                    .pending
+                    .get(session_id)
+                    .is_some_and(|pending| pending.source == envelope.source);
+                let remove_inbound = state
+                    .inbound
+                    .get(session_id)
+                    .is_some_and(|route| route.source == envelope.source);
+                if remove_pending {
+                    state.pending.remove(session_id);
+                }
+                if remove_inbound {
+                    state.inbound.remove(session_id);
+                }
+            }
+            true
+        }
         _ => false,
     }
 }
@@ -581,15 +604,16 @@ pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepa
             ));
         }
         for (session_id, route) in &guard.outbound {
-            if let Some(authorization) = route.authorization {
-                egress.push((
-                    route.target.clone(),
-                    PersonalFabricAction::RemoteAudioStop {
-                        session_id: *session_id,
-                        authorization,
-                    },
-                ));
-            }
+            let action = route.authorization.map_or(
+                PersonalFabricAction::RemoteAudioCancel {
+                    session_id: *session_id,
+                },
+                |authorization| PersonalFabricAction::RemoteAudioStop {
+                    session_id: *session_id,
+                    authorization,
+                },
+            );
+            egress.push((route.target.clone(), action));
         }
         for (session_id, route) in &guard.inbound {
             egress.push((
@@ -625,15 +649,14 @@ pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepa
             || !online.contains(&route.target)
             || !focus_valid
         {
-            if let Some(authorization) = route.authorization {
-                egress.push((
-                    route.target.clone(),
-                    PersonalFabricAction::RemoteAudioStop {
-                        session_id,
-                        authorization,
-                    },
-                ));
-            }
+            let action = route.authorization.map_or(
+                PersonalFabricAction::RemoteAudioCancel { session_id },
+                |authorization| PersonalFabricAction::RemoteAudioStop {
+                    session_id,
+                    authorization,
+                },
+            );
+            egress.push((route.target.clone(), action));
             guard.outbound.remove(&session_id);
             continue;
         }
