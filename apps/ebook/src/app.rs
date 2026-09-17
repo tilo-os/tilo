@@ -104,6 +104,7 @@ struct ImportRequest {
     generation: u64,
     path: PathBuf,
     kind: ImportKind,
+    expected_book_id: Option<String>,
     #[cfg(test)]
     delay: Duration,
 }
@@ -118,6 +119,7 @@ struct ImportResult {
     /// copy, otherwise the source when the host has no workspace capability.
     path: PathBuf,
     kind: ImportKind,
+    expected_book_id: Option<String>,
     result: Result<Book, String>,
 }
 
@@ -220,7 +222,18 @@ impl ImportWorker {
                     // bytes and metadata as one logical import, never a
                     // dangling shared title/annotation record.
                     let (path, result) = match content::parse_shared_path_detailed(&request.path) {
-                        Ok((book, shared_path)) => (shared_path, Ok(book)),
+                        Ok((book, shared_path))
+                            if request
+                                .expected_book_id
+                                .as_deref()
+                                .is_none_or(|expected| expected == book.id) =>
+                        {
+                            (shared_path, Ok(book))
+                        }
+                        Ok(_) => (
+                            request.path.clone(),
+                            Err("the shared workspace bytes do not match the requested book".into()),
+                        ),
                         Err(error) => (request.path.clone(), Err(error)),
                     };
                     if result_tx
@@ -229,6 +242,7 @@ impl ImportWorker {
                             source_path: request.path,
                             path,
                             kind: request.kind,
+                            expected_book_id: request.expected_book_id,
                             result,
                         })
                         .is_err()
@@ -289,6 +303,7 @@ struct LoadingImport {
     generation: u64,
     path: PathBuf,
     kind: ImportKind,
+    expected_book_id: Option<String>,
 }
 
 /// A materialised workspace copy awaiting the UI/document-owner commit. The
@@ -304,6 +319,7 @@ struct PendingShare {
 enum ResourceLifecycle {
     Open,
     Share,
+    Hydrate,
 }
 
 fn book_open_request() -> PickRequest {
@@ -1460,6 +1476,7 @@ impl BooksApp {
                     generation: 1,
                     path: PathBuf::from("/home/reader/Books/Illustrated Atlas.epub"),
                     kind: ImportKind::Open,
+                    expected_book_id: None,
                 });
             }
             "type" => {
@@ -2146,6 +2163,15 @@ impl BooksApp {
     /// Put one EPUB on the latest-wins worker mailbox. This only changes local
     /// loading state; all document mutation happens in [`Self::drain_import_worker`].
     fn begin_import(&mut self, path: PathBuf, kind: ImportKind) -> Result<(), String> {
+        self.begin_import_expected(path, kind, None)
+    }
+
+    fn begin_import_expected(
+        &mut self,
+        path: PathBuf,
+        kind: ImportKind,
+        expected_book_id: Option<String>,
+    ) -> Result<(), String> {
         // A background shelf refresh must never replace an explicit user open.
         // Watch requests coalesce with one another; after a successful receipt
         // we schedule the next unseen file.
@@ -2165,6 +2191,7 @@ impl BooksApp {
             generation,
             path: path.clone(),
             kind,
+            expected_book_id: expected_book_id.clone(),
             #[cfg(test)]
             delay: Duration::ZERO,
         })?;
@@ -2173,6 +2200,7 @@ impl BooksApp {
             generation,
             path,
             kind,
+            expected_book_id,
         });
         self.load_error = None;
         self.dirty = true;
@@ -2220,6 +2248,7 @@ impl BooksApp {
                 loading.generation == completed.generation
                     && source_matches
                     && loading.kind == completed.kind
+                    && loading.expected_book_id == completed.expected_book_id
             });
             if !current {
                 continue;
@@ -2304,6 +2333,7 @@ impl BooksApp {
             generation,
             path: path.to_path_buf(),
             kind,
+            expected_book_id: None,
             delay,
         })?;
         self.import_generation = generation;
@@ -2311,6 +2341,7 @@ impl BooksApp {
             generation,
             path: path.to_path_buf(),
             kind,
+            expected_book_id: None,
         });
         Ok(())
     }
@@ -2767,6 +2798,29 @@ impl BooksApp {
             path,
         });
         Ok(())
+    }
+
+    /// Queue a capability-safe hydrate of a remotely advertised book. The
+    /// replicated id determines the sole workspace path; the importer verifies
+    /// the parsed content id before it can become a local shelf entry.
+    fn begin_hydrate_shared_book(&mut self, id: &str, doc: &AutoCommit) -> Result<(), String> {
+        if self.pending_share.is_some()
+            || self.resource_invocation.is_some()
+            || self.import_loading.is_some()
+        {
+            return Err("another book lifecycle operation is in progress".into());
+        }
+        let advertised = BooksDoc::read_library_entries(doc)
+            .iter()
+            .any(|entry| entry.id == id && entry.shared);
+        if !advertised {
+            return Err("this shared book is no longer available in the workspace".into());
+        }
+        self.begin_import_expected(
+            content::workspace_book_path(id),
+            ImportKind::Open,
+            Some(id.to_string()),
+        )
     }
 
     fn commit_pending_share(&mut self, doc: &mut AutoCommit) {
@@ -4442,7 +4496,7 @@ impl Widget for BooksApp {
             EbookOperation::OpenBook => {
                 return Err("book open requires the lifecycle-capable operation host".into());
             }
-            EbookOperation::ShareBook { .. } => {
+            EbookOperation::ShareBook { .. } | EbookOperation::HydrateSharedBook { .. } => {
                 return Err("book sharing requires the lifecycle-capable operation host".into());
             }
         }
@@ -4488,6 +4542,12 @@ impl Widget for BooksApp {
                 self.resource_lifecycle = Some(ResourceLifecycle::Share);
                 Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
+            crate::actions::EbookOperation::HydrateSharedBook { book_id } => {
+                self.begin_hydrate_shared_book(&book_id, doc)?;
+                self.resource_invocation = Some(invocation);
+                self.resource_lifecycle = Some(ResourceLifecycle::Hydrate);
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
             _ => self
                 .invoke_resource_operation(kind, type_id, payload, doc, path)
                 .map(|handled| {
@@ -4513,6 +4573,7 @@ impl Widget for BooksApp {
             self.pending_share = None;
             let message = match self.resource_lifecycle.take() {
                 Some(ResourceLifecycle::Share) => "book sharing cancelled",
+                Some(ResourceLifecycle::Hydrate) => "shared book download cancelled",
                 Some(ResourceLifecycle::Open) | None => "book open cancelled",
             };
             // Parsing cannot be safely interrupted mid-ZIP member, but its
@@ -14070,6 +14131,95 @@ mod interaction_tests {
         )
         .unwrap_err();
         assert!(error.contains("unavailable on this device"));
+    }
+
+    #[test]
+    #[serial]
+    fn remote_open_operation_hydrates_verified_workspace_bytes_before_revealing() {
+        let workspace = tempfile::tempdir().unwrap();
+        let _workspace = WorkspaceEnvGuard::set(workspace.path());
+        let seed = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(seed.path(), crate::content::SAMPLE_EPUB).unwrap();
+        let remote = crate::content::parse_path_detailed(seed.path()).unwrap();
+        let id = remote.id.clone();
+        let shared_path = crate::content::workspace_book_path(&id);
+        std::fs::create_dir_all(shared_path.parent().unwrap()).unwrap();
+        std::fs::write(&shared_path, crate::content::SAMPLE_EPUB).unwrap();
+
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        let (_, entry) = crate::content::prepare_imported_book(&shared_path, remote);
+        BooksDoc::upsert_library_entry(&mut doc, &entry);
+        let invocation = tilo_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&crate::actions::EbookOperation::HydrateSharedBook {
+            book_id: id.clone(),
+        })
+        .unwrap();
+
+        assert!(matches!(
+            Widget::start_resource_operation(
+                &mut app,
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::EBOOK_OPERATION_TYPE,
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        ));
+        wait_for_import(&mut app, &mut doc);
+        assert_eq!(app.open_book().map(|book| &book.id), Some(&id));
+        assert_eq!(app.library_paths.get(&id), Some(&shared_path));
+        assert!(matches!(
+            Widget::poll_resource_operation(&mut app, invocation, false, &doc, &automerge::ROOT),
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+        ));
+    }
+
+    #[test]
+    #[serial]
+    fn remote_open_refuses_workspace_bytes_with_the_wrong_content_id() {
+        let workspace = tempfile::tempdir().unwrap();
+        let _workspace = WorkspaceEnvGuard::set(workspace.path());
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        let id = "book:claimed-but-wrong".to_string();
+        let shared_path = crate::content::workspace_book_path(&id);
+        std::fs::create_dir_all(shared_path.parent().unwrap()).unwrap();
+        std::fs::write(&shared_path, crate::content::SAMPLE_EPUB).unwrap();
+        BooksDoc::upsert_library_entry(
+            &mut doc,
+            &crate::model::LibraryEntry {
+                id: id.clone(),
+                shared: true,
+                title: "Wrong bytes".into(),
+                author: String::new(),
+                subject: String::new(),
+                added: 1,
+            },
+        );
+        let payload =
+            serde_json::to_vec(&crate::actions::EbookOperation::HydrateSharedBook { book_id: id })
+                .unwrap();
+        let invocation = tilo_actions::InvocationId::new();
+        Widget::start_resource_operation(
+            &mut app,
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            crate::actions::EBOOK_OPERATION_TYPE,
+            &payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .unwrap();
+        wait_for_import(&mut app, &mut doc);
+        assert!(app.library.is_empty());
+        assert!(matches!(
+            Widget::poll_resource_operation(&mut app, invocation, false, &doc, &automerge::ROOT),
+            Some(tilo_actions::InvocationUpdate::Failed { .. })
+        ));
     }
 
     #[test]
