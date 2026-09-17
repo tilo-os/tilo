@@ -43,6 +43,45 @@ pub struct SecureNearbySource {
     name: String,
 }
 
+/// An already-open writable destination capability. Installation remains
+/// anchored to this descriptor even if the granted directory is renamed.
+pub struct SecureNearbyDestination {
+    directory: File,
+    display_root: PathBuf,
+}
+
+impl SecureNearbyDestination {
+    /// Open one approved writable Files grant without following a final link.
+    pub fn open_grant(grant: &Path) -> Result<Self, String> {
+        let display_root = fs::canonicalize(grant).map_err(display)?;
+        let directory = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY)
+            .open(&display_root)
+            .map_err(display)?;
+        if !directory.metadata().map_err(display)?.is_dir() {
+            return Err("Nearby Send destination is not a directory".into());
+        }
+        Ok(Self {
+            directory,
+            display_root,
+        })
+    }
+
+    fn anchored_root(&self) -> PathBuf {
+        PathBuf::from(format!("/proc/self/fd/{}", self.directory.as_raw_fd()))
+    }
+
+    pub(crate) fn install_inline(&self, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+        let anchored = install_bytes_create_new(&self.anchored_root(), name, bytes)?;
+        Ok(self.display_root.join(
+            anchored
+                .file_name()
+                .ok_or_else(|| "Nearby Send destination name is unavailable".to_string())?,
+        ))
+    }
+}
+
 impl SecureNearbySource {
     /// Open `requested` beneath one exact granted file/directory without
     /// following any symlink in the relative walk.
@@ -513,6 +552,38 @@ impl NearbyTransferStore {
         Ok(installed)
     }
 
+    /// Verify and install through an already-open destination capability.
+    pub fn finish_secure(
+        &mut self,
+        id: [u8; 16],
+        destination: &SecureNearbyDestination,
+    ) -> Result<PathBuf, String> {
+        let entry = self
+            .index
+            .inbox
+            .iter()
+            .find(|entry| entry.id == id)
+            .cloned()
+            .ok_or_else(|| "unknown nearby transfer".to_string())?;
+        let part = self.partial_path(id);
+        let (len, hash) = hash_file(&part)?;
+        if len != entry.total_bytes || hash != entry.content_hash {
+            self.cancel_incoming(id)?;
+            return Err("nearby transfer integrity check failed".into());
+        }
+        let root = destination.anchored_root();
+        let installed = match entry.kind {
+            TransferKind::File => install_file_create_new(&part, &root, &entry.name)?,
+            TransferKind::FolderArchive => extract_archive_create_new(&part, &root, &entry.name)?,
+        };
+        self.cancel_incoming(id)?;
+        Ok(destination.display_root.join(
+            installed
+                .file_name()
+                .ok_or_else(|| "Nearby Send destination name is unavailable".to_string())?,
+        ))
+    }
+
     /// Remove outgoing metadata and staged bytes.
     ///
     /// # Errors
@@ -922,6 +993,17 @@ fn install_file_create_new(source: &Path, root: &Path, name: &str) -> Result<Pat
     Ok(destination)
 }
 
+fn install_bytes_create_new(root: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    if bytes.is_empty() || u64::try_from(bytes.len()).map_err(display)? > MAX_TRANSFER_BYTES {
+        return Err("nearby transfer exceeds the size limit".into());
+    }
+    let destination = unique_destination(root, name)?;
+    let mut output = create_private_new(&destination)?;
+    output.write_all(bytes).map_err(display)?;
+    output.sync_all().map_err(display)?;
+    Ok(destination)
+}
+
 fn unique_destination(root: &Path, name: &str) -> Result<PathBuf, String> {
     for suffix in 0..1000 {
         let candidate = root.join(collision_name(name, suffix));
@@ -1217,6 +1299,25 @@ mod tests {
             .expect("opened directory capability remains anchored after rename");
         assert_eq!(staged.kind, TransferKind::FolderArchive);
         assert!(store.object_path(staged.id).is_file());
+    }
+
+    #[test]
+    fn secure_destination_survives_rename_and_never_overwrites() {
+        let tmp = TempDir::new().unwrap();
+        let destination = tmp.path().join("approved");
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("report.txt"), b"existing").unwrap();
+        let capability = SecureNearbyDestination::open_grant(&destination).unwrap();
+        let moved = tmp.path().join("moved");
+        fs::rename(&destination, &moved).unwrap();
+        std::os::unix::fs::symlink("/etc", &destination).unwrap();
+
+        let installed = capability
+            .install_inline("report.txt", b"received")
+            .unwrap();
+        assert_eq!(installed, destination.join("report (1).txt"));
+        assert_eq!(fs::read(moved.join("report.txt")).unwrap(), b"existing");
+        assert_eq!(fs::read(moved.join("report (1).txt")).unwrap(), b"received");
     }
 
     #[test]

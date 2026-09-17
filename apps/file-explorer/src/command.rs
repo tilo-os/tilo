@@ -101,9 +101,13 @@ pub enum FileCommand {
     },
     /// Resolve an incoming Nearby Send offer locally; consent is never inferred
     /// from device certification or from merely opening Files.
+    ChooseNearbyDestination {
+        handle: ui::collaboration::NearbyTransferHandle,
+    },
     DecideNearby {
         handle: ui::collaboration::NearbyTransferHandle,
-        accept: bool,
+        destination: ui::collaboration::NearbyDestinationHandle,
+        remember_for_session: bool,
     },
     RetryNearby {
         handle: ui::collaboration::NearbyTransferHandle,

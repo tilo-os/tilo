@@ -235,7 +235,7 @@ enum CollabPanelAction {
         conflict_id: uuid::Uuid,
         version_id: collab_types::FileVersionId,
     },
-    AcceptNearby {
+    ChooseNearbyDestination {
         handle: ui::collaboration::NearbyTransferHandle,
     },
     RetryNearby {
@@ -1417,10 +1417,9 @@ impl FileExplorerWidget {
                 strategy: collab_types::ConflictStrategy::Merge,
                 version_id: *version_id,
             }),
-            CollabPanelAction::AcceptNearby { handle } => Some(FileCommand::DecideNearby {
-                handle: *handle,
-                accept: true,
-            }),
+            CollabPanelAction::ChooseNearbyDestination { handle } => {
+                Some(FileCommand::ChooseNearbyDestination { handle: *handle })
+            }
             CollabPanelAction::RetryNearby { handle } => {
                 Some(FileCommand::RetryNearby { handle: *handle })
             }
@@ -1435,7 +1434,9 @@ impl FileExplorerWidget {
             CollabPanelAction::PermanentDelete(_) => Some(t("files-permanent-delete-confirm")),
             CollabPanelAction::EmptyTrash => Some(t("files-empty-trash-confirm")),
             CollabPanelAction::ApplySafeMerge { .. } => Some(t("files-merge-apply-safe")),
-            CollabPanelAction::AcceptNearby { .. } => Some(t("files-nearby-accept")),
+            CollabPanelAction::ChooseNearbyDestination { .. } => {
+                Some(t("files-nearby-choose-destination"))
+            }
             CollabPanelAction::RetryNearby { .. } => Some(t("files-nearby-retry")),
         }
     }
@@ -1447,7 +1448,9 @@ impl FileExplorerWidget {
                 Some(t("files-permanent-delete-loss"))
             }
             CollabPanelAction::ApplySafeMerge { .. } => Some(t("files-merge-apply-safe-detail")),
-            CollabPanelAction::AcceptNearby { .. } => Some(t("files-nearby-consent-detail")),
+            CollabPanelAction::ChooseNearbyDestination { .. } => {
+                Some(t("files-nearby-consent-detail"))
+            }
             CollabPanelAction::RetryNearby { .. } => Some(t("files-nearby-retry-detail")),
         }
     }
@@ -2928,12 +2931,12 @@ impl FileExplorerWidget {
                 true
             }
             FileCommand::CloseCollabPanel => {
-                if let Some(CollabPanelAction::AcceptNearby { handle }) = self
+                if let Some(CollabPanelAction::ChooseNearbyDestination { handle }) = self
                     .collab_panel
                     .as_ref()
                     .and_then(|panel| panel.action.as_ref())
                 {
-                    self.nearby_send.decide(*handle, false);
+                    self.nearby_send.decline(*handle);
                 }
                 self.close_collab_panel();
                 true
@@ -3007,14 +3010,19 @@ impl FileExplorerWidget {
                 self.nearby_send.send(&path, target);
                 true
             }
-            FileCommand::DecideNearby { handle, accept } => {
-                self.nearby_send.decide(handle, accept);
+            FileCommand::ChooseNearbyDestination { handle } => {
+                self.open_nearby_destination_picker(handle);
+                true
+            }
+            FileCommand::DecideNearby {
+                handle,
+                destination,
+                remember_for_session,
+            } => {
+                self.nearby_send
+                    .decide(handle, Some(destination), remember_for_session);
                 self.close_collab_panel();
-                self.status = Some(if accept {
-                    t("files-nearby-accepted")
-                } else {
-                    t("files-nearby-declined")
-                });
+                self.status = Some(t("files-nearby-accepted"));
                 true
             }
             FileCommand::RetryNearby { handle } => {
@@ -4761,7 +4769,7 @@ impl FileExplorerWidget {
             let action_color = match panel.action.as_ref() {
                 Some(
                     CollabPanelAction::ApplySafeMerge { .. }
-                    | CollabPanelAction::AcceptNearby { .. }
+                    | CollabPanelAction::ChooseNearbyDestination { .. }
                     | CollabPanelAction::RetryNearby { .. },
                 ) => accent,
                 _ => theme.tokens.colors.semantic.danger,
@@ -5809,6 +5817,53 @@ impl FileExplorerWidget {
         self.menu_commands = commands;
         layout_menu_widget(&mut self.context_menu);
         self.status = Some(t("files-nearby-choose-device"));
+    }
+
+    fn open_nearby_destination_picker(
+        &mut self,
+        transfer: ui::collaboration::NearbyTransferHandle,
+    ) {
+        let destinations = self.nearby_send.destinations().to_vec();
+        if destinations.is_empty() {
+            self.status = Some(t("files-nearby-no-destinations"));
+            return;
+        }
+        self.submenu.close();
+        let mut menu = ContextMenu::new();
+        let mut commands = Vec::with_capacity(destinations.len().saturating_mul(2));
+        for destination in destinations {
+            menu.push(MenuItem::action(
+                t_args(
+                    "files-nearby-save-to-destination",
+                    &[arg("destination", destination.label.clone())],
+                ),
+                || {},
+            ));
+            commands.push(Some(FileCommand::DecideNearby {
+                handle: transfer,
+                destination: destination.handle,
+                remember_for_session: false,
+            }));
+            if !destination.remembered_for_session {
+                menu.push(MenuItem::action(
+                    t_args(
+                        "files-nearby-save-and-remember",
+                        &[arg("destination", destination.label)],
+                    ),
+                    || {},
+                ));
+                commands.push(Some(FileCommand::DecideNearby {
+                    handle: transfer,
+                    destination: destination.handle,
+                    remember_for_session: true,
+                }));
+            }
+        }
+        menu.open_at([self.last_cursor.x as f32, self.last_cursor.y as f32]);
+        self.context_menu = menu;
+        self.menu_commands = commands;
+        layout_menu_widget(&mut self.context_menu);
+        self.status = Some(t("files-nearby-choose-destination"));
     }
 
     /// Open `self.context_menu` from a `(label, command)` spec, right-aligned so
@@ -7493,7 +7548,10 @@ impl Widget for FileExplorerWidget {
                 crate::nearby_send::NearbyUiEffect::OpenPicker(targets) => {
                     self.open_nearby_device_picker(&targets);
                 }
-                crate::nearby_send::NearbyUiEffect::Offer(transfer) => {
+                crate::nearby_send::NearbyUiEffect::Offer {
+                    transfer,
+                    destinations,
+                } => {
                     self.show_collab_panel(CollabPanel {
                         title: t_args(
                             "files-nearby-offer-title",
@@ -7505,6 +7563,17 @@ impl Widget for FileExplorerWidget {
                         ),
                         lines: vec![
                             t("files-nearby-consent-detail"),
+                            if destinations.is_empty() {
+                                t("files-nearby-no-destinations")
+                            } else {
+                                t_args(
+                                    "files-nearby-destination-count",
+                                    &[arg(
+                                        "count",
+                                        i64::try_from(destinations.len()).unwrap_or(i64::MAX),
+                                    )],
+                                )
+                            },
                             t_args(
                                 "files-nearby-offer-size",
                                 &[arg(
@@ -7513,9 +7582,11 @@ impl Widget for FileExplorerWidget {
                                 )],
                             ),
                         ],
-                        action: Some(CollabPanelAction::AcceptNearby {
-                            handle: transfer.handle,
-                        }),
+                        action: (!destinations.is_empty()).then_some(
+                            CollabPanelAction::ChooseNearbyDestination {
+                                handle: transfer.handle,
+                            },
+                        ),
                         history: None,
                     });
                 }
