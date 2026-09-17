@@ -416,12 +416,19 @@ fn draw_lock_widget(
     text: &mut TextRenderer,
     view: &LockView<'_>,
 ) {
+    // The lock chrome sizes its type from the theme's text scale itself
+    // (`scaled_text_size`); the renderer must not scale it again (HIG §7a)
+    // — reset for this pass, as the shell's immediate-mode chrome passes
+    // do, and restored at the end.
+    let renderer_scale = text.text_scale();
+    text.set_text_scale(1.0);
+    let type_scale = ui::tokens::TypeScale::default();
     if !view.clock.is_empty() {
         draw_centered_text(
             scene,
             text,
             view.clock,
-            scaled_text_size(56.0, layout.scale, theme),
+            scaled_text_size(CLOCK_PX, layout.scale, theme),
             theme.text_primary,
             layout.clock,
         );
@@ -431,15 +438,16 @@ fn draw_lock_widget(
             scene,
             text,
             view.date,
-            scaled_text_size(18.0, layout.scale, theme),
+            scaled_text_size(type_scale.lg, layout.scale, theme),
             theme.text_dim,
             layout.date,
         );
     }
 
-    // Panel role (HIG §9.1): the credential card's corner is the Panel
-    // radius token (24) scaled with the rest of the lock chrome, and its
-    // edge is the derived Panel border rather than a declared colour.
+    // Panel role (HIG §9.1/§9.2): the credential card's corner is the Panel
+    // radius token (24) scaled with the rest of the lock chrome, its ground
+    // is `panel_ground` (walked clear of the wallpaper-dimmed desktop) and
+    // its edge is the derived Panel border rather than a declared colour.
     let panel = RoundedRect::from_rect(
         layout.panel,
         f64::from(theme.tokens.radii.xl) * layout.scale,
@@ -447,7 +455,7 @@ fn draw_lock_widget(
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        theme.bg_primary,
+        ui::chrome::shell::panel_ground(theme),
         None,
         &panel,
     );
@@ -464,7 +472,7 @@ fn draw_lock_widget(
         scene,
         text,
         "Session locked",
-        scaled_text_size(20.0, layout.scale, theme),
+        scaled_text_size(type_scale.xl, layout.scale, theme),
         theme.text_primary,
         layout.title,
     );
@@ -476,11 +484,12 @@ fn draw_lock_widget(
             scene,
             text,
             &label,
-            scaled_text_size(13.0, layout.scale, theme),
+            scaled_text_size(type_scale.sm, layout.scale, theme),
             theme.text_dim,
             layout.notifications,
         );
     }
+    text.set_text_scale(renderer_scale);
 }
 
 /// Quiet secondary-display indication. It must never paint a second password
@@ -492,12 +501,16 @@ fn draw_secondary_lock_widget(
     text: &mut TextRenderer,
     view: &LockView<'_>,
 ) {
+    // Same renderer reset as the primary widget (HIG §7a).
+    let renderer_scale = text.text_scale();
+    text.set_text_scale(1.0);
+    let type_scale = ui::tokens::TypeScale::default();
     if !view.clock.is_empty() {
         draw_centered_text(
             scene,
             text,
             view.clock,
-            scaled_text_size(52.0, layout.scale, theme),
+            scaled_text_size(SECONDARY_CLOCK_PX, layout.scale, theme),
             theme.text_primary,
             layout.clock,
         );
@@ -507,7 +520,7 @@ fn draw_secondary_lock_widget(
             scene,
             text,
             view.date,
-            scaled_text_size(16.0, layout.scale, theme),
+            scaled_text_size(type_scale.lg, layout.scale, theme),
             theme.text_dim,
             layout.date,
         );
@@ -522,7 +535,7 @@ fn draw_secondary_lock_widget(
         scene,
         text,
         "Session locked",
-        scaled_text_size(18.0, layout.scale, theme),
+        scaled_text_size(type_scale.lg, layout.scale, theme),
         theme.text_primary,
         Rect::new(
             message.x0,
@@ -535,7 +548,7 @@ fn draw_secondary_lock_widget(
         scene,
         text,
         "Password prompt is on the primary display",
-        scaled_text_size(13.0, layout.scale, theme),
+        scaled_text_size(type_scale.sm, layout.scale, theme),
         theme.text_dim,
         Rect::new(
             message.x0,
@@ -544,8 +557,20 @@ fn draw_secondary_lock_widget(
             message.y1,
         ),
     );
+    text.set_text_scale(renderer_scale);
 }
 
+/// The primary clock: a display size with no place on the compressed
+/// chrome type scale (HIG §9.6 tops out at `x4l` 40); the one authored size
+/// this surface keeps, named so it is not mistaken for a token.
+const CLOCK_PX: f32 = 56.0;
+/// The secondary display's clock, a step quieter than the primary's.
+const SECONDARY_CLOCK_PX: f32 = 52.0;
+
+/// A lock-chrome type size: the *unscaled* role size, multiplied by the
+/// layout's bounded scale and the user's text scale. The widget painters
+/// reset the renderer for their pass, so this is painted exactly once
+/// (HIG §7a).
 fn scaled_text_size(base: f32, scale: f64, theme: &Theme) -> f32 {
     #[allow(
         clippy::cast_possible_truncation,
@@ -653,7 +678,7 @@ fn draw_password_field(
             scene,
             text,
             "Enter password",
-            scaled_text_size(15.0, layout.scale, theme),
+            scaled_text_size(ui::tokens::TypeScale::default().base, layout.scale, theme),
             theme.text_dim,
             layout.password,
         );
@@ -692,8 +717,12 @@ fn draw_status(
     text: &mut TextRenderer,
     view: &LockView<'_>,
 ) {
-    let (value, color, size) = if view.verifying {
-        ("Verifying…", theme.text_dim, 14.0)
+    // One status role for every state (Control sub-line, HIG §9.6): the
+    // 14 / 13 / 12 the three states used to pick between were not sizes on
+    // the scale and made the row jump as the state changed.
+    let type_scale = ui::tokens::TypeScale::default();
+    let (value, color) = if view.verifying {
+        ("Verifying…", theme.text_dim)
     } else if let Some(err) = view.error {
         // Keep the recovery action visible after a failed attempt. Replacing
         // the only instruction with an error left keyboard users staring at
@@ -703,19 +732,19 @@ fn draw_status(
             scene,
             text,
             &retry,
-            scaled_text_size(12.0, layout.scale, theme),
+            scaled_text_size(type_scale.sm, layout.scale, theme),
             theme.tokens.colors.semantic.danger,
             layout.status,
         );
         return;
     } else {
-        ("Press Enter to unlock", theme.text_dim, 13.0)
+        ("Press Enter to unlock", theme.text_dim)
     };
     draw_centered_text(
         scene,
         text,
         value,
-        scaled_text_size(size, layout.scale, theme),
+        scaled_text_size(type_scale.sm, layout.scale, theme),
         color,
         layout.status,
     );
@@ -907,6 +936,81 @@ mod tests {
         assert!(!scene.encoding().is_empty());
     }
 
+    /// Review fixtures: the ux-bench cannot lock the session on macOS, so
+    /// the lock scene is photographed from its paint path — 1× and 200 %
+    /// text on a desktop and a laptop output, plus the light and
+    /// high-contrast palettes — with a typed password and a notification
+    /// count, and once more in the error state at 200 %.
+    /// The rendered pixels are asserted, not just the file: the credential
+    /// card's interior is the Panel ground on every palette and scale.
+    #[test]
+    fn lock_screen_review_fixtures_are_written() {
+        use crate::shell::osd::review_offscreen::OffscreenRenderer;
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/ui-review/s2-r2/lock-screen");
+        // One wgpu device per output size, shared by every variant of it.
+        let mut desktop = OffscreenRenderer::new(1280, 800);
+        let mut laptop = OffscreenRenderer::new(800, 700);
+        let variants = [
+            ("dark-1x-1280x800", Theme::dark(), (1280_u32, 800_u32)),
+            ("dark-2x-1280x800", Theme::dark().with_text_scale(2.0), (1280, 800)),
+            ("dark-2x-800x700", Theme::dark().with_text_scale(2.0), (800, 700)),
+            ("light-1x-1280x800", Theme::light(), (1280, 800)),
+            ("high-contrast-1x-1280x800", Theme::high_contrast(), (1280, 800)),
+        ];
+        for (name, theme, (w, h)) in variants {
+            let renderer = if w == 1280 { &mut desktop } else { &mut laptop };
+            let outputs = single(f64::from(w), f64::from(h));
+            let mut text = TextRenderer::new();
+            let typed = LockView {
+                password_len: 6,
+                notification_count: 3,
+                ..view()
+            };
+            let scene = draw_lock_scene(&outputs, &theme, &mut text, &typed);
+            let ground = theme.tokens.colors.surfaces.base;
+            let path = out.join(format!("{name}.png"));
+            renderer.render_png(&scene, ground, &path);
+            assert!(path.is_file(), "lock fixture missing: {}", path.display());
+            // Probe the card's top padding, left of the lock glyph: what the
+            // compositor painted there must be the Panel ground.
+            let layout = LockLayout::for_output(outputs[0], &theme);
+            let probe = (
+                layout.panel.x0 + layout.panel.width() / 4.0,
+                layout.panel.y0 + 8.0 * layout.scale,
+            );
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "probe points are inside a positive output"
+            )]
+            let (r, g, b, _) = OffscreenRenderer::sample(
+                &renderer.render_resilient(&scene, ground),
+                w,
+                probe.0 as u32,
+                probe.1 as u32,
+            );
+            let e = ui::chrome::shell::panel_ground(&theme).to_rgba8();
+            assert!(
+                r.abs_diff(e.r) <= 2 && g.abs_diff(e.g) <= 2 && b.abs_diff(e.b) <= 2,
+                "{name}: card interior ({r},{g},{b}) is the Panel ground ({},{},{})",
+                e.r,
+                e.g,
+                e.b
+            );
+            if name == "dark-2x-1280x800" {
+                let errored = LockView {
+                    error: Some("Incorrect password"),
+                    ..view()
+                };
+                let scene = draw_lock_scene(&outputs, &theme, &mut text, &errored);
+                let path = out.join("dark-2x-1280x800-error.png");
+                renderer.render_png(&scene, ground, &path);
+                assert!(path.is_file(), "lock fixture missing: {}", path.display());
+            }
+        }
+    }
+
     fn assert_inside(inner: Rect, outer: Rect, name: &str) {
         assert!(
             inner.x0 >= outer.x0
@@ -1010,11 +1114,9 @@ mod tests {
                     layout.notifications,
                 ),
             ] {
-                let (_, measured_height) = text.measure(
-                    value,
-                    scaled_text_size(size, layout.scale, &theme),
-                    Some(rect.width() as f32),
-                );
+                let size_px = scaled_text_size(size, layout.scale, &theme);
+                let (_, measured_height) =
+                    text.measure(value, size_px, Some(rect.width() as f32));
                 assert!(
                     f64::from(measured_height) <= rect.height() + 0.5,
                     "{label} text must fit its own row under {}: measured={measured_height}, row={rect:?}",
