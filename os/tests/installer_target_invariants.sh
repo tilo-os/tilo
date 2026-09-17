@@ -36,7 +36,7 @@ else
   bad "installer profile routing regressed to an all-or-nothing shortcut"
 fi
 
-unlock_placeholder=tilo.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000
+unlock_placeholder=tilo.unlock=000000000000000000000000000000000000000000000000000000000000000000000000000
 sample_uuid=00000000-0000-0000-0000-000000000000
 unlock_options="rd.luks.options=$sample_uuid=tpm2-device=auto,fido2-device=auto"
 if [ "${#unlock_placeholder}" -eq "${#unlock_options}" ] \
@@ -63,7 +63,7 @@ if grep -Fq 'tilo-uki-cmdline remove systemd.show_status' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline remove rd.udev.log_level' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline remove loglevel' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline remove vt.global_cursor_default' "$containerfile" \
-   && grep -Fq 'tilo-uki-cmdline append tilo.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000' "$containerfile" \
+   && grep -Fq 'tilo-uki-cmdline append tilo.unlock=000000000000000000000000000000000000000000000000000000000000000000000000000' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline show | grep -qw tilo.mode=normal' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline show | grep -qw tilo.install' "$containerfile"; then
   ok "installer reserves measured UKI cmdline space without losing splash or mode"
@@ -116,7 +116,7 @@ else
   bad "installer Wi-Fi profiles are not safely preserved for first boot"
 fi
 
-if grep -Fq 'code.podesta.ai/tilo/tilo:*|code.podesta.ai/tilo/tilo@sha256:*' "$backend"; then
+if grep -Fq 'code.podesta.ai/qos/tilo:*|code.podesta.ai/qos/tilo@sha256:*' "$backend"; then
   ok "installed update origin is restricted to the signature-required repository"
 else
   bad "installer can record an update origin outside the signature-required policy"
