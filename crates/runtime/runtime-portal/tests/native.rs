@@ -175,6 +175,51 @@ fn missing_developer_host_is_built_once_for_concurrent_launches() {
 }
 
 #[test]
+fn developer_build_uses_reported_configured_target_artifact_and_reuses_it() {
+    let root = std::env::temp_dir().join(format!(
+        "qos-native-configured-target-test-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    std::fs::create_dir_all(root.join("cargo-home")).unwrap();
+    std::fs::write(
+        root.join("cargo-home/config.toml"),
+        "[build]\ntarget = \"config-file-target\"\n",
+    )
+    .unwrap();
+    let cargo = root.join("bin/cargo");
+    std::fs::write(
+        &cargo,
+        "#!/bin/sh\nprintf 'build\\n' >> \"$CARGO_TARGET_DIR/build-calls\"\nconfigured=$(/usr/bin/sed -n 's/^target = \"\\(.*\\)\"/\\1/p' \"$CARGO_HOME/config.toml\")\n[ -n \"$configured\" ] || exit 19\nhost=\"$CARGO_TARGET_DIR/$configured/debug/qos-runtime-mcp\"\n/bin/mkdir -p \"$(/usr/bin/dirname \"$host\")\"\nprintf '#!/bin/sh\\nprintf CONFIGURED-TARGET\\\\n\\n' > \"$host\"\n/bin/chmod 700 \"$host\"\nprintf '{\"reason\":\"compiler-artifact\",\"target\":{\"name\":\"qos-runtime-mcp\"},\"executable\":\"%s\"}\\n' \"$host\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let target = root.join("target");
+    for _ in 0..2 {
+        let output = child()
+            .env_remove("QOS_RUNTIME_BINARY")
+            .env_remove("CARGO_BUILD_TARGET")
+            .env("PATH", root.join("bin"))
+            .env("CARGO_HOME", root.join("cargo-home"))
+            .env("CARGO_TARGET_DIR", &target)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("CONFIGURED-TARGET"));
+    }
+    assert_eq!(
+        std::fs::read_to_string(target.join("build-calls")).unwrap(),
+        "build\n"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn developer_build_failure_is_visible_and_does_not_run_standalone() {
     let root = std::env::temp_dir().join(format!("qos-native-build-fail-{}", std::process::id()));
     std::fs::create_dir_all(root.join("bin")).unwrap();
