@@ -70,6 +70,40 @@ class InstallTests(fixtures.PublicBundleTests):
                 self.run_install(self.output, 'development', digest, owner)
         self.assertFalse(self.destination.exists())
 
+    def test_runtime_binds_installed_registry_owner(self):
+        self.run_install(self.output, 'development', self.digest, 'ab' * 32)
+        owner = self.destination / 'trust/tilo-main-registry-owner.pub'
+        self.assertEqual(owner.read_bytes(), b'ab' * 32 + b'\n')
+        self.assertIsNotNone(installer.origin.development_origin(self.image_root))
+        for value in (b'cd' * 32, b'AB' * 32, b'0' * 64, b''):
+            owner.write_bytes(value + b'\n')
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'registry owner differs'):
+                installer.origin.development_origin(self.image_root)
+
+    def test_runtime_rejects_redirected_or_writable_registry_owner(self):
+        self.run_install(self.output, 'development', self.digest, 'ab' * 32)
+        owner = self.destination / 'trust/tilo-main-registry-owner.pub'
+        owner.chmod(0o666)
+        with self.assertRaisesRegex(ValueError, 'not group/world writable'):
+            installer.origin.development_origin(self.image_root)
+        owner.unlink()
+        owner.symlink_to(self.destination / 'development-trust/registry-owner.pub')
+        with self.assertRaisesRegex(ValueError, 'symlink'):
+            installer.origin.development_origin(self.image_root)
+
+    def test_runtime_rejects_non_root_registry_owner(self):
+        self.run_install(self.output, 'development', self.digest, 'ab' * 32)
+        owner = self.destination / 'trust/tilo-main-registry-owner.pub'
+        original_lstat = Path.lstat
+        def substituted_owner(path, *args, **kwargs):
+            info = list(original_lstat(path, *args, **kwargs))
+            if path == owner:
+                info[4] = 1000
+            return os.stat_result(info)
+        with mock.patch.object(Path, 'lstat', substituted_owner):
+            with self.assertRaisesRegex(ValueError, 'root-owned'):
+                installer.origin.development_origin(self.image_root)
+
     def test_runtime_resolves_only_bound_development_origin(self):
         self.run_install(self.output, 'development', self.digest, 'ab' * 32)
         bound = "127.0.0.1:5000/tilo-development/os:test"

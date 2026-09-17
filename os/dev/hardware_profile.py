@@ -88,6 +88,11 @@ def development_origin(root):
     for name in ('cosign.pub', 'tpm2-pcr-signing.public.pem'):
         if read(Path('usr/share/tilo') / name) != read(DEVELOPMENT_PATH / name):
             raise ValueError("installed development key differs from bound public identity")
+    owner = read(DEVELOPMENT_PATH / 'registry-owner.pub').strip()
+    installed_owner = read(Path('usr/share/tilo/trust/tilo-main-registry-owner.pub')).strip()
+    if (not re.fullmatch(rb'[0-9a-f]{64}', owner) or owner == b'0' * 64
+            or installed_owner != owner):
+        raise ValueError("installed development registry owner differs from bound public identity")
     if json.loads(read(Path('etc/containers/policy.json'))) != development_policy(selected['repository']):
         raise ValueError("development update policy must require the bound signature identity and reject other origins")
     attachments = ('docker:\n  "' + selected['repository'] + '":\n    use-sigstore-attachments: true\n').encode()
