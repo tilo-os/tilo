@@ -244,7 +244,7 @@ fn secret_service_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
     }
 
     let local_path = dir.join("vault.key");
-    let (key, migrated) = match std::fs::read(&local_path) {
+    let (key, migrated) = match read_key_bytes(&local_path) {
         Ok(bytes) if bytes.len() == KEY_LEN => {
             let mut key = Zeroizing::new([0u8; KEY_LEN]);
             key.copy_from_slice(&bytes);
@@ -376,7 +376,7 @@ fn hex_nibble(byte: u8) -> Result<u8, String> {
 
 fn local_file_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
     let path = dir.join("vault.key");
-    match std::fs::read(&path) {
+    match read_key_bytes(&path) {
         Ok(bytes) if bytes.len() == KEY_LEN => {
             let mut key = Zeroizing::new([0u8; KEY_LEN]);
             key.copy_from_slice(&bytes);
@@ -388,7 +388,7 @@ fn local_file_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
             tracing::warn!("accounts: vault key file is malformed; not overwriting");
             None
         }
-        Err(_) => {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let mut key = Zeroizing::new([0u8; KEY_LEN]);
             if getrandom::getrandom(key.as_mut_slice()).is_err() {
                 return None;
@@ -397,11 +397,22 @@ fn local_file_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
                 tracing::warn!(error = %e, "accounts: could not create vault dir for key");
                 return None;
             }
-            if write_key_file(&path, &key).is_err() {
+            if private_fs::create_atomic(&path, key.as_slice()).is_err() {
                 tracing::warn!("accounts: vault key write failed");
                 return None;
             }
+            // Another process may have won the exclusive publication. Always
+            // reload its key instead of encrypting with our discarded candidate.
+            let bytes = read_key_bytes(&path).ok()?;
+            if bytes.len() != KEY_LEN {
+                return None;
+            }
+            key.copy_from_slice(&bytes);
             Some(key)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "accounts: vault key cannot be read; refusing replacement");
+            None
         }
     }
 }
@@ -452,15 +463,69 @@ fn open(key: &[u8; KEY_LEN], blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
         .map(Zeroizing::new)
 }
 
-/// Write the key file atomically, restricted to `0600` before it is ever visible at its
-/// final path.
-fn write_key_file(path: &Path, key: &[u8; KEY_LEN]) -> std::io::Result<()> {
-    atomic_file::write_with_mode(path, key, 0o600)
+/// Keep private-key validation tied to the handle that supplies the bytes.
+fn read_key_bytes(path: &Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
+    use std::io::Read;
+    let mut bytes = Zeroizing::new(Vec::new());
+    private_fs::read(path)?.take(33).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn simultaneous_vault_creators_use_the_one_persisted_private_key() {
+        let root = temp_root();
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let root = root.clone();
+                let gate = std::sync::Arc::clone(&gate);
+                std::thread::spawn(move || {
+                    gate.wait();
+                    local_file_key(&root).unwrap()
+                })
+            })
+            .collect();
+        let keys: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        let persisted = read_key_bytes(&root.join("vault.key")).unwrap();
+        assert!(
+            keys.iter()
+                .all(|key| key.as_slice() == persisted.as_slice())
+        );
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn insecure_windows_vault_key_does_not_rotate_or_overwrite_the_vault() {
+        let root = temp_root();
+        let mut vault = SecretVault::open_in(&root);
+        vault.put(&AccountId::from("protected"), &Secret::password("secret"));
+        vault.try_save().unwrap();
+        let directory = crate::vault_dir_in(&root);
+        let key_path = directory.join("vault.key");
+        let sealed_path = directory.join("vault.enc");
+        let key_before = std::fs::read(&key_path).unwrap();
+        let sealed_before = std::fs::read(&sealed_path).unwrap();
+        let result = Command::new("icacls.exe")
+            .arg(&key_path)
+            .args(["/grant", "*S-1-1-0:(R)"])
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        assert!(local_file_key(&directory).is_none());
+        assert!(vault.try_save().is_err());
+        assert_eq!(std::fs::read(&key_path).unwrap(), key_before);
+        assert_eq!(std::fs::read(&sealed_path).unwrap(), sealed_before);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     fn temp_root() -> PathBuf {
         std::env::temp_dir().join(format!("tilo-accounts-vault-{}", uuid::Uuid::new_v4()))

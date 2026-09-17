@@ -27,6 +27,7 @@ pub fn default_speaker() -> Box<dyn Speaker> {
 /// diagnostics/tests.
 pub fn select_speaker() -> (Box<dyn Speaker>, &'static str) {
     // 1. speech-dispatcher.
+    #[cfg(unix)]
     match crate::speechd::SpeechDispatcherSpeaker::new() {
         Ok(s) => {
             log::info!("tilo-tts: using speech-dispatcher backend");
