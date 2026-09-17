@@ -62,6 +62,7 @@ pub struct BrowserTabs {
     focus_new_address: bool,
     buffered_address: bool,
     layout_active_id: Option<u64>,
+    layout_immersive: Option<bool>,
     address_focus_node: Option<NodeId>,
     cursor: Point,
     tab_menu: ContextMenu,
@@ -78,6 +79,7 @@ pub struct BrowserTabs {
     exit_panel: Option<Box<dyn Widget>>,
     close_intent: bool,
     window_fullscreen_active: bool,
+    observed_active_content_fullscreen: bool,
     fullscreen_hint_deadline: Option<Instant>,
     fullscreen_hint: Option<Box<dyn Widget>>,
 }
@@ -101,6 +103,7 @@ impl BrowserTabs {
             focus_new_address: false,
             buffered_address: false,
             layout_active_id: None,
+            layout_immersive: None,
             address_focus_node: None,
             cursor: Point::ORIGIN,
             tab_menu: ContextMenu::new(),
@@ -117,6 +120,7 @@ impl BrowserTabs {
             exit_panel: None,
             close_intent: false,
             window_fullscreen_active: false,
+            observed_active_content_fullscreen: false,
             fullscreen_hint_deadline: None,
             fullscreen_hint: None,
         }
@@ -148,6 +152,23 @@ impl BrowserTabs {
     fn clear_fullscreen_hint(&mut self) {
         self.fullscreen_hint_deadline = None;
         self.fullscreen_hint = None;
+    }
+    fn start_fullscreen_hint(&mut self) {
+        self.fullscreen_hint_deadline = Some(Instant::now() + FULLSCREEN_HINT_DURATION);
+        self.fullscreen_hint = Some(Self::make_fullscreen_hint());
+    }
+    fn reconcile_active_content_fullscreen(&mut self) {
+        let content_fullscreen = self.active().content_fullscreen();
+        if content_fullscreen == self.observed_active_content_fullscreen {
+            return;
+        }
+        self.observed_active_content_fullscreen = content_fullscreen;
+        if content_fullscreen && self.window_fullscreen_active {
+            self.start_fullscreen_hint();
+        } else {
+            self.clear_fullscreen_hint();
+        }
+        self.dirty = true;
     }
     fn make_exit_panel(&self, cancelling: bool) -> Box<dyn Widget> {
         use ui::widget::{Button, Column, Container, Row, Text};
@@ -410,6 +431,7 @@ impl BrowserTabs {
         let window_fullscreen_active = self.window_fullscreen_active;
         self.active_mut()
             .set_window_fullscreen_active(window_fullscreen_active);
+        self.observed_active_content_fullscreen = false;
         self.clear_fullscreen_hint();
         self.active_mut().refresh_shared_history();
         self.active_mut().activate_session_uri();
@@ -759,6 +781,7 @@ impl Widget for BrowserTabs {
                 tracing::warn!(%error, "Cannot open link tab");
             }
         }
+        self.reconcile_active_content_fullscreen();
         if self.exit_state == ExitState::Cancelling {
             if self.active().download_exit_cleanup_complete() {
                 self.exit_state = ExitState::Ready;
@@ -781,6 +804,8 @@ impl Widget for BrowserTabs {
     ) -> NodeId {
         self.retired.clear();
         if self.recovery.is_some() {
+            self.layout_active_id = None;
+            self.layout_immersive = None;
             let panel = self
                 .recovery_panel
                 .as_mut()
@@ -802,6 +827,7 @@ impl Widget for BrowserTabs {
         if self.immersive() {
             let page = self.active_mut().build_layout(taffy, theme, nodes);
             self.layout_active_id = Some(self.active_id);
+            self.layout_immersive = Some(true);
             let mut children = vec![page];
             if let Some(hint) = self.fullscreen_hint.as_mut() {
                 let hint = hint.build_layout(taffy, theme, nodes);
@@ -836,6 +862,7 @@ impl Widget for BrowserTabs {
             .map(|panel| panel.build_layout(taffy, theme, nodes));
         let page = self.active_mut().build_layout(taffy, theme, nodes);
         self.layout_active_id = Some(self.active_id);
+        self.layout_immersive = Some(false);
         let focus_address = self.focus_new_address || self.address_focus_node.is_some();
         self.address_focus_node = None;
         let buffered = self.buffered_address;
@@ -889,7 +916,7 @@ impl Widget for BrowserTabs {
                 }
                 return;
             }
-            if self.immersive() {
+            if self.layout_immersive == Some(true) {
                 if let Some(page) = children.first() {
                     let origin = self.rect.origin();
                     self.active_mut().apply_layout(taffy, *page, origin);
@@ -931,7 +958,7 @@ impl Widget for BrowserTabs {
                 .draw(scene, transform, tr, theme, presence);
             return;
         }
-        if self.immersive() {
+        if self.layout_immersive == Some(true) {
             self.active_mut()
                 .draw(scene, transform, tr, theme, presence);
             if let Some(hint) = self.fullscreen_hint.as_mut() {
@@ -979,6 +1006,7 @@ impl Widget for BrowserTabs {
         ) && self.active().content_fullscreen()
         {
             self.active_mut().exit_content_fullscreen();
+            self.observed_active_content_fullscreen = false;
             self.clear_fullscreen_hint();
             self.dirty = true;
             *handled = true;
@@ -998,8 +1026,10 @@ impl Widget for BrowserTabs {
         }
         // A switch can be followed by another input before the host rebuilds.
         // Retained compositions still contain NodeIds from their previous tree.
-        if self.layout_active_id != Some(self.active_id) {
-            if self.focus_new_address {
+        if self.layout_active_id != Some(self.active_id)
+            || self.layout_immersive != Some(self.immersive())
+        {
+            if self.layout_active_id != Some(self.active_id) && self.focus_new_address {
                 if let WindowEvent::KeyboardInput { event: key, .. } = event {
                     if key.state == ElementState::Pressed
                         && !modifiers.state().control_key()
@@ -1062,7 +1092,7 @@ impl Widget for BrowserTabs {
         let Ok(children) = taffy.children(node) else {
             return;
         };
-        if self.immersive() {
+        if self.layout_immersive == Some(true) {
             if let Some(page) = children.first() {
                 self.active_mut().handle_event(
                     event, scale, modifiers, state, path, handled, focus, *page, taffy,
@@ -1349,11 +1379,12 @@ impl Widget for BrowserTabs {
         self.window_fullscreen_active = active;
         self.active_mut().set_window_fullscreen_active(active);
         if active && self.active().content_fullscreen() {
-            self.fullscreen_hint_deadline = Some(Instant::now() + FULLSCREEN_HINT_DURATION);
-            self.fullscreen_hint = Some(Self::make_fullscreen_hint());
+            self.observed_active_content_fullscreen = true;
+            self.start_fullscreen_hint();
         } else {
             if !active {
                 self.active_mut().exit_content_fullscreen();
+                self.observed_active_content_fullscreen = false;
             }
             self.clear_fullscreen_hint();
         }
@@ -1556,19 +1587,58 @@ mod tests {
             engine,
         )
     }
-    fn key_event(named: NamedKey) -> WindowEvent {
+    fn key_event_with_state(named: NamedKey, state: ElementState) -> WindowEvent {
         let mut key: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         key.logical_key = Key::Named(named);
         key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
             winit::keyboard::NativeKeyCode::Unidentified,
         );
         key.location = winit::keyboard::KeyLocation::Standard;
-        key.state = ElementState::Pressed;
+        key.state = state;
         WindowEvent::KeyboardInput {
             device_id: unsafe { std::mem::zeroed() },
             event: key,
             is_synthetic: false,
         }
+    }
+    fn key_event(named: NamedKey) -> WindowEvent {
+        key_event_with_state(named, ElementState::Pressed)
+    }
+    fn retained_layout(tabs: &mut BrowserTabs) -> (TaffyTree<()>, NodeId) {
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let root = tabs.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+        tree.compute_layout(
+            root,
+            Size {
+                width: taffy::AvailableSpace::Definite(1000.0),
+                height: taffy::AvailableSpace::Definite(700.0),
+            },
+        )
+        .unwrap();
+        tabs.apply_layout(&tree, root, Point::ORIGIN);
+        (tree, root)
+    }
+    fn dispatch_key(
+        tabs: &mut BrowserTabs,
+        tree: &TaffyTree<()>,
+        root: NodeId,
+        named: NamedKey,
+        state: ElementState,
+    ) -> bool {
+        let mut handled = false;
+        tabs.handle_event(
+            &key_event_with_state(named, state),
+            1.0,
+            &Default::default(),
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+            &mut None,
+            root,
+            tree,
+        );
+        handled
     }
     fn layout_rects(tabs: &mut BrowserTabs) -> HashMap<String, Rect> {
         let mut tree = TaffyTree::new();
@@ -1662,6 +1732,61 @@ mod tests {
         assert!(
             !rects.contains_key("browser.fullscreen-hint"),
             "{rects:?}"
+        );
+    }
+
+    #[test]
+    fn page_entry_while_window_is_already_fullscreen_starts_hint_and_blocks_stale_tree_events() {
+        let (mut tabs, engine) = fullscreen_workspace();
+        tabs.on_fullscreen_changed(true);
+        let (tree, root) = retained_layout(&mut tabs);
+        assert!(tabs.fullscreen_hint.is_none());
+
+        engine.emit(WebViewEvent::FullscreenChanged(true));
+        tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
+
+        assert!(tabs.fullscreen_hint.is_some());
+        assert!(tabs.needs_animation_frame());
+        assert!(dispatch_key(
+            &mut tabs,
+            &tree,
+            root,
+            NamedKey::Enter,
+            ElementState::Released,
+        ));
+    }
+
+    #[test]
+    fn escape_release_is_blocked_until_immersive_tree_is_rebuilt() {
+        let (mut tabs, engine) = fullscreen_workspace();
+        engine.emit(WebViewEvent::FullscreenChanged(true));
+        tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        tabs.on_fullscreen_changed(true);
+        let (tree, root) = retained_layout(&mut tabs);
+
+        assert!(dispatch_key(
+            &mut tabs,
+            &tree,
+            root,
+            NamedKey::Escape,
+            ElementState::Pressed,
+        ));
+        assert!(dispatch_key(
+            &mut tabs,
+            &tree,
+            root,
+            NamedKey::Escape,
+            ElementState::Released,
+        ));
+        assert_eq!(
+            engine
+                .commands
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|command| matches!(command, WebViewCommand::ExitFullscreen))
+                .count(),
+            1
         );
     }
 
