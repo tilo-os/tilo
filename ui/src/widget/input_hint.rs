@@ -21,7 +21,9 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::{TaffyTreeExt, Widget};
 
-const HEIGHT: f64 = 22.0;
+/// Height of a painted hint row; hosts that centre a hint in their own band
+/// (the shortcut recorder) offset by half of this rather than a literal.
+pub(crate) const HEIGHT: f64 = 22.0;
 const CAP_GAP: f64 = 3.0;
 const CAP_PAD_X: f64 = 6.0;
 const MIN_CAP_WIDTH: f64 = 22.0;
