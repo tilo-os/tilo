@@ -260,6 +260,17 @@ cargo test --locked -p code-editor --all-targets
 ./tools/install-windows-apps.ps1 -Apps code-editor
 ```
 
+API Tester is installed as **API Tester** (`api-tester.exe`). Requests run on a
+background worker. Completed request history is saved in the app's CRDT document
+and restored on restart; the recorded URL and method describe the request sent,
+even if the builder is edited while that request is in flight. The native test
+suite exercises the resource Send operation against a real loopback HTTP server.
+
+```powershell
+cargo test --locked -p api-tester --all-targets
+./tools/install-windows-apps.ps1 -Apps api-tester
+```
+
 Unchanged shared fonts are preserved during installation, so a running Tilo app
 does not prevent installing another app. If font contents change, close running
 Tilo apps before installing the update.
