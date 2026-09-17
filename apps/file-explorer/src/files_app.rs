@@ -1416,9 +1416,9 @@ impl FileExplorerWidget {
         if label.is_empty() {
             return;
         }
-        let text_size = 12.0f32;
+        let text_size = theme.tokens.typography.scale.sm;
         let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
-        let margin = 14.0;
+        let margin = f64::from(theme.tokens.spacing.s4);
         let rect = vello::kurbo::Rect::new(
             self.rect.x1 - margin - w,
             self.rect.y1 - margin - h,

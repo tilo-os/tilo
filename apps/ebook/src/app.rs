@@ -46,7 +46,7 @@ use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::animation::{Animated, Curve};
 use ui::gesture::{DragSelect, Granularity};
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
-use ui::text_render::{FontChoice, TextRenderer, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Toggle, ToggleFace, Widget};
 
@@ -70,6 +70,10 @@ use crate::reading_settings::{ReadingSettings, ReadingSettingsAction};
 use crate::shelf_controls::{ShelfControlAction, ShelfControls};
 
 const TOP_BAR: f64 = 54.0;
+/// Side of the square −/+ buttons in a size stepper.
+const SIZE_STEPPER_BTN: f64 = 28.0;
+/// Width of the quick-settings visibility toggle in a font row.
+const FONT_ROW_TOGGLE_W: f64 = 40.0;
 
 /// Whether a parsed book should replace the reader's current content or only
 /// join a watched shelf. The worker carries this presentation intent but never
@@ -6166,10 +6170,9 @@ impl BooksApp {
         value: f64,
         field: &NumberField,
     ) -> f64 {
-        let btn = 28.0;
-        let vslot_w = 52.0;
+        let btn = SIZE_STEPPER_BTN;
         let by = cy - btn / 2.0;
-        let width = btn * 2.0 + vslot_w + 8.0;
+        let width = Self::size_stepper_width(tr, theme, field);
         let minus_x = right_x - width;
         self.number_controls.draw(
             field,
@@ -6181,6 +6184,30 @@ impl BooksApp {
             theme,
         );
         minus_x
+    }
+
+    /// Width of the stepper's value slot. The shared `NumberInput` paints its
+    /// value at the toolkit field size (the theme's `lg` step at 1×, scaled
+    /// once by the text scale) with `padding_standard` on either side, so the
+    /// slot is measured from the widest value the field can show. The theme
+    /// token is a resolved size, so it goes through `renderer_input_style`
+    /// before the renderer applies its own text scale (HIG §7a). A fixed 52px
+    /// slot clipped "0.96 ×" to "0.96 ›" whenever the digits ran wide.
+    fn size_stepper_slot_w(tr: &mut TextRenderer, theme: &Theme, field: &NumberField) -> f64 {
+        let style = tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.lg));
+        let widest = field
+            .widest_displays()
+            .iter()
+            .map(|sample| f64::from(tr.measure_style(sample, None, &style).0))
+            .fold(0.0, f64::max);
+        widest + 2.0 * f64::from(theme.padding_standard)
+    }
+
+    /// Total width of a size stepper: two square buttons, the measured value
+    /// slot and the gaps between them. `size_stepper` lays out with this and
+    /// `font_row_controls_x0` reserves space from it, so the two agree.
+    fn size_stepper_width(tr: &mut TextRenderer, theme: &Theme, field: &NumberField) -> f64 {
+        SIZE_STEPPER_BTN * 2.0 + Self::size_stepper_slot_w(tr, theme, field) + 8.0
     }
 
     /// A text pill (used for segmented controls + tags). Returns its width.
@@ -6205,8 +6232,8 @@ impl BooksApp {
         active: bool,
         action: Option<Action>,
     ) -> f64 {
-        let (tw, _) = tr.measure_weighted(label, size, None, TextWeight::Medium);
-        let pad = 12.0;
+        let (tw, th) = tr.measure_weighted(label, size, None, TextWeight::Medium);
+        let pad = f64::from(theme.padding_standard);
         let w = f64::from(tw) + pad * 2.0;
         let rect = Rect::new(x, y, x + w, y + h);
         let hover = action.is_some() && self.is_hover(rect);
@@ -6224,7 +6251,9 @@ impl BooksApp {
         } else {
             c.text_primary
         };
-        let ty = y + (h - f64::from(size)) / 2.0;
+        // Centre the measured line box (which carries the text scale), not the
+        // nominal size — the latter sat the label low and clipped it at 2×.
+        let ty = y + (h - f64::from(th)) / 2.0;
         tr.draw_text_weighted(
             scene,
             label,
@@ -8762,10 +8791,13 @@ impl BooksApp {
         // drawn a touch larger than the other chrome icons.
         let s_bm = 40.0;
         let cy = r.y0 + (TOP_BAR - s) / 2.0;
-        // The reading-settings ("Aa") pill lives in the right cluster; its width
-        // is measured up front so the centre title reserves room for it.
-        let (aa_label_w, _) = tr.measure_weighted("Aa", 15.0, None, TextWeight::Semibold);
-        let aa_w = f64::from(aa_label_w) + 26.0;
+        // The reading-settings ("Aa") pill lives in the right cluster; its
+        // label is measured up front (the height already carries the
+        // accessibility text scale) so the centre title reserves room for it
+        // and the pill itself is sized from the same measurement.
+        let (aa_label_w, aa_label_h) =
+            tr.measure_weighted("Aa", 15.0, None, TextWeight::Semibold);
+        let aa_w = f64::from(aa_label_w) + 2.0 * f64::from(theme.tokens.spacing.s3);
         let mut x = r.x0 + 14.0;
         x += self.icon_button(scene, t, theme, x, cy, s, Ico::Back, false, Action::Back) + 6.0;
         let toc_active = self.toc_open();
@@ -8787,7 +8819,19 @@ impl BooksApp {
         self.draw_reader_topbar_title(scene, t, tr, c, lib, r, x, s, s_bm, aa_w);
 
         // right: reading-settings ("Aa") pill + bookmark toggle + notes toggle
-        self.draw_reader_topbar_right(scene, t, tr, theme, c, r, s, s_bm, aa_w, aa_label_w, cy);
+        self.draw_reader_topbar_right(
+            scene,
+            t,
+            tr,
+            theme,
+            c,
+            r,
+            s,
+            s_bm,
+            aa_w,
+            (aa_label_w, aa_label_h),
+            cy,
+        );
     }
 
     /// The centre title (+ author, when it fits), clamped between the left
@@ -8865,7 +8909,7 @@ impl BooksApp {
         s: f64,
         s_bm: f64,
         aa_w: f64,
-        aa_label_w: f32,
+        (aa_label_w, aa_label_h): (f32, f32),
         cy: f64,
     ) {
         let bookmarked = self.annotations.iter().any(|a| {
@@ -8901,7 +8945,16 @@ impl BooksApp {
         );
 
         rx -= 8.0 + aa_w;
-        let aa_h = 32.0;
+        // The pill is sized from its measured label: `s8` tall at 1× (level
+        // with the icon buttons) and growing with the label at larger text,
+        // capped to keep an `s2` margin inside the bar. A fixed 32 clipped the
+        // 2× label against the bar's bottom edge. The cap is applied last:
+        // under a large UI scale the tokens outgrow the fixed bar, and the
+        // bar must win (a `clamp` with inverted bounds would panic).
+        let sp = &theme.tokens.spacing;
+        let aa_h = (f64::from(aa_label_h) + f64::from(sp.s3))
+            .max(f64::from(sp.s8))
+            .min(TOP_BAR - f64::from(sp.s2));
         let aa_y = r.y0 + (TOP_BAR - aa_h) / 2.0;
         let aa_rect = Rect::new(rx, aa_y, rx + aa_w, aa_y + aa_h);
         let aa_active = self.reading_settings.is_open();
@@ -8926,7 +8979,7 @@ impl BooksApp {
             aa_ink,
             t * Affine::translate((
                 rx + (aa_w - f64::from(aa_label_w)) / 2.0,
-                aa_y + (aa_h - 15.0) / 2.0,
+                aa_y + (aa_h - f64::from(aa_label_h)) / 2.0,
             )),
             None,
             TextWeight::Semibold,
@@ -8964,12 +9017,17 @@ impl BooksApp {
             c.border_standard,
             1.0,
         );
+        // Rows are inset 10 into the rail and paint their chapter number 14
+        // further in; the caption shares that number column's left edge so
+        // "CONTENTS" and "01" line up instead of sitting 2px apart.
+        let row_inset = 10.0;
+        let number_inset = 14.0;
         tr.draw_text_weighted(
             scene,
             "CONTENTS",
             11.0,
             c.text_dim,
-            t * Affine::translate((panel_x0 + 22.0, y0 + 18.0)),
+            t * Affine::translate((panel_x0 + row_inset + number_inset, y0 + 18.0)),
             None,
             TextWeight::Semibold,
         );
@@ -9001,7 +9059,12 @@ impl BooksApp {
             if y + row_h < list_y0 || y > list_y1 {
                 continue;
             }
-            let row = Rect::new(panel_x0 + 10.0, y, panel_x0 + TOC_W - 10.0, y + row_h - 6.0);
+            let row = Rect::new(
+                panel_x0 + row_inset,
+                y,
+                panel_x0 + TOC_W - row_inset,
+                y + row_h - 6.0,
+            );
             let active = i == self.chapter;
             let hover = self.is_hover(row);
             if active {
@@ -9033,7 +9096,7 @@ impl BooksApp {
                 } else {
                     c.text_dim
                 },
-                t * Affine::translate((row.x0 + 14.0, y + 8.0)),
+                t * Affine::translate((row.x0 + number_inset, y + 8.0)),
                 None,
                 TextWeight::Bold,
             );
@@ -9129,7 +9192,7 @@ impl BooksApp {
             1.0,
         );
 
-        Self::draw_notes_header(scene, t, tr, c, x0, y0, annos.len());
+        Self::draw_notes_header(scene, t, tr, theme, c, x0, y0, annos.len());
         let add_y = self.draw_notes_add_row(scene, t, tr, theme, c, x0, panel_x1, y0);
 
         // The annotation history is a genuine scroll surface, not a clipped
@@ -9201,35 +9264,50 @@ impl BooksApp {
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
+        theme: &Theme,
         c: &ui::tokens::colors::Colors,
         x0: f64,
         y0: f64,
         count: usize,
     ) {
+        let sp = &theme.tokens.spacing;
+        // The caption shares the cards' left edge (`s4` in from the rail)
+        // instead of its own 22px inset, and the count badge follows the
+        // measured caption rather than a fixed x that "ANNOTATIONS" overran
+        // at larger text.
+        let caption_x = x0 + f64::from(sp.s4);
+        let caption_y = y0 + 18.0;
+        let (cap_w, cap_h) = tr.measure_weighted("ANNOTATIONS", 11.0, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
             "ANNOTATIONS",
             11.0,
             c.text_dim,
-            t * Affine::translate((x0 + 22.0, y0 + 18.0)),
+            t * Affine::translate((caption_x, caption_y)),
             None,
             TextWeight::Semibold,
         );
         let count = format!("{count}");
-        let (cw, _) = tr.measure(&count, 11.0, None);
+        let (cw, ch) = tr.measure(&count, 11.0, None);
+        let badge_h = f64::from(ch) + f64::from(sp.s1);
+        let badge_x = caption_x + f64::from(cap_w) + f64::from(sp.s2);
+        let caption_cy = caption_y + f64::from(cap_h) / 2.0;
         let badge = Rect::new(
-            x0 + 110.0,
-            y0 + 14.0,
-            x0 + 110.0 + f64::from(cw) + 16.0,
-            y0 + 14.0 + 18.0,
+            badge_x,
+            caption_cy - badge_h / 2.0,
+            badge_x + f64::from(cw) + 2.0 * f64::from(sp.s2),
+            caption_cy + badge_h / 2.0,
         );
-        paint::fill_round(scene, t, badge, 9.0, c.surfaces.overlay);
+        paint::fill_round(scene, t, badge, badge_h / 2.0, c.surfaces.overlay);
         tr.draw_text(
             scene,
             &count,
             11.0,
             c.text_dim,
-            t * Affine::translate((x0 + 118.0, y0 + 17.0)),
+            t * Affine::translate((
+                badge.x0 + f64::from(sp.s2),
+                badge.y0 + (badge.height() - f64::from(ch)) / 2.0,
+            )),
             None,
         );
     }
@@ -9645,7 +9723,7 @@ impl BooksApp {
             (SettingsTab::Shortcuts, "Shortcuts"),
         ] {
             let active = self.settings_tab == tab;
-            let (lw, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
+            let (lw, lh) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
             let tab_rect = Rect::new(tx, tabs_y, tx + f64::from(lw) + 24.0, tabs_y + tab_h);
             let hover = self.is_hover(tab_rect);
             let col = if active || hover {
@@ -9658,7 +9736,7 @@ impl BooksApp {
                 label,
                 14.0,
                 col,
-                t * Affine::translate((tx + 12.0, tabs_y + 11.0)),
+                t * Affine::translate((tx + 12.0, tabs_y + (tab_h - f64::from(lh)) / 2.0)),
                 None,
                 if active {
                     TextWeight::Semibold
@@ -9768,12 +9846,17 @@ impl BooksApp {
                 },
                 if capturing { 2.0 } else { 1.0 },
             );
+            // Label and binding pill share the row's vertical centre; both
+            // centre their measured line boxes so they stay level with each
+            // other (and inside the row) at any text scale.
+            let (_, label_h) =
+                tr.measure_weighted(shortcut.label(), 14.0, None, TextWeight::Semibold);
             tr.draw_text_weighted(
                 scene,
                 shortcut.label(),
                 14.0,
                 c.text_primary,
-                t * Affine::translate((x + 16.0, y + 14.0)),
+                t * Affine::translate((x + 16.0, y + (row.height() - f64::from(label_h)) / 2.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -9784,7 +9867,8 @@ impl BooksApp {
                     .shortcut(shortcut.id(), shortcut.default_key())
                     .to_uppercase()
             };
-            let (binding_w, _) = tr.measure_weighted(&binding, 13.0, None, TextWeight::Semibold);
+            let (binding_w, binding_h) =
+                tr.measure_weighted(&binding, 13.0, None, TextWeight::Semibold);
             let pill_w = (f64::from(binding_w) + 24.0).max(42.0);
             let pill = Rect::new(x + w - pill_w - 14.0, y + 13.0, x + w - 14.0, y + 45.0);
             paint::fill_round(
@@ -9809,7 +9893,7 @@ impl BooksApp {
                 },
                 t * Affine::translate((
                     pill.x0 + (pill.width() - f64::from(binding_w)) / 2.0,
-                    y + 22.0,
+                    pill.y0 + (pill.height() - f64::from(binding_h)) / 2.0,
                 )),
                 None,
                 TextWeight::Semibold,
@@ -10240,10 +10324,21 @@ impl BooksApp {
             matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Font(f.id.clone()));
         let fam = font_choice(&f.kind);
         if renaming_this {
-            // Editor spans from the name to just before the right controls,
-            // and typesets the edited value in the font's own face.
-            let field_x1 = (x + w - 210.0).max(name_x + 140.0);
-            let field_rect = Rect::new(name_x - 8.0, y + 8.0, field_x1, y + 8.0 + 30.0);
+            // Editor spans from the name to an `s3` gap before the right
+            // control cluster — the same cluster edge `draw_font_row_controls`
+            // lays out from, so the field can never run under the toggle the
+            // way a fixed 210px reservation did. Its left edge backs off by
+            // the shared field's own text inset so the edited name starts
+            // exactly where the static name was painted.
+            let controls_x0 = Self::font_row_controls_x0(tr, theme, x, w, f);
+            let field_x1 =
+                (controls_x0 - f64::from(theme.tokens.spacing.s3)).max(name_x + 140.0);
+            let field_rect = Rect::new(
+                name_x - f64::from(theme.padding_standard),
+                y + 8.0,
+                field_x1,
+                y + 8.0 + 30.0,
+            );
             if let Some(rn) = self.renaming.as_mut() {
                 rn.field.apply_layout_external(field_rect);
                 rn.field
@@ -10293,7 +10388,7 @@ impl BooksApp {
         cy: f64,
         f: &FontEntry,
     ) {
-        let del_col = x + w - 16.0 - 24.0;
+        let del_col = Self::font_row_del_col(x, w);
         if matches!(f.kind, FontKind::Named(_)) {
             let del = Rect::new(del_col, cy - 12.0, del_col + 24.0, cy + 12.0);
             let col = if self.is_hover(del) {
@@ -10304,8 +10399,9 @@ impl BooksApp {
             paint::close(scene, t, del, col, 1.4);
             self.push_hit(del, Action::RemoveFont(f.id.clone()));
         }
-        let size_right = del_col - 12.0;
-        let left = self.size_stepper(
+        let field = NumberField::FontMult(f.id.clone());
+        let size_right = Self::font_row_size_right(x, w);
+        self.size_stepper(
             scene,
             t,
             tr,
@@ -10314,20 +10410,53 @@ impl BooksApp {
             size_right,
             cy,
             f64::from(f.size_mult),
-            &NumberField::FontMult(f.id.clone()),
+            &field,
         );
-        // Enable/disable toggle (= whether it appears in quick settings).
-        let tog_w = 40.0;
+        // Enable/disable toggle (= whether it appears in quick settings). Its
+        // left edge is the one cluster edge the rename editor also stops
+        // before, derived once for both.
         let tog_h = 22.0;
-        let tog_x = left - 16.0 - tog_w;
+        let tog_x = Self::font_row_controls_x0(tr, theme, x, w, f);
         self.switch(
             scene,
             t,
             theme,
-            Rect::new(tog_x, cy - tog_h / 2.0, tog_x + tog_w, cy + tog_h / 2.0),
+            Rect::new(
+                tog_x,
+                cy - tog_h / 2.0,
+                tog_x + FONT_ROW_TOGGLE_W,
+                cy + tog_h / 2.0,
+            ),
             f.shown,
             Action::ToggleFontShown(f.id.clone()),
         );
+    }
+
+    /// x of a font row's delete column (custom fonts only; built-ins reserve
+    /// the column so every row's stepper lines up).
+    fn font_row_del_col(x: f64, w: f64) -> f64 {
+        x + w - 16.0 - 24.0
+    }
+
+    /// Right edge of a font row's size stepper.
+    fn font_row_size_right(x: f64, w: f64) -> f64 {
+        Self::font_row_del_col(x, w) - 12.0
+    }
+
+    /// Left edge of a font row's whole right-hand control cluster (the
+    /// visibility toggle), derived from the same constants and the same
+    /// measured stepper width `draw_font_row_controls` lays out with. The
+    /// rename editor ends before this edge.
+    fn font_row_controls_x0(
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        x: f64,
+        w: f64,
+        f: &FontEntry,
+    ) -> f64 {
+        let stepper_w =
+            Self::size_stepper_width(tr, theme, &NumberField::FontMult(f.id.clone()));
+        Self::font_row_size_right(x, w) - stepper_w - 16.0 - FONT_ROW_TOGGLE_W
     }
 
     /// "+ Add a system font" pill. Returns the y just below it.
@@ -10804,7 +10933,14 @@ impl BooksApp {
         let name_end = rx - 12.0;
         if renaming_this {
             let field_x1 = name_end.max(name_x + 120.0);
-            let field_rect = Rect::new(name_x - 6.0, y + 8.0, field_x1, y + 8.0 + 28.0);
+            // Back off by the shared field's text inset so the edited name
+            // starts exactly where the static name is painted.
+            let field_rect = Rect::new(
+                name_x - f64::from(theme.padding_standard),
+                y + 8.0,
+                field_x1,
+                y + 8.0 + 28.0,
+            );
             if let Some(rn) = self.renaming.as_mut() {
                 rn.field.apply_layout_external(field_rect);
                 rn.field
@@ -15277,5 +15413,115 @@ mod interaction_tests {
             .find(|f| f.id == "serif")
             .expect("serif entry present");
         assert_eq!(serif.name, "Serif", "cancel kept the original name");
+    }
+
+    // ---- chrome alignment: one geometry for paint, hits and editors --------
+
+    /// Like `frame`, at an accessibility text scale: the theme and the
+    /// renderer both carry `scale`, exactly as the live host applies it.
+    fn frame_at_text_scale(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64, scale: f32) {
+        let root = automerge::ROOT;
+        app.sync(doc, &root);
+        app.rect = Rect::new(0.0, 0.0, w, h);
+        app.reconcile_flaps();
+        let theme = Theme::dark().with_text_scale(scale);
+        let presence = PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(scale);
+        let mut scene = Scene::new();
+        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    fn hit_rect(app: &BooksApp, pred: impl Fn(&Action) -> bool) -> Option<Rect> {
+        app.hits.iter().rev().find(|h| pred(&h.action)).map(|h| h.rect)
+    }
+
+    /// The inline font-rename editor ends an `s3` before the row's control
+    /// cluster (a fixed 210px reservation used to run it under the toggle),
+    /// and its left edge backs off by the shared field's text inset so the
+    /// edited name starts exactly where the static name is painted.
+    #[test]
+    #[serial]
+    fn font_rename_editor_stops_before_the_controls_and_starts_on_the_name() {
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        app.view = View::Settings;
+        app.settings_tab = SettingsTab::Fonts;
+        frame(&mut app, &mut doc, 1000.0, 800.0);
+        let static_name_x = hit_rect(&app, |a| matches!(a, Action::BeginRenameFont(id) if id == "mono"))
+            .expect("the static name is a rename target")
+            .x0;
+
+        app.dispatch(Action::BeginRenameFont("mono".into()), &mut doc);
+        frame(&mut app, &mut doc, 1000.0, 800.0);
+        let field = app
+            .renaming
+            .as_ref()
+            .expect("rename in progress")
+            .field
+            .get_rect();
+        let toggle = hit_rect(&app, |a| matches!(a, Action::ToggleFontShown(id) if id == "mono"))
+            .expect("the row's toggle is a hit target");
+        let theme = Theme::dark();
+        assert!(
+            field.x1 + f64::from(theme.tokens.spacing.s3) <= toggle.x0 + 0.01,
+            "editor ends at {} but the toggle starts at {}",
+            field.x1,
+            toggle.x0
+        );
+        assert!(
+            (field.x0 + f64::from(theme.padding_standard) - static_name_x).abs() < 0.01,
+            "editor text origin {} != static name x {static_name_x}",
+            field.x0 + f64::from(theme.padding_standard)
+        );
+    }
+
+    /// The reader's "Aa" pill is sized from its measured label: at 2× text
+    /// the label's line box still fits inside the pill, and the pill inside
+    /// the top bar, instead of the fixed 32px pill clipping the label.
+    #[test]
+    fn reader_aa_pill_contains_its_label_at_2x_text() {
+        for scale in [1.0_f32, 2.0] {
+            let mut app = app_with_sample();
+            let mut doc = AutoCommit::new();
+            frame_at_text_scale(&mut app, &mut doc, 800.0, 900.0, scale);
+            let pill = hit_rect(&app, |a| matches!(a, Action::ToggleTypePopover))
+                .expect("the type-settings pill is a hit target");
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let (_, label_h) = tr.measure_weighted("Aa", 15.0, None, TextWeight::Semibold);
+            assert!(
+                pill.height() >= f64::from(label_h) - 0.01,
+                "at {scale}× the pill ({}) is shorter than its label ({label_h})",
+                pill.height()
+            );
+            assert!(
+                pill.y0 >= app.rect.y0 && pill.y1 <= app.rect.y0 + TOP_BAR + 0.01,
+                "at {scale}× the pill {pill:?} leaves the {TOP_BAR}px top bar"
+            );
+        }
+    }
+
+    /// The size stepper's value slot is measured from the widest value the
+    /// field can show plus the shared field's insets, so "0.96 ×" is never
+    /// clipped the way the old fixed 52px slot clipped it.
+    #[test]
+    fn size_stepper_slot_fits_the_widest_value() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let field = NumberField::FontMult("mono".into());
+        let slot = BooksApp::size_stepper_slot_w(&mut tr, &theme, &field);
+        for sample in field.widest_displays() {
+            let (w, _) = tr.measure(sample, theme.tokens.typography.scale.lg, None);
+            assert!(
+                slot >= f64::from(w) + 2.0 * f64::from(theme.padding_standard) - 0.01,
+                "slot {slot} cannot hold {sample:?} ({w}px) plus the field insets"
+            );
+        }
+        assert!(
+            BooksApp::size_stepper_width(&mut tr, &theme, &field)
+                >= SIZE_STEPPER_BTN * 2.0 + slot,
+            "the stepper reserves both buttons and the measured slot"
+        );
     }
 }
