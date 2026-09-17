@@ -29,8 +29,12 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::draw;
 use crate::model::{self, FONTS, ThemeSpec, TokenId};
 
+/// Panel inset on every side — the toolkit's `s4` step.
 const PAD: f32 = 16.0;
-const GRID_H: f32 = 152.0;
+/// Vertical rhythm between the panel's controls. Deliberately off the token
+/// scale (between `s4` and `s6`): the sliders and the dropdown carry their
+/// labels 18 px above the control, so `s4` reads as one crowded stack while
+/// `s6` splits the panel into islands.
 const GAP: f32 = 22.0;
 /// Child-control heights, mirrored from the `ui` widgets, so the panel's
 /// intrinsic height can be computed for the narrow stacked/scrolling layout
@@ -38,13 +42,58 @@ const GAP: f32 = 22.0;
 const PICKER_H: f32 = 220.0;
 const SLIDER_H: f32 = 30.0;
 const DROPDOWN_H: f32 = 40.0;
-const ACTIONS_H: f32 = 34.0;
+/// The action buttons share the dropdown's control height, so the panel's
+/// last two rows never mix a 40 px chooser with shorter buttons.
+const ACTIONS_H: f32 = 40.0;
+
+/// The colour-token chip grid: a header (panel title, theme name and the
+/// "COLORS" label), the chips wrapped to the width the panel actually has,
+/// and the selected-token caption directly under the last chip row.
+const CHIP_SIZE: f64 = 28.0;
+/// Gap between chips — the `s2` step.
+const CHIP_GAP: f64 = 8.0;
+/// Height of the header block above the first chip row.
+const CHIP_HEADER_H: f64 = 58.0;
+/// Air between the last chip row and the caption, and the caption's own line.
+const CHIP_CAPTION_GAP: f64 = 15.0;
+const CHIP_CAPTION_H: f64 = 15.0;
+
+/// How many chips fit on one row at a content width of `avail` logical px.
+/// The one wrap rule shared by the reserved grid height and the drawn /
+/// hit-tested chip rects, so the two can never disagree.
+fn chips_per_row(avail: f64) -> usize {
+    let per_row = ((avail.max(0.0) + CHIP_GAP) / (CHIP_SIZE + CHIP_GAP)).floor();
+    (per_row as usize).max(1)
+}
+
+/// How many rows the colour-token chips wrap into at a content width of
+/// `avail` logical px (the panel width minus its two insets).
+pub fn chip_rows_for_width(avail: f32) -> usize {
+    TokenId::ALL.len().div_ceil(chips_per_row(f64::from(avail)))
+}
+
+/// Height of the chip-grid region (header, wrapped chip rows, caption) at a
+/// content width of `avail`. Measured from the row count instead of a fixed
+/// band, so a wide panel that fits every chip on one row does not leave a
+/// dead strip between the chips and their caption.
+pub fn chip_grid_height(avail: f32) -> f32 {
+    let rows = chip_rows_for_width(avail) as f64;
+    let chips = rows * (CHIP_SIZE + CHIP_GAP) - CHIP_GAP;
+    (CHIP_HEADER_H + chips + CHIP_CAPTION_GAP + CHIP_CAPTION_H) as f32
+}
 
 /// Intrinsic content height of the customizer column (grid + picker + two
-/// sliders + font dropdown + actions, plus padding and inter-row gaps).
-/// Used to stack it under the preview inside the narrow vertical scroll.
-pub fn intrinsic_height() -> f32 {
-    PAD * 2.0 + GRID_H + GAP * 5.0 + PICKER_H + SLIDER_H * 2.0 + DROPDOWN_H + ACTIONS_H
+/// sliders + font dropdown + actions, plus padding and inter-row gaps) when
+/// the panel is `panel_width` wide. Used to stack it under the preview inside
+/// the narrow vertical scroll, where the panel can't claim `percent(1.0)`.
+pub fn intrinsic_height_for_width(panel_width: f32) -> f32 {
+    PAD * 2.0
+        + chip_grid_height(panel_width - PAD * 2.0)
+        + GAP * 5.0
+        + PICKER_H
+        + SLIDER_H * 2.0
+        + DROPDOWN_H
+        + ACTIONS_H
 }
 
 /// Panic-free leaf/parent node construction for [`Widget::build_layout`].
@@ -105,6 +154,10 @@ pub struct Customizer {
     /// Last known cursor position (logical px), tracked from `CursorMoved`
     /// so a press — which carries no position — can hit-test the chips.
     cursor: Option<Point>,
+    /// Panel width (logical px) the next `build_layout` sizes the chip grid
+    /// for. The owning app sets it from the layout class it is building
+    /// (docked column or full narrow width) before every `build_layout`.
+    layout_width: f32,
 }
 
 impl Default for Customizer {
@@ -160,7 +213,27 @@ impl Customizer {
             grid_rect: Rect::ZERO,
             structure_dirty: false,
             cursor: None,
+            layout_width: 0.0,
         }
+    }
+
+    /// Tell the next `build_layout` how wide the panel will be, so the chip
+    /// grid reserves exactly the rows its chips wrap into at that width.
+    pub fn set_layout_width(&mut self, panel_width: f32) {
+        self.layout_width = panel_width;
+    }
+
+    /// Intrinsic content height of the panel at the width it was last told
+    /// about (see [`Self::set_layout_width`]); the narrow stacked layout uses
+    /// it to size the panel as a scrolling stack member.
+    pub fn intrinsic_height(&self) -> f32 {
+        intrinsic_height_for_width(self.layout_width)
+    }
+
+    /// Content width the chip grid is sized for: the declared panel width
+    /// minus the panel's two insets.
+    fn grid_content_width(&self) -> f32 {
+        (self.layout_width - PAD * 2.0).max(0.0)
     }
 
     pub fn set_view(&mut self, spec: ThemeSpec, edit_token: TokenId, editable: bool) {
@@ -267,7 +340,7 @@ impl Widget for Customizer {
             Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(GRID_H),
+                    height: Dimension::length(chip_grid_height(self.grid_content_width())),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
@@ -295,12 +368,12 @@ impl Widget for Customizer {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Row,
                 gap: Size {
-                    width: length(8.0_f32),
+                    width: length(theme.tokens.spacing.s2),
                     height: length(0.0_f32),
                 },
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(34.0),
+                    height: Dimension::length(ACTIONS_H),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
@@ -488,12 +561,19 @@ impl Widget for Customizer {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![
+        // Mirror `children_mut`: the action buttons are part of the read-only
+        // tree too, so the accessibility tree, inspection and named targets
+        // see the same controls the event path drives.
+        let mut v: Vec<&dyn Widget> = vec![
             &self.color_picker,
             &self.radius_slider,
             &self.spacing_slider,
             &self.font_dropdown,
-        ]
+        ];
+        for b in &self.buttons {
+            v.push(b as &dyn Widget);
+        }
+        v
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut v: Vec<&mut (dyn Widget + '_)> = vec![
@@ -526,18 +606,15 @@ impl Customizer {
     fn layout_chips(&mut self) {
         self.chip_rects.clear();
         let x0 = self.grid_rect.x0;
-        let y0 = self.grid_rect.y0 + 58.0;
-        let size = 28.0;
-        let gap = 8.0;
-        let avail = self.grid_rect.width();
-        let per_row = (((avail + gap) / (size + gap)).floor() as usize).max(1);
+        let y0 = self.grid_rect.y0 + CHIP_HEADER_H;
+        let per_row = chips_per_row(self.grid_rect.width());
         for (i, tok) in TokenId::ALL.iter().enumerate() {
             let col = (i % per_row) as f64;
             let row = (i / per_row) as f64;
-            let x = x0 + col * (size + gap);
-            let y = y0 + row * (size + gap);
+            let x = x0 + col * (CHIP_SIZE + CHIP_GAP);
+            let y = y0 + row * (CHIP_SIZE + CHIP_GAP);
             self.chip_rects
-                .push((*tok, Rect::new(x, y, x + size, y + size)));
+                .push((*tok, Rect::new(x, y, x + CHIP_SIZE, y + CHIP_SIZE)));
         }
     }
 
@@ -613,7 +690,7 @@ impl Customizer {
                 12.0,
                 theme.text_primary,
                 self.grid_rect.x0,
-                self.grid_rect.y1 - 15.0,
+                self.grid_rect.y1 - CHIP_CAPTION_H,
                 TextWeight::Medium,
             );
         }

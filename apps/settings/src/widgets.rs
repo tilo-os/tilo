@@ -8,6 +8,24 @@
 //! Grouped surfaces come from the shared [`ui::widget::Card`], so every card in
 //! the OS reads identically and tracks the theme; the helpers here just bundle
 //! the settings-specific row/section shapes on top of it.
+//!
+//! ## Spacing vocabulary
+//!
+//! Every gap here is one of three named steps, so a pane reads as groups
+//! rather than as a wall of equally spaced lines (HIG §7a):
+//!
+//! - **caption gap** ([`spacing`]`().s1`) — a description hugs the label it
+//!   explains;
+//! - **[`ROW_GAP`]** — related rows inside one card (the scale's `s3`);
+//! - **[`CARD_GAP`]** — one grouped surface to the next (deliberately between
+//!   `s4` and `s6`).
+//!
+//! Helpers run before a `Theme` exists (a pane composes its tree and the host
+//! resolves the theme at layout time), so every measure here comes from the
+//! toolkit's *default* spacing scale via [`spacing`]. A custom theme may
+//! retune `s2`–`s4`; those retuned values reach the shared widgets' own
+//! padding at layout time but not these composition gaps, which is a known
+//! limit of theme-less composition (recorded for the toolkit's layout unit).
 
 use ui::icons::Icon;
 use ui::widget::{Badge, Column, Container, IconWidget, Row, Spacer, Text, Widget};
@@ -15,49 +33,74 @@ use ui::widget::{Badge, Column, Container, IconWidget, Row, Spacer, Text, Widget
 /// Type alias for the boxed-widget currency the `ui` tree speaks.
 pub type El = Box<dyn Widget>;
 
+/// The toolkit's default spacing scale (`s1` = 4, `s2` = 8, `s3` = 12,
+/// `s4` = 16, `s6` = 24 …). Settings composes its tree before a `Theme` is
+/// resolved, so this is the one scale every helper (and the sidebar's row
+/// geometry) reads; keeping them on one source is what lets the pill, the
+/// section headers and the shell's search field share edges.
+pub fn spacing() -> ui::tokens::Spacing {
+    ui::tokens::Spacing::default()
+}
+
 /// Vertical gap (logical px) between stacked cards in a panel. The page
 /// heading and this deliberate air do the grouping work, so card outlines do
 /// not have to carry every level of hierarchy.
+///
+/// Deliberately off the token scale: `s4` (16) reads as one more row inside a
+/// card, `s6` (24) matches the page-level gap between heading and body, so a
+/// card boundary needs a step of its own between the two.
 pub const CARD_GAP: f32 = 20.0;
 
-/// A fixed-height empty box used to inject deliberate vertical space.
+/// Vertical gap (logical px) between rows inside a single card — the toolkit's
+/// `s3` step. Smaller than [`CARD_GAP`] so rows feel related within a group
+/// while still having visible separation.
+pub const ROW_GAP: f32 = 12.0;
+
+/// A fixed-height empty box for a deliberate one-off vertical gap.
 ///
-/// The toolkit's `Column` applies a *uniform* 12 px gap between children
-/// — and crucially, an intrinsic-height column lays out as a CSS **block**
-/// stack, where the taffy `gap` property is ignored entirely. So a plain
-/// stack of cards renders with the cards *touching*. We therefore place
-/// these explicit spacer rows between cards (and to tune the rhythm around
-/// section headers), which gives us per-gap control the `Column` API does
-/// not expose.
+/// Stacks of cards and rows do **not** need this: an intrinsic-height
+/// [`Column`] honours its `with_gap` between every child, and [`cards`] /
+/// [`rows`] rely on exactly that. Reach for `vgap` only where a single gap is
+/// deliberately asymmetric (air above a lone caption, say) and name the token
+/// you pass.
 pub fn vgap(px: f32) -> El {
     Box::new(Container::new().with_no_padding().with_height(px))
 }
 
 /// A fixed-width empty box for deliberate *horizontal* space inside a `Row`
 /// (e.g. a gutter between an icon and its label). Pinned width, so it never
-/// flex-grows like a bare spacer would.
+/// flex-grows like a bare spacer would. Note that a `Row` already separates
+/// its children by the theme gap; an `hgap` adds to that rather than replacing
+/// it.
 pub fn hgap(px: f32) -> El {
     Box::new(Container::new().with_no_padding().with_size(px, 1.0))
 }
 
 /// Stack a list of cards with a deliberate [`CARD_GAP`] of air between each
-/// one. This is the standard body for a panel: it replaces the bare
-/// `Column::new().with_intrinsic_height().push(card_a).push(card_b)…`
-/// pattern, which renders the cards flush against each other because an
-/// intrinsic-height (block-display) column ignores the toolkit gap.
+/// one. This is the standard body for a panel.
 pub fn cards(items: Vec<El>) -> El {
+    Box::new(stack(items, CARD_GAP))
+}
+
+/// A vertical stack of pre-built rows — the standard body for a card. Rows are
+/// separated by [`ROW_GAP`], the "related rows" step of the scale.
+pub fn rows(items: Vec<El>) -> El {
+    Box::new(stack(items, ROW_GAP))
+}
+
+/// An intrinsic-height column that owns one uniform `gap` between its
+/// children and no padding of its own. The shared building block behind
+/// [`cards`] and [`rows`]: the surface (card or page) supplies the inset, the
+/// stack supplies only the rhythm.
+fn stack(items: Vec<El>, gap: f32) -> Column {
     let mut col = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(0.0);
-    let last = items.len().saturating_sub(1);
-    for (i, item) in items.into_iter().enumerate() {
+        .with_gap(gap);
+    for item in items {
         col = col.push(item);
-        if i != last {
-            col = col.push(vgap(CARD_GAP));
-        }
     }
-    Box::new(col)
+    col
 }
 
 /// The unboxed heading at the start of every settings destination.
@@ -73,7 +116,7 @@ pub fn page_heading(title: &str, subtitle: &str) -> El {
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(5.0)
+            .with_gap(spacing().s1)
             .push(Box::new(
                 Text::new("SETTINGS").with_scaled_size(12.0).dimmed(),
             ))
@@ -101,7 +144,8 @@ pub fn card_with_action(title: &str, action: El, body: El) -> El {
 }
 
 /// A label-on-the-left, control-on-the-right row — the workhorse settings
-/// line. The `Spacer` pushes the control to the trailing edge.
+/// line. The `Spacer` pushes the control to the trailing edge, and the `Row`
+/// centres label and control on one line whatever the control's height.
 pub fn setting_row(label: &str, control: El) -> El {
     Box::new(
         Row::new()
@@ -123,6 +167,10 @@ pub fn value_row(label: &str, value: &str) -> El {
 /// its own line beneath. A single leading `Text` keeps the control on the
 /// label's line at the right edge — a multi-line block on the left would seize
 /// the row and wrap the control below it, dropping it out of alignment.
+///
+/// The description hugs its row by the caption gap (`s1`), so it reads as
+/// belonging to the label above it rather than floating halfway to the next
+/// row, which sits a full [`ROW_GAP`] further down.
 pub fn setting_row_described(label: &str, description: &str, control: El) -> El {
     let top = Row::new()
         .push(Box::new(Text::new(label).with_scaled_size(13.0)))
@@ -132,6 +180,7 @@ pub fn setting_row_described(label: &str, description: &str, control: El) -> El 
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
+            .with_gap(spacing().s1)
             .push(Box::new(top))
             .push(Box::new(
                 Text::new(description).with_scaled_size(12.0).dimmed(),
@@ -191,50 +240,35 @@ pub fn status_pill(label: &str, tint: vello::peniko::Color) -> El {
     Box::new(Badge::pill(label, tint))
 }
 
-/// A prominent identity block for a pane's first card: a large accent icon,
-/// a bold title, and a dim one-line subtitle stacked beside it. Used where a
+/// Glyph size (logical px) of the [`hero`] identity icon.
+pub const HERO_ICON_SIZE: f32 = 34.0;
+
+/// A prominent identity block for a pane's first card: a large icon with a
+/// bold title and a dim one-line subtitle stacked *beside* it. Used where a
 /// pane benefits from a hero (About's device identity, Power's battery).
+///
+/// The text block sits in a flex-growing container so it takes the width the
+/// icon leaves over instead of claiming the whole row and wrapping underneath
+/// the glyph; title and subtitle are one caption gap (`s1`) apart. The icon
+/// keeps the theme's primary ink rather than a colour frozen from one palette,
+/// so the block reads correctly in light and high-contrast as well.
 pub fn hero(icon: Icon, title: &str, subtitle: &str) -> El {
-    let accent = ui::Theme::dark().accent_primary;
     let text_block = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
+        .with_gap(spacing().s1)
         .push(Box::new(Text::new(title).with_scaled_size(20.0)))
-        .push(vgap(3.0))
         .push(Box::new(
             Text::new(subtitle).with_scaled_size(12.0).dimmed(),
         ));
     let row = Row::new()
-        .push(Box::new(IconWidget::new(icon, 34.0).with_color(accent)))
-        .push(hgap(14.0))
-        .push(Box::new(text_block))
-        .push(Box::new(Spacer::new()));
+        .no_wrap()
+        .push(Box::new(IconWidget::new(icon, HERO_ICON_SIZE)))
+        .push(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_flex_grow()
+                .with_child(Box::new(text_block)),
+        ));
     Box::new(ui::widget::Card::new(Box::new(row)))
-}
-
-/// Vertical gap (logical px) between rows inside a single card. Smaller
-/// than [`CARD_GAP`] so rows feel related within a group while still
-/// having visible separation.
-pub const ROW_GAP: f32 = 12.0;
-
-/// A vertical stack of pre-built rows inside a column with intrinsic
-/// height — the standard body for a card.
-///
-/// Like [`cards`], we interleave explicit fixed-height spacers because the
-/// intrinsic-height column lays out as a block stack that ignores the
-/// toolkit's inter-child gap; without them the rows would render flush
-/// against each other.
-pub fn rows(items: Vec<El>) -> El {
-    let mut col = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_gap(0.0);
-    let last = items.len().saturating_sub(1);
-    for (i, item) in items.into_iter().enumerate() {
-        col = col.push(item);
-        if i != last {
-            col = col.push(vgap(ROW_GAP));
-        }
-    }
-    Box::new(col)
 }
