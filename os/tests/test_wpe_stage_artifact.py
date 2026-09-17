@@ -42,7 +42,8 @@ class WpeArtifactTests(unittest.TestCase):
         self.receipt = dict(schema=1, purpose=wpe.PURPOSE, production_signed=False,
             inputs=self.inputs, dependency_key=wpe.sha(wpe.canonical(self.inputs)),
             reference=self.reference, config_digest=self.identity, payload={'proof': 'hash'},
-            build=dict(jobs=6, revision='a' * 40, run_id='42', attempt='1'))
+            build=dict(jobs=6, revision='a' * 40, run_id='42', attempt='1',
+                       source_completed_stage_id=self.identity))
 
     def dependencies(self):
         return wpe.dependency_inputs(self.repo, self.assets, 'x86_64', '0', self.buildroot)
@@ -122,10 +123,13 @@ class WpeArtifactTests(unittest.TestCase):
             epoch='0', wpe=self.buildroot, jobs=6, revision='a' * 40, run_id='42', attempt='1')
         with patch.object(wpe, 'verify_source'), \
              patch.object(wpe, '_build_stage', return_value=self.identity) as build, \
+             patch.object(wpe, '_project_payload', return_value='sha256:' + '3' * 64) as project, \
              patch.object(wpe, '_export_stage', return_value=self.receipt) as export:
             self.assertEqual(wpe.build_export(args), self.receipt)
             build.assert_called_once_with(args)
-            export.assert_called_once_with(self.identity, self.inputs, 6, 'a' * 40, '42', '1')
+            project.assert_called_once_with(self.identity, self.inputs)
+            export.assert_called_once_with('sha256:' + '3' * 64, self.inputs, 6, 'a' * 40, '42', '1',
+                                           source_completed_stage_id=self.identity)
         def changed(_):
             (self.repo / 'os/Containerfile').write_text('changed while building')
             return self.identity
@@ -151,6 +155,31 @@ class WpeArtifactTests(unittest.TestCase):
         script.write_bytes(b'x' * (2 * 1024 * 1024 + 1))
         with self.assertRaises(ValueError):
             self.dependencies()
+
+    def test_projection_copies_only_payload_without_running_image_code(self):
+        projected = 'sha256:' + '3' * 64
+        def command(*args):
+            self.assertEqual(args[:3], ('podman', '--remote=false', 'build'))
+            self.assertIn('--pull=never', args)
+            self.assertIn('--network=none', args)
+            self.assertIn('compiled-wpe=container-image://' + self.identity, args)
+            self.assertEqual(args[args.index('--source-date-epoch') + 1], '0')
+            context = Path(args[-1])
+            self.assertEqual((context / 'Containerfile').read_text(),
+                             'FROM scratch\nCOPY --from=compiled-wpe /wpe/ /wpe/\n')
+            Path(args[args.index('--iidfile') + 1]).write_text(projected)
+            return b''
+        with patch.object(wpe, 'native_host'), patch.object(wpe, 'inspect_local'), \
+             patch.object(wpe, 'mounted', return_value=nullcontext(self.repo)), \
+             patch.object(wpe, 'payload_identity', return_value={'hash': 'original'}), \
+             patch.object(wpe, 'command', side_effect=command):
+            self.assertEqual(wpe._project_payload(self.identity, self.inputs), projected)
+        with patch.object(wpe, 'native_host'), patch.object(wpe, 'inspect_local'), \
+             patch.object(wpe, 'mounted', return_value=nullcontext(self.repo)), \
+             patch.object(wpe, 'payload_identity', side_effect=[{'hash': 'original'}, {'hash': 'changed'}]), \
+             patch.object(wpe, 'command', side_effect=command):
+            with self.assertRaises(ValueError):
+                wpe._project_payload(self.identity, self.inputs)
 
     def test_registry_uses_raw_config_and_explicit_tls(self):
         with patch.object(wpe, 'command', side_effect=[self.manifest, self.config]) as command:
