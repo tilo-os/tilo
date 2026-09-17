@@ -145,6 +145,16 @@ pub(crate) fn shell_action_contract(id: &str) -> qos_actions::ActionContract {
             contract.permission = PermissionRequirement::Write;
             contract.reversible = true;
         }
+        // Moving a tab between groups is layout, undone by moving it back;
+        // closing one is not — its content is gone from the workspace.
+        "tab.split-right" | "tab.move-to-new-group" => {
+            contract.permission = PermissionRequirement::Write;
+            contract.reversible = true;
+        }
+        "tab.close" => {
+            contract.permission = PermissionRequirement::Write;
+            contract.reversible = false;
+        }
         "notifications.dnd.toggle" => {
             contract.permission = PermissionRequirement::Write;
             contract.retry = RetryPolicy::AtMostOnce;
@@ -1062,6 +1072,55 @@ impl Action {
                     },
                     |_| Ok(()),
                 )
+            },
+        ),
+        // The tab menu's three rows as actions, on the focused tab: a
+        // capability reachable only by right-click is not finished. The
+        // rows and these closures call the same `window_actions` functions.
+        chrome(
+            "tab.close",
+            "Close this tab",
+            "Close the focused tab; its window closes with it if it was the last",
+            |st, _| {
+                crate::shell::window_actions::close_active_tab(st).map_err(|err| {
+                    let message = err.user_message().to_string();
+                    st.push_warning_notification("Can't close this tab", &message);
+                    ActionError::Refused(message)
+                })
+            },
+        ),
+        chrome(
+            "tab.split-right",
+            "Split this tab to the right",
+            "Move the focused tab into a new window group beside its current one",
+            |st, _| {
+                crate::shell::window_actions::split_active_tab(
+                    st,
+                    crate::shell::window_actions::SplitPlacement::Right,
+                )
+                .map(|_| ())
+                .map_err(|err| {
+                    let message = err.user_message().to_string();
+                    st.push_warning_notification("Can't split this tab", &message);
+                    ActionError::Refused(message)
+                })
+            },
+        ),
+        chrome(
+            "tab.move-to-new-group",
+            "Move this tab to a new group",
+            "Move the focused tab into a new window group at the end of its strip",
+            |st, _| {
+                crate::shell::window_actions::split_active_tab(
+                    st,
+                    crate::shell::window_actions::SplitPlacement::StripEnd,
+                )
+                .map(|_| ())
+                .map_err(|err| {
+                    let message = err.user_message().to_string();
+                    st.push_warning_notification("Can't move this tab", &message);
+                    ActionError::Refused(message)
+                })
             },
         ),
         chrome(
