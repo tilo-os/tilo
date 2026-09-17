@@ -1822,7 +1822,7 @@ RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation
 # we mount it alongside the frozen repo, write a two-repo dnf config on
 # the fly, and swap kernel-core → tilo-kernel-core.  --nogpgcheck: our
 # in-house RPMs aren't signed by Fedora's key; provenance for the whole
-# image is verified via cosign against code.sandbox.example/qos/tilo-kernel
+# image is verified via cosign against the existing code.sandbox.example/qos/qos-kernel repository
 # (see os/etc/containers/policy.json).
 #
 # An initramfs is mandatory, and the static drivers do not remove the need
