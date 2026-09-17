@@ -368,6 +368,51 @@ def build_environment(wpe, generation, revision, manifest, signer, cache):
     return env
 
 
+def retain_compilation(revision, generation, epoch, target, manifest):
+    """Audit and retain one immutable raw build before its guest is destroyed.
+
+    This helper does not enable retention in the workflow. Native archive and
+    registry proofs must pass before the full-build path opts into raw-only mode.
+    """
+    spec = importlib.util.spec_from_file_location('compile_retention', REPO / 'os/dev/retain-development-rootfs.py')
+    retention = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(retention)
+    with (EVIDENCE / 'raw-rootfs.json').open('rb') as stream:
+        raw = stream.read(16385)
+    if len(raw) > 16384:
+        raise ValueError('raw handoff exceeds receipt size limit')
+    handoff = json.loads(raw, object_pairs_hook=retention.source.trust.unique_object)
+    image_id = retention.validate_receipt(handoff, revision, 'x86_64', manifest,
+                                           target, int(generation), epoch)
+    private_files = [PRIVATE / 'cosign.key', PRIVATE / 'owner.key',
+                     PRIVATE / 'signer/pcr-signing.key', PRIVATE / 'signer/efi-signing.key',
+                     CACHE_SECRETS / 'aws_secret_access_key']
+    command = ['python3', 'os/dev/audit-rootfs-layers.py', '--image-id', image_id]
+    for path in private_files:
+        command.extend(['--private-file', str(path)])
+    audit_result = subprocess.run(command, cwd=REPO, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, timeout=1830, check=False)
+    # Preserve the public rejection receipt, but never copy tool diagnostics.
+    try:
+        audit = json.loads(audit_result.stdout)
+    except (ValueError, UnicodeError):
+        raise ValueError('raw layer audit did not return a public receipt') from None
+    write_receipt('raw-rootfs-audit.json', audit)
+    if (audit_result.returncode or audit.get('status') != 'passed-scoped-scan'
+            or audit.get('image_id') != image_id):
+        raise ValueError('raw rootfs failed the private-material layer audit')
+    retained = json.loads(run('python3', 'os/dev/retain-development-rootfs.py',
+        '--receipt', str(EVIDENCE / 'raw-rootfs.json'), '--private-key', str(PRIVATE / 'cosign.key'),
+        '--public-bundle', str(PRIVATE / 'public'), '--revision', revision,
+        '--architecture', 'x86_64', '--manifest-sha256', manifest, '--target', target,
+        '--generation', str(generation), '--source-date-epoch', str(epoch)))
+    if (retained.get('handoff') != handoff or retained.get('published') is not True
+            or retained.get('installable') is not False):
+        raise ValueError('retention returned an inconsistent handoff receipt')
+    write_receipt('retained-rootfs.json', retained)
+    return retained
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=('cache-only', 'full-build'), default='cache-only')
