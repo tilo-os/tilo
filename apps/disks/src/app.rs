@@ -101,6 +101,11 @@ const LIST_W: f64 = 320.0;
 const LIST_HEADER_H: f64 = 30.0;
 const CARD_H: f64 = 96.0;
 const CARD_GAP: f64 = 12.0;
+/// Inner left/right inset shared by every detail card — the drive rows, the
+/// identity header and the action band — so their text, badges and buttons
+/// sit on one vertical line. Deliberately off the 4px scale (14, not 12/16):
+/// it is the value the drive-card badge and usage-bar geometry were drawn to.
+const CARD_INSET: f64 = 14.0;
 /// Identity header (model + meta + chips). Actions moved to their own band.
 const HEADER_H: f64 = 96.0;
 /// The dedicated action band below the identity header: a target label plus
@@ -629,7 +634,7 @@ impl DisksApp {
         let drive_ref = self.drive();
         let btn_h = 32.0;
         let btn_y = action_bar.y0 + 34.0;
-        let mut bx = action_bar.x0 + 14.0;
+        let mut bx = action_bar.x0 + CARD_INSET;
         for a in ActionKind::bar() {
             let w = (a.label().len() as f64) * 8.0 + 30.0;
             let enabled = drive_ref.is_some_and(|d| self.action_enabled(d, a));
@@ -1002,12 +1007,13 @@ impl DisksApp {
         } else {
             c.surfaces.raised
         };
-        Self::fill_rr(scene, t, r, 12.0, bg);
+        let card_radius = f64::from(theme.tokens.radii.lg);
+        Self::fill_rr(scene, t, r, card_radius, bg);
         Self::stroke_rr(
             scene,
             t,
             r,
-            12.0,
+            card_radius,
             if selected {
                 theme.accent_primary
             } else {
@@ -1029,9 +1035,9 @@ impl DisksApp {
         let inset = if selected { 8.0 } else { 0.0 };
         // Kind badge.
         let badge = Rect::new(
-            r.x0 + 14.0 + inset,
+            r.x0 + CARD_INSET + inset,
             r.y0 + 14.0,
-            r.x0 + 14.0 + inset + 52.0,
+            r.x0 + CARD_INSET + inset + 52.0,
             r.y0 + 14.0 + 22.0,
         );
         Self::fill_rr(scene, t, badge, 6.0, kind_color(theme, drive.kind));
@@ -1047,7 +1053,7 @@ impl DisksApp {
         );
 
         // Model + name + size.
-        let tx = r.x0 + 14.0 + inset;
+        let tx = r.x0 + CARD_INSET + inset;
         Self::txt(
             scene,
             tr,
@@ -1078,7 +1084,7 @@ impl DisksApp {
         } else {
             0.0
         };
-        let barr = Rect::new(tx, r.y1 - 16.0, r.x1 - 14.0, r.y1 - 10.0);
+        let barr = Rect::new(tx, r.y1 - 16.0, r.x1 - CARD_INSET, r.y1 - 10.0);
         Self::bar(
             scene,
             t,
@@ -1116,10 +1122,13 @@ impl DisksApp {
     ) {
         let c = &theme.tokens.colors;
         let h = lay.header;
-        Self::fill_rr(scene, t, h, 14.0, c.surfaces.raised);
-        Self::stroke_rr(scene, t, h, 14.0, c.border_standard, 1.0);
+        // Same radius and inner inset as the action band below and the drive
+        // rows beside it, so the three cards read as one family.
+        let card_radius = f64::from(theme.tokens.radii.lg);
+        Self::fill_rr(scene, t, h, card_radius, c.surfaces.raised);
+        Self::stroke_rr(scene, t, h, card_radius, c.border_standard, 1.0);
 
-        let tx = h.x0 + 20.0;
+        let tx = h.x0 + CARD_INSET;
         Self::txt(
             scene,
             tr,
@@ -1152,7 +1161,7 @@ impl DisksApp {
             c.text_dim,
             tx,
             h.y0 + 46.0,
-            Some((h.width() - 40.0) as f32),
+            Some((h.width() - 2.0 * CARD_INSET) as f32),
             TextWeight::Regular,
         );
 
@@ -1204,8 +1213,9 @@ impl DisksApp {
     ) {
         let c = &theme.tokens.colors;
         let bar = lay.action_bar;
-        Self::fill_rr(scene, t, bar, 12.0, c.surfaces.raised);
-        Self::stroke_rr(scene, t, bar, 12.0, c.border_standard, 1.0);
+        let card_radius = f64::from(theme.tokens.radii.lg);
+        Self::fill_rr(scene, t, bar, card_radius, c.surfaces.raised);
+        Self::stroke_rr(scene, t, bar, card_radius, c.border_standard, 1.0);
 
         self.draw_action_bar_target(scene, tr, theme, t, bar, drive);
         self.draw_action_bar_buttons(scene, tr, theme, t, lay);
@@ -1236,7 +1246,7 @@ impl DisksApp {
                 theme.accent_primary,
             ),
         };
-        let sx = bar.x0 + 14.0;
+        let sx = bar.x0 + CARD_INSET;
         // Small scope tag.
         let (tw, _) = tr.measure_weighted(scope, 10.5, None, TextWeight::Bold);
         let tag = Rect::new(
@@ -1359,7 +1369,7 @@ impl DisksApp {
             &caption,
             11.5,
             c.text_dim,
-            bar.x0 + 14.0,
+            bar.x0 + CARD_INSET,
             bar.y1 - 20.0,
             Some((bar.width() - 28.0) as f32),
             TextWeight::Regular,
@@ -4719,6 +4729,28 @@ mod tests {
         assert_eq!(lay.cards.len(), 4);
         assert_eq!(lay.tabs.len(), 3);
         assert_eq!(lay.action_buttons.len(), 5);
+    }
+
+    /// The identity header and the action band are stacked cards sharing one
+    /// left edge, and the band's first button sits on the same inner inset
+    /// the drive rows and the header text use — one vertical line for the
+    /// eye to follow down the detail pane.
+    #[test]
+    fn detail_cards_share_one_left_edge_and_inner_inset() {
+        let app = at_width(1280.0);
+        let lay = app.compute_layout();
+        assert!(
+            (lay.header.x0 - lay.action_bar.x0).abs() < f64::EPSILON
+                && (lay.header.x1 - lay.action_bar.x1).abs() < f64::EPSILON,
+            "header {:?} and action band {:?} share their edges",
+            lay.header,
+            lay.action_bar
+        );
+        let first_button = lay.action_buttons.first().map(|(r, _, _)| *r).expect("buttons");
+        assert!(
+            (first_button.x0 - (lay.action_bar.x0 + CARD_INSET)).abs() < f64::EPSILON,
+            "first action button {first_button:?} starts on the shared card inset"
+        );
     }
 
     /// Lay the app out at a given width through the real `build_layout` +
