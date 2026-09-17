@@ -524,8 +524,8 @@ impl SlashMenu {
             &TextStyle::new(tokens.typography.scale.sm),
             tokens.colors.text_primary,
             tokens.colors.text_dim,
-            tokens.colors.accent[5].with_alpha_factor(0.3),
-            tokens.colors.accent[5],
+            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX].with_alpha_factor(0.3),
+            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
             true,
         );
 

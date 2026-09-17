@@ -727,24 +727,28 @@ fn paint_card_text(
     let body_text = single_line_text(card.body);
     let has_caption = !caption_text.is_empty();
     let has_body = !body_text.is_empty();
-    // Stack and centre the block on the *measured* line boxes (the renderer
-    // paints `line_height × size`), never on the font sizes.
+    // Stack the measured line boxes, not the font sizes: a face's line
+    // height is ~1.2–1.3× its size, so size-derived heights under-reserved
+    // every line and the block sat high in the card. `spacing.s1` between
+    // lines.
+    let line_gap = f64::from(theme.tokens.spacing.s1);
+    let line_h = |text_renderer: &mut TextRenderer, text: &str, size: f32, weight: TextWeight| {
+        f64::from(text_renderer.measure_weighted(text, size, None, weight).1)
+    };
     let cap_h = if has_caption {
-        let (_, h) = text_renderer.measure_weighted(
-            &caption_text.to_uppercase(),
+        line_h(
+            text_renderer,
+            &caption_text,
             caption_size,
-            None,
             TextWeight::Semibold,
-        );
-        f64::from(h) + 4.0
+        ) + line_gap
     } else {
         0.0
     };
-    let (_, title_line_h) =
-        text_renderer.measure_weighted(&title_text, title_size, None, TextWeight::Semibold);
-    let title_h = f64::from(title_line_h) + if has_body { 4.0 } else { 0.0 };
+    let title_h = line_h(text_renderer, &title_text, title_size, TextWeight::Semibold)
+        + if has_body { line_gap } else { 0.0 };
     let body_h = if has_body {
-        f64::from(text_renderer.measure(&body_text, body_size, None).1)
+        line_h(text_renderer, &body_text, body_size, TextWeight::Regular)
     } else {
         0.0
     };
@@ -986,6 +990,49 @@ mod tests {
             node,
             &tree,
         );
+    }
+
+    /// Caption, title and body stack on their measured line boxes with an
+    /// `s1` gap, so in the 64 px card a desktop notification uses every
+    /// painted glyph line lands inside the card.
+    #[test]
+    fn three_line_text_block_stays_inside_the_card() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let rect = Rect::new(0.0, 0.0, 360.0, 64.0);
+        paint_card(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            rect,
+            &ToastCard::new("Build finished", ToastKind::Success)
+                .caption("Terminal")
+                .body("3 warnings, 0 errors")
+                .closable(true),
+        );
+        let runs = &scene.encoding().resources.glyph_runs;
+        assert!(runs.len() >= 3, "caption, title and body all paint");
+        let mut tops: Vec<f64> = Vec::new();
+        for run in runs {
+            let top = f64::from(run.transform.translation[1]);
+            let (_, h) = tr.measure("Ag", run.font_size, None);
+            assert!(
+                top >= rect.y0 - 0.01 && top + f64::from(h) <= rect.y1 + 0.01,
+                "a glyph line at y={top} (h={h}) leaves the {rect:?} card",
+            );
+            tops.push(top);
+        }
+        tops.sort_by(f64::total_cmp);
+        tops.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+        assert_eq!(tops.len(), 3, "three distinct baselines: {tops:?}");
+        for pair in tops.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= f64::from(theme.tokens.typography.scale.xs),
+                "lines do not overlap: {tops:?}"
+            );
+        }
     }
 
     #[test]
