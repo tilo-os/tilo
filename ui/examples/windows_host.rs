@@ -12,6 +12,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             host.show(tag, title, body)?;
             println!("enabled={:?}", host.enabled());
         }
+        [command, id, tag, uri, title, body] if command == "show-protocol" => {
+            HostNotifications::new(id)?.with_protocol_activation(uri)?.show(tag, title, body)?;
+        }
         [command, id] if command == "history" => {
             println!("{}", serde_json::to_string(&HostNotifications::new(id)?.history()?)?);
         }
@@ -27,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", serde_json::to_string(&pending)?);
         }
         [command, id, tag] if command == "cancel" => HostNotifications::new(id)?.cancel_schedule(tag)?,
-        _ => return Err("expected register ID TITLE EXE LINK | show ID TAG TITLE BODY | history ID | remove ID TAG".into()),
+        _ => return Err("expected register ID TITLE EXE LINK | show ID TAG TITLE BODY | show-protocol ID TAG URI TITLE BODY | history ID | remove ID TAG | schedule ID TAG SECONDS TITLE BODY | scheduled ID | cancel ID TAG".into()),
     }
     Ok(())
 }

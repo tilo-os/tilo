@@ -96,6 +96,14 @@ foreach ($application in $applications) {
         $notificationKey = 'HKCU:/Software/Classes/AppUserModelId/dev.tilo.clocks'
         New-Item -Path $notificationKey -Force | Out-Null
         New-ItemProperty -LiteralPath $notificationKey -Name DisplayName -Value "Tilo $title" -PropertyType String -Force | Out-Null
+        $activationKey = 'HKCU:/Software/Classes/tilo-clocks'
+        New-Item -Path $activationKey -Force | Out-Null
+        Set-Item -LiteralPath $activationKey -Value 'URL:Tilo Clocks'
+        New-ItemProperty -LiteralPath $activationKey -Name 'URL Protocol' -Value '' -PropertyType String -Force | Out-Null
+        New-Item -Path "$activationKey/shell/open/command" -Force | Out-Null
+        # This route only reopens Clocks. Never forward untrusted URI contents
+        # as command-line arguments or interpret them through a command shell.
+        Set-Item -LiteralPath "$activationKey/shell/open/command" -Value ('"' + $destination + '"')
     }
     [pscustomobject]@{ Application = $title; Executable = $destination; Shortcut = $shortcutPath }
 }
