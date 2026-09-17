@@ -46,6 +46,16 @@ class Boundaries(unittest.TestCase):
     def test_exact_bundle_accepted(self):
         self.assertEqual(self.verify()['target'], 'i686')
 
+    def test_tool_comparison_preserves_original_evidence_order(self):
+        original_manifest = (self.root / 'manifest.json').read_bytes()
+        current_tools = dict(self.tools, host_rpms=['a', 'b'])
+        with patch.object(producer, 'tool_record', return_value=current_tools):
+            verified = producer.verify_bundle(self.root, IMAGE, 'i686', PIN, 2)
+        self.assertEqual(verified['tools']['host_rpms'], ['b', 'a'])
+        self.assertEqual(verified['tools'], self.record['tools'])
+        self.assertEqual(current_tools['host_rpms'], ['a', 'b'])
+        self.assertEqual((self.root / 'manifest.json').read_bytes(), original_manifest)
+
     def test_modified_rpm_rejected(self):
         (self.root / 'dependency.rpm').write_bytes(b'changed')
         with self.assertRaisesRegex(ValueError, 'bundle changed'):

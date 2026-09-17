@@ -140,9 +140,9 @@ def verify_bundle(bundle, runtime_image, target, pin, jobs):
         raise ValueError('source/target/build options differ from resolution')
     current = tool_record(runtime_image)
     # Package order is not identity; preserve original order in evidence.
-    for value in (current, record['tools']):
-        value['host_rpms'] = sorted(value['host_rpms'])
-    if current != record['tools']:
+    current_comparable = dict(current, host_rpms=sorted(current['host_rpms']))
+    recorded_comparable = dict(record['tools'], host_rpms=sorted(record['tools']['host_rpms']))
+    if current_comparable != recorded_comparable:
         raise ValueError('offline tool environment differs from resolution')
     validate_lock(json.loads((bundle / 'resolution/buildroot_lock.json').read_text()), target)
     return record
