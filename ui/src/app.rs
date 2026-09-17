@@ -7716,6 +7716,7 @@ fn create_window_render(
     window: &Arc<Window>,
     transparent: bool,
 ) -> Result<RenderThreadHandle, String> {
+    tilo_startup_metrics::mark("window-render-context-start");
     let size = window.inner_size();
     let mut render_cx = RenderContext::new();
     let mut surface = pollster::block_on(render_cx.create_surface(
@@ -7750,6 +7751,7 @@ fn create_window_render(
     if let Some(err) = pollster::block_on(configure_scope.pop()) {
         return Err(format!("could not configure the drawing surface: {err}"));
     }
+    tilo_startup_metrics::mark("window-vello-init-start");
     let renderer = Renderer::new(
         &device_handle.device,
         RendererOptions {
@@ -7767,6 +7769,7 @@ fn create_window_render(
         },
     )
     .map_err(|e| format!("could not create the renderer: {e}"))?;
+    tilo_startup_metrics::mark("window-vello-init-done");
     // After this, every GPU call happens on its render worker.
     spawn_render_thread(render_cx, surface, renderer)
 }
@@ -7794,9 +7797,9 @@ fn begin_window_render_init(
 }
 
 impl AppHandler {
-    /// Called from the first `RedrawRequested` rather than inline in
-    /// `resumed`, so the blocking GPU init doesn't starve the loop's first
-    /// events. `Err` is returned, not panicked, since every step here can
+    /// Called before showing the window on Windows, and from the first
+    /// `RedrawRequested` elsewhere so GPU init doesn't starve Wayland's
+    /// initial focus events. `Err` is returned, not panicked, since every step here can
     /// fail when the compositor exits mid-open.
     fn init_render(&mut self, window: &Arc<Window>) -> Result<(), String> {
         self.render = Some(create_window_render(window, false)?);
@@ -8457,8 +8460,6 @@ impl AppHandler {
                 return;
             }
             tilo_startup_metrics::mark("first-redraw-init-render-done");
-        } else {
-            tilo_startup_metrics::mark("first-paint");
         }
         let Some(render) = self.render.as_mut() else {
             return;
@@ -9629,6 +9630,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             reason = "fixed () trait signature; window-creation failure at startup is unrecoverable"
         )]
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+        tilo_startup_metrics::mark("primary-window-created");
         // Some backends only honour the icon post-creation; a no-op on
         // Wayland compositors that source it from the app_id instead.
         window.set_window_icon(icon);
@@ -9645,10 +9647,19 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 &window,
                 self.app.platform,
             ));
+        // Windows otherwise exposes an empty white client area while GPU
+        // pipelines compile. Prepare those before revealing the window; the
+        // normal visible-window redraw path still submits its first frame.
+        #[cfg(target_os = "windows")]
+        if let Err(reason) = self.init_render(&window) {
+            crate::diag!("tilo: {reason}");
+            event_loop.exit();
+            return;
+        }
         window.set_visible(true);
 
         self.app.layout_dirty = true;
-        // GPU init deferred to first `RedrawRequested` (`init_render`): the
+        // On Wayland GPU init is deferred to first `RedrawRequested`: the
         // ~50ms surface+device init here would block `resumed`'s seat
         // wiring — on mutter that intermittently left the toplevel
         // unfocused with dead input on first launch.

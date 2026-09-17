@@ -1316,7 +1316,9 @@ fn draw_rich_strikes(
 
 impl TextRenderer {
     pub fn new() -> Self {
-        Self::with_font_system(configured_font_system())
+        tilo_startup_metrics::span("text-renderer-init", || {
+            Self::with_font_system(configured_font_system())
+        })
     }
 
     ///
