@@ -30,6 +30,54 @@ mod native;
 #[path = "endpoint/unsupported.rs"]
 mod native;
 
+#[cfg(any(target_os = "linux", test))]
+fn reject_clone_candidate(
+    volume: &[u8; 16],
+    candidate: Result<[u8; 16], EndpointError>,
+) -> Result<(), EndpointError> {
+    match candidate {
+        Ok(uuid) if uuid != *volume => Ok(()),
+        Ok(_) | Err(_) => Err(EndpointError::AmbiguousIdentity),
+    }
+}
+#[cfg(any(target_os = "linux", test))]
+fn serial_identity(
+    serial: &[u8],
+    vendor: Option<&[u8]>,
+    model: Option<&[u8]>,
+) -> Result<Vec<u8>, EndpointError> {
+    let vendor = vendor.ok_or(EndpointError::Unsupported)?;
+    let model = model.ok_or(EndpointError::Unsupported)?;
+    let mut identity = Vec::new();
+    for (label, value) in [
+        (b"serial".as_slice(), serial),
+        (b"vendor".as_slice(), vendor),
+        (b"model".as_slice(), model),
+    ] {
+        if value.is_empty() || value.contains(&0) || value.len() > 4096 {
+            return Err(EndpointError::Unsupported);
+        }
+        identity.extend_from_slice(label);
+        identity.push(0);
+        identity.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        identity.extend_from_slice(value);
+    }
+    Ok(identity)
+}
+
+#[cfg(any(windows, test))]
+fn windows_metadata_policy(
+    directory: bool,
+    links: u32,
+    named_stream: bool,
+    baseline_acl: bool,
+) -> Result<(), EndpointError> {
+    if (!directory && links != 1) || named_stream || !baseline_acl {
+        return Err(EndpointError::Unsupported);
+    }
+    Ok(())
+}
+
 const MAX_ENDPOINTS: usize = 128;
 static NEXT_PROBE: AtomicU64 = AtomicU64::new(0);
 const MAX_HASH_BYTES: u64 = 1024 * 1024 * 1024;
@@ -204,13 +252,12 @@ pub struct PinnedEndpoint {
 impl PinnedEndpoint {
     pub fn capabilities(&self) -> Capabilities {
         let mut capabilities = self.evidence.capabilities;
-        if self.write_verified.load(Ordering::Acquire) && !self.invalidated.load(Ordering::Acquire)
+        if cfg!(target_os = "linux")
+            && self.write_verified.load(Ordering::Acquire)
+            && !self.invalidated.load(Ordering::Acquire)
         {
             capabilities.safe_write = Capability::Available;
-            #[cfg(target_os = "linux")]
-            {
-                capabilities.durable_transactions = Capability::Available;
-            }
+            capabilities.durable_transactions = Capability::Available;
         }
         capabilities
     }
@@ -290,7 +337,7 @@ pub fn probe_endpoint(path: &Path) -> Result<EndpointProbe, EndpointError> {
         identity: evidence.identity,
         locator,
         capabilities: evidence.capabilities,
-        metadata_policy: "Content and executable bit only; ownership and security labels remain host-local. Custom ACLs, xattrs, streams and special file types require explicit handling.",
+        metadata_policy: "Content and executable bit only; ownership and security labels remain host-local. Windows accepts only unprotected auto-inherited baseline owner/admin full-control ACLs, without preserving them; custom or unknown ACLs, xattrs, streams and special file types require explicit handling.",
     })
 }
 #[cfg(any(target_os = "linux", windows))]
@@ -727,6 +774,88 @@ mod tests {
         assert_eq!(pin.validate(), Err(EndpointError::IdentityChanged));
     }
 
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn diagnostic_write_cannot_promote_unverified_platform_capabilities() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().canonicalize().unwrap();
+        let refused = Capabilities {
+            safe_read: Capability::Available,
+            safe_write: Capability::Refused(EndpointError::Unverified),
+            durable_transactions: Capability::Refused(EndpointError::Unverified),
+        };
+        let endpoint = PinnedEndpoint {
+            locator: EndpointLocator::new(&path).unwrap(),
+            root: Pin::open(&path).unwrap(),
+            evidence: NativeEvidence {
+                identity: EndpointIdentity {
+                    volume: [1; 32],
+                    root: [2; 32],
+                },
+                mount: vec![],
+                capabilities: refused,
+                names: NamePolicy::Exact,
+            },
+            invalidated: AtomicBool::new(false),
+            write_verified: AtomicBool::new(true),
+        };
+        assert_eq!(endpoint.capabilities(), refused);
+    }
+    #[test]
+    fn unresolved_clone_evidence_requires_reselection() {
+        for error in [
+            EndpointError::Unsupported,
+            EndpointError::Offline,
+            EndpointError::UnsafeVolume,
+            EndpointError::PermissionDenied,
+            EndpointError::IdentityChanged,
+        ] {
+            assert_eq!(
+                reject_clone_candidate(&[1; 16], Err(error)),
+                Err(EndpointError::AmbiguousIdentity),
+                "{error:?}"
+            );
+        }
+        assert_eq!(
+            reject_clone_candidate(&[1; 16], Ok([1; 16])),
+            Err(EndpointError::AmbiguousIdentity)
+        );
+        assert_eq!(reject_clone_candidate(&[1; 16], Ok([2; 16])), Ok(()));
+    }
+    #[test]
+    fn serial_without_manufacturer_and_model_is_not_identity() {
+        for (vendor, model) in [
+            (None, None),
+            (Some(b"vendor".as_slice()), None),
+            (None, Some(b"model".as_slice())),
+            (Some(b"".as_slice()), Some(b"model".as_slice())),
+        ] {
+            assert_eq!(
+                serial_identity(b"123", vendor, model),
+                Err(EndpointError::Unsupported)
+            );
+        }
+        assert_ne!(
+            serial_identity(b"123", Some(b"AB"), Some(b"C")).unwrap(),
+            serial_identity(b"123", Some(b"A"), Some(b"BC")).unwrap()
+        );
+    }
+    #[test]
+    fn windows_portability_policy_refuses_links_directory_streams_and_custom_acl() {
+        assert_eq!(windows_metadata_policy(false, 1, false, true), Ok(()));
+        assert_eq!(windows_metadata_policy(true, 1, false, true), Ok(()));
+        for (directory, links, stream, acl) in [
+            (false, 2, false, true),
+            (true, 1, true, true),
+            (false, 1, false, false),
+            (true, 1, false, false),
+        ] {
+            assert_eq!(
+                windows_metadata_policy(directory, links, stream, acl),
+                Err(EndpointError::Unsupported)
+            );
+        }
+    }
     #[test]
     fn validation_detects_a_previously_hashed_file_changed_later() {
         let temp = tempfile::tempdir().unwrap();
