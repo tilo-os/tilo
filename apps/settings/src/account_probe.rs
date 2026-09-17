@@ -112,6 +112,15 @@ impl LiveAccountTester {
         Ok(value.replace('\\', "\\\\").replace('"', "\\\""))
     }
 
+    fn imap_login_accepted(response: &str, tag: &str) -> bool {
+        response.lines().any(|line| {
+            line.strip_prefix(tag)
+                .and_then(|suffix| suffix.strip_prefix(' '))
+                .and_then(|suffix| suffix.split_ascii_whitespace().next())
+                .is_some_and(|status| status.eq_ignore_ascii_case("OK"))
+        })
+    }
+
     /// Complete TLS, read the greeting, authenticate, and log out. A TCP
     /// accept alone is deliberately not success: it says nothing about the
     /// saved credential or whether this is an IMAP endpoint.
@@ -188,11 +197,7 @@ impl LiveAccountTester {
             Some("tilo1"),
             std::time::Instant::now() + Self::NETWORK_TIMEOUT,
         )?;
-        let accepted = login.lines().any(|line| {
-            line.get(..7)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("tilo1 OK"))
-        });
-        if !accepted {
+        if !Self::imap_login_accepted(&login, "tilo1") {
             return Err("IMAP server rejected the saved credential".into());
         }
         let _ = stream.write_all(b"tilo2 LOGOUT\r\n");
@@ -275,6 +280,30 @@ mod tests {
     use std::io::{BufRead, BufReader};
     use std::net::TcpListener;
     use std::sync::mpsc;
+
+    #[test]
+    fn imap_login_accepts_only_the_matching_tag_and_complete_ok_status() {
+        for response in [
+            "tilo1 OK LOGIN completed\r\n",
+            "* CAPABILITY IMAP4rev1\r\ntilo1 ok done\r\n",
+        ] {
+            assert!(LiveAccountTester::imap_login_accepted(response, "tilo1"));
+        }
+        for response in [
+            "tilo1 NO rejected\r\n",
+            "tilo1 BAD invalid\r\n",
+            "tilo1 OKAY invalid\r\n",
+            "tilo10 OK wrong tag\r\n",
+            "other OK wrong tag\r\n",
+            "* OK untagged\r\n",
+            "tilo1\r\n",
+        ] {
+            assert!(
+                !LiveAccountTester::imap_login_accepted(response, "tilo1"),
+                "{response:?}"
+            );
+        }
+    }
 
     #[test]
     fn imap_response_requires_the_expected_tag() {
