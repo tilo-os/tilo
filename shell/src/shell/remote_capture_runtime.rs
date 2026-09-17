@@ -554,6 +554,29 @@ impl RemoteCaptureFabricRuntime {
         std::mem::take(&mut self.outgoing)
     }
 
+    pub(crate) fn outgoing_failed(&mut self, peer: &DeviceId, action: &PersonalFabricAction) {
+        let PersonalFabricAction::RemoteCaptureChunk { chunk } = action else {
+            return;
+        };
+        let Some(session) = self.source_sessions.get(&chunk.session_id) else {
+            return;
+        };
+        if &session.target != peer || session.grant != chunk.grant {
+            return;
+        }
+        let session = self
+            .source_sessions
+            .remove(&chunk.session_id)
+            .expect("session was checked");
+        self.source.stop(chunk.session_id);
+        self.registry.revoke(chunk.session_id, session.grant);
+        self.note_degraded(
+            peer.clone(),
+            session.request.profile.kind(),
+            RemoteCaptureDegradedReason::TransferInterrupted,
+        );
+    }
+
     fn publish_captured(&mut self, captured: CapturedRemoteChunk, now: Instant) {
         let Some(session) = self.source_sessions.get_mut(&captured.session_id) else {
             return;
