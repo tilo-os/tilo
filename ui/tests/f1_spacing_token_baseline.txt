@@ -155,7 +155,7 @@ apps/word-processor/src/review_overlay.rs pixel_const 4
 apps/word-processor/src/ruler.rs pixel_const 1
 apps/word-processor/src/style_color_picker.rs pixel_const 2
 apps/word-processor/src/widget.rs pixel_const 22
-apps/word-processor/src/zoom_control.rs pixel_const 2
+apps/word-processor/src/zoom_control.rs pixel_const 1
 shell/src/bin/shots/scenario.rs pixel_const 1
 shell/src/bluetooth_prompt.rs pixel_const 1
 shell/src/compositor/backend/drm/gestures.rs pixel_const 1
@@ -168,7 +168,7 @@ shell/src/shell/collaboration_launchpad.rs pixel_const 3
 shell/src/shell/collaborators_overlay.rs pixel_const 5
 shell/src/shell/color_pipeline.rs pixel_const 1
 shell/src/shell/desktop_backdrop.rs pixel_const 1
-shell/src/shell/editor_app.rs pixel_const 4
+shell/src/shell/editor_app.rs pixel_const 3
 shell/src/shell/file_picker_overlay.rs pixel_const 4
 shell/src/shell/global_search.rs pixel_const 1
 shell/src/shell/input_policy.rs pixel_const 1
