@@ -100,8 +100,6 @@ def select_receipt(directory, arch, image, revision, run_id):
             raise ValueError('invalid cold cache namespace')
         if receipt['architecture'] != arch:
             continue
-        if receipt['image'] != image:
-            raise ValueError('cold receipt used a different native image')
         if attempt in attempts:
             raise ValueError('duplicate successful cold attempt')
         attempts[attempt] = receipt
@@ -109,7 +107,10 @@ def select_receipt(directory, arch, image, revision, run_id):
         raise ValueError('missing successful cold receipt')
     # Upload happens only after cold acceptance. Per-job attempts, unlike
     # timestamps or a consumer's run_attempt, order successful producer runs.
-    return attempts[max(attempts)]
+    selected = attempts[max(attempts)]
+    if selected['image'] != image:
+        raise ValueError('latest cold receipt used a different native image')
+    return selected
 
 
 def verify_acceptance(directory, selected, revision, run_id):
