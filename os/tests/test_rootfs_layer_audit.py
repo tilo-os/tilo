@@ -66,6 +66,12 @@ class LayerAuditTests(unittest.TestCase):
         self.assertEqual(result['metadata_findings'], ['provided-private-material'])
         self.assertEqual(result['status'], 'rejected-private-material')
 
+    def test_credential_file_newlines_do_not_hide_shell_exported_value(self):
+        for content in (SECRET, SECRET + b'\r\n'):
+            stream, image = docker([tar([('environment', content)])])
+            result = audit.audit_stream(io.BytesIO(stream), image, [SECRET + b'\r\n'])
+            self.assertEqual(result['layers'][0]['findings'], ['provided-private-material'])
+
     def test_pax_long_names_are_streamed_and_scanned(self):
         stream, image = docker([tar([('a/' * 100 + 'file', SECRET)])])
         result = audit.audit_stream(io.BytesIO(stream), image, [SECRET])
