@@ -120,6 +120,8 @@ def validate_receipt(receipt, inputs):
                              receipt.get('reference', ''))), 'immutable development stage reference required')
     require(bool(re.fullmatch(DIGEST, receipt.get('config_digest', ''))), 'config digest required')
     provenance = receipt.get('build', {})
+    require(bool(re.fullmatch(DIGEST, provenance.get('source_completed_stage_id', ''))),
+            'completed source stage identity required')
     require(type(provenance.get('jobs')) is int and 1 <= provenance['jobs'] <= 64,
             'invalid producer parallelism')
     require(bool(re.fullmatch('[0-9a-f]{40}', provenance.get('revision', ''))), 'source revision required')
@@ -226,7 +228,7 @@ def import_stage(receipt, inputs):
     return identity
 
 
-def _export_stage(identity, inputs, jobs, revision, run_id, attempt):
+def _export_stage(identity, inputs, jobs, revision, run_id, attempt, *, source_completed_stage_id=None):
     architecture = inputs['architecture']
     native_host(architecture)
     require(bool(re.fullmatch(DIGEST, identity)), 'full completed local image ID required')
@@ -234,7 +236,8 @@ def _export_stage(identity, inputs, jobs, revision, run_id, attempt):
                    dependency_key=sha(canonical(inputs)),
                    reference=repository(architecture) + '@sha256:' + '0' * 64,
                    config_digest=identity,
-                   build=dict(jobs=jobs, revision=revision, run_id=run_id, attempt=attempt))
+                   build=dict(jobs=jobs, revision=revision, run_id=run_id, attempt=attempt,
+                              source_completed_stage_id=source_completed_stage_id or identity))
     validate_receipt(receipt, inputs)
     inspect_local(identity, architecture, identity)
     with mounted(identity) as root:
@@ -260,6 +263,30 @@ def _build_stage(args):
     return producer.prepare(args)
 
 
+def _project_payload(identity, inputs):
+    """Discard the completed compiler/toolchain layers without executing code."""
+    architecture = inputs['architecture']
+    native_host(architecture)
+    require(bool(re.fullmatch(DIGEST, identity)), 'full completed image ID required')
+    inspect_local(identity, architecture, identity)
+    with mounted(identity) as root:
+        expected = payload_identity(root, architecture)
+    with tempfile.TemporaryDirectory(prefix='tilo-wpe-payload-') as temporary:
+        context = Path(temporary)
+        (context / 'Containerfile').write_text(
+            'FROM scratch\nCOPY --from=compiled-wpe /wpe/ /wpe/\n')
+        iid = context / 'payload.iid'
+        command('podman', '--remote=false', 'build', '--pull=never', '--network=none',
+                '--skip-unused-stages=true', '--source-date-epoch', inputs['epoch'], '--rewrite-timestamp',
+                '--build-context', f'compiled-wpe=container-image://{identity}',
+                '--iidfile', str(iid), str(context))
+        projected = read_bounded(iid, 128).decode().strip()
+    inspect_local(projected, architecture, projected)
+    with mounted(projected) as root:
+        require(payload_identity(root, architecture) == expected, 'payload projection changed bytes')
+    return projected
+
+
 def build_export(args):
     """Attest only this invocation's build; receipts require trusted producer CI."""
     inputs = dependency_inputs(args.repo, args.assets, args.architecture, args.epoch, args.wpe)
@@ -271,7 +298,9 @@ def build_export(args):
     verify_source(args.repo, args.revision)
     require(dependency_inputs(args.repo, args.assets, args.architecture, args.epoch, args.wpe) == inputs,
             'dependency inputs changed during compilation')
-    return _export_stage(identity, inputs, args.jobs, args.revision, args.run_id, args.attempt)
+    projected = _project_payload(identity, inputs)
+    return _export_stage(projected, inputs, args.jobs, args.revision, args.run_id, args.attempt,
+                         source_completed_stage_id=identity)
 
 
 def verify_source(repo, revision):
