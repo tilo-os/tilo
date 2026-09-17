@@ -5,6 +5,12 @@
 //! historical renderer access to a live record, persistence, or dispatch.
 
 pub mod restore;
+pub mod preview;
+pub mod registration;
+pub(crate) mod host;
+mod canvas;
+pub use preview::*;
+pub use registration::*;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -466,3 +472,9 @@ fn is_effect_receipt(entry: &HistoryEntry) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod host_tests;
+
+#[cfg(test)]
+mod isolation_tests;
