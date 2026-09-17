@@ -119,3 +119,13 @@ Real image diagnostics exercised native source reads through staging and durable
 Independent spec and quality review found four recovery defects: destination edits during blocking postflight can escape validation and have their modification time overwritten; completed directory timestamp changes can be overwritten; a journal moved during source validation can be repaired before its location is rechecked; and receipt-history replay lacks a total work/size ceiling. Source approval is withheld. The original implementer is addressing all four in fix round 1 with focused regression tests. A smaller generated-fixture naming mismatch is also recorded.
 
 All production Linux device fixture modes and Windows runtime acceptance remain unrun. Neither held Fedora VM was operated. Public support gates, Connected synchronization, installed Desktop lifecycle and Full OS staging/dual boot remain unfinished.
+
+### Native Copy recovery review closed
+
+Fix `1f6c4d993363866f6d1e66640af559124338ab7a` addresses all four recovery findings and the fixture lookup mismatch. Fresh scoped re-review marked every finding addressed and identified no new breakage. The native Copy consumer source subtask is accepted; this does not complete Task 2 or native runtime acceptance.
+
+Resume revalidates file handles and names after destination hashing and blocking source postflight, restores access time only, and refuses changed completed-directory timestamps. Journal repair rechecks its pinned location immediately before truncation. Native history has checked aggregate frame/byte limits and cancellation checks; outcome groups reserve their full capacity before append. Exhausted recovery history preserves output and refuses continuation rather than silently renewing its budget.
+
+The fix passed 95 focused regressions, 20 native-contract tests, two real-image diagnostics, and the generated-fixture lookup regression. Host/Linux scoped lint, Linux backend/command cross-linking and Windows compilation completed; inherited harness warnings remain disclosed. The full host Imager check also completed. Behavioral failure logs precede the fixes, including file edits, changed directory timestamps, journal relocation, unbounded history and cancelled replay/append. Production runtime tests remain unrun.
+
+Source design for the planned durable Connected store is next. It must preserve endpoint capability gates, retain conflicts and recoverable versions, and fence disconnected connections across restart. Native write/durability proof remains required before public synchronization can be enabled.
