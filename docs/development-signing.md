@@ -93,14 +93,15 @@ TILO_PUBLIC_TRUST_MODE=development \
 TILO_PUBLIC_TRUST_BUNDLE="$PUBLIC_BUNDLE" \
 TILO_PUBLIC_TRUST_MANIFEST_SHA256="$EXPECTED_PUBLIC_BUNDLE_SHA256" \
 TILO_IMAGE=localhost/tilo-development:trust-test \
+TILO_TARGET_IMGREF=registry.vm.test:5443/tilo-development/os:trust-test \
   bash os/dev/build-image.sh
 ```
 
 All normal pinned build inputs are still required. Development mode rejects
 skip-build and production aliases, and returns after container creation,
 before disk imaging. This is a prerequisite staging interface, **not an
-installable or boot-validated development OS**. The required isolated registry,
-update-origin contract and signed disk/VM path below remain unimplemented.
+installable or boot-validated development OS**. Registry provisioning and the
+signed disk/VM path below remain unimplemented.
 Production defaults compare the selected public bytes with the unchanged
 tracked keys and reject development bundles.
 
@@ -129,13 +130,25 @@ these boundaries:
    initramfs, UKI and composefs seal together; verify that their embedded public
    identity matches the development bundle. Adding a public key after sealing
    does not preserve the existing measurement.
-4. Use a dedicated loopback-only test registry and repository, with its own
-   required-signature policy. Add a narrowly scoped development update-origin
-   contract shared by image metadata and installer validation. The current
-   `hardware_profile.py` and `tilo-install` deliberately reject that origin;
-   no development-origin override exists today. Production OS origin validation must keep
-   rejecting test repositories; production signature verification must keep its
-   independently pinned production identity.
+4. The development origin must explicitly name
+   `HOST[:PORT]/tilo-development/os:TAG` or an immutable SHA-256 digest.
+   Production aliases, credentials, URL schemes and other repository paths are
+   rejected. The image binds this origin to its pinned public manifest. Runtime
+   origin resolution requires root-owned, non-writable metadata, matching public
+   keys, exact signature policy and matching registry configuration. Environment
+   overrides cannot change that origin. Development policy rejects all other
+   repositories and requires a matching-repository Sigstore signature for the
+   selected one; the production policy remains unchanged.
+
+   Provision a dedicated registry reachable from the builder and future VM.
+   HTTPS is required for every endpoint except literal `127.0.0.1`, which permits
+   explicitly configured local HTTP staging. `localhost` is rejected to avoid
+   ambiguous resolution. A loopback endpoint inside a VM refers to that VM, so
+   forwarding or a guest-local registry must be prepared separately. An isolated
+   VM-network HTTPS endpoint can use a valid certificate trusted by the guest;
+   custom CA provisioning is not implemented here. Signature attachment lookup
+   is configured for the exact development repository. No registry is started,
+   published to or trusted merely by running the public-bundle helper.
 5. Install an independent test signer outside the checkout and runner temporary
    directory. Keep the same root-ownership, canonical-path, signature and
    payload-preservation checks as the existing interface. Do not add a bypass

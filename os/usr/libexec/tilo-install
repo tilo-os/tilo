@@ -99,13 +99,9 @@ log()  { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-# Updates are signature-required only for the official Tilo repository in the
-# shipped containers policy. Do not let a live-session environment override
-# silently turn the installed system onto an unsigned update origin.
-case "$TILO_TARGET_IMGREF" in
-  code.sandbox.example/qos/tilo:*|code.sandbox.example/qos/tilo@sha256:*) : ;;
-  *) die "untrusted TILO_TARGET_IMGREF '$TILO_TARGET_IMGREF' (must use the signature-required code.sandbox.example/qos/tilo repository)" ;;
-esac
+# The shared immutable-image resolver above enforces the production repository
+# or the development image's exact bound origin and required-signature policy.
+# An environment override alone cannot enable development trust.
 
 # Map an xkb layout (+optional variant) to a Linux console (kbd) keymap
 # name for /etc/vconsole.conf. The console map set doesn't line up 1:1 with
