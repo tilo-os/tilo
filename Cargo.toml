@@ -86,6 +86,7 @@ members = [
     "apps/db-client",
     "apps/diffmerge",
     "apps/disks",
+    "apps/disk-usage",
     "apps/ebook",
     "apps/feeds",
     "apps/file-explorer",
