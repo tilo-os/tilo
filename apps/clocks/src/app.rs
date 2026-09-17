@@ -284,7 +284,7 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
                     move || {
                         toggle.update(|s| {
                             if let Some(a) = s.alarms.iter_mut().find(|a| a.id == id) {
-                                a.enabled = !a.enabled;
+                                a.set_enabled(!a.enabled);
                             }
                         })
                     },
@@ -366,6 +366,7 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
                                     weekdays: add_repeat.get(),
                                     enabled: true,
                                     last_fired_local_date: None,
+                                    next_due_utc: None,
                                 })
                             });
                             add_label.set(String::new());
