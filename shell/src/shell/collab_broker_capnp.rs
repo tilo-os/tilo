@@ -68,6 +68,8 @@ const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
 const LAUNCH_RECORD_RACE_DELAY: Duration = Duration::from_millis(10);
 const MAX_LAUNCH_CONTENT_BYTES: usize = 64 * 1024 * 1024;
 const NEARBY_TARGET_HANDLE_TTL: Duration = Duration::from_secs(30);
+const NEARBY_TRANSFER_HANDLE_TTL: Duration = Duration::from_secs(120);
+const MAX_NEARBY_TRANSFER_HANDLES: usize = 256;
 const FILES_APP_ID: &str = "dev.tilo.file-explorer";
 
 #[derive(Clone)]
@@ -155,36 +157,125 @@ impl NearbyTargetRegistry {
     }
 }
 
-fn nearby_source_from_grants(raw_path: &[u8], grants: &[Capability]) -> Result<PathBuf, String> {
+#[derive(Clone)]
+struct NearbyTransferBinding {
+    peer_id: u64,
+    route: String,
+    transfer_id: [u8; 16],
+    direction: runtime_collab::NearbyTransferDirection,
+    expires_at: Instant,
+}
+
+#[derive(Default)]
+struct NearbyTransferRegistry {
+    bindings: HashMap<runtime_collab::NearbyTransferHandle, NearbyTransferBinding>,
+}
+
+impl NearbyTransferRegistry {
+    fn begin_snapshot(
+        &mut self,
+        peer_id: u64,
+        route: &CrdtRoute,
+        visible_ids: &[[u8; 16]],
+        now: Instant,
+    ) {
+        let route = route.channel_key();
+        self.bindings.retain(|_, binding| {
+            binding.expires_at > now
+                && (binding.peer_id != peer_id
+                    || binding.route != route
+                    || visible_ids.contains(&binding.transfer_id))
+        });
+    }
+
+    fn issue(
+        &mut self,
+        peer_id: u64,
+        route: &CrdtRoute,
+        transfer_id: [u8; 16],
+        direction: runtime_collab::NearbyTransferDirection,
+        allow_claim: bool,
+        now: Instant,
+    ) -> Option<runtime_collab::NearbyTransferHandle> {
+        self.bindings.retain(|_, binding| binding.expires_at > now);
+        if let Some((handle, binding)) = self
+            .bindings
+            .iter_mut()
+            .find(|(_, binding)| binding.transfer_id == transfer_id)
+        {
+            if binding.peer_id != peer_id || binding.route != route.channel_key() {
+                return None;
+            }
+            binding.expires_at = now + NEARBY_TRANSFER_HANDLE_TTL;
+            return Some(*handle);
+        }
+        if !allow_claim || self.bindings.len() >= MAX_NEARBY_TRANSFER_HANDLES {
+            return None;
+        }
+        loop {
+            let mut bytes = [0_u8; 16];
+            OsRng.fill_bytes(&mut bytes);
+            let handle = runtime_collab::NearbyTransferHandle::from_issued_bytes(bytes);
+            if handle.valid() && !self.bindings.contains_key(&handle) {
+                self.bindings.insert(
+                    handle,
+                    NearbyTransferBinding {
+                        peer_id,
+                        route: route.channel_key(),
+                        transfer_id,
+                        direction,
+                        expires_at: now + NEARBY_TRANSFER_HANDLE_TTL,
+                    },
+                );
+                return Some(handle);
+            }
+        }
+    }
+
+    fn resolve(
+        &mut self,
+        handle: runtime_collab::NearbyTransferHandle,
+        peer_id: u64,
+        route: &CrdtRoute,
+        direction: runtime_collab::NearbyTransferDirection,
+        now: Instant,
+    ) -> Option<[u8; 16]> {
+        self.bindings.retain(|_, binding| binding.expires_at > now);
+        let binding = self.bindings.get_mut(&handle)?;
+        if binding.peer_id != peer_id
+            || binding.route != route.channel_key()
+            || binding.direction != direction
+        {
+            return None;
+        }
+        binding.expires_at = now + NEARBY_TRANSFER_HANDLE_TTL;
+        Some(binding.transfer_id)
+    }
+
+    fn remove_peer(&mut self, peer_id: u64) {
+        self.bindings
+            .retain(|_, binding| binding.peer_id != peer_id);
+    }
+}
+
+fn nearby_source_from_grants(
+    raw_path: &[u8],
+    grants: &[Capability],
+) -> Result<crate::shell::nearby_transfer::SecureNearbySource, String> {
     use std::os::unix::ffi::OsStringExt as _;
 
     let source = PathBuf::from(std::ffi::OsString::from_vec(raw_path.to_vec()));
     if !source.is_absolute() {
         return Err("Nearby Send source must be an absolute Files grant path".into());
     }
-    let metadata = std::fs::symlink_metadata(&source)
-        .map_err(|_| "Nearby Send source is unavailable".to_string())?;
-    if metadata.file_type().is_symlink() {
-        return Err("Nearby Send refuses symbolic-link sources".into());
-    }
-    let canonical_source = std::fs::canonicalize(&source)
-        .map_err(|_| "Nearby Send source is unavailable".to_string())?;
-    let authorized = grants.iter().any(|grant| {
-        let Capability::Filesystem { path, .. } = grant else {
-            return false;
-        };
-        let Ok(canonical_grant) = std::fs::canonicalize(path) else {
-            return false;
-        };
-        if canonical_grant == canonical_source {
-            return true;
-        }
-        std::fs::metadata(&canonical_grant).is_ok_and(|metadata| {
-            metadata.is_dir() && canonical_source.starts_with(&canonical_grant)
+    grants
+        .iter()
+        .find_map(|grant| {
+            let Capability::Filesystem { path, .. } = grant else {
+                return None;
+            };
+            crate::shell::nearby_transfer::SecureNearbySource::open_beneath(path, &source).ok()
         })
-    });
-    authorized
-        .then_some(canonical_source)
         .ok_or_else(|| "Nearby Send source is outside this Files instance's grants".into())
 }
 
@@ -1479,6 +1570,7 @@ pub struct CapnpBrokerState {
     invocation_id: AtomicU64,
     realtime: Mutex<RealtimeBridge>,
     nearby_targets: Mutex<NearbyTargetRegistry>,
+    nearby_transfers: Mutex<NearbyTransferRegistry>,
     workspace_control_network: Mutex<Option<std::sync::Weak<crate::shell::network::ShellNetwork>>>,
 }
 
@@ -2294,6 +2386,7 @@ impl CapnpBrokerState {
                 invocation_id: AtomicU64::new(1),
                 realtime: Mutex::new(RealtimeBridge::default()),
                 nearby_targets: Mutex::new(NearbyTargetRegistry::default()),
+                nearby_transfers: Mutex::new(NearbyTransferRegistry::default()),
                 workspace_control_network: Mutex::new(None),
             }),
             bridge_rx,
@@ -4071,6 +4164,9 @@ impl CapnpBrokerState {
         if let Ok(mut targets) = self.nearby_targets.lock() {
             targets.remove_peer(peer_id);
         }
+        if let Ok(mut transfers) = self.nearby_transfers.lock() {
+            transfers.remove_peer(peer_id);
+        }
         if let Ok(mut realtime) = self.realtime.lock() {
             realtime.subscribers.remove(&peer_id);
             let target_sessions = realtime
@@ -4954,8 +5050,40 @@ impl channel_handle::Server for CapnpChannelHandle {
                     .map(|(device, _)| device.clone())
                     .collect::<Vec<_>>();
                 registry.begin_snapshot(self.peer_id, &route, &device_ids, now);
-                let transfers =
+                let raw_transfers =
                     crate::shell::device_fabric_runtime::nearby_transfer_statuses(&network);
+                let Ok(mut transfer_registry) = self.state.nearby_transfers.lock() else {
+                    return Promise::err(capnp::Error::failed(
+                        "Nearby Send transfer authority is unavailable".into(),
+                    ));
+                };
+                let visible_ids = raw_transfers
+                    .iter()
+                    .map(|status| status.transfer_id)
+                    .collect::<Vec<_>>();
+                transfer_registry.begin_snapshot(self.peer_id, &route, &visible_ids, now);
+                let transfers = raw_transfers
+                    .into_iter()
+                    .filter_map(|status| {
+                        let handle = transfer_registry.issue(
+                            self.peer_id,
+                            &route,
+                            status.transfer_id,
+                            status.direction,
+                            true,
+                            now,
+                        )?;
+                        Some(runtime_collab::NearbyTransferStatus {
+                            handle,
+                            name: status.name,
+                            device_label: status.device_label,
+                            direction: status.direction,
+                            phase: status.phase,
+                            transferred_bytes: status.transferred_bytes,
+                            total_bytes: status.total_bytes,
+                        })
+                    })
+                    .collect();
                 runtime_collab::NearbyTransferReply::Snapshot {
                     snapshot: runtime_collab::NearbyTransferSnapshot {
                         targets: targets
@@ -4999,14 +5127,66 @@ impl channel_handle::Server for CapnpChannelHandle {
                         },
                     );
                 };
-                match crate::shell::device_fabric_runtime::request_nearby_drop(
-                    &network, &target, &source,
+                match crate::shell::device_fabric_runtime::request_nearby_drop_secure(
+                    &network, &target, source,
                 ) {
-                    Ok(transfer_id) => runtime_collab::NearbyTransferReply::Queued { transfer_id },
+                    Ok(transfer_id) => {
+                        let handle =
+                            self.state
+                                .nearby_transfers
+                                .lock()
+                                .ok()
+                                .and_then(|mut registry| {
+                                    registry.issue(
+                                        self.peer_id,
+                                        &route,
+                                        transfer_id,
+                                        runtime_collab::NearbyTransferDirection::Sending,
+                                        true,
+                                        Instant::now(),
+                                    )
+                                });
+                        match handle {
+                            Some(handle) => runtime_collab::NearbyTransferReply::Queued { handle },
+                            None => {
+                                let _ = crate::shell::device_fabric_runtime::cancel_nearby_transfer(
+                                    &network,
+                                    transfer_id,
+                                );
+                                runtime_collab::NearbyTransferReply::Rejected {
+                                    reason: "Nearby Send transfer authority is full".into(),
+                                }
+                            }
+                        }
+                    }
                     Err(reason) => runtime_collab::NearbyTransferReply::Rejected { reason },
                 }
             }
-            runtime_collab::NearbyTransferCommand::Cancel { transfer_id } => {
+            runtime_collab::NearbyTransferCommand::Cancel { handle } => {
+                let transfer_id =
+                    self.state
+                        .nearby_transfers
+                        .lock()
+                        .ok()
+                        .and_then(|mut registry| {
+                            registry.resolve(
+                                handle,
+                                self.peer_id,
+                                &route,
+                                runtime_collab::NearbyTransferDirection::Sending,
+                                Instant::now(),
+                            )
+                        });
+                let Some(transfer_id) = transfer_id else {
+                    return nearby_transfer_reply(
+                        &mut results,
+                        runtime_collab::NearbyTransferReply::Rejected {
+                            reason:
+                                "Nearby Send transfer expired or belongs to another Files workspace"
+                                    .into(),
+                        },
+                    );
+                };
                 match crate::shell::device_fabric_runtime::cancel_nearby_transfer(
                     &network,
                     transfer_id,
@@ -5015,18 +5195,65 @@ impl channel_handle::Server for CapnpChannelHandle {
                     Err(reason) => runtime_collab::NearbyTransferReply::Rejected { reason },
                 }
             }
-            runtime_collab::NearbyTransferCommand::Decide {
-                transfer_id,
-                accept,
-            } => match crate::shell::device_fabric_runtime::decide_nearby_transfer(
-                &network,
-                transfer_id,
-                accept,
-            ) {
-                Ok(()) => runtime_collab::NearbyTransferReply::Accepted,
-                Err(reason) => runtime_collab::NearbyTransferReply::Rejected { reason },
-            },
-            runtime_collab::NearbyTransferCommand::Retry { transfer_id } => {
+            runtime_collab::NearbyTransferCommand::Decide { handle, accept } => {
+                let transfer_id =
+                    self.state
+                        .nearby_transfers
+                        .lock()
+                        .ok()
+                        .and_then(|mut registry| {
+                            registry.resolve(
+                                handle,
+                                self.peer_id,
+                                &route,
+                                runtime_collab::NearbyTransferDirection::Receiving,
+                                Instant::now(),
+                            )
+                        });
+                let Some(transfer_id) = transfer_id else {
+                    return nearby_transfer_reply(
+                        &mut results,
+                        runtime_collab::NearbyTransferReply::Rejected {
+                            reason:
+                                "Nearby Send transfer expired or belongs to another Files workspace"
+                                    .into(),
+                        },
+                    );
+                };
+                match crate::shell::device_fabric_runtime::decide_nearby_transfer(
+                    &network,
+                    transfer_id,
+                    accept,
+                ) {
+                    Ok(()) => runtime_collab::NearbyTransferReply::Accepted,
+                    Err(reason) => runtime_collab::NearbyTransferReply::Rejected { reason },
+                }
+            }
+            runtime_collab::NearbyTransferCommand::Retry { handle } => {
+                let transfer_id =
+                    self.state
+                        .nearby_transfers
+                        .lock()
+                        .ok()
+                        .and_then(|mut registry| {
+                            registry.resolve(
+                                handle,
+                                self.peer_id,
+                                &route,
+                                runtime_collab::NearbyTransferDirection::Sending,
+                                Instant::now(),
+                            )
+                        });
+                let Some(transfer_id) = transfer_id else {
+                    return nearby_transfer_reply(
+                        &mut results,
+                        runtime_collab::NearbyTransferReply::Rejected {
+                            reason:
+                                "Nearby Send transfer expired or belongs to another Files workspace"
+                                    .into(),
+                        },
+                    );
+                };
                 match crate::shell::device_fabric_runtime::retry_nearby_transfer(
                     &network,
                     transfer_id,
@@ -11299,11 +11526,10 @@ mod tests {
             mode: FsMode::Read,
             scope: GRANT_SESSION,
         }];
-        assert_eq!(
-            nearby_source_from_grants(source.as_os_str().as_encoded_bytes(), &grants)
-                .expect("granted source"),
-            std::fs::canonicalize(&source).expect("canonical source")
-        );
+        let opened = nearby_source_from_grants(source.as_os_str().as_encoded_bytes(), &grants)
+            .expect("granted source");
+        assert_eq!(opened.name(), "report.txt");
+        assert_eq!(opened.metadata().expect("source metadata").len(), 6);
         assert!(nearby_source_from_grants(b"/etc/passwd", &grants).is_err());
 
         let escape = root.path().join("escape");

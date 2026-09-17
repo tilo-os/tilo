@@ -3176,6 +3176,89 @@ pub fn request_nearby_drop(
     Ok(request)
 }
 
+/// Send from an already-open Files grant capability. The descriptor, rather
+/// than an app-provided path, crosses the deferred staging boundary.
+pub fn request_nearby_drop_secure(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    source: crate::shell::nearby_transfer::SecureNearbySource,
+) -> Result<[u8; 16], String> {
+    require_continuity(ContinuityCapability::FileTransfer)?;
+    let metadata = source.metadata()?;
+    let file_name = source.name().to_string();
+    if metadata.is_dir()
+        || metadata.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64
+    {
+        let target = target.clone();
+        let worker_target = target.clone();
+        let name = file_name.clone();
+        let sender = nearby_staging_queue().0.clone();
+        let mut transfer_id = [0; 16];
+        while transfer_id == [0; 16] {
+            OsRng.fill_bytes(&mut transfer_id);
+        }
+        std::thread::Builder::new()
+            .name("tilo-nearby-stage".into())
+            .spawn(move || {
+                let result = with_nearby_transfer_store(|store| {
+                    store
+                        .stage_secure_with_id(
+                            source,
+                            worker_target.as_str().to_string(),
+                            unix_millis(),
+                            transfer_id,
+                        )
+                        .map(|_| ())
+                });
+                let _ = sender.send(NearbyStagingResult {
+                    transfer_id,
+                    target: worker_target,
+                    name,
+                    result,
+                });
+            })
+            .map_err(|error| format!("nearby transfer could not start: {error}"))?;
+        if let Ok(mut state) = nearby_drop_state().lock() {
+            state.events.push_back(NearbyDropEvent::Sending {
+                file_name,
+                peer: target,
+            });
+        }
+        return Ok(transfer_id);
+    }
+    if metadata.len() == 0 {
+        return Err("nearby drop cannot send an empty file".into());
+    }
+    let mut bytes = Vec::new();
+    source
+        .into_file()
+        .take((crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("file cannot be read: {error}"))?;
+    if bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES {
+        return Err("file changed while being read".into());
+    }
+    let total_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    let request = network.send_personal_fabric_action(
+        target,
+        PersonalFabricAction::NearbyDrop {
+            content_hash: *blake3::hash(&bytes).as_bytes(),
+            bytes,
+            file_name: file_name.clone(),
+        },
+    )?;
+    if let Ok(mut state) = nearby_drop_state().lock() {
+        state
+            .pending
+            .insert(request, (target.clone(), file_name.clone(), total_bytes));
+        state.events.push_back(NearbyDropEvent::Sending {
+            file_name,
+            peer: target.clone(),
+        });
+    }
+    Ok(request)
+}
+
 /// Cancel one durable transfer locally and tell its exact peer to discard the
 /// matching partial. An unrelated device/request pair cannot cancel it.
 ///
@@ -3315,9 +3398,17 @@ pub fn retry_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> R
 }
 
 /// Project path-free, identity-redacted transfer state for Files.
-pub fn nearby_transfer_statuses(
-    network: &ShellNetwork,
-) -> Vec<runtime_collab::NearbyTransferStatus> {
+pub struct NearbyTransferRuntimeStatus {
+    pub transfer_id: [u8; 16],
+    pub name: String,
+    pub device_label: String,
+    pub direction: runtime_collab::NearbyTransferDirection,
+    pub phase: runtime_collab::NearbyTransferPhase,
+    pub transferred_bytes: u64,
+    pub total_bytes: u64,
+}
+
+pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRuntimeStatus> {
     if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::FileTransfer) {
         return Vec::new();
     }
@@ -3335,24 +3426,22 @@ pub fn nearby_transfer_statuses(
     let mut statuses = state
         .incoming
         .iter()
-        .map(
-            |(transfer_id, pending)| runtime_collab::NearbyTransferStatus {
-                transfer_id: *transfer_id,
-                name: pending.name.clone(),
-                device_label: label(&pending.source),
-                direction: runtime_collab::NearbyTransferDirection::Receiving,
-                phase: runtime_collab::NearbyTransferPhase::AwaitingConsent,
-                transferred_bytes: 0,
-                total_bytes: pending.total_bytes,
-            },
-        )
+        .map(|(transfer_id, pending)| NearbyTransferRuntimeStatus {
+            transfer_id: *transfer_id,
+            name: pending.name.clone(),
+            device_label: label(&pending.source),
+            direction: runtime_collab::NearbyTransferDirection::Receiving,
+            phase: runtime_collab::NearbyTransferPhase::AwaitingConsent,
+            transferred_bytes: 0,
+            total_bytes: pending.total_bytes,
+        })
         .collect::<Vec<_>>();
     statuses.extend(
         state
             .pending
             .iter()
-            .map(|(transfer_id, (target, name, total_bytes))| {
-                runtime_collab::NearbyTransferStatus {
+            .map(
+                |(transfer_id, (target, name, total_bytes))| NearbyTransferRuntimeStatus {
                     transfer_id: *transfer_id,
                     name: name.clone(),
                     device_label: label(target),
@@ -3360,8 +3449,8 @@ pub fn nearby_transfer_statuses(
                     phase: runtime_collab::NearbyTransferPhase::Queued,
                     transferred_bytes: 0,
                     total_bytes: *total_bytes,
-                }
-            }),
+                },
+            ),
     );
     statuses.truncate(runtime_collab::MAX_NEARBY_TRANSFER_STATUSES);
     for entry in try_inbox_entries() {
@@ -3371,7 +3460,7 @@ pub fn nearby_transfer_statuses(
         let Ok(source) = crate::shell::personal_continuity::DeviceId::new(entry.source) else {
             continue;
         };
-        statuses.push(runtime_collab::NearbyTransferStatus {
+        statuses.push(NearbyTransferRuntimeStatus {
             transfer_id: entry.id,
             name: entry.name,
             device_label: label(&source),
@@ -3411,7 +3500,7 @@ pub fn nearby_transfer_statuses(
                 (*sent, *total, phase)
             },
         );
-        statuses.push(runtime_collab::NearbyTransferStatus {
+        statuses.push(NearbyTransferRuntimeStatus {
             transfer_id: entry.id,
             name: entry.name,
             device_label: label(&target),
