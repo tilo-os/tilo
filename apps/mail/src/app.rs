@@ -3166,6 +3166,78 @@ impl MailApp {
             self.context_menu = None;
         }
     }
+
+    fn invoke_resource_effect(
+        &mut self,
+        operation: &crate::actions::MailOperation,
+    ) -> Result<bool, String> {
+        match operation {
+            crate::actions::MailOperation::RefreshCurrentFolder => {
+                if self.engine.is_none() {
+                    return Err("no connected mail account is available".into());
+                }
+                let _ = self.refresh_active_folder();
+                Ok(true)
+            }
+            crate::actions::MailOperation::SaveAttachment { .. } => {
+                Err("Save attachment must use the admitted portal operation path".into())
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn invoke_resource_view(
+        &mut self,
+        operation: crate::actions::MailOperation,
+        doc: &AutoCommit,
+    ) -> Result<bool, String> {
+        match operation {
+            crate::actions::MailOperation::RevealFolder { folder } => {
+                let Some(folder) = Folder::from_key(&folder) else {
+                    return Err("folder no longer exists".into());
+                };
+                self.shared.borrow_mut().reveal_folder(folder);
+                self.process_intents();
+            }
+            crate::actions::MailOperation::RevealAccount { id } => {
+                let Some(index) = self
+                    .shared
+                    .borrow()
+                    .accounts
+                    .accounts
+                    .iter()
+                    .position(|account| account.id == id)
+                else {
+                    return Err("account no longer exists".into());
+                };
+                let mut state = self.shared.borrow_mut();
+                state.accounts.set_active(index);
+                state.reveal_folder(Folder::Inbox);
+                drop(state);
+                self.process_intents();
+            }
+            crate::actions::MailOperation::RevealMessage { id: _ } => {
+                return Err("Open message must use the admitted mutable operation path".into());
+            }
+            crate::actions::MailOperation::InspectMessage { id } => {
+                let id = id.parse::<MessageId>().map_err(|_| "invalid message id")?;
+                if !self.shared.borrow_mut().preview_message(id) {
+                    return Err("message is no longer loaded".into());
+                }
+                self.shared.borrow_mut().status =
+                    Some("Previewing without changing this message’s read state".into());
+                self.process_intents();
+            }
+            crate::actions::MailOperation::RevealDraft => {
+                let draft = MailDoc::load_draft(doc);
+                self.compose.open_with_draft(&draft);
+                self.editing_draft = None;
+                self.dirty = true;
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
 }
 
 impl Widget for MailApp {
@@ -3253,10 +3325,6 @@ impl Widget for MailApp {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the resource-operation door intentionally keeps every Mail effect and view arm together, so their validation and canonical routing can be audited as one contract"
-    )]
     fn invoke_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
@@ -3268,81 +3336,11 @@ impl Widget for MailApp {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(false);
         };
-        match (kind, operation) {
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MailOperation::RefreshCurrentFolder,
-            ) => {
-                if self.engine.is_none() {
-                    return Err("no connected mail account is available".into());
-                }
-                let _ = self.refresh_active_folder();
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::MailOperation::RevealFolder { folder },
-            ) => {
-                let Some(folder) = Folder::from_key(&folder) else {
-                    return Err("folder no longer exists".into());
-                };
-                self.shared.borrow_mut().reveal_folder(folder);
-                self.process_intents();
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::MailOperation::RevealAccount { id },
-            ) => {
-                let Some(index) = self
-                    .shared
-                    .borrow()
-                    .accounts
-                    .accounts
-                    .iter()
-                    .position(|account| account.id == id)
-                else {
-                    return Err("account no longer exists".into());
-                };
-                let mut st = self.shared.borrow_mut();
-                st.accounts.set_active(index);
-                st.reveal_folder(Folder::Inbox);
-                drop(st);
-                self.process_intents();
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::MailOperation::RevealMessage { id: _ },
-            ) => {
-                return Err("Open message must use the admitted mutable operation path".into());
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::MailOperation::InspectMessage { id },
-            ) => {
-                let id = id
-                    .parse::<crate::model::MessageId>()
-                    .map_err(|_| "invalid message id")?;
-                if !self.shared.borrow_mut().preview_message(id) {
-                    return Err("message is no longer loaded".into());
-                }
-                self.shared.borrow_mut().status =
-                    Some("Previewing without changing this message’s read state".into());
-                self.process_intents();
-            }
-            (tilo_actions::OperationKind::View, crate::actions::MailOperation::RevealDraft) => {
-                let draft = MailDoc::load_draft(doc);
-                self.compose.open_with_draft(&draft);
-                self.editing_draft = None;
-                self.dirty = true;
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MailOperation::SaveAttachment { .. },
-            ) => {
-                return Err("Save attachment must use the admitted portal operation path".into());
-            }
-            _ => return Ok(false),
+        match kind {
+            tilo_actions::OperationKind::Effect => self.invoke_resource_effect(&operation),
+            tilo_actions::OperationKind::View => self.invoke_resource_view(operation, doc),
+            tilo_actions::OperationKind::Document => Ok(false),
         }
-        Ok(true)
     }
 
     fn start_resource_operation(
