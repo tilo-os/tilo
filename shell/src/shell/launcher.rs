@@ -2463,6 +2463,32 @@ pub fn clear_pending_placement(package_id: &str) {
     }
 }
 
+/// Forget the one claimed placement belonging to a launch that reported a
+/// terminal failure after its toplevel was already adopted.
+///
+/// A claim normally lives briefly so the rendered and protocol trees can
+/// agree on a just-mapped client.  A failed launcher is different: retaining
+/// that claim leaves the unpainted foreign tab with no future producer.  We
+/// only take it when it is the sole in-flight launch for the key; launch
+/// events have no per-process token, so guessing during concurrent launches
+/// could close the other launch's real window.
+pub(crate) fn take_sole_claimed_surface_for_failed_launch(package_id: &str) -> Option<u64> {
+    let mut pending = lock(&PENDING_PLACEMENT);
+    let matching: Vec<usize> = pending
+        .iter()
+        .enumerate()
+        .filter(|(_, note)| note.key == package_id)
+        .map(|(index, _)| index)
+        .collect();
+    if matching.len() != 1 {
+        return None;
+    }
+    let index = matching[0];
+    let surface_id = pending.get(index)?.claimed_by?;
+    pending.remove(index);
+    Some(surface_id)
+}
+
 /// Allow a cleanly-exited launcher parent a bounded handoff window for a
 /// daemonised GUI child to announce its toplevel. Failure paths still call
 /// [`clear_pending_placement`] immediately.

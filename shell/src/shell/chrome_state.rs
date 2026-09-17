@@ -806,7 +806,7 @@ impl ChromeState {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// Fold broker/portal mutations of the shared tree into retained chrome's
+    /// Fold non-chrome mutations of the shared tree into retained chrome's
     /// ordinary revision stream. Returns true exactly once per observed epoch.
     pub fn sync_external_tree_revision(&mut self) -> bool {
         let external = self.tree().external_revision;
