@@ -949,7 +949,14 @@ impl OnboardingView {
             || theme.name.eq_ignore_ascii_case("high contrast")
             || matches!(self.flow.screen(), Screen::Connect | Screen::NoRecovery)
             || (self.flow.screen() == Screen::Done && !self.identity_ready_page);
-        let scroll = Scrollable::new_vertical()
+        let mut scroll = Scrollable::new_vertical();
+        if backup_in_scroll {
+            // Backup is a form: Tab should enter its first field/control, and
+            // focus-follow scrolling reveals later controls. Explanatory
+            // pages retain the viewport stop for Page/Home/End navigation.
+            scroll = scroll.without_sequential_focus();
+        }
+        let scroll = scroll
             .with_content_gutter(spacing.s3)
             // Keep a clean terminal edge even on Backup's in-flow decision
             // block, so the last control is not painted against the clip.
