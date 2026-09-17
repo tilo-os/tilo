@@ -27,6 +27,7 @@ hex.workspace = true
 serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
+ed25519-dalek.workspace = true
 tar.workspace = true
 blake3.workspace = true
 semver.workspace = true
@@ -37,7 +38,6 @@ app-registry = { path = "../app-registry" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dev-dependencies]
-ed25519-dalek = { workspace = true, features = ["rand_core"] }
 rand.workspace = true
 tempfile.workspace = true
 
