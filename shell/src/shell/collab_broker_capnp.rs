@@ -1256,18 +1256,21 @@ impl RealtimeBridge {
         }
     }
 
-    fn notify(&mut self, peer: u64, event: &ui::realtime_continuity::RealtimeEvent) {
+    fn notify(&mut self, peer: u64, event: &ui::realtime_continuity::RealtimeEvent) -> bool {
         let Ok(bytes) = serde_json::to_vec(event) else {
-            return;
+            return false;
         };
-        if bytes.len() > ui::realtime_continuity::MAX_REALTIME_WIRE_BYTES
-            || self
-                .subscribers
-                .get(&peer)
-                .is_some_and(|subscriber| subscriber.tx.send(bytes).is_err())
-        {
+        if bytes.len() > ui::realtime_continuity::MAX_REALTIME_WIRE_BYTES {
+            return false;
+        }
+        let delivered = self
+            .subscribers
+            .get(&peer)
+            .is_some_and(|subscriber| subscriber.tx.send(bytes).is_ok());
+        if !delivered {
             self.subscribers.remove(&peer);
         }
+        delivered
     }
 
     fn required_capture_kinds(
@@ -1389,6 +1392,47 @@ fn release_realtime_capture_leases(
         for grant in leases {
             capture.release(grant.lease_id);
         }
+    }
+}
+
+fn revoke_realtime_capture_authorizations(
+    capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
+    opaque_authorizations: &[String],
+) {
+    let ids = opaque_authorizations
+        .iter()
+        .filter_map(|authorization| {
+            crate::portal::CaptureAuthorizationId::from_opaque(authorization).ok()
+        })
+        .collect::<Vec<_>>();
+    if let Ok(mut capture) = capture.lock() {
+        capture.revoke_authorizations(&ids);
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct RealtimeConsentMintHook {
+    minted: Arc<std::sync::Barrier>,
+    resume: Arc<std::sync::Barrier>,
+}
+
+#[cfg(test)]
+fn realtime_consent_mint_hook() -> &'static Mutex<Option<RealtimeConsentMintHook>> {
+    static HOOK: std::sync::OnceLock<Mutex<Option<RealtimeConsentMintHook>>> =
+        std::sync::OnceLock::new();
+    HOOK.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn pause_realtime_consent_after_mint() {
+    let hook = realtime_consent_mint_hook()
+        .lock()
+        .ok()
+        .and_then(|mut hook| hook.take());
+    if let Some(hook) = hook {
+        hook.minted.wait();
+        hook.resume.wait();
     }
 }
 
@@ -1594,8 +1638,8 @@ impl RealtimeFabricAppBridge {
         {
             return Err("realtime session continuity is disabled".into());
         }
-        let (id, app, source, target, peer, required) = {
-            let realtime = self
+        let (id, app, source, target, peer, required, capture) = {
+            let mut realtime = self
                 .state
                 .realtime
                 .lock()
@@ -1617,16 +1661,25 @@ impl RealtimeFabricAppBridge {
                 .session(binding.id)
                 .and_then(|view| view.target)
                 .ok_or_else(|| "realtime target binding is unavailable".to_string())?;
-            (
+            let required = realtime
+                .required_capture_kinds(binding.id)
+                .ok_or_else(|| "unknown realtime session".to_string())?;
+            let result = (
                 binding.id,
                 binding.app.clone(),
                 binding.source.clone(),
                 target,
                 binding.owner_peer,
-                realtime
-                    .required_capture_kinds(binding.id)
-                    .ok_or_else(|| "unknown realtime session".to_string())?,
-            )
+                required,
+                Arc::clone(&realtime.capture),
+            );
+            if !realtime
+                .consent_capabilities_issued
+                .insert(session.to_string())
+            {
+                return Err("capture consent is already being applied".into());
+            }
+            result
         };
         if !approved {
             let realtime = self
@@ -1634,14 +1687,20 @@ impl RealtimeFabricAppBridge {
                 .realtime
                 .lock()
                 .map_err(|_| "realtime broker is unavailable".to_string())?;
-            realtime
+            let declined = realtime
                 .fabric
                 .fail_imported(id.fabric_id(), &source, &target, std::time::Instant::now())
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.to_string());
             drop(realtime);
+            if let Err(error) = declined {
+                if let Ok(mut realtime) = self.state.realtime.lock() {
+                    realtime.consent_capabilities_issued.remove(session);
+                }
+                return Err(error);
+            }
             if let Ok(mut realtime) = self.state.realtime.lock() {
                 realtime.consent_capabilities_issued.remove(session);
-                realtime.notify(
+                let _ = realtime.notify(
                     peer,
                     &ui::realtime_continuity::RealtimeEvent::Ended {
                         session: session.to_string(),
@@ -1651,14 +1710,7 @@ impl RealtimeFabricAppBridge {
             }
             return Ok(());
         }
-        let selections = {
-            let capture = self
-                .state
-                .realtime
-                .lock()
-                .map_err(|_| "realtime broker is unavailable".to_string())?
-                .capture
-                .clone();
+        let selections = (|| {
             let capture = capture
                 .lock()
                 .map_err(|_| "target capture broker is unavailable".to_string())?;
@@ -1672,7 +1724,16 @@ impl RealtimeFabricAppBridge {
                         .map(|source| (*kind, source.id))
                         .ok_or_else(|| format!("no local {kind:?} source is available"))
                 })
-                .collect::<Result<Vec<_>, _>>()?
+                .collect::<Result<Vec<_>, _>>()
+        })();
+        let selections = match selections {
+            Ok(selections) => selections,
+            Err(error) => {
+                if let Ok(mut realtime) = self.state.realtime.lock() {
+                    realtime.consent_capabilities_issued.remove(session);
+                }
+                return Err(error);
+            }
         };
         let authorizations = self.state.authorize_realtime_capture_batch(
             &app,
@@ -1680,25 +1741,78 @@ impl RealtimeFabricAppBridge {
             &target,
             &selections,
             std::time::Instant::now(),
-        )?;
-        let mut realtime = self
-            .state
-            .realtime
+        );
+        let authorizations = match authorizations {
+            Ok(authorizations) => authorizations,
+            Err(error) => {
+                if let Ok(mut realtime) = self.state.realtime.lock() {
+                    realtime.consent_capabilities_issued.remove(session);
+                }
+                return Err(error);
+            }
+        };
+        #[cfg(test)]
+        pause_realtime_consent_after_mint();
+        let mut realtime = match self.state.realtime.lock() {
+            Ok(realtime) => realtime,
+            Err(_) => {
+                revoke_realtime_capture_authorizations(&capture, &authorizations);
+                return Err("realtime broker is unavailable".into());
+            }
+        };
+        let live_binding = realtime.sessions.get(session).is_some_and(|binding| {
+            binding.imported
+                && binding.id == id
+                && binding.app == app
+                && binding.source == source
+                && binding.owner_peer == peer
+        });
+        let live_session = realtime
+            .broker
             .lock()
-            .map_err(|_| "realtime broker is unavailable".to_string())?;
-        if !realtime
-            .consent_capabilities_issued
-            .insert(session.to_string())
+            .ok()
+            .and_then(|broker| broker.session(id))
+            .is_some_and(|view| {
+                view.source == source
+                    && view.target.as_ref() == Some(&target)
+                    && view.phase
+                        == crate::shell::realtime_session::RealtimeSessionPhase::AwaitingTargetAccept
+            });
+        let current_required = realtime.required_capture_kinds(id);
+        let still_reserved = realtime.consent_capabilities_issued.contains(session);
+        let policy_enabled = crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+            .permits(crate::shell::continuity_policy::ContinuityCapability::RealtimeSessions);
+        if !live_binding
+            || !live_session
+            || current_required.as_ref() != Some(&required)
+            || !still_reserved
+            || !policy_enabled
         {
-            return Err("capture consent is already being applied".into());
+            realtime.consent_capabilities_issued.remove(session);
+            drop(realtime);
+            revoke_realtime_capture_authorizations(&capture, &authorizations);
+            return Err("realtime consent expired while capture was being prepared".into());
         }
-        realtime.notify(
+        let delivered = realtime.notify(
             peer,
             &ui::realtime_continuity::RealtimeEvent::CaptureAuthorized {
                 session: session.to_string(),
-                capture_authorizations: authorizations,
+                capture_authorizations: authorizations.clone(),
             },
         );
+        if !delivered {
+            realtime.consent_capabilities_issued.remove(session);
+            let _ = realtime.fabric.fail_imported(
+                id.fabric_id(),
+                &source,
+                &target,
+                std::time::Instant::now(),
+            );
+            realtime.sessions.remove(session);
+            drop(realtime);
+            revoke_realtime_capture_authorizations(&capture, &authorizations);
+            return Err("realtime target application disconnected during consent".into());
+        }
         Ok(())
     }
 }
@@ -9187,6 +9301,148 @@ mod tests {
             crate::shell::realtime_session::RealtimeSessionPhase::TargetLive
         );
         assert!(session.len() <= ui::realtime_continuity::MAX_REALTIME_TOKEN_BYTES);
+    }
+
+    #[test]
+    fn realtime_consent_reserves_once_and_revokes_minted_batch_after_disconnect() {
+        use crate::shell::realtime_session::{
+            BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
+            RealtimeMediaFacet, RealtimeMediaSet, RealtimeResumeIntent, RealtimeSessionBroker,
+            SemanticRoomLocator, VerifiedAppRegistration,
+        };
+
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        let target_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+        let target_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
+            Arc::clone(&target_broker),
+            |_| true,
+        ));
+        let (subscriber, _events) = mpsc::unbounded_channel();
+        let app =
+            VerifiedAppRegistration::new_verified("dev.qos.calls", "work").expect("verified app");
+        {
+            let mut realtime = state.realtime.lock().expect("target bridge");
+            realtime.broker = Arc::clone(&target_broker);
+            realtime.fabric = Arc::clone(&target_fabric);
+            realtime.subscribers.insert(
+                9,
+                RealtimeSubscriber {
+                    app: app.clone(),
+                    tx: subscriber,
+                },
+            );
+        }
+
+        let now = std::time::Instant::now();
+        let source =
+            crate::shell::personal_continuity::DeviceId::new("laptop").expect("source device");
+        let target =
+            crate::shell::personal_continuity::DeviceId::new("tablet").expect("target device");
+        let source_broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+        let source_fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
+            Arc::clone(&source_broker),
+            |_| true,
+        ));
+        let intent = RealtimeResumeIntent {
+            room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
+            semantic_position: None,
+            media: RealtimeMediaSet::new([RealtimeMediaFacet::Microphone]).expect("media set"),
+            controls: Default::default(),
+        };
+        let id = source_broker
+            .lock()
+            .expect("source broker")
+            .register(&app, source.clone(), intent, now)
+            .expect("register source");
+        source_broker
+            .lock()
+            .expect("source broker")
+            .propose_target(&app, id, &source, target.clone(), now)
+            .expect("propose target");
+        source_fabric
+            .offer_to(id, &target, 20_000)
+            .expect("queue offer");
+        let offer = source_fabric.drain_egress().pop().expect("offer egress");
+        let RealtimeFabricSignal::Offer(offer) = offer.signal else {
+            panic!("expected offer");
+        };
+        assert!(target_fabric.receive_authenticated(
+            &source,
+            &target,
+            RealtimeFabricSignal::Offer(offer),
+            now,
+            10_000,
+        ));
+        state.pump_realtime_fabric_app_events();
+        let session = {
+            let realtime = state.realtime.lock().expect("target bridge");
+            realtime
+                .sessions
+                .keys()
+                .next()
+                .expect("imported session")
+                .clone()
+        };
+
+        // Pause after minting but before the exact binding is revalidated. A
+        // duplicate must fail immediately, and removing the imported binding
+        // while paused must revoke the whole just-minted batch.
+        let minted = Arc::new(std::sync::Barrier::new(2));
+        let resume = Arc::new(std::sync::Barrier::new(2));
+        *realtime_consent_mint_hook().lock().expect("consent hook") =
+            Some(RealtimeConsentMintHook {
+                minted: Arc::clone(&minted),
+                resume: Arc::clone(&resume),
+            });
+        let worker_bridge = RealtimeFabricAppBridge::from_state(Arc::clone(&state));
+        let worker_session = session.clone();
+        let worker =
+            std::thread::spawn(move || worker_bridge.resolve_consent(&worker_session, true));
+        minted.wait();
+        assert!(
+            state
+                .realtime
+                .lock()
+                .expect("target bridge")
+                .consent_capabilities_issued
+                .contains(&session),
+            "worker must reserve consent before capture minting"
+        );
+        assert!(
+            RealtimeFabricAppBridge::from_state(Arc::clone(&state))
+                .resolve_consent(&session, true)
+                .is_err(),
+            "a concurrent duplicate may not mint another batch"
+        );
+        state
+            .realtime
+            .lock()
+            .expect("target bridge")
+            .sessions
+            .remove(&session);
+        resume.wait();
+        assert!(
+            worker.join().expect("consent worker").is_err(),
+            "disconnect must invalidate consent before delivery"
+        );
+        let realtime = state.realtime.lock().expect("target bridge");
+        assert!(!realtime.consent_capabilities_issued.contains(&session));
+        assert_eq!(
+            realtime
+                .capture
+                .lock()
+                .expect("capture broker")
+                .pending_authorization_count(),
+            0,
+            "stale consent must revoke every minted capability"
+        );
     }
 
     #[test]
