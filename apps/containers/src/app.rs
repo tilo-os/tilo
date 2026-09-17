@@ -687,7 +687,7 @@ impl ContainersApp {
             self.combo.close();
             if let Some(tx) = self.bg_tx.clone() {
                 std::thread::spawn(move || {
-                    let out = std::process::Command::new("podman").args(&args).output();
+                    let out = podman::run_once(&args);
                     // Whatever the result, push a fresh snapshot so the new
                     // container appears (or the failure is implied by absence).
                     let _ = out;

@@ -2544,6 +2544,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
+ "bounded-command",
  "runtime-dylib",
  "serde",
  "serde_json",
