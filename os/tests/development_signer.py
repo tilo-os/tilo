@@ -9,17 +9,83 @@ import json
 import os
 from pathlib import Path
 import platform
+import shutil
 import subprocess
 import tempfile
 
 DEV = Path(__file__).resolve().parents[1] / 'dev'
 
 
-def run(*args, success=True):
-    result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+def run(*args, success=True, env=None):
+    result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
     if (result.returncode == 0) != success:
-        raise RuntimeError(f'{args[0]} {args[1]} unexpected exit {result.returncode}')
+        detail = result.stderr.decode(errors='replace')[-4096:]
+        raise RuntimeError(f'{args[0]} {args[1]} unexpected exit {result.returncode}: {detail}')
     return result.stdout
+
+
+def bootloader_selection(root, original, signed, certificate, metadata, machine):
+    """Prove native bootctl's directory copy, not FAT, firmware or OS bootability."""
+    architecture = platform.machine()
+    target = root / 'bootctl-root'
+    source = target / 'usr/lib/systemd/boot/efi'
+    source.mkdir(parents=True)
+    (target / 'etc').mkdir()
+    (target / 'etc/os-release').write_text('ID=tilo-fixture\nPRETTY_NAME="Tilo fixture"\n')
+    (target / 'boot').mkdir()
+    unsigned = source / original.name
+    companion = source / (original.name + '.signed')
+    shutil.copyfile(original, unsigned)
+    shutil.copyfile(signed, companion)
+    assert unsigned.read_bytes() != companion.read_bytes()
+
+    def verify(path, arch=architecture, success=True):
+        output = run('python3', str(DEV / 'verify-development-loader.py'),
+                     '--original', str(unsigned), '--signed', str(path),
+                     '--certificate', str(certificate),
+                     '--certificate-sha256', metadata['efi_certificate_sha256'],
+                     '--architecture', arch, success=success)
+        return json.loads(output) if success else None
+
+    receipt = verify(companion)
+    verify(source / 'missing.efi.signed', success=False)
+    verify(unsigned, success=False)
+    verify(companion, arch={'x86_64': 'aarch64', 'aarch64': 'x86_64'}[architecture], success=False)
+    tampered = root / 'tampered-loader.efi'
+    payload = bytearray(signed.read_bytes())
+    payload[2] ^= 1  # Authenticated DOS header byte; preserve MZ and PE structure.
+    tampered.write_bytes(payload)
+    verify(tampered, success=False)
+    other = json.loads(run('python3', str(DEV / 'setup-development-signer.py'),
+                          str(root / 'other-identity')))
+    wrong_key = root / 'wrong-key-loader.efi'
+    run(other['signer'], 'sign-efi', str(original), str(wrong_key))
+    verify(wrong_key, success=False)
+
+    # Never fall back to the host loader, write EFI variables, or open a disk.
+    # This is the same ESP-check relaxation bootc uses, on ordinary directories.
+    environment = {'PATH': os.defpath, 'LANG': 'C.UTF-8',
+                   'SYSTEMD_RELAX_ESP_CHECKS': '1',
+                   'KERNEL_INSTALL_CONF_ROOT': str(target / 'etc/kernel')}
+    run('/usr/bin/bootctl', 'install', '--root', str(target), '--esp-path=/boot',
+        '--install-source=image', '--no-variables', '--random-seed=no',
+        '--entry-token=literal:tilo-fixture', env=environment)
+    destinations = [target / 'boot/EFI/systemd' / original.name,
+                    target / 'boot/EFI/BOOT' / f'BOOT{machine.upper()}.EFI']
+    for destination in destinations:
+        assert destination.is_file() and not destination.is_symlink()
+        assert destination.read_bytes() == signed.read_bytes()
+        verify(destination)
+    assert not (target / 'boot/loader/random-seed').exists()
+    print(json.dumps({'result': 'pass', 'proof': 'native bootctl directory copy only',
+                      'architecture': architecture,
+                      'bootctl_version': run('/usr/bin/bootctl', '--version').decode().splitlines()[0],
+                      'rpm_nevras': run('rpm', '-qf', '--qf', '%{NEVRA}\n',
+                                        '/usr/bin/bootctl', str(original)).decode().splitlines(),
+                      'loader_verification': receipt,
+                      'esp_paths': [str(path.relative_to(target / 'boot')) for path in destinations],
+                      'rejected': ['missing companion', 'unsigned loader', 'wrong architecture',
+                                   'tampered loader', 'wrong signing key']}))
 
 
 def main():
@@ -77,6 +143,7 @@ def main():
         assert 'signature 1' in listing
         run('sbverify', '--cert', str(certificate), str(signed))
         run('python3', str(DEV / 'verify-authenticode-envelope.py'), str(original), str(signed))
+        bootloader_selection(root, original, signed, certificate, metadata, machine)
         (home / 'purpose').write_text('not a development signer\n')
         run(signer, 'export-efi-cert', str(failed_output), success=False)
         assert not failed_output.exists()
