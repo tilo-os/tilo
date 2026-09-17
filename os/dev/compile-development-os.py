@@ -47,13 +47,19 @@ CACHE_CREDENTIALS = {'AWS_ACCESS_KEY_ID': 'aws_access_key_id',
 
 def validate_inputs(wpe, generation, revision, branch, mode='full-build',
                     architecture='x86_64', kernel_candidate='', wpe_stage_receipt=None,
-                    wpe_adoption_receipt=None, wpe_adoption_sha256=''):
+                    wpe_adoption_receipt=None, wpe_adoption_sha256='',
+                    fex_payload_candidate='', windows_guest_candidate=''):
     if architecture not in ARCHITECTURES:
         raise ValueError('unsupported native architecture')
     if mode == 'full-build' and architecture == 'aarch64' and not kernel_candidate:
         raise ValueError('ARM full-build requires an explicit immutable kernel candidate')
     if kernel_candidate:
         immutable_candidate(kernel_candidate)
+    for name, reference in (('fex-payload', fex_payload_candidate), ('windows-guest', windows_guest_candidate)):
+        if mode == 'full-build' and architecture == 'aarch64' and not reference:
+            raise ValueError(f'ARM full-build requires an explicit immutable {name} candidate')
+        if reference:
+            immutable_candidate(reference)
     if mode not in ('cache-only', 'full-build'):
         raise ValueError('mode must be cache-only or full-build')
     adopting = bool(wpe_adoption_receipt or wpe_adoption_sha256)
@@ -425,7 +431,8 @@ def installation_tooling(image):
 
 
 def build_environment(wpe, generation, revision, manifest, signer, cache,
-                      architecture='x86_64', pins=None, adoption_sha256=''):
+                      architecture='x86_64', pins=None, adoption_sha256='',
+                      fex_payload_candidate='', windows_guest_candidate=''):
     # No inherited TILO_BUILD_ARGS, prebuilt payload, skip-build or remote engine
     # settings can change this from a complete, local, source build.
     allowed = ('PATH', 'HOME', 'CARGO_HOME', 'RUSTUP_HOME', 'REGISTRY_AUTH_FILE')
@@ -455,6 +462,10 @@ def build_environment(wpe, generation, revision, manifest, signer, cache,
             env.pop(name, None)
         env['TILO_WPE_ADOPTION_RECEIPT'] = str(EVIDENCE / 'wpe-adoption.json')
         env['TILO_WPE_ADOPTION_SHA256'] = adoption_sha256
+    for name, reference in (('FEX_PAYLOAD_REF', fex_payload_candidate),
+                            ('WINDOWS_GUEST_REF', windows_guest_candidate)):
+        if reference:
+            env[name] = immutable_candidate(reference)
     if pins is not None:
         env.update({name: pins[name] for name in ('RPMS_REF', 'KERNEL_RPMS_REF')})
     for name, value in cache.items():
@@ -517,6 +528,8 @@ def main(argv=None):
     parser.add_argument('--wpe-adoption-sha256', default='')
     parser.add_argument('--architecture', choices=tuple(ARCHITECTURES), default='x86_64')
     parser.add_argument('--kernel-candidate', default='')
+    parser.add_argument('--fex-payload-candidate', default='')
+    parser.add_argument('--windows-guest-candidate', default='')
     parser.add_argument('--rpms-candidate', default='')
     parser.add_argument('--builder-candidate', default=BUILDER)
     for name in ('wpe', 'generation'):
@@ -525,7 +538,8 @@ def main(argv=None):
         parser.add_argument('--' + name, required=True)
     args = parser.parse_args(argv)
     validate_inputs(args.wpe, args.generation, args.revision, args.branch, args.mode, args.architecture, args.kernel_candidate,
-                    args.wpe_stage_receipt, args.wpe_adoption_receipt, args.wpe_adoption_sha256)
+                    args.wpe_stage_receipt, args.wpe_adoption_receipt, args.wpe_adoption_sha256,
+                    args.fex_payload_candidate, args.windows_guest_candidate)
     for candidate in (args.rpms_candidate, args.builder_candidate):
         if candidate:
             immutable_candidate(candidate)
@@ -608,7 +622,8 @@ def main(argv=None):
         '--efi-certificate', signer['efi_certificate'], '--registry-owner', str(PRIVATE / 'owner.pub'),
         '--output', str(PRIVATE / 'public')))
     shutil.copytree(PRIVATE / 'public', EVIDENCE / 'public-trust')
-    env = build_environment(args.wpe, args.generation, args.revision, trust['manifest_sha256'], signer['signer'], cache, args.architecture, pins, args.wpe_adoption_sha256)
+    env = build_environment(args.wpe, args.generation, args.revision, trust['manifest_sha256'], signer['signer'], cache, args.architecture, pins, args.wpe_adoption_sha256,
+                            args.fex_payload_candidate, args.windows_guest_candidate)
     epoch = int(run('git', 'show', '-s', '--format=%ct', args.revision))
     env['SOURCE_DATE_EPOCH'] = str(epoch)
     compile_with_capacity_watchdog(env)
