@@ -3420,6 +3420,32 @@ fn install_device_fabric_bridge(
                         session,
                     )?;
                 }
+                DeviceFabricUiAction::StartRemoteAudio {
+                    source_token,
+                    target,
+                } => {
+                    let _ = crate::shell::device_fabric_runtime::request_remote_audio(
+                        &fabric_net,
+                        source_token,
+                        &target,
+                    )?;
+                }
+                DeviceFabricUiAction::AuthorizeRemoteAudio {
+                    session_id,
+                    approved,
+                } => {
+                    crate::shell::device_fabric_runtime::authorize_remote_audio(
+                        &fabric_net,
+                        session_id,
+                        approved,
+                    )?;
+                }
+                DeviceFabricUiAction::StopRemoteAudio { session_id } => {
+                    crate::shell::device_fabric_runtime::stop_remote_audio(
+                        &fabric_net,
+                        session_id,
+                    )?;
+                }
                 DeviceFabricUiAction::Place { device, edge } => {
                     crate::shell::device_fabric_runtime::place_device(&fabric_net, &device, edge)?;
                 }
@@ -3439,6 +3465,9 @@ fn install_device_fabric_bridge(
             let mut view = crate::shell::device_fabric_runtime::device_fabric_view(&fabric_net);
             view.local_gamepads =
                 crate::shell::physical_gamepad::local_physical_gamepads().unwrap_or_default();
+            let focus = active_physical_gamepad_binding(&tree_handle.read());
+            view.remote_audio =
+                crate::shell::device_fabric_runtime::remote_audio_view(focus.as_ref());
             *fabric_cache.borrow_mut() = Some((Instant::now(), view.clone()));
             Ok(view)
         })
