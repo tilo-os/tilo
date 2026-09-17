@@ -150,8 +150,11 @@ impl DailyControls {
     }
     fn button(&self, id: &str, label: &str, action: Action) -> Button {
         let pending = self.pending.clone();
+        // 40 tall like the address field and the find field these sit beside,
+        // so the toolbar row and the find bar each keep one top and one
+        // bottom edge. The 32px face left a step down on either side of them.
         Button::new(id, label, None)
-            .with_size(72.0, 32.0)
+            .with_size(72.0, 40.0)
             .on_effect(move || pending.set(Some(action)))
     }
     pub fn launcher(&self) -> Button {
