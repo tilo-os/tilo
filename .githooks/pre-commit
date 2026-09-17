@@ -88,7 +88,7 @@ if printf '%s\n' "$added" | grep -qE '(^|[^a-z_])dbg!\('; then
   fail=1
 fi
 
-# Cargo.lock is committed and deliberately not regenerated — see CLAUDE.md.
+# Cargo.lock is committed and deliberately not regenerated — see AGENTS.md.
 # A lock change with no manifest change beside it is a stray `cargo update`.
 if git diff --cached --name-only | grep -qx 'Cargo.lock' \
    && ! git diff --cached --name-only | grep -qE '(^|/)Cargo\.toml$'; then
