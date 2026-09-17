@@ -50,6 +50,10 @@ pub(crate) struct ChatRealtimeContinuity {
     pub(crate) pending_restore: Option<ChatCallContinuation>,
     pub(crate) offer: Option<(String, ChatCallContinuation)>,
     pub(crate) stop_source: Option<String>,
+    /// Set by the accepted command result and consumed from `sync`, so the
+    /// target call is locally established before `MediaReady` is emitted.
+    pub(crate) accepted_target: bool,
+    pub(crate) target_media_ready: bool,
     pub(crate) requests: Vec<ui::collaboration::CollabRequest>,
     next_request: u64,
 }
@@ -177,6 +181,24 @@ impl ChatApp {
             .request(ui::realtime_continuity::RealtimeCommand::MediaReady { session });
         self.realtime.requests.push(request);
         true
+    }
+
+    pub(crate) fn establish_realtime_target(&mut self) {
+        if !self.realtime.accepted_target {
+            return;
+        }
+        self.realtime.accepted_target = false;
+        let Some((_, offered)) = self.realtime.offer.clone() else {
+            return;
+        };
+        if self.realtime.pending_restore.as_ref() != Some(&offered) {
+            return;
+        }
+        self.call.join(&offered.channel_id);
+        self.call.muted = offered.controls.microphone_muted;
+        self.call.audio_only = !offered.media.camera || offered.controls.camera_muted;
+        self.call.sharing = offered.media.screen_share && !offered.controls.screen_share_paused;
+        self.realtime.target_media_ready = true;
     }
 
     pub(crate) fn apply_realtime_stop(&mut self, doc: &mut AutoCommit) {

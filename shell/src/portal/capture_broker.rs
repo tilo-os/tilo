@@ -86,12 +86,16 @@ impl CaptureSessionBinding {
 pub enum LocalCaptureHandle {
     PipeWireNode(u32),
     FileDescriptor(OwnedFd),
+    /// Shell-selected system default. The concrete device remains behind the
+    /// portal/media backend and may change without invalidating app state.
+    SystemDefault(CaptureKind),
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum BorrowedCaptureHandle<'a> {
     PipeWireNode(u32),
     FileDescriptor(BorrowedFd<'a>),
+    SystemDefault(CaptureKind),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -239,6 +243,28 @@ impl CaptureBroker {
         }
     }
 
+    /// Broker seeded with the compositor-owned semantic defaults used by
+    /// realtime handoff. These are selectors, not device handles: applications
+    /// continue opening media only through their existing sandboxed backend.
+    #[must_use]
+    pub fn with_system_defaults() -> Self {
+        let mut broker = Self::new();
+        for (id, label, kind) in [
+            (
+                "default-microphone",
+                "Default microphone",
+                CaptureKind::Microphone,
+            ),
+            ("default-camera", "Default camera", CaptureKind::Camera),
+            ("primary-display", "Primary display", CaptureKind::Screen),
+            ("system-audio", "System audio", CaptureKind::SystemAudio),
+        ] {
+            let _ =
+                broker.register_source(id, label, kind, LocalCaptureHandle::SystemDefault(kind));
+        }
+        broker
+    }
+
     /// Register or replace one target-local capture source.
     ///
     /// # Errors
@@ -321,6 +347,55 @@ impl CaptureBroker {
             },
         );
         Ok(id)
+    }
+
+    /// Atomically mint one authorization for every selected capture facet.
+    /// Validation and capacity checks complete before any capability exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for duplicate/missing sources, a kill switch, or if
+    /// the complete authorization set would exceed the bounded table.
+    pub fn authorize_batch(
+        &mut self,
+        binding: &CaptureSessionBinding,
+        selections: &[(String, CaptureKind)],
+        now: Instant,
+    ) -> Result<Vec<CaptureAuthorizationId>, CaptureBrokerError> {
+        self.reap_expired(now);
+        if selections.is_empty()
+            || selections.len() > 4
+            || self.authorizations.len().saturating_add(selections.len()) > MAX_AUTHORIZATIONS
+        {
+            return Err(CaptureBrokerError::Capacity);
+        }
+        for (index, (source_id, kind)) in selections.iter().enumerate() {
+            self.require_source(source_id, *kind)?;
+            if selections[..index]
+                .iter()
+                .any(|(_, prior_kind)| prior_kind == kind)
+            {
+                return Err(CaptureBrokerError::IncompleteAuthorizationSet);
+            }
+        }
+        let mut ids = Vec::with_capacity(selections.len());
+        for (source_id, kind) in selections {
+            let id = CaptureAuthorizationId {
+                broker: self.instance,
+                nonce: self.new_nonce(),
+            };
+            self.authorizations.insert(
+                id,
+                Authorization {
+                    binding: binding.clone(),
+                    source_id: source_id.clone(),
+                    kind: *kind,
+                    expires_at: now + CAPTURE_AUTHORIZATION_TTL,
+                },
+            );
+            ids.push(id);
+        }
+        Ok(ids)
     }
 
     /// Consume fresh authorization and create a target-local capture lease.
@@ -498,6 +573,7 @@ impl CaptureBroker {
             LocalCaptureHandle::FileDescriptor(fd) => {
                 BorrowedCaptureHandle::FileDescriptor(fd.as_fd())
             }
+            LocalCaptureHandle::SystemDefault(kind) => BorrowedCaptureHandle::SystemDefault(*kind),
         })
     }
 
@@ -701,6 +777,39 @@ mod tests {
             )
             .unwrap();
         broker
+    }
+
+    #[test]
+    fn batch_authorization_is_all_or_nothing() {
+        let mut broker = broker();
+        let owner = binding("dev.tilo.chat", "work", "session-batch");
+        let now = Instant::now();
+        assert!(
+            broker
+                .authorize_batch(
+                    &owner,
+                    &[
+                        ("mic-main".into(), CaptureKind::Microphone),
+                        ("missing-camera".into(), CaptureKind::Camera),
+                    ],
+                    now,
+                )
+                .is_err()
+        );
+        assert!(broker.authorizations.is_empty());
+
+        let ids = broker
+            .authorize_batch(
+                &owner,
+                &[
+                    ("mic-main".into(), CaptureKind::Microphone),
+                    ("camera-front".into(), CaptureKind::Camera),
+                ],
+                now,
+            )
+            .unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(broker.authorizations.len(), 2);
     }
 
     #[test]
