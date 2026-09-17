@@ -805,8 +805,7 @@ impl NotesApp {
                 for p in self.workspace.pages().to_vec() {
                     if !doc_ids.contains(&p.id) {
                         self.perform_action(state, &actions::upsert_page_action(&p));
-                        let body = storage::read_page_body(&self.root, p.id).unwrap_or_default();
-                        self.seed_page_body(state, p.id, &body);
+                        self.seed_legacy_page_body(state, p.id);
                         self.known_in_doc.insert(p.id);
                     }
                 }
@@ -848,8 +847,7 @@ impl NotesApp {
             );
             for p in self.workspace.pages().to_vec() {
                 self.perform_action(state, &actions::upsert_page_action(&p));
-                let body = storage::read_page_body(&self.root, p.id).unwrap_or_default();
-                self.seed_page_body(state, p.id, &body);
+                self.seed_legacy_page_body(state, p.id);
                 self.known_in_doc.insert(p.id);
             }
             self.seeded = true;
@@ -1037,6 +1035,16 @@ impl NotesApp {
             }
         }
         self.bound_page = Some(sel);
+    }
+
+    /// Adopt a legacy Markdown body only when the explicit disk adapter exists.
+    /// Canonical notebooks already own their bodies in the shared document.
+    fn seed_legacy_page_body(&mut self, doc: &mut AutoCommit, page: PageId) {
+        let Some(legacy) = &self.legacy_fixture_storage else {
+            return;
+        };
+        let body = storage::read_page_body(&legacy.root, page).unwrap_or_default();
+        self.seed_page_body(doc, page, &body);
     }
 
     /// Seed an otherwise-empty durable page through the canonical action
@@ -1417,8 +1425,7 @@ impl NotesApp {
         // of a sidebar Duplicate), rather than waiting until each one is
         // selected and accidentally making peer content view-dependent.
         for id in after.keys().filter(|id| !before.contains_key(*id)) {
-            let body = storage::read_page_body(&self.root, *id).unwrap_or_default();
-            self.seed_page_body(doc, *id, &body);
+            self.seed_legacy_page_body(doc, *id);
         }
     }
 
