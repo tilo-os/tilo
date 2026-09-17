@@ -55,6 +55,7 @@ podman run --rm -v "$work:/out:Z" --entrypoint /bin/bash "$image" -ceu '
     source=/boot/tilo-target/tilo-target.efi
     echo separate > /out/target-source
   else
+    [ "$n" -eq 1 ] || { echo "explicit target UKI required when multiple live UKIs exist" >&2; exit 1; }
     source="$(find /boot/EFI/Linux -type f -name "*.efi" -print -quit)"
     awk -F "\t" -v source="${source#/boot/}" '$1 == source {print $2}' \
       /out/live.manifest > /out/target-source
@@ -109,12 +110,14 @@ if [ "$target_source" = separate ]; then
   "$signer" sign-efi "$work/target.efi" "$work/target.efi.signed"
   verify_signed_efi "$work/target.efi" "$work/target.efi.signed" "target EFI image"
   mv "$work/target.efi.signed" "$work/target.efi"
-  install -Dm0644 "$work/target.efi" \
-    "$work/layer/boot/tilo-target/tilo-target.efi"
 else
   [ -s "$work/live/$target_source.signed" ] || die "could not bind the signed release UKI"
   cp "$work/live/$target_source.signed" "$work/target.efi"
 fi
+# Project the exact selected and signature-verified UKI for consumers that
+# require an explicit target. This changes only /boot, outside the root digest.
+install -Dm0644 "$work/target.efi" \
+  "$work/layer/boot/tilo-target/tilo-target.efi"
 
 # systemd-measure is the implementation systemd-stub is paired with. Feed it
 # every UKI component it documents as measured; refuse unknown allocatable UKI
