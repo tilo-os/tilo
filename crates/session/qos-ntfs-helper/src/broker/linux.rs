@@ -40,15 +40,6 @@ fn text(path: &Path) -> io::Result<String> {
 fn number(path: &Path) -> io::Result<u64> {
     text(path)?.parse().map_err(io::Error::other)
 }
-fn no_holders(path: &Path) -> io::Result<()> {
-    if fs::read_dir(path.join("holders"))?.next().is_some() {
-        return Err(refusal("Busy: native device has holders"));
-    }
-    if fs::read_dir(path.join("slaves"))?.next().is_some() {
-        return Err(refusal("unsupported stacked device"));
-    }
-    Ok(())
-}
 fn digest(fields: &[&[u8]]) -> String {
     let mut digest = Sha256::new();
     digest.update(b"qos-ntfs-stage1-inventory-v1\0");
@@ -79,8 +70,8 @@ fn candidate(path: &Path) -> io::Result<Candidate> {
     let parent = sysfs
         .parent()
         .ok_or_else(|| refusal("missing parent device"))?;
-    no_holders(parent)?;
-    no_holders(&sysfs)?;
+    super::topology::no_holders(parent, true)?;
+    super::topology::no_holders(&sysfs, false)?;
     let hardware = text(&parent.join("wwid")).or_else(|_| text(&parent.join("device/wwid")))?;
     if hardware.is_empty() {
         return Err(refusal("missing native hardware identifier"));

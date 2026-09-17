@@ -120,3 +120,68 @@ fn production_fd_readonly_and_reader_sandbox() {
         }
     }
 }
+
+fn native_coordinator(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
+    authorized()?;
+    let script = std::env::var("QOS_NTFS_NATIVE_COORDINATOR_SCRIPT")?;
+    let probe = std::env::var("QOS_NTFS_NATIVE_PROBE")
+        .unwrap_or_else(|_| env!("CARGO_BIN_EXE_qos-ntfs-probe").to_owned());
+    let output = Command::new("python3")
+        .args([&script, "--probe", &probe, "--mode", mode])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "native coordinator failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let receipt: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    if receipt
+        .pointer("/positive/writes")
+        .and_then(serde_json::Value::as_u64)
+        != Some(0)
+        || receipt
+            .pointer("/positive/persistent_root")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        return Err("missing positive native receipt".into());
+    }
+    if mode != "positive"
+        && (receipt
+            .pointer("/adversarial/action")
+            .and_then(serde_json::Value::as_str)
+            != Some(mode)
+            || receipt
+                .pointer("/adversarial/kernel_identity_invalidated")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            || receipt
+                .pointer("/adversarial/evidence_bytes")
+                .and_then(serde_json::Value::as_u64)
+                != Some(0)
+            || receipt
+                .pointer("/adversarial/reader_and_claims_torn_down")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true))
+    {
+        return Err("missing native invalidation/teardown receipt".into());
+    }
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}
+
+#[test]
+#[ignore = "native Linux root only; coordinator supplies an unmounted disposable physical partition and qos-ntfs account"]
+fn production_physical_partition_inventory_and_inspection() {
+    native_coordinator("positive").unwrap();
+}
+
+#[test]
+#[ignore = "native Linux root only; explicit external coordinator must detach or replace the authorized physical fixture at the observed claim"]
+fn production_detach_replacement_invalidates_evidence() {
+    let mode = std::env::var("QOS_NTFS_NATIVE_ACTION_KIND").unwrap();
+    assert!(mode == "detach" || mode == "replace");
+    native_coordinator(&mode).unwrap();
+}
