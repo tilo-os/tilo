@@ -11332,6 +11332,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-ntfs-helper"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "qos-power"
 version = "0.1.0"
 dependencies = [
