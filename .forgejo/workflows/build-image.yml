@@ -205,7 +205,7 @@ jobs:
                 "$COLLECTION_URL" -o "$work/apps.tar.gz"
               ;;
             http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*|\
-            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*)
+            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)
               # The in-cluster Forgejo service is reached over the cluster's
               # private network. Do not follow redirects from this allowlisted
               # HTTP origin, and never permit arbitrary cleartext package URLs.
@@ -297,7 +297,7 @@ jobs:
                 --output "$work/desktop.tar.gz"
               ;;
             http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*|\
-            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*)
+            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)
               curl --proto '=http' --fail --retry 3 \
                 --header "Authorization: Bearer $jwt" "$PAYLOAD_URL" \
                 --output "$work/desktop.tar.gz"
