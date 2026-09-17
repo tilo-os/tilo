@@ -2001,10 +2001,11 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
     for toplevel in toplevels {
         let surface = toplevel.wl_surface();
         let id = crate::compositor::state::surface_id(surface);
-        if !is_visible_tab(&state.workspace_tree, id)
-            && state.osk_surface != Some(id)
-            && !state.is_floating_toplevel(id)
-        {
+        let visible_tab = {
+            let tree = state.workspace_tree.read();
+            is_visible_tab(&tree, id)
+        };
+        if !visible_tab && state.osk_surface != Some(id) && !state.is_floating_toplevel(id) {
             continue;
         }
         let mut fired = false;

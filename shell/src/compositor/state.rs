@@ -91,7 +91,7 @@ use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
 use crate::network::streaming::{InputEvent, RemoteAction, RemoteInputSink, ShareRegistry};
 use crate::wayland::color_management::ColorManagerState;
 
-use crate::shell::state::WorkspaceTree;
+use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
 use smithay::backend::input::KeyState;
 use std::collections::{HashMap, HashSet};
 use vello::kurbo::Rect;
@@ -466,7 +466,7 @@ pub struct State {
     /// `wl_output` + xdg-output manager; concrete outputs are added separately.
     pub output_manager_state: OutputManagerState,
     /// Persisted workspace tree; foreign-client toplevels adopt into it as [`crate::shell::state::TileContent::Foreign`] tabs.
-    pub workspace_tree: WorkspaceTree,
+    pub workspace_tree: WorkspaceTreeHandle,
     /// Peer-sync share registry. Tracks which peers have been granted
     /// streaming + input access to which surfaces, and the per-peer
     /// `read_only` flag. Inbound [`crate::network::NeighbourMsg::RemoteInput`] events are filtered through this before reaching the seat.
@@ -828,6 +828,22 @@ impl State {
 
     /// Build a fresh `State` with all protocol globals registered — each `*::new::<Self>` call advertises the corresponding Wayland global.
     pub fn new(loop_handle: LoopHandle<'static, Self>, display_handle: DisplayHandle) -> Self {
+        Self::new_with_workspace_tree(
+            loop_handle,
+            display_handle,
+            WorkspaceTree::bootstrap_default().shared(),
+        )
+    }
+
+    /// Build a `State` around the tree restored by the native session loader.
+    /// The protocol callbacks and the frame builder must share this handle:
+    /// otherwise a restored local tab can remain in the rendered tree after
+    /// its Wayland surface is adopted and destroyed.
+    pub fn new_with_workspace_tree(
+        loop_handle: LoopHandle<'static, Self>,
+        display_handle: DisplayHandle,
+        workspace_tree: WorkspaceTreeHandle,
+    ) -> Self {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
@@ -897,7 +913,7 @@ impl State {
             virtual_keyboard_manager_state,
             selection,
             output_manager_state,
-            workspace_tree: WorkspaceTree::bootstrap_default(),
+            workspace_tree,
             share_registry: ShareRegistry::new(),
             remote_input_firewall: RemoteInputFirewall::new(),
             last_remote_input: None,
@@ -1197,7 +1213,11 @@ impl State {
         surface_id: SurfaceId,
         app_id: String,
     ) -> bool {
-        if !output_presentation_owner_is_live(&self.workspace_tree, surface_id, &app_id) {
+        let owner_is_live = {
+            let tree = self.workspace_tree.read();
+            output_presentation_owner_is_live(&tree, surface_id, &app_id)
+        };
+        if !owner_is_live {
             tracing::warn!(surface_id, %app_id, "rejected unpaired audience presentation surface");
             return false;
         }
@@ -1623,7 +1643,11 @@ impl State {
     /// The exact `commit` capture gate, kept named so output-owned surfaces
     /// cannot silently regress back to “only workspace tabs have pixels”.
     fn should_capture_foreign_surface(&self, surface_id: SurfaceId) -> bool {
-        tab_binding::group_id_for_surface(&self.workspace_tree, surface_id).is_some()
+        let has_workspace_tab = {
+            let tree = self.workspace_tree.read();
+            tab_binding::group_id_for_surface(&tree, surface_id).is_some()
+        };
+        has_workspace_tab
             || self.osk_surface == Some(surface_id)
             || self.is_floating_toplevel(surface_id)
             || self.is_output_presentation_surface(surface_id)
@@ -2365,10 +2389,12 @@ impl RemoteInputSink for State {
 impl State {
     fn prepare_pending_foreign_capture(&self, surface: &WlSurface) {
         let surface_id = crate::compositor::state::surface_id(surface);
-        let captured_here = tab_binding::group_id_for_surface(&self.workspace_tree, surface_id)
-            .is_some()
-            || self.osk_surface == Some(surface_id)
-            || self.is_floating_toplevel(surface_id);
+        let captured_here = {
+            let tree = self.workspace_tree.read();
+            tab_binding::group_id_for_surface(&tree, surface_id).is_some()
+                || self.osk_surface == Some(surface_id)
+                || self.is_floating_toplevel(surface_id)
+        };
         if !captured_here {
             return;
         }
@@ -2634,12 +2660,13 @@ impl CompositorHandler for State {
         });
 
         // Pull the surface's buffer into [`SurfaceTracker`] iff shared on any [`WorkspaceTree`] workspace; most aren't, so `is_surface_shared` short-circuits first.
-        let is_shared = self
-            .workspace_tree
-            .workspaces
-            .iter()
-            .any(|ws| ws.is_surface_shared(surface_id))
-            || self.active_sessions.contains_key(&surface_id);
+        let is_shared = {
+            let tree = self.workspace_tree.read();
+            tree.workspaces
+                .iter()
+                .any(|ws| ws.is_surface_shared(surface_id))
+                || self.active_sessions.contains_key(&surface_id)
+        };
         // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
         if self.should_capture_foreign_surface(surface_id) {
             Self::capture_foreign_surface(surface, surface_id);
@@ -3245,7 +3272,10 @@ impl XdgActivationHandler for State {
         // can replay it later against another window.
         let _ = self.xdg_activation_state.remove_token(&token);
         let target = surface_id(&surface);
-        let actual_app_id = tab_binding::app_id_for_surface(&self.workspace_tree, target);
+        let actual_app_id = {
+            let tree = self.workspace_tree.read();
+            tab_binding::app_id_for_surface(&tree, target)
+        };
         let app_id_matches_target = data.app_id.as_deref().is_none_or(|requested| {
             actual_app_id.is_some_and(|actual| app_ids_match(requested, actual))
         });
@@ -3272,18 +3302,26 @@ impl XdgActivationHandler for State {
             return;
         }
         if let Some(host_launch) = host_launch {
-            if tab_binding::relocate_foreign_toplevel(
-                &mut self.workspace_tree,
-                target,
-                host_launch.placement,
-                &host_launch.display_name,
-            ) {
+            let relocated = {
+                let mut tree = self.workspace_tree.write();
+                tab_binding::relocate_foreign_toplevel(
+                    &mut tree,
+                    target,
+                    host_launch.placement,
+                    &host_launch.display_name,
+                )
+            };
+            if relocated {
                 self.host_launch_surface_labels
                     .insert(target, host_launch.display_name.clone());
                 tracing::debug!(target, desktop_id = %host_launch.desktop_id, "placed host launch through activation token");
             }
         }
-        if tab_binding::activate_surface(&mut self.workspace_tree, target) {
+        let activated = {
+            let mut tree = self.workspace_tree.write();
+            tab_binding::activate_surface(&mut tree, target)
+        };
+        if activated {
             self.set_client_keyboard_focus(Some(target));
             tracing::debug!(
                 target: "shell::compositor::activation",
@@ -3353,21 +3391,19 @@ impl XdgShellHandler for State {
             self.osk_surface = Some(surface_id);
         } else if !floating && !presentation {
             if let Some(room) = attributed_room {
-                if tab_binding::adopt_toplevel_in_room(
-                    &mut self.workspace_tree,
-                    surface_id,
-                    app_id,
-                    room,
-                )
-                .is_none()
-                {
+                let adopted = {
+                    let mut tree = self.workspace_tree.write();
+                    tab_binding::adopt_toplevel_in_room(&mut tree, surface_id, app_id, room)
+                };
+                if adopted.is_none() {
                     tracing::warn!(surface_id, %room, "rejected Wayland toplevel for a stale workspace");
                     self.client_input.unregister_toplevel(surface_id);
                     surface.send_close();
                     return;
                 }
             } else {
-                tab_binding::adopt_toplevel(&mut self.workspace_tree, surface_id, app_id);
+                let mut tree = self.workspace_tree.write();
+                tab_binding::adopt_toplevel(&mut tree, surface_id, app_id);
             }
         }
 
@@ -3395,9 +3431,11 @@ impl XdgShellHandler for State {
                 });
         }
         // If the destroyed surface held the output fullscreen, drop the transient promotion so layout restores instead of staying collapsed.
-        if self.fullscreen_group
-            == tab_binding::group_id_for_surface(&self.workspace_tree, surface_id)
-        {
+        let fullscreen_group_matches = {
+            let tree = self.workspace_tree.read();
+            self.fullscreen_group == tab_binding::group_id_for_surface(&tree, surface_id)
+        };
+        if fullscreen_group_matches {
             self.fullscreen_group = None;
             self.fullscreen_output = None;
         }
@@ -3408,10 +3446,10 @@ impl XdgShellHandler for State {
         {
             self.fullscreen_target = None;
         }
-        let _ = tab_binding::close_tab_for_destroyed_surface_and_persist(
-            &mut self.workspace_tree,
-            surface_id,
-        );
+        let _ = {
+            let mut tree = self.workspace_tree.write();
+            tab_binding::close_tab_for_destroyed_surface_and_persist(&mut tree, surface_id)
+        };
         self.host_launch_surface_labels.remove(&surface_id);
         // Drop the tracker's per-surface buffer slot. The commit path's
         // `BufferAssignment::Removed` branch already forgets the slot on
@@ -3449,10 +3487,10 @@ impl XdgShellHandler for State {
                 // `set_app_id` normally arrives after `new_toplevel`; undo the
                 // temporary anonymous adoption before either tree can expose a
                 // keyboard as an ordinary app window.
-                let _ = tab_binding::close_tab_for_destroyed_surface(
-                    &mut self.workspace_tree,
-                    surface_id,
-                );
+                let _ = {
+                    let mut tree = self.workspace_tree.write();
+                    tab_binding::close_tab_for_destroyed_surface(&mut tree, surface_id)
+                };
                 self.client_input.promote_to_overlay(surface_id);
                 self.osk_surface = Some(surface_id);
                 return;
@@ -3461,23 +3499,25 @@ impl XdgShellHandler for State {
                 // `new_toplevel` may have inserted an anonymous placeholder
                 // before the app-id arrived. Remove it before the next tree
                 // mirror can expose a one-frame phantom tab.
-                let _ = tab_binding::close_tab_for_destroyed_surface(
-                    &mut self.workspace_tree,
-                    surface_id,
-                );
+                let _ = {
+                    let mut tree = self.workspace_tree.write();
+                    tab_binding::close_tab_for_destroyed_surface(&mut tree, surface_id)
+                };
                 return;
             }
             if is_output_presentation_app_id(&app_id)
                 && self.promote_output_presentation_toplevel(surface_id, app_id.clone())
             {
-                let provisional_group =
-                    tab_binding::group_id_for_surface(&self.workspace_tree, surface_id);
+                let provisional_group = {
+                    let tree = self.workspace_tree.read();
+                    tab_binding::group_id_for_surface(&tree, surface_id)
+                };
                 // The provisional anonymous tab must never share the
                 // presenter's workspace with the clean audience surface.
-                let _ = tab_binding::close_tab_for_destroyed_surface(
-                    &mut self.workspace_tree,
-                    surface_id,
-                );
+                let _ = {
+                    let mut tree = self.workspace_tree.write();
+                    tab_binding::close_tab_for_destroyed_surface(&mut tree, surface_id)
+                };
                 // `set_fullscreen` is permitted to arrive before
                 // `set_app_id`; undo that provisional group promotion now
                 // that the toplevel has become output-scoped.
@@ -3491,12 +3531,15 @@ impl XdgShellHandler for State {
                 .host_launch_surface_labels
                 .get(&surface_id)
                 .map(String::as_str);
-            let _ = tab_binding::rebind_toplevel_for_app_id(
-                &mut self.workspace_tree,
-                surface_id,
-                app_id.clone(),
-                host_launch_title,
-            );
+            let _ = {
+                let mut tree = self.workspace_tree.write();
+                tab_binding::rebind_toplevel_for_app_id(
+                    &mut tree,
+                    surface_id,
+                    app_id.clone(),
+                    host_launch_title,
+                )
+            };
             // Mirror the rename onto the chrome-side tab the input router mounted (or its still-pending adoption).
             self.client_input.note_app_id(surface_id, app_id);
         }
@@ -3511,7 +3554,8 @@ impl XdgShellHandler for State {
                 .and_then(|data| data.lock().ok().and_then(|data| data.title.clone()))
         });
         if let Some(title) = title {
-            let _ = tab_binding::rename_tab_for_title(&mut self.workspace_tree, surface_id, title);
+            let mut tree = self.workspace_tree.write();
+            let _ = tab_binding::rename_tab_for_title(&mut tree, surface_id, title);
         }
     }
 
@@ -3637,8 +3681,10 @@ impl XdgShellHandler for State {
         } else {
             self.pending_presentation_outputs
                 .insert(surface_id, requested);
-            self.fullscreen_group =
-                tab_binding::group_id_for_surface(&self.workspace_tree, surface_id);
+            self.fullscreen_group = {
+                let tree = self.workspace_tree.read();
+                tab_binding::group_id_for_surface(&tree, surface_id)
+            };
             self.fullscreen_output = requested;
             self.fullscreen_target = self.fullscreen_group.map(|_| FullscreenTarget {
                 surface_id,
@@ -3677,9 +3723,11 @@ impl XdgShellHandler for State {
             let _ = self.remove_output_presentation_surface(surface_id);
         }
         // Only clear if THIS surface was the fullscreen one — a stale request from a background toplevel must not steal another's.
-        if self.fullscreen_group
-            == tab_binding::group_id_for_surface(&self.workspace_tree, surface_id)
-        {
+        let fullscreen_group_matches = {
+            let tree = self.workspace_tree.read();
+            self.fullscreen_group == tab_binding::group_id_for_surface(&tree, surface_id)
+        };
+        if fullscreen_group_matches {
             self.fullscreen_group = None;
             self.fullscreen_output = None;
             self.fullscreen_target = None;
@@ -4331,7 +4379,12 @@ mod tick_hook_tests {
             out(1, (0, 0), (1280, 720), 1.0),
             out(2, (1280, 0), (1920, 1080), 1.0),
         ]);
-        let presenter_groups = state.workspace_tree.active_workspace().unwrap().strips[0]
+        let presenter_groups = state
+            .workspace_tree
+            .read()
+            .active_workspace()
+            .unwrap()
+            .strips[0]
             .window_groups
             .len();
         state
@@ -4347,7 +4400,12 @@ mod tick_hook_tests {
         assert_eq!(audience.output, crate::compositor::backend::OutputId(2));
         assert_eq!(audience.rect, Rect::ZERO);
         assert_eq!(
-            state.workspace_tree.active_workspace().unwrap().strips[0]
+            state
+                .workspace_tree
+                .read()
+                .active_workspace()
+                .unwrap()
+                .strips[0]
                 .window_groups
                 .len(),
             presenter_groups,
@@ -4389,7 +4447,7 @@ mod tick_hook_tests {
                 rect: Rect::new(100.0, 0.0, 200.0, 100.0),
             });
         assert!(state.should_capture_foreign_surface(id));
-        assert!(tab_binding::group_id_for_surface(&state.workspace_tree, id).is_none());
+        assert!(tab_binding::group_id_for_surface(&state.workspace_tree.read(), id).is_none());
     }
 
     #[test]
