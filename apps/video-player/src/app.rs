@@ -45,15 +45,36 @@ const OPEN_BTN_H: f64 = 32.0;
 const OPEN_BTN_W: f64 = 84.0;
 /// Width (logical px) of the floating Library button at 1× text.
 const LIBRARY_BTN_W: f64 = 88.0;
+/// Horizontal room the shared `Button` face keeps around a label
+/// (`Button::measure`, 15 px a side). Only the label part of a capsule's
+/// authored width scales with text; this padding does not.
+const BUTTON_PAD_X: f64 = 30.0;
 /// Vertical room either side of a floating button's label once the label
 /// outgrows [`OPEN_BTN_H`] (accessibility text scale).
 const BUTTON_PAD_Y: f64 = 4.0;
 /// Label size the floating buttons ask the shared `Button` face for, and the
 /// media title's size. Both are renderer-relative: the renderer applies the
-/// text scale and its default 1.25 line height (`TextStyle::new`).
+/// text scale and the default `TextStyle` line height.
 const BUTTON_LABEL_SIZE: f32 = 14.0;
 const TITLE_SIZE: f32 = 15.0;
-const RENDERER_LINE_HEIGHT: f64 = 1.25;
+
+/// Line height the renderer will give `size` at `text_scale` — the default
+/// `TextStyle` leading on the scaled size, not a local copy of that factor.
+fn line_h(size: f32, text_scale: f64) -> f64 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "text scale is clamped to 0.5..=4.0 by Theme"
+    )]
+    let scaled = size * text_scale as f32;
+    f64::from(ui::text_render::TextStyle::new(scaled).line_height_px())
+}
+
+/// A floating capsule's width at `text_scale`: the authored 1× width with only
+/// its label part scaled, so a 2× label still fits without the whole capsule
+/// doubling and starving the media title on a narrow surface.
+fn capsule_w(authored_1x: f64, text_scale: f64) -> f64 {
+    BUTTON_PAD_X + (authored_1x - BUTTON_PAD_X) * text_scale
+}
 /// One gutter for everything in the library panel — title, subtitle, tabs, row
 /// text on the left; Close/Clear and each row's Play on the right.
 const PANEL_GUTTER: f64 = 16.0;
@@ -78,7 +99,7 @@ struct TopStrip {
 
 impl TopStrip {
     fn at(y0: f64, text_scale: f64) -> Self {
-        let label_line = f64::from(BUTTON_LABEL_SIZE) * text_scale * RENDERER_LINE_HEIGHT;
+        let label_line = line_h(BUTTON_LABEL_SIZE, text_scale);
         let button_h = OPEN_BTN_H.max(label_line + BUTTON_PAD_Y * 2.0);
         Self {
             center_y: y0 + OVERLAY_MARGIN + button_h / 2.0,
@@ -262,15 +283,22 @@ fn panel_text(
     color: Color,
     weight: TextWeight,
 ) {
-    let (_, line_h) = text_renderer.measure_weighted(text, size, None, weight);
-    let y = rect.y0 + (rect.height() - f64::from(line_h)) / 2.0;
+    // Bound to the rect's width so a long line wraps inside the panel instead
+    // of running past its edge (the 360 px panel's empty-state copy did).
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "panel widths are ordinary logical-pixel values"
+    )]
+    let max_width = Some(rect.width().max(0.0) as f32);
+    let (_, text_h) = text_renderer.measure_weighted(text, size, max_width, weight);
+    let y = rect.y0 + (rect.height() - f64::from(text_h)) / 2.0;
     text_renderer.draw_text_weighted(
         scene,
         text,
         size,
         color,
         transform * Affine::translate((rect.x0, y)),
-        None,
+        max_width,
         weight,
     );
 }
@@ -1918,11 +1946,13 @@ impl PlayerApp {
                 scene,
                 text_renderer,
                 transform,
+                // Tall enough for the wrapped message at any text scale;
+                // `panel_text` centres the wrapped block inside it.
                 Rect::new(
                     panel.x0 + PANEL_GUTTER,
                     y,
                     panel.x1 - PANEL_GUTTER,
-                    y + 44.0,
+                    (y + 132.0).min(panel.y1 - PANEL_GUTTER),
                 ),
                 if self.library_tab == LibraryTab::Queue {
                     "Your queue is empty. Open a video to add it here."
@@ -1969,10 +1999,14 @@ impl PlayerApp {
             }
             let active = self.current_queue_id.as_deref() == Some(entry.id.as_str());
             let text_x1 = remove.map_or(play.x0, |remove| remove.x0) - 8.0;
-            let label = text_renderer.elide_to_width(
+            // Elide at the weight the label is drawn with (`panel_text` now
+            // honours `Medium`); Regular advances are narrower and would let
+            // a just-fitting title run into the Remove/Play faces.
+            let label = text_renderer.elide_to_width_weighted(
                 &entry.title,
                 14.0,
                 (text_x1 - content_x0).max(0.0) as f32,
+                TextWeight::Medium,
             );
             panel_text(
                 scene,
@@ -2293,20 +2327,22 @@ impl Widget for PlayerApp {
         self.player.apply_layout(taffy, player_node, new_origin);
         // Floating top strip — Library (left), title, Open pill (right) — all
         // centred on one line and contained by one scrim (see `TopStrip`).
-        // Widths grow with the text scale so a 2× label still fits its face.
+        // Only the label part of each capsule grows with the text scale
+        // (`capsule_w`), so a 2× label fits without the media title in between
+        // being starved on a narrow surface.
         let strip = self.top_strip();
         let by0 = strip.center_y - strip.button_h / 2.0;
         let by1 = strip.center_y + strip.button_h / 2.0;
         let bx1 = self.rect.x1 - OVERLAY_MARGIN;
-        let bx0 = (bx1 - OPEN_BTN_W * self.text_scale).max(self.rect.x0);
+        let bx0 = (bx1 - capsule_w(OPEN_BTN_W, self.text_scale)).max(self.rect.x0);
         self.open_button_rect = Rect::new(bx0, by0, bx1, by1);
-        self.library_button_rect = Rect::new(
-            self.rect.x0 + OVERLAY_MARGIN,
-            by0,
-            (self.rect.x0 + OVERLAY_MARGIN + LIBRARY_BTN_W * self.text_scale)
-                .min(bx0 - OVERLAY_MARGIN),
-            by1,
-        );
+        let lx0 = self.rect.x0 + OVERLAY_MARGIN;
+        // Never let the Library rect invert on a surface too narrow for both
+        // capsules: it is published to hit-testing, focus and accessibility.
+        let lx1 = (lx0 + capsule_w(LIBRARY_BTN_W, self.text_scale))
+            .min(bx0 - OVERLAY_MARGIN)
+            .max(lx0);
+        self.library_button_rect = Rect::new(lx0, by0, lx1, by1);
         let panel_width = if self.rect.width() < 640.0 {
             self.rect.width()
         } else {
@@ -3167,11 +3203,16 @@ mod tests {
         assert_eq!(one.center_y, OVERLAY_MARGIN + OPEN_BTN_H / 2.0);
         assert_eq!(one.scrim_h, OPEN_BTN_H + 2.0 * OVERLAY_MARGIN);
 
+        // The 2× label line comes from a real renderer at that scale, not from
+        // the same formula the strip uses — so a change to the shared Button's
+        // label size or the default leading would surface here.
         let two = TopStrip::at(0.0, 2.0);
-        let label_line = f64::from(BUTTON_LABEL_SIZE) * 2.0 * RENDERER_LINE_HEIGHT;
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let label_line = f64::from(tr.measure("Library", BUTTON_LABEL_SIZE, None).1);
         assert!(
             two.button_h >= label_line + 2.0 * BUTTON_PAD_Y,
-            "2× capsule {} contains a {label_line} px label",
+            "2× capsule {} contains a measured {label_line} px label",
             two.button_h
         );
         assert!(two.scrim_h >= two.button_h + 2.0 * OVERLAY_MARGIN);

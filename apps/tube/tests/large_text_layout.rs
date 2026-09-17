@@ -101,26 +101,18 @@ fn card_meta_lines_stack_without_overlap_at_1x() {
 /// below prove the app-local `Flex`, the CSS grid and `Scrollable` all measure
 /// correctly when hosted outside the split.
 #[test]
-fn card_meta_lines_stack_without_overlap_at_2x() {
-    let mut h2 = at(Route::Home, 2.0);
-    let lines = card_meta_lines(&h2);
-    let title = "Rewriting a Wayland compositor in Rust: results and benchmarks";
-    let w = lines[0].width() as f32;
-    eprintln!(
-        "renderer scale {}; laid-out meta lines {lines:?}; renderer measures title@14.5 w{w}={:?} channel@12.5={:?}",
-        h2.text_scale(),
-        h2.measure_text(title, 14.5, Some(w)),
-        h2.measure_text("Low Level Learning", 12.5, None),
-    );
+fn card_meta_rects_stay_stacked_in_order_at_2x_layout_pass() {
+    let h2 = at(Route::Home, 2.0);
     assert_eq!(h2.text_scale(), 2.0, "the frame really is at 2×");
-    assert_stacked_without_overlap("2× card meta", &lines);
+    assert_stacked_without_overlap("2× card meta", &card_meta_lines(&h2));
 }
 
-/// Isolation probe: one shared `Text` inside one app-local `Flex`, and the
-/// same `Text` on its own, both at 2×. Whichever of the two stays at 1×
-/// metrics owns the defect.
+/// One shared `Text` inside one app-local `Flex`, and the same `Text` on its
+/// own, both at 2×: the app-local container must report the renderer's
+/// measured size, not a 1× estimate. (Bisection step 1 of the task-16 trace;
+/// kept as the regression guarding `Flex::build_layout`.)
 #[test]
-fn probe_text_alone_and_in_flex_at_2x() {
+fn text_in_flex_measures_at_renderer_scale() {
     use tube::widgets::flex::Flex;
     let mut alone = Harness::with_text_scale(
         tube::widgets::text("Low Level Learning", 12.5),
@@ -137,9 +129,6 @@ fn probe_text_alone_and_in_flex_at_2x() {
         2.0,
     );
     let flex_children = in_flex.child_rects("probe");
-    eprintln!(
-        "direct={direct:?} alone(root child, stretched)={alone_rect:?} in_flex={flex_children:?}"
-    );
     // A root child is stretched to the viewport, so only its width is a
     // measurement; the Flex child is the real intrinsic case.
     assert!(
@@ -153,11 +142,12 @@ fn probe_text_alone_and_in_flex_at_2x() {
     );
 }
 
-/// Bisection probe: the same two text lines inside (a) a CSS-grid `Flex` like
-/// `screens::grid`, and (b) that grid inside the shared `Scrollable` like
-/// `screens::home`. Whichever layer first reports 1× heights owns the defect.
+/// The same two text lines inside (a) a CSS-grid `Flex` like `screens::grid`,
+/// and (b) that grid inside the shared `Scrollable` like `screens::home`: both
+/// layers must carry the renderer's measured heights through. (Bisection
+/// steps 2–3 of the task-16 trace, kept as the regression for the card grid.)
 #[test]
-fn probe_text_in_grid_and_scrollable_at_2x() {
+fn text_in_grid_and_scrollable_measures_at_renderer_scale() {
     use tube::widgets::flex::Flex;
     use ui::widget::{ScrollAxis, Scrollable};
     let title = "Rewriting a Wayland compositor in Rust: results and benchmarks";
@@ -183,8 +173,10 @@ fn probe_text_in_grid_and_scrollable_at_2x() {
     let w = grid_lines[0].width() as f32;
     let direct_title = in_grid.measure_text(title, 14.5, Some(w));
     let direct_channel = in_grid.measure_text("Low Level Learning", 12.5, None);
-    eprintln!(
-        "grid: card lines={grid_lines:?}; direct title@{w}={direct_title:?} channel={direct_channel:?}"
+    assert!(
+        (grid_lines[0].height() as f32 - direct_title.1).abs() < 1.5,
+        "grid: title line {:?} vs renderer {direct_title:?}",
+        grid_lines[0]
     );
 
     let in_scroll = Harness::with_text_scale(
@@ -193,7 +185,6 @@ fn probe_text_in_grid_and_scrollable_at_2x() {
         2.0,
     );
     let scroll_lines = in_scroll.child_rects("card");
-    eprintln!("scrollable(grid): card lines={scroll_lines:?}");
 
     assert!(
         (grid_lines[1].height() as f32 - direct_channel.1).abs() < 1.5,
@@ -215,7 +206,6 @@ fn search_header_chips_and_summary_do_not_collide_at_2x() {
         .rect_by_id("search_results_summary")
         .expect("results summary");
     let card = h.rect_by_id(CARD).expect("first result card");
-    eprintln!("2× chips {chips:?} summary {summary:?} card {card:?}");
     assert_stacked_without_overlap("2× search header", &[chips, summary, card]);
     // Every chip label lies inside its chip.
     for chip_id in ["type_chip_video", "type_chip_playlist", "type_chip_creator"] {
