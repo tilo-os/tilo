@@ -1046,7 +1046,11 @@ impl UpdatesPane {
                     Some(_) => setting_row(
                         "Automatic updates",
                         Box::new(
-                            Toggle::new("settings.updates.auto", AUTO_KEY).with_id("updates.auto"),
+                            Toggle::new("settings.updates.auto", AUTO_KEY)
+                                .with_id("updates.auto")
+                                .on_action(crate::actions::updates_bool_binding("automatic").expect(
+                                    "automatic updates are part of the static resource contract",
+                                )),
                         ),
                     ),
                     // Not a switch stuck in one position: a switch that cannot
@@ -1062,6 +1066,9 @@ impl UpdatesPane {
                                 UPDATE_SCHEDULES.iter().map(ToString::to_string).collect(),
                                 SCHEDULE_KEY,
                             )
+                            .on_action(crate::actions::updates_schedule_binding().expect(
+                                "update schedule is part of the static resource contract",
+                            ))
                             .with_placeholder(schedule),
                         ),
                     ),
@@ -1072,7 +1079,10 @@ impl UpdatesPane {
                         "Download on metered connections",
                         Box::new(
                             Toggle::new("settings.updates.metered", METERED_KEY)
-                                .with_id("updates.metered"),
+                                .with_id("updates.metered")
+                                .on_action(crate::actions::updates_bool_binding("metered").expect(
+                                    "metered update policy is part of the static resource contract",
+                                )),
                         ),
                     ),
                     None => value_row("Metered connections", "policy service is unavailable"),

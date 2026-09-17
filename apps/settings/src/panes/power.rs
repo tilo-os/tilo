@@ -198,10 +198,14 @@ impl PowerPane {
         self
     }
 
-    fn operation_finished(&self, percent: u32, result: Result<String, String>) {
+    fn operation_finished(
+        &self,
+        operation: &crate::actions::PowerOperation,
+        result: Result<String, String>,
+    ) {
         let token = crate::actions::local_operation_token_for(
             crate::actions::POWER_OPERATION_TYPE,
-            &crate::actions::PowerOperation::SetChargeLimit { percent },
+            operation,
         );
         if !matches!(
             self.operation_status.get(),
@@ -381,6 +385,15 @@ impl PowerPane {
                 Box::new(
                     Dropdown::new(choices, CHARGE_LIMIT_KEY)
                         .with_id("power.charge_limit")
+                        .on_action(
+                            crate::actions::power_charge_binding(
+                                &capability.choices,
+                                capability.current,
+                            )
+                            .expect(
+                                "charge-cap resource exists when the hardware control is visible",
+                            ),
+                        )
                         .with_placeholder(&format!("{}%", capability.current)),
                 ),
             ));
@@ -414,18 +427,22 @@ impl PowerPane {
             .iter()
             .map(|profile| profile_label(*profile).to_string())
             .collect();
-        let mut profile_rows = if profile_opts.is_empty() {
-            vec![value_row("Profile", "Power-profile service unavailable")]
-        } else {
-            vec![choice_row(
-                "Profile",
-                Box::new(
-                    Dropdown::new(profile_opts, PROFILE_KEY)
-                        .with_id("power.profile")
-                        .with_placeholder(profile_label(self.profile)),
-                ),
-            )]
-        };
+        let mut profile_rows =
+            if profile_opts.is_empty() {
+                vec![value_row("Profile", "Power-profile service unavailable")]
+            } else {
+                vec![choice_row(
+                    "Profile",
+                    Box::new(
+                        Dropdown::new(profile_opts, PROFILE_KEY)
+                            .with_id("power.profile")
+                            .on_action(crate::actions::power_text_binding("profile").expect(
+                                "power profile action is part of the static resource contract",
+                            ))
+                            .with_placeholder(profile_label(self.profile)),
+                    ),
+                )]
+            };
         profile_rows.push(caption(
             "Only modes supported by this device are shown. Balanced trades performance for battery life; Power Saver favours runtime; Performance favours speed.",
         ));
@@ -447,7 +464,11 @@ impl PowerPane {
                     "Suspend when idle",
                     Box::new(
                         Toggle::new("settings.power.auto_suspend", AUTO_SUSPEND_KEY)
-                            .with_id("power.auto_suspend"),
+                            .with_id("power.auto_suspend")
+                            .on_action(
+                                crate::actions::power_bool_binding("auto_suspend")
+                                    .expect("automatic-suspend action is part of the static resource contract"),
+                            ),
                     ),
                 ),
                 choice_row(
@@ -455,6 +476,10 @@ impl PowerPane {
                     Box::new(
                         Dropdown::new(suspend_opts.clone(), SUSPEND_KEY)
                             .with_id("power.suspend")
+                            .on_action(
+                                crate::actions::power_text_binding("suspend-after")
+                                    .expect("suspend action is part of the static resource contract"),
+                            )
                             .with_placeholder(suspend_label(self.prefs.suspend_minutes)),
                     ),
                 ),
@@ -463,6 +488,10 @@ impl PowerPane {
                     Box::new(
                         Dropdown::new(blank_opts, BLANK_KEY)
                             .with_id("power.blank")
+                            .on_action(
+                                crate::actions::power_text_binding("blank-after")
+                                    .expect("blank action is part of the static resource contract"),
+                            )
                             .with_placeholder(blank_label(self.prefs.blank_minutes)),
                     ),
                 ),
@@ -479,6 +508,10 @@ impl PowerPane {
                     "Power Saver suspend",
                     Box::new(
                         Dropdown::new(suspend_opts.clone(), SAVER_SUSPEND_KEY)
+                            .on_action(
+                                crate::actions::power_text_binding("saver-suspend")
+                                    .expect("saver suspend action is part of the static resource contract"),
+                            )
                             .with_placeholder(suspend_label(self.prefs.saver_suspend_minutes)),
                     ),
                 ),
@@ -486,15 +519,22 @@ impl PowerPane {
                     "Balanced suspend",
                     Box::new(
                         Dropdown::new(suspend_opts.clone(), BALANCED_SUSPEND_KEY)
+                            .on_action(
+                                crate::actions::power_text_binding("balanced-suspend")
+                                    .expect("balanced suspend action is part of the static resource contract"),
+                            )
                             .with_placeholder(suspend_label(self.prefs.balanced_suspend_minutes)),
                     ),
                 ),
                 choice_row(
                     "Performance suspend",
                     Box::new(
-                        Dropdown::new(suspend_opts, PERFORMANCE_SUSPEND_KEY).with_placeholder(
-                            suspend_label(self.prefs.performance_suspend_minutes),
-                        ),
+                        Dropdown::new(suspend_opts, PERFORMANCE_SUSPEND_KEY)
+                            .on_action(
+                                crate::actions::power_text_binding("performance-suspend")
+                                    .expect("performance suspend action is part of the static resource contract"),
+                            )
+                            .with_placeholder(suspend_label(self.prefs.performance_suspend_minutes)),
                     ),
                 ),
                 caption(
@@ -513,6 +553,10 @@ impl PowerPane {
                     Box::new(
                         Dropdown::new(action_options(), LID_KEY)
                             .with_id("power.lid")
+                            .on_action(
+                                crate::actions::power_text_binding("lid")
+                                    .expect("lid action is part of the static resource contract"),
+                            )
                             .with_placeholder(self.prefs.lid_close_action.display()),
                     ),
                 ),
@@ -521,6 +565,11 @@ impl PowerPane {
                     Box::new(
                         Dropdown::new(action_options(), POWER_KEY_KEY)
                             .with_id("power.power_key")
+                            .on_action(
+                                crate::actions::power_text_binding("power_key").expect(
+                                    "power-key action is part of the static resource contract",
+                                ),
+                            )
                             .with_placeholder(self.prefs.power_key_action.display()),
                     ),
                 ),
@@ -529,6 +578,11 @@ impl PowerPane {
                     Box::new(
                         Dropdown::new(action_options(), CRITICAL_KEY)
                             .with_id("power.critical")
+                            .on_action(
+                                crate::actions::power_text_binding("critical").expect(
+                                    "critical action is part of the static resource contract",
+                                ),
+                            )
                             .with_placeholder(self.prefs.critical_action.display()),
                     ),
                 ),
@@ -558,12 +612,13 @@ impl PowerPane {
         Some(card("Power devices", rows(entries)))
     }
 
-    fn persist(&self) {
+    fn persist(&self) -> Result<(), String> {
         let mut p = SystemPrefs::load();
         p.power = self.prefs;
-        if let Err(e) = p.save() {
-            warn!(target: "tilo::settings", op = "power_prefs_save", error = %e, "failed to persist power prefs");
-        }
+        p.save().map(|_| ()).map_err(|error| {
+            warn!(target: "tilo::settings", op = "power_prefs_save", %error, "failed to persist power prefs");
+            format!("Power preference was not saved: {error}")
+        })
     }
 
     fn seed(&mut self, state: &mut AutoCommit, root: &ObjId) {
@@ -616,15 +671,26 @@ impl PowerPane {
             return;
         }
         if self.available_profiles.contains(&p) {
+            let operation = crate::actions::PowerOperation::SetProfile {
+                profile: label.clone(),
+            };
             match self.dispatcher.set_power_profile(p) {
                 Ok(()) => {
                     self.last_profile = p;
                     self.profile = p;
                     self.profile_notice = Some(format!("{} is now active.", profile_label(p)));
+                    self.operation_finished(
+                        &operation,
+                        Ok(format!("{} is now active.", profile_label(p))),
+                    );
                 }
                 Err(e) => {
                     let _ = state.put(root, PROFILE_KEY, profile_label(self.last_profile));
                     self.profile_notice = Some(format!("Could not change the power profile: {e}"));
+                    self.operation_finished(
+                        &operation,
+                        Err(format!("Could not change the power profile: {e}")),
+                    );
                     warn!(target: "tilo::settings", op = "set_power_profile", error = %e, "power pane dispatch failed");
                 }
             }
@@ -634,6 +700,10 @@ impl PowerPane {
                 "{} is not supported by this device.",
                 profile_label(p)
             ));
+            self.operation_finished(
+                &crate::actions::PowerOperation::SetProfile { profile: label },
+                Err("Power profile is not supported by this device.".into()),
+            );
         }
     }
 
@@ -657,13 +727,16 @@ impl PowerPane {
                 self.charge_cap = Some(actual);
                 self.charge_notice = Some(format!("Hardware confirmed a {limit}% charge cap."));
                 self.operation_finished(
-                    limit,
+                    &crate::actions::PowerOperation::SetChargeLimit { percent: limit },
                     Ok(format!("hardware confirmed a {limit}% charge cap")),
                 );
             }
             Err(e) => {
                 self.charge_notice = Some(format!("Charge cap was not applied: {e}"));
-                self.operation_finished(limit, Err(format!("Charge cap was not applied: {e}")));
+                self.operation_finished(
+                    &crate::actions::PowerOperation::SetChargeLimit { percent: limit },
+                    Err(format!("Charge cap was not applied: {e}")),
+                );
                 warn!(target: "tilo::settings", op = "set_charge_limit", error = %e, "battery cap failed");
             }
         }
@@ -677,7 +750,13 @@ impl PowerPane {
         {
             self.last_prefs.auto_suspend = b;
             self.prefs.auto_suspend = b;
-            self.persist();
+            let result = self
+                .persist()
+                .map(|()| "Automatic suspend preference saved.".into());
+            self.operation_finished(
+                &crate::actions::PowerOperation::SetAutoSuspend { enabled: b },
+                result,
+            );
         }
 
         if let Some(label) = read_str(state, root, BLANK_KEY)
@@ -686,7 +765,13 @@ impl PowerPane {
         {
             self.last_prefs.blank_minutes = m;
             self.prefs.blank_minutes = m;
-            self.persist();
+            let result = self
+                .persist()
+                .map(|()| "Screen blank timeout saved.".into());
+            self.operation_finished(
+                &crate::actions::PowerOperation::SetBlankTimeout { label },
+                result,
+            );
         }
 
         if let Some(label) = read_str(state, root, LOCK_KEY)
@@ -704,7 +789,14 @@ impl PowerPane {
         {
             self.last_prefs.suspend_minutes = m;
             self.prefs.suspend_minutes = m;
-            self.persist();
+            let result = self.persist().map(|()| "Suspend timeout saved.".into());
+            self.operation_finished(
+                &crate::actions::PowerOperation::SetSuspendTimeout {
+                    profile: "default".into(),
+                    label,
+                },
+                result,
+            );
         }
         for (key, current, set) in [
             (
@@ -741,7 +833,21 @@ impl PowerPane {
                         self.prefs.performance_suspend_minutes = minutes;
                     }
                 }
-                self.persist();
+                let profile = match set {
+                    0 => "saver",
+                    1 => "balanced",
+                    _ => "performance",
+                };
+                let result = self
+                    .persist()
+                    .map(|()| format!("{profile} suspend timeout saved."));
+                self.operation_finished(
+                    &crate::actions::PowerOperation::SetSuspendTimeout {
+                        profile: profile.into(),
+                        label,
+                    },
+                    result,
+                );
             }
         }
     }
@@ -755,7 +861,11 @@ impl PowerPane {
         {
             self.last_prefs.lid_close_action = a;
             self.prefs.lid_close_action = a;
-            self.persist();
+            let result = self.persist().map(|()| "Lid-close action saved.".into());
+            self.operation_finished(
+                &crate::actions::PowerOperation::SetLidAction { action: label },
+                result,
+            );
         }
 
         if let Some(label) = read_str(state, root, POWER_KEY_KEY)
@@ -764,7 +874,11 @@ impl PowerPane {
         {
             self.last_prefs.power_key_action = a;
             self.prefs.power_key_action = a;
-            self.persist();
+            let result = self.persist().map(|()| "Power-key action saved.".into());
+            self.operation_finished(
+                &crate::actions::PowerOperation::SetPowerKeyAction { action: label },
+                result,
+            );
         }
 
         if let Some(label) = read_str(state, root, CRITICAL_KEY)
@@ -773,7 +887,13 @@ impl PowerPane {
         {
             self.last_prefs.critical_action = a;
             self.prefs.critical_action = a;
-            self.persist();
+            let result = self
+                .persist()
+                .map(|()| "Critical-battery action saved.".into());
+            self.operation_finished(
+                &crate::actions::PowerOperation::SetCriticalAction { action: label },
+                result,
+            );
         }
     }
 }

@@ -391,7 +391,12 @@ impl BluetoothPane {
             "Bluetooth",
             Box::new(
                 Toggle::new("settings.bluetooth.toggle", BT_ENABLED_KEY)
-                    .with_id("bluetooth.toggle"),
+                    .with_id("bluetooth.toggle")
+                    .on_action(
+                        crate::actions::bluetooth_bool_binding("bluetooth").expect(
+                            "Bluetooth power action is part of the static resource contract",
+                        ),
+                    ),
             ),
             rows(body),
         )])
@@ -500,10 +505,22 @@ impl BluetoothPane {
                 } else {
                     "Bluetooth is off.".into()
                 });
+                self.finish_local_operation(
+                    crate::actions::BluetoothOperation::SetPowered { enabled: on },
+                    Ok(if on {
+                        "Bluetooth enabled.".into()
+                    } else {
+                        "Bluetooth disabled.".into()
+                    }),
+                );
             }
             Err(e) => {
                 self.notice = Some(format!("Could not change Bluetooth power: {e}"));
                 let _ = state.put(root, BT_ENABLED_KEY, self.powered);
+                self.finish_local_operation(
+                    crate::actions::BluetoothOperation::SetPowered { enabled: on },
+                    Err(format!("Could not change Bluetooth power: {e}")),
+                );
             }
         }
         self.structure_dirty = true;
