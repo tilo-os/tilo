@@ -3610,12 +3610,19 @@ pub fn run_component(
 /// `3` when persistence itself was unavailable, which a sweep must not
 /// mistake for "nothing changed".
 pub fn run(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
+    run_with_theme(spec, root, manifest_id, Theme::dark())
+}
+
+/// [`run`] under an explicit theme, so a geometry dump can be taken in the
+/// light palette or at a text scale — the same `Theme` the screenshot path
+/// resolves from `QOS_SHOTS_THEME` / `QOS_SHOTS_TEXT_SCALE`.
+pub fn run_with_theme(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str, theme: Theme) -> i32 {
     let (state, autosave) = crate::persist::open(manifest_id);
-    run_opened(spec, root, manifest_id, state, autosave, None)
+    run_opened(spec, root, manifest_id, state, autosave, None, theme)
 }
 
 pub(crate) fn run_opened(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str, state: State, mut autosave: crate::persist::Autosave,
-    history: Option<crate::history_mode::HistoryRegistration>) -> i32 {
+    history: Option<crate::history_mode::HistoryRegistration>, theme: Theme) -> i32 {
     if !autosave.is_enabled() {
         eprintln!(
             "headless: persistence unavailable: {}",
@@ -3625,7 +3632,8 @@ pub(crate) fn run_opened(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str, 
     }
     // An app whose root names a record must be driven against that record's
     // document, not the room index — see `records` on `Driver`.
-    let mut driver = Driver::new(state, root, spec.viewport.unwrap_or(DEFAULT_VIEWPORT));
+    let mut driver =
+        Driver::new_with_theme(state, root, spec.viewport.unwrap_or(DEFAULT_VIEWPORT), theme);
     if driver.root_record_intent().is_some() {
         let (records_state, _) = crate::persist::open(manifest_id);
         driver = driver.with_records(
