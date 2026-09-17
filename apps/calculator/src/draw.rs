@@ -58,6 +58,13 @@ pub fn line(scene: &mut Scene, t: Affine, a: Point, b: Point, color: Color, widt
     scene.stroke(&Stroke::new(width), t, color, None, &Line::new(a, b));
 }
 
+/// Width one line of `text` paints at through [`text_in`] / [`text_at`] — the
+/// same scaled size, so a control sized from this seats the label it draws.
+pub fn measure_w(tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeight) -> f64 {
+    let (w, _) = tr.measure_weighted(text, scaled_size(size), None, weight);
+    f64::from(w)
+}
+
 /// Draw a single line of text inside `rect`, aligned + vertically centered.
 #[allow(clippy::too_many_arguments)]
 pub fn text_in(
