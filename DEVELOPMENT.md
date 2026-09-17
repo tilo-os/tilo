@@ -203,7 +203,12 @@ deadlines to Windows, so timers continue to notify after the app closes. Pausing
 or deleting a timer cancels its pending Windows alert. A saved receipt records
 the accepted deadline so reopening after delivery does not submit it again.
 Alarms still require the app to be running; closed-app alarm scheduling remains
-pending. Alerts carry the `tilo-clocks:` protocol activation URI, which the
+pending. Alarms persist their next UTC deadline, resolved from the requested
+local time and weekdays. A newly added past-time alarm waits for its next day;
+reopening after an elapsed deadline catches up once, then rearms recurring
+alarms for a future occurrence. Turning an alarm off and back on discards its
+old deadline. Older saved alarms without a deadline are armed on their first tick.
+Alerts carry the `tilo-clocks:` protocol activation URI, which the
 installer registers to open the installed executable. This route launches a
 normal Clocks window; it does not yet focus an already-running instance. The
 registered command ignores URI contents rather than forwarding them as arguments.
