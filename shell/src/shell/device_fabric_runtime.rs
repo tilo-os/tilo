@@ -61,6 +61,19 @@ struct InboundGamepadForwarding {
     lease: os_actions::PeripheralLeaseId,
 }
 
+fn finish_gamepad_grant_delivery<T, R, E>(
+    sessions: &mut BTreeMap<[u8; 16], T>,
+    forwarding_id: [u8; 16],
+    delivery: &Result<R, E>,
+    mut teardown: impl FnMut(T),
+) {
+    if delivery.is_err()
+        && let Some(session) = sessions.remove(&forwarding_id)
+    {
+        teardown(session);
+    }
+}
+
 #[derive(Clone, Debug)]
 struct OutboundGamepadForwarding {
     target: crate::shell::personal_continuity::DeviceId,
@@ -1411,7 +1424,7 @@ impl DeviceFabricRuntime {
             self.gamepad_broker.revoke(previous.lease);
             self.gamepad_broker.remove_device(previous.device);
         }
-        let _ = network.send_personal_fabric_action(
+        let delivery = network.send_personal_fabric_action(
             &pending.source,
             PersonalFabricAction::GamepadForwardGrant {
                 forwarding_id,
@@ -1419,6 +1432,17 @@ impl DeviceFabricRuntime {
                 lease_nonce,
             },
         );
+        let broker = &mut self.gamepad_broker;
+        finish_gamepad_grant_delivery(
+            &mut self.inbound_gamepads,
+            forwarding_id,
+            &delivery,
+            |session| {
+                broker.revoke(session.lease);
+                broker.remove_device(session.device);
+            },
+        );
+        self.restore_inbound_gamepad_focus();
     }
 
     fn remove_inbound_gamepad(&mut self, forwarding_id: [u8; 16]) {
@@ -1426,9 +1450,16 @@ impl DeviceFabricRuntime {
             self.gamepad_broker.revoke(session.lease);
             self.gamepad_broker.remove_device(session.device);
         }
-        if self.inbound_gamepads.is_empty() {
-            self.gamepad_broker.set_focus(None);
-        }
+        self.restore_inbound_gamepad_focus();
+    }
+
+    fn restore_inbound_gamepad_focus(&mut self) {
+        self.gamepad_broker.set_focus(
+            self.inbound_gamepads
+                .values()
+                .next()
+                .map(|session| session.identity.clone()),
+        );
     }
 
     fn maintain_gamepad_forwarding(
@@ -5491,5 +5522,26 @@ mod tests {
                 ..exact
             })
         ));
+    }
+
+    #[test]
+    fn failed_gamepad_grant_send_tears_down_inserted_session() {
+        let mut sessions = BTreeMap::from([([9; 16], "virtual-gamepad")]);
+        let mut torn_down = Vec::new();
+        finish_gamepad_grant_delivery(
+            &mut sessions,
+            [9; 16],
+            &Err::<(), _>("route vanished"),
+            |session| torn_down.push(session),
+        );
+        assert!(sessions.is_empty());
+        assert_eq!(torn_down, ["virtual-gamepad"]);
+
+        sessions.insert([8; 16], "still-live");
+        finish_gamepad_grant_delivery(&mut sessions, [8; 16], &Ok::<_, &str>(()), |session| {
+            torn_down.push(session)
+        });
+        assert_eq!(sessions.get(&[8; 16]), Some(&"still-live"));
+        assert_eq!(torn_down, ["virtual-gamepad"]);
     }
 }
