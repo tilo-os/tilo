@@ -318,3 +318,59 @@ to an isolated output; existing cross-build variables can also select Linux.
 It never installs the archive or fetches dependencies. The helper stays at
 `source/` and its parser-free source dependency is shipped at sibling
 `qos-ntfs-protocol/`, matching the path dependency in the standalone manifest.
+
+### Administrative one-time Copy consumer (production acceptance UNRUN)
+
+Linux Imager has an early, non-GUI administrative command using a dedicated
+`Client::connect` session. End an existing observer before acquiring its fresh
+Copy selection. The ordinary selected client receives the broker's descriptor
+file and independently expected full volume/root/UpCase identity:
+
+```sh
+imager --native-copy-selected /private/session.json '{"volume":"...","root":"...","upcase":"..."}' /private/fresh-output /private/receipts/copy.v3
+imager --native-resume-selected /private/fresh-session.json '{"volume":"...","root":"...","upcase":"..."}' /private/receipts/copy.v3
+```
+
+Neither command launches the broker or opens a device. The descriptor is not a
+restart grant: resume authenticates a newly selected broker, revalidates the
+whole bounded native inventory and actual output identities before repairing a
+journal tail, and independently rereads receipted native and destination bytes.
+V3 journals (`QOSJNL3\n`) retain token-free native paths, exact timestamp facts,
+per-path pending fidelity, real destination identities and verified content
+receipts. Existing local Copy continues writing V2 and reading V1/V2. Passing a
+V3 journal to local resume requires explicit fresh native selection.
+
+Every new file has two real source passes, independent destination verification,
+exact supported timestamps and native postflight before no-overwrite publication.
+Ranges are buffered at 1 MiB; files are limited to 512 MiB by the existing 1 GiB
+observation budget. The session's 4096 content requests and all native physical,
+time, memory and claim limits remain unchanged. Cancellation after the final
+range or postflight discards that file; a blocked operation can take its existing
+20-second timeout. A budget failure retains the durably receipted prefix and
+requires explicit fresh-selected resume. Root-volume system entries remain
+explicit pending scopes; ordinary file success does not imply whole-volume or
+Windows metadata completeness. The public native capability remains unverified.
+
+`tests/native_copy_coordinator.py` is executable production acceptance and is
+**UNRUN**. It requires the existing disposable physical fixture, deployed broker
+and Imager, existing parser/client accounts, and the same explicit authorization
+environment as `native_session_coordinator.py`. `--mode positive` verifies the
+12 MiB real file, exact times, independent destination hash, V3 file/directory
+receipts, claim teardown and whole-device nonmutation before any negative mode.
+Modes cover fresh-selection resume, actual native worker holds during second-pass
+final range/postflight cancellation, client/broker/parser death, externally
+coordinated detach/replacement, and live-Copy mount refusal. The three crash modes
+require `--native-test` pointing at the cross-linked exact-source test executable;
+the ignored `native_selected_copy_command_worker` uses the real authenticated
+command, with test-only publication/receipt crash boundaries. `budget` additionally
+requires an explicitly prepared bounded inventory at `--budget-root`; no fixture
+can raise native limits. Use `--baseline-root` if the positive fixture is under a
+separately selected directory. These scripts must not run on user disks.
+
+Host diagnostics use the uninstalled image-test binary's `--copy-manifest` to
+normalize actual native metadata. Test-only Imager transport invokes actual
+read-only manifest/range operations, never caller-supplied reports or a production
+helper/parser dependency. `build_native_fixtures.py` additionally creates
+`copy-tree.img` with nested empty directories. These diagnostics demonstrate bytes,
+times and consumer persistence; they do not prove Linux claim, credentials,
+limits, kernel support or Windows runtime acceptance.

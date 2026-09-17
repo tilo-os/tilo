@@ -14,7 +14,13 @@ pub mod known_folders;
 pub mod migration;
 mod migration_durability;
 pub mod migration_journal;
+mod migration_journal_log;
+#[cfg(any(target_os = "linux", test))]
+pub mod migration_native;
+#[cfg(any(target_os = "linux", test))]
+mod migration_native_journal;
 mod migration_review;
+mod migration_source;
 mod migration_store;
 mod migration_worker;
 pub mod model;

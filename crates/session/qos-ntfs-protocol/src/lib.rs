@@ -151,6 +151,13 @@ pub enum Response {
     },
     Closed,
 }
+#[derive(Clone, Debug)]
+pub struct Manifest {
+    pub generation: u64,
+    pub entries: Vec<Entry>,
+    pub issues: Vec<Issue>,
+    pub upcase: Vec<u16>,
+}
 #[cfg(target_os = "linux")]
 pub mod client;
 #[cfg(target_os = "linux")]

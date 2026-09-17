@@ -27,6 +27,7 @@ content.write_bytes(bytes(range(251))*17); run(src/'ntfsprogs/ntfscp', large, co
 content.write_bytes(b''); run(src/'ntfsprogs/ntfscp', large, content, '/empty.bin')
 run(exe, large, 'cancellation')
 content.write_bytes(b'final chunk'); run(src/'ntfsprogs/ntfscp', large, content, '/cancel/last.bin')
+copy_tree = out/'copy-tree.img'; shutil.copyfile(large, copy_tree); run(exe, copy_tree, 'copy-directories')
 for name, data in [('zero-hiber',bytes(4096)), ('hiber',b'hibr'+bytes(4092)), ('nonzero-hiber',bytes(4095)+b'x'), ('short-hiber',bytes(32))]:
     dest=out/(name+'.img'); shutil.copyfile(clean,dest)
     content.write_bytes(data); run(src/'ntfsprogs/ntfscp',dest,content,'/hiberfil.sys')
@@ -37,6 +38,10 @@ for name in ['bitlocker','truncated','corrupt']:
         if name=='bitlocker': f.seek(3); f.write(b'-FVE-FS-')
         elif name=='truncated': f.truncate(300)
         else: f.seek(3); f.write(b'BROKEN!!')
+content.write_bytes(b'ordinary sibling\n')
+for name in ['times','times-v1','times-duplicate','times-invalid-flags','metadata','acl','hardlink','dos-alias']:
+    scoped = out/('copy-scoped-'+name+'.img'); shutil.copyfile(out/(name+'.img'), scoped)
+    run(src/'ntfsprogs/ntfscp', scoped, content, '/ordinary.txt')
 manifest={'fixture_builder_sha256':hashlib.sha256((ROOT/'tests/fixture_builder.c').read_bytes()).hexdigest(),'source_sha256':SHA, 'format':'mkntfs -F -Q -T; serial set through NTFS_BOOT_SECTOR', 'expected':{'serial':'1122334455667788','root_record':5,'hello_content_hex':b'Connected NTFS fixture\n'.hex()},'images':{}}
 for f in sorted(out.glob('*.img')):
     manifest['images'][f.name]={'sha256':hashlib.sha256(f.read_bytes()).hexdigest(),'bytes':f.stat().st_size}

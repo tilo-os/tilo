@@ -11,17 +11,16 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
+use cap_fs_ext::OpenOptionsFollowExt;
 use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
 use cap_std::fs::Dir;
 use sha2::{Digest, Sha256};
 
 use super::destination_security;
 use super::migration_durability;
-use super::migration_journal::{
-    FileReceipt, MigrationJournal, PersistenceBoundary, persistence_result,
-};
+use super::migration_journal::{MigrationJournal, PersistenceBoundary, persistence_result};
 pub use super::migration_journal::{copy_folder_with_journal, resume_folder};
+use super::migration_source::{CopyFileSource, CopyPass, LocalCopySource, SourcePass};
 use super::nofollow::{metadata_nofollow, open_directory_nofollow, same_directory_identity};
 
 const BUFFER_SIZE: usize = 64 * 1024;
@@ -59,7 +58,7 @@ pub(super) fn changed(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
+pub(super) fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
     if cancelled.load(Ordering::Relaxed) {
         Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"))
     } else {
@@ -232,23 +231,6 @@ pub(super) fn same_snapshot(before: &Metadata, after: &Metadata) -> bool {
     true
 }
 
-fn preserve_times(file: &File, original: &Metadata) -> io::Result<()> {
-    let modified = original.modified()?.into_std();
-    let accessed = original.accessed()?.into_std();
-    file.set_times(
-        fs::FileTimes::new()
-            .set_accessed(accessed)
-            .set_modified(modified),
-    )?;
-    let actual = file.metadata()?;
-    if actual.modified()? != modified || actual.accessed()? != accessed {
-        return Err(changed(
-            "destination cannot preserve source timestamps exactly",
-        ));
-    }
-    Ok(())
-}
-
 // Linux scanner handles may be O_PATH and Windows scanner handles lack
 // FILE_WRITE_ATTRIBUTES. Reopen only the fresh destination using its pinned
 // parent, no-follow lookup and identity comparison before setting timestamps.
@@ -260,7 +242,7 @@ fn preserve_directory_times(directory: &PinnedDirectory, original: &Metadata) ->
     )
 }
 
-fn preserve_directory_times_values(
+pub(super) fn preserve_directory_times_values(
     directory: &PinnedDirectory,
     accessed: std::time::SystemTime,
     modified: std::time::SystemTime,
@@ -386,17 +368,14 @@ impl Drop for OwnedTemporary {
     }
 }
 
-struct StagedFile {
-    source_parent: Arc<PinnedDirectory>,
+pub(super) struct StagedFile<S: CopyFileSource = LocalCopySource> {
     name: OsString,
-    source: File,
-    original: Metadata,
+    source: S,
     temporary: OwnedTemporary,
     bytes: u64,
     digest: [u8; 32],
 }
-
-impl StagedFile {
+impl StagedFile<LocalCopySource> {
     fn copy(
         source_parent: &Arc<PinnedDirectory>,
         destination: &Arc<PinnedDirectory>,
@@ -405,43 +384,50 @@ impl StagedFile {
         cancelled: &AtomicBool,
     ) -> io::Result<Self> {
         check_cancel(cancelled)?;
-        source_parent.validate()?;
-        reject_windows_placeholder(expected)?;
-        if !expected.is_file() || expected.is_symlink() {
-            return Err(changed("source is not a regular file"));
-        }
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No).nonblock(true);
-        let mut source = cap_primitives::fs::open(&source_parent.file, Path::new(name), &options)?;
-        let original = Metadata::from_file(&source)?;
-        if !same_snapshot(expected, &original) {
-            return Err(changed("source changed while opening"));
-        }
+        Self::copy_source(
+            LocalCopySource::open(source_parent, name, expected)?,
+            destination,
+            name,
+            cancelled,
+        )
+    }
+    fn verify_and_publish(self, cancelled: &AtomicBool) -> io::Result<u64> {
+        self.publish(cancelled, false).map(|receipt| receipt.bytes)
+    }
+}
+impl<S: CopyFileSource> StagedFile<S> {
+    pub(super) fn copy_source(
+        mut source: S,
+        destination: &Arc<PinnedDirectory>,
+        name: &OsStr,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self> {
+        check_cancel(cancelled)?;
+        source.times()?;
+        source.begin_pass(CopyPass::Initial)?;
+        let expected = source.expected_len();
         let mut temporary = OwnedTemporary::create(destination, name)?;
         let (bytes, digest) = stream(
-            &mut source,
+            &mut SourcePass(&mut source),
             Some(&mut temporary.file),
-            original.len(),
+            expected,
             cancelled,
         )?;
         temporary.file.flush()?;
         temporary.file.sync_all()?;
         Ok(Self {
-            source_parent: Arc::clone(source_parent),
             name: name.to_os_string(),
             source,
-            original,
             temporary,
             bytes,
             digest,
         })
     }
-
-    fn verify_and_publish(self, cancelled: &AtomicBool) -> io::Result<u64> {
-        self.publish(cancelled, false).map(|receipt| receipt.bytes)
-    }
-
-    fn publish(mut self, cancelled: &AtomicBool, durable: bool) -> io::Result<FileReceipt> {
+    pub(super) fn publish(
+        mut self,
+        cancelled: &AtomicBool,
+        durable: bool,
+    ) -> io::Result<S::Receipt> {
         check_cancel(cancelled)?;
         self.temporary.validate()?;
         self.temporary.file.seek(SeekFrom::Start(0))?;
@@ -449,22 +435,20 @@ impl StagedFile {
         if destination != (self.bytes, self.digest) {
             return Err(changed("destination content verification failed"));
         }
-        self.source.seek(SeekFrom::Start(0))?;
-        let reread = stream(&mut self.source, None, self.bytes, cancelled)?;
+        self.source.begin_pass(CopyPass::IndependentReread)?;
+        let reread = stream(
+            &mut SourcePass(&mut self.source),
+            None,
+            self.bytes,
+            cancelled,
+        )?;
         if reread != (self.bytes, self.digest) {
             return Err(changed(
                 "source content changed during copy; retry required",
             ));
         }
-        self.source_parent.validate()?;
-        let by_handle = Metadata::from_file(&self.source)?;
-        let by_name = metadata_nofollow(&self.source_parent.file, Path::new(&self.name))?;
-        if !same_snapshot(&self.original, &by_handle) || !same_snapshot(&self.original, &by_name) {
-            return Err(changed(
-                "source metadata or identity changed during copy; retry required",
-            ));
-        }
-        preserve_times(&self.temporary.file, &self.original)?;
+        let times = self.source.times()?;
+        preserve_time_values(&self.temporary.file, times.accessed, times.modified)?;
         if durable {
             persistence_result(
                 migration_durability::sync_file(&self.temporary.file),
@@ -473,6 +457,7 @@ impl StagedFile {
         } else {
             self.temporary.file.sync_all()?;
         }
+        self.source.attest(self.bytes, self.digest, cancelled)?;
         check_cancel(cancelled)?;
         self.temporary.validate()?;
         // Hard-link publication is atomic and fails if the destination exists.
@@ -503,14 +488,8 @@ impl StagedFile {
             if durable {
                 super::migration_journal::crash_injection::boundary("file_published");
             }
-            FileReceipt::new(
-                &self.source,
-                &self.original,
-                &self.temporary.file,
-                self.bytes,
-                self.digest,
-                durable,
-            )
+            self.source
+                .receipt(&self.temporary.file, self.bytes, self.digest, durable)
         })();
         if durable {
             persistence_result(receipt, boundary)
@@ -523,7 +502,7 @@ impl StagedFile {
 /// Bounded streaming, also used for the independent source/destination rereads.
 /// The expected length bounds work even if another process keeps appending.
 pub(super) fn stream(
-    source: &mut File,
+    source: &mut impl Read,
     mut destination: Option<&mut File>,
     expected: u64,
     cancelled: &AtomicBool,
@@ -825,6 +804,84 @@ mod tests {
         let source = base.join("source");
         fs::create_dir(&source).unwrap();
         (temp, source, base.join("destination"))
+    }
+
+    // A native-like reader must get a second real pass and postflight before linking.
+    #[test]
+    fn sealed_source_requires_independent_bytes_and_late_attestation() {
+        use super::super::migration_source::{CopyFileSource, CopyPass, CopyTimes, sealed};
+        struct Source {
+            pass: usize,
+            offset: usize,
+            mutate: bool,
+            cancel: Arc<AtomicBool>,
+        }
+        impl sealed::Sealed for Source {}
+        impl CopyFileSource for Source {
+            type Receipt = (u64, [u8; 32]);
+            fn expected_len(&self) -> u64 {
+                3
+            }
+            fn times(&self) -> io::Result<CopyTimes> {
+                Ok(CopyTimes {
+                    accessed: std::time::UNIX_EPOCH,
+                    modified: std::time::UNIX_EPOCH,
+                })
+            }
+            fn begin_pass(&mut self, _: CopyPass) -> io::Result<()> {
+                self.pass += 1;
+                self.offset = 0;
+                Ok(())
+            }
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                if self.offset == 3 {
+                    return Ok(0);
+                }
+                let data = if self.mutate && self.pass == 2 {
+                    b"bad"
+                } else {
+                    b"abc"
+                };
+                let n = out.len().min(3 - self.offset);
+                out[..n].copy_from_slice(&data[self.offset..self.offset + n]);
+                self.offset += n;
+                Ok(n)
+            }
+            fn attest(&mut self, _: u64, _: [u8; 32], _: &AtomicBool) -> io::Result<()> {
+                if self.pass != 2 {
+                    return Err(changed("test source missing independent pass"));
+                }
+                self.cancel.store(true, Ordering::Relaxed);
+                Ok(())
+            }
+            fn receipt(
+                &self,
+                _: &File,
+                bytes: u64,
+                digest: [u8; 32],
+                _: bool,
+            ) -> io::Result<Self::Receipt> {
+                Ok((bytes, digest))
+            }
+        }
+        let (_temp, source, _) = fixture();
+        let parent = PinnedDirectory::open_absolute(&source).unwrap();
+        let destination = parent.create_child(OsStr::new("private")).unwrap();
+        let source = source.join("private");
+        for mutate in [true, false] {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let reader = Source {
+                pass: 0,
+                offset: 0,
+                mutate,
+                cancel: cancel.clone(),
+            };
+            let staged =
+                StagedFile::copy_source(reader, &destination, OsStr::new("native"), &cancel)
+                    .unwrap();
+            assert!(staged.publish(&cancel, true).is_err());
+            assert!(!source.join("native").exists());
+        }
     }
 
     // Catches missing/corrupted copies and dropped empty directories.
