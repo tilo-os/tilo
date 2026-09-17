@@ -2367,8 +2367,9 @@ pub struct WorkspaceTree {
     /// suppress the first resync.
     #[serde(skip)]
     pub room_epoch: u64,
-    /// Mutations performed by non-UI authorities (for example the local
-    /// action broker) increment this so chrome can invalidate retained panes.
+    /// Mutations performed outside retained chrome (for example the local
+    /// action broker or a Wayland lifecycle callback) increment this so chrome
+    /// can invalidate retained panes.
     /// It is process-local: restoring a persisted value could suppress the
     /// first refresh after launch.
     #[serde(skip)]
