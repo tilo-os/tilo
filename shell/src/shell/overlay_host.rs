@@ -35,13 +35,15 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, Image, ImageFit, OutputSpan,
-    PROMPT_HEIGHT, PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
+    Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, OutputSpan, PROMPT_HEIGHT,
+    PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
 };
 use ui::{CommandEntry, CommandPalette};
 
+#[cfg(test)]
+use crate::shell::capture_surface::CaptureSurfaceKind;
 use crate::shell::capture_surface::{
-    CaptureMirrorImage, CaptureSurfaceKind, CaptureSurfaceRequest, capture_mirror_initial_size,
+    CaptureMirrorImage, CaptureSurfaceRequest, PreparedCaptureSurface, capture_mirror_initial_size,
     capture_mirror_origin, visible_capture_spawn,
 };
 use crate::shell::chrome_state::{Chrome, WsTab};
@@ -2745,61 +2747,17 @@ impl ShellOverlayHost {
     /// user's window geometry; pinned requests use unique ids and remain
     /// immutable after insertion.
     pub(crate) fn upsert_capture_surface(&mut self, request: CaptureSurfaceRequest<'_>) {
-        let CaptureSurfaceRequest {
+        let PreparedCaptureSurface {
             id,
             title,
-            rgba,
-            width,
-            height,
+            image,
+            pixel_aspect,
+            preferred_size,
             spawn_from,
-            kind,
-        } = request;
-        let pixel_aspect = f64::from(width) / f64::from(height.max(1));
-        let (image, preferred_size, handoff_layers, crossfade_preview, document_aspect) = match kind
-        {
-            CaptureSurfaceKind::Live {
-                preferred_size,
-                handoff_layers,
-            } => (
-                Image::from_rgba(rgba, width, height)
-                    .with_fit(ImageFit::Contain)
-                    .with_alt(format!("Live capture: {title}")),
-                preferred_size,
-                handoff_layers,
-                None,
-                None,
-            ),
-            CaptureSurfaceKind::Pinned { preview } => {
-                let document_aspect = (pixel_aspect < 0.58).then_some(pixel_aspect);
-                let fit = if document_aspect.is_some() {
-                    ImageFit::Fill
-                } else {
-                    ImageFit::Contain
-                };
-                let image = Image::from_rgba(rgba, width, height)
-                    .with_fit(fit)
-                    .with_alt(format!("Pinned screenshot: {title}"));
-                let preview_rgba: Vec<u8> = preview
-                    .pixels
-                    .into_iter()
-                    .flat_map(std::iter::IntoIterator::into_iter)
-                    .collect();
-                let preview_image = Image::from_rgba(
-                    std::sync::Arc::from(preview_rgba),
-                    u32::from(preview.columns.max(1)),
-                    u32::from(preview.rows.max(1)),
-                )
-                .with_fit(ImageFit::Fill)
-                .with_alt(format!("Pinned screenshot preview: {title}"));
-                (
-                    image,
-                    document_aspect.map(|_| vello::kurbo::Size::new(340.0, 420.0)),
-                    Vec::new(),
-                    Some(preview_image),
-                    document_aspect,
-                )
-            }
-        };
+            handoff_layers,
+            crossfade_preview,
+            document_aspect,
+        } = request.prepare();
         if let Some((_, window)) = self
             .capture_mirrors
             .iter_mut()
