@@ -1831,7 +1831,7 @@ fn launch_with_context(
             package_id: package_id.to_string(),
         });
     }
-    execute_installed(app, room, document, uri, tool_intent)
+    execute_installed(app, room, document, uri, tool_intent, media_handoff)
 }
 
 #[cfg(test)]
@@ -1867,6 +1867,7 @@ fn execute_installed(
     document: Option<&Path>,
     uri: Option<&str>,
     tool_intent: Option<&ToolIntent>,
+    media_handoff: Option<MediaHandoffLaunch>,
 ) -> Result<InstalledApp, LaunchError> {
     let socket = wayland_socket().ok_or(LaunchError::NoDisplay)?;
     let launcher_bin = selected_execution_program()?;
