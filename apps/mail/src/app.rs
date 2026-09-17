@@ -1831,196 +1831,211 @@ impl MailApp {
 
     // ---- engine drain -----------------------------------------------------
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the engine drain is one ordered lifecycle reducer over every EngineEvent variant; splitting it would scatter the shared settlement and dirty-state transitions"
-    )]
+    fn apply_fetched_messages(
+        &mut self,
+        doc: &mut AutoCommit,
+        st: &mut MailState,
+        request_id: EngineRequestId,
+        account_id: &str,
+        folder: Folder,
+        messages: Vec<Message>,
+    ) {
+        let count = messages.len();
+        for message in messages {
+            MailDoc::ingest_message_flags(doc, &message);
+            st.mailbox.insert(message);
+        }
+        if st.folder == folder && st.selected.is_none() {
+            st.selected = st
+                .current_threads()
+                .first()
+                .and_then(|thread| thread.message_ids.last().copied());
+        }
+        st.status = Some(if count == 0 {
+            format!("{} up to date", folder.title())
+        } else {
+            format!("Synced {count} messages")
+        });
+        report_account_sync(
+            account_id,
+            accounts::AccountSyncHealth::Healthy,
+            true,
+            Some("Mail is up to date"),
+        );
+        if self
+            .resource_refresh_invocation
+            .is_some_and(|(pending, _)| pending == request_id)
+            && let Some((_, invocation)) = self.resource_refresh_invocation
+        {
+            self.resource_refresh_result = Some(tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput::default(),
+            });
+        }
+    }
+
+    fn apply_sent_message(
+        &mut self,
+        doc: &mut AutoCommit,
+        st: &mut MailState,
+        request_id: EngineRequestId,
+        wire_bytes: usize,
+    ) {
+        if self
+            .pending_send
+            .as_ref()
+            .is_none_or(|pending| pending.request_id != request_id)
+        {
+            return;
+        }
+        let Some(pending) = self.pending_send.take() else {
+            return;
+        };
+        // A message joins Sent only after SMTP has accepted its bytes. If this
+        // was an edited draft, remove it at the same point; failures leave the
+        // composer and draft intact for retry.
+        if let Some(draft_id) = pending.edited_draft {
+            st.mailbox.messages.remove(&draft_id);
+            st.mailbox
+                .order
+                .retain(|message_id| *message_id != draft_id);
+        }
+        MailDoc::ingest_message_flags(doc, &pending.message);
+        st.mailbox.insert(pending.message);
+        self.editing_draft = None;
+        self.compose.close();
+        st.status = Some(format!("Delivered ({wire_bytes} bytes)"));
+    }
+
+    fn apply_engine_error(
+        &mut self,
+        st: &mut MailState,
+        request_id: EngineRequestId,
+        context: &str,
+        message: &str,
+    ) {
+        let detail = format!("{context}: {message}");
+        st.status = Some(detail.clone());
+        let account_id = st.accounts.active_config().email;
+        let lower = detail.to_ascii_lowercase();
+        let health = if ["auth", "login", "password", "oauth", "credential"]
+            .iter()
+            .any(|needle| lower.contains(needle))
+        {
+            accounts::AccountSyncHealth::NeedsAuthentication
+        } else {
+            accounts::AccountSyncHealth::Error
+        };
+        report_account_sync(&account_id, health, false, Some(&detail));
+        if self
+            .pending_send
+            .as_ref()
+            .is_some_and(|pending| pending.request_id == request_id)
+        {
+            // Failed SMTP delivery leaves the composer contents recoverable.
+            self.pending_send = None;
+        }
+        if self
+            .resource_refresh_invocation
+            .is_some_and(|(pending, _)| pending == request_id)
+            && let Some((_, invocation)) = self.resource_refresh_invocation
+        {
+            self.resource_refresh_result = Some(tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "mail.refresh_failed".into(),
+                    message: detail,
+                    details: None,
+                    retryable: true,
+                },
+            });
+        }
+    }
+
+    fn apply_engine_event(&mut self, doc: &mut AutoCommit, st: &mut MailState, event: EngineEvent) {
+        match event {
+            EngineEvent::Connected {
+                request_id,
+                account_id,
+            } if self.expects_engine_event(request_id, EngineRequestKind::Connect) => {
+                st.status = Some(format!("Connected {account_id}"));
+                report_account_sync(
+                    &account_id,
+                    accounts::AccountSyncHealth::Syncing,
+                    false,
+                    Some("Connected; fetching mail"),
+                );
+            }
+            EngineEvent::Folders {
+                request_id,
+                folders,
+                ..
+            } if self.expects_engine_event(request_id, EngineRequestKind::Connect) => {
+                tracing::info!(count = folders.len(), "mail: server folders listed");
+            }
+            EngineEvent::Fetched {
+                request_id,
+                account_id,
+                folder,
+                messages,
+            } if self.expects_engine_event(request_id, EngineRequestKind::Fetch) => {
+                self.apply_fetched_messages(doc, st, request_id, &account_id, folder, messages);
+            }
+            EngineEvent::Sent {
+                request_id,
+                wire_bytes,
+            } if self.expects_engine_event(request_id, EngineRequestKind::Send) => {
+                self.apply_sent_message(doc, st, request_id, wire_bytes);
+            }
+            EngineEvent::Authorized {
+                request_id,
+                account_id,
+            } if self.expects_engine_event(request_id, EngineRequestKind::OAuthAuthorize) => {
+                st.status = Some(format!("Signed in as {account_id}"));
+                report_account_sync(
+                    &account_id,
+                    accounts::AccountSyncHealth::Healthy,
+                    true,
+                    Some("Signed in"),
+                );
+            }
+            EngineEvent::Error {
+                request_id,
+                kind,
+                context,
+                message,
+            } if self.expects_engine_event(request_id, kind) => {
+                self.apply_engine_error(st, request_id, &context, &message);
+            }
+            EngineEvent::Completed { request_id, kind }
+                if self.expects_engine_event(request_id, kind) =>
+            {
+                // Only the worker acknowledgement settles a queued request:
+                // connect has two payloads and successful writes have none.
+                self.pending_engine_requests.remove(&request_id);
+            }
+            ignored => {
+                tracing::warn!(request_id = %ignored.request_id(), "mail: ignoring unmatched or wrong-kind engine event");
+            }
+        }
+    }
+
     fn drain_engine(&mut self, doc: &mut AutoCommit) {
-        let Some(h) = &self.engine else { return };
+        let Some(handle) = &self.engine else { return };
         let mut events = Vec::new();
-        while let Ok(ev) = h.rx.try_recv() {
-            events.push(ev);
+        while let Ok(event) = handle.rx.try_recv() {
+            events.push(event);
         }
         if events.is_empty() {
             return;
         }
         {
-            let mut st = self.shared.borrow_mut();
-            for ev in events {
-                match ev {
-                    EngineEvent::Connected {
-                        request_id,
-                        account_id,
-                    } if self.expects_engine_event(request_id, EngineRequestKind::Connect) => {
-                        st.status = Some(format!("Connected {account_id}"));
-                        report_account_sync(
-                            &account_id,
-                            accounts::AccountSyncHealth::Syncing,
-                            false,
-                            Some("Connected; fetching mail"),
-                        );
-                    }
-                    EngineEvent::Folders {
-                        request_id,
-                        folders,
-                        ..
-                    } if self.expects_engine_event(request_id, EngineRequestKind::Connect) => {
-                        // The fixed system-folder set drives the sidebar; log the
-                        // server's advertised set for visibility.
-                        tracing::info!(count = folders.len(), "mail: server folders listed");
-                    }
-                    EngineEvent::Fetched {
-                        request_id,
-                        account_id,
-                        folder,
-                        messages,
-                    } if self.expects_engine_event(request_id, EngineRequestKind::Fetch) => {
-                        let count = messages.len();
-                        for m in messages {
-                            MailDoc::ingest_message_flags(doc, &m);
-                            st.mailbox.insert(m);
-                        }
-                        if st.folder == folder && st.selected.is_none() {
-                            st.selected = st
-                                .current_threads()
-                                .first()
-                                .and_then(|t| t.message_ids.last().copied());
-                        }
-                        st.status = Some(if count == 0 {
-                            format!("{} up to date", folder.title())
-                        } else {
-                            format!("Synced {count} messages")
-                        });
-                        report_account_sync(
-                            &account_id,
-                            accounts::AccountSyncHealth::Healthy,
-                            true,
-                            Some("Mail is up to date"),
-                        );
-                        if self
-                            .resource_refresh_invocation
-                            .is_some_and(|(pending, _)| pending == request_id)
-                            && let Some((_, invocation)) = self.resource_refresh_invocation
-                        {
-                            self.resource_refresh_result =
-                                Some(tilo_actions::InvocationUpdate::Succeeded {
-                                    invocation,
-                                    output: tilo_actions::ActionOutput::default(),
-                                });
-                        }
-                    }
-                    EngineEvent::Sent {
-                        request_id,
-                        wire_bytes,
-                    } if self.expects_engine_event(request_id, EngineRequestKind::Send) => {
-                        if self
-                            .pending_send
-                            .as_ref()
-                            .is_some_and(|pending| pending.request_id == request_id)
-                            && let Some(pending) = self.pending_send.take()
-                        {
-                            // A message joins Sent only after SMTP has
-                            // accepted its bytes. If this was an edited draft,
-                            // remove that draft at the same point; failures
-                            // leave the composer and draft intact for retry.
-                            if let Some(draft_id) = pending.edited_draft {
-                                st.mailbox.messages.remove(&draft_id);
-                                st.mailbox
-                                    .order
-                                    .retain(|message_id| *message_id != draft_id);
-                            }
-                            MailDoc::ingest_message_flags(doc, &pending.message);
-                            st.mailbox.insert(pending.message);
-                            self.editing_draft = None;
-                            self.compose.close();
-                            st.status = Some(format!("Delivered ({wire_bytes} bytes)"));
-                        }
-                    }
-                    EngineEvent::Authorized {
-                        request_id,
-                        account_id,
-                    } if self
-                        .expects_engine_event(request_id, EngineRequestKind::OAuthAuthorize) =>
-                    {
-                        // Tokens are sealed in the vault under the email; the
-                        // account (saved with that email as its id) reads them
-                        // at connect time.
-                        st.status = Some(format!("Signed in as {account_id}"));
-                        report_account_sync(
-                            &account_id,
-                            accounts::AccountSyncHealth::Healthy,
-                            true,
-                            Some("Signed in"),
-                        );
-                    }
-                    EngineEvent::Error {
-                        request_id,
-                        kind,
-                        context,
-                        message,
-                    } if self.expects_engine_event(request_id, kind) => {
-                        // Surface the specific failure so a fetch never fails
-                        // silently into an empty inbox.
-                        st.status = Some(format!("{context}: {message}"));
-                        let account_id = st.accounts.active_config().email;
-                        let lower = format!("{context} {message}").to_ascii_lowercase();
-                        let health = if ["auth", "login", "password", "oauth", "credential"]
-                            .iter()
-                            .any(|needle| lower.contains(needle))
-                        {
-                            accounts::AccountSyncHealth::NeedsAuthentication
-                        } else {
-                            accounts::AccountSyncHealth::Error
-                        };
-                        report_account_sync(
-                            &account_id,
-                            health,
-                            false,
-                            Some(&format!("{context}: {message}")),
-                        );
-                        if self
-                            .pending_send
-                            .as_ref()
-                            .is_some_and(|pending| pending.request_id == request_id)
-                        {
-                            // Keep the compose surface open and its contents
-                            // untouched. A failed SMTP round trip is not a
-                            // sent message and must remain recoverable.
-                            self.pending_send = None;
-                        }
-                        if self
-                            .resource_refresh_invocation
-                            .is_some_and(|(pending, _)| pending == request_id)
-                            && let Some((_, invocation)) = self.resource_refresh_invocation
-                        {
-                            self.resource_refresh_result =
-                                Some(tilo_actions::InvocationUpdate::Failed {
-                                    invocation,
-                                    error: tilo_actions::ActionFailure {
-                                        code: "mail.refresh_failed".into(),
-                                        message: format!("{context}: {message}"),
-                                        details: None,
-                                        retryable: true,
-                                    },
-                                });
-                        }
-                    }
-                    EngineEvent::Completed { request_id, kind }
-                        if self.expects_engine_event(request_id, kind) =>
-                    {
-                        // Completion is independent from the preceding UI
-                        // event. Successful IMAP writes have no payload event
-                        // at all, while Connect emits both Connected and
-                        // Folders, so only this acknowledgement may settle a
-                        // queued request.
-                        self.pending_engine_requests.remove(&request_id);
-                    }
-                    ignored => {
-                        tracing::warn!(request_id = %ignored.request_id(), "mail: ignoring unmatched or wrong-kind engine event");
-                    }
-                }
+            let shared = self.shared.clone();
+            let mut state = shared.borrow_mut();
+            for event in events {
+                self.apply_engine_event(doc, &mut state, event);
             }
-            st.dirty = true;
+            state.dirty = true;
         }
         self.awaiting_engine = !self.pending_engine_requests.is_empty();
     }
