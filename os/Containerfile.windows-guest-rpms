@@ -5,8 +5,8 @@
 ARG WINDOWS_GUEST_BUILDROOT_REF
 FROM ${WINDOWS_GUEST_BUILDROOT_REF} AS resolve
 ARG WINDOWS_GUEST_BUILDROOT_REF
-COPY os/dev/windows-guest-packages.txt os/dev/windows_guest_contract.py os/dev/resolve-windows-guest-rpms.sh /qos/
-RUN bash /qos/resolve-windows-guest-rpms.sh
+COPY os/dev/windows-guest-packages.txt os/dev/windows_guest_contract.py os/dev/resolve-windows-guest-rpms.sh /tilo/
+RUN bash /tilo/resolve-windows-guest-rpms.sh
 # RPM content targets x86 even when the download-only resolver runs on ARM.
 # This stage executes nothing on the foreign architecture.
 FROM --platform=linux/amd64 scratch

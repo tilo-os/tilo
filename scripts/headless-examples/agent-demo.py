@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """An agent edits a document someone has open, live, through the real stack.
 
-The demo's agent beat (plan/yc-demo.md, beat 6), driven end to end:
+The demo's agent beat (docs/demo-script.md, beat 6), driven end to end:
 
   1. a headless compositor with a private runtime dir (its own broker,
      Wayland socket and control socket);
   2. the real word processor opened on `brief.md` — a heading, three
      bullets, and the line `Claude: turn the bullets into a table` — as a
      Wayland client in the compositor's first workspace (room);
-  3. `qos-agent` joining that room and that record, receiving the document
+  3. `tilo-agent` joining that room and that record, receiving the document
      from the word processor, carrying out the instruction with the word
      processor's own actions, and leaving;
   4. Ctrl+S in the word processor, and the file on disk read back: a pipe
@@ -136,11 +136,11 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    for b in ("shell", "word-processor", "qos-agent"):
+    for b in ("shell", "word-processor", "tilo-agent"):
         if not (BIN / b).exists():
             fail(f"build first: cargo build -p shell -p word-processor -p agent ({BIN / b} missing)")
 
-    run = pathlib.Path(f"/run/user/{UID}/qos-agent-demo-{os.getpid()}")
+    run = pathlib.Path(f"/run/user/{UID}/tilo-agent-demo-{os.getpid()}")
     home = run / "home"
     home.mkdir(parents=True)
     brief = home / "brief.md"
@@ -158,8 +158,8 @@ def main() -> None:
         "XDG_STATE_HOME": str(run / "state"),
         "XDG_CACHE_HOME": str(run / "cache"),
         "HOME": str(home),
-        "QOS_TEST_CONTROL": str(ctl),
-        "NIRIOS_HEADLESS_SIZE": "1600x900",
+        "TILO_TEST_CONTROL": str(ctl),
+        "TILO_HEADLESS_SIZE": "1600x900",
         "RUST_LOG": "warn,shell=info",
         # The sandbox does not clear the environment, so the host locale
         # reaches the app and a de_DE machine renders the word processor's
@@ -178,10 +178,10 @@ def main() -> None:
         )
         procs.append(track(comp))
         wait_for(lambda: ctl.exists(), 30, "the control socket", comp_log)
-        display_file = run / "qos-session" / "wayland-display"
+        display_file = run / "tilo-session" / "wayland-display"
         wait_for(lambda: display_file.exists(), 30, "the Wayland display file", comp_log)
         display = display_file.read_text().strip()
-        broker = run / "qos" / "services" / "collab.sock"
+        broker = run / "tilo" / "services" / "collab.sock"
         wait_for(lambda: broker.exists(), 30, "the typed broker socket", comp_log)
 
         state = control(ctl, {"op": "state_dump"})["state"]
@@ -192,19 +192,19 @@ def main() -> None:
 
         # The word processor inherits the same connected service fd the real
         # launcher supplies.
-        control(ctl, {"op": "place_next_window", "app_id": "dev.qos.word-processor"})
+        control(ctl, {"op": "place_next_window", "app_id": "dev.tilo.word-processor"})
         wp_env = dict(env)
         wp_env.update({
             "WAYLAND_DISPLAY": display,
-            "QOS_PACKAGE_ID": "dev.qos.word-processor",
-            "QOS_WORKSPACE_ID": room,
+            "TILO_PACKAGE_ID": "dev.tilo.word-processor",
+            "TILO_WORKSPACE_ID": room,
             "QUICK_APP_ID": "quinten",
-            "QOS_USER_ID": "quinten",
+            "TILO_USER_ID": "quinten",
             "RUST_LOG": "warn",
         })
         wp_service = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         wp_service.connect(str(broker))
-        wp_env["QOS_SVC_COLLAB_FD"] = str(wp_service.fileno())
+        wp_env["TILO_SVC_COLLAB_FD"] = str(wp_service.fileno())
         wp = subprocess.Popen(
             [str(BIN / "word-processor"), str(brief)],
             env=wp_env, stdout=subprocess.DEVNULL, stderr=open(wp_log, "w"),
@@ -225,7 +225,7 @@ def main() -> None:
 
         # The agent: same room, same record, its own name.
         record = f"file:{brief.resolve()}"
-        argv = [str(BIN / "qos-agent"), "--endpoint", str(broker), "--workspace", room,
+        argv = [str(BIN / "tilo-agent"), "--endpoint", str(broker), "--workspace", room,
                 "--record", record, "--name", "Claude", "--once", "--pace-ms", "600"]
         if args.no_model:
             argv.append("--no-model")

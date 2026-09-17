@@ -56,6 +56,9 @@ pub struct Row {
     /// Optional explicit insets for toolbars and sticky action rows.
     horizontal_padding: f32,
     vertical_padding: f32,
+    /// Align intrinsic-height children to the top edge. The default remains
+    /// centred for toolbars and compact control rows.
+    align_start: bool,
     /// Subtree cache — same pattern as `Column::subtree_cache`.
     /// See that field for the gory rationale.
     subtree_cache: Scene,
@@ -82,6 +85,7 @@ impl Row {
             fill_height: false,
             horizontal_padding: 0.0,
             vertical_padding: 0.0,
+            align_start: false,
             subtree_cache: Scene::new(),
             cache_rect: vello::kurbo::Rect::ZERO,
             cache_present: false,
@@ -112,6 +116,14 @@ impl Row {
     pub fn with_padding(mut self, horizontal: f32, vertical: f32) -> Self {
         self.horizontal_padding = horizontal.max(0.0);
         self.vertical_padding = vertical.max(0.0);
+        self
+    }
+
+    /// Top-align children with different intrinsic heights, as in a wrapping
+    /// collection of cards.
+    #[must_use]
+    pub fn align_start(mut self) -> Self {
+        self.align_start = true;
         self
     }
 
@@ -174,6 +186,8 @@ impl Widget for Row {
                 // otherwise centre them (toolbar/button rows).
                 align_items: Some(if self.fill_height {
                     taffy::AlignItems::Stretch
+                } else if self.align_start {
+                    taffy::AlignItems::FlexStart
                 } else {
                     taffy::AlignItems::Center
                 }),

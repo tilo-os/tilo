@@ -5,7 +5,7 @@
 //! into offscreen PNGs:
 //!
 //! ```text
-//! QOS_LOCK_SHOT_DIR=/tmp/qos-lock-shots \
+//! TILO_LOCK_SHOT_DIR=/tmp/tilo-lock-shots \
 //!   cargo test -p shell --test it lock_screen_visual::render_lock_screen_matrix -- --ignored --nocapture
 //! ```
 
@@ -26,8 +26,8 @@ use ui::theme::Theme;
 use vello::peniko::Color;
 
 fn shot_dir() -> std::path::PathBuf {
-    std::env::var_os("QOS_LOCK_SHOT_DIR").map_or_else(
-        || std::env::temp_dir().join("qos-lock-shots"),
+    std::env::var_os("TILO_LOCK_SHOT_DIR").map_or_else(
+        || std::env::temp_dir().join("tilo-lock-shots"),
         std::path::PathBuf::from,
     )
 }

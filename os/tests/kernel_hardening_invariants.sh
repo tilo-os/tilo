@@ -5,9 +5,9 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-sysctl_file="$repo/os/usr/lib/sysctl.d/60-qos-hardening.conf"
-audit="$repo/os/usr/libexec/qos-security-audit"
-kernel_config="$repo/os/kernel/config-fragments/qos.config"
+sysctl_file="$repo/os/usr/lib/sysctl.d/60-tilo-hardening.conf"
+audit="$repo/os/usr/libexec/tilo-security-audit"
+kernel_config="$repo/os/kernel/config-fragments/tilo.config"
 kargs="$repo/os/usr/lib/bootc/kargs.d/01-hardening.toml"
 fail=0
 
@@ -57,16 +57,16 @@ grep -Fq 'failures=$((failures + 1))' "$audit" \
   || bad 'boot audit warnings do not contribute to a failing health result'
 grep -Fq 'exit 1' "$audit" \
   || bad 'boot audit cannot return failure when a required invariant is inactive'
-if grep -Fq 'SuccessExitStatus=0 1' "$repo/os/usr/lib/systemd/system/qos-security-audit.service"; then
+if grep -Fq 'SuccessExitStatus=0 1' "$repo/os/usr/lib/systemd/system/tilo-security-audit.service"; then
   bad 'systemd still converts the security audit failure into success'
 else
   ok 'security audit failure remains visible to system health and agents'
 fi
 
 for policy_fragment in \
-  '"code.podesta.ai/qos/qos"' \
+  '"code.podesta.ai/qos/tilo"' \
   '"type": "sigstoreSigned"' \
-  '"keyPath": "/usr/share/qos/cosign.pub"'; do
+  '"keyPath": "/usr/share/tilo/cosign.pub"'; do
   grep -Fq "$policy_fragment" "$audit" \
     || bad "boot audit does not bind image trust to $policy_fragment"
 done

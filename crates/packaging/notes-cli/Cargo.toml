@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Reference CLI app for the qOS package model — 'notes' on PATH writes a note."
+description = "Reference CLI app for the Tilo package model — 'notes' on PATH writes a note."
 
 [[bin]]
 name = "notes"

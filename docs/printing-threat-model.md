@@ -2,7 +2,7 @@
 
 Printing is the one desktop capability where the obvious implementation hands
 an untrusted application a bidirectional socket to a network daemon running as
-another user. This document says what qOS trusts CUPS with, what it does not,
+another user. This document says what Tilo trusts CUPS with, what it does not,
 and which mechanism enforces each part.
 
 The short version: **CUPS runs, confined, reachable only from this machine;
@@ -13,7 +13,7 @@ other side of the sandbox boundary.
 ## Why CUPS is here at all
 
 There is no alternative. Every printer worth supporting speaks IPP or expects
-a CUPS filter chain, and reimplementing that is not a project qOS is going to
+a CUPS filter chain, and reimplementing that is not a project Tilo is going to
 finish. So CUPS is a necessary evil: required for the feature, and not
 something to be trusted with the run of the machine.
 
@@ -83,7 +83,7 @@ Enforcement, concretely:
 
 ### The scheduler is confined
 
-`os/usr/lib/systemd/system/cups.service.d/qos-confinement.conf`. Fedora ships
+`os/usr/lib/systemd/system/cups.service.d/tilo-confinement.conf`. Fedora ships
 cups.service with no hardening at all; `systemd-analyze security` scores it
 **9.6 UNSAFE**. With the drop-in it scores **2.8 OK**, measured offline against
 the same unit file.
@@ -205,14 +205,14 @@ files, or persistence in `/usr`. On a bootc image an attacker who cannot write
 
 ## Out of scope
 
-- **Printer sharing.** qOS does not serve printers to other machines. That
+- **Printer sharing.** Tilo does not serve printers to other machines. That
   would mean exposing an IPP parser to the network, which is the surface this
   document exists to avoid.
 - **Scanning.** SANE is a separate stack with its own problems; none of this
   applies to it.
 - **Print accounting, quotas, and per-user policy** beyond `MaxJobsPerUser`.
 - **Confidentiality of the printed artifact.** Once bytes reach a printer,
-  what happens to them is outside any boundary qOS controls.
+  what happens to them is outside any boundary Tilo controls.
 
 ## Where this is enforced
 
@@ -220,8 +220,8 @@ files, or persistence in `/usr`. On a bootc image an attacker who cannot write
 |---|---|
 | Apps never get the cups socket | No `Capability::Print` arm in `SandboxProfile::apply_grants`; asserted by `os/tests/printing_isolation.sh` |
 | Apps print via a consented portal | `shell/src/portal/print.rs`, through `flow::resolve` |
-| Scheduler confinement | `os/usr/lib/systemd/system/cups.service.d/qos-confinement.conf` |
-| No network listener | `os/usr/lib/systemd/system/cups.socket.d/qos-local-only.conf`, `os/etc/cups/cupsd.conf` |
+| Scheduler confinement | `os/usr/lib/systemd/system/cups.service.d/tilo-confinement.conf` |
+| No network listener | `os/usr/lib/systemd/system/cups.socket.d/tilo-local-only.conf`, `os/etc/cups/cupsd.conf` |
 | Discovery off | `cups-browsed` and `avahi` not installed; `Browsing Off` |
 | Filters unprivileged | `User lp` / `Group lp` in `os/etc/cups/cupsd.conf` |
 | All of the above stay true | `os/tests/printing_isolation.sh`, which fails rather than skips when it cannot observe its subject |

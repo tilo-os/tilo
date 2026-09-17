@@ -20,14 +20,14 @@
 //! Persistence, transport, and CRDT-op validation itself live elsewhere;
 //! this module only holds the verified-once, keyed-by-hash lookup table
 //! ([`PeerIdentityStore::verify_signature_from`] is what `network::replica`
-//! calls). The `DeviceCert` byte layout and revocation entry live in `qos-user-identity`.
+//! calls). The `DeviceCert` byte layout and revocation entry live in `tilo-user-identity`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use ed25519_dalek::Verifier;
 
-use qos_user_identity::{
+use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceCertError, RevocationList, verify_device_cert,
     verify_device_cert_at,
 };
@@ -239,7 +239,7 @@ pub enum PeerIdentityError {
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
-    use qos_user_identity::{DeviceIdentity, UserIdentity, sign_device_cert};
+    use tilo_user_identity::{DeviceIdentity, UserIdentity, sign_device_cert};
 
     /// Build a fresh (user root sk, device sk, cert) for tests.
     fn fresh_identity(caps: DeviceCapabilities) -> (SigningKey, SigningKey, DeviceCert) {
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn revocation_kills_future_ops() {
-        use qos_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+        use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
 
         let (root_sk, dev_sk, cert) = fresh_identity(DeviceCapabilities::primary());
         let user_pk = cert.user_public_key;
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn different_users_get_separate_revocation_lists() {
-        use qos_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+        use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
 
         let (_, _, alice_cert) = fresh_identity(DeviceCapabilities::primary());
         let (bob_root, _, bob_cert) = fresh_identity(DeviceCapabilities::primary());

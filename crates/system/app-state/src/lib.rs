@@ -1,7 +1,7 @@
-//! Canonical on-disk home for a qOS app's Automerge document: one file per
+//! Canonical on-disk home for a Tilo app's Automerge document: one file per
 //! package at `$XDG_DATA_HOME/<package-id>/state.automerge`, atomic writes,
 //! a debounced background writer. The path derives only from
-//! `QOS_PACKAGE_ID`, validated so an app can't address another app's
+//! `TILO_PACKAGE_ID`, validated so an app can't address another app's
 //! storage or the shared workspace FUSE root.
 //!
 //! [`Autosave`] appends `save_after(persisted_heads)` (linear write volume,
@@ -48,13 +48,13 @@ pub const RECORDS_DIR: &str = "records";
 pub const ROOMS_DIR: &str = "rooms";
 /// Durable claim files prevent a pre-room document from being silently
 /// imported into every room that happens to open after an upgrade.
-const LEGACY_PACKAGE_ROOM_CLAIM: &str = ".qos-legacy-room-index-claim";
-const LEGACY_RECORD_ROOM_CLAIM: &str = ".qos-legacy-room-record-claim";
+const LEGACY_PACKAGE_ROOM_CLAIM: &str = ".tilo-legacy-room-index-claim";
+const LEGACY_RECORD_ROOM_CLAIM: &str = ".tilo-legacy-room-record-claim";
 
 /// Root-map key for the document's layout version. A document from before
 /// this key existed reads as [`SCHEMA_VERSION`] rather than "unknown", so the
 /// upgrade that added the check doesn't strand every existing document.
-pub const SCHEMA_VERSION_KEY: &str = "qos:schema_version";
+pub const SCHEMA_VERSION_KEY: &str = "tilo:schema_version";
 
 /// The document layout this build writes and understands. Bump only when a
 /// change makes a document unreadable to an older build in a way that loses
@@ -103,6 +103,14 @@ pub enum StoreError {
         found: u32,
         understood: u32,
     },
+    /// An app-owned migration declined an older, otherwise readable layout.
+    #[error("migrating {path} from layout {from} to {to}: {message}")]
+    Migration {
+        path: PathBuf,
+        from: u32,
+        to: u32,
+        message: String,
+    },
 }
 
 fn io_err(context: impl Into<String>, source: io::Error) -> StoreError {
@@ -127,22 +135,22 @@ pub fn schema_version_of(doc: &AutoCommit) -> u32 {
     }
 }
 
-fn stamp_schema_version(doc: &mut AutoCommit) {
-    if let Err(e) = doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION)) {
+fn stamp_schema_version(doc: &mut AutoCommit, version: u32) {
+    if let Err(e) = doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(version)) {
         tracing::warn!(error = %e, "could not stamp the document's schema version");
     }
 }
 
 /// Stamp the version only if the document doesn't already carry one, so a
 /// pre-versioning document gets it on first save rather than staying unlabelled.
-fn ensure_schema_version(doc: &mut AutoCommit) {
+fn ensure_schema_version(doc: &mut AutoCommit, version: u32) {
     if matches!(doc.get(ROOT, SCHEMA_VERSION_KEY), Ok(None) | Err(_)) {
-        stamp_schema_version(doc);
+        stamp_schema_version(doc, version);
     }
 }
 
 /// Validate a package id as a single directory name — the containment
-/// boundary. `QOS_PACKAGE_ID` is treated as untrusted (an app can set its
+/// boundary. `TILO_PACKAGE_ID` is treated as untrusted (an app can set its
 /// own environment), so anything that could escape its own directory is
 /// rejected rather than sanitised.
 fn validate_package_id(id: &str) -> Result<(), StoreError> {
@@ -214,6 +222,10 @@ pub struct DocStore {
     dir: PathBuf,
     document: PathBuf,
     actor: ActorId,
+    /// App/document-specific layout understood by this caller. Constructors
+    /// default to the toolkit's legacy v1 contract; apps opt into a newer
+    /// schema before loading via [`Self::with_schema_version`].
+    schema_version: u32,
     /// Held for as long as the store lives; `None` when another instance already owns the lock.
     lock: Option<File>,
     /// Heads the file on disk is known to contain; empty until the first load or save.
@@ -232,19 +244,19 @@ struct Refusal {
 }
 
 impl DocStore {
-    /// Open the store belonging to the running package, via `QOS_PACKAGE_ID` —
+    /// Open the store belonging to the running package, via `TILO_PACKAGE_ID` —
     /// no argument by design, since an app doesn't choose where its state lives.
     ///
     /// # Errors
     ///
-    /// Returns an error if `QOS_PACKAGE_ID` is not a valid single directory
+    /// Returns an error if `TILO_PACKAGE_ID` is not a valid single directory
     /// name (see [`validate_package_id`]), or if the package's state
     /// directory can't be created, inspected or locked.
     pub fn open() -> Result<Self, StoreError> {
         Self::open_for(&cli::package_id())
     }
 
-    /// Open the store, falling back to `manifest_id` when `QOS_PACKAGE_ID` is
+    /// Open the store, falling back to `manifest_id` when `TILO_PACKAGE_ID` is
     /// unset. The env var always wins; the fallback only covers launcher-less
     /// runs (dev binary, tests) that would otherwise share one directory.
     ///
@@ -254,7 +266,7 @@ impl DocStore {
     /// name (see [`validate_package_id`]), or if the package's state
     /// directory can't be created, inspected or locked.
     pub fn open_with_manifest_id(manifest_id: &str) -> Result<Self, StoreError> {
-        let id = std::env::var("QOS_PACKAGE_ID")
+        let id = std::env::var("TILO_PACKAGE_ID")
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| manifest_id.to_string());
@@ -440,6 +452,7 @@ impl DocStore {
             document: dir.join(DOCUMENT_FILE),
             dir,
             actor,
+            schema_version: SCHEMA_VERSION,
             lock,
             persisted: Vec::new(),
             refusal: None,
@@ -448,6 +461,19 @@ impl DocStore {
 
     pub fn package_id(&self) -> &str {
         &self.package_id
+    }
+
+    /// Select the app-owned CRDT layout this store reads and writes. Call
+    /// this before `load`, `load_or_new`, or creating an autosave handle.
+    #[must_use]
+    pub fn with_schema_version(mut self, version: u32) -> Self {
+        self.schema_version = version;
+        self
+    }
+
+    #[must_use]
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
     }
 
     /// The directory holding the document, its actor sidecar and its lock.
@@ -502,15 +528,51 @@ impl DocStore {
         // Check before reading any value: a newer layout may reuse a key with a
         // different meaning, and the writer above saves the whole document back.
         let found = schema_version_of(&doc);
-        if found > SCHEMA_VERSION {
+        if found > self.schema_version {
             return Err(StoreError::NewerSchema {
                 path: self.document.clone(),
                 found,
-                understood: SCHEMA_VERSION,
+                understood: self.schema_version,
             });
         }
         doc.set_actor(self.actor.clone());
         self.persisted = doc.get_heads();
+        Ok(Some(doc))
+    }
+
+    /// Load and, when necessary, atomically migrate an older app-owned CRDT
+    /// layout to [`Self::schema_version`]. The callback must be deterministic
+    /// and idempotent because another replica may independently migrate the
+    /// same logical document before their changes merge.
+    ///
+    /// A successful migration is written before returning. This keeps the
+    /// autosave frontier aligned with what is actually durable; merely
+    /// mutating the returned document and then seeding autosave would
+    /// otherwise make those migration heads look already persisted.
+    ///
+    /// # Errors
+    ///
+    /// Returns load/write errors unchanged, or [`StoreError::Migration`] when
+    /// the app callback rejects the older layout.
+    pub fn load_migrating<F>(&mut self, migrate: F) -> Result<Option<AutoCommit>, StoreError>
+    where
+        F: FnOnce(&mut AutoCommit, u32, u32) -> Result<(), String>,
+    {
+        let Some(mut doc) = self.load()? else {
+            return Ok(None);
+        };
+        let found = schema_version_of(&doc);
+        if found >= self.schema_version {
+            return Ok(Some(doc));
+        }
+        migrate(&mut doc, found, self.schema_version).map_err(|message| StoreError::Migration {
+            path: self.document.clone(),
+            from: found,
+            to: self.schema_version,
+            message,
+        })?;
+        stamp_schema_version(&mut doc, self.schema_version);
+        self.save(&mut doc)?;
         Ok(Some(doc))
     }
 
@@ -554,7 +616,7 @@ impl DocStore {
         self.persisted = Vec::new();
         self.refusal = None;
         let mut doc = AutoCommit::new().with_actor(self.actor.clone());
-        stamp_schema_version(&mut doc);
+        stamp_schema_version(&mut doc, self.schema_version);
         doc
     }
 
@@ -571,7 +633,7 @@ impl DocStore {
     /// can't be written.
     pub fn save(&mut self, doc: &mut AutoCommit) -> Result<(), StoreError> {
         self.refuse_to_write()?;
-        ensure_schema_version(doc);
+        ensure_schema_version(doc, self.schema_version);
         let bytes = doc.save();
         self.write_full(&bytes)?;
         self.persisted = doc.get_heads();
@@ -586,7 +648,7 @@ impl DocStore {
             Some(r) => Err(StoreError::NewerSchema {
                 path: self.document.clone(),
                 found: r.found,
-                understood: SCHEMA_VERSION,
+                understood: self.schema_version,
             }),
         }
     }
@@ -601,7 +663,7 @@ impl DocStore {
     /// can't be written.
     pub fn append(&mut self, doc: &mut AutoCommit) -> Result<usize, StoreError> {
         self.refuse_to_write()?;
-        ensure_schema_version(doc);
+        ensure_schema_version(doc, self.schema_version);
         let heads = doc.get_heads();
         if heads == self.persisted {
             return Ok(0);
@@ -752,7 +814,7 @@ fn publish_claim(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
     })?;
     let nonce = CLAIM_NONCE.fetch_add(1, Ordering::Relaxed);
     let temp = parent.join(format!(
-        ".qos-claim-{}-{}-{}",
+        ".tilo-claim-{}-{}-{}",
         std::process::id(),
         nonce,
         room_key
@@ -851,7 +913,7 @@ fn ensure_state_dir(dir: &Path) -> Result<(), StoreError> {
 /// doesn't exist yet, so preserving one leftover never clobbers another.
 fn stale_sibling(dir: &Path) -> PathBuf {
     // Append rather than replace the extension: package ids contain dots
-    // (`dev.qos.maps`), so `with_extension` would eat the last id segment.
+    // (`dev.tilo.maps`), so `with_extension` would eat the last id segment.
     let mut base = dir.as_os_str().to_owned();
     base.push(".stale");
     let mut candidate = PathBuf::from(&base);
@@ -937,7 +999,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
         tmp
     }
@@ -960,11 +1022,11 @@ mod tests {
     #[serial_test::serial]
     fn path_is_derived_from_the_package_id() {
         let tmp = scratch_home();
-        let store = DocStore::open_for("dev.qos.ebook").unwrap();
-        assert_eq!(store.dir(), tmp.path().join("dev.qos.ebook"));
+        let store = DocStore::open_for("dev.tilo.ebook").unwrap();
+        assert_eq!(store.dir(), tmp.path().join("dev.tilo.ebook"));
         assert_eq!(
             store.document_path(),
-            tmp.path().join("dev.qos.ebook").join(DOCUMENT_FILE)
+            tmp.path().join("dev.tilo.ebook").join(DOCUMENT_FILE)
         );
     }
 
@@ -972,18 +1034,18 @@ mod tests {
     #[serial_test::serial]
     fn open_reads_the_launcher_package_id() {
         let tmp = scratch_home();
-        unsafe { std::env::set_var("QOS_PACKAGE_ID", "dev.qos.monitor") };
+        unsafe { std::env::set_var("TILO_PACKAGE_ID", "dev.tilo.monitor") };
         let store = DocStore::open().unwrap();
-        assert_eq!(store.package_id(), "dev.qos.monitor");
-        assert_eq!(store.dir(), tmp.path().join("dev.qos.monitor"));
-        unsafe { std::env::remove_var("QOS_PACKAGE_ID") };
+        assert_eq!(store.package_id(), "dev.tilo.monitor");
+        assert_eq!(store.dir(), tmp.path().join("dev.tilo.monitor"));
+        unsafe { std::env::remove_var("TILO_PACKAGE_ID") };
     }
 
     #[test]
     #[serial_test::serial]
     fn legacy_package_migration_is_claimed_by_one_room_and_resume_is_stable() {
         let tmp = scratch_home();
-        let package = "dev.qos.legacy-claim";
+        let package = "dev.tilo.legacy-claim";
         let legacy = DocStore::legacy_package_document_path(package).unwrap();
         fs::create_dir_all(legacy.parent().unwrap()).unwrap();
         fs::write(&legacy, b"legacy source remains intact").unwrap();
@@ -1005,7 +1067,7 @@ mod tests {
     #[serial_test::serial]
     fn concurrent_legacy_migration_claims_have_one_winner() {
         let _tmp = scratch_home();
-        let package = "dev.qos.concurrent-claim";
+        let package = "dev.tilo.concurrent-claim";
         fs::create_dir_all(cli::standalone_state_dir(package)).unwrap();
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
         let mut threads = Vec::new();
@@ -1028,7 +1090,7 @@ mod tests {
     #[serial_test::serial]
     fn torn_legacy_claim_recovers_without_granting_two_rooms() {
         let _tmp = scratch_home();
-        let package = "dev.qos.torn-claim";
+        let package = "dev.tilo.torn-claim";
         let root = cli::standalone_state_dir(package);
         fs::create_dir_all(&root).unwrap();
         // Shape left by the old create-then-write implementation if it died
@@ -1047,10 +1109,10 @@ mod tests {
     fn package_id_cannot_escape_the_data_root() {
         let _tmp = scratch_home();
         for bad in [
-            "../dev.qos.mail",
+            "../dev.tilo.mail",
             "../../etc",
             "/etc/shadow",
-            "dev.qos.mail/../dev.qos.chat",
+            "dev.tilo.mail/../dev.tilo.chat",
             "a/b",
             "..",
             ".",
@@ -1070,7 +1132,7 @@ mod tests {
     #[serial_test::serial]
     fn round_trip_preserves_content() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.roundtrip").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.roundtrip").unwrap();
         assert!(store.load().unwrap().is_none(), "nothing saved yet");
 
         let mut doc = store.new_document();
@@ -1081,7 +1143,7 @@ mod tests {
         store.save(&mut doc).unwrap();
         drop((store, doc));
 
-        let mut reopened = DocStore::open_for("dev.qos.roundtrip").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.roundtrip").unwrap();
         let loaded = reopened.load().unwrap().expect("document is on disk");
         assert_eq!(text_of(&loaded, "title").as_deref(), Some("Moby Dick"));
         let notes = loaded.get(&ROOT, "notes").unwrap().unwrap().1;
@@ -1097,7 +1159,7 @@ mod tests {
     #[serial_test::serial]
     fn round_trip_merges_with_a_replica_that_diverged_before_the_save() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.merge").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.merge").unwrap();
 
         let mut doc = store.new_document();
         let list = doc.put_object(&ROOT, "contacts", ObjType::Map).unwrap();
@@ -1115,7 +1177,7 @@ mod tests {
         store.save(&mut doc).unwrap();
         drop((store, doc));
 
-        let mut reopened = DocStore::open_for("dev.qos.merge").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.merge").unwrap();
         let mut restored = reopened.load().unwrap().expect("saved document");
 
         // Actor identity survives the restart: same automerge actor, not a fresh one per launch.
@@ -1156,7 +1218,7 @@ mod tests {
     #[serial_test::serial]
     fn append_is_incremental_and_loads_back() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.append").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.append").unwrap();
         let mut doc = store.new_document();
         let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
         doc.splice_text(&body, 0, 0, "hello").unwrap();
@@ -1176,7 +1238,7 @@ mod tests {
         assert_eq!(store.append(&mut doc).unwrap(), 0);
         drop((store, doc));
 
-        let mut reopened = DocStore::open_for("dev.qos.append").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.append").unwrap();
         let loaded = reopened.load().unwrap().unwrap();
         let body = loaded.get(&ROOT, "body").unwrap().unwrap().1;
         assert_eq!(loaded.text(&body).unwrap(), "hello world");
@@ -1188,7 +1250,7 @@ mod tests {
     #[serial_test::serial]
     fn a_torn_append_loses_only_the_torn_change() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.torn").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.torn").unwrap();
         let mut doc = store.new_document();
         let body = doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
         doc.splice_text(&body, 0, 0, "committed").unwrap();
@@ -1202,7 +1264,7 @@ mod tests {
         fs::write(store.document_path(), &bytes[..bytes.len() - 3]).unwrap();
         drop((store, doc));
 
-        let mut reopened = DocStore::open_for("dev.qos.torn").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.torn").unwrap();
         let loaded = reopened
             .load()
             .expect("a torn tail must not fail the load")
@@ -1222,7 +1284,7 @@ mod tests {
     #[serial_test::serial]
     fn an_interrupted_full_save_leaves_the_previous_document_intact() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.atomic").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.atomic").unwrap();
         let mut doc = store.new_document();
         doc.put(&ROOT, "v", ScalarValue::Str("first".into()))
             .unwrap();
@@ -1233,7 +1295,7 @@ mod tests {
         fs::write(&tmp_path, b"\x85\x6f\x4a\x83truncated garbage").unwrap();
         drop((store, doc));
 
-        let mut reopened = DocStore::open_for("dev.qos.atomic").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.atomic").unwrap();
         let loaded = reopened.load().unwrap().expect("previous document");
         assert_eq!(text_of(&loaded, "v").as_deref(), Some("first"));
     }
@@ -1242,9 +1304,9 @@ mod tests {
     #[serial_test::serial]
     fn a_second_instance_gets_a_distinct_actor() {
         let _tmp = scratch_home();
-        let first = DocStore::open_for("dev.qos.twice").unwrap();
+        let first = DocStore::open_for("dev.tilo.twice").unwrap();
         assert!(first.is_exclusive_writer());
-        let second = DocStore::open_for("dev.qos.twice").unwrap();
+        let second = DocStore::open_for("dev.tilo.twice").unwrap();
         assert!(
             !second.is_exclusive_writer(),
             "the second live store must not claim the writer lock"
@@ -1285,21 +1347,21 @@ mod tests {
         fs::write(&legacy, old.save()).unwrap();
 
         // State the new store already has.
-        let mut store = DocStore::open_for("dev.qos.migrate").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.migrate").unwrap();
         let mut doc = store.new_document();
         doc.put(&ROOT, "from_new", ScalarValue::Str("yes".into()))
             .unwrap();
         store.save(&mut doc).unwrap();
 
         assert!(store.migrate_from(&legacy).unwrap());
-        let mut reopened = DocStore::open_for("dev.qos.migrate").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.migrate").unwrap();
         let loaded = reopened.load().unwrap().unwrap();
         assert_eq!(text_of(&loaded, "from_legacy").as_deref(), Some("yes"));
         assert_eq!(text_of(&loaded, "from_new").as_deref(), Some("yes"));
 
         // Idempotent: a second run changes nothing and loses nothing.
         assert!(store.migrate_from(&legacy).unwrap());
-        let mut again = DocStore::open_for("dev.qos.migrate").unwrap();
+        let mut again = DocStore::open_for("dev.tilo.migrate").unwrap();
         let loaded = again.load().unwrap().unwrap();
         assert_eq!(text_of(&loaded, "from_legacy").as_deref(), Some("yes"));
         assert_eq!(text_of(&loaded, "from_new").as_deref(), Some("yes"));
@@ -1309,7 +1371,7 @@ mod tests {
     #[serial_test::serial]
     fn migration_of_a_missing_file_is_a_no_op() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.nomigrate").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.nomigrate").unwrap();
         assert!(!store.migrate_from(Path::new("/nonexistent/nope")).unwrap());
     }
 
@@ -1320,18 +1382,74 @@ mod tests {
     #[serial_test::serial]
     fn a_new_document_carries_the_schema_version() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.stamped").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.stamped").unwrap();
         let mut doc = store.new_document();
         assert_eq!(schema_version_of(&doc), SCHEMA_VERSION);
         store.save(&mut doc).unwrap();
 
-        let mut reopened = DocStore::open_for("dev.qos.stamped").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.stamped").unwrap();
         let loaded = reopened.load().unwrap().expect("saved document");
         assert!(
             loaded.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_some(),
             "the version has to survive the round trip, not just live in memory"
         );
         assert_eq!(schema_version_of(&loaded), SCHEMA_VERSION);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn app_owned_schema_migration_is_durable_and_runs_once() {
+        let _tmp = scratch_home();
+        let package = "dev.tilo.schema-migration";
+        let mut old_store = DocStore::open_for(package).unwrap();
+        let mut old = old_store.new_document();
+        old.put(ROOT, "legacy", "value").unwrap();
+        old_store.save(&mut old).unwrap();
+        drop(old_store);
+
+        let mut migrated_store = DocStore::open_for(package).unwrap().with_schema_version(2);
+        let migrated = migrated_store
+            .load_migrating(|doc, from, to| {
+                assert_eq!((from, to), (1, 2));
+                doc.put(ROOT, "migrated", true)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(schema_version_of(&migrated), 2);
+        assert!(migrated.get(ROOT, "migrated").unwrap().is_some());
+        drop(migrated_store);
+
+        let mut reopened = DocStore::open_for(package).unwrap().with_schema_version(2);
+        let loaded = reopened
+            .load_migrating(|_, _, _| Err("migration ran twice".into()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(schema_version_of(&loaded), 2);
+        assert!(loaded.get(ROOT, "legacy").unwrap().is_some());
+        assert!(loaded.get(ROOT, "migrated").unwrap().is_some());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn app_owned_schema_refuses_a_newer_layout() {
+        let _tmp = scratch_home();
+        let package = "dev.tilo.schema-refusal";
+        let mut newer = DocStore::open_for(package).unwrap().with_schema_version(3);
+        let mut doc = newer.new_document();
+        newer.save(&mut doc).unwrap();
+        drop(newer);
+
+        let mut older = DocStore::open_for(package).unwrap().with_schema_version(2);
+        assert!(matches!(
+            older.load(),
+            Err(StoreError::NewerSchema {
+                found: 3,
+                understood: 2,
+                ..
+            })
+        ));
     }
 
     /// A document from before versioning existed opens, and gains its version
@@ -1341,7 +1459,7 @@ mod tests {
     #[serial_test::serial]
     fn a_document_written_before_versioning_opens_and_is_stamped_on_save() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.unversioned").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.unversioned").unwrap();
 
         // Written the way the crate used to: a bare AutoCommit, no stamp.
         let mut old = AutoCommit::new();
@@ -1366,7 +1484,7 @@ mod tests {
         );
         store.save(&mut doc).unwrap();
 
-        let mut reopened = DocStore::open_for("dev.qos.unversioned").unwrap();
+        let mut reopened = DocStore::open_for("dev.tilo.unversioned").unwrap();
         let loaded = reopened.load().unwrap().unwrap();
         assert!(
             loaded.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_some(),
@@ -1383,7 +1501,7 @@ mod tests {
     #[serial_test::serial]
     fn a_newer_document_is_refused_and_never_written_over() {
         let _tmp = scratch_home();
-        let mut store = DocStore::open_for("dev.qos.future").unwrap();
+        let mut store = DocStore::open_for("dev.tilo.future").unwrap();
 
         let mut future = AutoCommit::new();
         future
@@ -1452,7 +1570,7 @@ mod tests {
     #[serial_test::serial]
     fn opening_twice_against_an_existing_dir_keeps_persistence_enabled() {
         let _tmp = scratch_home();
-        let pkg = "dev.qos.persist-twice";
+        let pkg = "dev.tilo.persist-twice";
 
         let dir = cli::standalone_state_dir(pkg);
         fs::create_dir_all(&dir).unwrap();
@@ -1508,7 +1626,7 @@ mod tests {
     #[serial_test::serial]
     fn opening_when_the_state_path_is_a_stale_empty_file_recovers_persistence() {
         let _tmp = scratch_home();
-        let pkg = "dev.qos.stale-empty";
+        let pkg = "dev.tilo.stale-empty";
         let path = cli::standalone_state_dir(pkg);
 
         fs::write(&path, b"").unwrap();
@@ -1546,7 +1664,7 @@ mod tests {
     #[serial_test::serial]
     fn opening_when_the_state_path_is_a_nonempty_file_preserves_and_migrates_it() {
         let _tmp = scratch_home();
-        let pkg = "dev.qos.stale-doc";
+        let pkg = "dev.tilo.stale-doc";
         let path = cli::standalone_state_dir(pkg);
 
         // The old layout wrote a real Automerge document straight to the path.
@@ -1605,10 +1723,10 @@ mod tests {
         fs::write(&blocker, b"not a directory").unwrap();
         unsafe {
             std::env::set_var("XDG_DATA_HOME", blocker.join("sub"));
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
 
-        let result = DocStore::open_for("dev.qos.blocked");
+        let result = DocStore::open_for("dev.tilo.blocked");
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
 
         match result {

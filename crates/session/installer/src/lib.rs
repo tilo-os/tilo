@@ -1,6 +1,6 @@
-//! qOS graphical installer — library root.
+//! Tilo graphical installer — library root.
 //!
-//! A qOS-branded alternative to Anaconda, built on the `ui` toolkit and
+//! A Tilo-branded alternative to Anaconda, built on the `ui` toolkit and
 //! run under `cage` (a kiosk wlroots compositor) off the live media. It
 //! walks the user through a seven-step wizard with a persistent progress
 //! breadcrumb:
@@ -20,7 +20,7 @@
 //!
 //! Modules:
 //! * [`disks`] — `lsblk` discovery + the output parser.
-//! * [`install`] — backend (`/usr/libexec/qos-install`, `/usr/libexec/qos-power`)
+//! * [`install`] — backend (`/usr/libexec/tilo-install`, `/usr/libexec/tilo-power`)
 //!   invocation + line-streaming.
 //! * [`installer_network`] — asynchronous connectivity, Wi-Fi and portal flow.
 //! * [`status_log`] — the auto-tailing status view widget.
@@ -55,6 +55,7 @@ pub mod installer_network;
 pub mod keyboard_view;
 pub mod layouts;
 pub mod media_profile;
+pub mod power_readiness;
 pub mod seg_choice;
 pub mod status_log;
 pub mod step_indicator;

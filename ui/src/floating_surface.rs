@@ -61,7 +61,7 @@ pub enum FloatingRole {
 /// all carry the same messages.
 pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 4;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
-pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "dev.qos.shell-float.";
+pub const FLOATING_SURFACE_APP_ID_PREFIX: &str = "dev.tilo.shell-float.";
 const MAX_PROTOCOL_FRAME_BYTES: usize = 1024 * 1024;
 /// Backpressure bound for a non-reading shell peer. Frames are normally
 /// flushed immediately; this only limits the exceptional `WouldBlock` queue.
@@ -224,7 +224,7 @@ pub enum FloatingSurfaceHostMessage {
 
 /// Non-blocking app-side connection to the session shell. The launcher hands
 /// the already-connected socket into the sandbox as
-/// `QOS_SVC_SHELL-UI_FD`; newline-delimited JSON keeps the tiny lifecycle
+/// `TILO_SVC_SHELL-UI_FD`; newline-delimited JSON keeps the tiny lifecycle
 /// protocol inspectable and lets the compositor service evolve independently
 /// of app/widget releases.
 #[cfg(unix)]
@@ -238,7 +238,7 @@ pub struct FloatingSurfaceServiceClient {
 
 #[cfg(unix)]
 impl FloatingSurfaceServiceClient {
-    /// Discover the optional session service. Outside qOS (or on an older
+    /// Discover the optional session service. Outside Tilo (or on an older
     /// shell) this returns `None`; apps retain their ordinary attached UI.
     pub fn discover() -> Option<Self> {
         let fd = runtime_portal::service_fd(FLOATING_SURFACE_SERVICE)?;
@@ -359,7 +359,7 @@ impl FloatingSurfaceServiceClient {
     }
 }
 
-/// Non-Unix hosts cannot receive qOS session-service file descriptors. Keep
+/// Non-Unix hosts cannot receive Tilo session-service file descriptors. Keep
 /// the optional client API available so applications compile and naturally
 /// retain their attached in-window surface.
 #[cfg(not(unix))]
@@ -1411,11 +1411,11 @@ mod tests {
             role: FloatingRole::PictureInPicture,
             source: FloatingSource::Composite(vec![
                 FloatingSource::AppRegion {
-                    app_id: "dev.qos.editor".into(),
+                    app_id: "dev.tilo.editor".into(),
                     region: Rect::new(12.0, 30.0, 412.0, 330.0),
                 },
                 FloatingSource::AppElement {
-                    app_id: "dev.qos.browser".into(),
+                    app_id: "dev.tilo.browser".into(),
                     element_id: "video:main".into(),
                     region: Rect::new(20.0, 40.0, 620.0, 378.0),
                 },
@@ -1631,7 +1631,7 @@ mod tests {
             title: "Call".into(),
             role: FloatingSurfaceProtocolRole::ActiveCall,
             source: FloatingSurfaceProtocolSource::AppRegion {
-                app_id: "dev.qos.chat".into(),
+                app_id: "dev.tilo.chat".into(),
                 region: [10.0, 20.0, 210.0, 140.0],
             },
             preferred_size: [360.0, 220.0],
@@ -1645,7 +1645,7 @@ mod tests {
 
         let mut inverted = base;
         inverted.source = FloatingSurfaceProtocolSource::AppRegion {
-            app_id: "dev.qos.chat".into(),
+            app_id: "dev.tilo.chat".into(),
             region: [210.0, 20.0, 10.0, 140.0],
         };
         assert!(FloatingSurfaceRequest::try_from(inverted).is_err());

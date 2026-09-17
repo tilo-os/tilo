@@ -119,7 +119,11 @@ pub fn pill_size(text: &str, tr: &mut TextRenderer, text_size: f32, control: f64
     let (tw, _) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
     let pad_x = 14.0;
     let w = f64::from(tw) + 2.0 * pad_x + 2.0 * control;
-    let h = (f64::from(text_size) + 16.0).max(30.0);
+    // `TextRenderer` applies the user's text scale to metrics, so the pill
+    // geometry must use the same effective font size.  Otherwise at 200% the
+    // glyphs extend through the lower edge of a 30px bubble.
+    let scaled_text_size = f64::from(text_size) * f64::from(tr.text_scale());
+    let h = (scaled_text_size + 16.0).max(30.0);
     (w, h)
 }
 
@@ -156,7 +160,8 @@ pub fn draw_pill(
 
     let (tw, _) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
     let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
-    let ty = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
+    let scaled_text_size = f64::from(text_size) * f64::from(tr.text_scale());
+    let ty = rect.y0 + (rect.height() - scaled_text_size) / 2.0;
     tr.draw_text_weighted(
         scene,
         text,
@@ -190,6 +195,16 @@ pub fn draw_chevron(scene: &mut Scene, transform: Affine, r: Rect, color: Color,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pill_geometry_follows_the_text_renderer_scale() {
+        let mut tr = TextRenderer::new();
+        let (_, normal_h) = pill_size("Compiled", &mut tr, 12.0, 0.0);
+        tr.set_text_scale(2.0);
+        let (_, enlarged_h) = pill_size("Compiled", &mut tr, 12.0, 0.0);
+        assert_eq!(normal_h, 30.0);
+        assert_eq!(enlarged_h, 40.0);
+    }
 
     #[test]
     fn poke_reveals_then_fades_after_linger() {

@@ -1,6 +1,6 @@
 //! Devices & Sync — configure seamless continuation and always-on sync.
 //!
-//! The pane reads and writes the same `RelayConfig` consumed by `qos-relay`
+//! The pane reads and writes the same `RelayConfig` consumed by `tilo-relay`
 //! and reads the daemon's once-per-second metrics snapshot for live status.
 
 use std::collections::HashMap;
@@ -10,9 +10,9 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
-use qos_relay::{DeviceRole, RelayConfig, ReplicationIntent};
-use qos_user_identity::RevocationReason;
 use taffy::{NodeId, TaffyTree};
+use tilo_relay::{DeviceRole, RelayConfig, ReplicationIntent};
+use tilo_user_identity::RevocationReason;
 use ui::theme::Theme;
 use ui::widget::{Button, Dropdown, TextInput, Toggle, Widget};
 use vello::Scene;
@@ -25,7 +25,7 @@ use crate::widgets::{
     status_pill, value_row,
 };
 
-const DEFAULT_CONFIG: &str = "/etc/qos/relay.toml";
+const DEFAULT_CONFIG: &str = "/etc/tilo/relay.toml";
 const ROLE_KEY: &str = "device_mesh.role";
 const REPLICATION_KEY: &str = "device_mesh.replication";
 const INBOUND_RELAY_KEY: &str = "device_mesh.inbound_relay";
@@ -36,8 +36,8 @@ const APPROVE_ENROLLMENT_KEY: &str = "device_mesh.approve_enrollment.edit";
 const APPROVE_PERSONAL_DEVICE_KEY: &str = "device_mesh.approve_personal_device.edit";
 const CONFIRM_ROLE_KEY: &str = "device_mesh.confirm_role.edit";
 const CANCEL_ROLE_KEY: &str = "device_mesh.cancel_role.edit";
-const CONTROL_HELPER: &str = "/usr/libexec/qos-home-peer-control";
-const RELAY_ADMIN: &str = "/usr/bin/qos-relay-admin";
+const CONTROL_HELPER: &str = "/usr/libexec/tilo-home-peer-control";
+const RELAY_ADMIN: &str = "/usr/bin/tilo-relay-admin";
 
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const STATUS_FRESHNESS: Duration = Duration::from_secs(5);
@@ -123,7 +123,7 @@ enum RelayRuntimeStatus {
 
 impl RelayRuntimeStatus {
     fn read(config: &RelayConfig, now: SystemTime) -> Self {
-        let metrics_path = config.state_root.join(qos_relay::store::METRICS_FILE);
+        let metrics_path = config.state_root.join(tilo_relay::store::METRICS_FILE);
         let fresh = std::fs::metadata(metrics_path)
             .and_then(|metadata| metadata.modified())
             .is_ok_and(|modified| {
@@ -132,7 +132,7 @@ impl RelayRuntimeStatus {
         if !fresh {
             return Self::Offline;
         }
-        match qos_relay::store::load_metrics(&config.state_root) {
+        match tilo_relay::store::load_metrics(&config.state_root) {
             Ok(Some(_))
                 if config.device_role == DeviceRole::AlwaysOnServer
                     && config.services.full_content_replication =>
@@ -199,7 +199,7 @@ pub struct DeviceMeshPane {
     runtime_status: RelayRuntimeStatus,
     discovered_workspaces: Vec<DiscoveredWorkspace>,
     registered_home_peers: usize,
-    home_peers: Vec<qos_relay::HomePeerRegistration>,
+    home_peers: Vec<tilo_relay::HomePeerRegistration>,
     home_peer_health: HashMap<String, String>,
     home_peer_last_seen: HashMap<String, u64>,
     personal_devices: Vec<crate::device_fleet::DeviceView>,
@@ -250,7 +250,7 @@ fn workspace_key(id: u64) -> String {
 fn discover_workspaces(config: &RelayConfig) -> Vec<DiscoveredWorkspace> {
     let path = dirs::config_dir().map_or_else(
         || PathBuf::from("state.json"),
-        |dir| dir.join("qos/state.json"),
+        |dir| dir.join("tilo/state.json"),
     );
     let mut result = std::fs::read(&path)
         .ok()
@@ -268,7 +268,7 @@ fn discover_workspaces(config: &RelayConfig) -> Vec<DiscoveredWorkspace> {
                     let id = workspace
                         .get("room")
                         .and_then(serde_json::Value::as_str)
-                        .and_then(|room| qos_relay::room_workspace_id(room).ok())
+                        .and_then(|room| tilo_relay::room_workspace_id(room).ok())
                         .or_else(|| workspace.get("id").and_then(serde_json::Value::as_u64))?;
                     let name = workspace
                         .get("name")
@@ -296,7 +296,7 @@ fn registered_home_peer_count() -> usize {
     registered_home_peers().len()
 }
 
-fn registered_home_peers() -> Vec<qos_relay::HomePeerRegistration> {
+fn registered_home_peers() -> Vec<tilo_relay::HomePeerRegistration> {
     std::fs::read(identity_root().join("home-peers.json"))
         .ok()
         .filter(|bytes| bytes.len() <= 1024 * 1024)
@@ -375,14 +375,14 @@ fn peer_health_badge(health: &str) -> &'static str {
 }
 
 pub(crate) fn identity_root() -> PathBuf {
-    std::env::var_os("QOS_IDENTITY_ROOT").map_or_else(
+    std::env::var_os("TILO_IDENTITY_ROOT").map_or_else(
         || {
-            if PathBuf::from("/var/lib/qos/device").is_dir() {
-                PathBuf::from("/var/lib/qos")
+            if PathBuf::from("/var/lib/tilo/device").is_dir() {
+                PathBuf::from("/var/lib/tilo")
             } else {
                 dirs::data_dir()
                     .unwrap_or_else(|| PathBuf::from(".local/share"))
-                    .join("qos")
+                    .join("tilo")
             }
         },
         PathBuf::from,
@@ -422,15 +422,15 @@ impl DeviceMeshPane {
     fn from_path(config_path: PathBuf) -> Self {
         let (config, load_status) = match RelayConfig::load(&config_path) {
             Ok(config) => (config, "Configuration loaded".to_string()),
-            Err(qos_relay::config::ConfigError::Io(error))
+            Err(tilo_relay::config::ConfigError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
             {
-                // Settings is opened on interactive qOS devices far more
+                // Settings is opened on interactive Tilo devices far more
                 // often than on a newly provisioned headless relay. Do not
                 // visually opt an unconfigured desktop into server behavior.
                 let config = RelayConfig {
                     device_role: DeviceRole::Interactive,
-                    services: qos_relay::ServiceCapabilities::default(),
+                    services: tilo_relay::ServiceCapabilities::default(),
                     ..RelayConfig::default()
                 };
                 (config, "Not configured on this device".to_string())
@@ -501,7 +501,7 @@ impl DeviceMeshPane {
             state,
             SETTINGS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Settings", "Settings", action),
         );
     }
 
@@ -538,7 +538,7 @@ impl DeviceMeshPane {
                 self.config.workspaces = self
                     .discovered_workspaces
                     .iter()
-                    .map(|workspace| qos_relay::WorkspaceBinding {
+                    .map(|workspace| tilo_relay::WorkspaceBinding {
                         id: workspace.id,
                         pin: true,
                         replication: ReplicationIntent::FullWorkspace,
@@ -728,7 +728,7 @@ impl DeviceMeshPane {
             .with_enabled(!pairing),
         );
         let mut personal_rows = vec![caption(
-            "On the new device, choose Use my existing qOS identity. Compare the nearby six-digit code, then approve it here. Your open workspaces and trusted home peers appear automatically.",
+            "On the new device, choose Use my existing Tilo identity. Compare the nearby six-digit code, then approve it here. Your open workspaces and trusted home peers appear automatically.",
         )];
         if self.pairing_target == PairingTarget::PersonalDevice
             && (pairing || self.pairing_candidate.is_some() || !self.load_status.is_empty())
@@ -802,7 +802,7 @@ impl DeviceMeshPane {
             ));
         }
         let mut home_server_rows = vec![caption(
-            "Choose Pair home server while your new qOS server is starting. It receives its identity and full-sync setup automatically.",
+            "Choose Pair home server while your new Tilo server is starting. It receives its identity and full-sync setup automatically.",
         )];
         if self.registered_home_peers > 0 {
             home_server_rows.push(value_row(
@@ -1089,7 +1089,7 @@ impl DeviceMeshPane {
                 PairingTarget::HomePeer => "discover",
                 PairingTarget::PersonalDevice => "discover-device",
             };
-            self.load_status = match Command::new("/usr/bin/qos-enroll")
+            self.load_status = match Command::new("/usr/bin/tilo-enroll")
                 .args([discover_command, "--timeout", "15"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -1178,7 +1178,7 @@ impl DeviceMeshPane {
 
     fn start_home_peer_command(
         &mut self,
-        peer: &qos_relay::HomePeerRegistration,
+        peer: &tilo_relay::HomePeerRegistration,
         action: &str,
         label: Option<&str>,
     ) {
@@ -1614,7 +1614,7 @@ impl Widget for DeviceMeshPane {
                     .iter()
                     .any(|binding| binding.id == workspace.id)
             {
-                self.config.workspaces.push(qos_relay::WorkspaceBinding {
+                self.config.workspaces.push(tilo_relay::WorkspaceBinding {
                     id: workspace.id,
                     pin: self.config.device_role.can_serve(),
                     replication: if self.config.device_role == DeviceRole::AlwaysOnServer {
@@ -1678,7 +1678,7 @@ impl Widget for DeviceMeshPane {
                 let _ = state.put(root, &rename_key, false);
                 if let Some(label) =
                     Self::read_str(state, root, &peer_key("name", &peer.device_node_id))
-                    && qos_relay::valid_home_peer_label(&label)
+                    && tilo_relay::valid_home_peer_label(&label)
                 {
                     self.start_home_peer_command(&peer, "home-peer-rename", Some(label.trim()));
                 }
@@ -1821,7 +1821,7 @@ impl Widget for DeviceMeshPane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         let pending = std::mem::take(&mut self.commit_context_pending)
             || self
                 .composed
@@ -1870,8 +1870,8 @@ impl Widget for DeviceMeshPane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_relay::WorkspaceBinding;
     use std::time::Instant;
+    use tilo_relay::WorkspaceBinding;
 
     #[test]
     fn edits_write_the_real_relay_config_shape() {
@@ -1922,7 +1922,7 @@ mod tests {
         assert_eq!(pane.config.device_role, DeviceRole::Interactive);
         assert_eq!(
             pane.config.services,
-            qos_relay::ServiceCapabilities::default()
+            tilo_relay::ServiceCapabilities::default()
         );
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
@@ -1996,7 +1996,7 @@ mod tests {
         let path = dir.path().join("relay.toml");
         let mut config = RelayConfig {
             device_role: DeviceRole::Interactive,
-            services: qos_relay::ServiceCapabilities::default(),
+            services: tilo_relay::ServiceCapabilities::default(),
             ..RelayConfig::default()
         };
         config.workspaces.push(WorkspaceBinding {
@@ -2078,8 +2078,8 @@ mod tests {
     fn home_server_removal_requires_review_and_can_be_cancelled() {
         let dir = tempfile::tempdir().unwrap();
         let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
-        pane.home_peers = vec![qos_relay::HomePeerRegistration {
-            schema_version: qos_relay::HomePeerRegistration::CURRENT_SCHEMA,
+        pane.home_peers = vec![tilo_relay::HomePeerRegistration {
+            schema_version: tilo_relay::HomePeerRegistration::CURRENT_SCHEMA,
             device_node_id: "11".repeat(32),
             relay_service_node_id: "22".repeat(32),
             relay_endpoint: None,
@@ -2213,12 +2213,12 @@ mod tests {
             device_role: DeviceRole::Hybrid,
             ..RelayConfig::default()
         };
-        let metrics = qos_relay::metrics::MetricsSnapshot {
+        let metrics = tilo_relay::metrics::MetricsSnapshot {
             deltas_received: 42,
             ..Default::default()
         };
-        qos_relay::store::save_metrics(&config.state_root, &metrics).unwrap();
-        let modified = std::fs::metadata(config.state_root.join(qos_relay::store::METRICS_FILE))
+        tilo_relay::store::save_metrics(&config.state_root, &metrics).unwrap();
+        let modified = std::fs::metadata(config.state_root.join(tilo_relay::store::METRICS_FILE))
             .unwrap()
             .modified()
             .unwrap();
@@ -2244,12 +2244,12 @@ mod tests {
             state_root: dir.path().to_path_buf(),
             full_replica_status: proof.clone(),
             device_role: DeviceRole::AlwaysOnServer,
-            services: qos_relay::ServiceCapabilities::personal_server(),
+            services: tilo_relay::ServiceCapabilities::personal_server(),
             ..RelayConfig::default()
         };
-        qos_relay::store::save_metrics(
+        tilo_relay::store::save_metrics(
             &config.state_root,
-            &qos_relay::metrics::MetricsSnapshot::default(),
+            &tilo_relay::metrics::MetricsSnapshot::default(),
         )
         .unwrap();
         let now = SystemTime::now();

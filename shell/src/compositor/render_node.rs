@@ -17,7 +17,7 @@
 //! driver implements `mmap` — Mesa/DRM drivers (amdgpu, i915, xe, nouveau, …) do; NVIDIA's
 //! proprietary `nvidia` module doesn't (export-only fds), so steering a client onto it would turn every tile into an import error.
 //!
-//! The probe: (1) honours `QOS_DMABUF_DEVICE` if set, (2) otherwise walks `/dev/dri/renderD*` in
+//! The probe: (1) honours `TILO_DMABUF_DEVICE` if set, (2) otherwise walks `/dev/dri/renderD*` in
 //! numeric order for the first node that's openable and bound to a driver known to support
 //! dma-buf CPU mapping, (3) reports `None` when nothing qualifies, so the caller falls back to `wl_shm` rather than negotiating a buffer it would have to reject.
 
@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// Env override: absolute path to the DRM render node to advertise as the dmabuf main device — pin clients to a specific GPU on a multi-GPU box, or force a node the driver allow-list below declines.
-pub const DEVICE_ENV: &str = "QOS_DMABUF_DEVICE";
+pub const DEVICE_ENV: &str = "TILO_DMABUF_DEVICE";
 
 /// Kernel DRM drivers whose exported dma-bufs can be CPU-mapped.
 ///
@@ -68,7 +68,7 @@ pub enum ProbeError {
     NoRenderNodes,
     /// Nodes exist but none passed. Carries `(path, reason)` per node.
     NoneUsable(Vec<(PathBuf, String)>),
-    /// `QOS_DMABUF_DEVICE` was set but unusable.
+    /// `TILO_DMABUF_DEVICE` was set but unusable.
     OverrideUnusable { path: PathBuf, reason: String },
 }
 
@@ -114,7 +114,7 @@ pub fn driver_supports_cpu_map(driver: &str) -> bool {
 
 fn dev_of(path: &Path) -> std::io::Result<libc::dev_t> {
     use std::os::unix::fs::MetadataExt as _;
-    // `metadata` follows symlinks, which is what we want: a caller may point `QOS_DMABUF_DEVICE` at `/dev/dri/by-path/...`.
+    // `metadata` follows symlinks, which is what we want: a caller may point `TILO_DMABUF_DEVICE` at `/dev/dri/by-path/...`.
     Ok(std::fs::metadata(path)?.rdev())
 }
 
@@ -149,7 +149,7 @@ fn render_nodes() -> Vec<PathBuf> {
 ///
 /// # Errors
 ///
-/// Returns [`ProbeError::OverrideUnusable`] when `QOS_DMABUF_DEVICE` is set
+/// Returns [`ProbeError::OverrideUnusable`] when `TILO_DMABUF_DEVICE` is set
 /// but the node it names can't be stat'd or opened; [`ProbeError::NoRenderNodes`]
 /// when `/dev/dri` has no `renderD*` entries; [`ProbeError::NoneUsable`] when
 /// nodes exist but none has a driver on the CPU-mappable allow-list, or opening/stat'ing the ones that do fails.
@@ -234,7 +234,7 @@ static PINNED: OnceLock<PathBuf> = OnceLock::new();
 /// `dmabuf_feedback` could be built — a compositor that fell back to `wl_shm` still renders on a
 /// GPU its clients still have to match, so [`pin_process`] (which runs before either) is the fallback.
 ///
-/// This is the value the app launcher passes to `qos-launcher --render-node`, so apps follow the compositor's actual choice rather than re-deriving one of their own.
+/// This is the value the app launcher passes to `tilo-launcher --render-node`, so apps follow the compositor's actual choice rather than re-deriving one of their own.
 pub fn resolved() -> Option<&'static Path> {
     advertised().or_else(|| PINNED.get().map(PathBuf::as_path))
 }

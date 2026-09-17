@@ -377,7 +377,7 @@ impl Flex {
     /// Pointer, keyboard and accessibility activation all emit the exact same
     /// inert control invocation consumed by the host action door.
     #[must_use]
-    pub fn on_action(mut self, binding: qos_actions::ActionBinding<()>) -> Self {
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
         self.bus = None;
         self.action = None;
         self.action_emitter = Some(ActionEmitter::new(binding));
@@ -903,7 +903,7 @@ impl Widget for Flex {
             .then_some(winit::window::CursorIcon::Pointer)
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action_emitter
             .as_mut()
             .and_then(ActionEmitter::take)
@@ -931,7 +931,7 @@ impl Widget for Flex {
 
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         if let Some(emitter) = &mut self.action_emitter {
             emitter.refresh_availability(allowed);

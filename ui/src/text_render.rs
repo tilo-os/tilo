@@ -13,7 +13,7 @@ use vello::peniko::{Color, Fill, FontData as Font, StyleRef};
 
 use crate::text_break::{LineBreakKind, OffsetMap, line_break_opportunities};
 
-/// Product-wide primary font families. qOS ships these exact faces, and the
+/// Product-wide primary font families. Tilo ships these exact faces, and the
 /// renderer also assigns them to the CSS-like generic families below. Keeping
 /// the names here makes plain text, rich text, and theme tokens agree instead
 /// of depending on each machine's fontconfig defaults.
@@ -24,7 +24,7 @@ pub const UI_MONOSPACE_FAMILY: &str = "Noto Sans Mono";
 pub const UI_MATH_FAMILY: &str = "Noto Sans Math";
 
 /// Build a font system whose generic families are deterministic across the
-/// developer distrobox and the qOS image. cosmic-text's platform fallback
+/// developer distrobox and the Tilo image. cosmic-text's platform fallback
 /// still supplies script-aware Noto faces for Arabic, Indic, CJK, emoji, and
 /// other characters not covered by the selected primary face.
 pub fn configured_font_system() -> FontSystem {
@@ -2361,7 +2361,7 @@ mod tests {
             assert!(!glyphs.is_empty(), "{script} produced no shaped glyphs");
             assert!(
                 glyphs.iter().all(|glyph| glyph.id != 0),
-                "{script} fell through to a .notdef glyph; install the qOS Noto fallback package"
+                "{script} fell through to a .notdef glyph; install the Tilo Noto fallback package"
             );
         }
     }

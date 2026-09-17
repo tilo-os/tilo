@@ -1,7 +1,7 @@
 //! Representative-keyframe extraction from a video (feature `video`).
 //!
 //! Reuses the shared `media` GStreamer engine — the exact decode path
-//! `apps/video_editor` drives — rather than a second codec stack: open the
+//! `apps/video-editor` drives — rather than a second codec stack: open the
 //! file, seek a little way in (past a black intro frame), play, and poll until
 //! a decoded RGBA frame lands or a deadline passes. Only compiled under
 //! `--features video` (which turns on `media/decode`); without it the caller

@@ -1,7 +1,7 @@
 //! Per-application master-secret portal.
 //!
 //! Secrets are kept in a user-private, mode-0600 local store.  Deployments
-//! should place this state directory on qOS's encrypted user volume (or replace
+//! should place this state directory on Tilo's encrypted user volume (or replace
 //! the backend with the Secret Service provider); the portal never places the
 //! value in workspace state, diagnostics, or a D-Bus reply.
 
@@ -225,7 +225,7 @@ impl SecretBackend {
 fn default_path() -> PathBuf {
     super::private_state_root()
         .unwrap_or_else(|| PathBuf::from("/dev/null"))
-        .join("qos/portal/secrets.json")
+        .join("tilo/portal/secrets.json")
 }
 fn failed(message: &str) -> zbus::fdo::Error {
     zbus::fdo::Error::Failed(message.into())

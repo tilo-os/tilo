@@ -15,8 +15,8 @@ set -uo pipefail
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OS_ROOT="${OS_ROOT:-$(cd "$TEST_DIR/.." && pwd)}"
 
-CONFINEMENT="$OS_ROOT/usr/lib/systemd/system/cups.service.d/qos-confinement.conf"
-SOCKET_DROPIN="$OS_ROOT/usr/lib/systemd/system/cups.socket.d/qos-local-only.conf"
+CONFINEMENT="$OS_ROOT/usr/lib/systemd/system/cups.service.d/tilo-confinement.conf"
+SOCKET_DROPIN="$OS_ROOT/usr/lib/systemd/system/cups.socket.d/tilo-local-only.conf"
 CUPSD_CONF="$OS_ROOT/etc/cups/cupsd.conf"
 CONTAINERFILE="$OS_ROOT/Containerfile"
 

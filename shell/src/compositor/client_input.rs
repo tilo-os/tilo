@@ -1957,7 +1957,7 @@ fn route_keyboard_input(
         return false;
     };
     let pressed = key.state == ElementState::Pressed;
-    // DRM mirrors winit's repeat events for in-process qOS widgets. Native
+    // DRM mirrors winit's repeat events for in-process Tilo widgets. Native
     // Wayland clients already synthesize repeats from `wl_keyboard.repeat_info`;
     // sending another pressed edge would double every held key. Shell-owned
     // repeats must still reach the host so navigation can repeat and the host
@@ -3034,7 +3034,7 @@ mod tests {
             .expect("a fresh FrameBuilder has an active workspace");
         let (reply, _parked) = tokio::sync::oneshot::channel();
         queue.spawn(crate::portal::FilePickerRequest {
-            caller: crate::portal::PortalCaller::new(workspace, "dev.qos.tests"),
+            caller: crate::portal::PortalCaller::new(workspace, "dev.tilo.tests"),
             title: "Insert image".into(),
             save: false,
             multiple: false,
@@ -3067,7 +3067,7 @@ mod tests {
         let mut fb = FrameBuilder::new((1600, 900));
         let _ = fb.paint_settled();
         fb.host_mut()
-            .enable_onboarding(std::path::PathBuf::from("/tmp/qos-oobe-input-test"));
+            .enable_onboarding(std::path::PathBuf::from("/tmp/tilo-oobe-input-test"));
         let _ = fb.paint_settled();
 
         assert!(

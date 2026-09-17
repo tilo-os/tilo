@@ -20,12 +20,12 @@
 //! Geometry is clamped to a minimum size and kept on-screen. This works in any
 //! environment (it's all in-app drawing), so it's fully exercised by `--shots`.
 //!
-//! ## Detach (qOS pop-out)
+//! ## Detach (Tilo pop-out)
 //! [`DockState`] models two placements: `Docked` (centred in-app modal) and
 //! `Detached` (parked beside the app content, simulating a separate window).
 //! Both are movable + resizable. The Pop-out button toggles between them, so it
 //! performs a real, visible placement change. **True OS-window detach** — a real
-//! second top-level surface beside the app — needs the qOS compositor's
+//! second top-level surface beside the app — needs the Tilo compositor's
 //! window-group / multi-window support (`shell`), which is not available through
 //! the single-window `ui::App`; when that lands, a detached draft is handed back
 //! via [`ComposeWindow::reattach`].
@@ -42,7 +42,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::TextInput;
 
-use crate::model::{ComposeFormat, Draft, attachment_display_name};
+use crate::model::{ComposeFormat, Draft, DraftAttachment};
 use crate::wysiwyg::{BlockKind, InlineMark, Wysiwyg};
 
 const TITLE_H: f64 = 38.0;
@@ -101,7 +101,7 @@ pub enum ComposeHit {
     Numbered,
     Quote,
     Link,
-    // inline prompt (Attach path / Link URL entry)
+    // inline URL prompt
     PromptField,
     PromptConfirm,
     PromptCancel,
@@ -110,17 +110,13 @@ pub enum ComposeHit {
 /// What the inline prompt bar is collecting.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PromptKind {
-    /// A filesystem path to attach as a real file.
-    Attach,
     /// A URL to link the current selection (or insert) to.
     Link,
 }
 
 /// A small inline entry bar shown inside the compose window when the user needs
-/// to type a value the app can't fabricate: a file path to attach, or a link
-/// target. Confirming an Attach reads the real file; confirming a Link applies
-/// the entered `href`. This exists because `ui` has no file-picker / URL-prompt
-/// primitive yet (see the app-level UI-gap notes).
+/// to type a link target. File attachments use the host portal, preserving the
+/// selected descriptor rather than accepting arbitrary host paths.
 struct ComposePrompt {
     kind: PromptKind,
     input: TextInput,
@@ -131,6 +127,7 @@ struct ComposePrompt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ComposeAction {
     None,
+    RequestAttachment,
     Send,
     SaveDraft,
     Close,
@@ -184,14 +181,12 @@ pub struct ComposeWindow {
     // body
     format: ComposeFormat,
     editor: Wysiwyg,
-    /// Plain-text body (Text mode) — a shared multiline [`TextInput`], so the
-    /// body gets real caret/selection/clipboard/a11y for free instead of a
-    /// hand-rolled `String`.
+    /// Plain-text body (Text mode), backed by a shared multiline [`TextInput`].
     plain_body: TextInput,
 
-    /// Filesystem paths of staged attachments (real files read on send).
-    attachments: Vec<String>,
-    /// The inline path/URL prompt, when open.
+    /// Portable qdoc attachment references, never host paths.
+    attachments: Vec<DraftAttachment>,
+    /// The inline URL prompt, when open.
     prompt: Option<ComposePrompt>,
     focus: Field,
     drag: Option<Drag>,
@@ -484,7 +479,9 @@ impl ComposeWindow {
                 self.close();
                 return Some(ComposeAction::Close);
             }
-            "attach" if matches!(action, Action::Activate) => self.open_prompt(PromptKind::Attach),
+            "attach" if matches!(action, Action::Activate) => {
+                return Some(ComposeAction::RequestAttachment);
+            }
             "cc-bcc" if matches!(action, Action::Activate | Action::ToggleCheck) => {
                 self.show_cc_bcc = !self.show_cc_bcc;
                 self.relayout_regions();
@@ -714,6 +711,25 @@ impl ComposeWindow {
             attachments: self.attachments.clone(),
             in_reply_to: None,
         }
+    }
+
+    /// Add a verified portal-staged attachment, enforcing the same bounds the
+    /// replicated draft action will enforce on every collaborator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when metadata is invalid/duplicate or attachment
+    /// count and total-byte bounds would be exceeded.
+    pub fn add_attachment(&mut self, attachment: DraftAttachment) -> Result<(), String> {
+        let mut next = self.attachments.clone();
+        next.push(attachment);
+        let bounded = crate::attachment_store::bounded(&next);
+        if bounded.len() != next.len() {
+            return Err("Attachment is invalid, duplicated, or exceeds Mail's draft limits".into());
+        }
+        self.attachments = bounded;
+        self.dirty = true;
+        Ok(())
     }
 
     // ---- focus ----
@@ -1379,7 +1395,7 @@ impl ComposeWindow {
                 self.show_cc_bcc = !self.show_cc_bcc;
                 self.relayout_regions();
             }
-            ComposeHit::Attach => self.open_prompt(PromptKind::Attach),
+            ComposeHit::Attach => return ComposeAction::RequestAttachment,
             ComposeHit::FormatToggle => self.toggle_format(),
             ComposeHit::FieldTo
             | ComposeHit::FieldCc
@@ -1492,8 +1508,8 @@ impl ComposeWindow {
         }
     }
 
-    /// Open the inline prompt bar to collect a file path (Attach) or a URL
-    /// (Link). The body/header lose focus so keystrokes land in the prompt.
+    /// Open the inline prompt bar to collect a URL. File selection always
+    /// goes through the root's host-native portal boundary.
     fn open_prompt(&mut self, kind: PromptKind) {
         let mut input = TextInput::local();
         input.set_plain_chrome(true);
@@ -1523,27 +1539,6 @@ impl ComposeWindow {
                     self.set_focus(Field::Body);
                     if matches!(self.format, ComposeFormat::Html) {
                         self.editor.set_link(&val);
-                    }
-                }
-            }
-            PromptKind::Attach => {
-                if val.is_empty() {
-                    return;
-                }
-                match std::fs::metadata(&val) {
-                    Ok(m) if m.is_file() => {
-                        self.attachments.push(val);
-                    }
-                    _ => {
-                        let mut input = TextInput::local();
-                        input.set_plain_chrome(true);
-                        input.set_text(&val);
-                        input.set_focus(true);
-                        self.prompt = Some(ComposePrompt {
-                            kind: PromptKind::Attach,
-                            input,
-                            error: Some("No readable file at that path".into()),
-                        });
                     }
                 }
             }
@@ -1918,7 +1913,7 @@ impl ComposeWindow {
         }
     }
 
-    /// Draw the staged-attachment chips (real files, shown by basename) above
+    /// Draw the staged-attachment chips (portable content, shown by filename) above
     /// the button row. Part of [`Self::draw`].
     fn draw_staged_attachment_chips(
         &self,
@@ -1934,8 +1929,8 @@ impl ComposeWindow {
         let c = &theme.tokens.colors;
         let mut ax = r.x0 + PAD;
         let ay = r.y1 - 52.0 - 30.0;
-        for path in &self.attachments {
-            let name = attachment_display_name(path);
+        for attachment in &self.attachments {
+            let name = &attachment.filename;
             let (lw, _) = tr.measure(name, 11.5, None);
             let chip = Rect::new(ax, ay, ax + f64::from(lw) + 34.0, ay + 24.0);
             fill_round(scene, t, chip, 7.0, c.lift(0.72));
@@ -2223,7 +2218,6 @@ impl ComposeWindow {
             },
         );
         let label = match kind {
-            PromptKind::Attach => "Attach",
             PromptKind::Link => "Link",
         };
         tr.draw_text(
@@ -2617,51 +2611,17 @@ mod tests {
     }
 
     #[test]
-    fn attach_button_opens_prompt_and_stages_a_real_file() {
-        // Stage a real file to attach.
-        let path = std::env::temp_dir().join(format!("mail-compose-{}.txt", uuid::Uuid::new_v4()));
-        std::fs::write(&path, b"body").unwrap();
-
+    fn attach_button_requests_the_root_portal_boundary() {
         let mut w = win();
-        // Click the Attach button through the real hit path → opens the prompt
-        // (no fabricated filename is staged).
+        // The compose widget never accepts a typed path; its root owns the
+        // host portal and returns a descriptor-only staged attachment later.
         let attach = hit_rect(&w, ComposeHit::Attach);
-        let (consumed, _) = press_at(&mut w, attach.center());
+        let (consumed, action) = press_at(&mut w, attach.center());
         assert!(consumed);
-        assert!(w.prompt.is_some(), "Attach opens the path prompt");
-        assert!(w.attachments.is_empty(), "no fabricated attachment staged");
-
-        // Type the real path and confirm → the real file is staged.
-        w.prompt
-            .as_mut()
-            .unwrap()
-            .input
-            .set_text(&path.to_string_lossy());
-        w.confirm_prompt();
-        assert!(w.prompt.is_none(), "a valid path closes the prompt");
-        assert_eq!(w.attachments.len(), 1);
-        assert_eq!(
-            w.to_draft().attachments,
-            vec![path.to_string_lossy().to_string()]
-        );
-
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn attach_prompt_rejects_missing_path() {
-        let mut w = win();
-        w.open_prompt(PromptKind::Attach);
-        w.prompt
-            .as_mut()
-            .unwrap()
-            .input
-            .set_text("/no/such/mail/file-xyz");
-        w.confirm_prompt();
-        assert!(w.attachments.is_empty(), "a missing path stages nothing");
+        assert_eq!(action, ComposeAction::RequestAttachment);
         assert!(
-            w.prompt.as_ref().is_some_and(|p| p.error.is_some()),
-            "the prompt stays open showing an error"
+            w.attachments.is_empty(),
+            "no host path or fabricated attachment is staged"
         );
     }
 
@@ -2676,11 +2636,11 @@ mod tests {
             .as_mut()
             .unwrap()
             .input
-            .set_text("https://qos.example/docs");
+            .set_text("https://tilo.example/docs");
         w.confirm_prompt();
         let html = w.editor.to_html();
         assert!(
-            html.contains("href=\"https://qos.example/docs\""),
+            html.contains("href=\"https://tilo.example/docs\""),
             "got: {html}"
         );
         assert!(

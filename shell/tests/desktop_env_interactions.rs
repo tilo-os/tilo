@@ -3,7 +3,7 @@
 //! driven through the real [`ShellOverlayHost`] event/state path.
 //!
 //! Harness mirrors `cross_strip_drag.rs`: build a tree, hand it to
-//! [`build_nirios_overlay_host_with_chrome`], run a real layout pass, then
+//! [`build_tilo_overlay_host_with_chrome`], run a real layout pass, then
 //! drive real winit events plus the per-frame harvest hooks
 //! `Widget::update` runs in production.
 
@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
@@ -270,7 +270,7 @@ fn release(host: &mut ShellOverlayHost, layout: &Layout) {
 )]
 fn resize_handle_drag_persists_new_group_widths_into_tree() {
     let (tree, strip_id, ids) = single_strip_tree(&[100, 200]);
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
     let usable = usable_strip_px(&mut host, strip_id);
@@ -342,7 +342,7 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
     for g in &mut tree.workspaces[0].strips[0].window_groups {
         g.width = WindowWidth::Narrow;
     }
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
     let usable = usable_strip_px(&mut host, strip_id);
@@ -410,7 +410,7 @@ fn group_grab_point(host: &mut ShellOverlayHost, strip_id: StripId, group_idx: u
 )]
 fn group_drag_reorders_strip_window_groups_in_tree() {
     let (tree, strip_id, _ids) = single_strip_tree(&[100, 200, 300]);
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let state_dir = tempfile::tempdir().expect("state directory");
     let state_path = state_dir.path().join("state.json");
     {
@@ -492,7 +492,7 @@ fn group_drag_reorders_strip_window_groups_in_tree() {
 #[test]
 fn open_reorder_close_then_revision_reconstructs_the_same_layout() {
     let (tree, strip_id, _ids) = single_strip_tree(&[100, 200, 300]);
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let state_dir = tempfile::tempdir().expect("state directory");
     let state_path = state_dir.path().join("state.json");
     {
@@ -584,7 +584,7 @@ fn tab_search_chip_opens_palette_scoped_to_that_app() {
     use shell::shell::chrome_state::SearchScope;
 
     let (tree, strip_id, _ids) = single_strip_tree(&[100]);
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
     assert!(!host.palette_visible(), "palette starts closed");
@@ -623,7 +623,7 @@ fn tab_search_chip_opens_palette_scoped_to_that_app() {
 #[test]
 fn expand_takes_the_group_genuinely_fullscreen() {
     let (tree, strip_id, _ids) = single_strip_tree(&[100, 200]);
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
     assert!(
@@ -681,7 +681,7 @@ fn expand_takes_the_group_genuinely_fullscreen() {
 #[test]
 fn group_right_edge_drag_resizes_on_screen_and_persists() {
     let (tree, strip_id, _ids) = single_strip_tree(&[100]);
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let mut layout = lay_out_host(&mut host);
 
     let usable = usable_strip_px(&mut host, strip_id);
@@ -747,7 +747,7 @@ fn a_group_focused_before_it_has_a_rect_is_still_scrolled_into_view() {
     // right edge — the geometry a newly launched app lands in.
     let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);
     tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Wide;
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
     let _ = &layout;
 
@@ -858,7 +858,7 @@ fn tab_drag_reorders_tabs_within_group_in_tree() {
         ];
         g.active_tab = 1;
     }
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
     let tab_order = |chrome: &shell::shell::chrome_state::Chrome| -> Vec<u64> {
@@ -953,7 +953,7 @@ fn switching_workspace_swaps_the_rendered_strips() {
     tree.workspaces.push(ws_b);
     tree.active_strip.insert(ws_b_id, strip_b);
 
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let _layout = lay_out_host(&mut host);
     assert!(host.group_row_mut_for_tests(strip_a).is_some());
     assert!(
@@ -1006,7 +1006,7 @@ fn wheel_over_strip_does_not_move_it() {
     // and the Alt-modified wheel gestures, which route through
     // `client_input`, not this widget path.
     let (tree, strip_id, _ids) = single_strip_tree(&[100, 200, 300, 400]);
-    let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
     let row_rect = host
@@ -1050,7 +1050,7 @@ fn focusing_offscreen_group_scrolls_it_into_view() {
     // Four Normal (600 px) groups overflow the 1280 px viewport, so the last
     // starts off the right edge at scroll_x = 0.
     let (tree, strip_id, ids) = single_strip_tree(&[100, 200, 300, 400]);
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let _layout = lay_out_host(&mut host);
 
     let last_id = ids[3];
@@ -1111,7 +1111,7 @@ fn focusing_offscreen_group_scrolls_it_into_view() {
 )]
 fn dropping_a_code_file_opens_the_editor_in_the_active_workspace() {
     let (tree, _strip_id, _ids) = single_strip_tree(&[100]);
-    let (_host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let (_host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
     let tabs_before = {
         let st = chrome.borrow();
@@ -1156,8 +1156,8 @@ fn dropping_a_folder_opens_files_app() {
     // → Files, as does a real folder: a non-code drop never resolves to the
     // Editor.
     let (tree, _strip_id, _ids) = single_strip_tree(&[100]);
-    let (_host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
-    let tmp = std::env::temp_dir().join("qos-deskenv-drop-folder");
+    let (_host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let tmp = std::env::temp_dir().join("tilo-deskenv-drop-folder");
     let _ = std::fs::create_dir_all(&tmp);
 
     let tab_id = chrome

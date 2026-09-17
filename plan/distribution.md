@@ -92,7 +92,7 @@ never versioned, never installed, pinned by *identity* rather than by content.
 
 The gray zone is where every other system bleeds. A PDF that executes script, a
 spreadsheet with macros, a font that is really a program for a hinting VM, a
-page that is really an application. qOS does not adjudicate the gray zone; it
+page that is really an application. Tilo does not adjudicate the gray zone; it
 removes it. **Every parser is a package with no authority.** A format provider
 is a one-shot process with no network, no filesystem, no service sockets and no
 persistence: bytes in, structure out. Handling a hostile file is then a question
@@ -144,7 +144,7 @@ So the verb is **Add**, and it behaves like one:
   makes silent updating safe enough to be the default.
 
 Per-room data confinement (`plan/rooms.md`) is what makes removal honest: an
-app's writable directory is `<data home>/qos-rooms/<room>/<package>`, so there
+app's writable directory is `<data home>/tilo-rooms/<room>/<package>`, so there
 is exactly one place per room to delete, and no application anywhere else on
 disk.
 
@@ -169,7 +169,7 @@ trust without trusting it:
 
 Neither proof helps if the source shows different logs to different people. So:
 
-> **Every qOS machine is a witness.**
+> **Every Tilo machine is a witness.**
 
 Machines gossip signed log heads over the collaboration substrate that is
 already there for rooms — the same Iroh gossip that carries workspace
@@ -195,7 +195,7 @@ becomes a side effect of collaboration.
 serves. A catalogue is a **list** — a record holding an ordered set of
 references with notes, authored by a key, and a CRDT so several people can
 curate one together — and it has no powers a person's hand-written list of
-favourites lacks. The qOS catalogue is a list published by the qOS org. It is a
+favourites lacks. The Tilo catalogue is a list published by the Tilo org. It is a
 default, not a gate.
 
 ### 4. Trust is three separate questions

@@ -1,5 +1,5 @@
-//! Real-input e2e test of the `QOS_TEST_CONTROL` unix socket: spawns
-//! `quick-desktop --mode native` with `QOS_TEST_CONTROL` set to a temp
+//! Real-input e2e test of the `TILO_TEST_CONTROL` unix socket: spawns
+//! `tilo-desktop --mode native` with `TILO_TEST_CONTROL` set to a temp
 //! path, waits for the socket-listening line on stderr, then connects as
 //! a client.
 //!
@@ -7,8 +7,8 @@
 //! window, which needs a Wayland/X11 session headless CI can't satisfy.
 //! Run interactively inside `my-distrobox` (shares the host session):
 //! ```text
-//! cargo build -p quick-desktop
-//! cargo test -p quick-desktop --test control_socket_test -- --ignored
+//! cargo build -p tilo-desktop
+//! cargo test -p tilo-desktop --test control_socket_test -- --ignored
 //! ```
 
 #![allow(
@@ -32,7 +32,7 @@ use std::time::Duration;
 /// collisions in parallel runs.
 fn spawn_with_control() -> (Child, PathBuf) {
     let socket_path = PathBuf::from(format!(
-        "/tmp/nirios-test-control-{}.sock",
+        "/tmp/tilo-test-control-{}.sock",
         std::process::id()
     ));
     let _ = std::fs::remove_file(&socket_path);
@@ -41,21 +41,21 @@ fn spawn_with_control() -> (Child, PathBuf) {
         .join("..")
         .join("target")
         .join("debug")
-        .join("quick-desktop");
+        .join("tilo-desktop");
     assert!(
         binary.exists(),
         "expected the compositor binary at {}; \
-         run `cargo build -p quick-desktop` before this test",
+         run `cargo build -p tilo-desktop` before this test",
         binary.display()
     );
 
     let mut child = Command::new(&binary)
         .args(["--mode", "native"])
-        .env("QOS_TEST_CONTROL", &socket_path)
+        .env("TILO_TEST_CONTROL", &socket_path)
         .stderr(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .expect("spawn quick-desktop");
+        .expect("spawn tilo-desktop");
 
     // Drain stderr in a background thread — the BufReader must stay alive
     // for the binary's lifetime, or the child's stderr pipe closes and the
@@ -359,7 +359,7 @@ fn snapshot_writes_png_at_requested_path() {
     // Pid-scoped path so a flaky run from a parallel test doesn't
     // collide with this one. Cleaned up at the end.
     let png_path = PathBuf::from(format!(
-        "/tmp/nirios-test-snapshot-{}.png",
+        "/tmp/tilo-test-snapshot-{}.png",
         std::process::id()
     ));
     let _ = std::fs::remove_file(&png_path);

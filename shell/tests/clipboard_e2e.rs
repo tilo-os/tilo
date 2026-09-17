@@ -1,13 +1,13 @@
 //! End-to-end clipboard, primary selection and drag-and-drop, against a real
-//! qOS compositor with real Wayland clients — no mocks, no in-process
+//! Tilo compositor with real Wayland clients — no mocks, no in-process
 //! `State`, no `arboard`. Each client connects to a `UnixStream` inside the
 //! compositor's private runtime dir, never `Connection::connect_to_env()` or
 //! `WAYLAND_DISPLAY`.
 //!
 //! Why: under a nested GNOME session `arboard` reaches X11 through Xwayland
-//! and *appears* to work, so a clipboard test could pass while the qOS
+//! and *appears* to work, so a clipboard test could pass while the Tilo
 //! compositor had no selection protocol at all.
-//! [`TestClient::assert_is_qos_compositor`] checks the seat name the peer
+//! [`TestClient::assert_is_tilo_compositor`] checks the seat name the peer
 //! reports, so a reroute to another compositor fails loudly instead of the
 //! suite passing against a session it never touched.
 
@@ -66,14 +66,14 @@ use wayland_protocols::xdg::shell::client::{
     xdg_wm_base::{self, XdgWmBase},
 };
 
-/// The mime type qOS offers text selections as. Must match
+/// The mime type Tilo offers text selections as. Must match
 /// `shell::compositor::selection::TEXT_MIME` — asserted below so a change on
 /// one side cannot drift silently past the other.
 const TEXT_MIME: &str = "text/plain;charset=utf-8";
 
-/// The seat name the qOS compositor registers. Used as the proof that a client
+/// The seat name the Tilo compositor registers. Used as the proof that a client
 /// is talking to *this* compositor and not a session one.
-const QOS_SEAT_NAME: &str = "quick-desktop";
+const TILO_SEAT_NAME: &str = "tilo-desktop";
 
 /// How long any single wait-for-condition may take. Generous, because a cold
 /// headless compositor spins up a wgpu offscreen renderer on its first frame.
@@ -129,7 +129,7 @@ impl Compositor {
     }
 
     /// Host-desktop mode is intentionally a separate fixture mode: it is the
-    /// only supported configuration in which qOS starts the rootless Xwayland
+    /// only supported configuration in which Tilo starts the rootless Xwayland
     /// bridge. It still uses the same private XDG tree and Wayland socket as
     /// every other test, never the caller's session.
     fn start_host_desktop() -> Self {
@@ -149,14 +149,14 @@ impl Compositor {
         // SUN_LEN caps a unix socket path (~108 bytes), so the runtime dir must be
         // short — `/run/user/$UID` also keeps a stray socket out of the repo.
         let runtime_dir = PathBuf::from(format!(
-            "/run/user/{}/qos-clip-{}-{}",
+            "/run/user/{}/tilo-clip-{}-{}",
             unsafe { libc::getuid() },
             std::process::id(),
             next_id(),
         ));
         std::fs::create_dir_all(&runtime_dir).expect("create private runtime dir");
         if let Some(settings) = settings {
-            let settings_path = runtime_dir.join("config/qos/settings.json");
+            let settings_path = runtime_dir.join("config/tilo/settings.json");
             let parent = settings_path.parent().expect("settings parent");
             std::fs::create_dir_all(parent).expect("create fixture config root");
             std::fs::write(
@@ -246,7 +246,7 @@ impl Compositor {
     /// Clipboard tests exercise normal desktop clients; leaving the fixture
     /// identity empty correctly activates OOBE, which must withhold focus.
     fn seed_identity(runtime_dir: &Path) -> PathBuf {
-        let identity_dir = runtime_dir.join("config/qos/identity");
+        let identity_dir = runtime_dir.join("config/tilo/identity");
         let identity = ThresholdIdentity::bootstrap_single_device(&mut OsRng)
             .expect("create clipboard fixture identity");
         let record = IdentityRecord::from_threshold_identity(
@@ -284,7 +284,7 @@ impl Compositor {
     ) -> Child {
         let mut command = Command::new(env!("CARGO_BIN_EXE_shell"));
         if let Some(home) = home {
-            command.env("HOME", home).env("QOS_USER_HOME", home);
+            command.env("HOME", home).env("TILO_USER_HOME", home);
         }
         command.args(["--mode", "native", "--backend", "headless"]);
         if host_desktop {
@@ -312,14 +312,14 @@ impl Compositor {
             .env("XDG_DATA_HOME", runtime_dir.join("data"))
             .env("XDG_STATE_HOME", runtime_dir.join("state"))
             .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
-            // A CI checkout commonly lives at `/workspace`. It is not a qOS
+            // A CI checkout commonly lives at `/workspace`. It is not a Tilo
             // collaborative mount, and must not win over the fixture home as
             // the hosted Files app's initial directory.
-            .env("QOS_WORKSPACE_ROOTS", "")
-            .env("QOS_STATE_PATH", state_path)
-            .env("QOS_IDENTITY_ROOT", identity_root)
-            .env("QOS_TEST_CONTROL", control_socket)
-            .env("NIRIOS_HEADLESS_SIZE", format!("{}x{}", size.0, size.1))
+            .env("TILO_WORKSPACE_ROOTS", "")
+            .env("TILO_STATE_PATH", state_path)
+            .env("TILO_IDENTITY_ROOT", identity_root)
+            .env("TILO_TEST_CONTROL", control_socket)
+            .env("TILO_HEADLESS_SIZE", format!("{}x{}", size.0, size.1))
             // smithay logs selection/drag decisions at debug; "denying drag from
             // client without implicit grab" is what distinguishes a rejected drag from
             // one delivered to the wrong surface.
@@ -365,9 +365,9 @@ impl Compositor {
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                 for (marker, key) in [
-                    ("nirios compositor listening on ", "public"),
-                    ("nirios compositor privileged socket on ", "privileged"),
-                    ("nirios compositor test_control listening on ", "control"),
+                    ("tilo compositor listening on ", "public"),
+                    ("tilo compositor privileged socket on ", "privileged"),
+                    ("tilo compositor test_control listening on ", "control"),
                 ] {
                     if let Some(rest) = line.split_once(marker).map(|(_, r)| r) {
                         // The compositor prints an `OsString` in `Debug` form.
@@ -800,12 +800,12 @@ impl TestClient {
         }
     }
 
-    fn assert_is_qos_compositor(&mut self) {
+    fn assert_is_tilo_compositor(&mut self) {
         self.roundtrip();
         assert_eq!(
             self.state.seat_name.as_deref(),
-            Some(QOS_SEAT_NAME),
-            "connected to something that is not the qOS compositor (seat name mismatch). \
+            Some(TILO_SEAT_NAME),
+            "connected to something that is not the Tilo compositor (seat name mismatch). \
              Globals seen: {:?}",
             self.global_names(),
         );
@@ -964,7 +964,7 @@ impl TestClient {
 
         // SAFETY: a null-terminated name and a valid flag word are the whole
         // contract of `memfd_create`.
-        let raw = unsafe { libc::memfd_create(c"qos-clipboard-e2e".as_ptr(), 0) };
+        let raw = unsafe { libc::memfd_create(c"tilo-clipboard-e2e".as_ptr(), 0) };
         assert!(
             raw >= 0,
             "memfd_create: {}",
@@ -1147,8 +1147,8 @@ impl TestClient {
 #[test]
 fn image_clipboard_from_in_process_chrome_offers_png_and_keeps_text() {
     let compositor = Compositor::start();
-    let mut client = TestClient::new(compositor.connect(), "org.qos.test.image-sink");
-    client.assert_is_qos_compositor();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.image-sink");
+    client.assert_is_tilo_compositor();
     client.map_window(&compositor);
     compositor.chrome_copy("caption survives image copy", false);
     compositor.chrome_copy_image();
@@ -1177,8 +1177,8 @@ fn image_clipboard_from_in_process_chrome_offers_png_and_keeps_text() {
 #[test]
 fn third_direct_touch_contact_cancels_the_real_wayland_touch_client_without_leaks() {
     let compositor = Compositor::start();
-    let mut client = TestClient::new(compositor.connect(), "org.qos.test.touch-owner");
-    client.assert_is_qos_compositor();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.touch-owner");
+    client.assert_is_tilo_compositor();
     client.map_window(&compositor);
     client.wait_until(
         |state| state.touch_bound,
@@ -1234,8 +1234,8 @@ fn third_direct_touch_contact_cancels_the_real_wayland_touch_client_without_leak
 #[test]
 fn app_wayland_clipboard_publishes_png_and_text_to_another_client() {
     let compositor = Compositor::start();
-    let mut app = TestClient::new(compositor.connect(), "org.qos.test.app-clipboard");
-    app.assert_is_qos_compositor();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.app-clipboard");
+    app.assert_is_tilo_compositor();
     let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
     app.map_window(&compositor);
 
@@ -1245,8 +1245,8 @@ fn app_wayland_clipboard_publishes_png_and_text_to_another_client() {
     assert!(clipboard.set_text(ClipboardTarget::Clipboard, "app caption"));
     assert!(clipboard.set_image(2, 1, &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]));
 
-    let mut sink = TestClient::new(compositor.connect(), "org.qos.test.app-sink");
-    sink.assert_is_qos_compositor();
+    let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.app-sink");
+    sink.assert_is_tilo_compositor();
     sink.map_window(&compositor);
     let png = sink.read_clipboard_bytes("image/png", None);
     let decoder = png::Decoder::new(std::io::Cursor::new(png));
@@ -1982,17 +1982,17 @@ fn private_x11_activation_facts(compositor: &Compositor) -> Vec<(u32, bool, bool
         .collect()
 }
 
-/// Start the installed `ChatGPT` Electron client strictly through qOS's
+/// Start the installed `ChatGPT` Electron client strictly through Tilo's
 /// rootless Xwayland bridge. The test is opt-in because it opens a real
 /// heavyweight graphical process, but it is a genuine compatibility lane:
-/// private HOME/XDG state, qOS-created Xauthority, no inherited display or
+/// private HOME/XDG state, Tilo-created Xauthority, no inherited display or
 /// D-Bus session, and a child process group that is always torn down.
 #[allow(
     clippy::arithmetic_side_effects,
     reason = "the timeout is a fixed, short test-fixture deadline"
 )]
 fn private_xwayland_connection(compositor: &Compositor) -> Option<(String, PathBuf)> {
-    let bridge = compositor.runtime_dir.join("qos-session/xwayland");
+    let bridge = compositor.runtime_dir.join("tilo-session/xwayland");
     let deadline = Instant::now() + Duration::from_secs(10);
     let authority = loop {
         let authority = std::fs::read_dir(&bridge).ok().and_then(|entries| {
@@ -2009,7 +2009,7 @@ fn private_xwayland_connection(compositor: &Compositor) -> Option<(String, PathB
         }
         assert!(
             Instant::now() < deadline,
-            "qOS did not publish its private Xwayland authority; compositor log:\n{}",
+            "Tilo did not publish its private Xwayland authority; compositor log:\n{}",
             compositor.recent_log()
         );
         std::thread::sleep(Duration::from_millis(50));
@@ -2030,12 +2030,12 @@ fn spawn_isolated_chatgpt_x11(
     compositor: &Compositor,
     activation_token: Option<&str>,
 ) -> Option<(KillProcessGroup, Arc<Mutex<Vec<String>>>)> {
-    let launcher = std::env::var_os("QOS_TEST_LAUNCHER_BINARY")
+    let launcher = std::env::var_os("TILO_TEST_LAUNCHER_BINARY")
         .map(PathBuf::from)
         .filter(|path| path.is_file());
     let Some(launcher) = launcher else {
         eprintln!(
-            "SKIP Xwayland/Electron lane: set QOS_TEST_LAUNCHER_BINARY to the built qos-launcher; this test intentionally exercises the production host-launch process-group path"
+            "SKIP Xwayland/Electron lane: set TILO_TEST_LAUNCHER_BINARY to the built tilo-launcher; this test intentionally exercises the production host-launch process-group path"
         );
         return None;
     };
@@ -2043,7 +2043,7 @@ fn spawn_isolated_chatgpt_x11(
     let profile = compositor.runtime_dir.join("chatgpt-profile");
     std::fs::create_dir_all(&profile).expect("create isolated Electron profile");
     // The test runs in a disposable distrobox where the installed host entry
-    // is visible under `/run/host`, while production qos-launcher runs on the
+    // is visible under `/run/host`, while production tilo-launcher runs on the
     // host where its `Exec=/usr/bin/chatgpt` is correct.  Preserve every
     // installed entry field and rewrite only that mount boundary in a private
     // first-precedence XDG data root, so this remains a real `run-host`
@@ -2066,7 +2066,7 @@ fn spawn_isolated_chatgpt_x11(
     std::fs::write(applications.join("chatgpt.desktop"), entry).ok()?;
 
     let desktop_id = "chatgpt";
-    let xdg_data_dirs = "/nonexistent/qos-private-host-launch-fixture";
+    let xdg_data_dirs = "/nonexistent/tilo-private-host-launch-fixture";
     let mut preflight = Command::new(&launcher);
     preflight
         .env_clear()
@@ -2092,7 +2092,7 @@ fn spawn_isolated_chatgpt_x11(
     let preflight = preflight.output().expect("run host-launch preflight");
     assert!(
         preflight.status.success(),
-        "private host-entry fixture must resolve through qos-launcher before Electron starts: {}",
+        "private host-entry fixture must resolve through tilo-launcher before Electron starts: {}",
         String::from_utf8_lossy(&preflight.stderr)
     );
 
@@ -2126,10 +2126,10 @@ fn spawn_isolated_chatgpt_x11(
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     if let Some(token) = activation_token {
-        // qOS's compositor passes this intermediary only to qos-launcher.
+        // Tilo's compositor passes this intermediary only to tilo-launcher.
         // The launcher clears it, creates the production per-launch process
         // group, then gives the final host child only the standard variables.
-        command.env("QOS_HOST_ACTIVATION_TOKEN", token);
+        command.env("TILO_HOST_ACTIVATION_TOKEN", token);
     }
     let mut child = command
         .spawn()
@@ -2200,9 +2200,9 @@ fn installed_electron_client_maps_focuses_and_places_through_private_xwayland() 
     let compositor = Compositor::start_host_desktop();
     // Keep one ordinary native Wayland client alive throughout the Electron
     // launch. A bridge that only works in an otherwise empty compositor is
-    // not compatible with a desktop where qOS and host applications coexist.
-    let mut native = TestClient::new(compositor.connect(), "org.qos.test.native-alongside-x11");
-    native.assert_is_qos_compositor();
+    // not compatible with a desktop where Tilo and host applications coexist.
+    let mut native = TestClient::new(compositor.connect(), "org.tilo.test.native-alongside-x11");
+    native.assert_is_tilo_compositor();
     native.map_window(&compositor);
     let before = compositor
         .control(&serde_json::json!({ "op": "foreign_frames" }))
@@ -2236,7 +2236,7 @@ fn installed_electron_client_maps_focuses_and_places_through_private_xwayland() 
         }
         assert!(
             started.elapsed() < Duration::from_secs(45),
-            "the installed Electron client never mapped through qOS Xwayland.\nLast foreign-frame state:\n{}\nElectron log:\n{}\nCompositor log:\n{}",
+            "the installed Electron client never mapped through Tilo Xwayland.\nLast foreign-frame state:\n{}\nElectron log:\n{}\nCompositor log:\n{}",
             serde_json::to_string_pretty(&frames).unwrap_or_else(|_| frames.to_string()),
             log.lock().map(|lines| lines.join("\n")).unwrap_or_default(),
             compositor.recent_log(),
@@ -2294,7 +2294,7 @@ fn installed_electron_client_maps_focuses_and_places_through_private_xwayland() 
     assert!(
         titles.iter().any(|title| title == "ChatGPT")
             || titles.iter().any(|title| title == display_name),
-        "satellite mapped Electron but qOS did not retain its desktop-entry identity. tabs: {titles:?}\nElectron log:\n{}\nCompositor log:\n{}",
+        "satellite mapped Electron but Tilo did not retain its desktop-entry identity. tabs: {titles:?}\nElectron log:\n{}\nCompositor log:\n{}",
         log.lock().map(|lines| lines.join("\n")).unwrap_or_default(),
         compositor.recent_log(),
     );
@@ -2323,7 +2323,7 @@ fn installed_electron_client_maps_focuses_and_places_through_private_xwayland() 
 #[test]
 fn generic_x11_client_relays_compositor_token_through_private_satellite() {
     let compositor = Compositor::start_host_desktop();
-    let mut native = TestClient::new(compositor.connect(), "org.qos.test.native-x11-token");
+    let mut native = TestClient::new(compositor.connect(), "org.tilo.test.native-x11-token");
     native.map_window(&compositor);
     let before = compositor
         .control(&serde_json::json!({ "op": "foreign_frames" }))
@@ -2371,13 +2371,13 @@ fn generic_x11_client_relays_compositor_token_through_private_satellite() {
     });
     assert!(
         titles.iter().any(|title| title == display_name),
-        "generic X11 token was not relayed through satellite/qOS relocation. tabs: {titles:?}\ncompositor log:\n{}",
+        "generic X11 token was not relayed through satellite/Tilo relocation. tabs: {titles:?}\ncompositor log:\n{}",
         compositor.recent_log(),
     );
 }
 
 /// This is deliberately a real client-to-compositor exercise, not a unit
-/// test of `KeyboardSettings`: qOS must serialize the selected German keymap
+/// test of `KeyboardSettings`: Tilo must serialize the selected German keymap
 /// onto the Wayland seat and forward complete press/release/modifier streams
 /// to a focused foreign client. Electron and Xwayland both consume this same
 /// seat contract.
@@ -2387,8 +2387,8 @@ fn real_wayland_client_gets_de_nodeadkeys_symbols_modifiers_and_repeat_contract(
         "keyboard_layout": "de:nodeadkeys",
         "key_repeat": 0.5,
     }));
-    let mut client = TestClient::new(compositor.connect(), "org.qos.test.de-keyboard");
-    client.assert_is_qos_compositor();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.de-keyboard");
+    client.assert_is_tilo_compositor();
     client.map_window(&compositor);
     client.wait_until(
         |s| s.keyboard_keymap.is_some() && s.keyboard_repeat_info.is_some(),
@@ -2430,7 +2430,7 @@ fn real_wayland_client_gets_de_nodeadkeys_symbols_modifiers_and_repeat_contract(
         ("ArrowLeft", false),
         ("Control", false),
         // A held editing key has one press and one release. The client owns
-        // repeated delivery according to `repeat_info`; qOS must never leave
+        // repeated delivery according to `repeat_info`; Tilo must never leave
         // the key logically down or manufacture a second press on release.
         ("Backspace", true),
         ("Backspace", false),
@@ -2488,8 +2488,8 @@ fn real_wayland_client_gets_de_nodeadkeys_symbols_modifiers_and_repeat_contract(
 #[test]
 fn print_screen_capture_owns_both_edges_and_restores_a_clean_client_focus() {
     let compositor = Compositor::start();
-    let mut client = TestClient::new(compositor.connect(), "org.qos.test.print-screen");
-    client.assert_is_qos_compositor();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.print-screen");
+    client.assert_is_tilo_compositor();
     client.map_window(&compositor);
     client.clear_keyboard_trace();
 
@@ -2551,27 +2551,27 @@ fn print_screen_capture_owns_both_edges_and_restores_a_clean_client_focus() {
     );
 }
 
-/// Lock from the visible power menu must enter qOS's own session lifecycle,
+/// Lock from the visible power menu must enter Tilo's own session lifecycle,
 /// rather than merely asking the surrounding login manager to lock.  Drive
 /// the production shortcut and menu keyboard path, then prove both the
 /// compositor state and a real Wayland client's focus/input boundary.
 #[test]
-fn power_menu_lock_enters_qos_session_and_cuts_off_client_input() {
+fn power_menu_lock_enters_tilo_session_and_cuts_off_client_input() {
     let compositor = Compositor::start();
-    let mut client = TestClient::new(compositor.connect(), "org.qos.test.power-menu-lock");
-    client.assert_is_qos_compositor();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.power-menu-lock");
+    client.assert_is_tilo_compositor();
     client.map_window(&compositor);
     client.clear_keyboard_trace();
 
     // Open Quick Settings through its configured default (Super+Q), then
     // Keyboard-navigate its visible action row to Power and open it. Focus
     // starts with no hidden selection, followed by Edit, Settings, Privacy,
-    // Notifications and Power;
+    // Notifications, Clipboard, Devices and Power;
     // the next Enter activates the default Lock row in the real modal.
     compositor.modifiers(false, false, false, true);
     compositor.key("q");
     compositor.modifiers(false, false, false, false);
-    for _ in 0..5 {
+    for _ in 0..7 {
         compositor.key("Tab");
     }
     compositor.key("Enter");
@@ -2591,7 +2591,7 @@ fn power_menu_lock_enters_qos_session_and_cuts_off_client_input() {
         }
         assert!(
             started.elapsed() < DEADLINE,
-            "power-menu Lock did not enter the qOS locked state. {}",
+            "power-menu Lock did not enter the Tilo locked state. {}",
             compositor.debug_state()
         );
         std::thread::sleep(Duration::from_millis(20));
@@ -2625,14 +2625,14 @@ fn power_menu_lock_enters_qos_session_and_cuts_off_client_input() {
 #[test]
 fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart() {
     let mut compositor = Compositor::start();
-    let app_id = "org.qos.test.same-app-lifecycle";
+    let app_id = "org.tilo.test.same-app-lifecycle";
 
     // NewGroup is the production pending-placement path.  Use it twice for
     // the same app-id: app-id identity is intentionally insufficient to
     // identify one of an application's windows.
     compositor.place_next_window(app_id);
     let mut first = TestClient::new(compositor.connect(), app_id);
-    first.assert_is_qos_compositor();
+    first.assert_is_tilo_compositor();
     first.map_window(&compositor);
     let first_protocol_id = u64::from(
         first
@@ -2655,7 +2655,7 @@ fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart(
 
     compositor.place_next_window(app_id);
     let mut selected = TestClient::new(compositor.connect(), app_id);
-    selected.assert_is_qos_compositor();
+    selected.assert_is_tilo_compositor();
     selected.map_window(&compositor);
     let selected_protocol_id = u64::from(
         selected
@@ -2785,7 +2785,7 @@ fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart(
         "an unrelated revision/resync resurrected the selected closed surface",
     );
 
-    // The actual QOS_STATE_PATH must contain no process-local Wayland ids.
+    // The actual TILO_STATE_PATH must contain no process-local Wayland ids.
     // This read uses the production persistence decoder, not a raw string
     // search. Live exact-close durability was established above while the
     // innocent sibling remained mapped; restart safety is the separate rule
@@ -2796,7 +2796,7 @@ fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart(
     assert_eq!(
         foreign_surface_ids(&persisted, app_id),
         Vec::<u64>::new(),
-        "QOS_STATE_PATH must strip every process-local foreign surface binding"
+        "TILO_STATE_PATH must strip every process-local foreign surface binding"
     );
 
     compositor.restart_headless();
@@ -2823,7 +2823,7 @@ fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart(
     // manufacture the selected surface id, and a new same-app window must be
     // adopted as its own new protocol surface.
     let mut survivor = TestClient::new(compositor.connect(), app_id);
-    survivor.assert_is_qos_compositor();
+    survivor.assert_is_tilo_compositor();
     survivor.map_window(&compositor);
     let survivor_protocol_id = u64::from(
         survivor
@@ -2856,13 +2856,13 @@ fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart(
 
 /// A real toolkit must find every global it treats as mandatory — GTK
 /// refuses the display outright (stopping every GTK program) if
-/// `wl_data_device_manager` is missing. qOS's own toolkit never asks for
+/// `wl_data_device_manager` is missing. Tilo's own toolkit never asks for
 /// it, so this asserts the full set a foreign toolkit needs.
 #[test]
 fn compositor_advertises_the_globals_a_toolkit_requires() {
     let compositor = Compositor::start();
-    let mut client = TestClient::new(compositor.connect(), "org.qos.test.toolkit");
-    client.assert_is_qos_compositor();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.toolkit");
+    client.assert_is_tilo_compositor();
 
     // A registry that came back empty would satisfy any "is X absent" check,
     // so establish first that we actually read one.
@@ -2894,8 +2894,8 @@ fn clipboard_crosses_from_one_client_to_another() {
     let compositor = Compositor::start();
     let payload = "cross-process clipboard payload — ünïcödé ✂";
 
-    let mut source = TestClient::new(compositor.connect(), "org.qos.test.source");
-    source.assert_is_qos_compositor();
+    let mut source = TestClient::new(compositor.connect(), "org.tilo.test.source");
+    source.assert_is_tilo_compositor();
     assert!(
         source.has_global("wl_data_device_manager"),
         "the compositor must advertise wl_data_device_manager; globals: {:?}",
@@ -2906,8 +2906,8 @@ fn clipboard_crosses_from_one_client_to_another() {
 
     // Mapping the second window moves focus, which is what makes the compositor
     // offer it the selection — the real sequence a user performs.
-    let mut sink = TestClient::new(compositor.connect(), "org.qos.test.sink");
-    sink.assert_is_qos_compositor();
+    let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.sink");
+    sink.assert_is_tilo_compositor();
     sink.map_window(&compositor);
 
     let received = sink.read_clipboard(Some(&mut source));
@@ -2932,8 +2932,8 @@ fn clipboard_crosses_from_in_process_chrome_to_a_client() {
     let compositor = Compositor::start();
     let payload = "copied inside the compositor process";
 
-    let mut client = TestClient::new(compositor.connect(), "org.qos.test.chrome-sink");
-    client.assert_is_qos_compositor();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.chrome-sink");
+    client.assert_is_tilo_compositor();
     client.map_window(&compositor);
 
     compositor.chrome_copy(payload, false);
@@ -2953,8 +2953,8 @@ fn clipboard_crosses_from_a_client_to_in_process_chrome() {
     let compositor = Compositor::start();
     let payload = "copied inside a sandboxed client";
 
-    let mut client = TestClient::new(compositor.connect(), "org.qos.test.chrome-source");
-    client.assert_is_qos_compositor();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.chrome-source");
+    client.assert_is_tilo_compositor();
     client.map_window(&compositor);
     client.set_clipboard(payload);
 
@@ -2990,8 +2990,8 @@ fn primary_selection_crosses_between_processes_and_does_not_alias_the_clipboard(
     let clipboard_payload = "this went on the clipboard";
     let primary_payload = "this was drag-selected";
 
-    let mut source = TestClient::new(compositor.connect(), "org.qos.test.primary-source");
-    source.assert_is_qos_compositor();
+    let mut source = TestClient::new(compositor.connect(), "org.tilo.test.primary-source");
+    source.assert_is_tilo_compositor();
     assert!(
         source.has_global("zwp_primary_selection_device_manager_v1"),
         "the compositor must advertise the primary-selection manager; globals: {:?}",
@@ -3001,8 +3001,8 @@ fn primary_selection_crosses_between_processes_and_does_not_alias_the_clipboard(
     source.set_clipboard(clipboard_payload);
     source.set_primary(primary_payload);
 
-    let mut sink = TestClient::new(compositor.connect(), "org.qos.test.primary-sink");
-    sink.assert_is_qos_compositor();
+    let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.primary-sink");
+    sink.assert_is_tilo_compositor();
     sink.map_window(&compositor);
 
     let got_primary = sink.read_primary(Some(&mut source));
@@ -3025,8 +3025,8 @@ fn primary_selection_crosses_from_a_client_to_in_process_chrome() {
     let compositor = Compositor::start();
     let payload = "primary selection from a client";
 
-    let mut client = TestClient::new(compositor.connect(), "org.qos.test.primary-chrome");
-    client.assert_is_qos_compositor();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.primary-chrome");
+    client.assert_is_tilo_compositor();
     client.map_window(&compositor);
     client.set_primary(payload);
 
@@ -3053,8 +3053,8 @@ fn primary_selection_crosses_from_a_client_to_in_process_chrome() {
 fn primary_selection_crosses_from_in_process_chrome_to_a_client() {
     let compositor = Compositor::start();
 
-    let mut client = TestClient::new(compositor.connect(), "org.qos.test.primary-out");
-    client.assert_is_qos_compositor();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.primary-out");
+    client.assert_is_tilo_compositor();
     client.map_window(&compositor);
 
     compositor.chrome_copy("chrome clipboard", false);
@@ -3073,8 +3073,8 @@ fn primary_selection_crosses_from_in_process_chrome_to_a_client() {
 fn data_control_is_privileged_socket_only() {
     let compositor = Compositor::start();
 
-    let mut sandboxed = TestClient::new(compositor.connect(), "org.qos.test.sandboxed");
-    sandboxed.assert_is_qos_compositor();
+    let mut sandboxed = TestClient::new(compositor.connect(), "org.tilo.test.sandboxed");
+    sandboxed.assert_is_tilo_compositor();
     for manager in [
         "zwlr_data_control_manager_v1",
         "ext_data_control_manager_v1",
@@ -3096,9 +3096,9 @@ fn data_control_is_privileged_socket_only() {
 
     let mut privileged = TestClient::new(
         compositor.connect_privileged(),
-        "org.qos.test.clipboard-manager",
+        "org.tilo.test.clipboard-manager",
     );
-    privileged.assert_is_qos_compositor();
+    privileged.assert_is_tilo_compositor();
     for manager in [
         "zwlr_data_control_manager_v1",
         "ext_data_control_manager_v1",
@@ -3114,13 +3114,13 @@ fn data_control_is_privileged_socket_only() {
 
 /// Session-lock is an authentication boundary, just like clipboard-manager
 /// access: ordinary applications must not be able to acquire a compositor
-/// lock and later release it without passing qOS authentication.
+/// lock and later release it without passing Tilo authentication.
 #[test]
 fn session_lock_is_privileged_socket_only() {
     let compositor = Compositor::start();
 
-    let mut public = TestClient::new(compositor.connect(), "org.qos.test.untrusted-locker");
-    public.assert_is_qos_compositor();
+    let mut public = TestClient::new(compositor.connect(), "org.tilo.test.untrusted-locker");
+    public.assert_is_tilo_compositor();
     assert!(
         !public.has_global("ext_session_lock_manager_v1"),
         "session-lock is visible on the public socket; any app could acquire and release the desktop lock. Globals: {:?}",
@@ -3129,9 +3129,9 @@ fn session_lock_is_privileged_socket_only() {
 
     let mut trusted = TestClient::new(
         compositor.connect_privileged(),
-        "org.qos.test.session-locker",
+        "org.tilo.test.session-locker",
     );
-    trusted.assert_is_qos_compositor();
+    trusted.assert_is_tilo_compositor();
     assert!(
         trusted.has_global("ext_session_lock_manager_v1"),
         "session-lock is missing from the privileged session socket. Globals: {:?}",
@@ -3151,14 +3151,14 @@ fn drag_and_drop_carries_data_between_two_clients() {
     // Both windows have to be on screen at once for a drag to cross between
     // them, and in a scrollable-strip desktop that means separate window
     // groups rather than two tabs of one.
-    compositor.place_next_window("org.qos.test.dnd-source");
-    let mut source = TestClient::new(compositor.connect(), "org.qos.test.dnd-source");
-    source.assert_is_qos_compositor();
+    compositor.place_next_window("org.tilo.test.dnd-source");
+    let mut source = TestClient::new(compositor.connect(), "org.tilo.test.dnd-source");
+    source.assert_is_tilo_compositor();
     source.map_window(&compositor);
 
-    compositor.place_next_window("org.qos.test.dnd-target");
-    let mut target = TestClient::new(compositor.connect(), "org.qos.test.dnd-target");
-    target.assert_is_qos_compositor();
+    compositor.place_next_window("org.tilo.test.dnd-target");
+    let mut target = TestClient::new(compositor.connect(), "org.tilo.test.dnd-target");
+    target.assert_is_tilo_compositor();
     target.map_window(&compositor);
 
     // Click the source once before measuring anything — clicking raises its
@@ -3388,7 +3388,7 @@ fn narrow_demo_group_for_files(compositor: &Compositor) {
     }
     compositor.pointer_button(false);
     std::thread::sleep(Duration::from_millis(800));
-    compositor.snapshot(Path::new("/tmp/qos-dnd-e2e-after-resize.png"));
+    compositor.snapshot(Path::new("/tmp/tilo-dnd-e2e-after-resize.png"));
     assert!(
         files_tab_is_active(compositor),
         "the demo group must still show Files after the resize.\n{}",
@@ -3400,7 +3400,7 @@ fn narrow_demo_group_for_files(compositor: &Compositor) {
 /// on-screen part since the tile may extend past the left edge. Split out
 /// of the drag-and-drop tests below to keep each one short.
 fn locate_file_row(compositor: &Compositor) -> (f64, f64) {
-    compositor.snapshot(Path::new("/tmp/qos-dnd-e2e-before-drag.png"));
+    compositor.snapshot(Path::new("/tmp/tilo-dnd-e2e-before-drag.png"));
     let [x, y, w, h] = compositor
         .named_rect("file_row:photo.png")
         .unwrap_or_else(|| {
@@ -3442,7 +3442,7 @@ fn drag_file_row_onto_client(
         target.pump();
         std::thread::sleep(Duration::from_millis(30));
     }
-    compositor.snapshot(Path::new("/tmp/qos-dnd-e2e-mid-drag.png"));
+    compositor.snapshot(Path::new("/tmp/tilo-dnd-e2e-mid-drag.png"));
     let started = Instant::now();
     while started.elapsed() < DEADLINE {
         if target.state.dnd_entered && target.state.dnd_offer.is_some() {
@@ -3494,7 +3494,7 @@ fn release_and_wait_for_drop(compositor: &Compositor, target: &mut TestClient) {
 #[test]
 fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
     let home = PathBuf::from(format!(
-        "/run/user/{}/qos-dnd-home-{}-{}",
+        "/run/user/{}/tilo-dnd-home-{}-{}",
         unsafe { libc::getuid() },
         std::process::id(),
         next_id(),
@@ -3505,9 +3505,9 @@ fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
 
     let compositor = Compositor::start_with(Some(&home), (2560, 900));
 
-    compositor.place_next_window("org.qos.test.dnd-target");
-    let mut target = TestClient::new(compositor.connect(), "org.qos.test.dnd-target");
-    target.assert_is_qos_compositor();
+    compositor.place_next_window("org.tilo.test.dnd-target");
+    let mut target = TestClient::new(compositor.connect(), "org.tilo.test.dnd-target");
+    target.assert_is_tilo_compositor();
     target.map_window(&compositor);
 
     // Let the strip finish making room for the new group before reading
@@ -3600,7 +3600,7 @@ fn spawn_word_processor(
         // What the launcher exports for a packaged app; `ui` announces it
         // as the Wayland app id, which is how the placement above is
         // matched to this window.
-        .env("QOS_PACKAGE_ID", "dev.qos.word-processor")
+        .env("TILO_PACKAGE_ID", "dev.tilo.word-processor")
         .env("XDG_RUNTIME_DIR", &compositor.runtime_dir)
         .env("XDG_CONFIG_HOME", compositor.runtime_dir.join("app-config"))
         .env("XDG_DATA_HOME", compositor.runtime_dir.join("app-data"))
@@ -3651,13 +3651,13 @@ fn wait_for_word_processor_mapped(compositor: &Compositor, app_log: &Arc<Mutex<V
 /// The same drag, dropped on the real word processor. A live lane: starts
 /// `target/debug/word-processor` as an unsandboxed client (needs a GPU to
 /// render) and asserts its own report that it inserted the image.
-/// Self-skips unless `QOS_LIVE_APP_DND=1` (`docs/testing-live.md`), so
+/// Self-skips unless `TILO_LIVE_APP_DND=1` (`docs/testing-live.md`), so
 /// hermetic CI stays green.
 #[test]
 fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
     const STEPS: u32 = 16;
-    if std::env::var_os("QOS_LIVE_APP_DND").is_none() {
-        eprintln!("skipping: set QOS_LIVE_APP_DND=1 to run the word-processor drop lane");
+    if std::env::var_os("TILO_LIVE_APP_DND").is_none() {
+        eprintln!("skipping: set TILO_LIVE_APP_DND=1 to run the word-processor drop lane");
         return;
     }
     let word_processor =
@@ -3669,7 +3669,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
     );
 
     let home = PathBuf::from(format!(
-        "/run/user/{}/qos-dnd-wp-{}-{}",
+        "/run/user/{}/tilo-dnd-wp-{}-{}",
         unsafe { libc::getuid() },
         std::process::id(),
         next_id(),
@@ -3679,7 +3679,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
     std::fs::write(&photo, TINY_PNG).expect("write the fixture image");
 
     let compositor = Compositor::start_with_home(Some(&home));
-    compositor.place_next_window("dev.qos.word-processor");
+    compositor.place_next_window("dev.tilo.word-processor");
 
     let (mut app, app_log) = spawn_word_processor(&compositor, &word_processor, &home);
     wait_for_word_processor_mapped(&compositor, &app_log);

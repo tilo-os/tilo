@@ -137,7 +137,7 @@ pub enum Update {
 )]
 fn client() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
-        .user_agent("tube/0.1 (+qos)")
+        .user_agent("tube/0.1 (+tilo)")
         .timeout(Duration::from_secs(8))
         .build()
         // Only a static user-agent + timeout are set (no proxy/TLS config that

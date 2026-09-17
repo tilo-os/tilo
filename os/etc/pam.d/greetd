@@ -1,6 +1,6 @@
 #%PAM-1.0
-# qOS greetd PAM stack — used by greetd (and therefore the graphical
-# qos-greeter) to authenticate the user before StartSession.
+# Tilo greetd PAM stack — used by greetd (and therefore the graphical
+# tilo-greeter) to authenticate the user before StartSession.
 #
 # Fingerprint is offered first as a *sufficient* auth factor: if
 # pam_fprintd.so authenticates the user, the auth phase short-circuits to

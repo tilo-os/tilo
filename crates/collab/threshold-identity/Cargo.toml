@@ -11,13 +11,12 @@ license.workspace = true
 name = "threshold_identity"
 path = "src/lib.rs"
 
-# FROST-based threshold-shared Ed25519 identity for qOS.
+# FROST-based threshold-shared Ed25519 identity for Tilo.
 #
-# Phase 8 of the `2026-06-29-spaces-channels-and-cryptographic-roles.md`
-# spec: a single Ed25519 keypair representing a human, whose secret half
+# A single Ed25519 keypair represents a human while its secret half
 # is split across the user's devices via FROST-Ed25519. Threshold-produced
 # signatures are byte-compatible with standard Ed25519 verification so
-# `qos-collab-types::verify_event` does not need to know about
+# `tilo-collab-types::verify_event` does not need to know about
 # threshold-ness.
 #
 [dependencies]
@@ -38,7 +37,7 @@ rand.workspace = true
 rand_chacha.workspace = true
 rand_core.workspace = true
 
-# Standard wire-serialisation stack (mirrors qos-collab-types).
+# Standard wire-serialisation stack (mirrors tilo-collab-types).
 serde.workspace = true
 serde_bytes.workspace = true
 
@@ -68,7 +67,7 @@ ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 zeroize.workspace = true
 
 [dev-dependencies]
-# Same dep that qos-collab-types uses for ArtifactId / ChannelId /
+# Same dep that tilo-collab-types uses for ArtifactId / ChannelId /
 # SpaceId UUIDs; we mint a few in the SignedOp interop test.
 uuid.workspace = true
 

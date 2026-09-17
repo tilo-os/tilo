@@ -11,7 +11,7 @@
 //! explicit unlock). Independent: an idle locked session still blanks to save power, and waking
 //! from blank while locked re-shows the overlay rather than unlocking.
 //!
-//! `ext-session-lock-v1` is client-driven (a client supplies the lock surface(s)); qOS instead
+//! `ext-session-lock-v1` is client-driven (a client supplies the lock surface(s)); Tilo instead
 //! renders its own lock UI as chrome ([`crate::compositor::lock_screen`]), so a protocol `lock`
 //! request just folds into the same locked state this machine tracks. Unlock requires a verified password ([`crate::compositor::lock_controller`]), not merely a keypress.
 
@@ -26,15 +26,15 @@ pub const DEFAULT_LOCK_SECS: u64 = 300;
 /// Env var seeding the idle-to-blank timeout, in seconds; `0` disables
 /// blanking. Unset → [`DEFAULT_BLANK_SECS`]. The Settings power policy
 /// replaces this seed in production via [`IdleConfig::with_blank`].
-pub const BLANK_SECS_ENV: &str = "QOS_IDLE_BLANK_SECS";
+pub const BLANK_SECS_ENV: &str = "TILO_IDLE_BLANK_SECS";
 
 /// Env var overriding idle-to-lock, in seconds. Unset → [`DEFAULT_LOCK_SECS`];
 /// `0` explicitly disables automatic locking (Super+L still works).
-pub const LOCK_SECS_ENV: &str = "QOS_IDLE_LOCK_SECS";
+pub const LOCK_SECS_ENV: &str = "TILO_IDLE_LOCK_SECS";
 
 /// Env var enabling idle-to-suspend, in seconds. Unset (or `0`) → no automatic suspend from this
 /// source; production sources the timeout from Settings ([`IdleConfig::with_suspend`]) — this env var is the headless/testing override.
-pub const SUSPEND_SECS_ENV: &str = "QOS_IDLE_SUSPEND_SECS";
+pub const SUSPEND_SECS_ENV: &str = "TILO_IDLE_SUSPEND_SECS";
 
 /// An effect the calloop tick must apply after calling into the [`SessionManager`]; a pure value — the manager never touches hardware itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn settings_policy_blank_timeout_drives_the_live_session() {
-        let policy = qos_power_mgmt::config::policy_from_settings_json_for_profile(
+        let policy = tilo_power_mgmt::config::policy_from_settings_json_for_profile(
             r#"{"power":{"blank_minutes":1,"auto_suspend":false}}"#,
             None,
         );
@@ -421,7 +421,7 @@ mod tests {
             vec![SessionTransition::Blanked]
         );
 
-        let never = qos_power_mgmt::config::policy_from_settings_json_for_profile(
+        let never = tilo_power_mgmt::config::policy_from_settings_json_for_profile(
             r#"{"power":{"blank_minutes":0,"auto_suspend":false}}"#,
             None,
         );

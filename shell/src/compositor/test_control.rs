@@ -1,4 +1,4 @@
-//! Real-input e2e test control protocol (`QOS_TEST_CONTROL=/run/user/N/nirios-test-N.sock`): pure command/response types + dispatcher, kept separate from the socket transport.
+//! Real-input e2e test control protocol (`TILO_TEST_CONTROL=/run/user/N/tilo-test-N.sock`): pure command/response types + dispatcher, kept separate from the socket transport.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -203,7 +203,7 @@ impl TargetEntry {
 pub trait ControlState {
     /// Snapshot of every addressable widget in the live widget tree.
     fn widget_registry(&self) -> HashMap<String, Rect>;
-    /// JSON view of the persisted [`WorkspaceTree`] — same shape `NIRIOS_TEST_STATE_DUMP` writes on every frame tick. Defaults to `Null` so mock fixtures that only need `widget_registry` don't have to spell out a tree.
+    /// JSON view of the persisted [`WorkspaceTree`] — same shape `TILO_TEST_STATE_DUMP` writes on every frame tick. Defaults to `Null` so mock fixtures that only need `widget_registry` don't have to spell out a tree.
     fn workspace_tree_json(&self) -> serde_json::Value {
         serde_json::Value::Null
     }

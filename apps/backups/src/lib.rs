@@ -1,4 +1,4 @@
-//! Backups — qOS native snapshot & backup manager (CRDT-native, built on the
+//! Backups — Tilo native snapshot & backup manager (CRDT-native, built on the
 //! `ui` toolkit).
 //!
 //! Layers:
@@ -49,6 +49,7 @@ pub mod doc;
 pub mod engine;
 pub mod model;
 pub mod paint;
+pub mod search_provider;
 
 pub use app::BackupsApp;
 

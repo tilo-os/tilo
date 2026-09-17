@@ -413,7 +413,7 @@ pub fn continuation_file_reference_for_surface(
         .path
         .clone();
     drop(open);
-    let record_id = xattr::get(&path, "user.qos.record-id")
+    let record_id = xattr::get(&path, "user.tilo.record-id")
         .ok()
         .flatten()
         .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
@@ -430,13 +430,13 @@ pub fn continuation_file_reference_for_surface(
             .find(|record| record.path == *path)
             .map(|record| *record.record_id.as_bytes())
         })?;
-    let content_hash = xattr::get(&path, "user.qos.content-hash")
+    let content_hash = xattr::get(&path, "user.tilo.content-hash")
         .ok()
         .flatten()
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
     // FUSE exposes preview bytes, never a path. Persist only their hash so
     // the receiver can request/cache its own projected thumbnail.
-    let thumbnail_hash = xattr::get(&path, "user.qos.thumb")
+    let thumbnail_hash = xattr::get(&path, "user.tilo.thumb")
         .ok()
         .flatten()
         .map(|bytes| *blake3::hash(&bytes).as_bytes());
@@ -671,12 +671,12 @@ mod tests {
         ChromeState::new_with_handle(handle)
     }
 
-    /// A stand-in `qos-launcher` that records its argv, wired in via
-    /// `QOS_LAUNCHER_BIN` so the log holds what production really ran.
+    /// A stand-in `tilo-launcher` that records its argv, wired in via
+    /// `TILO_LAUNCHER_BIN` so the log holds what production really ran.
     fn install_recording_launcher(dir: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let log = dir.join("launched.log");
-        let bin = dir.join("qos-launcher");
+        let bin = dir.join("tilo-launcher");
         std::fs::write(
             &bin,
             format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display()),
@@ -685,7 +685,7 @@ mod tests {
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         // SAFETY: every caller is in the `process_env` serial group.
         unsafe {
-            std::env::set_var("QOS_LAUNCHER_BIN", &bin);
+            std::env::set_var("TILO_LAUNCHER_BIN", &bin);
             std::env::set_var("XDG_RUNTIME_DIR", dir);
         }
         launcher::set_wayland_socket_path(Some(dir.join("wayland-0")));
@@ -718,10 +718,10 @@ mod tests {
     fn clear_launch_env() {
         // SAFETY: every caller is in the `process_env` serial group.
         unsafe {
-            std::env::remove_var("QOS_APPS_DATA_DIR");
-            std::env::remove_var("QOS_LAUNCHER_BIN");
+            std::env::remove_var("TILO_APPS_DATA_DIR");
+            std::env::remove_var("TILO_LAUNCHER_BIN");
             std::env::remove_var("XDG_RUNTIME_DIR");
-            std::env::remove_var("QOS_WORKSPACE_ROOTS");
+            std::env::remove_var("TILO_WORKSPACE_ROOTS");
         }
         launcher::set_wayland_socket_path(None);
         reset_session_state();
@@ -751,14 +751,14 @@ mod tests {
         )
         .unwrap();
         // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", root.path()) };
+        unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", root.path()) };
         clear_open_documents();
         note_opening(
             &RecordId::for_file(&document),
             &document,
-            "dev.qos.pdf-viewer",
+            "dev.tilo.pdf-viewer",
         );
-        claim_surface_for_document("dev.qos.pdf-viewer", 77);
+        claim_surface_for_document("dev.tilo.pdf-viewer", 77);
 
         let reference = continuation_file_reference_for_surface(77)
             .expect("the root catalog supplies stable identity without a file xattr");
@@ -782,22 +782,22 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         install(
             tmp.path(),
-            "dev.qos.word-processor",
+            "dev.tilo.word-processor",
             "Word Processor",
             &["odt"],
         );
-        install(tmp.path(), "dev.qos.pdf-viewer", "PDF Viewer", &["pdf"]);
-        install(tmp.path(), "dev.qos.text-editor", "Text Editor", &["md"]);
+        install(tmp.path(), "dev.tilo.pdf-viewer", "PDF Viewer", &["pdf"]);
+        install(tmp.path(), "dev.tilo.text-editor", "Text Editor", &["md"]);
         // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         let log = install_recording_launcher(tmp.path());
         reset_session_state();
 
         let chrome = chrome_with_workspace();
         let cases = [
-            ("report.odt", "dev.qos.word-processor"),
-            ("manual.pdf", "dev.qos.pdf-viewer"),
-            ("notes.md", "dev.qos.text-editor"),
+            ("report.odt", "dev.tilo.word-processor"),
+            ("manual.pdf", "dev.tilo.pdf-viewer"),
+            ("notes.md", "dev.tilo.text-editor"),
         ];
         for (name, _) in cases {
             let path = tmp.path().join(name);
@@ -846,12 +846,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         install(
             tmp.path(),
-            "dev.qos.word-processor",
+            "dev.tilo.word-processor",
             "Word Processor",
             &["odt"],
         );
         // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         let log = install_recording_launcher(tmp.path());
         reset_session_state();
 
@@ -961,13 +961,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let apps = tmp.path().join("apps");
         std::fs::create_dir_all(&apps).unwrap();
-        install(&apps, "dev.qos.word-processor", "Word Processor", &["odt"]);
+        install(&apps, "dev.tilo.word-processor", "Word Processor", &["odt"]);
         let files = tmp.path().join("files");
         std::fs::create_dir_all(&files).unwrap();
         let doc = files.join("agenda.odt");
         std::fs::write(&doc, b"x").unwrap();
         // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", &apps) };
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", &apps) };
         let log = install_recording_launcher(tmp.path());
         reset_session_state();
 
@@ -990,7 +990,7 @@ mod tests {
         let commands = launched_commands(&log, 1);
         assert_eq!(commands.len(), 1, "exactly one launch: {commands:#?}");
         assert!(
-            commands[0].contains("--app-id dev.qos.word-processor")
+            commands[0].contains("--app-id dev.tilo.word-processor")
                 && commands[0].contains(&format!("--open {}", doc.display())),
             "the explorer's activation had to reach the owning app with the \
              document: {}",
@@ -1002,7 +1002,7 @@ mod tests {
             let st = chrome.borrow();
             let tree = st.tree();
             let ws = tree.active_workspace().unwrap();
-            let want = Subject::app("dev.qos.word-processor");
+            let want = Subject::app("dev.tilo.word-processor");
             let scopes: Vec<Scope> = ws
                 .capabilities
                 .iter()
@@ -1024,12 +1024,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let apps = tmp.path().join("apps");
         std::fs::create_dir_all(&apps).unwrap();
-        install(&apps, "dev.qos.word-processor", "Word Processor", &["odt"]);
+        install(&apps, "dev.tilo.word-processor", "Word Processor", &["odt"]);
         let files = tmp.path().join("files");
         std::fs::create_dir_all(&files).unwrap();
         std::fs::write(files.join("archive.zzz"), b"x").unwrap();
         // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", &apps) };
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", &apps) };
         let log = install_recording_launcher(tmp.path());
         reset_session_state();
 
@@ -1071,12 +1071,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         install(
             tmp.path(),
-            "dev.qos.word-processor",
+            "dev.tilo.word-processor",
             "Word Processor",
             &["odt"],
         );
         // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         let log = install_recording_launcher(tmp.path());
         reset_session_state();
 
@@ -1123,12 +1123,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         install(
             tmp.path(),
-            "dev.qos.word-processor",
+            "dev.tilo.word-processor",
             "Word Processor",
             &["odt", "md"],
         );
         // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         launcher::invalidate_app_cache();
 
         let target = resolve(Path::new("/w/report.odt"));
@@ -1137,7 +1137,7 @@ mod tests {
                 app,
                 editable_document,
             } => {
-                assert_eq!(app.package_id, "dev.qos.word-processor");
+                assert_eq!(app.package_id, "dev.tilo.word-processor");
                 assert!(
                     editable_document,
                     "the format registry knows .odt is an editable document"
@@ -1151,7 +1151,7 @@ mod tests {
         ));
 
         // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
         launcher::invalidate_app_cache();
     }
 
@@ -1161,9 +1161,9 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn document_with_no_installed_handler_is_distinguishable() {
         let tmp = tempfile::tempdir().unwrap();
-        install(tmp.path(), "dev.qos.calculator", "Calculator", &[]);
+        install(tmp.path(), "dev.tilo.calculator", "Calculator", &[]);
         // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         launcher::invalidate_app_cache();
 
         assert_eq!(
@@ -1180,7 +1180,7 @@ mod tests {
         );
 
         // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
         launcher::invalidate_app_cache();
     }
 
@@ -1197,12 +1197,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         install(
             tmp.path(),
-            "dev.qos.word-processor",
+            "dev.tilo.word-processor",
             "Word Processor",
             &["odt"],
         );
         // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         launcher::invalidate_app_cache();
 
         let doc_path = tmp.path().join("report.odt");
@@ -1224,7 +1224,7 @@ mod tests {
         let st = chrome.borrow();
         let tree = st.tree();
         let ws = tree.active_workspace().unwrap();
-        let want_subject = Subject::app("dev.qos.word-processor");
+        let want_subject = Subject::app("dev.tilo.word-processor");
         let granted: Vec<_> = ws
             .capabilities
             .iter()
@@ -1257,7 +1257,7 @@ mod tests {
         drop(st);
 
         // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
         launcher::invalidate_app_cache();
     }
 
@@ -1267,9 +1267,9 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn unclaimed_extension_refuses_with_a_reportable_reason() {
         let tmp = tempfile::tempdir().unwrap();
-        install(tmp.path(), "dev.qos.calculator", "Calculator", &[]);
+        install(tmp.path(), "dev.tilo.calculator", "Calculator", &[]);
         // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         launcher::invalidate_app_cache();
 
         let log = install_recording_launcher(tmp.path());
@@ -1330,9 +1330,9 @@ mod tests {
         let record = [0x71; 16];
         let content = [0x42; 32];
         let thumbnail = b"projected thumbnail";
-        xattr::set(&path, "user.qos.record-id", &record).unwrap();
-        xattr::set(&path, "user.qos.content-hash", &content).unwrap();
-        xattr::set(&path, "user.qos.thumb", thumbnail).unwrap();
+        xattr::set(&path, "user.tilo.record-id", &record).unwrap();
+        xattr::set(&path, "user.tilo.content-hash", &content).unwrap();
+        xattr::set(&path, "user.tilo.thumb", thumbnail).unwrap();
         let uuid = uuid::Uuid::from_bytes(record);
         let exact = serde_json::json!({
             "schema_version": 2,
@@ -1362,12 +1362,12 @@ mod tests {
 
         // A change after capture must not make the record unopenable: the
         // FileRecordId, rather than stale content/preview hashes, routes it.
-        xattr::set(&path, "user.qos.content-hash", &[0x43; 32]).unwrap();
-        xattr::set(&path, "user.qos.thumb", b"fresh preview").unwrap();
+        xattr::set(&path, "user.tilo.content-hash", &[0x43; 32]).unwrap();
+        xattr::set(&path, "user.tilo.thumb", b"fresh preview").unwrap();
 
-        let previous = std::env::var_os("QOS_WORKSPACE_ROOTS");
+        let previous = std::env::var_os("TILO_WORKSPACE_ROOTS");
         // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", root.path()) };
+        unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", root.path()) };
         let resolved = open_continuity_file_reference(&reference)
             .expect("the mounted Files record catalog resolves and hydrates the remote reference");
         assert_eq!(resolved, path);
@@ -1377,9 +1377,9 @@ mod tests {
                 .unwrap()
                 .contains(root.path().to_str().unwrap())
         );
-        install(root.path(), "dev.qos.text-editor", "Text Editor", &["md"]);
+        install(root.path(), "dev.tilo.text-editor", "Text Editor", &["md"]);
         // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", root.path()) };
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", root.path()) };
         let log = install_recording_launcher(root.path());
         reset_session_state();
         let chrome = chrome_with_workspace();
@@ -1402,8 +1402,8 @@ mod tests {
         // SAFETY: restore the process-global environment under the same lock.
         unsafe {
             match previous {
-                Some(value) => std::env::set_var("QOS_WORKSPACE_ROOTS", value),
-                None => std::env::remove_var("QOS_WORKSPACE_ROOTS"),
+                Some(value) => std::env::set_var("TILO_WORKSPACE_ROOTS", value),
+                None => std::env::remove_var("TILO_WORKSPACE_ROOTS"),
             }
         }
     }

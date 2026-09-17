@@ -430,8 +430,8 @@ pub struct FeedsApp {
     // --- refresh progress + non-blocking drain --------------------------
     /// Live refresh progress shown in the list header.
     refresh: RefreshState,
-    resource_refresh_invocation: Option<qos_actions::InvocationId>,
-    resource_refresh_result: Option<qos_actions::InvocationUpdate>,
+    resource_refresh_invocation: Option<tilo_actions::InvocationId>,
+    resource_refresh_result: Option<tilo_actions::InvocationUpdate>,
     /// CRDT writes produced by the doc-less `draw`-time drain, flushed on the
     /// next pass that holds the document.
     pending_doc_writes: Vec<DocWrite>,
@@ -891,7 +891,7 @@ impl FeedsApp {
     // --- action model ---------------------------------------------------
 
     /// Dispatch one Feeds [`FeedsAction`] — the single mutation path shared with
-    /// the Ctrl+K palette. The action is applied through the qOS action executor
+    /// the Ctrl+K palette. The action is applied through the Tilo action executor
     /// (a pinned actor + committed change, so it replays byte-identically on
     /// peers), exactly as the palette does. The document heads captured just
     /// before the first action of the event are stashed so the host records
@@ -901,7 +901,7 @@ impl FeedsApp {
             doc,
             actions::FEEDS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Feeds", "Feeds", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Feeds", "Feeds", action),
         );
         // The action just mutated the document; keep the reload watermark ahead
         // of it so `sync`'s out-of-band reload doesn't redundantly rebuild the
@@ -1630,9 +1630,9 @@ impl FeedsApp {
             self.refresh.finished_at = Some(Instant::now());
             if let Some(invocation) = self.resource_refresh_invocation.take() {
                 self.resource_refresh_result = Some(if self.refresh.failed_feeds > 0 {
-                    qos_actions::InvocationUpdate::Failed {
+                    tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "feeds.refresh_incomplete".into(),
                             message: format!(
                                 "{} of {} subscriptions failed to refresh",
@@ -1643,9 +1643,9 @@ impl FeedsApp {
                         },
                     }
                 } else {
-                    qos_actions::InvocationUpdate::Succeeded {
+                    tilo_actions::InvocationUpdate::Succeeded {
                         invocation,
-                        output: qos_actions::ActionOutput::default(),
+                        output: tilo_actions::ActionOutput::default(),
                     }
                 });
             }
@@ -4086,18 +4086,18 @@ impl Widget for FeedsApp {
 
     /// Publish the reader + its folders and subscriptions so the host's Ctrl+K
     /// action palette scopes to them. Delegates to the [`ResourceProvider`]
-    /// (`qos_actions::ResourceProvider`) impl in [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    /// (`tilo_actions::ResourceProvider`) impl in [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
@@ -4107,14 +4107,14 @@ impl Widget for FeedsApp {
             return Ok(false);
         };
         match (kind, operation) {
-            (qos_actions::OperationKind::Effect, crate::actions::FeedsOperation::RefreshAll) => {
+            (tilo_actions::OperationKind::Effect, crate::actions::FeedsOperation::RefreshAll) => {
                 if self.store.feeds.is_empty() {
                     return Err("there are no subscriptions to refresh".into());
                 }
                 self.refresh_all();
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::FeedsOperation::RevealFeed { id },
             ) => {
                 let id = id.parse::<Id>().map_err(|_| "invalid feed id")?;
@@ -4124,7 +4124,7 @@ impl Widget for FeedsApp {
                 self.set_filter(Filter::Feed(id));
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::FeedsOperation::RevealArticle { id },
             ) => {
                 let id = id.parse::<Id>().map_err(|_| "invalid article id")?;
@@ -4143,7 +4143,7 @@ impl Widget for FeedsApp {
                 }
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::FeedsOperation::RevealTag { tag },
             ) => {
                 let tag = actions::normalize_tags([tag.as_str()])
@@ -4162,14 +4162,14 @@ impl Widget for FeedsApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != qos_actions::OperationKind::Effect
+        if kind != tilo_actions::OperationKind::Effect
             || type_id != crate::actions::FEEDS_OPERATION_TYPE
         {
             return Ok(None);
@@ -4186,11 +4186,11 @@ impl Widget for FeedsApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         self.drain_fetches_live();
         if self
             .resource_refresh_result
@@ -4538,6 +4538,7 @@ impl Widget for FeedsApp {
             .map(|row| match row.role {
                 RowRole::Section => AccessNode::new(Role::Heading { level: 2 })
                     .with_name(row.label.clone())
+                    .with_hashed_key(format!("feeds.section:{}", row.label))
                     .with_bounds(row.rect),
                 RowRole::Smart(kind) => {
                     let target = match kind {
@@ -5104,13 +5105,7 @@ mod tests {
         t0.elapsed()
     }
 
-    /// THE responsiveness regression test the coordinator demanded. Spawns the
-    /// REAL worker (real thread + real Tokio runtime + real reqwest client),
-    /// fires a refresh against unreachable hosts, then proves the MAIN THREAD
-    /// stays responsive: `refresh_all`, every `draw`, and `handle_event` each
-    /// return in well under a 16 ms frame budget while the refresh is in flight.
-    /// If any network I/O, runtime construction, or blocking `recv` ran on the
-    /// UI thread, one of these would blow the budget.
+    /// A real refresh worker must not block the UI thread.
     #[test]
     fn real_worker_refresh_keeps_main_thread_responsive() {
         use std::time::{Duration, Instant};
@@ -5118,13 +5113,8 @@ mod tests {
         let mut a = app();
         let mut doc = AutoCommit::new();
         let mut tr = TextRenderer::new();
-        // Warm frames so first-frame font loading / cache warm-up isn't
-        // attributed to refresh, then capture a BASELINE for one idle draw +
-        // one idle input event. The invariant we prove is build-independent:
-        // an in-flight refresh must not make draw/handle_event meaningfully
-        // slower than this baseline — i.e. no network / runtime / blocking recv
-        // runs on the UI thread. (An absolute "<16ms" bound would just measure
-        // how slow an unoptimised debug draw of the sample scene is.)
+        // Compare active-refresh work with warmed idle frames to avoid tying
+        // the assertion to a machine-specific rendering budget.
         let synth_event = || WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(200.0, 200.0),
@@ -5164,8 +5154,7 @@ mod tests {
             f.kind = FeedKind::Rss;
         }
 
-        // Cold start: the FIRST refresh must also spawn the worker + runtime
-        // off the UI thread. The call itself must be trivial.
+        // Worker and runtime startup must stay off the UI thread.
         let t_refresh = Instant::now();
         a.refresh_all();
         let refresh_cost = t_refresh.elapsed();
@@ -5176,11 +5165,7 @@ mod tests {
         assert!(a.worker.is_some(), "worker really spawned");
         assert!(a.refresh.in_progress());
 
-        // Pump frames for a window while the fetches are genuinely outstanding
-        // (the worker hammers unreachable hosts the whole time). Track the best
-        // (fastest achievable) draw + event during the refresh — if any network
-        // I/O or blocking recv leaked onto the UI thread, even the *best* frame
-        // would balloon far past the idle baseline.
+        // Pump frames while requests remain outstanding.
         let deadline = Instant::now() + Duration::from_millis(500);
         let mut frames = 0u32;
         let mut best_draw = Duration::from_secs(9999);
@@ -5195,10 +5180,8 @@ mod tests {
             frames > 5,
             "the loop kept pumping frames while refreshing (got {frames})"
         );
-        // The refresh adds no blocking to the UI thread: draw + event during a
-        // refresh are within a small factor of the idle baseline (generous 4x
-        // slack absorbs scheduler jitter from the busy worker threads). A real
-        // main-thread network block would be orders of magnitude over.
+        // Allow scheduler jitter while rejecting main-thread I/O or blocking
+        // receives.
         let draw_bound = base_draw * 4 + Duration::from_millis(2);
         let event_bound = base_event * 4 + Duration::from_millis(2);
         assert!(
@@ -6546,11 +6529,8 @@ mod tests {
 
     // --- add-subscription dialog (real ModalDialog + real TextInput) -------
 
-    /// The add-subscription dialog hosts a real [`ui::widget::TextInput`], so
-    /// the shared clipboard core works: seed the clipboard, paste with Ctrl+V
-    /// through the app's real event path, and the URL lands in the field.
-    /// Submitting then runs the real `subscribe` path. This is the proof the
-    /// hand-rolled fake field (no clipboard, "Press enter to add") is gone.
+    /// Verifies Ctrl+V reaches the add-subscription field and submission uses
+    /// the normal `subscribe` path.
     #[test]
     fn add_subscription_modal_pastes_url_and_subscribes() {
         use winit::event::Modifiers;

@@ -41,11 +41,11 @@ const SAMPLE_COUNT: usize = 1_000;
 const MEAN_LIMIT_US: u128 = 25_000;
 const P99_LIMIT_US: u128 = 50_000;
 const ACTION_TARGETS: [&str; 2] = ["topbar_tray_pill", "topbar_overview_button"];
-const PROFILE_ENV: &str = "QOS_REDRAW_BENCH_PROFILE";
-const PROFILE_OUTPUT_ENV: &str = "QOS_REDRAW_BENCH_PROFILE_OUTPUT";
-const SCENE_REUSE_ENV: &str = "QOS_REDRAW_BENCH_SCENE_REUSE";
-const GEOMETRY_REUSE_ENV: &str = "QOS_REDRAW_BENCH_GEOMETRY_REUSE";
-const XRGB_DAMAGE_ENV: &str = "QOS_DRM_XRGB_DAMAGE";
+const PROFILE_ENV: &str = "TILO_REDRAW_BENCH_PROFILE";
+const PROFILE_OUTPUT_ENV: &str = "TILO_REDRAW_BENCH_PROFILE_OUTPUT";
+const SCENE_REUSE_ENV: &str = "TILO_REDRAW_BENCH_SCENE_REUSE";
+const GEOMETRY_REUSE_ENV: &str = "TILO_REDRAW_BENCH_GEOMETRY_REUSE";
+const XRGB_DAMAGE_ENV: &str = "TILO_DRM_XRGB_DAMAGE";
 const VELLO_GPU_TIMESTAMPS_ENV: &str = "VELLO_GPU_TIMESTAMPS";
 const VELLO_GPU_DISPATCH_TIMESTAMPS_ENV: &str = "VELLO_GPU_DISPATCH_TIMESTAMPS";
 const MAX_SCENE_REUSE_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
@@ -3692,7 +3692,7 @@ mod tests {
             .expect("the test clock is after the Unix epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "qos-redraw-bench-profile-output-{}-{stamp}",
+            "tilo-redraw-bench-profile-output-{}-{stamp}",
             std::process::id()
         ));
         {

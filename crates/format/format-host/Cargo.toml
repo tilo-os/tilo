@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "qOS format-provider router daemon. Hosts WASM Component Model providers via wasmtime and serves a Cap'n Proto RPC interface."
+description = "Tilo format-provider router daemon. Hosts WASM Component Model providers via wasmtime and serves a Cap'n Proto RPC interface."
 
 [package.metadata.cargo-machete]
 # Invoked by build.rs to compile the Cap'n Proto schema.
@@ -32,8 +32,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-
 tokio-util.workspace = true
 futures = { workspace = true, default-features = true }
 
-# Cap'n Proto RPC for the on-disk router socket. capnp 0.26 is the latest
-# stable release as of mid-2026, matching capnp-rpc 0.26.
+# Cap'n Proto RPC for the on-disk router socket; keep capnp and capnp-rpc
+# on the same release line.
 capnp.workspace = true
 capnp-rpc.workspace = true
 

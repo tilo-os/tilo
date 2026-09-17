@@ -1,8 +1,8 @@
 //! Host applications provider: everything already installed on the machine
-//! that qOS did not package.
+//! that Tilo did not package.
 //!
 //! Deliberately a separate provider under a separate [`ResourceKind`]
-//! rather than more rows under [`ApplicationsProvider`]: a qOS app runs
+//! rather than more rows under [`ApplicationsProvider`]: a Tilo app runs
 //! sandboxed with one writable directory, a host app runs unconfined with
 //! the user's own files. Own chip ("Host Apps"), own group header, and a
 //! row that says "unconfined" outright.
@@ -188,7 +188,7 @@ impl HostApplicationsProvider {
         }
         let (sender, receiver) = mpsc::sync_channel(1);
         if std::thread::Builder::new()
-            .name("qos-host-search-index".into())
+            .name("tilo-host-search-index".into())
             .spawn({
                 #[cfg(test)]
                 let source = self.source.clone();
@@ -267,7 +267,7 @@ impl HostApplicationsProvider {
                 score,
                 move |_doc, _root, chrome: &Chrome| {
                     // Decided now, while the layout is still true; a
-                    // foreign toplevel announces an app-id qOS did not
+                    // foreign toplevel announces an app-id Tilo did not
                     // mint, so the note is keyed on every declared identity.
                     if let Some(app) = host_apps::find(&desktop_id) {
                         let st = chrome.borrow();
@@ -295,7 +295,7 @@ impl HostApplicationsProvider {
                     // sandbox for either to act on.
                     if let Err(err) = host_apps::launch(&desktop_id, None) {
                         tracing::error!(
-                            target: "qos::app_launch",
+                            target: "tilo::app_launch",
                             desktop_id = %desktop_id,
                             display_name = %notify_name,
                             detail = %err,
@@ -322,11 +322,11 @@ impl HostApplicationsProvider {
     }
 }
 
-/// Whether an installed qOS package already answers for this app. Names and
+/// Whether an installed Tilo package already answers for this app. Names and
 /// reverse-DNS tails are deliberately insufficient: different desktops ship
 /// real, distinct applications called Calendar, Notes and Terminal.
 #[cfg(test)]
-fn shadowed_by_a_qos_package(
+fn shadowed_by_a_tilo_package(
     app: &HostApp,
     installed: &[crate::shell::launcher::InstalledApp],
 ) -> bool {
@@ -336,7 +336,7 @@ fn shadowed_by_a_qos_package(
 }
 
 /// Same scale as the applications provider, one step lower at each rung so
-/// a confined qOS app sorts first at an equal match. `Keywords=` and
+/// a confined Tilo app sorts first at an equal match. `Keywords=` and
 /// categories are matched too — how typing "browser" finds Firefox.
 fn match_score(needle: &str, name: &str, desktop_id: &str, app: &HostApp) -> Option<i32> {
     if needle.is_empty() {
@@ -710,7 +710,7 @@ mod tests {
         assert!(subtitle.contains("Flatpak"), "{subtitle}");
         assert!(
             subtitle.contains("unconfined"),
-            "the user must be able to tell a confined qOS app from an \
+            "the user must be able to tell a confined Tilo app from an \
              unconfined host app without opening anything: {subtitle}"
         );
         assert!(subtitle.contains("com.spotify.Client"), "{subtitle}");
@@ -729,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn host_apps_are_a_separate_kind_from_qos_applications() {
+    fn host_apps_are_a_separate_kind_from_tilo_applications() {
         let p = HostApplicationsProvider::new();
         assert_eq!(p.resource_kinds(), &[ResourceKind::HostApplication]);
         assert_eq!(ResourceKind::HostApplication.label(), "Host Apps");
@@ -741,17 +741,17 @@ mod tests {
 
     /// Equal-quality matches rank the confined app first — Enter takes the top row.
     #[test]
-    fn a_host_app_scores_below_an_equally_good_qos_match() {
+    fn a_host_app_scores_below_an_equally_good_tilo_match() {
         use crate::shell::search::providers::applications::ApplicationsProvider;
         let host = HostApplicationsProvider::new();
-        let qos = ApplicationsProvider::new();
+        let tilo = ApplicationsProvider::new();
         // Different name/id tail, so this measures the scale, not shadowing.
         let host_rows =
             host.results_against("term", vec![app("org.x.Terminator", "Terminator")], &[]);
-        let qos_rows = qos.results_for(
+        let tilo_rows = tilo.results_for(
             "term",
             vec![crate::shell::launcher::InstalledApp {
-                package_id: "dev.qos.terminal".into(),
+                package_id: "dev.tilo.terminal".into(),
                 display_name: "Terminal".into(),
                 category: None,
                 version: "1".into(),
@@ -765,9 +765,9 @@ mod tests {
             crate::shell::chrome_state::OpenTarget::Beside,
         );
         assert!(
-            qos_rows[0].score > host_rows[0].score,
-            "qos {} must outrank host {}",
-            qos_rows[0].score,
+            tilo_rows[0].score > host_rows[0].score,
+            "tilo {} must outrank host {}",
+            tilo_rows[0].score,
             host_rows[0].score
         );
     }
@@ -832,7 +832,7 @@ mod tests {
         let p = HostApplicationsProvider::new();
         let c = chrome_rc();
         let mut doc = AutoCommit::new();
-        let out = p.results_against("ghost", vec![app("dev.qos.ghost-host-app", "Ghost")], &[]);
+        let out = p.results_against("ghost", vec![app("dev.tilo.ghost-host-app", "Ghost")], &[]);
         let row = out.first().expect("a row for the ghost app");
         assert!(c.borrow().notifications().is_empty());
         (row.on_open)(
@@ -868,27 +868,27 @@ mod tests {
     }
 
     #[test]
-    fn only_an_exact_qos_package_identity_hides_the_host_row() {
-        let installed = vec![installed("dev.qos.terminal", "Terminal")];
-        assert!(shadowed_by_a_qos_package(
-            &app("dev.qos.terminal", "Terminal"),
+    fn only_an_exact_tilo_package_identity_hides_the_host_row() {
+        let installed = vec![installed("dev.tilo.terminal", "Terminal")];
+        assert!(shadowed_by_a_tilo_package(
+            &app("dev.tilo.terminal", "Terminal"),
             &installed
         ));
     }
 
     #[test]
-    fn qos_terminal_does_not_hide_a_distinct_host_terminal() {
-        let installed = vec![installed("dev.qos.terminal", "Terminal")];
-        assert!(!shadowed_by_a_qos_package(
+    fn tilo_terminal_does_not_hide_a_distinct_host_terminal() {
+        let installed = vec![installed("dev.tilo.terminal", "Terminal")];
+        assert!(!shadowed_by_a_tilo_package(
             &app("org.gnome.Console", "Terminal"),
             &installed
         ));
     }
 
     #[test]
-    fn qos_calendar_does_not_hide_gnome_calendar() {
-        let installed = vec![installed("dev.qos.calendar", "Calendar")];
-        assert!(!shadowed_by_a_qos_package(
+    fn tilo_calendar_does_not_hide_gnome_calendar() {
+        let installed = vec![installed("dev.tilo.calendar", "Calendar")];
+        assert!(!shadowed_by_a_tilo_package(
             &app("org.gnome.Calendar", "Calendar"),
             &installed
         ));
@@ -896,8 +896,8 @@ mod tests {
 
     #[test]
     fn a_generic_shared_name_does_not_hide_a_host_app() {
-        let installed = vec![installed("dev.qos.notes", "Notes")];
-        assert!(!shadowed_by_a_qos_package(
+        let installed = vec![installed("dev.tilo.notes", "Notes")];
+        assert!(!shadowed_by_a_tilo_package(
             &app("org.example.PrivateNotes", "Notes"),
             &installed
         ));

@@ -78,6 +78,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("new") => Box::new(|a: &mut contacts::ContactsApp| a.shots_new_contact()),
         Some("edit") => Box::new(|a: &mut contacts::ContactsApp| a.shots_edit_contact()),
         Some("editfocus") => Box::new(|a: &mut contacts::ContactsApp| a.shots_edit_focused()),
+        Some("edit-lower") => Box::new(|a: &mut contacts::ContactsApp| a.shots_edit_lower()),
         Some("export") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_export()),
         Some("unsaved") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_unsaved()),
         Some("groups") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_group_filter()),
@@ -110,13 +111,14 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.contacts", contacts::app_root)
+        &LaunchSpec::new("dev.tilo.contacts", contacts::app_root)
             .shot_handler(shot_handler)
             .allowed_flags(&["--detail"])
             .scenarios(&[
                 "new",
                 "edit",
                 "editfocus",
+                "edit-lower",
                 "export",
                 "unsaved",
                 "groups",
@@ -143,19 +145,19 @@ fn render_shot_to_png(
     setup: Box<dyn FnOnce(&mut contacts::ContactsApp)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
     // theme-driven chrome can be proven across palettes; defaults to dark.
-    // `QOS_SHOTS_REDUCE_MOTION=1` additionally exercises the same theme policy
+    // `TILO_SHOTS_REDUCE_MOTION=1` additionally exercises the same theme policy
     // the live accessibility setting supplies, without making shot output rely
     // on a host-global preference.
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     }
     .with_text_scale(text_scale)
     .with_reduce_motion(matches!(
-        std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
+        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
         Some("1" | "true" | "yes")
     ));
     let presence = PresenceCtx::empty();

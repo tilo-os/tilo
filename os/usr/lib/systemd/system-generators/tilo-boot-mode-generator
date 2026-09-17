@@ -1,0 +1,52 @@
+#!/usr/bin/bash
+# Boot to the repair console when the sealed command line says so.
+#
+# systemd generators run before any unit is loaded, which is the only point at
+# which the default target can still be changed. The alternative — a unit with
+# ConditionKernelCommandLine — cannot work: a condition can skip a unit, it
+# cannot stop graphical.target from being the thing systemd is booting towards.
+#
+# The mode is read from /proc/cmdline and from nowhere else. On a sealed image
+# that string came out of the UKI's signed .cmdline section, so it is exactly as
+# trustworthy as the kernel that is running; a marker file under /boot or /etc
+# would be writable by anything that could mount the ESP.
+#
+# Output goes in the EARLY generator directory ($2). `systemctl set-default`
+# leaves /etc/systemd/system/default.target as a symlink, and /etc beats the
+# normal generator directory but loses to the early one — writing to $1 would
+# leave the machine booting the desktop while reporting that it had not.
+set -u
+
+EARLY="${2:-}"
+[ -n "$EARLY" ] || exit 0
+
+read -r cmdline < /proc/cmdline 2>/dev/null || exit 0
+
+mode=normal
+for arg in $cmdline; do
+  case "$arg" in
+    tilo.mode=*) mode="${arg#tilo.mode=}" ;;
+  esac
+done
+
+case "$mode" in
+  repair) ;;
+  *) exit 0 ;;
+esac
+
+mkdir -p "$EARLY" || exit 0
+ln -sf /usr/lib/systemd/system/tilo-repair.target "$EARLY/default.target"
+
+# Repair mode must not run the things that make a machine a desktop. Masking
+# them here rather than relying on them simply not being wanted by
+# tilo-repair.target closes the path where something else pulls them in: a
+# D-Bus activation, a socket unit, or a `Wants=` from a unit we did not write.
+# The collaborative filesystem is on the list because it joins a peer network
+# from a machine whose state is by definition not trusted yet.
+for unit in greetd.service fs.service fs-identity.path shell-firstboot.service \
+            tilo-rollback-confirm.timer tilo-rollback-confirm.service \
+            bootc-fetch-apply-updates.timer sshd.service; do
+  ln -sf /dev/null "$EARLY/$unit"
+done
+
+exit 0

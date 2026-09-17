@@ -775,7 +775,7 @@ mod tests {
 
     use automerge::ROOT;
     use automerge::transaction::{CommitOptions, Transactable};
-    use ui::qos_actions::ActionContext;
+    use ui::tilo_actions::ActionContext;
 
     use super::*;
     use crate::shell::state::{Workspace, WorkspaceId};
@@ -817,7 +817,7 @@ mod tests {
                 "note",
                 "Decision log",
             )
-            .with_app("org.qos.Notes", "Notes")
+            .with_app("org.tilo.Notes", "Notes")
             .with_purpose("Recorded the launch decision");
             doc.commit_with(
                 CommitOptions::default()

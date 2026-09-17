@@ -99,7 +99,7 @@ impl Toggle {
 
     /// Route pointer, keyboard, and accessibility toggles through an action.
     #[must_use]
-    pub fn on_action(mut self, binding: qos_actions::ActionBinding<bool>) -> Self {
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<bool>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
         self.on_change = None;
         self
@@ -631,13 +631,13 @@ impl Widget for Toggle {
         self.permission_scope.clone()
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
 
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         if let Some(action) = &mut self.action {
             action.refresh_availability(allowed);
@@ -956,7 +956,7 @@ mod tests {
         assert!(!Widget::is_enabled(&toggle));
         Widget::refresh_control_action_availability(
             &mut toggle,
-            &std::collections::HashSet::from([qos_actions::ActionAddress::new(
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                 "test:control",
                 "set",
             )]),

@@ -1,4 +1,4 @@
-//! Logs — a graphical systemd-journal viewer, built on the qOS `ui`
+//! Logs — a graphical systemd-journal viewer, built on the Tilo `ui`
 //! toolkit (CRDT-native, retained-mode).
 //!
 //! The viewer is a single self-rendering [`app::LogsApp`] widget: a

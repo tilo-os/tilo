@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Validate the xdg-desktop-portal config files (Sandbox Phase 4.3
-# follow-up). The checks cover:
+# Validate the xdg-desktop-portal config files. The checks cover:
 #
 #   1. The .portal file declares the right backend bus name and lists
-#      every interface our `quick_desktop::portal::serve()` registers.
-#   2. The nirios desktop preference selects that backend.
+#      every interface our `tilo_desktop::portal::serve()` registers.
+#   2. The tilo desktop preference selects that backend.
 #   3. No obsolete D-Bus activation or standalone portal unit remains;
 #      the live compositor is the sole backend owner.
 #
@@ -25,20 +24,20 @@ set -euo pipefail
 # Two layouts are supported:
 #   1. From the source tree — files live under "$OS_DIR/usr/...".
 #   2. From inside the test image — files live at "/usr/..." (the
-#      script bundle landed at /usr/libexec/qos/, so the
+#      script bundle landed at /usr/libexec/tilo/, so the
 #      relative ../../ walk would yank us to / and miss the files).
 #      Set OS_ROOT=/ in that case (the Containerfile.test build step
 #      does so) and the assertions resolve at /usr/...
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OS_ROOT="${OS_ROOT:-$(cd "$TEST_DIR/.." && pwd)}"
 
-PORTAL_FILE="$OS_ROOT/usr/share/xdg-desktop-portal/portals/qos.portal"
-PORTAL_PREFERENCE_FILE="$OS_ROOT/usr/share/xdg-desktop-portal/nirios-portals.conf"
-DBUS_SERVICE_FILE="$OS_ROOT/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service"
+PORTAL_FILE="$OS_ROOT/usr/share/xdg-desktop-portal/portals/tilo.portal"
+PORTAL_PREFERENCE_FILE="$OS_ROOT/usr/share/xdg-desktop-portal/tilo-portals.conf"
+DBUS_SERVICE_FILE="$OS_ROOT/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.tilo.service"
 SYSTEMD_UNIT_FILE="$OS_ROOT/usr/lib/systemd/user/shell-portal.service"
 
-EXPECTED_BUS_NAME="org.freedesktop.impl.portal.desktop.qos"
-# Interfaces the Rust backend registers in `quick_desktop::portal::serve`.
+EXPECTED_BUS_NAME="org.freedesktop.impl.portal.desktop.tilo"
+# Interfaces the Rust backend registers in `tilo_desktop::portal::serve`.
 # Keeping the list here mirrors `portal/mod.rs::serve` so a drift
 # (e.g. we add an interface to the Rust side without updating the
 # .portal config) shows up as a CI failure.
@@ -124,7 +123,7 @@ fi
 # --- desktop preference ---------------------------------------------
 if assert_file_exists "$PORTAL_PREFERENCE_FILE"; then
     assert_contains "$PORTAL_PREFERENCE_FILE" '^\[preferred\]$'
-    assert_contains "$PORTAL_PREFERENCE_FILE" '^default=qos$'
+    assert_contains "$PORTAL_PREFERENCE_FILE" '^default=tilo$'
 fi
 
 # --- no second claimant for the bus name -----------------------------

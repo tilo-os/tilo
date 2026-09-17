@@ -296,7 +296,7 @@ pub fn extend_span_drag<T: Ord + Copy>(
 /// Lazy global `arboard` handle, used **only on X11** and other non-Wayland
 /// platforms.
 ///
-/// On Wayland `arboard` talks `zwlr_data_control_manager_v1`, which qOS does
+/// On Wayland `arboard` talks `zwlr_data_control_manager_v1`, which Tilo does
 /// not offer to sandboxed apps (see `shell/src/compositor/selection.rs`); a
 /// `ui` app there goes through [`crate::clipboard::WaylandClipboard`] and
 /// `wl_data_device` instead. Construction is skipped rather than attempted

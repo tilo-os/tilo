@@ -48,7 +48,7 @@ def traditional_wine(root, guest, pin):
             raise ValueError("alternate Wine loader differs from the matching width entrypoint")
         records.append({"path": name, "resolved_path": path.relative_to(root).as_posix(),
                         **guest.elf_info(path, bits, machine, True)})
-    packages = guest.guest_file(root, "usr/lib/qos/windows-guest/installed-packages.tsv")
+    packages = guest.guest_file(root, "usr/lib/tilo/windows-guest/installed-packages.tsv")
     cores = []
     for line in packages.read_text().splitlines():
         fields = line.split("\t")
@@ -58,7 +58,7 @@ def traditional_wine(root, guest, pin):
             cores.append((fields[2], fields[3], fields[4]))
     if sorted(cores) != sorted((pin["version"], pin["build_release"], arch)
                                for arch in ("i686", "x86_64")):
-        raise ValueError("guest must contain the pinned qOS traditional Wine pair")
+        raise ValueError("guest must contain the pinned Tilo traditional Wine pair")
     return records
 
 
@@ -70,47 +70,47 @@ def validate(fex_root, guest_root, fex_ref, guest_ref, source_pin, wine_pin):
     result["guest_payload"] = guest.validate(guest_root)
     # Producer inventories must match the consumer's independent validation.
     for root, name, expected in (
-        (fex_root, "usr/lib/qos/fex/payload-inventory.json", result["fex_payload"]),
-        (guest_root, "usr/lib/qos/windows-guest/payload.json", result["guest_payload"]),
+        (fex_root, "usr/lib/tilo/fex/payload-inventory.json", result["fex_payload"]),
+        (guest_root, "usr/lib/tilo/windows-guest/payload.json", result["guest_payload"]),
     ):
         if json.loads(guest.guest_file(root, name).read_text()) != expected:
             raise ValueError(f"stale or mismatched producer inventory: {name}")
     revision = re.search(r"^FEX_SOURCE_REVISION=([0-9a-f]{40})$", source_pin.read_text(), re.M)
-    source = guest.guest_file(fex_root, "usr/lib/qos/fex/source.txt").read_text()
+    source = guest.guest_file(fex_root, "usr/lib/tilo/fex/source.txt").read_text()
     if not revision or source.splitlines()[0] != "FEX source revision: " + revision[1]:
         raise ValueError("FEX source differs from the repository pin")
     patch_module = load("apply-fex-patches")
     patches = patch_module.patch_record(source_pin.parent / "fex-patches")
     recorded_patches = json.loads(guest.guest_file(fex_root,
-        "usr/lib/qos/fex/downstream-patches.json").read_text())
+        "usr/lib/tilo/fex/downstream-patches.json").read_text())
     shipped_patches = patch_module.patch_record(guest.guest_file(fex_root,
-        "usr/share/qos/fex/patches/series.json").parent)
+        "usr/share/tilo/fex/patches/series.json").parent)
     if patches["base_revision"] != revision[1] or recorded_patches != patches or shipped_patches != patches:
         raise ValueError("FEX downstream patches differ from the reviewed series")
     result["fex_downstream_patches"] = patches
-    cache = guest.guest_file(fex_root, "usr/lib/qos/fex/cmake-cache.txt").read_text()
+    cache = guest.guest_file(fex_root, "usr/lib/tilo/fex/cmake-cache.txt").read_text()
     for key, value in (("TUNE_CPU", "none"), ("TUNE_ARCH", "generic")):
         if not re.search(rf"^{key}:[^=]+={value}$", cache, re.M):
             raise ValueError("FEX payload is not a portable CPU build")
-    for name in ("usr/lib/qos/fex/inputs.env", "usr/lib/qos/fex/buildroot-packages.txt"):
+    for name in ("usr/lib/tilo/fex/inputs.env", "usr/lib/tilo/fex/buildroot-packages.txt"):
         guest.guest_file(fex_root, name)
-    upstream_inputs = guest.guest_file(fex_root, "usr/lib/qos/fex/inputs.env").read_text()
+    upstream_inputs = guest.guest_file(fex_root, "usr/lib/tilo/fex/inputs.env").read_text()
     for key in ("FEX_BUILDROOT_REF", "FEX_X86_SDK_REF"):
         matches = re.findall(rf"^{key}=(.+)$", upstream_inputs, re.M)
         if len(matches) != 1:
             raise ValueError("missing or duplicate FEX build provenance")
         reference(matches[0])
     for name in ("windows-guest-contract.json", "windows-guest-roots.txt", "rpms-ref.txt"):
-        guest.guest_file(guest_root, "usr/lib/qos/windows-guest/" + name)
+        guest.guest_file(guest_root, "usr/lib/tilo/windows-guest/" + name)
     snapshot = json.loads(guest.guest_file(guest_root,
-        "usr/lib/qos/windows-guest/windows-guest-contract.json").read_text())
+        "usr/lib/tilo/windows-guest/windows-guest-contract.json").read_text())
     if (snapshot.get("transaction_base"), snapshot.get("architecture"), snapshot.get("releasever"),
             snapshot.get("install_weak_deps")) != ("empty-installroot", "x86_64", "44", True):
         raise ValueError("guest is not a complete Fedora 44 transaction snapshot")
     reference(snapshot.get("buildroot_ref", ""))
-    reference(guest.guest_file(guest_root, "usr/lib/qos/windows-guest/rpms-ref.txt").read_text().strip())
-    license_path = guest.guest_file(guest_root, "usr/share/licenses/qos-dxvk/LICENSE")
-    dxvk = json.loads(guest.guest_file(guest_root, "usr/share/qos/dxvk/provenance.json").read_text())
+    reference(guest.guest_file(guest_root, "usr/lib/tilo/windows-guest/rpms-ref.txt").read_text().strip())
+    license_path = guest.guest_file(guest_root, "usr/share/licenses/tilo-dxvk/LICENSE")
+    dxvk = json.loads(guest.guest_file(guest_root, "usr/share/tilo/dxvk/provenance.json").read_text())
     if dxvk.get("license", {}).get("sha256") != file_hash(license_path):
         raise ValueError("DXVK license differs from recorded provenance")
     result["native_elfs"] = []

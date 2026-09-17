@@ -555,7 +555,7 @@ mod tests {
                 kind: RuntimeKind::Cpu,
                 version: "0.9.0".into(),
                 artifact: artifact("runtime"),
-                oci_image: "registry.example.invalid/qos/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                oci_image: "registry.example.invalid/tilo/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             }],
             models: vec![LocalModelRelease {
                 id: "tiny-q4".into(),

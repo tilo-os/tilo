@@ -27,7 +27,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-use crate::core::Core;
+use crate::core::{Core, OverviewEventCtx};
 
 /// The contentful city-list (master / overview) panel.
 pub struct OverviewPane {
@@ -145,16 +145,20 @@ impl Widget for OverviewPane {
         if *handled {
             return;
         }
-        if self.core.borrow_mut().handle_overview_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+        if self
+            .core
+            .borrow_mut()
+            .handle_overview_event(OverviewEventCtx {
+                event,
+                scale_factor,
+                modifiers: *modifiers,
+                state,
+                path,
+                focus_target,
+                node_id,
+                taffy,
+            })
+        {
             *handled = true;
         }
     }

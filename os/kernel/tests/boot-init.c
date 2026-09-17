@@ -12,18 +12,18 @@ static int check_module(const char *path, int expected) {
     int result = syscall(SYS_finit_module, fd, "", 0);
     int error = result == 0 ? 0 : errno;
     close(fd);
-    printf("QOS_MODULE_CHECK path=%s errno=%d expected=%d\n", path, error, expected);
+    printf("TILO_MODULE_CHECK path=%s errno=%d expected=%d\n", path, error, expected);
     return error == expected;
 }
 int main(void) {
     struct utsname info;
     int valid = uname(&info) == 0;
-    if (valid) printf("QOS_KERNEL_USERSPACE_OK release=%s machine=%s\n", info.release, info.machine);
-    else puts("QOS_KERNEL_USERSPACE_FAILED");
+    if (valid) printf("TILO_KERNEL_USERSPACE_OK release=%s machine=%s\n", info.release, info.machine);
+    else puts("TILO_KERNEL_USERSPACE_FAILED");
     int signatures = check_module("/unsigned.ko", EKEYREJECTED);
     signatures &= check_module("/tampered.ko", EKEYREJECTED);
     signatures &= check_module("/signed.ko", 0);
-    puts(signatures ? "QOS_MODULE_SIGNATURE_ENFORCEMENT_OK" : "QOS_MODULE_SIGNATURE_ENFORCEMENT_FAILED");
+    puts(signatures ? "TILO_MODULE_SIGNATURE_ENFORCEMENT_OK" : "TILO_MODULE_SIGNATURE_ENFORCEMENT_FAILED");
     fflush(stdout);
     sync();
     reboot(RB_POWER_OFF);

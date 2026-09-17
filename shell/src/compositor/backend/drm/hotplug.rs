@@ -8,7 +8,7 @@
 //! combined coordinate space, and where the pointer ends up when that
 //! space shrank. This module computes it; [`super::runtime`] performs it.
 //!
-//! qOS does not pin a window to an output — a workspace holds strips, a
+//! Tilo does not pin a window to an output — a workspace holds strips, a
 //! strip holds groups, and the shell places those groups across whatever
 //! displays it is told about. So removing a display re-flows the same
 //! groups onto the remaining ones on the next layout pass rather than

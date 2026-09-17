@@ -32,7 +32,7 @@ impl SessionAudioPolicyOwner {
     pub fn spawn() -> std::io::Result<Self> {
         let (stop, rx) = mpsc::channel();
         let worker = std::thread::Builder::new()
-            .name("qos-session-audio-policy".into())
+            .name("tilo-session-audio-policy".into())
             .spawn(move || {
                 let mut policy = PersistentAudioPolicy::new(Arc::new(RealAudioRuntime));
                 let mut last_error = None;
@@ -43,12 +43,12 @@ impl SessionAudioPolicyOwner {
                     if error != last_error {
                         match error.as_deref() {
                             Some(error) => tracing::warn!(
-                                target: "qos::audio_policy",
+                                target: "tilo::audio_policy",
                                 %error,
                                 "persistent audio preference could not be applied"
                             ),
                             None if last_error.is_some() => tracing::info!(
-                                target: "qos::audio_policy",
+                                target: "tilo::audio_policy",
                                 "persistent audio preference recovered"
                             ),
                             None => {}

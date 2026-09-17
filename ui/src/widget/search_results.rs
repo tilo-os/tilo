@@ -1,4 +1,4 @@
-//! `SearchResultsView` — the shared results overlay for qOS global search.
+//! `SearchResultsView` — the shared results overlay for Tilo global search.
 //!
 //! Renders the ranked, kind-grouped [`SearchResult`](crate::search::SearchResult)s
 //! that a [`SearchRegistry`](crate::search::SearchRegistry) produces: one

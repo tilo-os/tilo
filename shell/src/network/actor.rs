@@ -1,7 +1,7 @@
 //! Iroh-gossip actor for workspace collaboration.
 //!
 //! Direct paths, NAT traversal and stateless relay fallback are selected by
-//! iroh. qOS only names authenticated endpoint ids and workspace topics.
+//! iroh. Tilo only names authenticated endpoint ids and workspace topics.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -15,8 +15,8 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use iroh_gossip::api::{Event as GossipEvent, GossipSender};
 use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
 use iroh_gossip::proto::TopicId;
-use qos_relay::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
-use qos_user_identity::{DeviceCert, RevocationList};
+use tilo_relay::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
+use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
 use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg};
@@ -31,12 +31,82 @@ const EVICTION_INTERVAL: Duration = Duration::from_secs(1);
 const HOST_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(600);
 const MAX_GOSSIP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SURFACE_FRAME_BYTES: usize = 64 * 1024 * 1024;
-const SURFACE_STREAM_ALPN: &[u8] = b"qos-surface-stream/1";
+const SURFACE_STREAM_ALPN: &[u8] = b"tilo-surface-stream/1";
+const PERSONAL_FABRIC_ALPN: &[u8] = b"tilo-personal-fabric/1";
+pub const PERSONAL_MEDIA_CHUNK_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct SurfaceWireFrame {
     workspace: WorkspaceId,
     message: NeighbourMsg,
+}
+
+/// Versioned private-device traffic. A separate ALPN makes support
+/// negotiation implicit and leaves the legacy Postcard enum untouched.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum PersonalFabricPayload {
+    Request,
+    Snapshot(Vec<u8>),
+    /// Ephemeral, exact-target command encoded independently of snapshot
+    /// schema so it is never persisted or relayed through room history.
+    Action(Vec<u8>),
+    /// Bounded pieces of an explicitly requested, device-local media handoff.
+    /// The surrounding personal-fabric route authenticates the source device;
+    /// the receiver additionally verifies the final content hash before use.
+    MediaTransfer(PersonalMediaTransferFrame),
+    /// Shell-owned display session traffic. Frames are exact-target and
+    /// ephemeral; authorization is rechecked against saved placement state.
+    Display(crate::shell::device_fabric::PersonalDisplayMessage),
+    /// Resumable generic Nearby object data. Offers and resume checkpoints
+    /// travel as authenticated actions; this lane carries bounded bytes only.
+    NearbyTransfer(PersonalNearbyTransferFrame),
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum PersonalMediaTransferFrame {
+    Start {
+        transfer_id: [u8; 16],
+        file_name: String,
+        total_bytes: u64,
+    },
+    Chunk {
+        transfer_id: [u8; 16],
+        offset: u64,
+        bytes: Vec<u8>,
+    },
+    Finish {
+        transfer_id: [u8; 16],
+        content_hash: [u8; 32],
+    },
+    Abort {
+        transfer_id: [u8; 16],
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum PersonalNearbyTransferFrame {
+    Chunk {
+        transfer_id: [u8; 16],
+        request_id: [u8; 16],
+        offset: u64,
+        bytes: Vec<u8>,
+    },
+    Finish {
+        transfer_id: [u8; 16],
+        request_id: [u8; 16],
+        content_hash: [u8; 32],
+    },
+    Abort {
+        transfer_id: [u8; 16],
+        request_id: [u8; 16],
+    },
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct PersonalFabricWireFrame {
+    workspace: WorkspaceId,
+    user_public_key: [u8; 32],
+    payload: PersonalFabricPayload,
 }
 
 pub type WorkspaceId = u64;
@@ -49,7 +119,7 @@ pub struct HomePeerExpectation {
     pub device_public_key: [u8; 32],
 }
 
-/// Device certificate chain used to authenticate to a qOS workspace host.
+/// Device certificate chain used to authenticate to a Tilo workspace host.
 #[derive(Clone)]
 pub struct HostIdentity {
     pub device_cert: DeviceCert,
@@ -59,18 +129,18 @@ pub struct HostIdentity {
     /// unbound workspaces.
     pub workspace_device_certs: HashMap<WorkspaceId, DeviceCert>,
     /// Root-signed revocations advertised beside each workspace certificate.
-    pub workspace_revocations: HashMap<WorkspaceId, Vec<qos_user_identity::RevocationEntry>>,
+    pub workspace_revocations: HashMap<WorkspaceId, Vec<tilo_user_identity::RevocationEntry>>,
     /// System device-key/certificate paths. Production actors use these to
     /// refresh workspace identity material on every heartbeat; tests may use
     /// the in-memory maps alone.
-    pub identity_paths: Option<qos_user_identity::IdentityPaths>,
+    pub identity_paths: Option<tilo_user_identity::IdentityPaths>,
 }
 
 impl HostIdentity {
     pub(crate) fn material_for(
         &self,
         ws: WorkspaceId,
-    ) -> (DeviceCert, Vec<qos_user_identity::RevocationEntry>) {
+    ) -> (DeviceCert, Vec<tilo_user_identity::RevocationEntry>) {
         let fallback_cert = self
             .workspace_device_certs
             .get(&ws)
@@ -103,12 +173,12 @@ impl HostIdentity {
         let Some(profile) = registry.identities.get(&identity_id) else {
             return (fallback_cert, fallback_revocations);
         };
-        let Ok(cert) = qos_user_identity::persist::read_device_cert(
+        let Ok(cert) = tilo_user_identity::persist::read_device_cert(
             &paths.device_cert_for_user(&profile.user_public_key),
         ) else {
             return (fallback_cert, fallback_revocations);
         };
-        if qos_user_identity::verify_device_cert(&cert).is_err()
+        if tilo_user_identity::verify_device_cert(&cert).is_err()
             || cert.user_public_key != profile.user_public_key
             || cert.device_public_key != self.device_signing_key.verifying_key().to_bytes()
         {
@@ -151,10 +221,46 @@ pub enum NetCmd {
         ws: WorkspaceId,
         msg: NeighbourMsg,
     },
+    /// Exchange same-person fabric state over its separately negotiated ALPN.
+    PublishPersonalFabric {
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        payload: PersonalFabricPayload,
+    },
+    /// Send an ephemeral personal-fabric action to one authenticated device.
+    PublishPersonalFabricTarget {
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        target: EndpointId,
+        payload: PersonalFabricPayload,
+    },
+    /// Stream one local file to an exact certified personal device without
+    /// copying host paths into a durable snapshot or buffering the file.
+    PublishPersonalMedia {
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        file_name: String,
+        total_bytes: u64,
+        file: std::fs::File,
+    },
+    PublishNearbyTransfer {
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        request_id: [u8; 16],
+        total_bytes: u64,
+        resume_offset: u64,
+        prefix_hash: [u8; 32],
+        content_hash: [u8; 32],
+        file: std::fs::File,
+    },
     Connect {
         addr: EndpointAddr,
     },
-    /// Connect to an always-on qOS host. Messages continue to use the
+    /// Connect to an always-on Tilo host. Messages continue to use the
     /// direct gossip path too; the host adds persistence and offline delivery.
     ConnectHost {
         addr: EndpointAddr,
@@ -196,6 +302,34 @@ pub enum NetEvent {
         peer: PeerId,
         msg: NeighbourMsg,
     },
+    PersonalFabric {
+        ws: WorkspaceId,
+        peer: PeerId,
+        user_public_key: [u8; 32],
+        payload: PersonalFabricPayload,
+    },
+    PersonalMediaTransfer {
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        sent_bytes: u64,
+        total_bytes: u64,
+        status: PersonalMediaTransferStatus,
+    },
+    NearbyTransferProgress {
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        sent_bytes: u64,
+        total_bytes: u64,
+        status: PersonalMediaTransferStatus,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersonalMediaTransferStatus {
+    Started,
+    Progress,
+    Completed,
+    Failed,
 }
 
 /// Why the transport stopped treating a peer as live on a workspace topic.
@@ -236,6 +370,12 @@ enum InternalEvent {
         peer: EndpointId,
         fingerprint: [u8; 32],
         msg: NeighbourMsg,
+    },
+    PersonalFabric {
+        ws: WorkspaceId,
+        peer: EndpointId,
+        user_public_key: [u8; 32],
+        payload: PersonalFabricPayload,
     },
     Closed {
         ws: WorkspaceId,
@@ -327,6 +467,64 @@ impl ProtocolHandler for SurfaceStreamProtocol {
     }
 }
 
+#[derive(Clone)]
+struct PersonalFabricProtocol {
+    internal_tx: mpsc::Sender<InternalEvent>,
+}
+
+impl std::fmt::Debug for PersonalFabricProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PersonalFabricProtocol")
+    }
+}
+
+impl ProtocolHandler for PersonalFabricProtocol {
+    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+        let peer = connection.remote_id();
+        let tx = self.internal_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok(mut recv) = connection.accept_uni().await else {
+                    return;
+                };
+                let bytes = match recv
+                    .read_to_end(crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128)
+                    .await
+                {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        tracing::debug!(peer = %peer, %error, "personal fabric stream read failed");
+                        continue;
+                    }
+                };
+                let Ok((frame, remaining)) =
+                    postcard::take_from_bytes::<PersonalFabricWireFrame>(&bytes)
+                else {
+                    tracing::warn!(peer = %peer, "invalid personal fabric frame");
+                    continue;
+                };
+                if !remaining.is_empty() {
+                    tracing::warn!(peer = %peer, "personal fabric frame has trailing data");
+                    continue;
+                }
+                if tx
+                    .send(InternalEvent::PersonalFabric {
+                        ws: frame.workspace,
+                        peer,
+                        user_public_key: frame.user_public_key,
+                        payload: frame.payload,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        Ok(())
+    }
+}
+
 pub struct Actor;
 
 impl Actor {
@@ -375,11 +573,16 @@ struct ActorState {
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
     surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
+    personal_fabric_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
 }
 
 impl ActorState {
     /// Handle one [`NetCmd`]. Returns `false` once the command channel has
     /// closed, so [`run`]'s loop should stop.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the actor command match is the single auditable transport mutation boundary"
+    )]
     async fn handle_command(&mut self, command: Option<NetCmd>) -> bool {
         match command {
             Some(NetCmd::JoinWorkspace { ws, on_event }) => {
@@ -435,6 +638,67 @@ impl ActorState {
             }
             Some(NetCmd::PublishCheckpoint { ws, msg }) => {
                 publish(&self.topics, &self.host_sessions, ws, msg, true, true).await;
+            }
+            Some(NetCmd::PublishPersonalFabric {
+                ws,
+                user_public_key,
+                payload,
+            }) => {
+                self.publish_personal_fabric(ws, user_public_key, payload)
+                    .await;
+            }
+            Some(NetCmd::PublishPersonalFabricTarget {
+                ws,
+                user_public_key,
+                target,
+                payload,
+            }) => {
+                self.publish_personal_fabric_to(ws, user_public_key, payload, Some(target))
+                    .await;
+            }
+            Some(NetCmd::PublishPersonalMedia {
+                ws,
+                user_public_key,
+                target,
+                transfer_id,
+                file_name,
+                total_bytes,
+                file,
+            }) => {
+                self.publish_personal_media(
+                    ws,
+                    user_public_key,
+                    target,
+                    transfer_id,
+                    file_name,
+                    total_bytes,
+                    file,
+                );
+            }
+            Some(NetCmd::PublishNearbyTransfer {
+                ws,
+                user_public_key,
+                target,
+                transfer_id,
+                request_id,
+                total_bytes,
+                resume_offset,
+                prefix_hash,
+                content_hash,
+                file,
+            }) => {
+                self.publish_nearby_transfer(
+                    ws,
+                    user_public_key,
+                    target,
+                    transfer_id,
+                    request_id,
+                    total_bytes,
+                    resume_offset,
+                    prefix_hash,
+                    content_hash,
+                    file,
+                );
             }
             Some(NetCmd::Connect { addr }) => {
                 let id = addr.id;
@@ -588,6 +852,240 @@ impl ActorState {
             }
         }
         workspace_peer_count > 0 && sent == workspace_peer_count
+    }
+
+    async fn publish_personal_fabric(
+        &mut self,
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        payload: PersonalFabricPayload,
+    ) {
+        self.publish_personal_fabric_to(ws, user_public_key, payload, None)
+            .await;
+    }
+
+    async fn publish_personal_fabric_to(
+        &mut self,
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        payload: PersonalFabricPayload,
+        exact_target: Option<EndpointId>,
+    ) {
+        if matches!(payload, PersonalFabricPayload::Action(ref bytes) if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_ACTION_BYTES)
+        {
+            tracing::warn!(ws, "personal fabric action exceeds wire limit");
+            return;
+        }
+        let wire = PersonalFabricWireFrame {
+            workspace: ws,
+            user_public_key,
+            payload,
+        };
+        let Ok(bytes) = postcard::to_allocvec(&wire) else {
+            return;
+        };
+        if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128 {
+            tracing::warn!(
+                ws,
+                bytes = bytes.len(),
+                "personal fabric frame exceeds wire limit"
+            );
+            return;
+        }
+        let targets: Vec<_> = self
+            .peers
+            .values()
+            .filter(|addr| self.peers_seen.contains_key(&(ws, addr.id)))
+            .filter(|addr| exact_target.is_none_or(|target| addr.id == target))
+            .cloned()
+            .collect();
+        for addr in targets {
+            let peer = addr.id;
+            let connection = if let Some(connection) = self.personal_fabric_connections.get(&peer) {
+                connection.clone()
+            } else {
+                let Ok(Ok(connection)) = tokio::time::timeout(
+                    Duration::from_millis(300),
+                    self.endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
+                )
+                .await
+                else {
+                    // An older Tilo peer simply does not negotiate this ALPN.
+                    continue;
+                };
+                self.personal_fabric_connections
+                    .insert(peer, connection.clone());
+                connection
+            };
+            let send = async {
+                let mut stream = connection.open_uni().await.map_err(|_| ())?;
+                stream.write_all(&bytes).await.map_err(|_| ())?;
+                stream.finish().map_err(|_| ())?;
+                Ok::<(), ()>(())
+            };
+            if !matches!(
+                tokio::time::timeout(Duration::from_millis(100), send).await,
+                Ok(Ok(()))
+            ) {
+                self.personal_fabric_connections.remove(&peer);
+            }
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the arguments are the complete authenticated transfer manifest plus its local-only file handle"
+    )]
+    fn publish_personal_media(
+        &self,
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        file_name: String,
+        total_bytes: u64,
+        file: std::fs::File,
+    ) {
+        let progress = self.subscribers.get(&ws).cloned();
+        let report = |status, sent_bytes| {
+            if let Some(progress) = progress.as_ref() {
+                let _ = progress.try_send(NetEvent::PersonalMediaTransfer {
+                    target,
+                    transfer_id,
+                    sent_bytes,
+                    total_bytes,
+                    status,
+                });
+            }
+        };
+        if transfer_id == [0; 16] {
+            tracing::warn!(peer = %target, "refusing media transfer with an empty id");
+            report(PersonalMediaTransferStatus::Failed, 0);
+            return;
+        }
+        if !self.peers_seen.contains_key(&(ws, target)) {
+            tracing::warn!(ws, peer = %target, "personal media target is no longer live");
+            report(PersonalMediaTransferStatus::Failed, 0);
+            return;
+        }
+        let Some(addr) = self.peers.get(&target).cloned() else {
+            tracing::warn!(peer = %target, "personal media target has no dial address");
+            report(PersonalMediaTransferStatus::Failed, 0);
+            return;
+        };
+        let endpoint = self.endpoint.clone();
+        report(PersonalMediaTransferStatus::Started, 0);
+        tokio::spawn(async move {
+            let sent_bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let result = stream_personal_media(
+                endpoint,
+                addr,
+                ws,
+                user_public_key,
+                transfer_id,
+                file_name,
+                total_bytes,
+                file,
+                progress.clone(),
+                target,
+                std::sync::Arc::clone(&sent_bytes),
+            )
+            .await;
+            let status = if result.is_ok() {
+                PersonalMediaTransferStatus::Completed
+            } else {
+                tracing::warn!(peer = %target, "personal media transfer did not complete");
+                PersonalMediaTransferStatus::Failed
+            };
+            if let Some(progress) = progress {
+                let _ = progress
+                    .send(NetEvent::PersonalMediaTransfer {
+                        target,
+                        transfer_id,
+                        sent_bytes: sent_bytes.load(std::sync::atomic::Ordering::Relaxed),
+                        total_bytes,
+                        status,
+                    })
+                    .await;
+            }
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publish_nearby_transfer(
+        &self,
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        request_id: [u8; 16],
+        total_bytes: u64,
+        resume_offset: u64,
+        prefix_hash: [u8; 32],
+        content_hash: [u8; 32],
+        file: std::fs::File,
+    ) {
+        let progress = self.subscribers.get(&ws).cloned();
+        let report = |status, sent_bytes| {
+            if let Some(progress) = progress.as_ref() {
+                let _ = progress.try_send(NetEvent::NearbyTransferProgress {
+                    target,
+                    transfer_id,
+                    sent_bytes,
+                    total_bytes,
+                    status,
+                });
+            }
+        };
+        if transfer_id == [0; 16]
+            || request_id == [0; 16]
+            || resume_offset > total_bytes
+            || !self.peers_seen.contains_key(&(ws, target))
+        {
+            report(PersonalMediaTransferStatus::Failed, resume_offset);
+            return;
+        }
+        let Some(addr) = self.peers.get(&target).cloned() else {
+            report(PersonalMediaTransferStatus::Failed, resume_offset);
+            return;
+        };
+        let endpoint = self.endpoint.clone();
+        report(PersonalMediaTransferStatus::Started, resume_offset);
+        tokio::spawn(async move {
+            let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(resume_offset));
+            let result = stream_nearby_transfer(
+                endpoint,
+                addr,
+                ws,
+                user_public_key,
+                target,
+                transfer_id,
+                request_id,
+                total_bytes,
+                resume_offset,
+                prefix_hash,
+                content_hash,
+                file,
+                progress.clone(),
+                std::sync::Arc::clone(&sent),
+            )
+            .await;
+            if let Some(progress) = progress {
+                let _ = progress
+                    .send(NetEvent::NearbyTransferProgress {
+                        target,
+                        transfer_id,
+                        sent_bytes: sent.load(std::sync::atomic::Ordering::Relaxed),
+                        total_bytes,
+                        status: if result.is_ok() {
+                            PersonalMediaTransferStatus::Completed
+                        } else {
+                            PersonalMediaTransferStatus::Failed
+                        },
+                    })
+                    .await;
+            }
+        });
     }
 
     /// Send consented input to one exact authenticated device. Gossip has no
@@ -751,6 +1249,30 @@ impl ActorState {
                     && let Some(tx) = self.subscribers.get(&ws)
                 {
                     let _ = tx.send(NetEvent::Msg { ws, peer, msg }).await;
+                }
+            }
+            Some(InternalEvent::PersonalFabric {
+                ws,
+                peer,
+                user_public_key,
+                payload,
+            }) => {
+                // Topic membership establishes reachability only. ShellNetwork
+                // still binds the frame to the peer's certified person/device.
+                if !self.peers_seen.contains_key(&(ws, peer)) {
+                    tracing::warn!(ws, peer = %peer, "personal fabric frame from unknown peer");
+                    return true;
+                }
+                self.peers_seen.insert((ws, peer), Instant::now());
+                if let Some(tx) = self.subscribers.get(&ws) {
+                    let _ = tx
+                        .send(NetEvent::PersonalFabric {
+                            ws,
+                            peer,
+                            user_public_key,
+                            payload,
+                        })
+                        .await;
                 }
             }
             None => return false,
@@ -986,6 +1508,303 @@ impl ActorState {
     }
 }
 
+async fn send_personal_media_frame(
+    connection: &iroh::endpoint::Connection,
+    workspace: WorkspaceId,
+    user_public_key: [u8; 32],
+    frame: PersonalMediaTransferFrame,
+) -> Result<(), ()> {
+    let wire = PersonalFabricWireFrame {
+        workspace,
+        user_public_key,
+        payload: PersonalFabricPayload::MediaTransfer(frame),
+    };
+    let bytes = postcard::to_allocvec(&wire).map_err(|_| ())?;
+    if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128 {
+        return Err(());
+    }
+    let send = async {
+        let mut stream = connection.open_uni().await.map_err(|_| ())?;
+        stream.write_all(&bytes).await.map_err(|_| ())?;
+        stream.finish().map_err(|_| ())?;
+        match stream.stopped().await.map_err(|_| ())? {
+            None => Ok::<(), ()>(()),
+            Some(_) => Err(()),
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(30), send)
+        .await
+        .map_err(|_| ())?
+}
+
+async fn send_nearby_transfer_frame(
+    connection: &iroh::endpoint::Connection,
+    workspace: WorkspaceId,
+    user_public_key: [u8; 32],
+    frame: PersonalNearbyTransferFrame,
+) -> Result<(), ()> {
+    let wire = PersonalFabricWireFrame {
+        workspace,
+        user_public_key,
+        payload: PersonalFabricPayload::NearbyTransfer(frame),
+    };
+    let bytes = postcard::to_allocvec(&wire).map_err(|_| ())?;
+    if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128 {
+        return Err(());
+    }
+    let send = async {
+        let mut stream = connection.open_uni().await.map_err(|_| ())?;
+        stream.write_all(&bytes).await.map_err(|_| ())?;
+        stream.finish().map_err(|_| ())?;
+        match stream.stopped().await.map_err(|_| ())? {
+            None => Ok(()),
+            Some(_) => Err(()),
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(30), send)
+        .await
+        .map_err(|_| ())?
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one audited streaming state machine keeps prefix verification, bounded chunks, progress, and the authenticated finish together"
+)]
+async fn stream_nearby_transfer(
+    endpoint: Endpoint,
+    addr: EndpointAddr,
+    workspace: WorkspaceId,
+    user_public_key: [u8; 32],
+    target: EndpointId,
+    transfer_id: [u8; 16],
+    request_id: [u8; 16],
+    total_bytes: u64,
+    resume_offset: u64,
+    prefix_hash: [u8; 32],
+    content_hash: [u8; 32],
+    mut file: std::fs::File,
+    progress: Option<mpsc::Sender<NetEvent>>,
+    sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) -> Result<(), ()> {
+    use std::io::{Read as _, Seek as _};
+    use tokio::io::AsyncReadExt as _;
+
+    let mut hasher = blake3::Hasher::new();
+    let mut verify = vec![0_u8; PERSONAL_MEDIA_CHUNK_BYTES];
+    let mut verified = 0_u64;
+    while verified < resume_offset {
+        let want = usize::try_from(
+            resume_offset
+                .saturating_sub(verified)
+                .min(PERSONAL_MEDIA_CHUNK_BYTES as u64),
+        )
+        .map_err(|_| ())?;
+        let read = file
+            .read(verify.get_mut(..want).ok_or(())?)
+            .map_err(|_| ())?;
+        if read == 0 {
+            return Err(());
+        }
+        hasher.update(verify.get(..read).ok_or(())?);
+        verified = verified.saturating_add(u64::try_from(read).map_err(|_| ())?);
+    }
+    if hasher.finalize().as_bytes() != &prefix_hash {
+        return Err(());
+    }
+    file.seek(std::io::SeekFrom::Start(resume_offset))
+        .map_err(|_| ())?;
+    let connection = tokio::time::timeout(
+        Duration::from_secs(10),
+        endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
+    )
+    .await
+    .map_err(|_| ())?
+    .map_err(|_| ())?;
+    let mut file = tokio::fs::File::from_std(file);
+    let mut offset = resume_offset;
+    let mut buffer = vec![0_u8; PERSONAL_MEDIA_CHUNK_BYTES];
+    while offset < total_bytes {
+        let want = usize::try_from(
+            total_bytes
+                .saturating_sub(offset)
+                .min(PERSONAL_MEDIA_CHUNK_BYTES as u64),
+        )
+        .map_err(|_| ())?;
+        let read = file
+            .read(buffer.get_mut(..want).ok_or(())?)
+            .await
+            .map_err(|_| ())?;
+        if read == 0 {
+            return Err(());
+        }
+        hasher.update(buffer.get(..read).ok_or(())?);
+        send_nearby_transfer_frame(
+            &connection,
+            workspace,
+            user_public_key,
+            PersonalNearbyTransferFrame::Chunk {
+                transfer_id,
+                request_id,
+                offset,
+                bytes: buffer.get(..read).ok_or(())?.to_vec(),
+            },
+        )
+        .await?;
+        offset = offset.saturating_add(u64::try_from(read).map_err(|_| ())?);
+        sent_bytes.store(offset, std::sync::atomic::Ordering::Relaxed);
+        if let Some(progress) = progress.as_ref() {
+            let _ = progress.try_send(NetEvent::NearbyTransferProgress {
+                target,
+                transfer_id,
+                sent_bytes: offset,
+                total_bytes,
+                status: PersonalMediaTransferStatus::Progress,
+            });
+        }
+    }
+    let mut tail = [0_u8; 1];
+    if file.read(&mut tail).await.map_err(|_| ())? != 0 {
+        return Err(());
+    }
+    if hasher.finalize().as_bytes() != &content_hash {
+        return Err(());
+    }
+    let result = send_nearby_transfer_frame(
+        &connection,
+        workspace,
+        user_public_key,
+        PersonalNearbyTransferFrame::Finish {
+            transfer_id,
+            request_id,
+            content_hash,
+        },
+    )
+    .await;
+    if result.is_err() {
+        let _ = send_nearby_transfer_frame(
+            &connection,
+            workspace,
+            user_public_key,
+            PersonalNearbyTransferFrame::Abort {
+                transfer_id,
+                request_id,
+            },
+        )
+        .await;
+    }
+    result
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the arguments mirror one immutable transfer manifest and its exact transport route"
+)]
+async fn stream_personal_media(
+    endpoint: Endpoint,
+    addr: EndpointAddr,
+    workspace: WorkspaceId,
+    user_public_key: [u8; 32],
+    transfer_id: [u8; 16],
+    file_name: String,
+    total_bytes: u64,
+    file: std::fs::File,
+    progress: Option<mpsc::Sender<NetEvent>>,
+    target: EndpointId,
+    sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) -> Result<(), ()> {
+    use tokio::io::AsyncReadExt as _;
+
+    let connection = tokio::time::timeout(
+        Duration::from_secs(10),
+        endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
+    )
+    .await
+    .map_err(|_| ())?
+    .map_err(|_| ())?;
+    send_personal_media_frame(
+        &connection,
+        workspace,
+        user_public_key,
+        PersonalMediaTransferFrame::Start {
+            transfer_id,
+            file_name,
+            total_bytes,
+        },
+    )
+    .await?;
+
+    let mut file = tokio::fs::File::from_std(file);
+    let mut offset = 0_u64;
+    let mut last_reported = 0_u64;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0_u8; PERSONAL_MEDIA_CHUNK_BYTES];
+    let transfer = async {
+        while offset < total_bytes {
+            let remaining = total_bytes.saturating_sub(offset);
+            let want = usize::try_from(remaining.min(PERSONAL_MEDIA_CHUNK_BYTES as u64))
+                .map_err(|_| ())?;
+            let window = buffer.get_mut(..want).ok_or(())?;
+            let read = file.read(window).await.map_err(|_| ())?;
+            if read == 0 {
+                return Err(());
+            }
+            let bytes = buffer.get(..read).ok_or(())?.to_vec();
+            hasher.update(&bytes);
+            send_personal_media_frame(
+                &connection,
+                workspace,
+                user_public_key,
+                PersonalMediaTransferFrame::Chunk {
+                    transfer_id,
+                    offset,
+                    bytes,
+                },
+            )
+            .await?;
+            offset = offset.saturating_add(u64::try_from(read).map_err(|_| ())?);
+            sent_bytes.store(offset, std::sync::atomic::Ordering::Relaxed);
+            if offset == total_bytes || offset.saturating_sub(last_reported) >= 8 * 1024 * 1024 {
+                if let Some(progress) = progress.as_ref() {
+                    let _ = progress.try_send(NetEvent::PersonalMediaTransfer {
+                        target,
+                        transfer_id,
+                        sent_bytes: offset,
+                        total_bytes,
+                        status: PersonalMediaTransferStatus::Progress,
+                    });
+                }
+                last_reported = offset;
+            }
+        }
+        let mut trailing = [0_u8; 1];
+        if file.read(&mut trailing).await.map_err(|_| ())? != 0 {
+            return Err(());
+        }
+        send_personal_media_frame(
+            &connection,
+            workspace,
+            user_public_key,
+            PersonalMediaTransferFrame::Finish {
+                transfer_id,
+                content_hash: *hasher.finalize().as_bytes(),
+            },
+        )
+        .await
+    }
+    .await;
+    if transfer.is_err() {
+        let _ = send_personal_media_frame(
+            &connection,
+            workspace,
+            user_public_key,
+            PersonalMediaTransferFrame::Abort { transfer_id },
+        )
+        .await;
+    }
+    transfer
+}
+
 async fn run(
     endpoint: Endpoint,
     lookup: MemoryLookup,
@@ -1002,6 +1821,12 @@ async fn run(
         .accept(
             SURFACE_STREAM_ALPN,
             SurfaceStreamProtocol {
+                internal_tx: internal_tx.clone(),
+            },
+        )
+        .accept(
+            PERSONAL_FABRIC_ALPN,
+            PersonalFabricProtocol {
                 internal_tx: internal_tx.clone(),
             },
         )
@@ -1024,6 +1849,7 @@ async fn run(
         recent: HashSet::new(),
         recent_order: VecDeque::new(),
         surface_connections: HashMap::new(),
+        personal_fabric_connections: HashMap::new(),
     };
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut eviction = tokio::time::interval(EVICTION_INTERVAL);
@@ -1348,17 +2174,17 @@ fn schedule_host_topic(
     clippy::items_after_statements,
     reason = "the async write extension is local to the detached filesystem-registration worker and kept beside its only use"
 )]
-async fn register_content_peer(registration: qos_relay::ContentPeerRegistration) -> bool {
-    if cfg!(test) && std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER").is_none() {
+async fn register_content_peer(registration: tilo_relay::ContentPeerRegistration) -> bool {
+    if cfg!(test) && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none() {
         return true;
     }
-    let publisher = std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER")
+    let publisher = std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER")
         .filter(|value| !value.is_empty())
         .map_or_else(
             || std::path::PathBuf::from("/usr/bin/fs"),
             std::path::PathBuf::from,
         );
-    let cache_dir = std::env::var_os("QOS_FS_CONTENT_PEER_CACHE_DIR")
+    let cache_dir = std::env::var_os("TILO_FS_CONTENT_PEER_CACHE_DIR")
         .filter(|value| !value.is_empty())
         .map_or_else(
             || std::path::PathBuf::from("/var/cache/quick-fs"),
@@ -1419,16 +2245,16 @@ async fn unregister_content_peers_for_relay(relay: EndpointId) -> bool {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .push(relay);
-    if cfg!(test) && std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER").is_none() {
+    if cfg!(test) && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none() {
         return true;
     }
-    let publisher = std::env::var_os("QOS_FS_CONTENT_PEER_PUBLISHER")
+    let publisher = std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER")
         .filter(|value| !value.is_empty())
         .map_or_else(
             || std::path::PathBuf::from("/usr/bin/fs"),
             std::path::PathBuf::from,
         );
-    let cache_dir = std::env::var_os("QOS_FS_CONTENT_PEER_CACHE_DIR")
+    let cache_dir = std::env::var_os("TILO_FS_CONTENT_PEER_CACHE_DIR")
         .filter(|value| !value.is_empty())
         .map_or_else(
             || std::path::PathBuf::from("/var/cache/quick-fs"),
@@ -1520,7 +2346,7 @@ fn spawn_host_pump(
 }
 
 fn topic_id(ws: WorkspaceId) -> TopicId {
-    let mut hasher = blake3::Hasher::new_derive_key("qos-workspace-gossip-v1");
+    let mut hasher = blake3::Hasher::new_derive_key("tilo-workspace-gossip-v1");
     hasher.update(&ws.to_le_bytes());
     TopicId::from_bytes(*hasher.finalize().as_bytes())
 }
@@ -1529,10 +2355,10 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
 mod tests {
     use super::*;
     use iroh::endpoint::presets;
-    use qos_relay::{
+    use tilo_relay::{
         Relay, RelayConfig, ReplicationIntent, WorkspaceBinding, daemon::RelayIdentity,
     };
-    use qos_user_identity::{
+    use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
         sign_revocation_entry,
     };
@@ -1658,6 +2484,36 @@ mod tests {
             .await
             .unwrap();
         (endpoint, lookup)
+    }
+
+    #[test]
+    fn nearby_transfer_frame_round_trips_exact_binding_and_bounded_chunk() {
+        let wire = PersonalFabricWireFrame {
+            workspace: 42,
+            user_public_key: [3; 32],
+            payload: PersonalFabricPayload::NearbyTransfer(PersonalNearbyTransferFrame::Chunk {
+                transfer_id: [4; 16],
+                request_id: [5; 16],
+                offset: 99,
+                bytes: vec![7; PERSONAL_MEDIA_CHUNK_BYTES],
+            }),
+        };
+        let encoded = postcard::to_allocvec(&wire).unwrap();
+        assert!(encoded.len() < crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES);
+        let decoded: PersonalFabricWireFrame = postcard::from_bytes(&encoded).unwrap();
+        let PersonalFabricPayload::NearbyTransfer(PersonalNearbyTransferFrame::Chunk {
+            transfer_id,
+            request_id,
+            offset,
+            bytes,
+        }) = decoded.payload
+        else {
+            panic!("wrong nearby transfer frame");
+        };
+        assert_eq!(transfer_id, [4; 16]);
+        assert_eq!(request_id, [5; 16]);
+        assert_eq!(offset, 99);
+        assert_eq!(bytes.len(), PERSONAL_MEDIA_CHUNK_BYTES);
     }
 
     async fn identified_endpoint(key: &ed25519_dalek::SigningKey) -> (Endpoint, MemoryLookup) {
@@ -1790,6 +2646,300 @@ mod tests {
                 > dedicated_before,
             "surface frame should arrive through the dedicated QUIC ALPN"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn personal_fabric_uses_its_negotiated_alpn() {
+        let (a, lookup_a) = endpoint().await;
+        let (b, lookup_b) = endpoint().await;
+        let b_addr = b.addr();
+        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
+        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
+        let (event_a, mut rx_a) = mpsc::channel(16);
+        let (event_b, mut rx_b) = mpsc::channel(16);
+        cmd_a
+            .send(NetCmd::JoinWorkspace {
+                ws: 43,
+                on_event: event_a,
+            })
+            .await
+            .unwrap();
+        cmd_b
+            .send(NetCmd::JoinWorkspace {
+                ws: 43,
+                on_event: event_b,
+            })
+            .await
+            .unwrap();
+        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+        while !matches!(
+            timeout(Duration::from_secs(10), rx_a.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            NetEvent::PeerJoined { .. }
+        ) {}
+
+        cmd_a
+            .send(NetCmd::PublishPersonalFabric {
+                ws: 43,
+                user_public_key: [0xA5; 32],
+                payload: PersonalFabricPayload::Snapshot(vec![1, 2, 3]),
+            })
+            .await
+            .unwrap();
+        loop {
+            let event = timeout(Duration::from_secs(10), rx_b.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(
+                event,
+                NetEvent::PersonalFabric {
+                    ws: 43,
+                    user_public_key,
+                    payload: PersonalFabricPayload::Snapshot(bytes),
+                    ..
+                } if user_public_key == [0xA5; 32] && bytes == vec![1, 2, 3]
+            ) {
+                break;
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the integration test verifies both receiver framing and the sender's ordered progress lifecycle"
+    )]
+    async fn personal_media_streams_in_order_with_a_verified_finish_hash() {
+        let (a, lookup_a) = endpoint().await;
+        let (b, lookup_b) = endpoint().await;
+        let a_id = a.id();
+        let b_id = b.id();
+        let b_addr = b.addr();
+        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
+        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
+        let (event_a, mut rx_a) = mpsc::channel(16);
+        let (event_b, mut rx_b) = mpsc::channel(16);
+        for (command, events) in [(&cmd_a, event_a), (&cmd_b, event_b)] {
+            command
+                .send(NetCmd::JoinWorkspace {
+                    ws: 45,
+                    on_event: events,
+                })
+                .await
+                .unwrap();
+        }
+        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+        while !matches!(
+            timeout(Duration::from_secs(10), rx_a.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            NetEvent::PeerJoined { peer, .. } if peer == b_id
+        ) {}
+        while !matches!(
+            timeout(Duration::from_secs(10), rx_b.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            NetEvent::PeerJoined { peer, .. } if peer == a_id
+        ) {}
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("private-host-name.flac");
+        let bytes = vec![0x9a; PERSONAL_MEDIA_CHUNK_BYTES.saturating_add(31)];
+        std::fs::write(&path, &bytes).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let transfer_id = [0x45; 16];
+        cmd_a
+            .send(NetCmd::PublishPersonalMedia {
+                ws: 45,
+                user_public_key: [0xA6; 32],
+                target: b_id,
+                transfer_id,
+                file_name: "song.flac".into(),
+                total_bytes: u64::try_from(bytes.len()).unwrap(),
+                file,
+            })
+            .await
+            .unwrap();
+
+        let mut received = Vec::new();
+        loop {
+            let event = timeout(Duration::from_secs(10), rx_b.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let NetEvent::PersonalFabric {
+                payload: PersonalFabricPayload::MediaTransfer(frame),
+                ..
+            } = event
+            else {
+                continue;
+            };
+            match frame {
+                PersonalMediaTransferFrame::Start {
+                    transfer_id: id,
+                    file_name,
+                    total_bytes,
+                } => {
+                    assert_eq!(id, transfer_id);
+                    assert_eq!(file_name, "song.flac");
+                    assert_eq!(total_bytes, u64::try_from(bytes.len()).unwrap());
+                }
+                PersonalMediaTransferFrame::Chunk {
+                    transfer_id: id,
+                    offset,
+                    bytes: chunk,
+                } => {
+                    assert_eq!(id, transfer_id);
+                    assert_eq!(offset, u64::try_from(received.len()).unwrap());
+                    received.extend_from_slice(&chunk);
+                }
+                PersonalMediaTransferFrame::Finish {
+                    transfer_id: id,
+                    content_hash,
+                } => {
+                    assert_eq!(id, transfer_id);
+                    assert_eq!(content_hash, *blake3::hash(&received).as_bytes());
+                    break;
+                }
+                PersonalMediaTransferFrame::Abort { .. } => panic!("transfer aborted"),
+            }
+        }
+        assert_eq!(received, bytes);
+
+        let mut statuses = Vec::new();
+        loop {
+            let event = timeout(Duration::from_secs(10), rx_a.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let NetEvent::PersonalMediaTransfer {
+                target,
+                transfer_id: id,
+                sent_bytes,
+                total_bytes,
+                status,
+            } = event
+            else {
+                continue;
+            };
+            assert_eq!(target, b_id);
+            assert_eq!(id, transfer_id);
+            assert!(sent_bytes <= total_bytes);
+            statuses.push((status, sent_bytes));
+            if status == PersonalMediaTransferStatus::Completed {
+                break;
+            }
+        }
+        assert_eq!(
+            statuses.first(),
+            Some(&(PersonalMediaTransferStatus::Started, 0))
+        );
+        assert!(statuses.iter().any(|(status, sent)| {
+            *status == PersonalMediaTransferStatus::Progress
+                && *sent == u64::try_from(bytes.len()).unwrap()
+        }));
+        assert_eq!(
+            statuses.last(),
+            Some(&(
+                PersonalMediaTransferStatus::Completed,
+                u64::try_from(bytes.len()).unwrap()
+            ))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn personal_fabric_action_reaches_only_the_exact_target() {
+        let (a, lookup_a) = endpoint().await;
+        let (b, lookup_b) = endpoint().await;
+        let (c, lookup_c) = endpoint().await;
+        let a_id = a.id();
+        let b_id = b.id();
+        let c_id = c.id();
+        let b_addr = b.addr();
+        let c_addr = c.addr();
+        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
+        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
+        let (cmd_c, _c_task) = Actor::spawn(c, lookup_c);
+        let (event_a, mut rx_a) = mpsc::channel(16);
+        let (event_b, mut rx_b) = mpsc::channel(16);
+        let (event_c, mut rx_c) = mpsc::channel(16);
+        for (cmd, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
+            cmd.send(NetCmd::JoinWorkspace {
+                ws: 44,
+                on_event: events,
+            })
+            .await
+            .unwrap();
+        }
+        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+        cmd_a.send(NetCmd::Connect { addr: c_addr }).await.unwrap();
+
+        let mut a_saw_b = false;
+        let mut a_saw_c = false;
+        while !(a_saw_b && a_saw_c) {
+            match timeout(Duration::from_secs(10), rx_a.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                NetEvent::PeerJoined { peer, .. } if peer == b_id => a_saw_b = true,
+                NetEvent::PeerJoined { peer, .. } if peer == c_id => a_saw_c = true,
+                _ => {}
+            }
+        }
+        for receiver in [&mut rx_b, &mut rx_c] {
+            loop {
+                let event = timeout(Duration::from_secs(10), receiver.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if matches!(event, NetEvent::PeerJoined { peer, .. } if peer == a_id) {
+                    break;
+                }
+            }
+        }
+
+        cmd_a
+            .send(NetCmd::PublishPersonalFabricTarget {
+                ws: 44,
+                user_public_key: [0xB4; 32],
+                target: b_id,
+                payload: PersonalFabricPayload::Action(vec![4, 4]),
+            })
+            .await
+            .unwrap();
+        loop {
+            let event = timeout(Duration::from_secs(10), rx_b.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(
+                event,
+                NetEvent::PersonalFabric {
+                    payload: PersonalFabricPayload::Action(bytes),
+                    ..
+                } if bytes == vec![4, 4]
+            ) {
+                break;
+            }
+        }
+        while let Ok(Some(event)) = timeout(Duration::from_millis(500), rx_c.recv()).await {
+            assert!(
+                !matches!(
+                    event,
+                    NetEvent::PersonalFabric {
+                        payload: PersonalFabricPayload::Action(_),
+                        ..
+                    }
+                ),
+                "personal action leaked to a non-target device"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2049,45 +3199,46 @@ mod tests {
             .await
             .unwrap();
 
-        let attempt = |expectation: HomePeerExpectation,
-                       revocations: Vec<qos_user_identity::RevocationEntry>| {
-            let relay_addr = relay.node_addr();
-            let client_key = client_key.clone();
-            let client_cert = client_cert.clone();
-            async move {
-                let (endpoint, _) = identified_endpoint(&client_key).await;
-                let identity = HostIdentity {
-                    device_cert: client_cert,
-                    device_signing_key: client_key,
-                    workspace_device_certs: HashMap::new(),
-                    workspace_revocations: HashMap::from([(42, revocations)]),
-                    identity_paths: None,
-                };
-                let (tx, mut rx) = mpsc::channel(2);
-                let mut connecting = HashSet::new();
-                let mut discoveries = HashMap::new();
-                schedule_host_topic(
-                    &endpoint,
-                    &identity,
-                    42,
-                    relay_addr,
-                    Some(expectation),
-                    &tx,
-                    &HashMap::new(),
-                    &mut connecting,
-                    &mut discoveries,
-                );
-                let rejected = matches!(
-                    timeout(Duration::from_secs(5), rx.recv()).await,
-                    Ok(Some(InternalEvent::HostConnected { result, .. })) if result.is_err()
-                );
-                for (_, task) in discoveries {
-                    task.abort();
+        let attempt =
+            |expectation: HomePeerExpectation,
+             revocations: Vec<tilo_user_identity::RevocationEntry>| {
+                let relay_addr = relay.node_addr();
+                let client_key = client_key.clone();
+                let client_cert = client_cert.clone();
+                async move {
+                    let (endpoint, _) = identified_endpoint(&client_key).await;
+                    let identity = HostIdentity {
+                        device_cert: client_cert,
+                        device_signing_key: client_key,
+                        workspace_device_certs: HashMap::new(),
+                        workspace_revocations: HashMap::from([(42, revocations)]),
+                        identity_paths: None,
+                    };
+                    let (tx, mut rx) = mpsc::channel(2);
+                    let mut connecting = HashSet::new();
+                    let mut discoveries = HashMap::new();
+                    schedule_host_topic(
+                        &endpoint,
+                        &identity,
+                        42,
+                        relay_addr,
+                        Some(expectation),
+                        &tx,
+                        &HashMap::new(),
+                        &mut connecting,
+                        &mut discoveries,
+                    );
+                    let rejected = matches!(
+                        timeout(Duration::from_secs(5), rx.recv()).await,
+                        Ok(Some(InternalEvent::HostConnected { result, .. })) if result.is_err()
+                    );
+                    for (_, task) in discoveries {
+                        task.abort();
+                    }
+                    endpoint.close().await;
+                    rejected
                 }
-                endpoint.close().await;
-                rejected
-            }
-        };
+            };
         let host_device = host_cert.device_public_key;
         assert!(
             attempt(

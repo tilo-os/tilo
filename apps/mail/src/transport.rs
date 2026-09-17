@@ -73,9 +73,10 @@ fn parse_single_addr(s: &str) -> Addr {
 ///
 /// # Errors
 ///
-/// Returns `Err` if `mail-builder` cannot serialise the message (for
-/// example a header value it rejects).
-pub fn build_mime(from: &Addr, draft: &Draft) -> std::io::Result<Vec<u8>> {
+/// Returns `Err` if serialisation fails or any portable attachment cannot be
+/// materialized and re-verified. In particular, it never silently omits a
+/// missing attachment and then reports a successful send.
+pub fn build_mime(from: &Addr, draft: &Draft) -> Result<Vec<u8>, String> {
     let to = parse_addr_list(&draft.to);
     let cc = parse_addr_list(&draft.cc);
     let bcc = parse_addr_list(&draft.bcc);
@@ -104,17 +105,9 @@ pub fn build_mime(from: &Addr, draft: &Draft) -> std::io::Result<Vec<u8>> {
         builder = builder.bcc(addr_tuples(&bcc));
     }
 
-    // Attachments are staged as real filesystem paths (the FUSE-projected file
-    // the user picked). Read the actual bytes so the produced message carries
-    // the genuine file — never a fabricated placeholder. A path that can't be
-    // read is skipped rather than sending fake content.
-    for path in &draft.attachments {
-        let Ok(bytes) = std::fs::read(path) else {
-            continue;
-        };
-        let name = crate::model::attachment_display_name(path).to_string();
-        let mime = mime_from_filename(&name);
-        builder = builder.attachment(mime, name, bytes);
+    for attachment in &draft.attachments {
+        let bytes = crate::attachment_store::materialize(attachment)?;
+        builder = builder.attachment(attachment.mime.clone(), attachment.filename.clone(), bytes);
     }
     if let Some(calendar_ics) = &draft.calendar_ics {
         builder = builder.attachment(
@@ -124,7 +117,7 @@ pub fn build_mime(from: &Addr, draft: &Draft) -> std::io::Result<Vec<u8>> {
         );
     }
 
-    builder.write_to_vec()
+    builder.write_to_vec().map_err(|error| error.to_string())
 }
 
 fn addr_tuples(addrs: &[Addr]) -> Vec<(String, String)> {
@@ -203,6 +196,7 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
                 mime,
                 filename,
                 hydrated: !content.is_empty(),
+                content_id: None,
                 content,
             }
         })
@@ -356,24 +350,21 @@ mod tests {
 
     #[test]
     fn build_mime_produces_valid_rfc5322() {
-        // Attachments are real file paths — stage one so the message is a
-        // genuine multipart/mixed with the file's real bytes.
-        let path = std::env::temp_dir().join(format!("mail-report-{}.pdf", Uuid::new_v4()));
-        std::fs::write(&path, b"%PDF-1.4 report body").unwrap();
-        let from = Addr::new("Me", "me@qos.example");
+        let attachment =
+            crate::attachment_store::stage_bytes(b"%PDF-1.4 report body", "report.pdf").unwrap();
+        let from = Addr::new("Me", "me@tilo.example");
         let draft = Draft {
             to: "you@there.example".into(),
             subject: "Hello".into(),
             body: "Body text here.".into(),
-            attachments: vec![path.to_string_lossy().into_owned()],
+            attachments: vec![attachment],
             ..Default::default()
         };
         let bytes = build_mime(&from, &draft).unwrap();
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("Subject: Hello"));
         assert!(text.to_ascii_lowercase().contains("multipart/mixed"));
-        assert!(text.contains("me@qos.example"));
-        std::fs::remove_file(&path).ok();
+        assert!(text.contains("me@tilo.example"));
     }
 
     #[test]
@@ -383,7 +374,7 @@ mod tests {
         // reader drew its header once per copy. A stable id keyed on the
         // Message-ID must collapse them to one.
         let raw = b"From: Ada <ada@x.example>\r\n\
-To: you@qos.example\r\n\
+To: you@tilo.example\r\n\
 Subject: Re: Launch\r\n\
 Message-ID: <thread-42@x.example>\r\n\
 \r\n\
@@ -405,7 +396,7 @@ Body of the message.\r\n";
     #[test]
     fn parse_eml_retains_rfc_reply_linkage_for_threading() {
         let raw = b"From: Ada <ada@x.example>\r\n\
-To: you@qos.example\r\n\
+To: you@tilo.example\r\n\
 Subject: Re: Launch\r\n\
 Message-ID: <thread-reply@x.example>\r\n\
 In-Reply-To: <thread-root@x.example>\r\n\
@@ -425,7 +416,7 @@ Reply body.\r\n";
     #[test]
     fn parse_eml_uses_the_references_root_over_an_intermediate_reply() {
         let raw = b"From: Ada <ada@x.example>\r\n\
-To: you@qos.example\r\n\
+To: you@tilo.example\r\n\
 Subject: Re: Launch\r\n\
 Message-ID: <thread-latest@x.example>\r\n\
 References: <thread-root@x.example> <thread-middle@x.example>\r\n\
@@ -470,7 +461,7 @@ Content-Type: text/html; charset=utf-8\r\n\
         // back, and confirm the headers survive.
         let from = Addr::new("Ada", "ada@analytical.example");
         let draft = Draft {
-            to: "you@qos.example".into(),
+            to: "you@tilo.example".into(),
             subject: "Notes from the Analytical Engine".into(),
             body: "The Engine weaves algebraic patterns.".into(),
             ..Default::default()
@@ -483,31 +474,28 @@ Content-Type: text/html; charset=utf-8\r\n\
     }
 
     #[test]
-    fn build_mime_embeds_real_attachment_bytes_from_path() {
-        // Stage a real file, attach it by path, and confirm the produced
-        // message carries the genuine bytes (no fabricated placeholder).
-        let path = std::env::temp_dir().join(format!("mail-att-{}.txt", Uuid::new_v4()));
-        std::fs::write(&path, b"REAL-ATTACHMENT-CONTENT-\x00\x01\x02").unwrap();
-        let from = Addr::new("Me", "me@qos.example");
+    fn build_mime_embeds_verified_portable_attachment_bytes() {
+        let attachment = crate::attachment_store::stage_bytes(
+            b"REAL-ATTACHMENT-CONTENT-\x00\x01\x02",
+            "report.txt",
+        )
+        .unwrap();
+        let from = Addr::new("Me", "me@tilo.example");
         let draft = Draft {
             to: "you@there.example".into(),
             subject: "Files".into(),
             body: "See attached.".into(),
-            attachments: vec![path.to_string_lossy().into_owned()],
+            attachments: vec![attachment],
             ..Default::default()
         };
         let bytes = build_mime(&from, &draft).unwrap();
         let parsed = parse_eml(&bytes, 0, Folder::Inbox).unwrap();
         assert_eq!(parsed.attachments.len(), 1);
-        assert_eq!(
-            parsed.attachments[0].filename,
-            path.file_name().unwrap().to_string_lossy()
-        );
+        assert_eq!(parsed.attachments[0].filename, "report.txt");
         assert_eq!(
             parsed.attachments[0].content,
             b"REAL-ATTACHMENT-CONTENT-\x00\x01\x02"
         );
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -525,21 +513,22 @@ Content-Type: text/html; charset=utf-8\r\n\
     }
 
     #[test]
-    fn build_mime_skips_unreadable_attachment_path() {
-        // A path that can't be read must not fabricate an attachment.
+    fn build_mime_refuses_missing_portable_attachment() {
+        // A missing blob must not be silently omitted from an otherwise
+        // successful-looking send.
         let draft = Draft {
             to: "you@there.example".into(),
             subject: "Nope".into(),
             body: "b".into(),
-            attachments: vec!["/no/such/mail/file-definitely-missing".into()],
+            attachments: vec![crate::model::DraftAttachment {
+                content_id: format!("mail-attachment:blake3:{}", "0".repeat(64)),
+                filename: "missing.txt".into(),
+                mime: "text/plain".into(),
+                size: 12,
+            }],
             ..Default::default()
         };
-        let bytes = build_mime(&Addr::new("Me", "me@x.example"), &draft).unwrap();
-        let parsed = parse_eml(&bytes, 0, Folder::Inbox).unwrap();
-        assert!(
-            parsed.attachments.is_empty(),
-            "unreadable path must not emit an attachment"
-        );
+        assert!(build_mime(&Addr::new("Me", "me@x.example"), &draft).is_err());
     }
 
     #[test]

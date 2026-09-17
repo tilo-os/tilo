@@ -18,7 +18,7 @@
 //! asynchronously, read in-process synchronously; writes publish to Wayland
 //! on the next tick.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::io::Read;
 use std::os::unix::io::{AsFd, FromRawFd, OwnedFd};
@@ -65,6 +65,13 @@ pub const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
 /// names.  This is deliberately the same order as the Clipboard portal cap.
 pub const MAX_SELECTION_MIMES: usize = 16;
 pub const MAX_SELECTION_MIME_BYTES: usize = 128;
+/// A clipboard manager is useful only while it stays predictable. History is
+/// session-private and bounded independently of the larger live selection.
+pub const MAX_CLIPBOARD_HISTORY_ITEMS: usize = 50;
+pub const MAX_CLIPBOARD_HISTORY_ITEM_BYTES: usize = 256 * 1024;
+/// Secret-capable widgets use this MIME marker to make retention impossible at
+/// the compositor boundary, even if an application accidentally offers it.
+pub const SECRET_MIME: &str = "application/x-tilo-secret";
 
 /// Bytes a fresh pipe accepts before write blocks (Linux default 64 KiB);
 /// kept conservative so the "cannot block" assumption holds even under a
@@ -99,16 +106,16 @@ impl From<Target> for SelectionTarget {
     }
 }
 
-/// One side of the mirror.  It retains the actual bytes for the formats qOS
+/// One side of the mirror.  It retains the actual bytes for the formats Tilo
 /// has asynchronously pulled from a client, not just a lossy text rendering.
 /// That makes this a suitable bridge for the Clipboard portal as well as the
 /// in-process UI.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Slot {
     /// Payloads keyed by advertised MIME type.  The aggregate is bounded by
     /// `MAX_SELECTION_BYTES`; aliases are resolved on read rather than copied.
     values: BTreeMap<String, Vec<u8>>,
-    /// MIME types exposed to Wayland clients when qOS owns the selection.
+    /// MIME types exposed to Wayland clients when Tilo owns the selection.
     mime_types: Vec<String>,
     /// Bumped whenever the selection changes hands, so an old asynchronous
     /// client transfer cannot overwrite a newer selection.
@@ -135,6 +142,7 @@ struct Slot {
 pub struct SelectionStore {
     clipboard: Slot,
     primary: Slot,
+    history: VecDeque<ClipboardHistoryItem>,
 }
 
 impl SelectionStore {
@@ -155,6 +163,67 @@ impl SelectionStore {
 
 /// Shared handle to the compositor's selection mirror.
 pub type SharedSelection = Arc<Mutex<SelectionStore>>;
+
+/// Safe metadata shown by the clipboard manager. Payload bytes stay inside the
+/// privileged compositor and can only become the live clipboard via
+/// [`activate_history_item`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClipboardHistorySnapshot {
+    pub id: [u8; 32],
+    pub mime_types: Vec<String>,
+    pub text_preview: Option<String>,
+    pub byte_len: usize,
+    pub pinned: bool,
+    /// Authenticated fabric author, or `None` when the copy originated in
+    /// this compositor. The UI receives identity metadata, never payload
+    /// bytes, until the person explicitly activates an item.
+    pub source_device: Option<crate::shell::personal_continuity::DeviceId>,
+    pub created_unix_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ClipboardHistoryItem {
+    id: [u8; 32],
+    generation: u64,
+    created_unix_ms: u64,
+    values: BTreeMap<String, Vec<u8>>,
+    mime_types: Vec<String>,
+    pinned: bool,
+    /// Imported fabric entries remain selectable locally but are not
+    /// re-authored and rebroadcast as if they originated on this device.
+    fabric_imported: bool,
+    source_device: Option<crate::shell::personal_continuity::DeviceId>,
+}
+
+/// Payload-safe export used only by the encrypted same-person device lane.
+/// The primary selection and secret MIME type never reach this structure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShareableClipboardSnapshot {
+    pub id: [u8; 32],
+    pub mime: String,
+    pub bytes: Vec<u8>,
+    pub created_unix_ms: u64,
+    pub pinned: bool,
+}
+
+impl ClipboardHistoryItem {
+    fn snapshot(&self) -> ClipboardHistorySnapshot {
+        let text_preview = text_mime_types()
+            .iter()
+            .find_map(|mime| self.values.get(mime))
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .map(|text| text.chars().take(160).collect());
+        ClipboardHistorySnapshot {
+            id: self.id,
+            mime_types: self.mime_types.clone(),
+            text_preview,
+            byte_len: total_bytes(&self.values),
+            pinned: self.pinned,
+            source_device: self.source_device.clone(),
+            created_unix_ms: self.created_unix_ms,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SelectionSnapshot {
@@ -233,6 +302,221 @@ fn total_bytes(values: &BTreeMap<String, Vec<u8>>) -> usize {
         .fold(0usize, |total, bytes| total.saturating_add(bytes.len()))
 }
 
+fn history_id(values: &BTreeMap<String, Vec<u8>>) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"tilo-clipboard-history-v1\0");
+    for (mime, bytes) in values {
+        hash.update(mime.as_bytes());
+        hash.update(&[0]);
+        hash.update(bytes);
+    }
+    *hash.finalize().as_bytes()
+}
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+fn record_clipboard_history(store: &mut SelectionStore) {
+    let slot = &store.clipboard;
+    if slot.values.is_empty()
+        || slot.mime_types.iter().any(|mime| mime == SECRET_MIME)
+        || total_bytes(&slot.values) > MAX_CLIPBOARD_HISTORY_ITEM_BYTES
+    {
+        return;
+    }
+    let id = history_id(&slot.values);
+    if store
+        .history
+        .front()
+        .is_some_and(|item| item.generation == slot.generation)
+    {
+        let pinned = store.history.front().is_some_and(|item| item.pinned);
+        let created_unix_ms = store
+            .history
+            .front()
+            .map_or_else(now_unix_ms, |item| item.created_unix_ms);
+        store.history.pop_front();
+        store.history.push_front(ClipboardHistoryItem {
+            id,
+            generation: slot.generation,
+            created_unix_ms,
+            values: slot.values.clone(),
+            mime_types: slot.mime_types.clone(),
+            pinned,
+            fabric_imported: false,
+            source_device: None,
+        });
+        return;
+    }
+    let pinned = store
+        .history
+        .iter()
+        .find(|item| item.id == id)
+        .is_some_and(|item| item.pinned);
+    store.history.retain(|item| item.id != id);
+    while store.history.len() >= MAX_CLIPBOARD_HISTORY_ITEMS {
+        let Some(index) = store.history.iter().rposition(|item| !item.pinned) else {
+            return;
+        };
+        store.history.remove(index);
+    }
+    store.history.push_front(ClipboardHistoryItem {
+        id,
+        generation: slot.generation,
+        created_unix_ms: now_unix_ms(),
+        values: slot.values.clone(),
+        mime_types: slot.mime_types.clone(),
+        pinned,
+        fabric_imported: false,
+        source_device: None,
+    });
+}
+
+/// Export safe retained clipboard payloads for the encrypted personal fabric.
+/// Text is canonicalized to UTF-8; otherwise one exact binary MIME is used.
+pub fn shareable_clipboard_history(store: &SharedSelection) -> Vec<ShareableClipboardSnapshot> {
+    let Ok(store) = store.lock() else {
+        return Vec::new();
+    };
+    store
+        .history
+        .iter()
+        .filter(|item| !item.fabric_imported)
+        .filter_map(|item| {
+            let (mime, bytes) = text_mime_types()
+                .iter()
+                .find_map(|mime| item.values.get(mime).map(|bytes| (TEXT_MIME, bytes)))
+                .or_else(|| {
+                    item.values
+                        .iter()
+                        .find(|(mime, _)| mime.as_str() != SECRET_MIME)
+                        .map(|(mime, bytes)| (mime.as_str(), bytes))
+                })?;
+            Some(ShareableClipboardSnapshot {
+                id: item.id,
+                mime: mime.to_string(),
+                bytes: bytes.clone(),
+                created_unix_ms: item.created_unix_ms,
+                pinned: item.pinned,
+            })
+        })
+        .collect()
+}
+
+/// Merge authenticated personal-fabric items into history without exposing
+/// them as the active Wayland clipboard until the person chooses one.
+pub fn merge_shared_clipboard_history(
+    store: &SharedSelection,
+    entries: &[crate::shell::device_fabric::ClipboardEntry],
+) {
+    let Ok(mut store) = store.lock() else {
+        return;
+    };
+    for entry in entries.iter().rev() {
+        let (mime, bytes) = match &entry.payload {
+            crate::shell::device_fabric::ClipboardPayload::Text(text) => {
+                (TEXT_MIME.to_string(), text.as_bytes().to_vec())
+            }
+            crate::shell::device_fabric::ClipboardPayload::Binary { mime, bytes } => {
+                (mime.clone(), bytes.clone())
+            }
+        };
+        if store.history.iter().any(|item| item.id == entry.id) {
+            continue;
+        }
+        let mut values = BTreeMap::new();
+        values.insert(mime.clone(), bytes);
+        while store.history.len() >= MAX_CLIPBOARD_HISTORY_ITEMS {
+            let Some(index) = store.history.iter().rposition(|item| !item.pinned) else {
+                return;
+            };
+            store.history.remove(index);
+        }
+        store.history.push_front(ClipboardHistoryItem {
+            id: entry.id,
+            generation: 0,
+            created_unix_ms: entry.created_unix_ms,
+            values,
+            mime_types: normalized_mimes([mime]),
+            pinned: entry.pinned,
+            fabric_imported: true,
+            source_device: Some(entry.origin.clone()),
+        });
+    }
+}
+
+/// Clipboard-manager metadata, newest first. Primary selection is never
+/// retained and payload bytes never leave the privileged compositor here.
+pub fn clipboard_history(store: &SharedSelection) -> Vec<ClipboardHistorySnapshot> {
+    store
+        .lock()
+        .map(|store| {
+            store
+                .history
+                .iter()
+                .map(ClipboardHistoryItem::snapshot)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Make a retained item the live clipboard and queue normal Wayland
+/// publication. This is the only payload-reading clipboard-manager action.
+pub fn activate_history_item(store: &SharedSelection, id: [u8; 32]) -> bool {
+    let Ok(mut store) = store.lock() else {
+        return false;
+    };
+    let Some(index) = store.history.iter().position(|item| item.id == id) else {
+        return false;
+    };
+    let Some(mut item) = store.history.remove(index) else {
+        return false;
+    };
+    let slot = &mut store.clipboard;
+    slot.values.clone_from(&item.values);
+    slot.mime_types.clone_from(&item.mime_types);
+    slot.generation = slot.generation.wrapping_add(1).max(1);
+    slot.revision = slot.revision.wrapping_add(1).max(1);
+    slot.compositor_owned = true;
+    slot.publish_pending = true;
+    slot.clear_pending = false;
+    item.generation = slot.generation;
+    store.history.push_front(item);
+    true
+}
+
+pub fn pin_history_item(store: &SharedSelection, id: [u8; 32], pinned: bool) -> bool {
+    let Ok(mut store) = store.lock() else {
+        return false;
+    };
+    let Some(item) = store.history.iter_mut().find(|item| item.id == id) else {
+        return false;
+    };
+    item.pinned = pinned;
+    true
+}
+
+pub fn remove_history_item(store: &SharedSelection, id: [u8; 32]) -> bool {
+    let Ok(mut store) = store.lock() else {
+        return false;
+    };
+    let before = store.history.len();
+    store.history.retain(|item| item.id != id);
+    store.history.len() != before
+}
+
+/// Clear ordinary history while preserving explicitly pinned entries.
+pub fn clear_clipboard_history(store: &SharedSelection) {
+    if let Ok(mut store) = store.lock() {
+        store.history.retain(|item| item.pinned);
+    }
+}
+
 /// MIME types currently available without waiting on a client.  A portal may
 /// read only these; it never gets a synchronous path into an arbitrary focused
 /// Wayland client.
@@ -262,10 +546,19 @@ pub fn mirror_text(store: &SharedSelection, target: Target) -> Option<String> {
 /// in-process immediately, becomes a Wayland selection on the next tick via
 /// [`State::pump_selection`].
 pub fn set_mirror_text(store: &SharedSelection, target: Target, text: &str) -> bool {
+    // Ctrl+C starts a new offer even when chrome already owned the clipboard;
+    // otherwise unrelated successive copies would be merged into one history
+    // generation. Primary selection remains ephemeral and is not retained.
+    if let Ok(mut store) = store.lock() {
+        let slot = store.slot_mut(target);
+        slot.values.clear();
+        slot.mime_types.clear();
+        slot.compositor_owned = false;
+    }
     set_mirror_bytes(store, target, TEXT_MIME, text.as_bytes().to_vec()).is_ok()
 }
 
-/// Replace qOS's pending portal offer.  There is deliberately no publication
+/// Replace Tilo's pending portal offer.  There is deliberately no publication
 /// until payload arrives: offering stale bytes under a newly remote-owned MIME
 /// would leak the prior selection.
 ///
@@ -321,29 +614,34 @@ pub fn set_mirror_bytes(
     let Ok(mut store) = store.lock() else {
         return Err("clipboard selection store is unavailable".into());
     };
-    let slot = store.slot_mut(target);
-    if !slot.compositor_owned {
-        slot.values.clear();
-        slot.mime_types.clear();
-        slot.generation = slot.generation.wrapping_add(1).max(1);
-    }
-    let previous = slot.values.insert(mime.to_owned(), bytes);
-    if total_bytes(&slot.values) > MAX_SELECTION_BYTES {
-        if let Some(previous) = previous {
-            slot.values.insert(mime.to_owned(), previous);
-        } else {
-            slot.values.remove(mime);
+    {
+        let slot = store.slot_mut(target);
+        if !slot.compositor_owned {
+            slot.values.clear();
+            slot.mime_types.clear();
+            slot.generation = slot.generation.wrapping_add(1).max(1);
         }
-        return Err("clipboard selection exceeds the compositor size limit".into());
+        let previous = slot.values.insert(mime.to_owned(), bytes);
+        if total_bytes(&slot.values) > MAX_SELECTION_BYTES {
+            if let Some(previous) = previous {
+                slot.values.insert(mime.to_owned(), previous);
+            } else {
+                slot.values.remove(mime);
+            }
+            return Err("clipboard selection exceeds the compositor size limit".into());
+        }
+        if !slot.mime_types.iter().any(|offered| offered == mime) {
+            slot.mime_types.push(mime.to_owned());
+        }
+        slot.mime_types = normalized_mimes(std::mem::take(&mut slot.mime_types));
+        slot.compositor_owned = true;
+        slot.revision = slot.revision.wrapping_add(1).max(1);
+        slot.publish_pending = true;
+        slot.clear_pending = false;
     }
-    if !slot.mime_types.iter().any(|offered| offered == mime) {
-        slot.mime_types.push(mime.to_owned());
+    if target == Target::Clipboard {
+        record_clipboard_history(&mut store);
     }
-    slot.mime_types = normalized_mimes(std::mem::take(&mut slot.mime_types));
-    slot.compositor_owned = true;
-    slot.revision = slot.revision.wrapping_add(1).max(1);
-    slot.publish_pending = true;
-    slot.clear_pending = false;
     Ok(())
 }
 
@@ -396,19 +694,26 @@ fn record_client_bytes(
     let Ok(mut store) = store.lock() else {
         return;
     };
-    let slot = store.slot_mut(target);
-    if generation == 0 || slot.generation != generation || bytes.len() > MAX_SELECTION_BYTES {
-        return;
-    }
-    let previous = slot.values.insert(mime.to_owned(), bytes);
-    if total_bytes(&slot.values) > MAX_SELECTION_BYTES {
-        if let Some(previous) = previous {
-            slot.values.insert(mime.to_owned(), previous);
-        } else {
-            slot.values.remove(mime);
+    let accepted = {
+        let slot = store.slot_mut(target);
+        if generation == 0 || slot.generation != generation || bytes.len() > MAX_SELECTION_BYTES {
+            return;
         }
-    } else {
-        slot.revision = slot.revision.wrapping_add(1).max(1);
+        let previous = slot.values.insert(mime.to_owned(), bytes);
+        if total_bytes(&slot.values) > MAX_SELECTION_BYTES {
+            if let Some(previous) = previous {
+                slot.values.insert(mime.to_owned(), previous);
+            } else {
+                slot.values.remove(mime);
+            }
+            false
+        } else {
+            slot.revision = slot.revision.wrapping_add(1).max(1);
+            true
+        }
+    };
+    if accepted && target == Target::Clipboard {
+        record_clipboard_history(&mut store);
     }
 }
 
@@ -874,7 +1179,7 @@ impl State {
                         read_fd,
                     ),
                     Err(e) => {
-                        // `ServerSideSelection` is normal when qOS owns the
+                        // `ServerSideSelection` is normal when Tilo owns the
                         // source; it already has the bytes in the mirror.
                         tracing::debug!(target: "shell::selection", error = %e, "no client selection to mirror");
                     }
@@ -1047,7 +1352,7 @@ fn request_dragged_name(source: &WlDataSource, label: DragLabel) {
     // EOF — the client's copy closing alone isn't enough.
     drop(writer);
     let _ = std::thread::Builder::new()
-        .name("qos-drag-name".into())
+        .name("tilo-drag-name".into())
         .spawn(move || {
             use std::io::Read;
             let mut reader = reader;
@@ -1098,7 +1403,7 @@ impl ClientDndGrabHandler for State {
         {
             request_dragged_name(source, self.selection.dnd_label.clone());
         }
-        // The drag icon is a client surface with the `dnd_icon` role, but qOS
+        // The drag icon is a client surface with the `dnd_icon` role, but Tilo
         // doesn't composite it — the compositor draws its own drag feedback, and a
         // client icon would sit outside the strip layout. Recording it just keeps
         // the role assignment honest per protocol.
@@ -1358,6 +1663,131 @@ mod tests {
             vec![0; MAX_SELECTION_BYTES + 1],
         );
         assert_eq!(mirror_bytes(&s, Target::Clipboard, "image/png"), None);
+    }
+
+    #[test]
+    fn clipboard_manager_tracks_distinct_copies_newest_first() {
+        let s = store();
+        assert!(set_mirror_text(&s, Target::Clipboard, "first"));
+        assert!(set_mirror_text(&s, Target::Clipboard, "second"));
+        assert!(set_mirror_text(&s, Target::Clipboard, "first"));
+        let history = clipboard_history(&s);
+        assert_eq!(
+            history.len(),
+            2,
+            "copying identical content de-duplicates it"
+        );
+        assert_eq!(history[0].text_preview.as_deref(), Some("first"));
+        assert_eq!(history[1].text_preview.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn primary_and_secret_or_oversized_selections_never_enter_history() {
+        let s = store();
+        assert!(set_mirror_text(&s, Target::Primary, "selection churn"));
+        assert!(clipboard_history(&s).is_empty());
+
+        begin_mirror_offer(&s, Target::Clipboard, &[SECRET_MIME.into()]).unwrap();
+        set_mirror_bytes(&s, Target::Clipboard, SECRET_MIME, b"totp".to_vec()).unwrap();
+        assert!(clipboard_history(&s).is_empty());
+
+        set_mirror_bytes(
+            &s,
+            Target::Clipboard,
+            "application/octet-stream",
+            vec![0; MAX_CLIPBOARD_HISTORY_ITEM_BYTES + 1],
+        )
+        .unwrap();
+        assert!(clipboard_history(&s).is_empty());
+    }
+
+    #[test]
+    fn clipboard_manager_can_pin_clear_restore_and_remove() {
+        let s = store();
+        set_mirror_text(&s, Target::Clipboard, "keep");
+        let keep = clipboard_history(&s)[0].id;
+        assert!(pin_history_item(&s, keep, true));
+        set_mirror_text(&s, Target::Clipboard, "discard");
+        let discard = clipboard_history(&s)[0].id;
+
+        clear_clipboard_history(&s);
+        let history = clipboard_history(&s);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, keep);
+
+        clear_mirror(&s, Target::Clipboard);
+        assert!(activate_history_item(&s, keep));
+        assert_eq!(mirror_text(&s, Target::Clipboard).as_deref(), Some("keep"));
+        assert!(compositor_owns(&s, Target::Clipboard));
+        assert!(remove_history_item(&s, keep));
+        assert!(!remove_history_item(&s, discard));
+    }
+
+    #[test]
+    fn asynchronous_multi_mime_copy_becomes_one_history_item() {
+        let s = store();
+        let generation = begin_client_selection(
+            &s,
+            Target::Clipboard,
+            Some(vec![TEXT_MIME.into(), "image/png".into()]),
+        );
+        record_client_bytes(
+            &s,
+            Target::Clipboard,
+            generation,
+            TEXT_MIME,
+            b"caption".to_vec(),
+        );
+        record_client_bytes(
+            &s,
+            Target::Clipboard,
+            generation,
+            "image/png",
+            vec![1, 2, 3],
+        );
+        let history = clipboard_history(&s);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].text_preview.as_deref(), Some("caption"));
+        assert!(history[0].mime_types.iter().any(|mime| mime == "image/png"));
+    }
+
+    #[test]
+    fn fabric_clipboard_is_history_only_and_is_not_reauthored() {
+        use crate::shell::device_fabric::{ClipboardEntry, ClipboardPayload, FabricStamp};
+        use crate::shell::personal_continuity::DeviceId;
+
+        let s = store();
+        let origin = DeviceId::new("remote-device").unwrap();
+        let entry = ClipboardEntry::shareable(
+            ClipboardPayload::Text("from the other screen".into()),
+            origin.clone(),
+            42,
+            FabricStamp {
+                counter: 7,
+                device: origin.clone(),
+            },
+        )
+        .unwrap();
+        merge_shared_clipboard_history(&s, std::slice::from_ref(&entry));
+
+        assert_eq!(mirror_text(&s, Target::Clipboard), None);
+        assert_eq!(
+            clipboard_history(&s)[0].text_preview.as_deref(),
+            Some("from the other screen")
+        );
+        assert_eq!(
+            clipboard_history(&s)[0].source_device.as_ref(),
+            Some(&origin)
+        );
+        assert_eq!(clipboard_history(&s)[0].created_unix_ms, 42);
+        assert!(shareable_clipboard_history(&s).is_empty());
+
+        assert!(activate_history_item(&s, entry.id));
+        assert_eq!(
+            mirror_text(&s, Target::Clipboard).as_deref(),
+            Some("from the other screen")
+        );
+        assert!(shareable_clipboard_history(&s).is_empty());
     }
 
     #[test]

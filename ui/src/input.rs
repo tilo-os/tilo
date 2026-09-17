@@ -344,10 +344,12 @@ pub enum InputBinding {
 
 impl InputBinding {
     pub fn available_in(&self, environment: InteractionEnvironment) -> bool {
+        use crate::interaction::InputDevice;
+
         match self {
-            Self::Keyboard(_) => environment.available.keyboard,
-            Self::Controller(_) => environment.available.controller,
-            Self::Touch(_) => environment.available.touch,
+            Self::Keyboard(_) => environment.available.contains(InputDevice::Keyboard),
+            Self::Controller(_) => environment.available.contains(InputDevice::Controller),
+            Self::Touch(_) => environment.available.contains(InputDevice::Touch),
         }
     }
 }

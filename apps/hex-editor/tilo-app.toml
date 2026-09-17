@@ -1,0 +1,60 @@
+# Hex Editor — Tilo application manifest.
+#
+# Opens exactly one file, named on argv, and has no save path at all.
+#
+# Beyond the system read profile it needs, as a consented capability:
+# read on the file it was asked to open.
+#
+
+
+[package]
+id       = "dev.tilo.hex-editor"
+name     = "Hex Editor"
+category = "Development"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/hex-editor"
+type            = "gui"
+splash-segments = ["bin/hex-editor[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []

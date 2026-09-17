@@ -112,7 +112,7 @@ class SignatureTests(unittest.TestCase):
         if not shutil.which("rpmbuild") or not shutil.which("rpmkeys") or not keys:
             self.skipTest("native RPM tools and a Fedora public key required")
         spec = self.root / "fixture.spec"
-        spec.write_text("Name: qos-signature-fixture\nVersion: 1\nRelease: 1.fc44\nSummary: Unsigned verification fixture\nLicense: MIT\nBuildArch: noarch\n%description\nFixture.\n%files\n")
+        spec.write_text("Name: tilo-signature-fixture\nVersion: 1\nRelease: 1.fc44\nSummary: Unsigned verification fixture\nLicense: MIT\nBuildArch: noarch\n%description\nFixture.\n%files\n")
         subprocess.run(["rpmbuild", "-bb", "--nodeps", "--define", f"_topdir {self.root / 'build'}", str(spec)],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         rpm = next((self.root / "build/RPMS").rglob("*.rpm"))

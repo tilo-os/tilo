@@ -29,9 +29,9 @@ getrandom.workspace = true
 thumbnail = { path = "../crates/thumbnail" }
 # The machine's one device key. The mount derives its iroh node key from
 # it rather than minting its own, so the node id names the device.
-qos-user-identity = { path = "../crates/identity/qos-user-identity" }
+tilo-user-identity = { path = "../crates/identity/tilo-user-identity" }
 # Bus-free, production battery/AC sampling for speculative-hydration policy.
-qos-power-mgmt = { path = "../crates/system/power", default-features = false }
+tilo-power-mgmt = { path = "../crates/system/power", default-features = false }
 runtime-fs = { path = "../crates/runtime/runtime-fs" }
 libc.workspace = true
 moka = { version = "0.12.15", features = ["sync"] }

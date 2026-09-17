@@ -18,6 +18,8 @@
 //! - `handle_event` — route clicks against the hit-map, keyboard
 //!   shortcuts, and forward to the editor when notes are active.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -44,6 +46,7 @@ use ui::{
     widget::{
         BlockEditor, Checkbox, CheckboxFace, DatePicker, Dropdown, ExternalDatePickerHit,
         TextInput, Toggle, ToggleFace,
+        chip::{Chip, ChipLead, ChipStyle},
     },
 };
 
@@ -73,6 +76,28 @@ const TITLE_PLACEHOLDER: &str = "New event";
 /// Placeholder shown in the empty notes editor of an event (dim hint text that
 /// disappears the moment the user types — never seeded as real body text).
 const NOTES_PLACEHOLDER: &str = "Add details…";
+
+/// Compact, derived stable-id positions over Calendar's authoritative model.
+///
+/// This deliberately contains identities and positions only: unlike the old
+/// retained resource context it never duplicates `EventData`/`TaskData` for
+/// the whole document. Exact resource requests validate the position against
+/// the live model before materialising the one addressed record.
+#[derive(Default)]
+struct CalendarResourceIndex {
+    events: HashMap<String, usize>,
+    tasks: HashMap<String, usize>,
+    projects: HashMap<String, usize>,
+    calendars: HashMap<String, usize>,
+    subtasks: HashMap<String, BoundedSubtasks>,
+    projects_in_use: HashSet<String>,
+}
+
+#[derive(Default)]
+struct BoundedSubtasks {
+    ids: Vec<String>,
+    overflow: usize,
+}
 
 /// First-run onboarding shown centered over an empty calendar (no events):
 /// a friendly headline + hint instead of a blank grid.
@@ -106,6 +131,11 @@ const MODAL_MARGIN: f64 = 40.0;
 /// Above this theme scale, an editor needs a wider canvas for its real labels
 /// and controls instead of squeezing 2× glyphs into the normal modal grid.
 const LARGE_TEXT_SCALE: f32 = 1.35;
+/// Metadata chips are compact at the default text size but must grow with
+/// text-only accessibility scaling: their border is a container, never a
+/// decoration drawn across the label.
+const EVENT_FORM_CHIP_H: f64 = 28.0;
+const EVENT_FORM_CHIP_GAP: f64 = 6.0;
 
 /// How the event/task detail editor is presented at the current width.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -298,10 +328,18 @@ pub struct CalendarApp {
     /// Projection generation included in the retained catalogue currently
     /// published to Ctrl+K.
     search_catalog_projection_revision: u64,
+    /// Compact position indices over the authoritative model. Rebuilt when a
+    /// document/account projection changes; this is intentionally not a
+    /// second event/task resource corpus.
+    resource_index: CalendarResourceIndex,
     #[cfg(test)]
     note_projection_refreshes: usize,
     #[cfg(test)]
     search_catalog_refreshes: usize,
+    #[cfg(test)]
+    pub(crate) resource_snapshot_inspected: Cell<usize>,
+    #[cfg(test)]
+    pub(crate) resource_exact_inspected: Cell<usize>,
     today: NaiveDate,
     anchor: NaiveDate,
     view: View,
@@ -436,22 +474,22 @@ pub struct CalendarApp {
     /// ticking (`needs_animation_frame`) so the worker's result lands promptly
     /// without waiting for the next unrelated input.
     syncing: bool,
-    resource_sync_invocation: Option<qos_actions::InvocationId>,
-    resource_sync_result: Option<qos_actions::InvocationUpdate>,
+    resource_sync_invocation: Option<tilo_actions::InvocationId>,
+    resource_sync_result: Option<tilo_actions::InvocationUpdate>,
     /// A resource import is parsed on explicit invocation, then dispatched on
     /// the next mutable document sync. Resource-operation handlers receive an
     /// immutable snapshot, so this bridge prevents a false successful import
     /// against a throwaway clone.
     pending_resource_import: Option<crate::actions::CalendarAction>,
-    resource_import_invocation: Option<qos_actions::InvocationId>,
-    resource_import_result: Option<qos_actions::InvocationUpdate>,
+    resource_import_invocation: Option<tilo_actions::InvocationId>,
+    resource_import_result: Option<tilo_actions::InvocationUpdate>,
 
     /// Framework-owned action dispatch. Each on-screen affordance dispatches its
     /// [`CalendarAction`](crate::actions::CalendarAction) through this: the host
     /// brackets the undo boundary, applies the action through the executor (so it
     /// replays byte-identically on peers, exactly as the Ctrl+K palette does), and
     /// records the last one so a test can prove a button and its
-    /// [`ActionSpec`](qos_actions::ActionSpec) build the identical action.
+    /// [`ActionSpec`](tilo_actions::ActionSpec) build the identical action.
     actions: ui::ActionHost,
 
     /// The document heads the in-memory [`Model`] was last derived from. When the
@@ -515,7 +553,7 @@ impl CalendarApp {
 
         let task_project_choice = LocalState::new(String::new());
         let task_priority_choice = LocalState::new(String::new());
-        Self {
+        let mut app = Self {
             model,
             note_search: HashMap::new(),
             search_provider,
@@ -523,10 +561,15 @@ impl CalendarApp {
             calendar_projection_revision: 0,
             calendar_projection_snapshot: Vec::new(),
             search_catalog_projection_revision: 0,
+            resource_index: CalendarResourceIndex::default(),
             #[cfg(test)]
             note_projection_refreshes: 0,
             #[cfg(test)]
             search_catalog_refreshes: 0,
+            #[cfg(test)]
+            resource_snapshot_inspected: Cell::new(0),
+            #[cfg(test)]
+            resource_exact_inspected: Cell::new(0),
             today,
             anchor: today,
             view: View::Month,
@@ -606,7 +649,10 @@ impl CalendarApp {
             resource_import_result: None,
             actions: ui::ActionHost::new(),
             model_heads: Vec::new(),
-        }
+        };
+        app.observe_calendar_projection();
+        app.rebuild_resource_index();
+        app
     }
 
     // --- shots-only configuration (no effect on live runtime behaviour) --
@@ -938,9 +984,9 @@ impl CalendarApp {
                 self.apply_sync_result(result, outcome, doc);
                 if let Some(invocation) = self.resource_sync_invocation.take() {
                     self.resource_sync_result = Some(if let Some(message) = failure {
-                        qos_actions::InvocationUpdate::Failed {
+                        tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "calendar.sync_failed".into(),
                                 message,
                                 details: None,
@@ -948,9 +994,9 @@ impl CalendarApp {
                             },
                         }
                     } else {
-                        qos_actions::InvocationUpdate::Succeeded {
+                        tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
-                            output: qos_actions::ActionOutput::default(),
+                            output: tilo_actions::ActionOutput::default(),
                         }
                     });
                 }
@@ -964,9 +1010,9 @@ impl CalendarApp {
                 self.syncing = false;
                 self.status = Some("Sync failed".into());
                 if let Some(invocation) = self.resource_sync_invocation.take() {
-                    self.resource_sync_result = Some(qos_actions::InvocationUpdate::Failed {
+                    self.resource_sync_result = Some(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "calendar.sync_worker_lost".into(),
                             message: "calendar synchronization worker stopped without a result"
                                 .into(),
@@ -1021,7 +1067,7 @@ impl CalendarApp {
                 let binding_href = if index == 0 {
                     resource.href.clone()
                 } else {
-                    format!("{}#qos-component-{index}", resource.href)
+                    format!("{}#tilo-component-{index}", resource.href)
                 };
                 let id = if index == 0 {
                     existing
@@ -1055,7 +1101,7 @@ impl CalendarApp {
                 );
             }
             for (index, mut task) in resource.tasks.into_iter().enumerate() {
-                let binding_href = format!("{}#qos-task-{index}", resource.href);
+                let binding_href = format!("{}#tilo-task-{index}", resource.href);
                 let id = CalDoc::remote_id_for_href(doc, &resource.calendar_id, &binding_href)
                     .unwrap_or_else(Uuid::new_v4);
                 if CalDoc::task_tombstoned(doc, id) {
@@ -1083,7 +1129,7 @@ impl CalendarApp {
             let victims: Vec<Id> = CalDoc::remote_bindings_for_calendar(doc, &deletion.calendar_id)
                 .into_iter()
                 .filter(|(_, href)| {
-                    caldav::hrefs_equal(href.split("#qos-").next().unwrap_or(href), &deletion.href)
+                    caldav::hrefs_equal(href.split("#tilo-").next().unwrap_or(href), &deletion.href)
                 })
                 .map(|(id, _)| id)
                 .collect();
@@ -1105,7 +1151,7 @@ impl CalendarApp {
                     checkpoint.seen_hrefs.iter().map(String::as_str).collect();
                 for (id, href) in CalDoc::remote_bindings_for_calendar(doc, &checkpoint.calendar_id)
                 {
-                    let base = href.split("#qos-").next().unwrap_or(&href);
+                    let base = href.split("#tilo-").next().unwrap_or(&href);
                     if !seen
                         .iter()
                         .any(|seen_href| caldav::hrefs_equal(base, seen_href))
@@ -1287,10 +1333,22 @@ impl CalendarApp {
     /// already-current note projection.
     fn refresh_search_catalog(&mut self, heads: &[ChangeHash]) {
         let calendars = self.calendar_projection_snapshot.clone();
-        self.search_provider
-            .refresh_with_calendars(&self.model, &self.note_search, &calendars);
-        self.search_catalog_heads = heads.to_vec();
-        self.search_catalog_projection_revision = self.calendar_projection_revision;
+        match self.search_provider.refresh_with_calendars(
+            &self.model,
+            &self.note_search,
+            &calendars,
+        ) {
+            Ok(()) => {
+                self.search_catalog_heads = heads.to_vec();
+                self.search_catalog_projection_revision = self.calendar_projection_revision;
+            }
+            Err(error) => {
+                // Keep the last complete revision searchable, but make a
+                // failed catalogue rebuild visible rather than silently
+                // advertising a partial/stale corpus as current.
+                self.status = Some(format!("Calendar search update failed: {error}"));
+            }
+        }
         #[cfg(test)]
         {
             self.search_catalog_refreshes = self.search_catalog_refreshes.saturating_add(1);
@@ -1547,12 +1605,12 @@ impl CalendarApp {
         );
     }
 
-    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
-    /// affordance dispatched, for the button == [`ActionSpec`](qos_actions::ActionSpec)
+    /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-screen
+    /// affordance dispatched, for the button == [`ActionSpec`](tilo_actions::ActionSpec)
     /// covenant test: a control and its Ctrl+K entry must build the identical
     /// action.
     #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -1570,19 +1628,46 @@ impl CalendarApp {
             .then_some(cid)
     }
 
-    /// The context Ctrl+K needs to build the calendar's resource tree: a template
-    /// for a palette-created event (from the current view), and the events +
-    /// tasks currently in the model.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one projection keeps resource ownership and editor destinations consistent"
-    )]
-    pub(crate) fn calendar_resource_ctx(&self) -> crate::actions::CalendarResourceCtx {
+    /// Build compact stable-id indices over the authoritative model and the
+    /// small Settings-owned calendar projection. No event/task payload is
+    /// copied here; resource requests materialise only a bounded snapshot or
+    /// the one exact record they address.
+    fn rebuild_resource_index(&mut self) {
+        let mut index = CalendarResourceIndex::default();
+        for (position, event) in self.model.events.iter().enumerate() {
+            index.events.insert(event.id.to_string(), position);
+            if let Some(project) = event.project {
+                index.projects_in_use.insert(project.to_string());
+            }
+        }
+        for (position, task) in self.model.tasks.iter().enumerate() {
+            index.tasks.insert(task.id.to_string(), position);
+            if let Some(project) = task.project {
+                index.projects_in_use.insert(project.to_string());
+            }
+            if let Some(parent) = task.parent {
+                let children = index.subtasks.entry(parent.to_string()).or_default();
+                if children.ids.len() < crate::actions::TASK_DELETE_FANOUT_LIMIT {
+                    children.ids.push(task.id.to_string());
+                } else {
+                    children.overflow = children.overflow.saturating_add(1);
+                }
+            }
+        }
+        for (position, project) in self.model.projects.iter().enumerate() {
+            index.projects.insert(project.id.to_string(), position);
+        }
+        for (position, calendar) in self.calendar_projection_snapshot.iter().enumerate() {
+            index.calendars.insert(calendar.id.clone(), position);
+        }
+        self.resource_index = index;
+    }
+
+    fn resource_template(&self) -> crate::actions::EventData {
         let start = self
             .anchor
-            // 12:00:00 is always a valid `NaiveTime`; the fallback never runs.
             .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap_or(NaiveTime::MIN));
-        let template = Event {
+        crate::actions::EventData::from_event(&Event {
             id: Uuid::nil(),
             title: String::new(),
             start,
@@ -1602,144 +1687,242 @@ impl CalendarApp {
             reminder_min: Some(10),
             calendar_id: None,
             project: None,
-        };
-        let events = self
-            .model
-            .events
-            .iter()
-            .map(|e| crate::actions::EventResource {
-                data: crate::actions::EventData::from_event(e),
-                remote_delete: self.resolve_remote_delete(e.id),
-            })
-            .collect();
-        let tasks = self
-            .model
-            .tasks
-            .iter()
-            .map(|t| crate::actions::TaskResource {
-                data: crate::actions::TaskData::from_task(t),
-                subtasks: self
-                    .model
-                    .subtasks_of(t.id)
-                    .iter()
-                    .map(|s| s.id.to_string())
-                    .collect(),
-            })
-            .collect();
-        let projects = self
-            .model
-            .projects
-            .iter()
-            .map(|project| crate::actions::ProjectResource {
-                data: crate::actions::ProjectData::from_project(project),
-                in_use: self
-                    .model
-                    .events
-                    .iter()
-                    .any(|event| event.project == Some(project.id))
-                    || self
-                        .model
-                        .tasks
-                        .iter()
-                        .any(|task| task.project == Some(project.id)),
-            })
-            .collect();
-        // Keep the resource tree's available destinations identical to the
-        // editor's selector: a local calendar plus real collections discovered
-        // in the shared accounts store. Account configuration remains in
-        // Settings; this is the live, agent-addressable projection Calendar
-        // can actually file an event into.
-        let mut calendar_targets = vec![crate::actions::CalendarTargetResource {
-            id: "local".to_string(),
-            label: "On this device".to_string(),
-            color: None,
-        }];
-        calendar_targets.extend(self.accounts.all_calendars().map(|(account, calendar)| {
-            crate::actions::CalendarTargetResource {
-                id: calendar.id.clone(),
-                label: format!("{} · {}", account.label(), calendar.name),
-                color: Some(calendar.palette().index()),
-            }
-        }));
-        let calendars = self.calendar_collections();
-        let task_project_targets = self
-            .model
-            .projects
-            .iter()
-            .map(|project| crate::actions::TaskProjectTarget {
-                id: project.id.to_string(),
-                label: project.name.clone(),
-            })
-            .collect();
-        crate::actions::CalendarResourceCtx {
-            new_event: crate::actions::EventData::from_event(&template),
-            events,
-            tasks,
-            projects,
-            calendars,
-            calendar_targets,
-            task_project_targets,
-            can_sync: self.demo || !self.accounts.is_empty(),
-            syncing: self.syncing,
-            can_export: !self.model.events.is_empty() || !self.model.tasks.is_empty(),
-            next_project_order: self
-                .model
+        })
+    }
+
+    fn resource_ctx_base(&self) -> crate::actions::CalendarResourceCtx {
+        crate::actions::CalendarResourceCtx::new(
+            self.resource_template(),
+            self.demo || !self.accounts.is_empty(),
+            self.syncing,
+            !self.model.events.is_empty() || !self.model.tasks.is_empty(),
+            self.model
                 .projects
                 .last()
                 .map_or(1, |project| project.order.saturating_add(1)),
+        )
+    }
+
+    /// A bounded contextual snapshot for the root directory. This is the only
+    /// path `Widget::resources` uses, so opening the local resource directory
+    /// never clones or projects an unbounded Calendar corpus.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one bounded projection keeps resource ownership and editor destinations consistent"
+    )]
+    pub(crate) fn calendar_resource_ctx(&self) -> crate::actions::CalendarResourceCtx {
+        #[cfg(test)]
+        self.resource_snapshot_inspected.set(0);
+        let mut ctx = self.resource_ctx_base();
+        let limit = crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT;
+        ctx.calendars = self
+            .calendar_projection_snapshot
+            .iter()
+            .take(limit)
+            .cloned()
+            .collect();
+        ctx.projects = self
+            .model
+            .projects
+            .iter()
+            .take(limit)
+            .map(|project| {
+                #[cfg(test)]
+                self.resource_snapshot_inspected
+                    .set(self.resource_snapshot_inspected.get().saturating_add(1));
+                crate::actions::ProjectResource {
+                    data: crate::actions::ProjectData::from_project(project),
+                    in_use: self
+                        .resource_index
+                        .projects_in_use
+                        .contains(&project.id.to_string()),
+                }
+            })
+            .collect();
+        ctx.events = self
+            .model
+            .events
+            .iter()
+            .take(limit)
+            .map(|event| {
+                #[cfg(test)]
+                self.resource_snapshot_inspected
+                    .set(self.resource_snapshot_inspected.get().saturating_add(1));
+                crate::actions::EventResource {
+                    data: crate::actions::EventData::from_event(event),
+                    remote_delete: self.resolve_remote_delete(event.id),
+                }
+            })
+            .collect();
+        ctx.tasks = self
+            .model
+            .tasks
+            .iter()
+            .take(limit)
+            .map(|task| {
+                #[cfg(test)]
+                self.resource_snapshot_inspected
+                    .set(self.resource_snapshot_inspected.get().saturating_add(1));
+                crate::actions::TaskResource {
+                    data: crate::actions::TaskData::from_task(task),
+                    subtasks: self
+                        .resource_index
+                        .subtasks
+                        .get(&task.id.to_string())
+                        .map_or_else(Vec::new, |children| children.ids.clone()),
+                    subtask_overflow: self
+                        .resource_index
+                        .subtasks
+                        .get(&task.id.to_string())
+                        .map_or(0, |children| children.overflow),
+                }
+            })
+            .collect();
+        ctx
+    }
+
+    /// Materialise a one-record context for a canonical exact resource id.
+    /// Each entity position comes from `resource_index`, then is checked
+    /// against the authoritative current model to make stale positions/IDs
+    /// harmless. Descendants share their event's one-record context.
+    pub(crate) fn exact_resource_ctx(
+        &self,
+        id: &str,
+    ) -> Option<crate::actions::CalendarResourceCtx> {
+        #[cfg(test)]
+        self.resource_exact_inspected.set(0);
+        let mut ctx = self.resource_ctx_base();
+        let event_id = id
+            .strip_prefix("calendar.event:")
+            .and_then(|value| value.strip_suffix(":notes").or(Some(value)))
+            .or_else(|| {
+                id.strip_prefix("calendar.attendee:")
+                    .and_then(|value| value.split_once(':').map(|(event, _)| event))
+            })
+            .or_else(|| {
+                id.strip_prefix("calendar.reminder:")
+                    .and_then(|value| value.strip_suffix(":primary"))
+            })
+            .or_else(|| {
+                id.strip_prefix("calendar.occurrence:")
+                    .and_then(|value| value.split_once(':').map(|(event, _)| event))
+            });
+        if let Some(event_id) = event_id {
+            let position = *self.resource_index.events.get(event_id)?;
+            let event = self
+                .model
+                .events
+                .get(position)
+                .filter(|event| event.id.to_string() == event_id)?;
+            #[cfg(test)]
+            self.resource_exact_inspected.set(1);
+            ctx.events.push(crate::actions::EventResource {
+                data: crate::actions::EventData::from_event(event),
+                remote_delete: self.resolve_remote_delete(event.id),
+            });
+            if let Some(calendar) = self.calendar_for_resource(event.calendar_id.as_deref()) {
+                ctx.calendars.push(calendar);
+            }
+            return Some(ctx);
         }
+        if let Some(raw) = id.strip_prefix("calendar.task:") {
+            let task_id = raw.strip_suffix(":notes").unwrap_or(raw);
+            let position = *self.resource_index.tasks.get(task_id)?;
+            let task = self
+                .model
+                .tasks
+                .get(position)
+                .filter(|task| task.id.to_string() == task_id)?;
+            #[cfg(test)]
+            self.resource_exact_inspected.set(1);
+            ctx.tasks.push(crate::actions::TaskResource {
+                data: crate::actions::TaskData::from_task(task),
+                subtasks: self
+                    .resource_index
+                    .subtasks
+                    .get(task_id)
+                    .map_or_else(Vec::new, |children| children.ids.clone()),
+                subtask_overflow: self
+                    .resource_index
+                    .subtasks
+                    .get(task_id)
+                    .map_or(0, |children| children.overflow),
+            });
+            if let Some(project) = task
+                .project
+                .and_then(|project_id| self.project_resource(project_id))
+            {
+                ctx.projects.push(project);
+            }
+            return Some(ctx);
+        }
+        if let Some(raw) = id.strip_prefix("calendar.project:") {
+            let parsed = raw.parse::<Id>().ok()?;
+            if crate::actions::project_resource_id(parsed) != id {
+                return None;
+            }
+            let project = self.project_resource(parsed)?;
+            #[cfg(test)]
+            self.resource_exact_inspected.set(1);
+            ctx.projects.push(project);
+            return Some(ctx);
+        }
+        if let Some(raw) = id.strip_prefix("calendar.collection:") {
+            if crate::actions::calendar_resource_id(raw) != id {
+                return None;
+            }
+            let position = *self.resource_index.calendars.get(raw)?;
+            let calendar = self
+                .calendar_projection_snapshot
+                .get(position)
+                .filter(|calendar| calendar.id == raw)?
+                .clone();
+            #[cfg(test)]
+            self.resource_exact_inspected.set(1);
+            ctx.calendars.push(calendar);
+            return Some(ctx);
+        }
+        (id == "calendar.calendar").then_some(ctx)
+    }
+
+    fn calendar_for_resource(
+        &self,
+        id: Option<&str>,
+    ) -> Option<crate::actions::CalendarCollectionResource> {
+        let id = id.unwrap_or("local");
+        let position = *self.resource_index.calendars.get(id)?;
+        self.calendar_projection_snapshot
+            .get(position)
+            .filter(|calendar| calendar.id == id)
+            .cloned()
+    }
+
+    fn project_resource(&self, id: Id) -> Option<crate::actions::ProjectResource> {
+        let raw = id.to_string();
+        let position = *self.resource_index.projects.get(&raw)?;
+        let project = self
+            .model
+            .projects
+            .get(position)
+            .filter(|project| project.id == id)?;
+        Some(crate::actions::ProjectResource {
+            data: crate::actions::ProjectData::from_project(project),
+            in_use: self.resource_index.projects_in_use.contains(&raw),
+        })
     }
 
     /// Build only the root metadata the pull directory needs.  In particular,
     /// do not materialise events/tasks (which may number in the hundreds of
     /// thousands) merely to expose Calendar's stable root actions.
     fn calendar_directory_root_ctx(&self) -> crate::actions::CalendarResourceCtx {
-        let start = self
-            .anchor
-            .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap_or(NaiveTime::MIN));
-        let template = Event {
-            id: Uuid::nil(),
-            title: String::new(),
-            start,
-            end: start + Duration::hours(1),
-            all_day: false,
-            location: String::new(),
-            color: self.model.next_event_order_color(),
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: Vec::new(),
-            reminder_min: Some(10),
-            calendar_id: None,
-            project: None,
-        };
-        crate::actions::CalendarResourceCtx {
-            new_event: crate::actions::EventData::from_event(&template),
-            events: Vec::new(),
-            tasks: Vec::new(),
-            projects: Vec::new(),
-            calendars: Vec::new(),
-            calendar_targets: Vec::new(),
-            task_project_targets: Vec::new(),
-            can_sync: self.demo || !self.accounts.is_empty(),
-            syncing: self.syncing,
-            can_export: !self.model.events.is_empty() || !self.model.tasks.is_empty(),
-            next_project_order: self
-                .model
-                .projects
-                .last()
-                .map_or(1, |project| project.order.saturating_add(1)),
-        }
+        self.resource_ctx_base()
     }
 
-    /// Convert parsed ICS records into one deterministic action. Ids are
-    /// minted here, at explicit import authoring time; replays carry the exact
-    /// ids and never consult the filesystem or clock.
+    /// Convert parsed ICS records into one deterministic action. Tilo's UUID
+    /// UIDs survive parsing, so a repeated import resolves to the same task;
+    /// missing or external non-UUID identities are minted during parsing.
+    /// Replays carry this exact payload and never consult the filesystem or
+    /// clock.
     fn import_action_from_payload(&self, payload: &str) -> Option<crate::actions::CalendarAction> {
         let (events, tasks) = ics::parse(payload);
         let events: Vec<_> = events
@@ -1759,16 +1942,15 @@ impl CalendarApp {
         let tasks: Vec<_> = tasks
             .into_iter()
             .filter(|task| {
-                !self
-                    .model
-                    .tasks
-                    .iter()
-                    .any(|current| current.title == task.title)
+                !self.model.tasks.iter().any(|current| {
+                    current.id == task.id
+                        && current.title == task.title
+                        && current.done == task.done
+                        && current.due == task.due
+                        && current.priority == task.priority
+                })
             })
-            .map(|mut task| {
-                task.id = Uuid::new_v4();
-                crate::actions::TaskData::from_task(&task)
-            })
+            .map(|task| crate::actions::TaskData::from_task(&task))
             .collect();
         (!events.is_empty() || !tasks.is_empty())
             .then_some(crate::actions::CalendarAction::ImportIcs { events, tasks })
@@ -2722,8 +2904,9 @@ impl CalendarApp {
         match std::fs::write(&path, ics) {
             Ok(()) => {
                 self.status = Some(format!(
-                    "Exported {} events to {}",
+                    "Exported {} events · {} tasks to {}",
                     self.model.events.len(),
+                    self.model.tasks.len(),
                     path.display()
                 ));
             }
@@ -3190,7 +3373,7 @@ impl CalendarApp {
         } else {
             2.0
         };
-        y += chip_rows * 34.0 + 36.0;
+        y += chip_rows * event_form_chip_row_pitch(self.text_scale) + 36.0;
 
         f.notes_top = y - r.y0;
         f
@@ -4838,7 +5021,9 @@ impl CalendarApp {
         } else {
             self.notes_top_offset()
         };
-        let notes_label_y = r.y0 + notes_top - 26.0;
+        let (_, label_h) = tr.measure("NOTES", 11.0, None);
+        let (notes_label_y, notes_rule_y) =
+            notes_header_positions(r.y0 + notes_top, f64::from(label_h));
         tr.draw_text(
             scene,
             "NOTES",
@@ -4851,8 +5036,8 @@ impl CalendarApp {
             scene,
             t,
             c.border_standard,
-            Point::new(x, notes_label_y + 18.0),
-            Point::new(x + w, notes_label_y + 18.0),
+            Point::new(x, notes_rule_y),
+            Point::new(x + w, notes_rule_y),
             1.0,
         );
     }
@@ -5120,38 +5305,30 @@ impl CalendarApp {
                 Action::CycleRecurrenceInterval,
             ),
             (reminder_label, Action::CycleReminder),
-            (format!("● {}", e.color.name()), Action::CycleColor),
+            (e.color.name().to_string(), Action::CycleColor),
             (format!("◷ {}", e.timezone), Action::CycleTimezone),
             (guest_label, Action::FocusField(FormField::Invite)),
         ];
         let max_x = f.title.x1;
-        let gap = if theme.text_scale >= LARGE_TEXT_SCALE {
-            12.0
-        } else {
-            8.0
-        };
+        let height = event_form_chip_height(theme.text_scale);
+        let gap = EVENT_FORM_CHIP_GAP * f64::from(theme.text_scale).max(1.0);
         let mut x = label_x;
         let mut y = f.chips_y;
-        let mut rects = Vec::with_capacity(specs.len());
-        for (label, action) in specs {
-            let width = f64::from(tr.measure(&label, 12.0, None).0) + 24.0;
+        for (index, (label, action)) in specs.into_iter().enumerate() {
+            let lead = if index == 3 {
+                ChipLead::Dot(e.color.color(theme))
+            } else {
+                ChipLead::None
+            };
+            let width = Chip::natural_width_at(&label, height, lead, theme, tr);
             if x > label_x && x + width > max_x {
                 x = label_x;
-                y += 34.0;
+                y += event_form_chip_row_pitch(theme.text_scale);
             }
-            let rect = chip(scene, t, tr, theme, x, y, &label, false);
+            let rect = Rect::new(x, y, x + width, y + height);
+            Chip::draw_at(scene, t, rect, &label, lead, ChipStyle::quiet(), theme, tr);
             x = rect.x1 + gap;
             hits.push((rect, action));
-            rects.push(rect);
-        }
-        if let Some(color_rect) = rects.get(3) {
-            scene.fill(
-                Fill::NonZero,
-                t,
-                e.color.color(theme),
-                None,
-                &Circle::new(Point::new(color_rect.x0 + 12.0, color_rect.center().y), 4.0),
-            );
         }
     }
 
@@ -5882,9 +6059,9 @@ impl CalendarApp {
         self.status = Some("Imported calendar items from the latest ICS file".to_string());
         self.dirty = true;
         if let Some(invocation) = self.resource_import_invocation.take() {
-            self.resource_import_result = Some(qos_actions::InvocationUpdate::Succeeded {
+            self.resource_import_result = Some(tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             });
         }
     }
@@ -5901,8 +6078,8 @@ impl Widget for CalendarApp {
         &[crate::actions::CALENDAR_OPERATION_TYPE]
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn action_directory_resource_page(
@@ -5921,19 +6098,19 @@ impl Widget for CalendarApp {
         })
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     fn invoke_resource_operation_v2(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<qos_actions::ActionOutput>, String> {
-        if kind == qos_actions::OperationKind::Effect
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        if kind == tilo_actions::OperationKind::Effect
             && type_id == crate::actions::CALENDAR_OPERATION_TYPE
         {
             let operation: crate::actions::CalendarOperation =
@@ -5970,7 +6147,7 @@ impl Widget for CalendarApp {
                 self.status =
                     Some("Invitation prepared for Mail — review it there before sending".into());
                 self.dirty = true;
-                return Ok(Some(qos_actions::ActionOutput {
+                return Ok(Some(tilo_actions::ActionOutput {
                     value: Some(serde_json::json!({
                         "delivery": "not_sent",
                         "target": {
@@ -5990,7 +6167,7 @@ impl Widget for CalendarApp {
             }
         }
         self.invoke_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(qos_actions::ActionOutput::default))
+            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -6006,7 +6183,7 @@ impl Widget for CalendarApp {
     )]
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -6019,7 +6196,7 @@ impl Widget for CalendarApp {
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
         match (kind, operation) {
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CalendarOperation::OpenEvent { id },
             ) => {
                 let id = id
@@ -6033,7 +6210,7 @@ impl Widget for CalendarApp {
                 self.select_event(id);
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CalendarOperation::OpenOccurrence {
                     event_id,
                     original_date,
@@ -6057,7 +6234,7 @@ impl Widget for CalendarApp {
                 self.select_event(id);
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CalendarOperation::OpenTask { id },
             ) => {
                 let id = id
@@ -6073,7 +6250,7 @@ impl Widget for CalendarApp {
                 self.select_task(id);
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CalendarOperation::OpenProject { id },
             ) => {
                 let id = id
@@ -6092,14 +6269,11 @@ impl Widget for CalendarApp {
                 self.blur_editor();
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CalendarOperation::OpenCalendar { id },
             ) => {
                 let calendar = self
-                    .calendar_resource_ctx()
-                    .calendars
-                    .into_iter()
-                    .find(|calendar| calendar.id == id)
+                    .calendar_for_resource(Some(&id))
                     .ok_or_else(|| "calendar no longer exists".to_string())?;
                 self.calendar_filter = Some(calendar.id);
                 self.detail_open = false;
@@ -6116,7 +6290,7 @@ impl Widget for CalendarApp {
                 });
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CalendarOperation::ShowAllCalendars,
             ) => {
                 self.calendar_filter = None;
@@ -6126,29 +6300,29 @@ impl Widget for CalendarApp {
                 self.blur_editor();
                 self.status = Some("Showing all calendars".into());
             }
-            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowMonth) => {
+            (tilo_actions::OperationKind::View, crate::actions::CalendarOperation::ShowMonth) => {
                 self.view = View::Month;
             }
-            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowWeek) => {
+            (tilo_actions::OperationKind::View, crate::actions::CalendarOperation::ShowWeek) => {
                 self.view = View::Week;
             }
-            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowDay) => {
+            (tilo_actions::OperationKind::View, crate::actions::CalendarOperation::ShowDay) => {
                 self.view = View::Day;
             }
-            (qos_actions::OperationKind::View, crate::actions::CalendarOperation::ShowAgenda) => {
+            (tilo_actions::OperationKind::View, crate::actions::CalendarOperation::ShowAgenda) => {
                 self.view = View::Agenda;
             }
-            (qos_actions::OperationKind::Effect, crate::actions::CalendarOperation::Sync) => {
+            (tilo_actions::OperationKind::Effect, crate::actions::CalendarOperation::Sync) => {
                 if self.syncing {
                     return Err("calendar synchronization is already running".into());
                 }
                 let mut doc = doc.clone();
                 self.start_sync(&mut doc);
             }
-            (qos_actions::OperationKind::Effect, crate::actions::CalendarOperation::ExportIcs) => {
+            (tilo_actions::OperationKind::Effect, crate::actions::CalendarOperation::ExportIcs) => {
                 self.export_ics();
             }
-            (qos_actions::OperationKind::Effect, crate::actions::CalendarOperation::ImportIcs) => {
+            (tilo_actions::OperationKind::Effect, crate::actions::CalendarOperation::ImportIcs) => {
                 return Err("calendar import requires the lifecycle-capable operation host".into());
             }
             _ => return Err("operation kind does not match Calendar operation".into()),
@@ -6159,8 +6333,8 @@ impl Widget for CalendarApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -6170,7 +6344,7 @@ impl Widget for CalendarApp {
             .then(|| serde_json::from_slice::<crate::actions::CalendarOperation>(payload))
             .transpose()
             .map_err(|error| error.to_string())?;
-        if kind != qos_actions::OperationKind::Effect {
+        if kind != tilo_actions::OperationKind::Effect {
             return self
                 .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
                 .map(|result| result.map(ui::widget::ResourceOperationStart::Completed));
@@ -6200,18 +6374,18 @@ impl Widget for CalendarApp {
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )))
         }
     }
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if self
             .resource_sync_result
             .as_ref()
@@ -6316,6 +6490,9 @@ impl Widget for CalendarApp {
         let document_changed = self.search_catalog_heads != post_hydration_heads;
         let calendar_projection_changed =
             self.search_catalog_projection_revision != self.calendar_projection_revision;
+        if document_changed || calendar_projection_changed {
+            self.rebuild_resource_index();
+        }
         if document_changed {
             self.refresh_note_search(state);
         }
@@ -6481,6 +6658,38 @@ impl Widget for CalendarApp {
             );
             let area = self.view_rect();
             match self.view {
+                View::Month if self.text_scale >= LARGE_TEXT_SCALE && area.width() < 520.0 => {
+                    // A seven-column grid turns events into indistinguishable
+                    // dots at phone width/200% text. Keep the Month navigation
+                    // identity in the top bar, but present the selected day and
+                    // following dates as the readable, focusable shared agenda.
+                    let hidden = self.hidden_calendar_ids();
+                    hits.extend(
+                        self.agenda
+                            .draw(
+                                scene,
+                                t,
+                                text_renderer,
+                                theme,
+                                area,
+                                &self.model,
+                                self.anchor,
+                                self.today,
+                                &hidden,
+                                self.calendar_filter.as_deref(),
+                                self.last_mouse,
+                            )
+                            .into_iter()
+                            .map(|(rect, action)| {
+                                let action = match action {
+                                    AgendaAction::OpenEvent(id) => Action::OpenEvent(id),
+                                    AgendaAction::OpenTask(id) => Action::OpenTask(id),
+                                    AgendaAction::ToggleTask(id) => Action::ToggleTask(id),
+                                };
+                                (rect, action)
+                            }),
+                    );
+                }
                 View::Month => hits.extend(self.draw_month(scene, t, text_renderer, theme, area)),
                 View::Week | View::Day => {
                     let days = self.timeline_days();
@@ -7310,45 +7519,26 @@ fn draw_field_button(
     }
 }
 
-/// Draw a small pill chip and return its rect.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each parameter is an independently-meaningful piece of the chip's own geometry/label"
-)]
-#[allow(
-    clippy::many_single_char_names,
-    reason = "t is the paint transform, x/y are the chip's position, and c/r are the \
-              theme's colour set and the resulting rect — conventional short names for \
-              this draw step"
-)]
-fn chip(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    x: f64,
-    y: f64,
-    label: &str,
-    filled: bool,
-) -> Rect {
-    let c = &theme.tokens.colors;
-    let tw = f64::from(tr.measure(label, 12.0, None).0);
-    let r = Rect::new(x, y, x + tw + 24.0, y + 28.0);
-    if filled {
-        fill_round(scene, t, c.accent[5], r, 8.0);
-    } else {
-        fill_round(scene, t, c.neutral[2], r, 8.0);
-        stroke_round(scene, t, c.border_standard, r, 8.0, 1.0);
-    }
-    tr.draw_text(
-        scene,
-        label,
-        12.0,
-        c.neutral[9],
-        t * Affine::translate((r.x0 + 12.0, r.center().y - 7.0)),
-        None,
-    );
-    r
+/// The immediate-mode shared chip measures its label against the renderer's
+/// scaled font. Keep this geometry in one helper so the form reserve, hit
+/// targets, and painted border agree at every accessibility text size.
+fn event_form_chip_height(text_scale: f32) -> f64 {
+    EVENT_FORM_CHIP_H * f64::from(text_scale).max(1.0)
+}
+
+fn event_form_chip_row_pitch(text_scale: f32) -> f64 {
+    event_form_chip_height(text_scale) + EVENT_FORM_CHIP_GAP * f64::from(text_scale).max(1.0)
+}
+
+/// Position the NOTES heading above its rule using the shaped label height.
+/// At 200% text, a fixed baseline offset made the rule cut across the label.
+/// The editor starts eight pixels below the rule, preserving its prior visual
+/// rhythm while making the heading's clearance explicit.
+fn notes_header_positions(notes_origin_y: f64, label_h: f64) -> (f64, f64) {
+    const RULE_TO_EDITOR_GAP: f64 = 8.0;
+    const LABEL_TO_RULE_GAP: f64 = 6.0;
+    let rule_y = notes_origin_y - RULE_TO_EDITOR_GAP;
+    (rule_y - LABEL_TO_RULE_GAP - label_h, rule_y)
 }
 
 fn elide(s: &str, max: usize) -> String {
@@ -7365,8 +7555,8 @@ fn elide(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use automerge::ROOT;
-    use qos_actions::Action as _;
     use serial_test::serial;
+    use tilo_actions::Action as _;
 
     #[test]
     fn task_checkbox_paints_both_completion_states() {
@@ -7393,6 +7583,187 @@ mod tests {
         assert!(!app.model.tasks.is_empty());
         assert!(app.selection.is_some());
         assert!(app.detail_open);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one adversarial fixture proves every exact resource family uses the real provider"
+    )]
+    fn real_resource_provider_keeps_snapshot_and_late_exact_resolution_bounded() {
+        const LARGE: usize = 100_001;
+
+        let mut app = CalendarApp::new_demo();
+        let doc = AutoCommit::new();
+        let event_template = app.model.events[0].clone();
+        let task_template = app.model.tasks[0].clone();
+        let project_template = app.model.projects[0].clone();
+        let attendee_id = Id::from_u128(900_001);
+
+        app.calendar_projection_snapshot = (0..LARGE)
+            .map(|index| crate::actions::CalendarCollectionResource {
+                id: format!("stress/calendar/{index}"),
+                label: format!("Stress calendar {index}"),
+                color: None,
+                visible: true,
+            })
+            .collect();
+        let late_calendar = format!("stress/calendar/{}", LARGE - 1);
+        app.model.projects = (0..LARGE)
+            .map(|index| crate::model::Project {
+                id: Id::from_u128(1_000_000 + index as u128),
+                name: format!("Stress project {index}"),
+                color: project_template.color,
+                order: index as u32,
+            })
+            .collect();
+        let late_project_id = app.model.projects.last().expect("late project").id;
+        app.model.events = (0..LARGE)
+            .map(|index| {
+                let mut event = event_template.clone();
+                event.id = Id::from_u128(2_000_000 + index as u128);
+                event.title = format!("Stress event {index}");
+                event.calendar_id = Some(late_calendar.clone());
+                event.project = Some(late_project_id);
+                event.attendees.clear();
+                event.reminder_min = None;
+                event
+            })
+            .collect();
+        let late_event = app.model.events.last_mut().expect("late event");
+        late_event.reminder_min = Some(10);
+        late_event.attendees.push(crate::model::Attendee {
+            id: attendee_id,
+            name: "Late attendee".into(),
+            email: "late@example.test".into(),
+            status: crate::model::InviteStatus::NeedsAction,
+        });
+        let late_event_id = late_event.id;
+        app.model.tasks = (0..LARGE)
+            .map(|index| {
+                let mut task = task_template.clone();
+                task.id = Id::from_u128(3_000_000 + index as u128);
+                task.title = format!("Stress task {index}");
+                task.project = Some(late_project_id);
+                task.parent = None;
+                task
+            })
+            .collect();
+        let late_task_id = app.model.tasks.last().expect("late task").id;
+        app.rebuild_resource_index();
+
+        let root = <CalendarApp as tilo_actions::ResourceProvider>::resources(&app, &doc);
+        assert_eq!(root.len(), 1);
+        assert!(
+            app.resource_snapshot_inspected.get()
+                <= crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT * 3,
+            "root snapshot inspected {} entity payloads",
+            app.resource_snapshot_inspected.get()
+        );
+
+        let expect_exact = |id: String, kind: &str| {
+            let resource =
+                <CalendarApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &id)
+                    .unwrap_or_else(|| panic!("late stable resource did not resolve: {id}"));
+            assert_eq!(resource.kind, kind);
+            assert!(
+                app.resource_exact_inspected.get() <= 1,
+                "exact resolution inspected {} model records for {id}",
+                app.resource_exact_inspected.get()
+            );
+        };
+        expect_exact(
+            crate::actions::calendar_resource_id(&late_calendar),
+            "calendar.collection",
+        );
+        expect_exact(
+            crate::actions::project_resource_id(late_project_id),
+            "calendar.project",
+        );
+        let event_id = crate::actions::event_resource_id(late_event_id);
+        expect_exact(event_id.clone(), "calendar.event");
+        expect_exact(format!("{event_id}:notes"), "calendar.note");
+        expect_exact(
+            crate::actions::reminder_resource_id(late_event_id),
+            "calendar.reminder",
+        );
+        expect_exact(
+            crate::actions::attendee_resource_id(late_event_id, attendee_id),
+            "calendar.attendee",
+        );
+        expect_exact(
+            crate::actions::occurrence_resource_id(late_event_id, event_template.start.date()),
+            "calendar.occurrence",
+        );
+        let task_id = crate::actions::task_resource_id(late_task_id);
+        expect_exact(task_id.clone(), "calendar.task");
+        expect_exact(format!("{task_id}:notes"), "calendar.note");
+
+        app.model.tasks.pop();
+        assert!(
+            <CalendarApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &task_id)
+                .is_none(),
+            "a stale index position must not redirect a deleted stable task id"
+        );
+        assert_eq!(
+            app.resource_exact_inspected.get(),
+            0,
+            "stale removal is rejected before materialising a task payload"
+        );
+    }
+
+    #[test]
+    fn exact_parent_task_caps_delete_fanout_for_over_one_hundred_thousand_children() {
+        const CHILDREN: usize = 100_001;
+
+        let mut app = CalendarApp::new_demo();
+        let doc = AutoCommit::new();
+        let mut parent = app.model.tasks[0].clone();
+        parent.id = Id::from_u128(4_000_000);
+        parent.parent = None;
+        let mut tasks = Vec::with_capacity(CHILDREN + 1);
+        tasks.push(parent.clone());
+        tasks.extend((0..CHILDREN).map(|offset| {
+            let mut child = parent.clone();
+            child.id = Id::from_u128(4_100_000 + offset as u128);
+            child.parent = Some(parent.id);
+            child.title = format!("Child {offset}");
+            child
+        }));
+        app.model.tasks = tasks;
+        app.rebuild_resource_index();
+
+        let resource = <CalendarApp as tilo_actions::ResourceProvider>::resource(
+            &app,
+            &doc,
+            &crate::actions::task_resource_id(parent.id),
+        )
+        .expect("parent task resolves exactly");
+        assert!(
+            app.resource_exact_inspected.get() <= 1,
+            "parent resolution must not walk its children"
+        );
+        let delete = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "delete")
+            .expect("task exposes a delete action with an honest contract");
+        assert!(matches!(
+            &delete.contract.availability,
+            tilo_actions::Availability::Unavailable { code, .. } if code == "task_children_overflow"
+        ));
+        let ctx = app
+            .exact_resource_ctx(&crate::actions::task_resource_id(parent.id))
+            .expect("one-record task context");
+        assert_eq!(ctx.tasks.len(), 1);
+        assert_eq!(
+            ctx.tasks[0].subtasks.len(),
+            crate::actions::TASK_DELETE_FANOUT_LIMIT
+        );
+        assert_eq!(
+            ctx.tasks[0].subtask_overflow,
+            CHILDREN - crate::actions::TASK_DELETE_FANOUT_LIMIT
+        );
     }
 
     #[test]
@@ -7527,7 +7898,7 @@ mod tests {
             })
             .expect("calendar collection is indexed by canonical address");
         assert_eq!(hit.title, calendar.label);
-        let resource = <CalendarApp as qos_actions::ResourceProvider>::resource(
+        let resource = <CalendarApp as tilo_actions::ResourceProvider>::resource(
             &app,
             &doc,
             &crate::actions::calendar_resource_id(&calendar.id),
@@ -7541,7 +7912,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CALENDAR_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -7784,7 +8155,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cal-import-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: single-threaded test process for this env var.
-        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+        unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
         let today = chrono::Local::now().date_naive();
         std::fs::write(dir.join("invite.ics"), crate::ics::sample_ics(today)).unwrap();
 
@@ -7804,8 +8175,39 @@ mod tests {
                 .any(|e| e.title == "Quarterly all-hands"),
             "the .ics file's event parsed in"
         );
-        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn uuid_vtodo_import_preserves_identity_and_is_idempotent() {
+        let id = Uuid::new_v4();
+        let payload = format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:{id}@tilo\r\nSUMMARY:Durable imported task\r\nDUE;VALUE=DATE:20260916\r\nPRIORITY:1\r\nEND:VTODO\r\nEND:VCALENDAR\r\n"
+        );
+        let mut app = CalendarApp::new_empty_for_shots();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+
+        let first = app
+            .import_action_from_payload(&payload)
+            .expect("the task is new on the first import");
+        let crate::actions::CalendarAction::ImportIcs { tasks, .. } = &first else {
+            panic!("ICS import builds one import action");
+        };
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, id.to_string(), "the VTODO UID is retained");
+
+        app.perform_action(&mut doc, &first);
+        app.model = CalDoc::read_model(&doc);
+        assert!(
+            app.model.task(id).is_some(),
+            "the exact UID became the task id"
+        );
+        assert!(
+            app.import_action_from_payload(&payload).is_none(),
+            "re-importing the same VTODO does not create a duplicate action"
+        );
     }
 
     #[test]
@@ -7815,7 +8217,7 @@ mod tests {
             std::env::temp_dir().join(format!("cal-resource-import-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("temporary transfer directory");
         // SAFETY: `serial` prevents this process-global test seam from racing.
-        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+        unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
         let today = chrono::Local::now().date_naive();
         std::fs::write(dir.join("invite.ics"), crate::ics::sample_ics(today))
             .expect("write fixture");
@@ -7829,7 +8231,7 @@ mod tests {
                 .iter()
                 .find(|action| action.id == "import-latest-ics")
                 .expect("import remains discoverable")
-                .build_args(std::iter::empty::<(String, qos_actions::ArgValue)>())
+                .build_args(std::iter::empty::<(String, tilo_actions::ArgValue)>())
                 .expect("nullary import operation")
         };
         let first = resource_import(&app, &state);
@@ -7848,11 +8250,11 @@ mod tests {
             "resource enumeration did not read or apply the transfer file"
         );
 
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let start = Widget::start_resource_operation(
             &mut app,
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             &first.type_id,
             &first.payload,
             &state,
@@ -7887,13 +8289,13 @@ mod tests {
                     &state,
                     &automerge::ROOT
                 ),
-                Some(qos_actions::InvocationUpdate::Succeeded { .. })
+                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
             ),
             "completion arrives only after the document action commits"
         );
 
         // SAFETY: see the setup above.
-        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -8094,6 +8496,11 @@ mod tests {
             .collect();
         assert_eq!(chip_rects.len(), 5);
         for rect in &chip_rects {
+            assert_eq!(
+                rect.height(),
+                event_form_chip_height(theme.text_scale),
+                "the chip border grows with its 2× label instead of cutting through it"
+            );
             assert!(
                 rect.x0 >= app.detail_rect.x0 && rect.x1 <= app.detail_rect.x1,
                 "wrapped metadata chip escaped the phone sheet: {rect:?}"
@@ -8103,6 +8510,61 @@ mod tests {
         assert!(
             app.detail_rect.y0 + app.form.notes_top > last_bottom,
             "notes must begin below the final wrapped metadata row"
+        );
+    }
+
+    #[test]
+    fn high_contrast_large_text_metadata_chips_clear_labels_and_notes() {
+        let mut app = CalendarApp::new_demo();
+        app.detail_open = true;
+        app.text_scale = 2.0;
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 900.0);
+        app.relayout();
+
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        text.set_text_scale(theme.text_scale);
+        let painted = app.draw_event_form(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let chip_rects: Vec<_> = painted
+            .iter()
+            .filter(|(rect, action)| {
+                rect.y0 >= app.form.chips_y
+                    && matches!(
+                        action,
+                        Action::CycleRecurrence
+                            | Action::CycleRecurrenceInterval
+                            | Action::CycleReminder
+                            | Action::CycleColor
+                            | Action::CycleTimezone
+                            | Action::FocusField(FormField::Invite)
+                    )
+            })
+            .map(|(rect, _)| *rect)
+            .collect();
+        assert_eq!(chip_rects.len(), 6);
+        let expected_h = event_form_chip_height(theme.text_scale);
+        assert!(
+            chip_rects.iter().all(|rect| rect.height() == expected_h),
+            "every high-contrast chip must contain the scaled label within its border"
+        );
+        let last_bottom = chip_rects.iter().map(|rect| rect.y1).fold(0.0, f64::max);
+        assert!(
+            app.detail_rect.y0 + app.form.notes_top > last_bottom,
+            "the notes divider must remain below the enlarged chip rows"
+        );
+        let (_, notes_h) = text.measure("NOTES", 11.0, None);
+        let (notes_y, rule_y) =
+            notes_header_positions(app.detail_rect.y0 + app.form.notes_top, f64::from(notes_h));
+        assert!(
+            rule_y >= notes_y + f64::from(notes_h) + 6.0,
+            "the NOTES rule must start after the scaled label, never through it"
         );
     }
 
@@ -8130,7 +8592,7 @@ mod tests {
         .unwrap();
         let output = Widget::invoke_resource_operation_v2(
             &mut app,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::CALENDAR_OPERATION_TYPE,
             &payload,
             &doc,
@@ -8153,9 +8615,9 @@ mod tests {
             has_draft: false,
             can_sync: true,
         });
-        let encoded = qos_actions::door::encode_json(
+        let encoded = tilo_actions::door::encode_json(
             &[mail_root],
-            &qos_actions::ActionAddress::new("mail.mailbox", "prepare-calendar-invitation"),
+            &tilo_actions::ActionAddress::new("mail.mailbox", "prepare-calendar-invitation"),
             &arguments,
         )
         .expect("Mail accepts Calendar's exact typed arguments");
@@ -8527,10 +8989,10 @@ mod tests {
 
     #[test]
     fn direct_task_detail_choices_match_their_resource_action_envelopes() {
-        use qos_actions::ActionInput;
+        use tilo_actions::ActionInput;
         use ui::widget::Widget;
 
-        fn prompted(spec: &qos_actions::ActionSpec, value: &str) -> qos_actions::EncodedAction {
+        fn prompted(spec: &tilo_actions::ActionSpec, value: &str) -> tilo_actions::EncodedAction {
             match &spec.input {
                 ActionInput::Prompted { build, .. } => build(value),
                 ActionInput::Immediate(_) => panic!("{} must prompt for a choice", spec.id),
@@ -8570,7 +9032,7 @@ mod tests {
                 .any(|(_, action)| matches!(action, Action::OpenTaskPopover(TaskPopover::Project)))
         );
 
-        let task = <CalendarApp as qos_actions::ResourceProvider>::resource(
+        let task = <CalendarApp as tilo_actions::ResourceProvider>::resource(
             &app,
             &state,
             &crate::actions::task_resource_id(id),
@@ -8608,7 +9070,7 @@ mod tests {
         app.set_selected_task_project(Some(project), &mut state);
         assert_eq!(
             app.last_dispatched().unwrap().payload,
-            prompted(project_spec, &project.to_string()).payload
+            prompted(project_spec, &crate::actions::project_resource_id(project),).payload
         );
     }
 
@@ -9688,7 +10150,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CALENDAR_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -9711,7 +10173,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
         app.calendar_filter = Some("work/default".into());
-        let root = <CalendarApp as qos_actions::ResourceProvider>::resource(
+        let root = <CalendarApp as tilo_actions::ResourceProvider>::resource(
             &app,
             &doc,
             "calendar.calendar",
@@ -9728,7 +10190,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::CALENDAR_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -9950,7 +10412,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cal-export-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         // SAFETY: `#[serial]` keeps env-var tests off each other's toes.
-        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+        unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
 
         let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
@@ -9968,8 +10430,15 @@ mod tests {
             app.status.as_deref().unwrap_or("").contains("Exported"),
             "the status pill confirms the export"
         );
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap_or("")
+                .contains(&format!("{} tasks", app.model.tasks.len())),
+            "the confirmation truthfully includes the exported VTODO count"
+        );
 
-        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -9983,7 +10452,7 @@ mod tests {
         // it to a temp dir first.
         let dir = std::env::temp_dir().join(format!("cal-keys-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        unsafe { std::env::set_var("QOS_CALENDAR_IMPORT_DIR", &dir) };
+        unsafe { std::env::set_var("TILO_CALENDAR_IMPORT_DIR", &dir) };
 
         let mut h = Harness::new(1280, 800);
         // Close the demo's detail so the notes editor doesn't own keystrokes.
@@ -10035,7 +10504,7 @@ mod tests {
             "'e' exported an .ics through the key path"
         );
 
-        unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
+        unsafe { std::env::remove_var("TILO_CALENDAR_IMPORT_DIR") };
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -10884,5 +11353,67 @@ mod tests {
         assert!(app.model.event(id).is_none());
         assert!(CalDoc::remote_binding(&doc, id).is_none());
         assert_eq!(CalDoc::sync_tokens(&doc)[0].1, "token-3");
+    }
+
+    #[test]
+    fn caldav_reconciliation_keeps_a_vtodo_at_its_stable_resource_across_pulls() {
+        let uid = Uuid::new_v4();
+        let remote_task = |done| crate::model::Task {
+            id: uid,
+            title: "Server task".into(),
+            done,
+            due: NaiveDate::from_ymd_opt(2026, 8, 3),
+            priority: Priority::High,
+            project: None,
+            parent: None,
+        };
+        // Send the record through the real VTODO parser before reconciliation:
+        // a second pull must update the href-bound task, never append one.
+        let parsed_task = |done| {
+            let (_, tasks) = ics::parse(&ics::export(&Model {
+                events: Vec::new(),
+                tasks: vec![remote_task(done)],
+                projects: Vec::new(),
+            }));
+            tasks.into_iter().next().expect("one VTODO parses")
+        };
+        let mut app = CalendarApp::new_empty_for_shots();
+        let mut doc = AutoCommit::new();
+        let apply =
+            |app: &mut CalendarApp, doc: &mut AutoCommit, task: crate::model::Task, etag: &str| {
+                app.apply_sync_result(
+                    caldav::SyncResult {
+                        resources: vec![caldav::RemoteResource {
+                            calendar_id: "work/default".into(),
+                            href: "/dav/work/tasks.ics".into(),
+                            etag: Some(etag.into()),
+                            events: Vec::new(),
+                            tasks: vec![task],
+                        }],
+                        ..caldav::SyncResult::default()
+                    },
+                    SyncOutcome::Synced {
+                        calendars: 1,
+                        events: 0,
+                    },
+                    doc,
+                );
+            };
+
+        apply(&mut app, &mut doc, parsed_task(false), "\"one\"");
+        let id =
+            CalDoc::remote_id_for_href(&doc, "work/default", "/dav/work/tasks.ics#tilo-task-0")
+                .expect("the VTODO has a href binding");
+        apply(&mut app, &mut doc, parsed_task(true), "\"two\"");
+
+        assert_eq!(
+            app.model.tasks.iter().filter(|task| task.id == id).count(),
+            1
+        );
+        assert!(app.model.task(id).is_some_and(|task| task.done));
+        assert_eq!(
+            CalDoc::remote_binding(&doc, id).unwrap().2.as_deref(),
+            Some("\"two\"")
+        );
     }
 }

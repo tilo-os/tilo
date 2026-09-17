@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # A local app registry for the "search → the app is not here → it opens"
-# palette flow (plan/yc-demo.md, beat 3; shell/src/shell/catalogue.rs).
+# palette flow (docs/demo-script.md, beat 3; shell/src/shell/catalogue.rs).
 #
 #   scripts/demo-registry.sh up      # build, pack, sign, configure, serve (foreground)
 #   scripts/demo-registry.sh down    # restore registries.toml, stop a background server
 #   scripts/demo-registry.sh reset   # forget the installed word processor so the beat repeats
 #
 # What `up` does, all in userspace, nothing on the host:
-#   1. builds qos-pkg, qos-install, qos-launcher, qos-catalogue and the word processor;
-#   2. mints a publisher identity (once) with `qos-pkg keygen`;
+#   1. builds tilo-pkg, tilo-install, tilo-launcher, tilo-catalogue and the word processor;
+#   2. mints a publisher identity (once) with `tilo-pkg keygen`;
 #   3. installs the signed runtime bundle the manifest pins, from the host
 #      root, once — the launcher refuses to start an app without it;
 #   4. packs apps/word-processor into a .qpkg and signs a registry entry
-#      for it with `qos-pkg entry`;
+#      for it with `tilo-pkg entry`;
 #   5. points the Store's registries.toml (which the shell's palette also
 #      reads) at http://127.0.0.1:$PORT, keeping a backup;
 #   6. makes sure the word processor is NOT installed, so the palette's
@@ -20,13 +20,13 @@
 #   7. serves the directory with python's http.server: GET /entries is the
 #      signed catalogue, GET /word-processor.qpkg is the package.
 #
-# Then start the shell from the same tree (it finds qos-install and
-# qos-launcher beside its own binary):
+# Then start the shell from the same tree (it finds tilo-install and
+# tilo-launcher beside its own binary):
 #
 #   cargo run --profile demo -p shell -- --enable-peer-sync
 #
-# from the same profile as the packages above — the shell finds qos-install
-# and qos-launcher beside its own binary, so a `debug` shell will not see a
+# from the same profile as the packages above — the shell finds tilo-install
+# and tilo-launcher beside its own binary, so a `debug` shell will not see a
 # `demo` toolchain.
 #
 # Super+Space, type "word", Enter — the row reads "Open Word Processor" like
@@ -41,36 +41,36 @@ REPO="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 # is ~1.9 s optimised and 6.7-21 s debug, for the same mechanism.
 #
 # `demo` rather than `release` because the shell has to run from the same
-# profile — it resolves qos-install and qos-launcher beside its own binary
-# — and `target/demo/shell` is the one that keeps the QOS_TEST_CONTROL
+# profile — it resolves tilo-install and tilo-launcher beside its own binary
+# — and `target/demo/shell` is the one that keeps the TILO_TEST_CONTROL
 # socket a `--release` build deliberately omits. For every package built
 # here `demo` IS the release configuration; it overrides one thing,
 # `debug-assertions` for `shell`.
-PROFILE="${QOS_DEMO_PROFILE:-demo}"
+PROFILE="${TILO_DEMO_PROFILE:-demo}"
 BIN="$REPO/target/$PROFILE"
 case "$PROFILE" in
     debug)   CARGO_PROFILE_FLAG="" ;;
     release) CARGO_PROFILE_FLAG="--release" ;;
     *)       CARGO_PROFILE_FLAG="--profile $PROFILE" ;;
 esac
-OUT="${QOS_DEMO_REGISTRY_DIR:-$REPO/target/demo-registry}"
-PORT="${QOS_DEMO_REGISTRY_PORT:-8765}"
+OUT="${TILO_DEMO_REGISTRY_DIR:-$REPO/target/demo-registry}"
+PORT="${TILO_DEMO_REGISTRY_PORT:-8765}"
 BASE_URL="http://127.0.0.1:$PORT"
-STORE_CFG="${QOS_STORE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/qos-store}"
+STORE_CFG="${TILO_STORE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/tilo-store}"
 REGISTRIES="$STORE_CFG/registries.toml"
 BACKUP="$REGISTRIES.pre-demo"
 IDENTITY="$OUT/publisher-identity.json"
-RUNTIME_VERSION="$(sed -n 's/^runtime *= *"qos-runtime\/\(.*\)"/\1/p' "$REPO/apps/word-processor/qos-app.toml")"
-PKG_ID="dev.qos.word-processor"
+RUNTIME_VERSION="$(sed -n 's/^runtime *= *"tilo-runtime\/\(.*\)"/\1/p' "$REPO/apps/word-processor/tilo-app.toml")"
+PKG_ID="dev.tilo.word-processor"
 PIDFILE="$OUT/http.pid"
 
 say() { printf '\033[1m[demo-registry]\033[0m %s\n' "$*"; }
 die() { echo "FATAL: $*" >&2; exit 1; }
 
 build() {
-    say "building qos-pkg, qos-install, qos-launcher, qos-catalogue, word-processor"
+    say "building tilo-pkg, tilo-install, tilo-launcher, tilo-catalogue, word-processor"
     (cd "$REPO" && cargo build $CARGO_PROFILE_FLAG -p pkg-cli -p install -p launcher -p app-catalogue -p word-processor)
-    for b in qos-pkg qos-install qos-launcher qos-catalogue word-processor; do
+    for b in tilo-pkg tilo-install tilo-launcher tilo-catalogue word-processor; do
         [ -x "$BIN/$b" ] || die "$BIN/$b missing after build"
     done
 }
@@ -79,18 +79,18 @@ identity() {
     mkdir -p "$OUT"
     if [ ! -f "$IDENTITY" ]; then
         say "minting publisher identity at $IDENTITY"
-        "$BIN/qos-pkg" keygen --out "$IDENTITY" >/dev/null
+        "$BIN/tilo-pkg" keygen --out "$IDENTITY" >/dev/null
     fi
 }
 
 runtime() {
     [ -n "$RUNTIME_VERSION" ] || die "could not read the runtime version from the manifest"
-    if "$BIN/qos-install" runtime list 2>/dev/null | grep -q "$RUNTIME_VERSION"; then
-        say "runtime bundle qos-runtime/$RUNTIME_VERSION already installed"
+    if "$BIN/tilo-install" runtime list 2>/dev/null | grep -q "$RUNTIME_VERSION"; then
+        say "runtime bundle tilo-runtime/$RUNTIME_VERSION already installed"
         return
     fi
-    say "installing runtime bundle qos-runtime/$RUNTIME_VERSION from the host root (one-time)"
-    "$BIN/qos-install" runtime install --version "$RUNTIME_VERSION" --from-host --identity "$IDENTITY"
+    say "installing runtime bundle tilo-runtime/$RUNTIME_VERSION from the host root (one-time)"
+    "$BIN/tilo-install" runtime install --version "$RUNTIME_VERSION" --from-host --identity "$IDENTITY"
 }
 
 pack() {
@@ -98,13 +98,13 @@ pack() {
     local payload="$OUT/payload/word-processor"
     rm -rf "$payload"; mkdir -p "$payload/bin"
     cp "$BIN/word-processor" "$payload/bin/word-processor"
-    "$BIN/qos-pkg" pack \
-        --manifest "$REPO/apps/word-processor/qos-app.toml" \
+    "$BIN/tilo-pkg" pack \
+        --manifest "$REPO/apps/word-processor/tilo-app.toml" \
         --payload "$payload" \
         --identity "$IDENTITY" \
         --output "$OUT/word-processor.qpkg"
     say "signing the registry entry"
-    "$BIN/qos-pkg" entry \
+    "$BIN/tilo-pkg" entry \
         --url "$BASE_URL/word-processor.qpkg" \
         --identity "$IDENTITY" \
         "$OUT/word-processor.qpkg" > "$OUT/entry.json"
@@ -135,9 +135,9 @@ EOF
 }
 
 forget_app() {
-    if "$BIN/qos-install" list 2>/dev/null | grep -q "$PKG_ID"; then
+    if "$BIN/tilo-install" list 2>/dev/null | grep -q "$PKG_ID"; then
         say "removing installed $PKG_ID so the palette offers to install it"
-        "$BIN/qos-install" remove "$PKG_ID" || true
+        "$BIN/tilo-install" remove "$PKG_ID" || true
     fi
 }
 
@@ -146,7 +146,7 @@ serve() {
     say "  GET $BASE_URL/entries"
     say "  GET $BASE_URL/word-processor.qpkg"
     cd "$OUT"
-    if [ "${QOS_DEMO_REGISTRY_BACKGROUND:-0}" = "1" ]; then
+    if [ "${TILO_DEMO_REGISTRY_BACKGROUND:-0}" = "1" ]; then
         python3 -m http.server "$PORT" --bind 127.0.0.1 >"$OUT/http.log" 2>&1 &
         echo $! > "$PIDFILE"
         say "background server pid $(cat "$PIDFILE")"

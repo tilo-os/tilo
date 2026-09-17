@@ -27,7 +27,7 @@ use crate::shell::state::RoomId;
 /// Package id the compositor stores its own room indexes under — not an
 /// installed package, just the same directory shape so the same store
 /// (atomic writes, single-writer lock) can be reused.
-pub const SHELL_PACKAGE_ID: &str = "dev.qos.shell";
+pub const SHELL_PACKAGE_ID: &str = "dev.tilo.shell";
 
 /// Ceiling on a record document the scan will read. Automerge can't read
 /// a document in part, so anything larger is skipped — losing a search
@@ -319,7 +319,7 @@ impl RoomRecords {
         // `known()`'s cache key. `generation` changes on local mutations;
         // scan_revision changes for every effective retained corpus update.
         let mut hash = blake3::Hasher::new();
-        hash.update(b"qos-room-record-search-generation\0");
+        hash.update(b"tilo-room-record-search-generation\0");
         hash.update(&self.generation.to_le_bytes());
         hash.update(&scan_revision.to_le_bytes());
         hash.finalize().to_hex().to_string()
@@ -830,7 +830,7 @@ fn shared_scan() -> Arc<Mutex<ScanState>> {
         let handle = Arc::clone(&state);
         let root = cli::data_home();
         std::thread::Builder::new()
-            .name("qos-record-scan".into())
+            .name("tilo-record-scan".into())
             .spawn(move || {
                 let found = scan_record_stores(&root);
                 if let Ok(mut st) = handle.lock() {
@@ -1079,7 +1079,7 @@ mod tests {
             id: scanned.clone(),
             kind: RecordKind::new("document"),
             home: Some(home),
-            package_id: "dev.qos.word-processor".into(),
+            package_id: "dev.tilo.word-processor".into(),
         }]);
         rr.reference(other, &scanned, &RecordKind::new("document"));
 
@@ -1097,7 +1097,7 @@ mod tests {
         assert!(observed.held_by.is_empty());
         assert_eq!(
             observed.package_id.as_deref(),
-            Some("dev.qos.word-processor")
+            Some("dev.tilo.word-processor")
         );
         let referenced = known
             .iter()
@@ -1163,7 +1163,7 @@ mod tests {
             id: RecordId::for_file("/work/other.odt"),
             kind: RecordKind::new("document"),
             home: Some(a),
-            package_id: "dev.qos.word-processor".into(),
+            package_id: "dev.tilo.word-processor".into(),
         }]);
         assert_eq!(
             rr.known().len(),
@@ -1217,7 +1217,7 @@ mod tests {
             id: old.clone(),
             kind: kind.clone(),
             home: Some(room),
-            package_id: "dev.qos.word-processor".into(),
+            package_id: "dev.tilo.word-processor".into(),
         }]);
         assert!(rr.known().is_empty());
         assert_eq!(rr.search_generation(), generation);
@@ -1227,7 +1227,7 @@ mod tests {
             id: old.clone(),
             kind: kind.clone(),
             home: Some(room),
-            package_id: "dev.qos.word-processor".into(),
+            package_id: "dev.tilo.word-processor".into(),
         }]);
         let scan = Arc::clone(rr.scan.as_ref().unwrap());
         scan.lock().unwrap().revision = u64::MAX;
@@ -1235,7 +1235,7 @@ mod tests {
             id: new,
             kind,
             home: Some(room),
-            package_id: "dev.qos.word-processor".into(),
+            package_id: "dev.tilo.word-processor".into(),
         }]);
         let scan = scan.lock().unwrap();
         assert_eq!(scan.records.len(), 1);

@@ -2,7 +2,7 @@
 # Run on the launcher's native build architecture. No disk image is attached.
 set -euo pipefail
 if [[ $# != 3 ]]; then
-    echo "Usage: $0 KERNEL_IMAGE QOS_LAUNCHER NEW_OUTPUT_DIRECTORY" >&2
+    echo "Usage: $0 KERNEL_IMAGE TILO_LAUNCHER NEW_OUTPUT_DIRECTORY" >&2
     exit 2
 fi
 kernel=$(realpath "$1")
@@ -19,10 +19,10 @@ mkdir "$3"
 out=$(realpath "$3")
 rootfs=$out/rootfs
 mkdir -p "$rootfs"/{usr/bin,proc,dev,tmp,denied,lib,lib64}
-cp "$launcher" "$rootfs/usr/bin/qos-launcher"
+cp "$launcher" "$rootfs/usr/bin/tilo-launcher"
 "${CC:-cc}" -O2 -Wall -Wextra -Werror "$fixture" -o "$rootfs/init"
 cp "$rootfs/init" "$rootfs/usr/bin/tmp-probe"
-for binary in "$rootfs/init" "$rootfs/usr/bin/qos-launcher"; do
+for binary in "$rootfs/init" "$rootfs/usr/bin/tilo-launcher"; do
     ldd "$binary" > "$out/dependencies.txt"
     if grep -q 'not found' "$out/dependencies.txt"; then
         cat "$out/dependencies.txt" >&2
@@ -44,6 +44,6 @@ timeout --kill-after=10s 180 "${qemu[@]}" -accel tcg -smp 2 -m 1024 \
     -nographic -no-reboot -nic none -kernel "$kernel" -initrd "$out/initramfs.cpio.gz" \
     -append "console=$console rdinit=/init panic=1" > "$out/serial.log" 2>&1 || status=$?
 printf 'qemu_exit=%s\n' "$status"
-grep -E 'Linux version|QOS_LANDLOCK|qos-sandbox-exec|Kernel panic|reboot: Power down' "$out/serial.log"
+grep -E 'Linux version|TILO_LANDLOCK|tilo-sandbox-exec|Kernel panic|reboot: Power down' "$out/serial.log"
 test "$status" = 0
-grep -q '^QOS_LANDLOCK_PRIVATE_TMP_PASS' "$out/serial.log"
+grep -q '^TILO_LANDLOCK_PRIVATE_TMP_PASS' "$out/serial.log"

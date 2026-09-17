@@ -1,3 +1,7 @@
+#![allow(
+    clippy::doc_markdown,
+    reason = "PipeWire and wpctl are established product names"
+)]
 //! Audio pane — output volume + mute, microphone input level, device
 //! capabilities, diagnostics, and per-application routing.
 //!
@@ -79,7 +83,7 @@ const HOTPLUG_INTERVAL: Duration = Duration::from_millis(1_500);
 /// its `PipeWire` node id. `audio.stream.<id>.sink` holds the chosen output
 /// label (or [`FOLLOW_DEFAULT`]); `.volume` the perceptual gain; `.muted` the
 /// mute.
-fn stream_sink_key(id: u32) -> String {
+pub(crate) fn stream_sink_key(id: u32) -> String {
     format!("audio.stream.{id}.sink")
 }
 fn stream_volume_key(id: u32) -> String {
@@ -293,7 +297,7 @@ pub fn parse_wpctl_status(stdout: &str) -> AudioDevices {
 }
 
 /// Enumerate the audio devices via `wpctl status`. Best-effort: an empty set
-/// when `wpctl` is missing or fails, so a non-qOS host with no `PipeWire` shows
+/// when `wpctl` is missing or fails, so a non-Tilo host with no `PipeWire` shows
 /// no device pickers rather than fabricated devices.
 fn list_audio_devices() -> AudioDevices {
     let Ok(out) = Command::new("wpctl").arg("status").output() else {
@@ -408,6 +412,7 @@ pub struct AudioPane {
     last_sink: Option<String>,
     /// Name of the default source we last set/seeded, guarding re-dispatch.
     last_source: Option<String>,
+    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     /// Whether device/sound changes persist to the shared prefs store. Off in
     /// the test/shots constructors so the suite never writes a real
     /// `settings.json`.
@@ -529,6 +534,7 @@ impl AudioPane {
             last_muted: initial_state.muted,
             last_sink,
             last_source,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             persist_prefs: true,
             needs_seed: true,
             composed: None,
@@ -585,6 +591,7 @@ impl AudioPane {
             last_muted: false,
             last_sink: None,
             last_source: None,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             persist_prefs: false,
             needs_seed: true,
             composed: None,
@@ -633,6 +640,40 @@ impl AudioPane {
         self.hotplug_interval = Duration::ZERO;
         self.last_enum = None;
         self
+    }
+
+    #[must_use]
+    pub fn with_operation_status(
+        mut self,
+        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
+    ) -> Self {
+        self.operation_status = status.clone();
+        self
+    }
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "callers construct the exact typed request whose token is completed"
+    )]
+    fn finish_local_operation(
+        &self,
+        operation: crate::actions::AudioOperation,
+        result: Result<String, String>,
+    ) {
+        let token = crate::actions::local_operation_token_for(
+            crate::actions::AUDIO_OPERATION_TYPE,
+            &operation,
+        );
+        if !matches!(
+            self.operation_status.get(),
+            crate::actions::LocalOperationStatus::Running { token: running } if running == token
+        ) {
+            return;
+        }
+        self.operation_status.set(match result {
+            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
+            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
+        });
     }
 
     /// The enumerated audio devices (tests read this to assert rendering).
@@ -944,6 +985,7 @@ impl AudioPane {
             && self.last_stream_sink.get(&s.id).map(String::as_str) != Some(choice.as_str())
         {
             self.last_stream_sink.insert(s.id, choice.clone());
+            let mut target_id = None;
             let result = if choice == FOLLOW_DEFAULT {
                 self.gctl.unroute_stream(s.id)
             } else {
@@ -953,12 +995,40 @@ impl AudioPane {
                     &self.graph.sources
                 };
                 match devices.iter().find(|d| d.description == choice) {
-                    Some(dev) => self.gctl.route_stream(s.id, dev.serial),
+                    Some(dev) => {
+                        target_id = Some(dev.id);
+                        self.gctl.route_stream(s.id, dev.serial)
+                    }
                     None => Ok(()),
                 }
             };
-            if let Err(e) = result {
-                warn!(target: "qos::settings", op = "route_stream", stream = s.id, error = %e, "audio pane stream route failed");
+            if let Some(device_id) = target_id {
+                let operation = if s.playback {
+                    crate::actions::AudioOperation::RoutePlayback {
+                        stream_id: s.id,
+                        device_id,
+                    }
+                } else {
+                    crate::actions::AudioOperation::RouteRecording {
+                        stream_id: s.id,
+                        device_id,
+                    }
+                };
+                match result {
+                    Ok(()) => self.finish_local_operation(
+                        operation,
+                        Ok("Audio stream route changed.".into()),
+                    ),
+                    Err(error) => {
+                        warn!(target: "tilo::settings", op = "route_stream", stream = s.id, error = %error, "audio pane stream route failed");
+                        self.finish_local_operation(
+                            operation,
+                            Err(format!("Audio stream route could not be changed: {error}")),
+                        );
+                    }
+                }
+            } else if let Err(error) = result {
+                warn!(target: "tilo::settings", op = "route_stream", stream = s.id, error = %error, "audio pane stream route failed");
             }
         }
         // Per-app volume.
@@ -967,7 +1037,7 @@ impl AudioPane {
             if (v - self.last_stream_vol.get(&s.id).copied().unwrap_or(v)).abs() > 0.001 {
                 self.last_stream_vol.insert(s.id, v);
                 if let Err(e) = self.gctl.set_node_volume(s.id, v.clamp(0.0, 1.0)) {
-                    warn!(target: "qos::settings", op = "stream_volume", stream = s.id, error = %e, "audio pane stream volume failed");
+                    warn!(target: "tilo::settings", op = "stream_volume", stream = s.id, error = %e, "audio pane stream volume failed");
                 }
             }
         }
@@ -977,7 +1047,7 @@ impl AudioPane {
         {
             self.last_stream_mute.insert(s.id, b);
             if let Err(e) = self.gctl.set_node_mute(s.id, b) {
-                warn!(target: "qos::settings", op = "stream_mute", stream = s.id, error = %e, "audio pane stream mute failed");
+                warn!(target: "tilo::settings", op = "stream_mute", stream = s.id, error = %e, "audio pane stream mute failed");
             }
         }
     }
@@ -1032,7 +1102,7 @@ impl AudioPane {
         let mut p = SystemPrefs::load();
         f(&mut p.audio);
         if let Err(e) = p.save() {
-            warn!(target: "qos::settings", op = "audio_prefs_save", error = %e, "failed to persist audio prefs");
+            warn!(target: "tilo::settings", op = "audio_prefs_save", error = %e, "failed to persist audio prefs");
         }
     }
 
@@ -1129,7 +1199,7 @@ impl AudioPane {
                         let _ = state.put(root, VOLUME_KEY, f64::from(self.last_volume));
                         self.runtime_notice = Some(format!("Volume could not be changed: {e}"));
                         self.structure_dirty = true;
-                        warn!(target: "qos::settings", op = "set_volume", error = %e, "audio pane dispatch failed");
+                        warn!(target: "tilo::settings", op = "set_volume", error = %e, "audio pane dispatch failed");
                     }
                 }
             }
@@ -1144,7 +1214,7 @@ impl AudioPane {
                         self.runtime_notice =
                             Some(format!("Input level could not be changed: {e}"));
                         self.structure_dirty = true;
-                        warn!(target: "qos::settings", op = "set_input_volume", error = %e, "audio pane dispatch failed");
+                        warn!(target: "tilo::settings", op = "set_input_volume", error = %e, "audio pane dispatch failed");
                     }
                 }
             }
@@ -1158,7 +1228,7 @@ impl AudioPane {
                     let _ = state.put(root, MUTED_KEY, self.last_muted);
                     self.runtime_notice = Some(format!("Mute could not be changed: {e}"));
                     self.structure_dirty = true;
-                    warn!(target: "qos::settings", op = "set_mute", error = %e, "audio pane dispatch failed");
+                    warn!(target: "tilo::settings", op = "set_mute", error = %e, "audio pane dispatch failed");
                 }
             }
         }
@@ -1277,6 +1347,10 @@ impl AudioPane {
                         Self::persist_audio(|a| a.output_device = Some(nm));
                     }
                     self.last_sink = Some(name);
+                    self.finish_local_operation(
+                        crate::actions::AudioOperation::SelectOutput { device_id: id },
+                        Ok("Audio output device changed.".into()),
+                    );
                 }
                 Err(e) => {
                     if let Some(previous) = self.last_sink.as_deref() {
@@ -1284,7 +1358,11 @@ impl AudioPane {
                     }
                     self.runtime_notice = Some(format!("Output device could not be changed: {e}"));
                     self.structure_dirty = true;
-                    warn!(target: "qos::settings", op = "set_default_sink", error = %e, "audio pane device switch failed");
+                    self.finish_local_operation(
+                        crate::actions::AudioOperation::SelectOutput { device_id: id },
+                        Err(format!("Output device could not be changed: {e}")),
+                    );
+                    warn!(target: "tilo::settings", op = "set_default_sink", error = %e, "audio pane device switch failed");
                 }
             }
         }
@@ -1300,6 +1378,10 @@ impl AudioPane {
                         Self::persist_audio(|a| a.input_device = Some(nm));
                     }
                     self.last_source = Some(name);
+                    self.finish_local_operation(
+                        crate::actions::AudioOperation::SelectInput { device_id: id },
+                        Ok("Audio input device changed.".into()),
+                    );
                 }
                 Err(e) => {
                     if let Some(previous) = self.last_source.as_deref() {
@@ -1307,7 +1389,11 @@ impl AudioPane {
                     }
                     self.runtime_notice = Some(format!("Input device could not be changed: {e}"));
                     self.structure_dirty = true;
-                    warn!(target: "qos::settings", op = "set_default_source", error = %e, "audio pane device switch failed");
+                    self.finish_local_operation(
+                        crate::actions::AudioOperation::SelectInput { device_id: id },
+                        Err(format!("Input device could not be changed: {e}")),
+                    );
+                    warn!(target: "tilo::settings", op = "set_default_source", error = %e, "audio pane device switch failed");
                 }
             }
         }
@@ -1356,7 +1442,7 @@ impl AudioPane {
                     }
                     self.runtime_notice = Some(format!("Device profile could not be changed: {e}"));
                     self.structure_dirty = true;
-                    warn!(target: "qos::settings", op = "set_device_profile", device = hw.id, error = %e, "audio profile change failed");
+                    warn!(target: "tilo::settings", op = "set_device_profile", device = hw.id, error = %e, "audio profile change failed");
                 }
             }
         }

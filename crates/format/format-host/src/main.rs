@@ -36,7 +36,7 @@ fn main() -> anyhow::Result<()> {
     tracing::info!(
         registry = %registry_path.display(),
         socket   = %socket_path.display(),
-        "qos-format-host starting"
+        "tilo-format-host starting"
     );
 
     // capnp-rpc + tokio-LocalSet (one task per connection, single-thread Vat).

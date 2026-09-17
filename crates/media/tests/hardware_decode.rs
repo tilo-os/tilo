@@ -9,7 +9,7 @@
 //!   (and prints it), then still requires that decode *worked* through a
 //!   software decoder.
 //!
-//! Neither branch is a skip. The second one is a real configuration — the qOS
+//! Neither branch is a skip. The second one is a real configuration — the Tilo
 //! build container has no H.264 hardware decoder, because `libcuda.so.1` is
 //! not mounted into it (so `nvcodec` exposes zero features) and Fedora's Mesa
 //! VA driver ships without H.264. On the host, where both `nvh264dec` and

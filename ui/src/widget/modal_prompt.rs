@@ -2,9 +2,9 @@
 //!
 //! [`PromptBody`] drops into `ModalDialog` as the content `C`; the dialog
 //! owns the backdrop/box/title/footer/Esc while the body renders an
-//! optional caption, an optional field label, and a **real** [`TextInput`]
-//! (selection, clipboard, a11y — not a hand-rolled `Key::Character`
-//! pusher). The host reads the result with [`PromptBody::value`] on submit.
+//! optional caption, an optional field label, and a [`TextInput`] with
+//! selection, clipboard, and accessibility support. The host reads the result
+//! with [`PromptBody::value`] on submit.
 //!
 //! ```ignore
 //! let body = PromptBody::new("Name", "New volume")

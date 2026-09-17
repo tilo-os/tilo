@@ -171,15 +171,17 @@ mod tests {
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
-        r.declare(ActionDecl::new("org.qos.Ebook", "turn-page", Verb::Read));
-        r.declare(ActionDecl::new("org.qos.Ebook", "annotate", Verb::Write));
-        r.declare(ActionDecl::new("org.qos.Ebook", "delete-annotation", Verb::Write).destructive());
+        r.declare(ActionDecl::new("org.tilo.Ebook", "turn-page", Verb::Read));
+        r.declare(ActionDecl::new("org.tilo.Ebook", "annotate", Verb::Write));
+        r.declare(
+            ActionDecl::new("org.tilo.Ebook", "delete-annotation", Verb::Write).destructive(),
+        );
         r
     }
 
     fn book() -> ResourceRef {
         ResourceRef::Action {
-            app: "org.qos.Ebook".into(),
+            app: "org.tilo.Ebook".into(),
             action: "annotate".into(),
         }
     }
@@ -190,7 +192,7 @@ mod tests {
         let reg = registry();
         let owner = ws.actor_for_person(&"alice".to_string());
         assert_eq!(
-            check_action(&ws, &reg, &owner, "org.qos.Ebook", "rm-rf", &book()),
+            check_action(&ws, &reg, &owner, "org.tilo.Ebook", "rm-rf", &book()),
             ActionOutcome::Denied(DenyReason::UndeclaredAction),
             "an app must not be able to smuggle an operation past the check by \
              declining to declare it"
@@ -207,21 +209,21 @@ mod tests {
         ));
         let reg = registry();
         let bob = ws.actor_for_person(&"bob".to_string());
-        let target = ResourceRef::App("org.qos.Ebook".into());
+        let target = ResourceRef::App("org.tilo.Ebook".into());
 
         assert_eq!(
-            check_action(&ws, &reg, &bob, "org.qos.Ebook", "turn-page", &target),
+            check_action(&ws, &reg, &bob, "org.tilo.Ebook", "turn-page", &target),
             ActionOutcome::Allow,
             "a read-class action is available to a Viewer"
         );
         assert_eq!(
-            check_action(&ws, &reg, &bob, "org.qos.Ebook", "annotate", &target),
+            check_action(&ws, &reg, &bob, "org.tilo.Ebook", "annotate", &target),
             ActionOutcome::Denied(DenyReason::Capability(CapDecision::DeniedByRole)),
             "a write-class action must be denied to a Viewer"
         );
 
         // And chrome must not even offer it.
-        let offered: Vec<&str> = permitted_actions(&ws, &reg, &bob, "org.qos.Ebook", &target)
+        let offered: Vec<&str> = permitted_actions(&ws, &reg, &bob, "org.tilo.Ebook", &target)
             .into_iter()
             .map(|d| d.action.as_str())
             .collect();
@@ -244,10 +246,10 @@ mod tests {
         ));
         let reg = registry();
         let bob = ws.actor_for_person(&"bob".to_string());
-        let target = ResourceRef::App("org.qos.Ebook".into());
+        let target = ResourceRef::App("org.tilo.Ebook".into());
 
         assert_eq!(
-            check_action(&ws, &reg, &bob, "org.qos.Ebook", "annotate", &target),
+            check_action(&ws, &reg, &bob, "org.tilo.Ebook", "annotate", &target),
             ActionOutcome::Allow
         );
         assert_eq!(
@@ -255,7 +257,7 @@ mod tests {
                 &ws,
                 &reg,
                 &bob,
-                "org.qos.Ebook",
+                "org.tilo.Ebook",
                 "delete-annotation",
                 &target
             ),
@@ -276,7 +278,7 @@ mod tests {
                 &ws2,
                 &reg,
                 &carol,
-                "org.qos.Ebook",
+                "org.tilo.Ebook",
                 "delete-annotation",
                 &target
             ),
@@ -298,7 +300,7 @@ mod tests {
         ws.grant_capability(CapOverride::grant(
             Subject::person("bob"),
             Scope::Action {
-                app: "org.qos.Ebook".into(),
+                app: "org.tilo.Ebook".into(),
                 action: "annotate".into(),
             },
             Verb::Write,
@@ -307,7 +309,7 @@ mod tests {
         let bob = ws.actor_for_person(&"bob".to_string());
 
         assert_eq!(
-            check_action(&ws, &reg, &bob, "org.qos.Ebook", "annotate", &book()),
+            check_action(&ws, &reg, &bob, "org.tilo.Ebook", "annotate", &book()),
             ActionOutcome::Allow,
             "the granted action is invokable"
         );
@@ -316,10 +318,10 @@ mod tests {
                 &ws,
                 &reg,
                 &bob,
-                "org.qos.Ebook",
+                "org.tilo.Ebook",
                 "delete-annotation",
                 &ResourceRef::Action {
-                    app: "org.qos.Ebook".into(),
+                    app: "org.tilo.Ebook".into(),
                     action: "delete-annotation".into(),
                 }
             ),
@@ -337,11 +339,11 @@ mod tests {
             Verb::Admin,
         ));
         let reg = registry();
-        let app = ws.actor_for_app("org.qos.Ebook");
-        let target = ResourceRef::App("org.qos.Ebook".into());
+        let app = ws.actor_for_app("org.tilo.Ebook");
+        let target = ResourceRef::App("org.tilo.Ebook".into());
 
         assert_eq!(
-            check_action(&ws, &reg, &app, "org.qos.Ebook", "annotate", &target),
+            check_action(&ws, &reg, &app, "org.tilo.Ebook", "annotate", &target),
             ActionOutcome::Denied(DenyReason::Capability(CapDecision::DeniedByRole)),
             "an app holds no role, so a room full of admins grants it nothing"
         );
@@ -349,16 +351,16 @@ mod tests {
         // Granting the app itself is what authorises it.
         let mut ws = ws;
         ws.grant_capability(CapOverride::grant(
-            Subject::app("org.qos.Ebook"),
-            Scope::App("org.qos.Ebook".into()),
+            Subject::app("org.tilo.Ebook"),
+            Scope::App("org.tilo.Ebook".into()),
             Verb::Write,
         ));
         assert_eq!(
             check_action(
                 &ws,
                 &reg,
-                &ws.actor_for_app("org.qos.Ebook"),
-                "org.qos.Ebook",
+                &ws.actor_for_app("org.tilo.Ebook"),
+                "org.tilo.Ebook",
                 "annotate",
                 &target
             ),
@@ -376,15 +378,15 @@ mod tests {
         ));
         let mut reg = registry();
         let bob = ws.actor_for_person(&"bob".to_string());
-        let target = ResourceRef::App("org.qos.Ebook".into());
+        let target = ResourceRef::App("org.tilo.Ebook".into());
 
         assert_eq!(
-            check_action(&ws, &reg, &bob, "org.qos.Ebook", "annotate", &target),
+            check_action(&ws, &reg, &bob, "org.tilo.Ebook", "annotate", &target),
             ActionOutcome::Allow
         );
-        reg.forget_app("org.qos.Ebook");
+        reg.forget_app("org.tilo.Ebook");
         assert_eq!(
-            check_action(&ws, &reg, &bob, "org.qos.Ebook", "annotate", &target),
+            check_action(&ws, &reg, &bob, "org.tilo.Ebook", "annotate", &target),
             ActionOutcome::Denied(DenyReason::UndeclaredAction),
             "an action of an app that has exited must not remain invokable"
         );
@@ -399,14 +401,14 @@ mod tests {
         );
         assert_eq!(id, "bob-write");
         let reg = registry();
-        let target = ResourceRef::App("org.qos.Ebook".into());
+        let target = ResourceRef::App("org.tilo.Ebook".into());
 
         assert_eq!(
             check_action(
                 &ws,
                 &reg,
                 &ws.actor_for_person(&"bob".to_string()),
-                "org.qos.Ebook",
+                "org.tilo.Ebook",
                 "annotate",
                 &target
             ),
@@ -419,7 +421,7 @@ mod tests {
                 &ws,
                 &reg,
                 &ws.actor_for_person(&"bob".to_string()),
-                "org.qos.Ebook",
+                "org.tilo.Ebook",
                 "annotate",
                 &target
             ),
@@ -431,7 +433,7 @@ mod tests {
                 &ws,
                 &reg,
                 &ws.actor_for_person(&"bob".to_string()),
-                "org.qos.Ebook",
+                "org.tilo.Ebook",
                 &target
             )
             .iter()
@@ -446,7 +448,7 @@ mod tests {
         ws.grant_capability(CapOverride::grant(
             Subject::person("dave"),
             Scope::Action {
-                app: "org.qos.Ebook".into(),
+                app: "org.tilo.Ebook".into(),
                 action: "annotate".into(),
             },
             Verb::Write,
@@ -455,7 +457,7 @@ mod tests {
         let dave = ws.actor_for_person(&"dave".to_string());
 
         assert_eq!(
-            check_action(&ws, &reg, &dave, "org.qos.Ebook", "annotate", &book()),
+            check_action(&ws, &reg, &dave, "org.tilo.Ebook", "annotate", &book()),
             ActionOutcome::Allow,
             "the share works"
         );

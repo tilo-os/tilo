@@ -74,7 +74,7 @@ pub struct UsbDeviceDecision {
 }
 
 /// A DynamicLauncher review with shell-owned editable fields.  The portal
-/// caller never supplies UI objects: `icon_choices` are labels for safe qOS
+/// caller never supplies UI objects: `icon_choices` are labels for safe Tilo
 /// icon assets selected by the compositor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LauncherReviewRequest {
@@ -585,7 +585,7 @@ impl PortalDialogQueue {
         };
         if crate::portal::global_shortcuts::is_reserved_accelerator(&accelerator) {
             request.rows[selected].status =
-                Some("Reserved by qOS. Choose another shortcut.".into());
+                Some("Reserved by Tilo. Choose another shortcut.".into());
             return true;
         }
         if request.rows.iter().enumerate().any(|(index, other)| {
@@ -730,7 +730,7 @@ impl DialogView {
         match self {
             Self::AppChoice { detail, .. } | Self::Review { detail, .. } => detail,
             Self::ShortcutBindings { .. } => {
-                "Select a row, then press the shortcut. qOS and active app shortcuts cannot be claimed. Backspace clears a row."
+                "Select a row, then press the shortcut. Tilo and active app shortcuts cannot be claimed. Backspace clears a row."
             }
             Self::LauncherReview { detail, .. } => detail,
             Self::UsbDevices { detail, .. } => detail,
@@ -1355,7 +1355,7 @@ mod tests {
                     handle: "/r/launcher".into(),
                     app_id: "org.example.Web".into(),
                     title: "Install this web app?".into(),
-                    reason: "Reviewed by qOS.".into(),
+                    reason: "Reviewed by Tilo.".into(),
                     resource: "https://example.test".into(),
                     confirm_label: "Add launcher".into(),
                 },

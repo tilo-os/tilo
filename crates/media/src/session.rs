@@ -283,7 +283,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("qos-session-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-session-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("clip.mp4");
         std::fs::write(&p, b"not really a video, but a real path").unwrap();

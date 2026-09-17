@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::dxvk::WineMode;
 
-pub(crate) const ROOTFS: &str = "/opt/qos/x86";
+pub(crate) const ROOTFS: &str = "/opt/tilo/x86";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const PREPARATION_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -452,7 +452,7 @@ fn configure_environment(command: &mut Command) {
         // where the capsule grants access only to its brokered Wayland socket.
         // This absolute override is shared by the server and every client.
         // /tmp is the capsule's private tmpfs, already writable under Landlock.
-        .env("FEX_SERVERSOCKETPATH", "/tmp/qos-fex-server.sock")
+        .env("FEX_SERVERSOCKETPATH", "/tmp/tilo-fex-server.sock")
         .env("FEX_INTERPRETER_INSTALLED", "0");
 }
 
@@ -583,7 +583,7 @@ mod tests {
         reason = "one isolated process owns the complete signal, adoption, cleanup, and lock-lifetime regression"
     )]
     fn exclusive_cleanup_reaps_detached_descendants_and_preserves_existing_children() {
-        const CHILD: &str = "QOS_TEST_PREPARATION_REAPER";
+        const CHILD: &str = "TILO_TEST_PREPARATION_REAPER";
         if std::env::var_os(CHILD).is_none() {
             // Subreaper state is process-wide. Isolate this test from the
             // parallel harness, whose unrelated children must never be adopted.
@@ -786,7 +786,7 @@ mod tests {
         assert!(
             environment
                 .lines()
-                .any(|line| line == "FEX_SERVERSOCKETPATH=/tmp/qos-fex-server.sock")
+                .any(|line| line == "FEX_SERVERSOCKETPATH=/tmp/tilo-fex-server.sock")
         );
         assert!(
             environment

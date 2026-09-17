@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep qOS's public collaboration vocabulary stable.
+"""Keep Tilo's public collaboration vocabulary stable.
 
 Protocol and implementation types may continue to use ``room`` and ``peer``.
 Ordinary shell copy uses Workspace, People, Collaborator and Participant. This

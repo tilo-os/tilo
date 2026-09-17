@@ -9,7 +9,7 @@
 //! exits non-zero.
 //!
 //! It deliberately never pairs or forgets anything: those are destructive to
-//! whatever the machine is already paired with. `qos-bluez`'s own
+//! whatever the machine is already paired with. `tilo-bluez`'s own
 //! `live_check` covers the pairing path.
 
 use std::time::Duration;

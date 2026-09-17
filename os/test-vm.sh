@@ -16,8 +16,8 @@ if [ ! -f "$OVMF" ]; then
     OVMF="/usr/share/OVMF/OVMF_CODE.fd"
 fi
 
-echo "Starting qOS VM with disk: $DISK"
-echo "Login: quickuser / quickdesktop"
+echo "Starting Tilo VM with disk: $DISK"
+echo "Login: quickuser / tilo"
 
 qemu-system-x86_64 \
     -enable-kvm \

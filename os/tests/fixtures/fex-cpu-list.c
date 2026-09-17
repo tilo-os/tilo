@@ -70,6 +70,6 @@ int main(void) {
         fputs("CPU-list ABI contract failed\n", stderr);
         return 1;
     }
-    puts("QOS_CPU_LIST_PASS");
+    puts("TILO_CPU_LIST_PASS");
     return 0;
 }

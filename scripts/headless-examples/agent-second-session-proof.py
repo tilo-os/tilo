@@ -12,7 +12,7 @@ So: two real compositors with separate identities, homes and device
 keys, joined into one room the way a person joins one — an invite minted
 on the first and pasted into the second. A real word processor in each.
 Quinten types a flat draft and one line addressed to Claude. Then
-`qos-agent` joins Quinten's session, chooses an action with a model from
+`tilo-agent` joins Quinten's session, chooses an action with a model from
 the catalogue the word processor exports, and carries it out — and
 Xaver's session is asked what *his* copy says.
 
@@ -138,12 +138,12 @@ def _pair_from(profile: str) -> tuple[pathlib.Path | None, pathlib.Path | None]:
 
 
 SHELL, WORD_PROCESSOR = _matched_pair()
-AGENT = _tool("qos-agent")
+AGENT = _tool("tilo-agent")
 # Decodes an Automerge blob to the strings it holds. Without it there is
 # no honest way to answer "does this document say that" — see `_strings`.
-DOC_TEXT = _tool("qos-doc-text")
+DOC_TEXT = _tool("tilo-doc-text")
 
-APP = "dev.qos.word-processor"
+APP = "dev.tilo.word-processor"
 APPLICATIONS = "applications"
 
 # A flat draft: no markup at all, a title line, two section labels, prose
@@ -219,20 +219,20 @@ class Session:
         home = os.path.expanduser("~")
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.socket,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_TEST_CONTROL": self.socket,
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
             "XDG_STATE_HOME": os.path.join(self.dir, "state"),
             "XDG_CONFIG_HOME": os.path.join(self.dir, "config"),
             "XDG_RUNTIME_DIR": self.runtime,
             # Machine state the isolation must not take with it.
-            "QOS_APPS_DATA_DIR": os.path.join(home, ".local/share/qos-apps"),
-            "QOS_RUNTIME_BUNDLE_DIR": os.path.join(home, ".local/share/qos-runtime"),
+            "TILO_APPS_DATA_DIR": os.path.join(home, ".local/share/tilo-apps"),
+            "TILO_RUNTIME_BUNDLE_DIR": os.path.join(home, ".local/share/tilo-runtime"),
             # Without its own device key a session's peer-sync turns
             # itself off, and the only symptom is a missing peer.* action.
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
-            "NIRIOS_HEADLESS_SIZE": "1600x1200",
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_HEADLESS_SIZE": "1600x1200",
             # The sandbox does not clear the environment, so a de_DE host
             # renders the app's chrome in German. Any frame this writes
             # could end up as footage, and mixed languages read as broken.
@@ -254,7 +254,7 @@ class Session:
     @property
     def broker(self) -> str:
         """The typed collaboration broker this session binds."""
-        return os.path.join(self.runtime, "qos", "services", "collab.sock")
+        return os.path.join(self.runtime, "tilo", "services", "collab.sock")
 
     def wait_up(self, timeout=90.0) -> bool:
         end = time.time() + timeout
@@ -336,7 +336,7 @@ def launch_word_processor(session: Session, room: str, brief: str,
     the real launcher. Both sessions open the *same* record path so the apps
     announce one address and the room can bridge them.
     """
-    display_file = os.path.join(session.runtime, "qos-session", "wayland-display")
+    display_file = os.path.join(session.runtime, "tilo-session", "wayland-display")
     if not wait_for(lambda: os.path.exists(display_file), timeout=45):
         note(f"{session.name}: no wayland display file at {display_file}")
         return None
@@ -349,22 +349,22 @@ def launch_word_processor(session: Session, room: str, brief: str,
     env = dict(session.env)
     env.update({
         "WAYLAND_DISPLAY": display,
-        "QOS_PACKAGE_ID": APP,
-        "QOS_WORKSPACE_ID": room,
+        "TILO_PACKAGE_ID": APP,
+        "TILO_WORKSPACE_ID": room,
         "QUICK_APP_ID": session.name,
-        "QOS_USER_ID": session.name,
+        "TILO_USER_ID": session.name,
         "RUST_LOG": "warn",
         # Makes the toolkit say whether it reached the broker. Without it
         # an app that is up but not collaborating looks exactly like an
         # app that is up and collaborating, and the difference is the
         # whole question this script asks.
-        "QUICK_COLLAB_DEBUG": "1",
+        "RUST_LOG": "tilo.state=debug",
     })
     log_path = os.path.join(session.dir, "word-processor.log")
     before = {f.get("surface_id") for f in session.frames()}
     service = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     service.connect(session.broker)
-    env["QOS_SVC_COLLAB_FD"] = str(service.fileno())
+    env["TILO_SVC_COLLAB_FD"] = str(service.fileno())
     proc = track(subprocess.Popen(
         [str(WORD_PROCESSOR), brief], env=env,
         stdout=subprocess.DEVNULL, stderr=open(log_path, "w"),
@@ -425,7 +425,7 @@ class DocumentReader:
     speaks, announces the same `(app_id, cluster_id, record)` address
     the word processor announced, and sends the one frame every toolkit
     answers with its whole document — `Presence { Arrived }`, the same
-    handshake `qos-agent` opens with.
+    handshake `tilo-agent` opens with.
 
     What comes back is therefore produced *by the app running in that
     session, out of the document that app is holding*. It is not the
@@ -570,17 +570,17 @@ def main() -> int:
             print(f"target/{args.profile} has no shell + word-processor pair")
             return 2
 
-    for binary, what in ((SHELL, "shell"), (AGENT, "qos-agent"),
+    for binary, what in ((SHELL, "shell"), (AGENT, "tilo-agent"),
                          (WORD_PROCESSOR, "word-processor")):
         if binary is None:
             print(f"missing {what} in target/demo and target/debug")
             print("build it:  cargo build -p shell -p agent -p word-processor")
             return 2
     if DOC_TEXT is None:
-        print("missing qos-doc-text in target/demo and target/debug")
-        print("build it:  cargo build -p qdoc --bin qos-doc-text")
+        print("missing tilo-doc-text in target/demo and target/debug")
+        print("build it:  cargo build -p qdoc --bin tilo-doc-text")
         return 2
-    for binary, what in ((SHELL, "shell"), (AGENT, "qos-agent"),
+    for binary, what in ((SHELL, "shell"), (AGENT, "tilo-agent"),
                          (WORD_PROCESSOR, "word-processor")):
         print(f"  {what}: {binary}")
 

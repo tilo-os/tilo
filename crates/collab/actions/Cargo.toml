@@ -1,15 +1,15 @@
 [package]
-name = "qos-actions"
+name = "tilo-actions"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
 
 [lib]
-name = "qos_actions"
+name = "tilo_actions"
 path = "src/lib.rs"
 
-# The qOS ACTION model: a serializable, replayable unit of CRDT mutation, plus
+# The Tilo ACTION model: a serializable, replayable unit of CRDT mutation, plus
 # the nested Resource tree apps publish and the locus-aware dispatch that either
 # executes-and-replicates locally (`ClientLocal`) or routes to a host
 # (`ServerPreferred`). Pure state layer — no `ui`, no `winit`, no render deps —

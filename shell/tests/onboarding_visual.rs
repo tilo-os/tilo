@@ -5,7 +5,7 @@
 //! seam. It never creates an identity or changes the running session.
 //!
 //! ```text
-//! QOS_ONBOARDING_SHOT_DIR=/tmp/qos-onboarding-shots \
+//! TILO_ONBOARDING_SHOT_DIR=/tmp/tilo-onboarding-shots \
 //!   cargo test -p shell --test it onboarding_visual::render_onboarding_matrix -- --ignored --nocapture
 //! ```
 
@@ -40,8 +40,8 @@ use vello::peniko::Color;
 use crate::support::offscreen::OffscreenRenderer;
 
 fn shot_dir() -> PathBuf {
-    std::env::var_os("QOS_ONBOARDING_SHOT_DIR").map_or_else(
-        || std::env::temp_dir().join("qos-onboarding-shots"),
+    std::env::var_os("TILO_ONBOARDING_SHOT_DIR").map_or_else(
+        || std::env::temp_dir().join("tilo-onboarding-shots"),
         PathBuf::from,
     )
 }

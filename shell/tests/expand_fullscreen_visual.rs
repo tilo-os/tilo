@@ -7,7 +7,7 @@
 //! a gate. Run with an output directory:
 //!
 //! ```text
-//! QOS_SHOT_DIR=/tmp/shots cargo test -p shell --test expand_fullscreen_visual \
+//! TILO_SHOT_DIR=/tmp/shots cargo test -p shell --test expand_fullscreen_visual \
 //!     -- --ignored --nocapture
 //! ```
 
@@ -33,8 +33,8 @@ const W: u32 = 1600;
 const H: u32 = 900;
 
 fn shot_dir() -> std::path::PathBuf {
-    std::env::var("QOS_SHOT_DIR").map_or_else(
-        |_| std::env::temp_dir().join("qos-expand-shots"),
+    std::env::var("TILO_SHOT_DIR").map_or_else(
+        |_| std::env::temp_dir().join("tilo-expand-shots"),
         std::path::PathBuf::from,
     )
 }

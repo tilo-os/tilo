@@ -66,7 +66,7 @@ use smithay::wayland::socket::ListeningSocketSource;
 use taffy::NodeId;
 use vello::kurbo::Rect;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 use crate::compositor::accessibility::{NativeAccessibility, Request as AccessibilityRequest};
@@ -894,7 +894,7 @@ fn pump_floating_toplevel_events(service: &FloatingSurfaceService, state: &mut S
 /// `tests/compositor_test.rs` polls it to assert foreign-tab adoption +
 /// teardown without a public shell-state API. Unset means the compositor
 /// never touches the filesystem here.
-const TEST_STATE_DUMP_ENV: &str = "NIRIOS_TEST_STATE_DUMP";
+const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 
 /// Env var for the real-input e2e control protocol: when set to a writable
 /// path, [`run`] binds a unix socket there accepting newline-delimited JSON
@@ -902,7 +902,7 @@ const TEST_STATE_DUMP_ENV: &str = "NIRIOS_TEST_STATE_DUMP";
 /// reads back state as if it were the person at the keyboard — even while
 /// locked — so it is a **developer-build** surface, gated on
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
-const TEST_CONTROL_ENV: &str = "QOS_TEST_CONTROL";
+const TEST_CONTROL_ENV: &str = "TILO_TEST_CONTROL";
 
 /// RAII guard that unlinks a unix-socket file when dropped. `process::exit`
 /// skips destructors, so [`run`] drops this explicitly before exiting —
@@ -955,21 +955,18 @@ fn bind_test_control_socket() -> Option<(UnixListener, UnlinkOnDrop)> {
     match UnixListener::bind(&path) {
         Ok(listener) => {
             if let Err(e) = listener.set_nonblocking(true) {
-                eprintln!("nirios compositor: test_control set_nonblocking: {e}");
+                eprintln!("tilo compositor: test_control set_nonblocking: {e}");
                 return None;
             }
             eprintln!(
-                "nirios compositor test_control listening on {}",
+                "tilo compositor test_control listening on {}",
                 path.display()
             );
             let guard = UnlinkOnDrop(path);
             Some((listener, guard))
         }
         Err(e) => {
-            eprintln!(
-                "nirios compositor: test_control bind {}: {e}",
-                path.display()
-            );
+            eprintln!("tilo compositor: test_control bind {}: {e}", path.display());
             None
         }
     }
@@ -977,7 +974,7 @@ fn bind_test_control_socket() -> Option<(UnixListener, UnlinkOnDrop)> {
 
 /// Directory under `$XDG_RUNTIME_DIR` where a running compositor publishes
 /// facts the next terminal command needs; torn down with the session.
-pub const SESSION_RUNTIME_SUBDIR: &str = "qos-session";
+pub const SESSION_RUNTIME_SUBDIR: &str = "tilo-session";
 
 /// File inside [`SESSION_RUNTIME_SUBDIR`] holding the bare socket name (no
 /// trailing newline), so `WAYLAND_DISPLAY=$(cat …)` is exactly right.
@@ -997,7 +994,7 @@ pub(crate) fn session_display_path(runtime_dir: Option<std::ffi::OsString>) -> O
 }
 
 /// Publish the compositor's Wayland socket name to
-/// `$XDG_RUNTIME_DIR/qos-session/wayland-display`. Last writer wins — the
+/// `$XDG_RUNTIME_DIR/tilo-session/wayland-display`. Last writer wins — the
 /// file answers "what do I connect to *now*"; the printed stderr line stays
 /// authoritative for a specific compositor. Never fatal on failure. Returns
 /// the unlink guard so the file disappears with the process.
@@ -1006,7 +1003,7 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     if let Some(dir) = path.parent()
         && let Err(e) = std::fs::create_dir_all(dir)
     {
-        eprintln!("nirios compositor: publishing {}: {e}", path.display());
+        eprintln!("tilo compositor: publishing {}: {e}", path.display());
         return None;
     }
     // 0600: not a secret, but nothing else should write it; applied before
@@ -1014,7 +1011,7 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     match atomic_file::write_with_mode(&path, socket_name.as_encoded_bytes(), 0o600) {
         Ok(()) => Some(UnlinkOnDrop(path)),
         Err(e) => {
-            eprintln!("nirios compositor: publishing {}: {e}", path.display());
+            eprintln!("tilo compositor: publishing {}: {e}", path.display());
             None
         }
     }
@@ -1023,18 +1020,18 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
 /// Env var naming the compositor's privileged Wayland socket, exported to
 /// trusted session services outside app sandboxes. Clipboard managers and
 /// the session-lock integration connect here instead of `WAYLAND_DISPLAY`.
-pub const PRIVILEGED_SOCKET_ENV: &str = "QOS_WAYLAND_PRIVILEGED";
+pub const PRIVILEGED_SOCKET_ENV: &str = "TILO_WAYLAND_PRIVILEGED";
 
 /// Bind the privileged Wayland socket and publish its name, carrying the
 /// compositor's pid so concurrent sessions can't collide. The pid is only a
 /// collision-free socket name; authorization comes from which acceptor made
 /// the immutable per-connection `ClientState`.
 fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString), String> {
-    let name = format!("qos-privileged-{}", std::process::id());
+    let name = format!("tilo-privileged-{}", std::process::id());
     let socket = ListeningSocketSource::with_name(&name).map_err(|e| e.to_string())?;
     let socket_name = socket.socket_name().to_os_string();
     // Published for privileged children only; sandboxed apps get an explicit
-    // environment from `qos-launcher` and never inherit this.
+    // environment from `tilo-launcher` and never inherit this.
     // SAFETY: single-threaded compositor startup, before any thread that
     // reads the environment has been spawned.
     unsafe { std::env::set_var(PRIVILEGED_SOCKET_ENV, &socket_name) };
@@ -1046,7 +1043,7 @@ fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString
 /// clipboard socket it is never exported in the session environment.
 fn bind_osk_socket() -> Result<(ListeningSocketSource, PathBuf), String> {
     let name = format!(
-        "qos-osk-{}-{}",
+        "tilo-osk-{}-{}",
         std::process::id(),
         uuid::Uuid::new_v4().simple()
     );
@@ -1065,7 +1062,7 @@ struct TestControlConn {
 impl TestControlConn {
     fn new(stream: UnixStream) -> Option<Self> {
         if let Err(e) = stream.set_nonblocking(true) {
-            eprintln!("nirios compositor: test_control conn set_nonblocking: {e}");
+            eprintln!("tilo compositor: test_control conn set_nonblocking: {e}");
             return None;
         }
         Some(Self {
@@ -1888,7 +1885,7 @@ fn execute_invoke_action(
     }) {
         Ok(catalog) => catalog,
         Err(why) => {
-            eprintln!("nirios compositor: cannot invoke ({provider}, {id}): {why}");
+            eprintln!("tilo compositor: cannot invoke ({provider}, {id}): {why}");
             return Err(InvokeFailure {
                 code: "action_failed".into(),
                 message: why,
@@ -1910,7 +1907,7 @@ fn execute_invoke_action(
             Ok(receipt) => Ok(receipt),
             Err(failure) => {
                 eprintln!(
-                    "nirios compositor: ({provider}, {id}) did not run: {}",
+                    "tilo compositor: ({provider}, {id}) did not run: {}",
                     failure.message
                 );
                 Err(failure)
@@ -1920,7 +1917,7 @@ fn execute_invoke_action(
         let message = format!(
             "action ({provider}, {id}) vanished between resolve and invoke; nothing was run"
         );
-        eprintln!("nirios compositor: {message}");
+        eprintln!("tilo compositor: {message}");
         Err(InvokeFailure {
             code: "action_failed".to_string(),
             message,
@@ -2157,9 +2154,7 @@ fn write_snapshot_png(
         h.round().clamp(0.0, f64::from(u32::MAX)) as u32,
     );
     if w == 0 || h == 0 {
-        eprintln!(
-            "nirios compositor: test_control snapshot: viewport is {w}x{h}, nothing to write"
-        );
+        eprintln!("tilo compositor: test_control snapshot: viewport is {w}x{h}, nothing to write");
         return;
     }
     let mut scene = fb.paint();
@@ -2207,9 +2202,7 @@ fn write_snapshot_png(
                     *slot = Some(renderer);
                 }
                 Err(e) => {
-                    eprintln!(
-                        "nirios compositor: test_control snapshot: no offscreen renderer: {e}"
-                    );
+                    eprintln!("tilo compositor: test_control snapshot: no offscreen renderer: {e}");
                     *slot = None;
                     return;
                 }
@@ -2227,7 +2220,7 @@ fn write_snapshot_png(
         Ok(f) => f,
         Err(e) => {
             eprintln!(
-                "nirios compositor: test_control snapshot: create {}: {e}",
+                "tilo compositor: test_control snapshot: create {}: {e}",
                 path.display()
             );
             return;
@@ -2241,7 +2234,7 @@ fn write_snapshot_png(
         Ok(w) => w,
         Err(e) => {
             eprintln!(
-                "nirios compositor: test_control snapshot: png header {}: {e}",
+                "tilo compositor: test_control snapshot: png header {}: {e}",
                 path.display()
             );
             return;
@@ -2249,7 +2242,7 @@ fn write_snapshot_png(
     };
     if let Err(e) = png_writer.write_image_data(&rgba) {
         eprintln!(
-            "nirios compositor: test_control snapshot: png write {}: {e}",
+            "tilo compositor: test_control snapshot: png write {}: {e}",
             path.display()
         );
         return;
@@ -2259,7 +2252,7 @@ fn write_snapshot_png(
     drop(png_writer);
     if let Err(e) = writer.flush() {
         eprintln!(
-            "nirios compositor: test_control snapshot: flush {}: {e}",
+            "tilo compositor: test_control snapshot: flush {}: {e}",
             path.display()
         );
     }
@@ -2486,7 +2479,7 @@ fn pump_test_control_conn(
                 let mut out = serialise_response(&resp);
                 out.push('\n');
                 if let Err(e) = conn.reader.get_mut().write_all(out.as_bytes()) {
-                    eprintln!("nirios compositor: test_control write: {e}");
+                    eprintln!("tilo compositor: test_control write: {e}");
                     conn.closed = true;
                     return injected_input;
                 }
@@ -2500,7 +2493,7 @@ fn pump_test_control_conn(
                 return injected_input;
             }
             Err(ReadLineError::Io(e)) => {
-                eprintln!("nirios compositor: test_control read: {e}");
+                eprintln!("tilo compositor: test_control read: {e}");
                 conn.closed = true;
                 return injected_input;
             }
@@ -2730,6 +2723,412 @@ fn keycode_for_eis(key: PhysicalKey) -> Option<u32> {
     })
 }
 
+#[derive(Clone, Debug)]
+struct SpatialControlSession {
+    target: crate::shell::personal_continuity::DeviceId,
+    return_edge: crate::shell::device_fabric::DisplayEdge,
+    x: f64,
+    y: f64,
+    pressed_keys: std::collections::BTreeSet<u32>,
+    pressed_buttons: std::collections::BTreeSet<u32>,
+    nearby_drop: Option<std::path::PathBuf>,
+}
+
+fn end_spatial_control(
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<SpatialControlSession>,
+) {
+    let Some(session) = active.take() else {
+        return;
+    };
+    for keycode in session.pressed_keys {
+        let _ = crate::shell::device_fabric_runtime::send_spatial_input(
+            network,
+            &session.target,
+            crate::shell::device_fabric::FabricInputEvent::Key {
+                keycode,
+                pressed: false,
+                modifiers: 0,
+            },
+        );
+    }
+    for button in session.pressed_buttons {
+        let _ = crate::shell::device_fabric_runtime::send_spatial_input(
+            network,
+            &session.target,
+            crate::shell::device_fabric::FabricInputEvent::PointerButton {
+                button,
+                pressed: false,
+            },
+        );
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "coordinates are clamped to the fabric wire bounds before narrowing"
+)]
+fn spatial_coord(value: f64) -> i32 {
+    value.clamp(-1_000_000.0, 1_000_000.0).round() as i32
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "wheel deltas are clamped to the bounded fabric wire representation"
+)]
+fn spatial_scroll(value: f64) -> i16 {
+    value
+        .clamp(f64::from(i16::MIN), f64::from(i16::MAX))
+        .round() as i16
+}
+
+fn nearby_drop_candidate(
+    paths: Option<&[std::path::PathBuf]>,
+) -> Result<Option<std::path::PathBuf>, ()> {
+    let Some(paths) = paths else {
+        return Ok(None);
+    };
+    let [path] = paths else {
+        return Err(());
+    };
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| ())?;
+    if metadata.file_type().is_symlink()
+        || (!metadata.is_file() && !metadata.is_dir())
+        || (metadata.is_file() && metadata.len() == 0)
+    {
+        return Err(());
+    }
+    Ok(Some(path.clone()))
+}
+
+fn move_spatial_pointer(
+    state: &State,
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<SpatialControlSession>,
+    dx: f64,
+    dy: f64,
+) -> bool {
+    if let Some(session) = active.as_mut() {
+        session.x += dx;
+        session.y += dy;
+        let fabric = network.device_fabric();
+        let Some(rect) = fabric
+            .snapshots()
+            .get(&session.target)
+            .and_then(|snapshot| snapshot.display.as_ref())
+            .map(|display| display.rect)
+        else {
+            end_spatial_control(network, active);
+            return true;
+        };
+        let max_x = f64::from(rect.width.saturating_sub(1));
+        let max_y = f64::from(rect.height.saturating_sub(1));
+        let crossed_back = match session.return_edge {
+            crate::shell::device_fabric::DisplayEdge::Left => session.x < 0.0,
+            crate::shell::device_fabric::DisplayEdge::Right => session.x > max_x,
+            crate::shell::device_fabric::DisplayEdge::Top => session.y < 0.0,
+            crate::shell::device_fabric::DisplayEdge::Bottom => session.y > max_y,
+        };
+        if crossed_back {
+            end_spatial_control(network, active);
+            return true;
+        }
+        session.x = session.x.clamp(0.0, max_x);
+        session.y = session.y.clamp(0.0, max_y);
+        if crate::shell::device_fabric_runtime::send_spatial_input(
+            network,
+            &session.target,
+            crate::shell::device_fabric::FabricInputEvent::PointerMotion {
+                x: spatial_coord(session.x),
+                y: spatial_coord(session.y),
+            },
+        )
+        .is_err()
+        {
+            end_spatial_control(network, active);
+        }
+        return true;
+    }
+    let Some((cursor_x, cursor_y)) = state.client_input.pointer_position() else {
+        return false;
+    };
+    let Some((local, _)) = network.local_device_fabric_identity() else {
+        return false;
+    };
+    let fabric = network.device_fabric();
+    let Some(local_rect) = fabric
+        .snapshots()
+        .get(&local)
+        .and_then(|snapshot| snapshot.display.as_ref())
+        .map(|display| display.rect)
+    else {
+        return false;
+    };
+    let Some(edge) = spatial_departure_edge(
+        cursor_x,
+        cursor_y,
+        local_rect.width,
+        local_rect.height,
+        dx,
+        dy,
+    ) else {
+        return false;
+    };
+    let local_x = spatial_coord(cursor_x);
+    let local_y = spatial_coord(cursor_y);
+    let Some(transition) = fabric.cross_edge(&local, edge, local_x, local_y) else {
+        return false;
+    };
+    let pending_drag = file_explorer::external_drag::unclaimed();
+    let Ok(nearby_drop) =
+        nearby_drop_candidate(pending_drag.as_ref().map(|drag| drag.paths.as_slice()))
+    else {
+        // Keep unsupported Files drags local; crossing would otherwise swallow
+        // their release and strand the gesture on the source device.
+        return false;
+    };
+    let session = SpatialControlSession {
+        target: transition.to,
+        return_edge: edge.opposite(),
+        x: f64::from(transition.target_x) + dx,
+        y: f64::from(transition.target_y) + dy,
+        pressed_keys: std::collections::BTreeSet::new(),
+        pressed_buttons: std::collections::BTreeSet::new(),
+        nearby_drop,
+    };
+    if crate::shell::device_fabric_runtime::send_spatial_input(
+        network,
+        &session.target,
+        crate::shell::device_fabric::FabricInputEvent::PointerMotion {
+            x: spatial_coord(session.x),
+            y: spatial_coord(session.y),
+        },
+    )
+    .is_err()
+    {
+        return false;
+    }
+    *active = Some(session);
+    true
+}
+
+fn spatial_departure_edge(
+    cursor_x: f64,
+    cursor_y: f64,
+    width: u32,
+    height: u32,
+    dx: f64,
+    dy: f64,
+) -> Option<crate::shell::device_fabric::DisplayEdge> {
+    use crate::shell::device_fabric::DisplayEdge;
+    let max_x = f64::from(width.saturating_sub(1));
+    let max_y = f64::from(height.saturating_sub(1));
+    let horizontal = if cursor_x <= 0.0 && dx < 0.0 {
+        Some(DisplayEdge::Left)
+    } else if cursor_x >= max_x && dx > 0.0 {
+        Some(DisplayEdge::Right)
+    } else {
+        None
+    };
+    let vertical = if cursor_y <= 0.0 && dy < 0.0 {
+        Some(DisplayEdge::Top)
+    } else if cursor_y >= max_y && dy > 0.0 {
+        Some(DisplayEdge::Bottom)
+    } else {
+        None
+    };
+    match (horizontal, vertical) {
+        (Some(edge), Some(_)) if dx.abs() >= dy.abs() => Some(edge),
+        (Some(_) | None, Some(edge)) | (Some(edge), None) => Some(edge),
+        (None, None) => None,
+    }
+}
+
+#[cfg(test)]
+mod spatial_edge_tests {
+    use super::{nearby_drop_candidate, spatial_departure_edge};
+    use crate::shell::device_fabric::DisplayEdge;
+
+    #[test]
+    fn pointer_can_depart_through_all_four_edges() {
+        assert_eq!(
+            spatial_departure_edge(0.0, 400.0, 1_000, 800, -2.0, 0.0),
+            Some(DisplayEdge::Left)
+        );
+        assert_eq!(
+            spatial_departure_edge(999.0, 400.0, 1_000, 800, 2.0, 0.0),
+            Some(DisplayEdge::Right)
+        );
+        assert_eq!(
+            spatial_departure_edge(500.0, 0.0, 1_000, 800, 0.0, -2.0),
+            Some(DisplayEdge::Top)
+        );
+        assert_eq!(
+            spatial_departure_edge(500.0, 799.0, 1_000, 800, 0.0, 2.0),
+            Some(DisplayEdge::Bottom)
+        );
+    }
+
+    #[test]
+    fn corner_departure_follows_the_dominant_motion_axis() {
+        assert_eq!(
+            spatial_departure_edge(999.0, 799.0, 1_000, 800, 8.0, 3.0),
+            Some(DisplayEdge::Right)
+        );
+        assert_eq!(
+            spatial_departure_edge(999.0, 799.0, 1_000, 800, 3.0, 8.0),
+            Some(DisplayEdge::Bottom)
+        );
+        assert_eq!(
+            spatial_departure_edge(500.0, 400.0, 1_000, 800, 8.0, 8.0),
+            None
+        );
+    }
+
+    #[test]
+    fn one_safe_file_or_folder_can_arm_a_nearby_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("note.txt");
+        std::fs::write(&path, b"hello").unwrap();
+        assert_eq!(
+            nearby_drop_candidate(Some(std::slice::from_ref(&path))),
+            Ok(Some(path.clone()))
+        );
+        let folder = temp.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        assert_eq!(
+            nearby_drop_candidate(Some(std::slice::from_ref(&folder))),
+            Ok(Some(folder))
+        );
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(nearby_drop_candidate(Some(&[link])).is_err());
+        assert!(nearby_drop_candidate(Some(&[path.clone(), path])).is_err());
+        assert!(nearby_drop_candidate(Some(&[])).is_err());
+    }
+}
+
+fn finish_nearby_drop(
+    event: &WindowEvent,
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<SpatialControlSession>,
+) -> Option<bool> {
+    let session = active.as_ref()?;
+    if matches!(
+        event,
+        WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        }
+    ) && let Some(path) = session.nearby_drop.clone()
+    {
+        let target = session.target.clone();
+        let matches = file_explorer::external_drag::hand_off()
+            .is_some_and(|drag| drag.paths.as_slice() == [path.as_path()]);
+        end_spatial_control(network, active);
+        if matches {
+            let _ =
+                crate::shell::device_fabric_runtime::request_nearby_drop(network, &target, &path);
+        }
+        return Some(false);
+    }
+    None
+}
+
+fn forward_spatial_window_event(
+    event: &WindowEvent,
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<SpatialControlSession>,
+) -> bool {
+    if let Some(consumed) = finish_nearby_drop(event, network, active) {
+        return consumed;
+    }
+    let Some(session) = active.as_ref() else {
+        return false;
+    };
+    if let WindowEvent::KeyboardInput { event, .. } = event
+        && event.state == ElementState::Pressed
+        && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+    {
+        end_spatial_control(network, active);
+        return true;
+    }
+    let target = session.target.clone();
+    let fabric_event = match event {
+        WindowEvent::CursorMoved { .. } => return true,
+        WindowEvent::MouseInput { state, button, .. } => {
+            let button = match button {
+                MouseButton::Left => 0x110,
+                MouseButton::Right => 0x111,
+                MouseButton::Middle => 0x112,
+                MouseButton::Back => 0x116,
+                MouseButton::Forward => 0x115,
+                MouseButton::Other(button) => u32::from(*button),
+            };
+            crate::shell::device_fabric::FabricInputEvent::PointerButton {
+                button,
+                pressed: *state == ElementState::Pressed,
+            }
+        }
+        WindowEvent::MouseWheel { delta, .. } => {
+            let (horizontal, vertical) = match delta {
+                MouseScrollDelta::LineDelta(x, y) => {
+                    (spatial_scroll(f64::from(*x)), spatial_scroll(f64::from(*y)))
+                }
+                MouseScrollDelta::PixelDelta(position) => {
+                    (spatial_scroll(position.x), spatial_scroll(position.y))
+                }
+            };
+            if horizontal == 0 && vertical == 0 {
+                return true;
+            }
+            crate::shell::device_fabric::FabricInputEvent::Scroll {
+                horizontal,
+                vertical,
+            }
+        }
+        WindowEvent::KeyboardInput { event, .. } => {
+            let Some(keycode) = keycode_for_eis(event.physical_key) else {
+                return true;
+            };
+            crate::shell::device_fabric::FabricInputEvent::Key {
+                keycode,
+                pressed: event.state == ElementState::Pressed,
+                modifiers: 0,
+            }
+        }
+        _ => return false,
+    };
+    if crate::shell::device_fabric_runtime::send_spatial_input(network, &target, fabric_event)
+        .is_err()
+    {
+        *active = None;
+    } else if let Some(session) = active.as_mut() {
+        match fabric_event {
+            crate::shell::device_fabric::FabricInputEvent::PointerButton { button, pressed } => {
+                if pressed {
+                    session.pressed_buttons.insert(button);
+                } else {
+                    session.pressed_buttons.remove(&button);
+                }
+            }
+            crate::shell::device_fabric::FabricInputEvent::Key {
+                keycode, pressed, ..
+            } => {
+                if pressed {
+                    session.pressed_keys.insert(keycode);
+                } else {
+                    session.pressed_keys.remove(&keycode);
+                }
+            }
+            crate::shell::device_fabric::FabricInputEvent::PointerMotion { .. }
+            | crate::shell::device_fabric::FabricInputEvent::Scroll { .. } => {}
+        }
+    }
+    true
+}
+
 fn is_power_key(event: &WindowEvent) -> bool {
     if let WindowEvent::KeyboardInput { event, .. } = event
         && event.state == ElementState::Pressed
@@ -2747,7 +3146,7 @@ fn is_power_key(event: &WindowEvent) -> bool {
 /// Build an OS notification toast from a power-service notification.
 fn power_notification_to_incoming(
     bridge: &crate::notifications::NotificationBridge,
-    n: qos_power_mgmt::PowerNotification,
+    n: tilo_power_mgmt::PowerNotification,
 ) -> crate::notifications::IncomingNotification {
     crate::notifications::IncomingNotification {
         dbus_id: bridge.alloc_id(),
@@ -3131,9 +3530,118 @@ fn spawn_session_collab_broker(
     }
 }
 
+fn install_device_fabric_bridge(
+    host: &mut crate::shell::overlay_host::ShellOverlayHost,
+    fabric_net: Arc<crate::shell::network::ShellNetwork>,
+) {
+    let fabric_cache = std::rc::Rc::new(std::cell::RefCell::new(
+        None::<(Instant, crate::shell::overlay_host::DeviceFabricView)>,
+    ));
+    host.set_device_fabric_bridge({
+        let fabric_cache = std::rc::Rc::clone(&fabric_cache);
+        std::rc::Rc::new(move |action| {
+            use crate::shell::overlay_host::DeviceFabricUiAction;
+            if matches!(action, DeviceFabricUiAction::Snapshot)
+                && let Some((updated, view)) = fabric_cache.borrow().as_ref()
+                && updated.elapsed() < Duration::from_millis(750)
+            {
+                return Ok(view.clone());
+            }
+            match action {
+                DeviceFabricUiAction::Snapshot => {}
+                DeviceFabricUiAction::HandoffMedia { session_id, target } => {
+                    let _ = crate::shell::device_fabric_runtime::request_media_handoff(
+                        &fabric_net,
+                        &session_id,
+                        &target,
+                    )?;
+                }
+                DeviceFabricUiAction::RouteLocalAudio { node_id } => {
+                    crate::shell::device_fabric_runtime::route_local_audio(node_id)?;
+                }
+                DeviceFabricUiAction::HandoffBluetooth {
+                    address,
+                    name,
+                    target,
+                } => {
+                    let _ = crate::shell::device_fabric_runtime::request_bluetooth_handoff(
+                        &fabric_net,
+                        &address,
+                        &name,
+                        &target,
+                    )?;
+                }
+                DeviceFabricUiAction::AuthorizeBluetoothHandoff {
+                    request_id,
+                    approved,
+                } => {
+                    crate::shell::device_fabric_runtime::authorize_bluetooth_handoff(
+                        &fabric_net,
+                        request_id,
+                        approved,
+                    )?;
+                }
+                DeviceFabricUiAction::Place { device, edge } => {
+                    crate::shell::device_fabric_runtime::place_device(&fabric_net, &device, edge)?;
+                }
+                DeviceFabricUiAction::GrantControl { controller } => {
+                    let _ = crate::shell::device_fabric_runtime::grant_input_control(
+                        &fabric_net,
+                        &controller,
+                    )?;
+                }
+                DeviceFabricUiAction::RevokeControl { controller } => {
+                    crate::shell::device_fabric_runtime::revoke_input_control(
+                        &fabric_net,
+                        &controller,
+                    )?;
+                }
+            }
+            let view = crate::shell::device_fabric_runtime::device_fabric_view(&fabric_net);
+            *fabric_cache.borrow_mut() = Some((Instant::now(), view.clone()));
+            Ok(view)
+        })
+    });
+}
+
 /// Start the authenticated peer transport and install the chrome commands
 /// that use it. Kept as one operation so first-login can call the exact same
 /// path after the identity ceremony releases the desktop.
+fn visible_wifi_security(ssid: &str) -> Result<Option<os_actions::WifiSecurity>, String> {
+    os_actions::list_wifi_networks().map(|networks| {
+        networks
+            .into_iter()
+            .find(|network| network.ssid == ssid)
+            .map(|network| network.security)
+    })
+}
+
+fn install_wifi_secret_bridge(
+    host: &mut crate::shell::overlay_host::ShellOverlayHost,
+    wifi_net: Arc<crate::shell::network::ShellNetwork>,
+) {
+    host.set_wifi_secret_bridge(std::rc::Rc::new(move |action| match action {
+        crate::shell::overlay_host::WifiSecretAction::Lookup { ssid } => {
+            let Some(security) = visible_wifi_security(&ssid)? else {
+                return Ok(None);
+            };
+            Ok(wifi_net.shared_wifi_password(&ssid, security))
+        }
+        crate::shell::overlay_host::WifiSecretAction::Share { ssid, password } => {
+            let security = visible_wifi_security(&ssid)?
+                .ok_or_else(|| "could not verify the connected Wi-Fi security mode".to_string())?;
+            if matches!(
+                security,
+                os_actions::WifiSecurity::Open | os_actions::WifiSecurity::Owe
+            ) {
+                return Ok(None);
+            }
+            wifi_net.share_wifi_credential(&ssid, security, &password)?;
+            Ok(None)
+        }
+    }));
+}
+
 fn spawn_session_peer_sync(
     frame_builder: &mut FrameBuilder,
     state: &mut State,
@@ -3147,6 +3655,8 @@ fn spawn_session_peer_sync(
             let _ = handle.join_default_workspace();
             tracing::info!("peer-sync: actor spawned, default workspace joined");
             let net = Arc::new(handle);
+            install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
+            install_device_fabric_bridge(frame_builder.host_mut(), Arc::clone(&net));
             let stream_net = Arc::clone(&net);
             state.set_legacy_stream_publisher(Arc::new(move |message| {
                 stream_net.publish_legacy_active(message)
@@ -3257,7 +3767,42 @@ fn attach_peer_presence(
             };
             let payload = ui::collaboration::PresencePayload::Following { target };
             if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
-                follow_network.publish_app_presence("qos-shell".into(), room.to_string(), frame);
+                follow_network.publish_app_presence("tilo-shell".into(), room.to_string(), frame);
+            }
+        }));
+    let status_network = Arc::clone(net);
+    frame_builder
+        .host_mut()
+        .set_status_presence_bridge(std::rc::Rc::new(move |room, status| {
+            let key = ui::presence::PresenceKey::Workspace {
+                id: room.to_string(),
+            };
+            let payload = ui::collaboration::PresencePayload::Status {
+                text: status
+                    .as_ref()
+                    .map_or_else(String::new, |status| status.text.clone()),
+                automatic: status.as_ref().is_some_and(|status| {
+                    matches!(status.origin, ui::StatusOrigin::Inferred { .. })
+                }),
+            };
+            if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
+                status_network.publish_app_presence("tilo-shell".into(), room.to_string(), frame);
+            }
+        }));
+    let tab_network = Arc::clone(net);
+    frame_builder
+        .host_mut()
+        .set_active_tab_presence_bridge(std::rc::Rc::new(move |room, tab, present| {
+            let key = ui::presence::PresenceKey::Tab {
+                id: format!("{tab:x}"),
+            };
+            let payload = if present {
+                ui::collaboration::PresencePayload::Arrived
+            } else {
+                ui::collaboration::PresencePayload::Left
+            };
+            if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
+                tab_network.publish_app_presence("tilo-shell".into(), room.to_string(), frame);
             }
         }));
     let rooms = {
@@ -3645,13 +4190,13 @@ fn start_portal_backend(
     tree_handle: crate::shell::state::WorkspaceTreeHandle,
     notifications: crate::notifications::NotificationBridge,
     zones: Vec<crate::portal::CaptureZone>,
-    inhibit_registry: qos_power_mgmt::InhibitRegistry,
+    inhibit_registry: tilo_power_mgmt::InhibitRegistry,
     selection: crate::compositor::selection::SharedSelection,
 ) -> Option<PortalBackend> {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
-        .thread_name("qos-portal")
+        .thread_name("tilo-portal")
         .build()
     {
         Ok(rt) => rt,
@@ -3791,7 +4336,7 @@ fn build_backend(kind: BackendKind) -> Box<dyn Backend> {
             let mut b = match WinitBackend::new() {
                 Ok(b) => b,
                 Err(e) => {
-                    eprintln!("nirios compositor: --backend winit failed: {e}");
+                    eprintln!("tilo compositor: --backend winit failed: {e}");
                     std::process::exit(1);
                 }
             };
@@ -3803,18 +4348,18 @@ fn build_backend(kind: BackendKind) -> Box<dyn Backend> {
         BackendKind::Drm => match DrmBackend::new() {
             Ok(b) => Box::new(b),
             Err(e) => {
-                eprintln!("nirios compositor: --backend drm failed: {e}");
+                eprintln!("tilo compositor: --backend drm failed: {e}");
                 std::process::exit(1);
             }
         },
         BackendKind::Headless => {
-            // Initial size from `NIRIOS_HEADLESS_SIZE` (shots-default fallback), keeping
+            // Initial size from `TILO_HEADLESS_SIZE` (shots-default fallback), keeping
             // headless env-var-driven. Skip `set_base_color`: no window to clear.
             let (w, h) = headless::resolve_initial_size();
             match HeadlessBackend::new(w, h) {
                 Ok(b) => Box::new(b),
                 Err(e) => {
-                    eprintln!("nirios compositor: --backend headless failed: {e}");
+                    eprintln!("tilo compositor: --backend headless failed: {e}");
                     std::process::exit(1);
                 }
             }
@@ -3835,7 +4380,7 @@ fn size_to_signed(size: (u32, u32)) -> (i32, i32) {
 
 /// Bind the primary public Wayland socket (`wayland-1..32`, first free
 /// name), print the two lines a human or test relies on, and publish the
-/// name to `$XDG_RUNTIME_DIR/qos-session/wayland-display`. Split out of
+/// name to `$XDG_RUNTIME_DIR/tilo-session/wayland-display`. Split out of
 /// [`run`] to keep that function's line count down.
 #[allow(
     clippy::exit,
@@ -3850,7 +4395,7 @@ fn bind_and_publish_wayland_socket() -> (
     let listening_socket = match ListeningSocketSource::new_auto() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("nirios compositor: bind listening wayland socket failed: {e}");
+            eprintln!("tilo compositor: bind listening wayland socket failed: {e}");
             std::process::exit(1);
         }
     };
@@ -3864,7 +4409,7 @@ fn bind_and_publish_wayland_socket() -> (
                   contract in tests/compositor_test.rs::extract_socket_name — switching to \
                   `to_string_lossy()` would drop the quotes that test strips"
     )]
-    let banner = format!("nirios compositor listening on {socket_name:?}");
+    let banner = format!("tilo compositor listening on {socket_name:?}");
     eprintln!("{banner}");
     // The two lines below are for a human who just ran `cargo run -p shell` —
     // publishing to a file too lets the next command read it instead of copying from a log.
@@ -3940,7 +4485,7 @@ pub fn run() -> ! {
     let mut event_loop: EventLoop<'static, State> = match EventLoop::try_new() {
         Ok(el) => el,
         Err(e) => {
-            eprintln!("nirios compositor: create calloop event loop failed: {e}");
+            eprintln!("tilo compositor: create calloop event loop failed: {e}");
             std::process::exit(1);
         }
     };
@@ -3950,7 +4495,7 @@ pub fn run() -> ! {
     let mut display: Display<State> = match Display::new() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("nirios compositor: create wayland display failed: {e}");
+            eprintln!("tilo compositor: create wayland display failed: {e}");
             std::process::exit(1);
         }
     };
@@ -3990,7 +4535,7 @@ pub fn run() -> ! {
     // debug-only control socket. Their deliberately empty XDG roots are test
     // isolation, not a first-login fixture; letting OOBE capture input would
     // make every real-client input test time out before its first keypress.
-    // Release builds ignore QOS_TEST_CONTROL entirely via DEV_ENV_OVERRIDES.
+    // Release builds ignore TILO_TEST_CONTROL entirely via DEV_ENV_OVERRIDES.
     let test_control_session = test_control_path(
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
         std::env::var_os(TEST_CONTROL_ENV),
@@ -4039,6 +4584,33 @@ pub fn run() -> ! {
         initial_size,
         crate::shell::session_record_store(),
     );
+    let clipboard_store = state.selection_store();
+    frame_builder
+        .host_mut()
+        .set_clipboard_manager_bridge(std::rc::Rc::new(move |action| {
+            use crate::shell::overlay_host::ClipboardManagerAction;
+            match action {
+                ClipboardManagerAction::Snapshot => {}
+                ClipboardManagerAction::Activate(id) => {
+                    let _ =
+                        crate::compositor::selection::activate_history_item(&clipboard_store, id);
+                }
+                ClipboardManagerAction::SetPinned { id, pinned } => {
+                    let _ = crate::compositor::selection::pin_history_item(
+                        &clipboard_store,
+                        id,
+                        pinned,
+                    );
+                }
+                ClipboardManagerAction::Remove(id) => {
+                    let _ = crate::compositor::selection::remove_history_item(&clipboard_store, id);
+                }
+                ClipboardManagerAction::ClearUnpinned => {
+                    crate::compositor::selection::clear_clipboard_history(&clipboard_store);
+                }
+            }
+            crate::compositor::selection::clipboard_history(&clipboard_store)
+        }));
     // A fresh machine has no display server before `shell`, so first-login
     // cannot be a standalone winit app or a pre-graphical user unit. Host the
     // ceremony in trusted compositor chrome and withhold every desktop
@@ -4047,12 +4619,10 @@ pub fn run() -> ! {
         if crate::compositor::parse_install_mode_from_args()
             == crate::compositor::InstallMode::HostDesktop
         {
-            eprintln!(
-                "nirios compositor: showing host-desktop identity setup from the first frame"
-            );
+            eprintln!("tilo compositor: showing host-desktop identity setup from the first frame");
             frame_builder.enable_host_desktop_onboarding(identity_dir);
         } else {
-            eprintln!("nirios compositor: showing full first-login setup from the first frame");
+            eprintln!("tilo compositor: showing full first-login setup from the first frame");
             frame_builder.enable_onboarding(identity_dir);
         }
     }
@@ -4086,7 +4656,7 @@ pub fn run() -> ! {
     // it owns — see `start_portal_backend` for why not the separate daemon.
     let notif_bridge = crate::notifications::NotificationBridge::new();
     frame_builder.with_chrome(|st| st.set_notification_bridge(notif_bridge.clone()));
-    let inhibit_registry = qos_power_mgmt::InhibitRegistry::new();
+    let inhibit_registry = tilo_power_mgmt::InhibitRegistry::new();
     frame_builder
         .host_mut()
         .set_session_inhibitors(inhibit_registry.clone());
@@ -4100,10 +4670,14 @@ pub fn run() -> ! {
     );
 
     // Peer sync is constructed here (not only in hosted mode) because this is
-    // the compositor that boots as the qOS session.
+    // the compositor that boots as the Tilo session.
     let mut peer_sync = enable_peer_sync
         .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone()))
         .flatten();
+    let mut device_fabric_runtime = peer_sync.as_ref().map(|network| {
+        crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(network, notif_bridge.clone())
+    });
+    let mut spatial_control: Option<SpatialControlSession> = None;
     // The session's CRDT fan-out broker, bound before the wayland socket is
     // published (before any app launches) — an app resolves its collab
     // descriptor once at spawn, so a broker arriving later is one it never gets.
@@ -4146,7 +4720,7 @@ pub fn run() -> ! {
     // `new_auto` walks `wayland-1..wayland-32`, binding the first free name.
     let (listening_socket, socket_name, _display_file) = bind_and_publish_wayland_socket();
     // Publish to the app launcher: every app is pointed at this socket
-    // explicitly (`qos-launcher --wayland-socket`), never at the compositor's own env.
+    // explicitly (`tilo-launcher --wayland-socket`), never at the compositor's own env.
     crate::shell::launcher::set_wayland_socket(&socket_name);
     let _windows_compat = match crate::shell::windows_compat::spawn(
         frame_builder.chrome_handle().borrow().tree_handle(),
@@ -4176,17 +4750,15 @@ pub fn run() -> ! {
                     .display_handle
                     .insert_client(client_stream, client_state)
                 {
-                    eprintln!("nirios compositor: failed to insert client: {err}");
+                    eprintln!("tilo compositor: failed to insert client: {err}");
                 }
             })
     {
-        eprintln!(
-            "nirios compositor: insert listening socket source into event loop failed: {err}"
-        );
+        eprintln!("tilo compositor: insert listening socket source into event loop failed: {err}");
         std::process::exit(1);
     }
 
-    // The complete qOS image deliberately remains Wayland-only. A host
+    // The complete Tilo image deliberately remains Wayland-only. A host
     // desktop session is a different trust tier: it promises to keep the
     // distro applications the person already installed usable, including
     // legacy X11 software, and labels those launches as unconfined.
@@ -4220,27 +4792,27 @@ pub fn run() -> ! {
                 osk_socket,
                 move |client_stream, (), state| {
                     if !authorization.allows(&client_stream) {
-                        tracing::warn!(target: "qos::osk", "rejected connection to private OSK display");
+                        tracing::warn!(target: "tilo::osk", "rejected connection to private OSK display");
                         return;
                     }
                     if let Err(error) = state
                         .display_handle
                         .insert_client(client_stream, ClientState::osk_arc())
                     {
-                        tracing::warn!(target: "qos::osk", %error, "could not accept OSK Wayland connection");
+                        tracing::warn!(target: "tilo::osk", %error, "could not accept OSK Wayland connection");
                     }
                 },
             ) {
-                tracing::warn!(target: "qos::osk", %error, "private OSK socket source rejected");
+                tracing::warn!(target: "tilo::osk", %error, "private OSK socket source rejected");
                 None
             } else {
-                tracing::info!(target: "qos::osk", socket = %path.display(), "private OSK display ready");
+                tracing::info!(target: "tilo::osk", socket = %path.display(), "private OSK display ready");
                 service.reload_preference();
                 Some(service)
             }
         }
         Err(error) => {
-            tracing::warn!(target: "qos::osk", %error, "private OSK display unavailable");
+            tracing::warn!(target: "tilo::osk", %error, "private OSK display unavailable");
             None
         }
     };
@@ -4253,7 +4825,7 @@ pub fn run() -> ! {
     // bind-mounts only the public socket (`crates/packaging/launcher/src/sandbox.rs`); bind failure is logged and non-fatal.
     match bind_privileged_socket() {
         Ok((privileged_socket, path)) => {
-            eprintln!("nirios compositor privileged socket on {}", path.display());
+            eprintln!("tilo compositor privileged socket on {}", path.display());
             if let Err(err) = event_loop.handle().insert_source(
                 privileged_socket,
                 move |client_stream, (), state| {
@@ -4261,21 +4833,21 @@ pub fn run() -> ! {
                         .display_handle
                         .insert_client(client_stream, ClientState::privileged_arc())
                     {
-                        eprintln!("nirios compositor: failed to insert privileged client: {err}");
+                        eprintln!("tilo compositor: failed to insert privileged client: {err}");
                     }
                 },
             ) {
-                eprintln!("nirios compositor: privileged socket source rejected: {err}");
+                eprintln!("tilo compositor: privileged socket source rejected: {err}");
             }
         }
         Err(e) => {
             eprintln!(
-                "nirios compositor: no privileged wayland socket ({e}); clipboard managers will not be able to connect"
+                "tilo compositor: no privileged wayland socket ({e}); clipboard managers will not be able to connect"
             );
         }
     }
 
-    // When `NIRIOS_TEST_STATE_DUMP` is set, serializes `WorkspaceTree` there
+    // When `TILO_TEST_STATE_DUMP` is set, serializes `WorkspaceTree` there
     // each tick for `tests/compositor_test.rs`; zero-cost when unset.
     let test_dump_path = test_state_dump_path(
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
@@ -4283,7 +4855,7 @@ pub fn run() -> ! {
     );
 
     // Opt-in unix socket for newline-delimited JSON commands
-    // (`compositor::test_control`), bound at `QOS_TEST_CONTROL`; unset means never created.
+    // (`compositor::test_control`), bound at `TILO_TEST_CONTROL`; unset means never created.
     let (test_control_listener, test_control_unlink) = match bind_test_control_socket() {
         Some((l, g)) => (Some(l), Some(g)),
         None => (None, None),
@@ -4304,7 +4876,7 @@ pub fn run() -> ! {
     // lock-overlay paints. The power policy from `settings.json` owns the
     // blank and suspend timeouts at startup and on live reload; environment
     // values only seed the headless/default config before that policy applies.
-    let mut power_policy = qos_power_mgmt::config::load_policy();
+    let mut power_policy = tilo_power_mgmt::config::load_policy();
     let mut session = SessionManager::new(
         IdleConfig::from_env()
             .with_blank(power_policy.idle_blank)
@@ -4312,7 +4884,7 @@ pub fn run() -> ! {
         Instant::now(),
     );
     // Session-lock unlock: input + auth state machine. Verifier is the fixed
-    // test password (`QOS_LOCK_TEST_PASSWORD`) or real greetd/PAM; fail-closed otherwise.
+    // test password (`TILO_LOCK_TEST_PASSWORD`) or real greetd/PAM; fail-closed otherwise.
     let mut lock = LockController::new(
         lock_auth::verifier_from_env(),
         std::env::var("USER").unwrap_or_else(|_| "user".to_string()),
@@ -4339,7 +4911,7 @@ pub fn run() -> ! {
     // `inhibit_registry.acquire(reason)`; power service mirrors it into a real logind lock, idle loop checks `is_inhibited()` before suspending.
     // Mailbox the async power service uses to reach this loop (lock, battery
     // toast, idle-reset on resume) and this loop uses to reach it (request suspend).
-    let power_bridge = qos_power_mgmt::PowerBridge::new();
+    let power_bridge = tilo_power_mgmt::PowerBridge::new();
 
     // The `org.freedesktop.Notifications` D-Bus service — the compositor owns
     // it so sandboxed apps' toasts render as OS-drawn chrome. The bridge is the
@@ -4360,7 +4932,7 @@ pub fn run() -> ! {
     match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(1)
-        .thread_name("nirios-notify")
+        .thread_name("tilo-notify")
         .build()
     {
         Ok(rt) => {
@@ -4414,10 +4986,10 @@ pub fn run() -> ! {
         let registry = inhibit_registry.clone();
         let policy = power_policy;
         rt.spawn(async move {
-            match qos_power_mgmt::PowerService::connect(bridge, registry, policy).await {
+            match tilo_power_mgmt::PowerService::connect(bridge, registry, policy).await {
                 Ok(service) => service.run().await,
                 Err(e) => tracing::warn!(
-                    target: "qos::power",
+                    target: "tilo::power",
                     "power service unavailable ({e}); suspend/lid/battery inactive"
                 ),
             }
@@ -4428,19 +5000,19 @@ pub fn run() -> ! {
 
     // Presentation cadence via `FrameClock` (`compositor::pacing`): interval
     // comes from the backend's display; a fixed post-tick sleep instead
-    // measures 21.9ms/45.6Hz regardless of actual rate. `QOS_REFRESH_HZ` overrides for testing.
+    // measures 21.9ms/45.6Hz regardless of actual rate. `TILO_REFRESH_HZ` overrides for testing.
     let refresh_override = pacing::refresh_override_from_env();
     let mut frame_clock =
         if let Some(interval) = refresh_override.or_else(|| backend.refresh_interval()) {
             eprintln!(
-                "nirios compositor: pacing to {:.3} Hz",
+                "tilo compositor: pacing to {:.3} Hz",
                 1.0 / interval.as_secs_f64()
             );
             pacing::FrameClock::new(interval, Instant::now())
         } else {
             // No display to follow (headless, or a host that won't say) — fall back rather than invent a rate.
             eprintln!(
-                "nirios compositor: backend reports no refresh rate; pacing to {:.3} Hz",
+                "tilo compositor: backend reports no refresh rate; pacing to {:.3} Hz",
                 1.0 / pacing::FALLBACK_INTERVAL.as_secs_f64()
             );
             pacing::FrameClock::fallback(Instant::now())
@@ -4451,20 +5023,20 @@ pub fn run() -> ! {
     // Move presentation onto its own thread where the backend supports it.
     // Headless declines: its bytes are read back synchronously by `snapshot`.
     let mut present_pipe = backend.take_presenter().map(|p| {
-        eprintln!("nirios compositor: presenting on a dedicated render thread");
+        eprintln!("tilo compositor: presenting on a dedicated render thread");
         // Wake the loop when a frame retires — otherwise a tick that declined to
         // paint for lack of pipe capacity would park out the whole interval, halving throughput.
         let (ping, ping_source) = match calloop::ping::make_ping() {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("nirios compositor: create present-retire ping failed: {e}");
+                eprintln!("tilo compositor: create present-retire ping failed: {e}");
                 std::process::exit(1);
             }
         };
         if let Err(e) = event_loop.handle().insert_source(ping_source, |(), (), _| {
             // Waking is the whole effect: the loop re-evaluates its paint gate next iteration and now finds room.
         }) {
-            eprintln!("nirios compositor: insert present-retire ping source failed: {e}");
+            eprintln!("tilo compositor: insert present-retire ping source failed: {e}");
             std::process::exit(1);
         }
         present::PresentPipe::spawn(p, Box::new(move || ping.ping()))
@@ -4517,12 +5089,12 @@ pub fn run() -> ! {
     // cheap idempotent mount every network tick.
     let mut pending_legacy_streams: HashMap<(u64, u64), PendingLegacyStream> = HashMap::new();
     let legacy_share_config = crate::config::load_config().flatpak_share;
-    // Optional paint-rate diagnostics (`QOS_PAINT_STATS=1`).
-    let paint_stats = std::env::var("QOS_PAINT_STATS").is_ok();
-    // Optional per-iteration timing (`QOS_LOOP_TIMING=1`): logs any tick over
+    // Optional paint-rate diagnostics (`TILO_PAINT_STATS=1`).
+    let paint_stats = std::env::var("TILO_PAINT_STATS").is_ok();
+    // Optional per-iteration timing (`TILO_LOOP_TIMING=1`): logs any tick over
     // 100ms non-sleeping work with a phase breakdown, so a stall is measured, not guessed.
-    let loop_timing = std::env::var("QOS_LOOP_TIMING").is_ok();
-    // Frame-loop instrumentation (`QOS_FRAME_TRACE`/`QOS_FRAME_SUMMARY`), free
+    let loop_timing = std::env::var("TILO_LOOP_TIMING").is_ok();
+    // Frame-loop instrumentation (`TILO_FRAME_TRACE`/`TILO_FRAME_SUMMARY`), free
     // when neither is set. See `compositor::metrics`.
     let mut metrics = metrics::FrameRecorder::from_env();
     metrics.set_target_period(frame_period);
@@ -4532,7 +5104,7 @@ pub fn run() -> ! {
     // "no deadline" rather than panicking a session over a bench-only knob.
     let run_deadline = metrics::run_seconds_from_env().and_then(|d| {
         eprintln!(
-            "nirios compositor: {}={:?}; will exit cleanly after that",
+            "tilo compositor: {}={:?}; will exit cleanly after that",
             metrics::RUN_SECONDS_ENV,
             d
         );
@@ -4547,7 +5119,7 @@ pub fn run() -> ! {
         metrics.begin_tick(iter_t0);
         // Logout is requested from an off-thread power-menu action. Exit the
         // compositor through this normal cleanup path; its package wrapper
-        // then stops qOS's graphical targets and clears the shared user-manager
+        // then stops Tilo's graphical targets and clears the shared user-manager
         // environment before GDM admits the next desktop.
         if os_actions::take_logout_request() {
             close_requested = true;
@@ -4671,7 +5243,7 @@ pub fn run() -> ! {
                             && frame_clock.set_interval(interval)
                         {
                             eprintln!(
-                                "nirios compositor: display changed; now pacing to {:.3} Hz",
+                                "tilo compositor: display changed; now pacing to {:.3} Hz",
                                 1.0 / interval.as_secs_f64()
                             );
                             metrics.set_target_period(interval);
@@ -4699,6 +5271,11 @@ pub fn run() -> ! {
                     state.remote_input_firewall.note_local_input(Instant::now());
 
                     if session.is_locked() {
+                        if let Some(network) = peer_sync.as_ref() {
+                            end_spatial_control(network, &mut spatial_control);
+                        } else {
+                            spatial_control = None;
+                        }
                         // Locked: every input is captured by the lock surface, into the password
                         // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
                         if let WindowEvent::KeyboardInput { event: key_ev, .. } = wev {
@@ -4719,13 +5296,13 @@ pub fn run() -> ! {
                         // Hardware power key resolves per the power policy (logind delegates via
                         // the service's block inhibitor); a deliberate press bypasses the idle inhibitor.
                         match power_policy.on_power_key() {
-                            Some(qos_power_mgmt::PowerAction::Suspend) => {
-                                tracing::info!(target: "qos::power", "power key: requesting suspend");
+                            Some(tilo_power_mgmt::PowerAction::Suspend) => {
+                                tracing::info!(target: "tilo::power", "power key: requesting suspend");
                                 sleep_lock_was_locked = session.is_locked();
                                 session_changed = true;
                                 power_bridge.request_suspend();
                             }
-                            Some(qos_power_mgmt::PowerAction::Lock) => {
+                            Some(tilo_power_mgmt::PowerAction::Lock) => {
                                 for t in session.request_lock(Instant::now()) {
                                     apply_session_transition(
                                         t,
@@ -4734,7 +5311,7 @@ pub fn run() -> ! {
                                     );
                                 }
                             }
-                            Some(qos_power_mgmt::PowerAction::Ignore) | None => {}
+                            Some(tilo_power_mgmt::PowerAction::Ignore) | None => {}
                         }
                     } else if let Some(vt) = vt_switch_chord(wev, test_control_ctx.modifiers) {
                         // Ahead of every other chord, never offered to a client: leaving the
@@ -4744,6 +5321,11 @@ pub fn run() -> ! {
                         // Super+Esc: every peer's input stops and stays stopped. Ahead of the
                         // client router and shell's Escape handling — a panic key a client can swallow isn't one.
                         client_input::stop_remote_input(&mut state, &mut frame_builder);
+                        if let Some(network) = peer_sync.as_ref() {
+                            end_spatial_control(network, &mut spatial_control);
+                        } else {
+                            spatial_control = None;
+                        }
                         session_changed = true;
                     } else if is_lock_chord(wev, test_control_ctx.modifiers) {
                         // Super+L locks immediately.
@@ -4761,6 +5343,13 @@ pub fn run() -> ! {
                             frame_builder.with_chrome(|st| st.show_osd(osd));
                             session_changed = true;
                         }
+                    } else if peer_sync.as_ref().is_some_and(|network| {
+                        forward_spatial_window_event(wev, network, &mut spatial_control)
+                    }) {
+                        // The physical keyboard/pointer is logically on the
+                        // adjacent certified device until it crosses back or
+                        // Escape is pressed. Reserved shell chords above stay
+                        // local and remain an unconditional escape path.
                     } else {
                         // InputCapture deliberately sits after the compositor's
                         // power/VT/lock/panic controls but before client/chrome
@@ -4808,6 +5397,17 @@ pub fn run() -> ! {
                         }
                     }
                 }
+                BackendEvent::RelativePointerMotion { dx, dy } => {
+                    if session.is_locked() {
+                        if let Some(network) = peer_sync.as_ref() {
+                            end_spatial_control(network, &mut spatial_control);
+                        } else {
+                            spatial_control = None;
+                        }
+                    } else if let Some(network) = peer_sync.as_ref() {
+                        let _ = move_spatial_pointer(&state, network, &mut spatial_control, dx, dy);
+                    }
+                }
                 BackendEvent::ModifiersChanged(modifiers) => {
                     // Carry the modifier mask forward so the next event dispatched (or the
                     // lock-chord check above) sees the right Ctrl/Shift/Alt/Super state.
@@ -4819,6 +5419,11 @@ pub fn run() -> ! {
                     // chrome's modifier snapshot, before accepting another
                     // physical event.
                     state.reset_client_keyboard_state();
+                    if let Some(network) = peer_sync.as_ref() {
+                        end_spatial_control(network, &mut spatial_control);
+                    } else {
+                        spatial_control = None;
+                    }
                     test_control_ctx.modifiers = Modifiers::default();
                 }
                 BackendEvent::OutputsChanged => {
@@ -4878,8 +5483,17 @@ pub fn run() -> ! {
                         state.forward_client_touch(touch, target);
                     }
                 }
-                BackendEvent::Redraw | BackendEvent::Focus(_) => {
-                    // Redraw is implicit (we re-paint every tick); focus changes don't gate input dispatch here.
+                BackendEvent::Focus(focused) => {
+                    if !focused {
+                        if let Some(network) = peer_sync.as_ref() {
+                            end_spatial_control(network, &mut spatial_control);
+                        } else {
+                            spatial_control = None;
+                        }
+                    }
+                }
+                BackendEvent::Redraw => {
+                    // Redraw is implicit: the native loop paints every tick.
                 }
             }
         }
@@ -4925,7 +5539,7 @@ pub fn run() -> ! {
         // before doing any layout/render work.  The later flush remains necessary
         // for protocol events produced while dispatching client requests.
         if had_backend_events && let Err(err) = display.flush_clients() {
-            eprintln!("nirios compositor: input flush_clients error: {err}");
+            eprintln!("tilo compositor: input flush_clients error: {err}");
             break;
         }
 
@@ -4948,7 +5562,7 @@ pub fn run() -> ! {
             {
                 tracing::warn!(?error, "compositor: rejected invalid shortcut settings");
             }
-            let policy = qos_power_mgmt::config::load_policy();
+            let policy = tilo_power_mgmt::config::load_policy();
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
             session.set_suspend_timeout(policy.idle_suspend);
@@ -5018,7 +5632,7 @@ pub fn run() -> ! {
                 && frame_clock.set_interval(interval)
             {
                 eprintln!(
-                    "nirios compositor: display configuration changed; now pacing to {:.3} Hz",
+                    "tilo compositor: display configuration changed; now pacing to {:.3} Hz",
                     1.0 / interval.as_secs_f64()
                 );
                 metrics.set_target_period(interval);
@@ -5050,12 +5664,12 @@ pub fn run() -> ! {
                 if inhibit_registry.is_inhibited() {
                     session.cancel_suspend();
                     tracing::debug!(
-                        target: "qos::power",
+                        target: "tilo::power",
                         reasons = ?inhibit_registry.active_reasons(),
                         "idle-suspend deferred: inhibitor held"
                     );
                 } else {
-                    tracing::info!(target: "qos::power", "idle threshold reached: requesting suspend");
+                    tracing::info!(target: "tilo::power", "idle threshold reached: requesting suspend");
                     sleep_lock_was_locked = session.is_locked();
                     power_bridge.request_suspend();
                 }
@@ -5071,12 +5685,12 @@ pub fn run() -> ! {
         for sig in power_bridge.drain_signals() {
             session_changed = true;
             match sig {
-                qos_power_mgmt::PowerSignal::Lock => {
+                tilo_power_mgmt::PowerSignal::Lock => {
                     for t in session.request_lock(Instant::now()) {
                         apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
                 }
-                qos_power_mgmt::PowerSignal::PreparingForSleep => {
+                tilo_power_mgmt::PowerSignal::PreparingForSleep => {
                     // Preserve a lock that was already present at request
                     // time, and also observe a manual/lid lock that arrived
                     // while the async suspend request was in flight.
@@ -5088,7 +5702,7 @@ pub fn run() -> ! {
                     sleep_lock_frame_serial = None;
                     sleep_lock_frame_failed = false;
                 }
-                qos_power_mgmt::PowerSignal::SuspendFailed => {
+                tilo_power_mgmt::PowerSignal::SuspendFailed => {
                     let was_prepared = sleep_lock_frame_pending;
                     sleep_lock_frame_pending = false;
                     sleep_lock_frame_serial = None;
@@ -5104,9 +5718,9 @@ pub fn run() -> ! {
                         }
                     }
                     sleep_lock_was_locked = false;
-                    tracing::warn!(target: "qos::power", "suspend request failed; session remains awake");
+                    tracing::warn!(target: "tilo::power", "suspend request failed; session remains awake");
                 }
-                qos_power_mgmt::PowerSignal::ResumedFromSleep => {
+                tilo_power_mgmt::PowerSignal::ResumedFromSleep => {
                     // Reset the idle timer so a stale pre-sleep timestamp doesn't immediately re-blank/re-suspend on resume.
                     for t in session.resume_from_sleep(Instant::now()) {
                         apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
@@ -5122,11 +5736,11 @@ pub fn run() -> ! {
                     outputs_dirty = false;
                     session_changed = true;
                 }
-                qos_power_mgmt::PowerSignal::IdleSuspendChanged(timeout) => {
+                tilo_power_mgmt::PowerSignal::IdleSuspendChanged(timeout) => {
                     session.set_suspend_timeout(timeout);
-                    tracing::info!(target: "qos::power", ?timeout, "live idle-suspend timeout updated");
+                    tracing::info!(target: "tilo::power", ?timeout, "live idle-suspend timeout updated");
                 }
-                qos_power_mgmt::PowerSignal::Notify(n) => {
+                tilo_power_mgmt::PowerSignal::Notify(n) => {
                     let inc = power_notification_to_incoming(&notif_bridge, n);
                     notif_bridge.push_incoming(inc);
                 }
@@ -5155,7 +5769,7 @@ pub fn run() -> ! {
                 SleepLockFrameStatus::PresenterLost => {
                     if !sleep_lock_frame_failed {
                         tracing::error!(
-                            target: "qos::power",
+                            target: "tilo::power",
                             serial,
                             "presenter exited before the required lock frame retired; retaining sleep delay inhibitor"
                         );
@@ -5217,6 +5831,14 @@ pub fn run() -> ! {
         }
         if session.is_locked() != prev_locked {
             crate::portal::inhibit::publish_screensaver_state(session.is_locked());
+            if session.is_locked() {
+                let _ = state.release_all_personal_fabric_input();
+                if let Some(network) = peer_sync.as_ref() {
+                    end_spatial_control(network, &mut spatial_control);
+                } else {
+                    spatial_control = None;
+                }
+            }
         }
         prev_locked = session.is_locked();
 
@@ -5368,6 +5990,141 @@ pub fn run() -> ! {
         // network actor into the replica: peer changes fold in before this frame's pump reads them, bumping the revision to repaint.
         if let Some(net) = peer_sync.as_ref() {
             net.tick();
+            let runtime = device_fabric_runtime.get_or_insert_with(|| {
+                crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(
+                    net,
+                    notif_bridge.clone(),
+                )
+            });
+            let (width, height) = combined_geometry(backend.outputs());
+            let display =
+                (width > 0 && height > 0).then_some(crate::shell::device_fabric::DisplayRect {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                });
+            runtime.pump(
+                net,
+                &state.selection_store(),
+                crate::shell::device_fabric_runtime::LocalFabricCapabilities {
+                    display,
+                    pointer: true,
+                    keyboard: true,
+                    audio_output: system_audio,
+                },
+            );
+            for (controller, event) in crate::shell::device_fabric_runtime::take_spatial_input() {
+                let _ = state.apply_personal_fabric_input(&controller, event);
+            }
+            for controller in crate::shell::device_fabric_runtime::take_spatial_input_releases() {
+                let _ = state.release_personal_fabric_input(&controller);
+            }
+            for event in crate::shell::device_fabric_runtime::take_personal_display_events() {
+                use crate::shell::device_fabric_runtime::PersonalDisplayEvent;
+                match event {
+                    PersonalDisplayEvent::Started {
+                        session_id, source, ..
+                    } => {
+                        let input_net = Arc::clone(net);
+                        let input_source = source.clone();
+                        let sink = Arc::new(move |event: crate::network::streaming::InputEvent| {
+                            use crate::network::streaming::InputEvent;
+                            let mapped = match event {
+                                InputEvent::PointerMotion { x, y } => Some(
+                                    crate::shell::device_fabric::FabricInputEvent::PointerMotion {
+                                        x: spatial_coord(x),
+                                        y: spatial_coord(y),
+                                    },
+                                ),
+                                InputEvent::PointerButton { button, pressed } => Some(
+                                    crate::shell::device_fabric::FabricInputEvent::PointerButton {
+                                        button,
+                                        pressed,
+                                    },
+                                ),
+                                InputEvent::Key {
+                                    keysym,
+                                    pressed,
+                                    modifiers,
+                                } => Some(crate::shell::device_fabric::FabricInputEvent::Key {
+                                    keycode: keysym,
+                                    pressed,
+                                    modifiers,
+                                }),
+                                InputEvent::PointerEnter { .. }
+                                | InputEvent::PointerLeave { .. }
+                                | InputEvent::KeyboardFocus { .. } => None,
+                            };
+                            if let Some(mapped) = mapped {
+                                let _ = crate::shell::device_fabric_runtime::send_spatial_input(
+                                    &input_net,
+                                    &input_source,
+                                    mapped,
+                                );
+                            }
+                        });
+                        frame_builder
+                            .host_mut()
+                            .mount_personal_display(session_id, sink);
+                    }
+                    PersonalDisplayEvent::Frame {
+                        session_id,
+                        sequence,
+                        annex_b,
+                        ..
+                    } => {
+                        let outcome = frame_builder
+                            .host_mut()
+                            .push_personal_display_frame(session_id, &annex_b);
+                        crate::shell::device_fabric_runtime::report_personal_display_decode(
+                            net, session_id, sequence, outcome,
+                        );
+                    }
+                    PersonalDisplayEvent::Ended { session_id } => {
+                        let _ = frame_builder
+                            .host_mut()
+                            .unmount_personal_display(session_id);
+                    }
+                }
+            }
+            for event in crate::shell::device_fabric_runtime::take_nearby_drop_events() {
+                use crate::shell::device_fabric_runtime::NearbyDropEvent;
+                let fabric = net.device_fabric();
+                let peer_label = |peer: &crate::shell::personal_continuity::DeviceId| {
+                    fabric.snapshots().get(peer).map_or_else(
+                        || "your device".to_string(),
+                        |snapshot| snapshot.presence.label.clone(),
+                    )
+                };
+                let (title, body) = match event {
+                    NearbyDropEvent::Sending { file_name, peer } => (
+                        "Sending nearby".to_string(),
+                        format!("{file_name} to {}", peer_label(&peer)),
+                    ),
+                    NearbyDropEvent::Sent { file_name, peer } => (
+                        "Sent nearby".to_string(),
+                        format!("{file_name} to {}", peer_label(&peer)),
+                    ),
+                    NearbyDropEvent::Failed { file_name, peer } => (
+                        "Nearby drop failed".to_string(),
+                        format!("{file_name} · {}", peer_label(&peer)),
+                    ),
+                    NearbyDropEvent::Received { path, peer } => (
+                        "Received nearby".to_string(),
+                        format!(
+                            "{} from {}",
+                            path.file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("File"),
+                            peer_label(&peer)
+                        ),
+                    ),
+                };
+                frame_builder.with_chrome(|chrome| {
+                    chrome.push_notification(title, body);
+                });
+            }
             let desired = {
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();
@@ -5605,7 +6362,7 @@ pub fn run() -> ! {
         }
         let should_paint = content_changed && cadence_due && pipe_ready;
 
-        // Diagnostic: `QOS_PAINT_STATS=1` logs every ~2s how many frames painted
+        // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
         if paint_stats {
             frames_total = frames_total.saturating_add(1);
@@ -5976,7 +6733,23 @@ pub fn run() -> ! {
             // Neither capture path transmits the lock screen: receiver
             // sessions may remain connected, but no fresh frame reveals
             // password entry, notification counts, or unlock timing.
-            if !session.is_locked() && frame_builder.host().projection_capture_requested() {
+            let personal_display_profile =
+                crate::shell::device_fabric_runtime::personal_display_capture_profile();
+            projection_capture.set_personal_profile(personal_display_profile);
+            if crate::shell::device_fabric_runtime::take_personal_display_keyframe_request() {
+                projection_capture.request_keyframe();
+            }
+            if let Some(net) = peer_sync.as_ref() {
+                while let Some(packet) = projection_capture.take_packet() {
+                    let _ = crate::shell::device_fabric_runtime::publish_personal_display_packet(
+                        net, &packet,
+                    );
+                }
+            }
+            if !session.is_locked()
+                && (frame_builder.host().projection_capture_requested()
+                    || personal_display_profile.is_some())
+            {
                 let viewport = frame_builder.viewport();
                 #[allow(
                     clippy::cast_possible_truncation,
@@ -6014,7 +6787,7 @@ pub fn run() -> ! {
                 // Presentation is dead but the session isn't — clients stay served and
                 // protocol state is kept, a far better failure mode than tearing the seat down.
                 eprintln!(
-                    "nirios compositor: render thread gone; presentation stopped \
+                    "tilo compositor: render thread gone; presentation stopped \
                      (clients keep running)"
                 );
                 if sleep_lock_frame_pending {
@@ -6093,7 +6866,7 @@ pub fn run() -> ! {
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(e) => {
-                        eprintln!("nirios compositor: test_control accept: {e}");
+                        eprintln!("tilo compositor: test_control accept: {e}");
                         break;
                     }
                 }
@@ -6125,7 +6898,7 @@ pub fn run() -> ! {
         // Drain wayland client traffic and push updates back out: `dispatch_clients`
         // advances each client's request queue through the `*Handler` impls, `flush_clients` pumps server events back. Mirrors smithay 0.7's minimal example.
         if let Err(err) = display.dispatch_clients(&mut state) {
-            eprintln!("nirios compositor: dispatch_clients error: {err}");
+            eprintln!("tilo compositor: dispatch_clients error: {err}");
             break;
         }
         // Selection bookkeeping after dispatch, not in the protocol handler:
@@ -6135,7 +6908,7 @@ pub fn run() -> ! {
         }
         state.pump_selection();
         if let Err(err) = display.flush_clients() {
-            eprintln!("nirios compositor: flush_clients error: {err}");
+            eprintln!("tilo compositor: flush_clients error: {err}");
             break;
         }
         let t_work_done = iter_t0.elapsed();
@@ -6158,7 +6931,7 @@ pub fn run() -> ! {
         let park = frame_clock.park(Instant::now());
         let t_sleep_start = Instant::now();
         if let Err(err) = event_loop.dispatch(park, &mut state) {
-            eprintln!("nirios compositor: event loop dispatch error: {err}");
+            eprintln!("tilo compositor: event loop dispatch error: {err}");
             break;
         }
         if xwayland_enabled && xwayland.is_none() {
@@ -6214,7 +6987,7 @@ pub fn run() -> ! {
 /// Settings exits. Missing sensors/backlights simply produce no write.
 fn spawn_auto_brightness_worker() {
     let _ = std::thread::Builder::new()
-        .name("qos-auto-brightness".into())
+        .name("tilo-auto-brightness".into())
         .spawn(|| {
             let mut controller = os_actions::AmbientBrightnessController::default();
             loop {
@@ -6230,7 +7003,7 @@ fn spawn_auto_brightness_worker() {
                         && let Some(percent) = controller.update(lux)
                         && let Err(error) = os_actions::set_brightness(percent)
                     {
-                        tracing::warn!(target: "qos::display", %error, "automatic brightness write failed");
+                        tracing::warn!(target: "tilo::display", %error, "automatic brightness write failed");
                     }
                 } else {
                     controller.reset();
@@ -6505,7 +7278,7 @@ mod tests {
     fn onboarding_blocks_every_client_input_route() {
         let mut fb = FrameBuilder::new((800, 600));
         assert!(client_input_allowed(&fb));
-        fb.enable_onboarding(std::path::PathBuf::from("/tmp/qos-onboarding-test"));
+        fb.enable_onboarding(std::path::PathBuf::from("/tmp/tilo-onboarding-test"));
         assert!(fb.host().onboarding_active());
         assert!(
             !client_input_allowed(&fb),
@@ -6553,7 +7326,7 @@ mod tests {
             &services,
             false,
             launcher::services::ServiceLaunchContext {
-                app_id: "dev.qos.socket-contract-test",
+                app_id: "dev.tilo.socket-contract-test",
                 workspace_id: Some("socket-contract-workspace"),
             },
         )
@@ -6695,7 +7468,7 @@ mod tests {
     fn display_path_lands_under_the_runtime_dir() {
         assert_eq!(
             session_display_path(Some(std::ffi::OsString::from("/run/user/1000"))),
-            Some(PathBuf::from("/run/user/1000/qos-session/wayland-display")),
+            Some(PathBuf::from("/run/user/1000/tilo-session/wayland-display")),
         );
     }
 
@@ -6715,12 +7488,12 @@ mod tests {
 
         // Round-trip through the real writer: what lands on disk must be usable as
         // `WAYLAND_DISPLAY=$(cat …)` — no trailing newline, no quoting.
-        let dir = std::env::temp_dir().join(format!("qos-display-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-display-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp runtime dir");
         let path = session_display_path(Some(dir.clone().into_os_string()))
             .expect("absolute temp dir yields a path");
-        std::fs::create_dir_all(path.parent().unwrap()).expect("create qos-session dir");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("create tilo-session dir");
         atomic_file::write_with_mode(&path, b"wayland-7", 0o600).expect("write display file");
 
         let read = std::fs::read_to_string(&path).expect("read back");
@@ -7002,7 +7775,7 @@ mod tests {
     // state_dump
 
     /// `chrome_state_json` returns an object with an `overlays` key carrying
-    /// the four flags — matches what `qos-control state-dump` queries, so a regression here silently breaks the CLI.
+    /// the four flags — matches what `tilo-control state-dump` queries, so a regression here silently breaks the CLI.
     #[test]
     fn state_dump_chrome_includes_overlays_field() {
         let fb = FrameBuilder::new((1600, 900));
@@ -7155,7 +7928,7 @@ mod tests {
     #[test]
     fn unlink_on_drop_removes_socket_file_on_drop() {
         let tmpdir = tempfile::tempdir().expect("tempdir");
-        let path = tmpdir.path().join("nirios-test-control.sock");
+        let path = tmpdir.path().join("tilo-test-control.sock");
         // Use an arbitrary regular-file stand-in — the guard removes anything
         // `remove_file` accepts, no real unix socket needed to exercise the contract.
         std::fs::write(&path, b"").expect("create stand-in file");
@@ -7970,21 +8743,21 @@ mod external_floating_security_tests {
     fn authenticated_app_region_is_translated_and_clipped_to_its_surface() {
         let app = Rect::new(300.0, 80.0, 1100.0, 680.0);
         let source = FloatingSource::AppRegion {
-            app_id: "dev.qos.chat".into(),
+            app_id: "dev.tilo.chat".into(),
             region: Rect::new(720.0, 20.0, 880.0, 220.0),
         };
-        let translated = translate_external_source(source, "dev.qos.chat", app).unwrap();
+        let translated = translate_external_source(source, "dev.tilo.chat", app).unwrap();
         let FloatingSource::AppRegion { region, .. } = translated else {
             panic!("app region must remain an app region");
         };
         assert_eq!(region, Rect::new(1020.0, 100.0, 1100.0, 300.0));
 
         let semantic = FloatingSource::AppElement {
-            app_id: "dev.qos.chat".into(),
+            app_id: "dev.tilo.chat".into(),
             element_id: "call:shared-screen".into(),
             region: Rect::new(40.0, 30.0, 440.0, 280.0),
         };
-        let translated = translate_external_source(semantic, "dev.qos.chat", app).unwrap();
+        let translated = translate_external_source(semantic, "dev.tilo.chat", app).unwrap();
         let FloatingSource::AppElement {
             app_id,
             element_id,
@@ -7993,7 +8766,7 @@ mod external_floating_security_tests {
         else {
             panic!("semantic app element must retain its identity");
         };
-        assert_eq!(app_id, "dev.qos.chat");
+        assert_eq!(app_id, "dev.tilo.chat");
         assert_eq!(element_id, "call:shared-screen");
         assert_eq!(region, Rect::new(340.0, 110.0, 740.0, 360.0));
     }
@@ -8014,10 +8787,10 @@ mod external_floating_security_tests {
         assert!(
             translate_external_source(
                 FloatingSource::AppRegion {
-                    app_id: "dev.qos.mail".into(),
+                    app_id: "dev.tilo.mail".into(),
                     region: Rect::new(0.0, 0.0, 200.0, 120.0),
                 },
-                "dev.qos.chat",
+                "dev.tilo.chat",
                 app,
             )
             .is_err()
@@ -8025,7 +8798,7 @@ mod external_floating_security_tests {
         assert!(
             translate_external_source(
                 FloatingSource::Surface { surface_id: 42 },
-                "dev.qos.chat",
+                "dev.tilo.chat",
                 app,
             )
             .is_err()
@@ -8035,21 +8808,21 @@ mod external_floating_security_tests {
     #[test]
     fn app_owned_native_surface_accepts_local_source_but_not_spoofed_identity() {
         let source = FloatingSource::AppRegion {
-            app_id: "dev.qos.chat".into(),
+            app_id: "dev.tilo.chat".into(),
             region: Rect::new(420.0, 80.0, 780.0, 300.0),
         };
-        assert!(validate_app_owned_source(&source, "dev.qos.chat").is_ok());
+        assert!(validate_app_owned_source(&source, "dev.tilo.chat").is_ok());
         assert_eq!(
             app_owned_source_region(
                 &source,
-                "dev.qos.chat",
+                "dev.tilo.chat",
                 vello::kurbo::Size::new(1_000.0, 700.0)
             ),
             Some(Rect::new(420.0, 80.0, 780.0, 300.0))
         );
-        assert!(validate_app_owned_source(&source, "dev.qos.maps").is_err());
+        assert!(validate_app_owned_source(&source, "dev.tilo.maps").is_err());
         assert!(
-            validate_app_owned_source(&FloatingSource::Surface { surface_id: 42 }, "dev.qos.chat")
+            validate_app_owned_source(&FloatingSource::Surface { surface_id: 42 }, "dev.tilo.chat")
                 .is_err()
         );
     }
@@ -8057,7 +8830,7 @@ mod external_floating_security_tests {
     #[test]
     fn app_owned_transfer_keeps_visible_soft_chrome_at_the_parent_edge() {
         let source = FloatingSource::AppElement {
-            app_id: "dev.qos.chat".into(),
+            app_id: "dev.tilo.chat".into(),
             element_id: "active-call".into(),
             // A live drag has already carried most of the content beyond the
             // primary window. Its final visible strip is still a valid source
@@ -8068,7 +8841,7 @@ mod external_floating_security_tests {
         let visible = app_owned_transfer_region(
             &source,
             Some(presentation),
-            "dev.qos.chat",
+            "dev.tilo.chat",
             vello::kurbo::Size::new(1_200.0, 700.0),
         )
         .expect("the visible decorated edge becomes the warm-up proxy");
@@ -8078,7 +8851,7 @@ mod external_floating_security_tests {
     #[test]
     fn app_owned_transfer_prefers_decoration_over_content_only_source() {
         let source = FloatingSource::AppRegion {
-            app_id: "dev.qos.maps".into(),
+            app_id: "dev.tilo.maps".into(),
             region: Rect::new(720.0, 120.0, 1_080.0, 276.0),
         };
         let window = Rect::new(712.0, 112.0, 1_088.0, 284.0);
@@ -8086,7 +8859,7 @@ mod external_floating_security_tests {
             app_owned_transfer_region(
                 &source,
                 Some(window),
-                "dev.qos.maps",
+                "dev.tilo.maps",
                 vello::kurbo::Size::new(1_280.0, 720.0),
             ),
             Some(window),

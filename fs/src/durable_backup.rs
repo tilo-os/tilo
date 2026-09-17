@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 pub const RETAINED_GENERATIONS: usize = 3;
 pub const MAX_DURABLE_STATE_BYTES: u64 = 256 * 1024 * 1024;
-const BACKUP_SUFFIX: &str = ".qos-backups";
+const BACKUP_SUFFIX: &str = ".tilo-backups";
 const RECEIPT_VERSION: u16 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

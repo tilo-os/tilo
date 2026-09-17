@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-pub const APPLIANCE_DOMAIN_NAME: &str = "qos-windows-appliance";
+pub const APPLIANCE_DOMAIN_NAME: &str = "tilo-windows-appliance";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CpuMode {
@@ -57,7 +57,7 @@ pub struct ApplianceConfig {
     pub firmware: FirmwareConfig,
     pub performance: PerformanceConfig,
     /// A libvirt network with forwarding disabled. Guest internet access is
-    /// opened by the qOS capability broker, never by changing this NIC.
+    /// opened by the Tilo capability broker, never by changing this NIC.
     pub host_only_network: String,
     /// Fixed `AF_VSOCK` context identifier used only by the authenticated guest bridge.
     pub guest_cid: u32,
@@ -108,7 +108,7 @@ impl ApplianceConfig {
                 io_threads: 1,
                 cpu_mode: CpuMode::HostPassthrough,
             },
-            host_only_network: "qos-windows-hostonly".to_string(),
+            host_only_network: "tilo-windows-hostonly".to_string(),
             guest_cid: 7,
         }
     }
@@ -212,8 +212,8 @@ mod tests {
     fn config() -> ApplianceConfig {
         ApplianceConfig::recommended(
             "01234567-89ab-cdef-0123-456789abcdef",
-            "/var/lib/qos/windows/system.qcow2",
-            "/var/lib/qos/windows/nvram.fd",
+            "/var/lib/tilo/windows/system.qcow2",
+            "/var/lib/tilo/windows/nvram.fd",
         )
     }
 

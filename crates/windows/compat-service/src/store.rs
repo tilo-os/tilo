@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub const CAPSULE_SCHEMA_VERSION: u16 = 1;
-const SANDBOX_FILES_ROOT: &str = "/run/qos/files";
+const SANDBOX_FILES_ROOT: &str = "/run/tilo/files";
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// Why a managed executable exists in capsule state. Installer control rows
@@ -96,7 +96,7 @@ impl InstallationRecord {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CapsuleProgram {
-    /// Stable opaque identifier used by qOS search and launch actions.
+    /// Stable opaque identifier used by Tilo search and launch actions.
     pub id: String,
     pub display_name: String,
     /// Relative to the prefix root, normally `drive_c/Program Files/...`.
@@ -367,7 +367,7 @@ impl CapsuleStore {
         let data = Self::open_child_dir(&capsule, "data", false)?;
         let prefix = Self::open_child_dir(&data, "prefix", false)?;
         let drive_c = Self::open_child_dir(&prefix, "drive_c", true)?;
-        let installers = Self::open_child_dir(&drive_c, "qos-installers", true)?;
+        let installers = Self::open_child_dir(&drive_c, "tilo-installers", true)?;
         let extension = match kind {
             InstallerKind::Exe => "exe",
             InstallerKind::Msi => "msi",
@@ -406,7 +406,7 @@ impl CapsuleStore {
         destination.sync_all()?;
         rename_at(&installers, &temporary, &installers, &name)?;
         let _ = installers.sync_all();
-        Ok(PathBuf::from("drive_c/qos-installers").join(name))
+        Ok(PathBuf::from("drive_c/tilo-installers").join(name))
     }
 
     /// Reopen the exact installer retained by a portal-managed capsule for an
@@ -421,7 +421,7 @@ impl CapsuleStore {
         validate_id("capsule id", capsule_id)?;
         installation.validate()?;
         if installation.installer_relative_path.parent()
-            != Some(Path::new("drive_c/qos-installers"))
+            != Some(Path::new("drive_c/tilo-installers"))
         {
             return Err(CapsuleError::InvalidInstallation);
         }
@@ -434,7 +434,7 @@ impl CapsuleStore {
         let data = Self::open_child_dir(&capsule, "data", false)?;
         let prefix = Self::open_child_dir(&data, "prefix", false)?;
         let drive_c = Self::open_child_dir(&prefix, "drive_c", false)?;
-        let installers = Self::open_child_dir(&drive_c, "qos-installers", false)?;
+        let installers = Self::open_child_dir(&drive_c, "tilo-installers", false)?;
         Ok(open_regular_nofollow(&installers, name)?)
     }
 
@@ -503,7 +503,7 @@ impl CapsuleStore {
                 let installed_location = relative_lower.contains("program files")
                     || (relative_lower.contains("appdata") && relative_lower.contains("local"));
                 if !installed_location
-                    || relative_lower.contains("qos-installers")
+                    || relative_lower.contains("tilo-installers")
                     || relative_lower.starts_with("drive_c/windows/")
                     || is_helper_executable(&lower)
                     || candidates.len() >= MAX_PROGRAMS
@@ -852,7 +852,7 @@ fn file_from_fd_io(fd: i32) -> Result<File, std::io::Error> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RegisteredProgram {
     pub entry_id: String,
-    /// Canonical qOS capability subject derived by the service, never a client.
+    /// Canonical Tilo capability subject derived by the service, never a client.
     pub app_id: String,
     pub capsule_id: String,
     pub program: CapsuleProgram,
@@ -865,7 +865,7 @@ fn managed_program_id(capsule_id: &str, program_id: &str) -> String {
 
 fn managed_app_id(capsule_id: &str, program_id: &str) -> String {
     format!(
-        "dev.qos.windows.{}",
+        "dev.tilo.windows.{}",
         identity_digest(capsule_id, program_id)
     )
 }

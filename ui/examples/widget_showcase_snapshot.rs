@@ -1,5 +1,5 @@
 //! Renders the `widget_showcase` Column tree to PNG via `OffscreenRenderer`.
-//! Lets reviewers (and Claude) inspect the live App layout without opening
+//! Lets reviewers inspect the live app layout without opening
 //! a window. Run with:
 //! ```
 //! cargo run -p ui --example ui-shots -- widget_showcase_snapshot
@@ -32,12 +32,9 @@ use vello::peniko::{
     Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format,
 };
 
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
 #[allow(
     clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine * Affine composes two 2D transforms via f64 \
-              matrix math; it never panics or overflows, unlike integer +/-/*"
+    reason = "affine composition uses floating-point matrix arithmetic"
 )]
 fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
@@ -349,8 +346,8 @@ fn build_root_widget(tree: TreeView<()>) -> Box<dyn Widget> {
                                        // anchoring + percent-height widgets don't compose into a
                                        // bare Column). The offscreen `widget_snapshot` example
                                        // pins them at fixed rects for visual review.
-        )), // close Column → Box::new
-    ); // close Scrollable.with_child → Box::new (outer root)
+        )),
+    );
     let _ = popover;
     let _ = modal;
     root
@@ -411,7 +408,6 @@ pub fn run(_args: &[String]) {
     renderer.render_png(&scene, theme.tokens.colors.surfaces.base, &out_top);
     println!("wrote top-of-page snapshot to {out_top}");
 
-    // ----- Now scroll down 600 px and re-render to verify scrolling --
     // Inject a synthetic MouseWheel event that the Scrollable should
     // catch and convert to an `offset_y` update. Then re-apply layout
     // (Scrollable's apply_layout re-positions its child using the new

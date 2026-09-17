@@ -27,9 +27,12 @@ encode = ["dep:gstreamer"]
 # state (playing / position / rate / epoch) between peers so a joiner follows
 # the host with drift correction. Same pin as `ui` so a single copy resolves.
 automerge.workspace = true
+blake3.workspace = true
+serde.workspace = true
+hex.workspace = true
 
 # Decode diagnostics: which decoder was plugged, why a hardware path was
-# refused, what `QOS_MEDIA_HWDEC` / `QOS_MEDIA_HWENC` were read as. Same pin the
+# refused, what `TILO_MEDIA_HWDEC` / `TILO_MEDIA_HWENC` were read as. Same pin the
 # rest of the workspace resolves, so log filtering behaves identically.
 tracing.workspace = true
 

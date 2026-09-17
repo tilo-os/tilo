@@ -1,4 +1,4 @@
-//! Diff/merge — standard qOS application entry point.
+//! Diff/merge — standard Tilo application entry point.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -37,7 +37,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.diffmerge", diffmerge::app_root)
+        &LaunchSpec::new("dev.tilo.diffmerge", diffmerge::app_root)
             .shot_root(shot_root)
             .scenarios(&["empty", "diff", "merge", "error", "status"])
             .configure_app(|app| diffmerge::actions::register(app.action_registry_mut())),

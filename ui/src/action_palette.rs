@@ -1,8 +1,8 @@
 //! `ActionPalette` — the one Ctrl+K surface for a `ui::App`.
 //!
-//! The **resource + action model** ([`qos_actions`]) is the foundation: the
+//! The **resource + action model** ([`tilo_actions`]) is the foundation: the
 //! focused app instance publishes a tree of open [`Resource`]s, each
-//! exporting [`ActionSpec`](qos_actions::ActionSpec)s — the operations
+//! exporting [`ActionSpec`](tilo_actions::ActionSpec)s — the operations
 //! Ctrl+K offers. An app can also fold in *searchable content* via
 //! [`SearchProvider`](crate::search::SearchProvider)s (contacts, files, …);
 //! their hits can address an exported resource action and therefore enter the
@@ -16,9 +16,9 @@
 //! [`SearchField`](crate::widget::SearchField); results render through
 //! [`SearchResultsView`](crate::widget::SearchResultsView), grouped by kind.
 //! An action row resolves to its [`EncodedAction`] and
-//! [`dispatch_with_context`](qos_actions::dispatch_with_context)es through `qos_actions` — the same
+//! [`dispatch_with_context`](tilo_actions::dispatch_with_context)es through `tilo_actions` — the same
 //! path a remote peer replays — with a
-//! [`Prompted`](qos_actions::ActionInput::Prompted) action first collecting
+//! [`Prompted`](tilo_actions::ActionInput::Prompted) action first collecting
 //! its argument in the field. A canonical search hit resolves to that same
 //! action machinery. Only a legacy content row hands its opaque `action_id`
 //! back to the app to navigate.
@@ -42,7 +42,7 @@ use crate::search::{SearchCursor, SearchGroup, SearchProvider, SearchResult, fuz
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, SearchResultsView, Widget};
-use qos_actions::{
+use tilo_actions::{
     ActionContext, ActionInput, ActionRegistry, ActionTransport, ConfirmationPolicy, Dispatched,
     EncodedAction, OperationKind, Resource, flatten,
 };
@@ -77,7 +77,7 @@ pub struct SearchAdvance {
 enum RowResolution {
     /// An exported action, deliberately retained as an inert address. It is
     /// resolved against the latest resource forest only when activated.
-    Address(qos_actions::ActionAddress),
+    Address(tilo_actions::ActionAddress),
     /// A legacy search-provider hit — hand the opaque id back to the app.
     Navigate(String),
 }
@@ -104,7 +104,7 @@ enum ActionKind {
     /// multi-parameter action, then uses the `ActionSpec`'s strict binder.
     Typed {
         prompt: String,
-        spec: Box<qos_actions::ActionSpec>,
+        spec: Box<tilo_actions::ActionSpec>,
         context: ActionContext,
         kind: OperationKind,
         confirmation: ConfirmationPolicy,
@@ -113,7 +113,7 @@ enum ActionKind {
 
 /// Live state while the field is collecting a prompted action's argument.
 struct ArgState {
-    address: qos_actions::ActionAddress,
+    address: tilo_actions::ActionAddress,
 }
 
 struct ConfirmState {
@@ -131,7 +131,7 @@ enum PendingInput {
 /// A palette activation after address resolution and argument collection.
 pub struct PendingOperation {
     /// The address whose current authority must still be present at dispatch.
-    pub address: qos_actions::ActionAddress,
+    pub address: tilo_actions::ActionAddress,
     pub encoded: EncodedAction,
     pub context: ActionContext,
     pub kind: OperationKind,
@@ -149,7 +149,7 @@ impl PendingOperation {
             PendingInput::Immediate | PendingInput::Invalid => None,
             PendingInput::Text(value) => Some(value.clone()),
             PendingInput::Json(value) => {
-                Some(format!("{}{}", qos_actions::ARGUMENTS_JSON_PREFIX, value))
+                Some(format!("{}{}", tilo_actions::ARGUMENTS_JSON_PREFIX, value))
             }
         }
     }
@@ -508,7 +508,7 @@ impl ActionPalette {
     /// Used by accessibility activation so consequential resource nodes cannot
     /// jump around the palette's policy flow.
     pub fn activate_address(&mut self, resource: &str, action: &str) -> bool {
-        let id = format!("{resource}{}{action}", qos_actions::KEY_SEP);
+        let id = format!("{resource}{}{action}", tilo_actions::KEY_SEP);
         if self.index.contains_key(&id) {
             self.resolve_activation(&id);
             true
@@ -526,10 +526,10 @@ impl ActionPalette {
         doc: &mut AutoCommit,
         registry: &ActionRegistry,
         transport: &mut dyn ActionTransport,
-    ) -> Option<Result<Dispatched, qos_actions::ActionError>> {
+    ) -> Option<Result<Dispatched, tilo_actions::ActionError>> {
         let pending = self.take_operation()?;
         if pending.kind != OperationKind::Document {
-            return Some(Err(qos_actions::ActionError::Refused(format!(
+            return Some(Err(tilo_actions::ActionError::Refused(format!(
                 "{} operation requires the owning widget",
                 pending.kind.as_str()
             ))));
@@ -549,7 +549,7 @@ impl ActionPalette {
     pub fn take_operation(&mut self) -> Option<PendingOperation> {
         let mut pending = self.pending_dispatch.take()?;
         let authority = self.authority_for(&pending.address)?;
-        let spec = qos_actions::door::resolve(&authority, &pending.address)?;
+        let spec = tilo_actions::door::resolve(&authority, &pending.address)?;
         if !spec.contract.availability.is_available()
             || spec.kind != pending.kind
             || spec.contract.confirmation != pending.confirmation
@@ -558,24 +558,24 @@ impl ActionPalette {
         }
         pending.encoded = match &pending.input {
             PendingInput::Immediate => {
-                qos_actions::door::encode(&authority, &pending.address, None).ok()?
+                tilo_actions::door::encode(&authority, &pending.address, None).ok()?
             }
             PendingInput::Text(value) => {
-                qos_actions::door::encode(&authority, &pending.address, Some(value)).ok()?
+                tilo_actions::door::encode(&authority, &pending.address, Some(value)).ok()?
             }
             PendingInput::Json(value) => {
                 let arguments =
                     serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(value)
                         .ok()?;
-                qos_actions::door::encode_json(&authority, &pending.address, &arguments).ok()?
+                tilo_actions::door::encode_json(&authority, &pending.address, &arguments).ok()?
             }
             PendingInput::Invalid => pending.encoded.clone(),
         };
         Some(pending)
     }
 
-    fn authority_for(&self, address: &qos_actions::ActionAddress) -> Option<Vec<Resource>> {
-        qos_actions::door::resolve(&self.resources, address)
+    fn authority_for(&self, address: &tilo_actions::ActionAddress) -> Option<Vec<Resource>> {
+        tilo_actions::door::resolve(&self.resources, address)
             .is_some()
             .then(|| self.resources.clone())
     }
@@ -592,15 +592,15 @@ impl ActionPalette {
         registry: &ActionRegistry,
         transport: &mut dyn ActionTransport,
         context: ActionContext,
-    ) -> Result<Dispatched, qos_actions::ActionError> {
-        if encoded.type_id == qos_actions::resource::INVALID_ARGUMENTS_TYPE {
-            return Err(qos_actions::ActionError::Refused(
+    ) -> Result<Dispatched, tilo_actions::ActionError> {
+        if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE {
+            return Err(tilo_actions::ActionError::Refused(
                 String::from_utf8_lossy(&encoded.payload).into_owned(),
             ));
         }
         let action = registry.decode(encoded)?;
         let actor = doc.get_actor().to_bytes().to_vec();
-        qos_actions::dispatch_by_with_context(
+        tilo_actions::dispatch_by_with_context(
             doc,
             action.as_ref(),
             encoded.clone(),
@@ -665,7 +665,7 @@ impl ActionPalette {
         }
     }
 
-    fn action_kind_for_address(&self, address: &qos_actions::ActionAddress) -> Option<ActionKind> {
+    fn action_kind_for_address(&self, address: &tilo_actions::ActionAddress) -> Option<ActionKind> {
         let fa = flatten(&self.resources)
             .into_iter()
             .find(|fa| fa.key == address.encode())?;
@@ -686,7 +686,7 @@ impl ActionPalette {
                 .action
                 .params()
                 .first()
-                .is_some_and(|parameter| parameter.ty != qos_actions::ParamType::Text);
+                .is_some_and(|parameter| parameter.ty != tilo_actions::ParamType::Text);
         Some(match &fa.action.input {
             ActionInput::Immediate(enc) => ActionKind::Immediate {
                 encoded: enc.clone(),
@@ -747,7 +747,7 @@ impl ActionPalette {
                 }
                 index.insert(
                     fa.key.clone(),
-                    RowResolution::Address(qos_actions::ActionAddress::new(
+                    RowResolution::Address(tilo_actions::ActionAddress::new(
                         fa.resource_id.as_str(),
                         fa.action.id.as_str(),
                     )),
@@ -938,7 +938,7 @@ impl ActionPalette {
                         } => {
                             let encoded = build(&value);
                             let input = if encoded.type_id
-                                == qos_actions::resource::INVALID_ARGUMENTS_TYPE
+                                == tilo_actions::resource::INVALID_ARGUMENTS_TYPE
                             {
                                 PendingInput::Invalid
                             } else {
@@ -962,11 +962,11 @@ impl ActionPalette {
                                     .map_err(|error| error.to_string())
                             })
                             .unwrap_or_else(|error| EncodedAction {
-                                type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                                 payload: error.into_bytes(),
                             });
                             let input = if encoded.type_id
-                                == qos_actions::resource::INVALID_ARGUMENTS_TYPE
+                                == tilo_actions::resource::INVALID_ARGUMENTS_TYPE
                             {
                                 PendingInput::Invalid
                             } else {
@@ -1138,10 +1138,10 @@ mod tests {
     use super::*;
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue};
-    use qos_actions::{
+    use serde::{Deserialize, Serialize};
+    use tilo_actions::{
         Action, ActionError, ActionRegistry, ActionSpec, Doc, ExecutionLocus, LocalTransport,
     };
-    use serde::{Deserialize, Serialize};
     use winit::event::KeyEvent;
 
     /// A minimal replayable action: set a string under a root key.
@@ -1232,7 +1232,7 @@ mod tests {
                     vec![SearchResult::for_action(
                         "People",
                         "Ada Lovelace",
-                        qos_actions::ActionAddress::new("test.thing:1", "mark"),
+                        tilo_actions::ActionAddress::new("test.thing:1", "mark"),
                     )]
                 })
                 .unwrap_or_default()
@@ -1260,7 +1260,7 @@ mod tests {
                     SearchResult::for_action(
                         "Large corpus",
                         format!("Item {id}"),
-                        qos_actions::ActionAddress::new(format!("lazy.item:{id}"), "open"),
+                        tilo_actions::ActionAddress::new(format!("lazy.item:{id}"), "open"),
                     )
                 })
                 .collect()
@@ -1268,7 +1268,7 @@ mod tests {
 
         fn resolve_action_resource(
             &self,
-            address: &qos_actions::ActionAddress,
+            address: &tilo_actions::ActionAddress,
         ) -> Option<Resource> {
             address.resource.strip_prefix("lazy.item:")?;
             Some(
@@ -1322,7 +1322,7 @@ mod tests {
                     SearchResult::for_action(
                         "Items",
                         format!("Broad candidate {id}"),
-                        qos_actions::ActionAddress::new(&resource_id, "open"),
+                        tilo_actions::ActionAddress::new(&resource_id, "open"),
                     ),
                 )
                 .expect("valid broad candidate");
@@ -1335,7 +1335,7 @@ mod tests {
                 SearchResult::for_action(
                     "Items",
                     "The only exact abc d result",
-                    qos_actions::ActionAddress::new(target_id, "open"),
+                    tilo_actions::ActionAddress::new(target_id, "open"),
                 ),
             )
             .expect("valid exact target");
@@ -1410,7 +1410,7 @@ mod tests {
         assert!(labels.iter().any(|l| l == "Ada Lovelace"), "{labels:?}");
     }
 
-    /// Activating an ACTION row dispatches through `qos_actions` and mutates the
+    /// Activating an ACTION row dispatches through `tilo_actions` and mutates the
     /// CRDT — the real replay path.
     #[test]
     fn activating_an_action_dispatches_and_mutates() {
@@ -1462,7 +1462,7 @@ mod tests {
         p.load_open_resources(&[thing_resource()]);
         p.set_ambient_context(Some(
             ActionContext::default()
-                .with_app("org.qos.Agent", "Agent")
+                .with_app("org.tilo.Agent", "Agent")
                 .with_purpose("Prepare launch")
                 .with_group("issue:42", "Launch", "issue"),
         ));
@@ -1538,7 +1538,7 @@ mod tests {
         let pending = p.take_operation().expect("broker operation pending");
         assert_eq!(
             pending.address,
-            qos_actions::ActionAddress::new("test.thing:1", "mark")
+            tilo_actions::ActionAddress::new("test.thing:1", "mark")
         );
         assert_eq!(pending.encoded.type_id, NOTE_TYPE);
         assert_eq!(pending.kind, OperationKind::Document);
@@ -1582,7 +1582,7 @@ mod tests {
     #[test]
     fn disabled_canonical_action_is_refused_at_activation() {
         let mut disabled = thing_resource();
-        disabled.actions[0].contract.availability = qos_actions::Availability::Unavailable {
+        disabled.actions[0].contract.availability = tilo_actions::Availability::Unavailable {
             code: "offline".into(),
             reason: "The service went offline".into(),
         };
@@ -1672,11 +1672,11 @@ mod tests {
                 },
             )
             .unwrap()
-            .with_contract(qos_actions::ActionContract {
+            .with_contract(tilo_actions::ActionContract {
                 confirmation: ConfirmationPolicy::Phrase {
                     phrase: "MARK THING".into(),
                 },
-                ..qos_actions::ActionContract::default()
+                ..tilo_actions::ActionContract::default()
             }),
         );
         let mut palette = ActionPalette::new();

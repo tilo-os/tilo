@@ -1,8 +1,8 @@
 //! Authenticated host client for the Windows guest bridge.
 //!
-//! The bridge is reachable only over qOS's non-forwarding libvirt network.
+//! The bridge is reachable only over Tilo's non-forwarding libvirt network.
 //! Its first, HMAC-authenticated health response carries the self-signed
-//! certificate.  qOS validates that response with the root-only bootstrap
+//! certificate.  Tilo validates that response with the root-only bootstrap
 //! key, records the exact certificate DER and SHA-256 digest, and uses it as
 //! a Rustls trust anchor thereafter.  A different certificate is a repair
 //! condition, never an automatic re-enrolment.
@@ -230,7 +230,7 @@ pub struct PublicationResult {
     pub catalog_generation: u64,
 }
 
-/// Root-owned bridge locations and the fixed host-only endpoint.  qOS's
+/// Root-owned bridge locations and the fixed host-only endpoint.  Tilo's
 /// libvirt network reserves `192.168.251.2` for the singleton appliance; the
 /// constructor rejects all other address ranges and public ports.
 #[derive(Clone, Debug)]
@@ -247,8 +247,8 @@ impl GuestBridgeConfig {
     pub fn system(presentation: ApplicationPresentation) -> Self {
         Self {
             endpoint: DEFAULT_ENDPOINT,
-            bootstrap_secret: PathBuf::from("/var/lib/qos/windows/bridge/bootstrap.secret"),
-            pin_directory: PathBuf::from("/var/lib/qos/windows/bridge"),
+            bootstrap_secret: PathBuf::from("/var/lib/tilo/windows/bridge/bootstrap.secret"),
+            pin_directory: PathBuf::from("/var/lib/tilo/windows/bridge"),
             presentation,
         }
     }
@@ -280,7 +280,7 @@ pub struct HttpsGuestBridge {
 
 impl HttpsGuestBridge {
     /// Opens the root-only bootstrap secret.  The caller is normally the
-    /// privileged qOS compatibility host; an unprivileged manager receives no
+    /// privileged Tilo compatibility host; an unprivileged manager receives no
     /// instance of this type and cannot read or use this key.
     pub fn new(config: GuestBridgeConfig) -> Result<Self, AgentError> {
         config.validate()?;
@@ -338,7 +338,7 @@ impl HttpsGuestBridge {
         Client::builder()
             .use_rustls_tls()
             .add_root_certificate(certificate)
-            // The enrolled guest certificate is self-signed for its qOS DNS
+            // The enrolled guest certificate is self-signed for its Tilo DNS
             // name while the host-only bridge has a fixed numeric endpoint.
             // Chain validation still occurs against the exact persisted DER.
             .danger_accept_invalid_hostnames(true)
@@ -423,11 +423,11 @@ impl HttpsGuestBridge {
         let path = format!("/v1/installers/{}", package.package_id);
         let mut response = client
             .post(self.bridge_url(&path))
-            .header("X-qOS-Timestamp", timestamp.to_string())
-            .header("X-qOS-Nonce", &request_nonce)
-            .header("X-qOS-Auth", authentication)
-            .header("X-qOS-Installer-Kind", package.kind.wire_name())
-            .header("X-qOS-Payload-SHA256", &package.sha256)
+            .header("X-Tilo-Timestamp", timestamp.to_string())
+            .header("X-Tilo-Nonce", &request_nonce)
+            .header("X-Tilo-Auth", authentication)
+            .header("X-Tilo-Installer-Kind", package.kind.wire_name())
+            .header("X-Tilo-Payload-SHA256", &package.sha256)
             .header("Content-Type", "application/octet-stream")
             .header("Content-Length", package.byte_len)
             .header("Accept", "application/json")
@@ -442,7 +442,7 @@ impl HttpsGuestBridge {
         }
         let response_auth = response
             .headers()
-            .get("X-qOS-Response-Auth")
+            .get("X-Tilo-Response-Auth")
             .and_then(|value| value.to_str().ok())
             .map(ToOwned::to_owned)
             .ok_or(AgentError::Authentication)?;
@@ -514,7 +514,7 @@ impl HttpsGuestBridge {
     }
 
     /// Publishes only a candidate previously discovered by the SYSTEM bridge.
-    /// Neither executable paths nor process arguments are accepted from qOS.
+    /// Neither executable paths nor process arguments are accepted from Tilo.
     pub fn publish_candidate(
         &self,
         operation: &InstallationOperationId,
@@ -625,9 +625,9 @@ impl HttpsGuestBridge {
             }
         };
         request = request
-            .header("X-qOS-Timestamp", timestamp.to_string())
-            .header("X-qOS-Nonce", &nonce)
-            .header("X-qOS-Auth", authentication)
+            .header("X-Tilo-Timestamp", timestamp.to_string())
+            .header("X-Tilo-Nonce", &nonce)
+            .header("X-Tilo-Auth", authentication)
             .header("Accept", "application/json");
         if method == "POST" {
             request = request.header("Content-Type", "application/json");
@@ -643,7 +643,7 @@ impl HttpsGuestBridge {
         }
         let response_auth = response
             .headers()
-            .get("X-qOS-Response-Auth")
+            .get("X-Tilo-Response-Auth")
             .and_then(|value| value.to_str().ok())
             .map(ToOwned::to_owned)
             .ok_or(AgentError::Authentication)?;

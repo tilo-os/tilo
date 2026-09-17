@@ -1,4 +1,4 @@
-//! Provider-neutral configuration for qOS agents.
+//! Provider-neutral configuration for Tilo agents.
 //!
 //! This crate deliberately stores *descriptions* of model providers, never a
 //! bearer token. A profile can point at a system-vault item via
@@ -50,7 +50,7 @@ pub enum EndpointLocation {
     /// A provider-operated internet endpoint.
     #[default]
     Hosted,
-    /// A loopback endpoint on this qOS device, e.g. vLLM or Ollama.
+    /// A loopback endpoint on this Tilo device, e.g. vLLM or Ollama.
     ThisDevice,
     /// An endpoint on a LAN, VPN, or a user-managed server.
     PrivateNetwork,
@@ -80,7 +80,7 @@ impl EndpointLocation {
 /// handing the secret to an outbound request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecretReference {
-    /// The broker/vault namespace, usually `qos.secret-service`.
+    /// The broker/vault namespace, usually `tilo.secret-service`.
     pub vault: String,
     /// Opaque item locator within `vault`; never the secret value.
     pub locator: String,
@@ -89,7 +89,7 @@ pub struct SecretReference {
 impl SecretReference {
     pub fn provider_api_key(profile_id: &str) -> Self {
         Self {
-            vault: "qos.secret-service".to_string(),
+            vault: "tilo.secret-service".to_string(),
             locator: format!("agent-provider/{profile_id}/api-key"),
         }
     }
@@ -471,7 +471,7 @@ mod tests {
     fn hosted_profiles_hold_only_a_vault_reference() {
         let profile = ProviderProfile::hosted(ProviderProtocol::Anthropic);
         let json = serde_json::to_string(&profile).unwrap();
-        assert!(json.contains("qos.secret-service"));
+        assert!(json.contains("tilo.secret-service"));
         assert!(json.contains("agent-provider/"));
         assert!(!json.contains("sk-ant-"));
         assert!(!json.contains("api_key\":\""));

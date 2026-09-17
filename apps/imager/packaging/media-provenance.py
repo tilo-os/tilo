@@ -27,7 +27,7 @@ FIELDS = {"schema_version", "source_image_id", "architecture", "hardware_profile
 CONTAINER_READ = """
 import json, sys
 from pathlib import Path
-sys.path.insert(0, '/run/qos-media-validation')
+sys.path.insert(0, '/run/tilo-media-validation')
 from hardware_profile import read_profile, read_definition, trusted_path, PROFILE_PATH, DEFINITION_PATH
 profile = read_profile(Path('/'))
 print(json.dumps({
@@ -82,11 +82,11 @@ def create(image, qcow):
     architecture = {"arm64": "aarch64", "amd64": "x86_64"}.get(architecture, architecture)
     # Validate immutable, root-owned profile metadata inside the final image.
     # Pin the run to the inspected ID so a changing tag cannot swap its bytes.
-    with tempfile.TemporaryDirectory(prefix="qos-media-validator-") as validation_dir:
+    with tempfile.TemporaryDirectory(prefix="tilo-media-validator-") as validation_dir:
         shutil.copyfile(REPO / "os/dev/hardware_profile.py", Path(validation_dir) / "hardware_profile.py")
         snapshot = json.loads(subprocess.check_output([
             "podman", "run", "--rm", "--network=none", "--read-only", "--user=0",
-            "--volume", f"{validation_dir}:/run/qos-media-validation:ro,Z",
+            "--volume", f"{validation_dir}:/run/tilo-media-validation:ro,Z",
             "--entrypoint", "python3", native_id, "-c", CONTAINER_READ,
         ], text=True))
     name, profile_hash, _ = snapshot_profile(snapshot, architecture)

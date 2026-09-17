@@ -38,7 +38,7 @@ impl SandboxExecutor for BwrapExecutor {
         let mut filter_file = if let Some(profile) = plan.seccomp_profile {
             let filter = launcher::seccomp::compile_baseline(profile)
                 .map_err(|error| ExecutionError::Seccomp(error.to_string()))?;
-            let mut file = create_memfd("qos-compat-seccomp")?;
+            let mut file = create_memfd("tilo-compat-seccomp")?;
             file.write_all(&filter)?;
             file.sync_all()?;
             // Bubblewrap reads from the inherited descriptor's current offset.
@@ -69,7 +69,7 @@ impl SandboxExecutor for BwrapExecutor {
             ));
         }
         if plan.runtime_lock_required {
-            let lock = create_memfd("qos-runtime-lock")?;
+            let lock = create_memfd("tilo-runtime-lock")?;
             inherited.push((
                 duplicate_above_child_slots(lock.as_raw_fd())?,
                 RUNTIME_LOCK_CHILD_FD,
@@ -132,16 +132,16 @@ fn validate_identity_uid(planned: u32, effective: u32) -> Result<(), ExecutionEr
 fn identity_files(uid: u32, gid: u32) -> [(&'static str, String, i32); 2] {
     [
         (
-            "qos-capsule-passwd",
+            "tilo-capsule-passwd",
             format!(
-                "qos:x:{uid}:{gid}:qOS capsule:{}:/usr/bin/nologin\n",
+                "tilo:x:{uid}:{gid}:Tilo capsule:{}:/usr/bin/nologin\n",
                 crate::plan::HOME_MOUNT
             ),
             PASSWD_CHILD_FD,
         ),
         (
-            "qos-capsule-group",
-            format!("qos:x:{gid}:\n"),
+            "tilo-capsule-group",
+            format!("tilo:x:{gid}:\n"),
             GROUP_CHILD_FD,
         ),
     ]
@@ -172,7 +172,7 @@ fn create_memfd(name: &str) -> Result<File, ExecutionError> {
 pub enum ExecutionError {
     #[error("capsule session UID {planned} differs from executor UID {effective}")]
     IdentityMismatch { planned: u32, effective: u32 },
-    #[error("could not compile the qOS seccomp profile: {0}")]
+    #[error("could not compile the Tilo seccomp profile: {0}")]
     Seccomp(String),
     #[error("could not create a private sandbox memfd: {0}")]
     Memfd(std::io::Error),
@@ -192,9 +192,11 @@ mod tests {
             let files = identity_files(uid, gid);
             assert_eq!(
                 files[0].1,
-                format!("qos:x:{uid}:{gid}:qOS capsule:/run/qos/capsule/home:/usr/bin/nologin\n")
+                format!(
+                    "tilo:x:{uid}:{gid}:Tilo capsule:/run/tilo/capsule/home:/usr/bin/nologin\n"
+                )
             );
-            assert_eq!(files[1].1, format!("qos:x:{gid}:\n"));
+            assert_eq!(files[1].1, format!("tilo:x:{gid}:\n"));
             assert_eq!(files[0].2, PASSWD_CHILD_FD);
             assert_eq!(files[1].2, GROUP_CHILD_FD);
         }

@@ -11,7 +11,7 @@ name = "ush"
 path = "src/lib.rs"
 
 [[bin]]
-name = "qos-ush"
+name = "tilo-ush"
 path = "src/main.rs"
 
 [dependencies]
