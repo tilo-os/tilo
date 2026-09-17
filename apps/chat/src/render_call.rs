@@ -41,6 +41,10 @@ struct Participant {
 }
 
 #[derive(Clone, Copy)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "typed snapshot of four independent visual control states passed together to the leaf painter"
+)]
 struct ControlVisual {
     on: bool,
     danger: bool,
