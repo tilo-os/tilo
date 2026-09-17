@@ -1,12 +1,10 @@
 //! Toolbar zoom control and page-scale transform.
 
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 
-use ui::text_render::TextRenderer;
-
 use crate::num;
+use crate::paint_context::PaintContext;
 
 pub(crate) const MIN: f64 = 0.4;
 pub(crate) const MAX: f64 = 3.0;
@@ -17,6 +15,14 @@ enum Action {
     Out,
     Reset,
     In,
+}
+
+#[derive(Clone, Copy)]
+struct ButtonStyle {
+    center_y: f64,
+    scale: f64,
+    chip: Color,
+    text: Color,
 }
 
 /// Owns the local zoom preference, transform geometry and toolbar interaction.
@@ -105,16 +111,20 @@ impl ZoomControl {
 
     pub(crate) fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
+        context: &mut PaintContext<'_>,
         row: Rect,
         chip: Color,
         text_color: Color,
     ) {
         self.hits.clear();
-        let scale = f64::from(text.text_scale());
+        let scale = f64::from(context.text.text_scale());
         let center_y = f64::midpoint(row.y0, row.y1);
+        let style = ButtonStyle {
+            center_y,
+            scale,
+            chip,
+            text: text_color,
+        };
         let button_width = 18.0 * scale;
         let button_height = 18.0 * scale;
         let y = center_y - button_height / 2.0;
@@ -123,21 +133,17 @@ impl ZoomControl {
         let total = button_width * 2.0 + value_width + 8.0 * scale;
         let mut x = row.x1 - 14.0 * scale - total;
 
-        self.hits.push((
-            Action::Out,
-            draw_button(
-                scene, transform, text, x, y, center_y, scale, chip, text_color, "−",
-            ),
-        ));
+        self.hits
+            .push((Action::Out, draw_button(context, x, y, style, "−")));
         x += button_width + 4.0 * scale;
         let value = Rect::new(x, y, x + value_width, y + button_height);
         let percent_width = num::f64_of_usize(percent.chars().count()) * 6.8 * scale;
-        text.draw_text(
-            scene,
+        context.text.draw_text(
+            context.scene,
             &percent,
             12.5,
             text_color,
-            transform
+            context.transform
                 * Affine::translate((
                     x + (value_width - percent_width) / 2.0,
                     center_y - 8.0 * scale,
@@ -146,12 +152,8 @@ impl ZoomControl {
         );
         self.hits.push((Action::Reset, value));
         x += value_width + 4.0 * scale;
-        self.hits.push((
-            Action::In,
-            draw_button(
-                scene, transform, text, x, y, center_y, scale, chip, text_color, "+",
-            ),
-        ));
+        self.hits
+            .push((Action::In, draw_button(context, x, y, style, "+")));
     }
 
     #[cfg(test)]
@@ -160,38 +162,32 @@ impl ZoomControl {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn draw_button(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
+    context: &mut PaintContext<'_>,
     x: f64,
     y: f64,
-    center_y: f64,
-    scale: f64,
-    chip: Color,
-    text_color: Color,
+    style: ButtonStyle,
     label: &str,
 ) -> Rect {
-    let width = 18.0 * scale;
-    let rect = Rect::new(x, y, x + width, y + 18.0 * scale);
-    scene.fill(
+    let width = 18.0 * style.scale;
+    let rect = Rect::new(x, y, x + width, y + 18.0 * style.scale);
+    context.scene.fill(
         Fill::NonZero,
-        transform,
-        chip,
+        context.transform,
+        style.chip,
         None,
-        &RoundedRect::from_rect(rect, 4.0 * scale),
+        &RoundedRect::from_rect(rect, 4.0 * style.scale),
     );
-    let label_width = num::f64_of_usize(label.chars().count()) * 6.5 * scale;
-    text.draw_text(
-        scene,
+    let label_width = num::f64_of_usize(label.chars().count()) * 6.5 * style.scale;
+    context.text.draw_text(
+        context.scene,
         label,
         13.0,
-        text_color,
-        transform
+        style.text,
+        context.transform
             * Affine::translate((
-                rect.x0 + (width - label_width).max(2.0 * scale) / 2.0,
-                center_y - 8.0 * scale,
+                rect.x0 + (width - label_width).max(2.0 * style.scale) / 2.0,
+                style.center_y - 8.0 * style.scale,
             )),
         None,
     );

@@ -34,11 +34,14 @@ use ui::widget::{TextInput, TextInputKind, Widget};
 use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_copy, clipboard_paste};
 
 use crate::WpFormat;
-use crate::compact_swatch_palette::{CompactSwatchPalette, PaletteChoice, PaletteKind};
-use crate::find_bar::{FindBar, FindEffect, FindPalette};
+use crate::compact_swatch_palette::{
+    CompactSwatchPalette, PaletteChoice, PaletteKind, PaletteRequest,
+};
+use crate::find_bar::{FindBar, FindEffect, FindEventContext, FindPalette};
 use crate::i18n::{arg, t, t_args};
 use crate::num;
 use crate::outline_pane::{OutlinePalette, OutlinePane};
+use crate::paint_context::PaintContext;
 #[cfg(test)]
 use crate::recovery_banner::AUTOSAVE_EDIT_THRESHOLD;
 use crate::recovery_banner::{RecoveryBanner, RecoveryDecision, RecoveryPalette};
@@ -6411,9 +6414,7 @@ impl WordProcessorWidget {
             );
             let cc = self.chrome;
             self.find.draw(
-                scene,
-                transform,
-                text_renderer,
+                PaintContext::new(scene, transform, text_renderer),
                 theme,
                 &PresenceCtx::empty(),
                 FindPalette {
@@ -9766,10 +9767,8 @@ impl Widget for WordProcessorWidget {
             },
         );
         self.review.draw(
-            scene,
-            text_renderer,
+            &mut PaintContext::new(scene, fg.ctf, text_renderer),
             fg.canvas,
-            fg.ctf,
             markers.comment_markers,
             markers.change_markers,
         );
@@ -9874,14 +9873,16 @@ impl Widget for WordProcessorWidget {
             let mut find_handled = false;
             let effect = self.find.handle_event(
                 event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                &mut find_handled,
-                focus_target,
-                node_id,
-                taffy,
+                &mut FindEventContext {
+                    scale_factor,
+                    modifiers: *modifiers,
+                    state,
+                    path,
+                    handled: &mut find_handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                },
                 &self.blocks,
             );
             self.apply_find_effect_mut(state, effect);
@@ -10368,9 +10369,7 @@ impl WordProcessorWidget {
         let active = self.active_outline_block();
         let colors = self.chrome;
         self.outline.draw(
-            scene,
-            transform,
-            text_renderer,
+            &mut PaintContext::new(scene, transform, text_renderer),
             outline_band,
             &entries,
             active.as_deref(),
@@ -11305,15 +11304,17 @@ impl WordProcessorWidget {
         root: &ObjId,
         handled: &mut bool,
     ) -> bool {
-        let result = self.color_picker.handle_event(
-            event,
-            scale,
-            mods,
-            state,
-            root,
-            self.rect,
-            self.panel_rect,
-        );
+        let result = self
+            .color_picker
+            .handle_event(crate::style_color_picker::EventArgs {
+                event,
+                scale,
+                modifiers: mods,
+                state,
+                root,
+                host: self.rect,
+                panel: self.panel_rect,
+            });
         if let Some(rgb) = result.changed {
             self.edit_focused_style(state, true, |st| st.color = rgb);
         }
@@ -11367,15 +11368,15 @@ impl WordProcessorWidget {
                 ),
             };
         let anchor = Point::new(self.pointer.x, self.pointer.y);
-        self.compact_swatch_palette.open(
+        self.compact_swatch_palette.open(PaletteRequest {
             kind,
-            palette,
+            colors: palette,
             labels,
             title,
             clear_label,
             anchor,
-            self.rect,
-        );
+            host: self.rect,
+        });
         self.dirty = true;
     }
 
@@ -12170,9 +12171,7 @@ impl WordProcessorWidget {
         row: Rect,
     ) {
         self.zoom.draw(
-            scene,
-            transform,
-            tr,
+            &mut PaintContext::new(scene, transform, tr),
             row,
             self.chrome.chip,
             self.chrome.text,
