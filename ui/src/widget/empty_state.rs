@@ -32,6 +32,7 @@ use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle, TextWrapMode};
+use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::theme::Theme;
 use crate::widget::{ActionEmitter, Scrollable, TaffyTreeExt, Widget};
 
@@ -312,7 +313,12 @@ fn paint_empty_state(
         text_renderer.draw_style(
             scene,
             label,
-            Color::WHITE,
+            // Ink chosen against the accent fill (rest and hover), so the
+            // label reads on a light theme's accent too.
+            theme
+                .tokens
+                .colors
+                .ink_on_any(&[bg, theme.accent_primary], Color::WHITE, ON_FILL_MIN_CONTRAST),
             translated(transform, cx - metrics.action_w / 2.0, ty),
             Some(metrics.inner_width),
             &action_style,

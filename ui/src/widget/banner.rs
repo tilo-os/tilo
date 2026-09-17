@@ -27,7 +27,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::data_table::renderer_type_size;
+use crate::widget::data_table::{renderer_type_size, type_line_height};
 
 const PAD_X: f64 = 14.0;
 const PAD_Y: f64 = 12.0;
@@ -195,6 +195,12 @@ pub struct Banner {
     rect: Rect,
     dismiss_rect: Rect,
     last_cursor: Point,
+    /// Height resolved from the theme in `build_layout`, so `measure`
+    /// answers with the same band the live theme laid out rather than a
+    /// default-theme guess.
+    layout_height: f32,
+    /// Width `measure` reports when a parent asks for content size.
+    layout_width: f32,
 }
 
 impl Banner {
@@ -210,6 +216,8 @@ impl Banner {
             rect: Rect::ZERO,
             dismiss_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
+            layout_height: 0.0,
+            layout_width: crate::tokens::Metrics::BASE.panel_width_utility,
         }
     }
 
@@ -298,12 +306,23 @@ impl Banner {
 
     /// Intrinsic content height for the current title/message, in logical px.
     fn content_height(&self, theme: &Theme) -> f64 {
-        let title_h = f64::from(theme.tokens.typography.scale.base);
-        let mut h = title_h;
+        let tokens = &theme.tokens;
+        let gap = f64::from(tokens.spacing.s1);
+        // The pinned band: type sizes plus the vertical padding, floored at
+        // 44 (54 / 44 at the default text scale).
+        let mut by_size = f64::from(tokens.typography.scale.base);
+        // The block as `paint_banner` measures and centres it: title and
+        // message *line boxes* plus their gap. It is taller than the type
+        // sizes, so at 2× the band grows to keep one `s2` of air above and
+        // below the block instead of the block eating the padding.
+        let mut by_line = type_line_height(tokens.typography.scale.base);
         if self.message.is_some() {
-            h += f64::from(theme.tokens.spacing.s1) + f64::from(theme.tokens.typography.scale.sm);
+            by_size += gap + f64::from(tokens.typography.scale.sm);
+            by_line += gap + type_line_height(tokens.typography.scale.sm);
         }
-        (h + PAD_Y * 2.0).max(44.0)
+        (by_size + PAD_Y * 2.0)
+            .max(44.0)
+            .max(by_line + 2.0 * f64::from(tokens.spacing.s2))
     }
 }
 
@@ -326,6 +345,8 @@ impl Widget for Banner {
         } else {
             self.content_height(theme) as f32
         };
+        self.layout_height = h;
+        self.layout_width = theme.tokens.metrics.panel_width_utility;
         let node = taffy.leaf_node(Style {
             flex_shrink: 0.0,
             size: taffy::Size {
@@ -338,26 +359,17 @@ impl Widget for Banner {
         node
     }
 
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "content_height is a small, bounded pixel value built from theme typography \
-                  constants; f32 precision loss is immaterial for widget layout"
-    )]
     fn measure(
         &mut self,
         _k: taffy::Size<Option<f32>>,
         _a: taffy::Size<taffy::AvailableSpace>,
         _tr: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let theme = Theme::dark();
-        let h = if self.dismissed {
-            0.0
-        } else {
-            self.content_height(&theme) as f32
-        };
+        // The theme this banner was laid out with decides its band; a
+        // default-theme guess here would answer 1× inside a 2× layout.
         taffy::Size {
-            width: 320.0,
-            height: h,
+            width: self.layout_width,
+            height: self.layout_height,
         }
     }
 
