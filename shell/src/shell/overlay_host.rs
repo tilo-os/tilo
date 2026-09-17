@@ -3949,6 +3949,11 @@ impl ShellOverlayHost {
     #[must_use]
     pub fn with_content_workspace(mut self, ws_raw: u64) -> Self {
         self.content_built_for_ws = Some(ws_raw);
+        // Restoring the desktop is not a deliberate workspace navigation.
+        // Keep unread activity in passive chrome at startup instead of
+        // opening a modal that steals focus from the restored application.
+        // Later workspace switches still trigger the catch-up reveal.
+        self.activity_awareness_workspace = Some(ws_raw);
         self.content_built_empty = self.chrome.as_ref().and_then(|chrome| {
             let state = chrome.borrow();
             let tree = state.tree();
@@ -8355,10 +8360,7 @@ impl ShellOverlayHost {
         let local_ids = {
             let state = chrome.borrow();
             let tree = state.tree();
-            let mut ids = vec![
-                state.local_user_id.clone(),
-                crate::shell::state::local_user_id(),
-            ];
+            let mut ids = vec![state.local_user_id.clone()];
             if let Some(workspace) = tree.active_workspace() {
                 ids.push(state.local_user_for_room(&workspace.room));
             }
@@ -24691,6 +24693,8 @@ mod tests {
             let mut chrome = h.chrome.borrow_mut();
             chrome
                 .tree_mut()
+                .active_workspace_mut()
+                .expect("active workspace")
                 .collaborators
                 .push(crate::shell::state::Collaborator::new("ada", "Ada").with_role("editor"));
             chrome.overlays.collaborators = true;
@@ -25884,7 +25888,7 @@ mod tests {
         assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
         assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
 
-        h.host.palette.set_query("nir");
+        h.host.palette.set_query("tilo");
         h.host.refresh_search_results(&doc, &automerge::ROOT);
 
         let hit = h
