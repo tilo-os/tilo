@@ -3803,7 +3803,7 @@ mod tests {
             let decoded = registry().decode(&encoded).expect("registered action");
             let mut doc = AutoCommit::new();
             let mut transport = LocalTransport::new();
-            qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
                 .expect("catalogued boolean target is valid");
             assert_eq!(doc_bool(&doc, key), Some(true));
         }
