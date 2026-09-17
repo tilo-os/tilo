@@ -51,7 +51,7 @@ use ui::{
 };
 
 use crate::account::AccountStore;
-use crate::agenda::{AgendaAction, AgendaView};
+use crate::agenda::{AgendaAction, AgendaRenderModel, AgendaView};
 use crate::caldav::{self, SyncOutcome};
 use crate::date;
 use crate::doc::CalDoc;
@@ -6640,20 +6640,25 @@ impl Widget for CalendarApp {
                     // identity in the top bar, but present the selected day and
                     // following dates as the readable, focusable shared agenda.
                     let hidden = self.hidden_calendar_ids();
+                    let render = AgendaRenderModel {
+                        area,
+                        model: &self.model,
+                        anchor: self.anchor,
+                        today: self.today,
+                        hidden_calendars: &hidden,
+                        calendar_filter: self.calendar_filter.as_deref(),
+                        pointer: self.last_mouse,
+                    };
                     hits.extend(
                         self.agenda
                             .draw(
-                                scene,
-                                t,
-                                text_renderer,
-                                theme,
-                                area,
-                                &self.model,
-                                self.anchor,
-                                self.today,
-                                &hidden,
-                                self.calendar_filter.as_deref(),
-                                self.last_mouse,
+                                &mut PaintContext {
+                                    scene,
+                                    transform: t,
+                                    text: text_renderer,
+                                    theme,
+                                },
+                                &render,
                             )
                             .into_iter()
                             .map(|(rect, action)| {
@@ -6694,20 +6699,25 @@ impl Widget for CalendarApp {
                 }
                 View::Agenda => {
                     let hidden = self.hidden_calendar_ids();
+                    let render = AgendaRenderModel {
+                        area,
+                        model: &self.model,
+                        anchor: self.anchor,
+                        today: self.today,
+                        hidden_calendars: &hidden,
+                        calendar_filter: self.calendar_filter.as_deref(),
+                        pointer: self.last_mouse,
+                    };
                     hits.extend(
                         self.agenda
                             .draw(
-                                scene,
-                                t,
-                                text_renderer,
-                                theme,
-                                area,
-                                &self.model,
-                                self.anchor,
-                                self.today,
-                                &hidden,
-                                self.calendar_filter.as_deref(),
-                                self.last_mouse,
+                                &mut PaintContext {
+                                    scene,
+                                    transform: t,
+                                    text: text_renderer,
+                                    theme,
+                                },
+                                &render,
                             )
                             .into_iter()
                             .map(|(rect, action)| {
