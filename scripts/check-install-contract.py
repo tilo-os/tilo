@@ -11,9 +11,15 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 contract = json.loads((ROOT / "docs/install-contract.json").read_text())
 
-assert contract["schemaVersion"] == 1
+assert contract["schemaVersion"] == 2
 assert contract["product"] == "Tilo"
 assert contract["completeSystem"]["architectures"] == ["x86_64", "aarch64"]
+assert "minimumUsbGiB" not in contract["completeSystem"]
+assert contract["completeSystem"]["usbCapacity"] == {
+    "requirement": "expanded-image-size",
+    "catalogField": "image_size",
+    "unit": "bytes",
+}
 assert contract["completeSystem"]["alongside"] == {
     "rootMinimumGiB": 32,
     "efiMinimumGiB": 2,
@@ -47,7 +53,7 @@ windows_host = next(host for host in contract["imager"]["hosts"] if host["os"].s
 assert windows_host["architectures"] == ["x86_64", "aarch64"]
 for architecture in windows_host["architectures"]:
     assert f"runner: imager-windows-{architecture}" in imager_workflow
-    assert f"            qos-imager-setup-windows-{architecture}.exe" in imager_workflow
+    assert f"            tilo-imager-setup-windows-{architecture}.exe" in imager_workflow
 assert "python3 apps/imager/packaging/generate-winget.py release-assets" in imager_workflow
 
 # Imager's native Windows release includes `ui`. The Wayland clipboard backend

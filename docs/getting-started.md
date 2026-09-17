@@ -79,6 +79,9 @@ installer's expanded image size. The Imager checks that size against the drive
 before writing; the compressed download size is not the required capacity.
 The current full installer reserves at least 40 GiB for its live root, plus
 boot partitions, and larger payloads increase that requirement.
+The release catalog records the required bytes as `image_size`. Compare that
+number with the drive's usable bytes; neither a nominal drive label nor the
+free space in an existing USB filesystem establishes that the image fits.
 
 The Imager authenticates Tilo images selected from its bundled release catalog,
 writes the selected USB drive, reads it back, and can carry account name,
