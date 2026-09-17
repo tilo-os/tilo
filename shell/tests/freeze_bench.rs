@@ -18,7 +18,7 @@
 use std::time::Instant;
 
 use shell::shell::state::{TileContent as ShellTile, WindowGroup};
-use shell::shell::to_ui_window_group;
+use shell::shell::to_ui_window_group_with_inputs;
 use ui::widget::AppKind as UiKind;
 
 fn ms(f: impl FnOnce()) -> f64 {
@@ -64,15 +64,11 @@ fn terminal_first_sync_crdt_cost() {
     use terminal::TerminalWidget;
     use ui::widget::Widget;
 
-    let mut w = match TerminalWidget::spawn_default() {
-        Ok(w) => w,
-        Err(e) => {
-            println!("terminal spawn failed ({e}); skipping");
-            return;
-        }
-    };
-    // Let the PTY emit its prompt so the grid has content, matching a
-    // terminal that's been alive a couple of seconds.
+    // Explicit fixture process: a populated PTY without login startup files.
+    let mut command = terminal::CommandBuilder::new("/bin/sh");
+    command.arg("-c");
+    command.arg("printf 'fixture terminal ready\\r\\n$ '");
+    let mut w = TerminalWidget::spawn_command(command).expect("fixture PTY");
     std::thread::sleep(std::time::Duration::from_millis(300));
 
     // Fresh shared doc (like the compositor's `test_control_ctx.doc`).
@@ -94,22 +90,36 @@ fn rematerialize_group_cost() {
     // Records stay in memory: this measures widget construction, not what a
     // session writes to disk.
     let records = ui::record::RecordStore::in_memory();
+    let inputs = shell::shell::hosted_inputs::HostedTileInputs::fixture().unwrap();
     // Warm the OS caches once so we measure steady-state, not first-touch.
-    let _ = to_ui_window_group(&placeholder_group(UiKind::Files, "Files"), &records);
+    let _ = to_ui_window_group_with_inputs(
+        &placeholder_group(UiKind::Files, "Files"),
+        &records,
+        &inputs,
+    );
 
     let files = ms(|| {
-        let _ = to_ui_window_group(&placeholder_group(UiKind::Files, "Files"), &records);
+        let _ = to_ui_window_group_with_inputs(
+            &placeholder_group(UiKind::Files, "Files"),
+            &records,
+            &inputs,
+        );
     });
     let terminal = ms(|| {
-        let _ = to_ui_window_group(&placeholder_group(UiKind::Terminal, "Terminal"), &records);
+        let _ = to_ui_window_group_with_inputs(
+            &placeholder_group(UiKind::Terminal, "Terminal"),
+            &records,
+            &inputs,
+        );
     });
     let notes = ms(|| {
-        let _ = to_ui_window_group(
+        let _ = to_ui_window_group_with_inputs(
             &placeholder_group(
                 UiKind::Editor, // routed to a Stub unless "Notes"/"Editor" label
                 "Notes",
             ),
             &records,
+            &inputs,
         );
     });
 
@@ -117,5 +127,4 @@ fn rematerialize_group_cost() {
     println!("  Files group   : {files:8.2} ms");
     println!("  Terminal group: {terminal:8.2} ms");
     println!("  Notes group   : {notes:8.2} ms");
-    println!("  (HOME = {:?})", std::env::var("HOME").ok());
 }

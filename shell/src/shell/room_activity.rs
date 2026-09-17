@@ -625,6 +625,7 @@ struct UndoApply {
     reason = "each flag represents an independently focusable activity-pane mode or asynchronous visual state"
 )]
 pub struct RoomActivityPane {
+    explicit_local_user: Option<String>,
     timeline: ActivityTimeline,
     source: HistorySource,
     /// Set by the timeline's `FnMut` callback, drained right after — it
@@ -766,11 +767,19 @@ impl RoomActivityPane {
         }
     }
 
+    pub fn new() -> Self {
+        Self::from_local_user(None)
+    }
+
+    pub(crate) fn with_local_user(local: String) -> Self {
+        Self::from_local_user(Some(local))
+    }
+
     #[allow(
         clippy::too_many_lines,
-        reason = "the pane constructor wires mutually dependent retained UI controllers and their one-shot intents in a single ownership transfer"
+        reason = "the shared pane constructor wires retained controllers and one-shot intents"
     )]
-    pub fn new() -> Self {
+    fn from_local_user(explicit_local_user: Option<String>) -> Self {
         let revert_intent = Rc::new(Cell::new(None));
         let name_intent: Rc<RefCell<Option<GroupNameRequest>>> = Rc::new(RefCell::new(None));
         let undo_intent: Rc<RefCell<Option<BandUndoRequest>>> = Rc::new(RefCell::new(None));
@@ -780,6 +789,7 @@ impl RoomActivityPane {
         let ui = Rc::clone(&undo_intent);
         let ci = Rc::clone(&clear_filters_intent);
         Self {
+            explicit_local_user,
             timeline: {
                 let mut t = ActivityTimeline::new()
                     .on_revert(move |id| ri.set(Some(*id)))
@@ -1667,19 +1677,27 @@ impl RoomActivityPane {
         // id; a peer's actor stays unresolved until collaboration says who.
         let actor = tree.doc.get_actor().to_hex_string();
         if !self.source.authors().is_registered(&actor) {
-            let registered = self.source.authors_mut().register_local_identity(&actor);
-            if !registered {
-                let me = crate::shell::state::local_user_id();
-                if !me.is_empty() {
-                    self.source.authors_mut().register(
-                        &actor,
-                        ui::widget::HistoryAuthor::new(
-                            me,
-                            ui::history_source::stable_hue(&actor),
-                            ui::history_source::short_id(&actor),
-                        ),
-                    );
+            let principal = if let Some(local) = &self.explicit_local_user {
+                Some(local.clone())
+            } else {
+                #[cfg(test)]
+                crate::shell::test_support::ambient_start("history author identity");
+                if self.source.authors_mut().register_local_identity(&actor) {
+                    None
+                } else {
+                    let me = crate::shell::state::local_user_id();
+                    (!me.is_empty()).then_some(me)
                 }
+            };
+            if let Some(principal) = principal {
+                self.source.authors_mut().register(
+                    &actor,
+                    ui::widget::HistoryAuthor::new(
+                        principal,
+                        ui::history_source::stable_hue(&actor),
+                        ui::history_source::short_id(&actor),
+                    ),
+                );
             }
         }
 
@@ -4219,6 +4237,12 @@ impl RoomActivityPane {
         self.task_attachment = None;
     }
 
+    fn local_user(&self) -> String {
+        self.explicit_local_user
+            .clone()
+            .unwrap_or_else(crate::shell::state::local_user_id)
+    }
+
     fn create_task_from_draft(&mut self, tree: &mut WorkspaceTree) -> RoomActivityOutcome {
         let workspace = tree.active;
         let assigned_agent = (self.task_route != WorkspaceTaskRoute::Manual)
@@ -4227,7 +4251,7 @@ impl RoomActivityPane {
         let created = tree.create_workspace_task(
             workspace,
             self.task_draft.clone(),
-            crate::shell::state::local_user_id(),
+            self.local_user(),
             assigned_agent,
             self.task_route,
             self.task_attachment.clone(),
@@ -4351,12 +4375,8 @@ impl RoomActivityPane {
                 return handled_outcome();
             }
         };
-        let changed = tree.set_workspace_task_status(
-            tree.active,
-            &task_id,
-            status,
-            &crate::shell::state::local_user_id(),
-        );
+        let changed =
+            tree.set_workspace_task_status(tree.active, &task_id, status, &self.local_user());
         if changed {
             self.refresh(tree);
         }

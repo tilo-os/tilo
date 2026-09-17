@@ -3,3 +3,7 @@
 * text=auto eol=lf
 *.bat text eol=crlf
 *.cmd text eol=crlf
+
+# Font licenses are content-addressed by the canonical font manifest.
+ui/assets/fonts/LICENSES/*.txt -text
+ui/assets/fonts/manifest.toml text eol=lf

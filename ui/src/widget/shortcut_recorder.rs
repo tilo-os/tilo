@@ -437,8 +437,14 @@ mod tests {
         assert_eq!(
             recorder
                 .binding()
-                .keycap_labels(PlatformConventions::default()),
+                .keycap_labels(PlatformConventions::new(crate::platform::Platform::Linux)),
             ["Super", "Down"]
+        );
+        assert_eq!(
+            recorder
+                .binding()
+                .keycap_labels(PlatformConventions::new(crate::platform::Platform::MacOs)),
+            ["⌘", "Down"]
         );
     }
 }

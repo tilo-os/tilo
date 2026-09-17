@@ -154,6 +154,8 @@ impl FilesIndex {
     /// `~/.cache/tilo/files-index` can't be opened or created (a missing
     /// schema field, a corrupt directory, or similar).
     pub fn open_or_create(home: &Path) -> Result<Self, tantivy::error::TantivyError> {
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("Files body index");
         let dir = files_index_dir()?;
         fs::create_dir_all(&dir).ok();
         let schema = build_schema();

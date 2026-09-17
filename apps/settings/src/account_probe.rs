@@ -318,6 +318,31 @@ mod tests {
     }
 
     #[test]
+    fn imap_login_requires_an_exact_matching_success_status() {
+        assert!(LiveAccountTester::imap_login_accepted(
+            "tilo1 OK LOGIN completed\r\n",
+            "tilo1"
+        ));
+        assert!(LiveAccountTester::imap_login_accepted(
+            "tilo1 ok LOGIN completed\r\n",
+            "tilo1"
+        ));
+        for response in [
+            "tilo1 NO credential rejected\r\n",
+            "tilo1 BAD invalid login\r\n",
+            "tilo1 OKAY invalid status\r\n",
+            "tilo2 OK unrelated command\r\n",
+            "* OK untagged response\r\n",
+            "tilo1 NO rejected\r\n* OK server ready\r\n",
+        ] {
+            assert!(
+                !LiveAccountTester::imap_login_accepted(response, "tilo1"),
+                "{response:?}"
+            );
+        }
+    }
+
+    #[test]
     fn email_probe_completes_tls_and_authenticates() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
         let port = listener.local_addr().expect("listener address").port();

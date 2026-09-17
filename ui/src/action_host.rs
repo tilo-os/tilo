@@ -142,7 +142,8 @@ impl ActionHost {
         A: Action + serde::Serialize,
     {
         let encoded = EncodedAction::encode(type_id, action)?;
-        let before = doc.get_heads();
+        let observed_before = crate::bound_dispatch::typed_action_before(doc);
+        let before = observed_before.clone().unwrap_or_else(|| doc.get_heads());
         let mut transport = tilo_actions::LocalTransport::new();
         let actor = doc.get_actor().to_bytes().to_vec();
         let context = match (context, self.ambient_context.as_ref()) {
@@ -168,6 +169,10 @@ impl ActionHost {
             ),
         };
         result?;
+        if let Some(before) = observed_before {
+            let after = doc.get_heads();
+            crate::bound_dispatch::report_typed_action(doc, before, after);
+        }
         if self.commit_before.is_none() {
             self.commit_before = Some(before);
         }
@@ -204,8 +209,13 @@ impl ActionHost {
         A: Action + serde::Serialize,
     {
         let encoded = EncodedAction::encode(type_id, action)?;
-        let before = doc.get_heads();
+        let observed_before = crate::bound_dispatch::typed_action_before(doc);
+        let before = observed_before.clone().unwrap_or_else(|| doc.get_heads());
         let envelope = queue.submit(doc, action, encoded.clone())?;
+        if let Some(before) = observed_before {
+            let after = doc.get_heads();
+            crate::bound_dispatch::report_typed_action(doc, before, after);
+        }
         if self.commit_before.is_none() {
             self.commit_before = Some(before);
         }

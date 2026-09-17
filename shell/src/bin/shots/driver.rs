@@ -101,6 +101,10 @@ impl ShellDriver {
     /// the taffy tree is rebuilt first so the new structure participates
     /// in layout. Mirrors `App::handle_window_event`'s post-event sweep.
     pub fn relayout(&mut self) {
+        // A compositor frame harvests pending tab/group gestures before it
+        // rebuilds layout. A drag can enqueue a topology change without
+        // changing the live rows until this production update pass runs.
+        self.fb.pump_apps(&mut self.state, &self.root_obj);
         self.fb.relayout();
     }
 

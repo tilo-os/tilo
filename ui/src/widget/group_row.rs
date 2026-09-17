@@ -1607,6 +1607,23 @@ impl Widget for GroupRow {
         "GroupRow"
     }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+
+        let mut children = Vec::new();
+        for group in &self.groups {
+            let Some(host) = group.active_host() else {
+                continue;
+            };
+            collect_accessibility(host, &mut children);
+        }
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name("Hosted applications")
+                .with_children(children),
+        )
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -2455,6 +2472,22 @@ fn collect_named_rects(w: &dyn Widget, out: &mut Vec<(String, Rect)>) {
     }
     for child in w.children() {
         collect_named_rects(child, out);
+    }
+}
+
+/// Hosted app widgets are deliberately not retained as `GroupRow::children`
+/// because resize handles are interleaved with groups in the taffy child list.
+/// Publish their real semantic subtrees explicitly, attaching each retained
+/// widget's laid-out bounds while preserving any more precise synthetic bounds.
+fn collect_accessibility(w: &dyn Widget, out: &mut Vec<crate::a11y::AccessNode>) {
+    if let Some(mut node) = w.accessibility() {
+        if node.bounds.is_none() {
+            node.bounds = Some(w.get_rect().into());
+        }
+        out.push(node);
+    }
+    for child in w.children() {
+        collect_accessibility(child, out);
     }
 }
 
