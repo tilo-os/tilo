@@ -19,6 +19,7 @@ use std::{
     process::{Child, Command},
 };
 
+pub mod mcp;
 mod unix;
 
 /// A single-user service session. Drop applications before dropping the session.
