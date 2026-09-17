@@ -37,6 +37,11 @@ It retains acquisition/signature logs and publishes only verified inputs to
 a new directory. Failed attempts retain their staging directory and logs.
 This acquisition step does not resolve or build either target environment.
 
+`.forgejo/workflows/build-wine.yml` runs this input stage on the native `runner`
+lane. It publishes a run-specific candidate tooling image, consumes that exact
+digest, and retains the signed source and acquisition evidence as a CI artifact.
+This stage neither publishes Wine RPMs nor changes production image pins.
+
 Use native x86 hardware. Prepare separate Fedora 44 target buildroots for
 `x86_64` and `i686`, retaining the complete spec-derived BuildRequires.
 An i686 target can run on an x86-64 host; an OCI `linux/386` label is not
