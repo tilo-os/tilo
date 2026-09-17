@@ -67,6 +67,12 @@ const BREAKPOINT: f64 = 820.0;
 /// Hamburger toggle box drawn at the left of the tab bar when the sidebar is
 /// not fully docked-open, so a collapsed sidebar can be summoned.
 const TOGGLE_SIZE: f64 = 26.0;
+/// Horizontal inset shared by the sidebar's connection rows and its
+/// "New connection" button so they read as one column.
+const SIDEBAR_INSET: f64 = 8.0;
+/// Minimum toolbar control widths; measured labels widen them when needed.
+const RUN_MIN_W: f64 = 150.0;
+const SNIPPETS_MIN_W: f64 = 110.0;
 /// The single externally-invokable effect protocol for live database work.
 /// Unlike document actions, these payloads contain only stable object ids and
 /// SQL/table names — never passwords or live driver handles.
@@ -2960,7 +2966,7 @@ impl DbClientApp {
     ) {
         let p = theme.db();
         let r = self.sidebar_rect;
-        let row = Rect::new(r.x0 + 6.0, y, r.x1 - 6.0, y + 40.0);
+        let row = Rect::new(r.x0 + SIDEBAR_INSET, y, r.x1 - SIDEBAR_INSET, y + 40.0);
         self.conn_rects.push((idx, row));
         let is_active = idx == active;
         if is_active {
@@ -3106,7 +3112,7 @@ impl DbClientApp {
         }
 
         // "New connection" button.
-        let btn = Rect::new(r.x0 + 8.0, y, r.x1 - 8.0, y + 30.0);
+        let btn = Rect::new(r.x0 + SIDEBAR_INSET, y, r.x1 - SIDEBAR_INSET, y + 30.0);
         self.new_conn_btn = btn;
         let btn_color = if btn.contains(self.cursor) {
             theme.accent_hover
@@ -3114,12 +3120,17 @@ impl DbClientApp {
             theme.accent_primary
         };
         scene.fill(Fill::NonZero, t, btn_color, None, &btn.to_rounded_rect(6.0));
+        let label = "+  New connection";
+        let (_, lh) = tr.measure(label, 12.0, None);
         tr.draw_text(
             scene,
-            "+  New connection",
+            label,
             12.0,
             Color::WHITE,
-            t * Affine::translate((btn.x0 + 12.0, btn.y0 + 8.0)),
+            t * Affine::translate((
+                btn.x0 + 12.0,
+                btn.y0 + (btn.height() - f64::from(lh)) / 2.0,
+            )),
             None,
         );
     }
@@ -3215,12 +3226,16 @@ impl DbClientApp {
             } else {
                 theme.text_dim
             };
+            let (_, lh) = tr.measure(label, 13.0, None);
             tr.draw_text(
                 scene,
                 label,
                 13.0,
                 color,
-                t * Affine::translate((x + 14.0, bar.y0 + 11.0)),
+                t * Affine::translate((
+                    x + 14.0,
+                    tab_rect.y0 + (tab_rect.height() - f64::from(lh)) / 2.0,
+                )),
                 None,
             );
             x += w + 4.0;
@@ -3229,13 +3244,16 @@ impl DbClientApp {
         // Selected-table breadcrumb on the right of the tab bar.
         if let Some(name) = &self.session.selected_table {
             let crumb = format!("main · {name}");
-            let (cw, _) = tr.measure(&crumb, 12.0, None);
+            let (cw, ch) = tr.measure(&crumb, 12.0, None);
             tr.draw_text(
                 scene,
                 &crumb,
                 12.0,
                 theme.text_dim,
-                t * Affine::translate((bar.x1 - f64::from(cw) - 14.0, bar.y0 + 12.0)),
+                t * Affine::translate((
+                    bar.x1 - f64::from(cw) - 14.0,
+                    bar.y0 + (bar.height() - f64::from(ch)) / 2.0,
+                )),
                 None,
             );
         }
@@ -3333,11 +3351,19 @@ impl DbClientApp {
         let toolbar = self.query_layout.toolbar;
         scene.fill(Fill::NonZero, t, p.panel_bg, None, &toolbar);
 
-        // Run button.
+        // Run button. Both toolbar controls size themselves from their
+        // measured labels and centre those labels on the measured line
+        // height, so "Run" and "Snippets" share one centre line instead of
+        // two different hand-tuned offsets.
+        let run_label = "▶  Run";
+        let run_hint = "⌘↵";
+        let (run_lw, run_lh) = tr.measure(run_label, 13.0, None);
+        let (hint_w, hint_h) = tr.measure(run_hint, 12.0, None);
+        let run_w = (14.0 + f64::from(run_lw) + 16.0 + f64::from(hint_w) + 14.0).max(RUN_MIN_W);
         let run = Rect::new(
             toolbar.x0 + 10.0,
             toolbar.y0 + 6.0,
-            toolbar.x0 + 160.0,
+            toolbar.x0 + 10.0 + run_w,
             toolbar.y1 - 6.0,
         );
         self.run_btn = run;
@@ -3349,26 +3375,35 @@ impl DbClientApp {
         scene.fill(Fill::NonZero, t, run_color, None, &run.to_rounded_rect(6.0));
         tr.draw_text(
             scene,
-            "▶  Run",
+            run_label,
             13.0,
             Color::WHITE,
-            t * Affine::translate((run.x0 + 14.0, run.y0 + 7.0)),
+            t * Affine::translate((
+                run.x0 + 14.0,
+                run.y0 + (run.height() - f64::from(run_lh)) / 2.0,
+            )),
             None,
         );
         tr.draw_text(
             scene,
-            "⌘↵",
+            run_hint,
             12.0,
             Color::from_rgba8(255, 255, 255, 190),
-            t * Affine::translate((run.x1 - 32.0, run.y0 + 7.0)),
+            t * Affine::translate((
+                run.x1 - 14.0 - f64::from(hint_w),
+                run.y0 + (run.height() - f64::from(hint_h)) / 2.0,
+            )),
             None,
         );
 
         // Snippets button.
+        let snip_label = "Snippets ▾";
+        let (snip_lw, snip_lh) = tr.measure(snip_label, 12.5, None);
+        let snip_w = (12.0 + f64::from(snip_lw) + 12.0).max(SNIPPETS_MIN_W);
         let snip = Rect::new(
             run.x1 + 8.0,
             toolbar.y0 + 6.0,
-            run.x1 + 118.0,
+            run.x1 + 8.0 + snip_w,
             toolbar.y1 - 6.0,
         );
         self.snippet_btn = snip;
@@ -3393,10 +3428,13 @@ impl DbClientApp {
         );
         tr.draw_text(
             scene,
-            "Snippets ▾",
+            snip_label,
             12.5,
             theme.text_primary,
-            t * Affine::translate((snip.x0 + 12.0, snip.y0 + 8.0)),
+            t * Affine::translate((
+                snip.x0 + 12.0,
+                snip.y0 + (snip.height() - f64::from(snip_lh)) / 2.0,
+            )),
             None,
         );
 
@@ -3419,12 +3457,16 @@ impl DbClientApp {
                 RunStatus::Busy(m) => (m.clone(), theme.accent_primary),
                 RunStatus::Idle => ("Ready".to_string(), theme.text_dim),
             };
+            let (_, mh) = tr.measure(&msg, 12.0, None);
             tr.draw_text(
                 scene,
                 &msg,
                 12.0,
                 color,
-                t * Affine::translate((self.main_rect.x0 + 12.0, strip_y + 4.0)),
+                t * Affine::translate((
+                    self.main_rect.x0 + 12.0,
+                    strip_y + (QUERY_RESULT_STRIP_H - f64::from(mh)) / 2.0,
+                )),
                 None,
             );
         }
@@ -3475,12 +3517,13 @@ impl DbClientApp {
             if item.contains(self.cursor) {
                 scene.fill(Fill::NonZero, t, p.hover, None, &item);
             }
+            let (_, nh) = tr.measure(name, 12.0, None);
             tr.draw_text(
                 scene,
                 name,
                 12.0,
                 theme.text_primary,
-                t * Affine::translate((item.x0 + 12.0, y + 7.0)),
+                t * Affine::translate((item.x0 + 12.0, y + (28.0 - f64::from(nh)) / 2.0)),
                 None,
             );
             y += 28.0;

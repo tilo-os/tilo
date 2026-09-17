@@ -28,6 +28,9 @@ use crate::podman::{Action, ImageAction};
 /// Sizes used across the panels — kept here so the layout reads coherently.
 const PAD: f64 = 16.0;
 const ICON_BTN: f64 = 32.0;
+/// Inset of a container row's text from its column edge (clears the status
+/// accent bar); the column heading shares it.
+const ROW_TEXT_INSET: f64 = 8.0;
 
 /// Grouped inputs to a single container row's paint (position, the
 /// container itself, the shared column x-positions, and whether the
@@ -126,14 +129,18 @@ impl ContainersApp {
             if self.hovered(tgl) {
                 draw::fill_round(scene, tgl, f64::from(theme.tokens.radii.sm), c.lift(0.72));
             }
-            // "«" collapse glyph
+            // "«" collapse glyph, centred on its measured box.
+            let (gw, gh) = draw::measure(tr, "«", theme.tokens.typography.scale.base, TextWeight::Bold);
             draw::text(
                 scene,
                 tr,
                 "«",
                 theme.tokens.typography.scale.base,
                 c.text_dim,
-                Point::new(tgl.center().x - 5.0, tgl.center().y - 9.0),
+                Point::new(
+                    tgl.center().x - f64::from(gw) / 2.0,
+                    tgl.center().y - f64::from(gh) / 2.0,
+                ),
                 TextWeight::Bold,
             );
             self.push_hit(tgl, Hit::ToggleSidebar);
@@ -143,13 +150,17 @@ impl ContainersApp {
             if self.hovered(ctgl) {
                 draw::fill_round(scene, ctgl, f64::from(theme.tokens.radii.sm), c.lift(0.72));
             }
+            let (gw, gh) = draw::measure(tr, "»", theme.tokens.typography.scale.base, TextWeight::Bold);
             draw::text(
                 scene,
                 tr,
                 "»",
                 theme.tokens.typography.scale.base,
                 c.text_dim,
-                Point::new(ctgl.center().x - 5.0, ctgl.center().y - 9.0),
+                Point::new(
+                    ctgl.center().x - f64::from(gw) / 2.0,
+                    ctgl.center().y - f64::from(gh) / 2.0,
+                ),
                 TextWeight::Bold,
             );
             self.push_hit(ctgl, Hit::ToggleSidebar);
@@ -206,36 +217,51 @@ impl ContainersApp {
                 1.6,
             );
             if expanded {
+                let weight = if active {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Medium
+                };
+                let label_y = draw::centered_top(
+                    tr,
+                    section.label(),
+                    theme.tokens.typography.scale.base,
+                    weight,
+                    item.y0,
+                    item.height(),
+                );
                 draw::text(
                     scene,
                     tr,
                     section.label(),
                     theme.tokens.typography.scale.base,
                     if active { c.text_primary } else { c.text_dim },
-                    Point::new(item.x0 + 38.0, item.center().y - 8.0),
-                    if active {
-                        TextWeight::Semibold
-                    } else {
-                        TextWeight::Medium
-                    },
+                    Point::new(item.x0 + 38.0, label_y),
+                    weight,
                 );
-                // count chip on the right
+                // count chip on the right, its label centred on the chip
                 let count_str = count.to_string();
-                let (cw, _) = tr.measure(&count_str, theme.tokens.typography.scale.xs, None);
+                let (cw, ch) = draw::measure(
+                    tr,
+                    &count_str,
+                    theme.tokens.typography.scale.xs,
+                    TextWeight::Medium,
+                );
+                let chip_h = (f64::from(ch) + 4.0).max(16.0);
                 let chip = Rect::new(
                     item.x1 - 14.0 - f64::from(cw),
-                    item.center().y - 8.0,
+                    item.center().y - chip_h / 2.0,
                     item.x1 - 6.0,
-                    item.center().y + 8.0,
+                    item.center().y + chip_h / 2.0,
                 );
-                draw::fill_round(scene, chip, 8.0, c.lift(0.72));
+                draw::fill_round(scene, chip, chip_h / 2.0, c.lift(0.72));
                 draw::text(
                     scene,
                     tr,
                     &count_str,
                     theme.tokens.typography.scale.xs,
                     c.text_dim,
-                    Point::new(chip.x0 + 4.0, chip.center().y - 5.0),
+                    Point::new(chip.x0 + 4.0, chip.center().y - f64::from(ch) / 2.0),
                     TextWeight::Medium,
                 );
             }
@@ -358,7 +384,15 @@ impl ContainersApp {
         // Primary action button (right-aligned).
         let mut right = header.x1 - PAD;
         if let Some((label, hit)) = action_label {
-            let bw = if compact { 96.0 } else { 150.0 };
+            let shown = if compact { "New" } else { label };
+            let (lw, lh) = draw::measure(
+                tr,
+                shown,
+                theme.tokens.typography.scale.base,
+                TextWeight::Semibold,
+            );
+            // icon slot (12 + 16 + 6) + label + trailing padding
+            let bw = 34.0 + f64::from(lw) + 16.0;
             let btn = Rect::new(
                 right - bw,
                 if compact {
@@ -395,10 +429,10 @@ impl ContainersApp {
             draw::text(
                 scene,
                 tr,
-                if compact { "New" } else { label },
+                shown,
                 theme.tokens.typography.scale.base,
                 Color::WHITE,
-                Point::new(btn.x0 + 34.0, btn.center().y - 8.0),
+                Point::new(btn.x0 + 34.0, btn.center().y - f64::from(lh) / 2.0),
                 TextWeight::Semibold,
             );
             self.push_hit(btn, hit);
@@ -604,13 +638,25 @@ impl ContainersApp {
             let Some(&x) = cols.get(i) else {
                 continue;
             };
+            // The first column's rows paint their name `ROW_TEXT_INSET` in
+            // from the column edge (after the status bar); the heading sits
+            // on the same x so it labels what is under it.
+            let x = if i == 0 { x + ROW_TEXT_INSET } else { x };
+            let y = draw::centered_top(
+                tr,
+                lbl,
+                theme.tokens.typography.scale.xs,
+                TextWeight::Semibold,
+                colhead.y0,
+                colhead.height(),
+            );
             draw::text(
                 scene,
                 tr,
                 lbl,
                 theme.tokens.typography.scale.xs,
                 c.text_dim,
-                Point::new(x, colhead.center().y - 5.0),
+                Point::new(x, y),
                 TextWeight::Semibold,
             );
         }
@@ -776,7 +822,16 @@ impl ContainersApp {
 
         let name_y = row.center().y - 16.0;
         let sub_y = row.center().y + 4.0;
-        if self.uses_compact_layout(theme) {
+        // A narrow list (detail open beside it) shows the status as a pill
+        // next to the name only when that pill ends before the lifecycle
+        // buttons start; otherwise the status stacks under the name exactly
+        // as it does on a compact surface. One measured decision drives both
+        // the text and the pill so nothing paints over the actions.
+        let actions_x0 = row.x1 - PAD - Self::row_actions_width(container);
+        let stacked = self.uses_compact_layout(theme)
+            || (info.compact
+                && !Self::status_pill_fits(tr, theme, info.cols[1], actions_x0, container));
+        if stacked {
             // In the one-column list, status belongs beneath the name. This
             // gives a large-text row a stable reading order and reserves the
             // trailing edge exclusively for lifecycle buttons.
@@ -787,7 +842,7 @@ impl ContainersApp {
                 } else {
                     36.0
                 };
-            let text_width = (row.width() - 138.0).max(64.0);
+            let text_width = (actions_x0 - 12.0 - (info.cols[0] + ROW_TEXT_INSET)).max(64.0);
             draw::text_clip(
                 scene,
                 tr,
@@ -797,7 +852,7 @@ impl ContainersApp {
                     color: c.text_primary,
                     weight: TextWeight::Semibold,
                 },
-                Point::new(info.cols[0] + 8.0, compact_name_y),
+                Point::new(info.cols[0] + ROW_TEXT_INSET, compact_name_y),
                 text_width,
             );
             draw::text_clip(
@@ -809,7 +864,7 @@ impl ContainersApp {
                     color: draw::status_color(theme, container.status),
                     weight: TextWeight::Medium,
                 },
-                Point::new(info.cols[0] + 8.0, compact_sub_y),
+                Point::new(info.cols[0] + ROW_TEXT_INSET, compact_sub_y),
                 text_width,
             );
         } else {
@@ -823,7 +878,7 @@ impl ContainersApp {
                     color: c.text_primary,
                     weight: TextWeight::Semibold,
                 },
-                Point::new(info.cols[0] + 8.0, name_y),
+                Point::new(info.cols[0] + ROW_TEXT_INSET, name_y),
                 (info.cols[1] - info.cols[0] - 16.0).max(40.0),
             );
             draw::text(
@@ -832,7 +887,7 @@ impl ContainersApp {
                 container.short_id(),
                 theme.tokens.typography.scale.xs,
                 c.text_dim,
-                Point::new(info.cols[0] + 8.0, sub_y),
+                Point::new(info.cols[0] + ROW_TEXT_INSET, sub_y),
                 TextWeight::Regular,
             );
 
@@ -912,16 +967,37 @@ impl ContainersApp {
                 Point::new(cols[2], sub_y + 2.0),
                 (cols[3] - cols[2] - 12.0).max(30.0),
             );
-            // CPU / MEM mini-stats
+            // CPU / MEM mini-stats, bounded by where the action cluster starts.
+            let actions_x0 = row.x1 - PAD - Self::row_actions_width(container);
             Self::draw_row_stats(
                 scene,
                 tr,
                 theme,
                 container,
                 Point::new(cols[3], row.y0 + 12.0),
-                cols[4] - cols[3] - 96.0,
+                actions_x0 - 12.0 - cols[3],
             );
         }
+    }
+
+    /// Width the lifecycle button cluster paints for `container` (see
+    /// [`Self::draw_row_actions`]): `n` buttons with 4px gaps.
+    fn row_actions_width(container: &Container) -> f64 {
+        let n = if container.status.is_running() { 3.0 } else { 2.0 };
+        n * ICON_BTN + (n - 1.0) * 4.0
+    }
+
+    /// Whether the status pill placed at `pill_x` ends before the action
+    /// cluster begins at `actions_x0`, with a gap either side.
+    fn status_pill_fits(
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        pill_x: f64,
+        actions_x0: f64,
+        container: &Container,
+    ) -> bool {
+        let pill_w = draw::status_pill_width(tr, theme, container.status.label());
+        pill_x + pill_w + 12.0 <= actions_x0
     }
 
     fn draw_row_stats(
@@ -933,7 +1009,12 @@ impl ContainersApp {
         width: f64,
     ) {
         let c = &theme.tokens.colors;
-        let w = width.clamp(80.0, 160.0);
+        // No room for a readable gauge: draw nothing rather than paint over
+        // the action buttons to the right.
+        if width < 60.0 {
+            return;
+        }
+        let w = width.min(160.0);
         if !container.status.is_running() {
             draw::text(
                 scene,
@@ -1008,7 +1089,7 @@ impl ContainersApp {
                 (Icon::Trash, Action::Remove, c.semantic.danger),
             ]
         };
-        let mut x = row.x1 - 12.0;
+        let mut x = row.x1 - PAD;
         for (icon, action, color) in actions.into_iter().rev() {
             x -= ICON_BTN;
             let btn = Rect::new(
@@ -1217,7 +1298,7 @@ impl ContainersApp {
             } else {
                 theme.tokens.typography.scale.sm
             };
-            let (lw, _) = tr.measure_weighted(label, label_size, None, TextWeight::Semibold);
+            let (lw, lh) = draw::measure(tr, label, label_size, TextWeight::Semibold);
             draw::text(
                 scene,
                 tr,
@@ -1226,7 +1307,7 @@ impl ContainersApp {
                 fg,
                 Point::new(
                     trect.center().x - f64::from(lw) / 2.0,
-                    trect.center().y - 7.0,
+                    trect.center().y - f64::from(lh) / 2.0,
                 ),
                 if active {
                     TextWeight::Semibold
@@ -1288,10 +1369,10 @@ impl ContainersApp {
                 // is identical to the row actions.
                 40.0
             } else {
-                let (lw, _) = tr.measure_weighted(
+                let (lw, _) = draw::measure(
+                    tr,
                     label,
                     theme.tokens.typography.scale.sm,
-                    None,
                     TextWeight::Semibold,
                 );
                 f64::from(lw) + 38.0
@@ -1333,13 +1414,21 @@ impl ContainersApp {
                 1.5,
             );
             if !compact {
+                let label_y = draw::centered_top(
+                    tr,
+                    label,
+                    theme.tokens.typography.scale.sm,
+                    TextWeight::Semibold,
+                    btn.y0,
+                    btn.height(),
+                );
                 draw::text(
                     scene,
                     tr,
                     label,
                     theme.tokens.typography.scale.sm,
                     c.text_primary,
-                    Point::new(btn.x0 + 28.0, btn.center().y - 7.0),
+                    Point::new(btn.x0 + 28.0, label_y),
                     TextWeight::Semibold,
                 );
             }
@@ -1561,10 +1650,10 @@ impl ContainersApp {
                 Point::new(card.x0 + 14.0, ry + 6.0),
                 TextWeight::Regular,
             );
-            let (vw, _) = tr.measure_weighted(
+            let (vw, _) = draw::measure(
+                tr,
                 v,
                 theme.tokens.typography.scale.sm,
-                None,
                 TextWeight::Semibold,
             );
             draw::text(
@@ -1980,10 +2069,10 @@ impl ContainersApp {
         let c = &theme.tokens.colors;
         let meta_right = acts_right - 12.0;
         let size = ui::format::bytes(image.size_bytes);
-        let (sw, _) = tr.measure_weighted(
+        let (sw, _) = draw::measure(
+            tr,
             &size,
             theme.tokens.typography.scale.base,
-            None,
             TextWeight::Semibold,
         );
         draw::text(
@@ -2989,8 +3078,12 @@ impl ContainersApp {
 
     fn draw_empty(scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, area: Rect, msg: &str) {
         let c = &theme.tokens.colors;
-        let (w, _) = tr.measure(msg, theme.tokens.typography.scale.base, None);
-        let p = Point::new(area.center().x - f64::from(w) / 2.0, area.center().y - 8.0);
+        let (w, h) =
+            draw::measure(tr, msg, theme.tokens.typography.scale.base, TextWeight::Regular);
+        let p = Point::new(
+            area.center().x - f64::from(w) / 2.0,
+            area.center().y - f64::from(h) / 2.0,
+        );
         draw::text(
             scene,
             tr,
@@ -3018,7 +3111,7 @@ impl ContainersApp {
         let scale = &theme.tokens.typography.scale;
         let cx = area.center().x;
         let cy = area.center().y;
-        let (tw, _) = tr.measure_weighted(title, scale.lg, None, TextWeight::Semibold);
+        let (tw, _) = draw::measure(tr, title, scale.lg, TextWeight::Semibold);
         draw::text(
             scene,
             tr,
@@ -3028,7 +3121,7 @@ impl ContainersApp {
             Point::new(cx - f64::from(tw) / 2.0, cy - 22.0),
             TextWeight::Semibold,
         );
-        let (sw, _) = tr.measure(subtitle, scale.sm, None);
+        let (sw, _) = draw::measure(tr, subtitle, scale.sm, TextWeight::Regular);
         draw::text(
             scene,
             tr,
@@ -3538,5 +3631,102 @@ fn log_line_color(theme: &Theme, line: &str) -> Color {
         c.text_primary
     } else {
         c.text_dim
+    }
+}
+
+#[cfg(test)]
+mod row_layout_tests {
+    use super::*;
+    use crate::model::sample_engine;
+
+    fn running_container() -> Container {
+        sample_engine()
+            .containers
+            .into_iter()
+            .find(|c| c.status.is_running())
+            .expect("the sample engine has a running container")
+    }
+
+    /// The status pill sits beside the name only while it ends before the
+    /// lifecycle buttons start; a 240px list beside an open detail pane does
+    /// not have that room and stacks the status under the name instead.
+    #[test]
+    fn narrow_list_stacks_status_when_the_pill_would_reach_the_actions() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let container = running_container();
+        assert_eq!(
+            ContainersApp::row_actions_width(&container),
+            3.0 * ICON_BTN + 2.0 * 4.0,
+            "a running container shows stop / restart / remove"
+        );
+        // 240px list (detail open): the pill column starts at 42% of the row.
+        let narrow = Rect::new(0.0, 0.0, 240.0, 64.0);
+        let cols = ContainersApp::container_columns(narrow, true);
+        let actions_x0 = narrow.x1 - PAD - ContainersApp::row_actions_width(&container);
+        assert!(
+            !ContainersApp::status_pill_fits(&mut tr, &theme, cols[1], actions_x0, &container),
+            "a Running pill at x={} cannot end before the actions at x={actions_x0}",
+            cols[1]
+        );
+        // The same row layout at a laptop-wide list fits comfortably.
+        let wide = Rect::new(0.0, 0.0, 740.0, 64.0);
+        let cols = ContainersApp::container_columns(wide, true);
+        let actions_x0 = wide.x1 - PAD - ContainersApp::row_actions_width(&container);
+        assert!(ContainersApp::status_pill_fits(&mut tr, &theme, cols[1], actions_x0, &container));
+    }
+
+    /// The `NAME` heading and the row name it labels are painted on one x.
+    /// Both are read back from real draw passes (glyph-run origins), not from
+    /// the constants that produce them.
+    #[test]
+    fn name_heading_and_row_name_share_one_x() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        draw::set_base(Affine::IDENTITY);
+        let list = Rect::new(200.0, 60.0, 1000.0, 660.0);
+        let cols = ContainersApp::container_columns(list, false);
+
+        let mut header = Scene::new();
+        ContainersApp::draw_container_list_header(&mut header, &mut tr, &theme, list, false, &cols);
+        let heading_x = header
+            .encoding()
+            .resources
+            .glyph_runs
+            .first()
+            .map(|run| f64::from(run.transform.translation[0]))
+            .expect("the list header paints its NAME heading");
+
+        // The row paints its name on `cols[0] + ROW_TEXT_INSET` in both the
+        // stacked and the wide layout, so the app's viewport does not matter.
+        let mut app = ContainersApp::new(false);
+        let view = ViewState::default();
+        let container = running_container();
+        let row = Rect::new(
+            list.x0,
+            list.y0 + 28.0,
+            list.x1,
+            list.y0 + 28.0 + crate::app::ROW_HEIGHT,
+        );
+        let info = ContainerRow {
+            row,
+            container: &container,
+            cols: &cols,
+            compact: false,
+        };
+        let mut scene = Scene::new();
+        app.draw_container_row(&mut scene, &mut tr, &theme, info, &view);
+        let name_x = scene
+            .encoding()
+            .resources
+            .glyph_runs
+            .first()
+            .map(|run| f64::from(run.transform.translation[0]))
+            .expect("the row paints its name first");
+
+        assert!(
+            (heading_x - name_x).abs() < 0.01,
+            "heading at x={heading_x} but the row name at x={name_x}"
+        );
     }
 }

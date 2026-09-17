@@ -17,6 +17,9 @@ use ui::theme::Theme;
 
 const ROW_H: f64 = 24.0;
 const INDENT: f64 = 14.0;
+/// Height of the "SCHEMA" heading band above the first row; paint,
+/// hit-testing and the visible-row budget all use this one value.
+const HEADER_H: f64 = 26.0;
 
 /// What a click in the tree resolved to.
 #[derive(Clone, Debug)]
@@ -111,7 +114,7 @@ impl SchemaTree {
     }
 
     fn visible_rows(&self) -> usize {
-        (((self.rect.height() - 30.0) / ROW_H).floor()).max(0.0) as usize
+        (((self.rect.height() - HEADER_H) / ROW_H).floor()).max(0.0) as usize
     }
 
     /// Build the flattened row list from the current schema + expansion
@@ -155,7 +158,7 @@ impl SchemaTree {
         if !self.rect.contains(p) {
             return None;
         }
-        let body_top = self.rect.y0 + 26.0;
+        let body_top = self.rect.y0 + HEADER_H;
         if p.y < body_top {
             return None;
         }
@@ -201,7 +204,7 @@ impl SchemaTree {
         // Rebuild rows each frame (cheap; schema is small).
         self.rows = self.build_rows(session);
 
-        let body_top = r.y0 + 26.0;
+        let body_top = r.y0 + HEADER_H;
         let vis = self.visible_rows();
 
         for vi in 0..vis {
