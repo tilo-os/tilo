@@ -4,6 +4,8 @@
 //! It therefore neither commits an app's open transaction nor gives a
 //! historical renderer access to a live record, persistence, or dispatch.
 
+pub mod restore;
+
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
