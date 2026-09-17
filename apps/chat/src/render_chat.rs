@@ -205,18 +205,20 @@ pub(crate) fn shape_body(
 }
 
 /// Draw a circular initials avatar with an optional presence dot.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_avatar(
-    scene: &mut Scene,
-    tf: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
+    paint: PaintContext<'_>,
     center: Point,
     r: f64,
     initials: &str,
     color_idx: usize,
     status: Option<Presence>,
 ) {
+    let PaintContext {
+        scene,
+        transform: tf,
+        text: tr,
+        theme,
+    } = paint;
     // Peer colour comes from the per-peer palette index (deliberately distinct
     // per identity, and shared with the workspace-tint colouring), so it's
     // passed straight through; the disc + centred monogram are painted by the
@@ -825,10 +827,7 @@ impl ChatApp {
             return;
         };
         draw_avatar(
-            scene,
-            tf,
-            tr,
-            theme,
+            PaintContext::new(scene, tf, tr, theme),
             Point::new(bar.x0 + 28.0, bar.center().y),
             16.0,
             &me.initials,
@@ -1246,10 +1245,7 @@ impl ChatApp {
                     stroke_circle(scene, tf, cc, radius + 2.5, c.semantic.success, 2.0);
                 }
                 draw_avatar(
-                    scene,
-                    tf,
-                    tr,
-                    theme,
+                    PaintContext::new(scene, tf, tr, theme),
                     cc,
                     radius,
                     &u.initials,
@@ -1380,10 +1376,7 @@ impl ChatApp {
         // cluster and can never overlap it, even on a very narrow header.
         let cluster_left = self.draw_header_action_buttons(scene, tf, tr, theme, h, hits);
         Self::draw_header_title(
-            scene,
-            tf,
-            tr,
-            theme,
+            PaintContext::new(scene, tf, tr, theme),
             h,
             left_inset,
             cluster_left,
@@ -1490,15 +1483,8 @@ impl ChatApp {
 
     /// The channel glyph + name + topic, truncated to stop before
     /// `cluster_left` so nothing runs under the action buttons.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_header_title(
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         h: Rect,
         left_inset: f64,
         cluster_left: f64,
@@ -1506,6 +1492,12 @@ impl ChatApp {
         topic: &str,
         glyph: &str,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let cy = h.center().y;
         label(
@@ -2020,10 +2012,7 @@ impl ChatApp {
             |u| (u.initials.clone(), u.color_idx, Some(u.status)),
         );
         draw_avatar(
-            scene,
-            tf,
-            tr,
-            theme,
+            PaintContext::new(scene, tf, tr, theme),
             Point::new(area.x0 + 16.0 + AVATAR / 2.0, *y + AVATAR / 2.0),
             AVATAR / 2.0,
             &initials,
@@ -2437,10 +2426,7 @@ impl ChatApp {
                     c.surfaces.raised,
                 );
                 draw_avatar(
-                    scene,
-                    tf,
-                    tr,
-                    theme,
+                    PaintContext::new(scene, tf, tr, theme),
                     Point::new(ax + 11.0, bar.center().y),
                     11.0,
                     &u.initials,
@@ -2870,10 +2856,7 @@ impl ChatApp {
         let focused = matches!(self.focus, crate::app::Focus::Main) && self.editing.is_none();
         let send_enabled = !self.composer_main.value().trim().is_empty();
         let inner = Self::draw_input_box(
-            scene,
-            tf,
-            tr,
-            theme,
+            PaintContext::new(scene, tf, tr, theme),
             rect,
             send_enabled,
             focused,
@@ -2915,12 +2898,8 @@ impl ChatApp {
     /// emoji + send buttons — and record their hit regions. Returns the inner
     /// rect the caller lays the composer [`TextInput`] into; the widget owns
     /// the text, caret, selection, and placeholder inside it.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_input_box(
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         rect: Rect,
         send_enabled: bool,
         focused: bool,
@@ -2928,6 +2907,12 @@ impl ChatApp {
         attach: bool,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> Rect {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         fill_round(scene, tf, rect, 14.0, c.neutral[2]);
         stroke_round(
@@ -3067,7 +3052,13 @@ impl ChatApp {
         );
 
         let head = self.draw_thread_header(scene, tf, tr, theme, panel, hits);
-        self.draw_thread_body(scene, tf, tr, theme, panel, head, &parent_id, hits);
+        self.draw_thread_body(
+            PaintContext::new(scene, tf, tr, theme),
+            panel,
+            head,
+            &parent_id,
+            hits,
+        );
 
         // thread composer
         let comp = Rect::new(
@@ -3084,10 +3075,7 @@ impl ChatApp {
         let focused = matches!(self.focus, crate::app::Focus::Thread) && self.editing.is_none();
         let send_enabled = !self.composer_thread.value().trim().is_empty();
         let inner = Self::draw_input_box(
-            scene,
-            tf,
-            tr,
-            theme,
+            PaintContext::new(scene, tf, tr, theme),
             comp,
             send_enabled,
             focused,
@@ -3192,21 +3180,20 @@ impl ChatApp {
     /// The thread body: the parent message, a "N replies" divider, then
     /// every reply in order — clipped to the scrollable region between the
     /// header and the thread composer.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_thread_body(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         panel: Rect,
         head: Rect,
         parent_id: &str,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let scale = f64::from(self.layout_text_scale);
         let body = Rect::new(panel.x0, head.y1, panel.x1, panel.y1 - 70.0 * scale);
@@ -3218,10 +3205,7 @@ impl ChatApp {
         // parent message
         if let Some(parent) = self.message(parent_id).cloned() {
             y = self.draw_thread_message(
-                scene,
-                tf,
-                tr,
-                theme,
+                PaintContext::new(scene, tf, tr, theme),
                 &parent,
                 panel.x0 + 16.0 * scale.min(1.2),
                 tx,
@@ -3270,10 +3254,7 @@ impl ChatApp {
             .collect();
         for r in &replies {
             y = self.draw_thread_message(
-                scene,
-                tf,
-                tr,
-                theme,
+                PaintContext::new(scene, tf, tr, theme),
                 r,
                 panel.x0 + 16.0 * scale.min(1.2),
                 tx,
@@ -3285,13 +3266,9 @@ impl ChatApp {
         scene.pop_layer();
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_thread_message(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         m: &Message,
         avx: f64,
         tx: f64,
@@ -3299,15 +3276,18 @@ impl ChatApp {
         y: f64,
         _hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let scale = f64::from(self.layout_text_scale);
         let mut yy = y;
         if let Some(u) = self.user(&m.author) {
             draw_avatar(
-                scene,
-                tf,
-                tr,
-                theme,
+                PaintContext::new(scene, tf, tr, theme),
                 Point::new(avx + 16.0 * scale.min(1.2), yy + 14.0 * scale),
                 14.0 * scale.min(1.2),
                 &u.initials,
@@ -3416,28 +3396,37 @@ impl ChatApp {
         );
 
         let rows = self.roster_rows();
-        let head_y1 = self.draw_members_header(scene, tf, tr, theme, panel, rows.len(), hits);
-        self.draw_members_rows(scene, tf, tr, theme, panel, head_y1, &rows);
+        let head_y1 = self.draw_members_header(
+            PaintContext::new(scene, tf, tr, theme),
+            panel,
+            rows.len(),
+            hits,
+        );
+        self.draw_members_rows(
+            PaintContext::new(scene, tf, tr, theme),
+            panel,
+            head_y1,
+            &rows,
+        );
     }
 
     /// A precise People/Collaborators label, the workspace name and roster
     /// count, plus the
     /// close control. Returns the y-coordinate the scrollable roster starts
     /// beneath.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_members_header(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         panel: Rect,
         people_count: usize,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         label(
             scene,
@@ -3513,20 +3502,19 @@ impl ChatApp {
 
     /// The scrollable roster list beneath the header: each member's avatar,
     /// display name, and presence/voice status.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_members_rows(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         panel: Rect,
         head_y1: f64,
         rows: &[(crate::model::User, Option<String>)],
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let body = Rect::new(panel.x0, head_y1, panel.x1, panel.y1);
         push_clip(scene, tf, body);
@@ -3547,10 +3535,7 @@ impl ChatApp {
             }
             let avc = Point::new(panel.x0 + 16.0 + 16.0, y + row_h / 2.0);
             draw_avatar(
-                scene,
-                tf,
-                tr,
-                theme,
+                PaintContext::new(scene, tf, tr, theme),
                 avc,
                 16.0,
                 &u.initials,
@@ -3632,7 +3617,7 @@ impl ChatApp {
             self.draw_attach_picker_empty(scene, tf, tr, theme, panel, head_h);
             return;
         }
-        self.draw_attach_picker_rows(scene, tf, tr, theme, panel, head_h, hits);
+        self.draw_attach_picker_rows(PaintContext::new(scene, tf, tr, theme), panel, head_h, hits);
     }
 
     /// The picker panel's rect, anchored above the composer's "+" and
@@ -3780,20 +3765,22 @@ impl ChatApp {
     /// size — plus a "+N more" footer note when the workspace has more than
     /// that.
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
-        reason = "draw-context bundle and one bounded picker-row presentation, not incidental coupling"
+        reason = "one bounded picker-row presentation, not incidental coupling"
     )]
     fn draw_attach_picker_rows(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         panel: Rect,
         head_h: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let scale = f64::from(self.layout_text_scale);
         let row_h = 52.0 * scale;
