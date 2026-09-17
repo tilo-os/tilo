@@ -5,8 +5,11 @@
 signing identities or compiling the OS. Select `full-build` explicitly to invoke
 the actual `os/dev/build-image.sh` development path with browser support enabled
 and all applications and desktop components compiled from source. Supply the
-reviewed immutable x86-64 WPE buildroot candidate and an explicit positive test
-generation. The committed base, RPM snapshot and kernel snapshot remain inputs.
+reviewed immutable x86-64 WPE buildroot candidate, its completed WPE stage JSON
+receipt and an explicit positive test generation. The committed base, RPM
+snapshot and kernel snapshot remain inputs. The full-build job imports the
+completed WPE artifact; a missing or mismatched receipt fails without compiling
+WebKit as a fallback.
 
 ## Reuse and timing
 
@@ -17,13 +20,17 @@ local cache, plus invalidation after changing a tracked compiler input. Its
 11.85-second duration measures that tiny probe, not OS compilation. Inspect the
 nested build's own sccache statistics to assess actual Rust reuse.
 
-The WPE stage has a separate native Buildah registry cache and stable dependency
+The WPE producer has a separate native Buildah registry cache and stable dependency
 epoch. Source commits and development signing identities do not change that
 epoch; recipe, asset and dependency changes still invalidate the stage. Both
 native architectures passed fresh-store reuse and invalidation fixtures in run
 6992. The full build uses the resulting immutable local stage ID. This proves
 the cache mechanism; actual WebKit compilation and its warm duration remain to
-be measured.
+be measured. The completed artifact contains only `/wpe`, so consumer pulls do
+not transfer the producer's compiler and intermediate build layers. Its receipt
+binds architecture, pinned buildroot, dependency epoch, recipe and source archive
+hashes; unrelated application changes reuse that artifact. The recipe key
+currently conservatively includes the entire OS Containerfile.
 
 Build logs report individual phase durations and compiler-cache statistics,
 including on failure. Missing Rust outputs fail with their names instead of
@@ -53,8 +60,8 @@ The 80 GiB free-space admission threshold is a deliberately conservative
 experiment floor, not a calculated WebKit requirement or proof that a complete build
 fits. After admission, the driver samples free space every five seconds and
 terminates its own build at an 8 GiB reserve, retaining `capacity.json` for the
-next capacity decision. The selected class has general-runner memory; WebKit and
-Cargo both use two build jobs, and receipts record the visible cgroup/guest memory
+next capacity decision. The selected class has general-runner memory; Cargo
+uses two build jobs, WPE is imported, and receipts record the visible cgroup/guest memory
 limits and peak. A storage abort is a failed experiment, never a reason to
 disable the browser or publish an incomplete image.
 
