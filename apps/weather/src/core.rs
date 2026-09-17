@@ -54,8 +54,66 @@ use crate::wxcode::Sky;
 
 const PAD: f64 = 28.0;
 const RP: f64 = 20.0; // overview inner padding
-const CHIP_H: f64 = 62.0; // saved-place chip height
+const CHIP_H: f64 = 62.0; // authored 1× saved-place chip height (see `ChipMetrics`)
 const CHIP_GAP: f64 = 8.0;
+/// Base text sizes inside a saved-place chip: city name, country/condition
+/// line and the trailing temperature.
+const CHIP_NAME_TEXT: f32 = 15.0;
+const CHIP_SUB_TEXT: f32 = 12.0;
+const CHIP_TEMP_TEXT: f32 = 24.0;
+/// Authored 1× condition glyph size inside a chip.
+const CHIP_ICON: f64 = 40.0;
+/// Authored 1× height of the detail header (city, region, date/time, refresh)
+/// measured from its top to the body's first section.
+const DETAIL_HEADER_H: f64 = 74.0;
+/// Vertical padding above and below a chip's text block (the spacing scale's
+/// `s3`; literal because the row grid is solved before a theme is in hand).
+const CHIP_TEXT_PAD: f64 = 12.0;
+
+/// Height of one line of `size`-pt text at `text_scale` — the same value
+/// `TextRenderer::measure` reports for a single line, so the row grid, the hit
+/// rects, the reorder metrics and the painter agree at every scale.
+fn line_h(size: f32, text_scale: f32) -> f64 {
+    let scale = if text_scale.is_finite() {
+        text_scale.clamp(0.5, 4.0)
+    } else {
+        1.0
+    };
+    f64::from(ui::text_render::TextStyle::new(size * scale).line_height_px())
+}
+
+/// Saved-place row geometry for the current text scale: the authored 62px
+/// chip at 1×, growing once the measured name + condition lines need more.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ChipMetrics {
+    chip_h: f64,
+    name_h: f64,
+    sub_h: f64,
+    temp_h: f64,
+    /// Condition glyph size, never taller than the text block beside it.
+    icon: f64,
+}
+
+impl ChipMetrics {
+    fn new(text_scale: f32) -> Self {
+        let name_h = line_h(CHIP_NAME_TEXT, text_scale);
+        let sub_h = line_h(CHIP_SUB_TEXT, text_scale);
+        let temp_h = line_h(CHIP_TEMP_TEXT, text_scale);
+        // 33.75 + 24 < 62 at 1×, so the authored chip wins there; 91.5 at 2×.
+        let chip_h = (name_h + sub_h + 2.0 * CHIP_TEXT_PAD).max(CHIP_H);
+        Self {
+            chip_h,
+            name_h,
+            sub_h,
+            temp_h,
+            icon: (name_h + sub_h).max(CHIP_ICON),
+        }
+    }
+
+    fn pitch(self) -> f64 {
+        self.chip_h + CHIP_GAP
+    }
+}
 const HERO_H: f64 = 168.0;
 const TILE_H: f64 = 78.0;
 const TILE_MIN_W: f64 = 118.0;
@@ -122,6 +180,10 @@ pub struct Core {
     pub units: Units,
 
     last_mouse: Point,
+    /// The renderer's text scale, captured at the top of each paint so the
+    /// saved-place rows, their hit rects, the reorder metrics and the scroll
+    /// extent all size from the same measured lines.
+    text_scale: f32,
 
     // --- overview: saved-place direct manipulation ---
     /// Press classifier: distinguishes a click from a vertical reorder-drag
@@ -202,6 +264,7 @@ impl Core {
             model,
             units,
             last_mouse: Point::ZERO,
+            text_scale: 1.0,
             press: None,
             menu: None,
             reorder: DragController::vertical(),
@@ -774,6 +837,7 @@ impl Core {
         theme: &Theme,
     ) {
         self.over_rect = rect;
+        self.text_scale = tr.text_scale();
         // Below the rail threshold the overview collapses to a glanceable
         // icon column. The mode is re-derived from the allocated width every
         // frame, so a resize between side-by-side and rail reflows on its own.
@@ -906,7 +970,7 @@ impl Core {
         };
         let view_h = (list_bottom - list_top).max(0.0);
         let count = self.model.locations.len();
-        let content_h = count as f64 * (CHIP_H + CHIP_GAP);
+        let content_h = count as f64 * self.chip_metrics().pitch();
         self.over_max_scroll = (content_h - view_h).max(0.0);
         self.over_scroll = self.over_scroll.clamp(0.0, self.over_max_scroll);
         self.over_list_top = list_top - self.over_scroll;
@@ -1209,8 +1273,9 @@ impl Core {
     ) {
         let units = self.units;
         let metrics = self.list_metrics();
+        let chip_m = self.chip_metrics();
         let dragging = self.reorder.from_index();
-        let slot_y = |i: usize| self.over_list_top + i as f64 * (CHIP_H + CHIP_GAP);
+        let slot_y = |i: usize| self.over_list_top + i as f64 * chip_m.pitch();
 
         // While a reorder is live the toolkit's `DragController` reflows the
         // list: every non-dragged chip slides by `item_shift` to close the
@@ -1234,7 +1299,7 @@ impl Core {
                 continue;
             }
             let y = slot_y(i) + self.reorder.item_shift(i, &metrics);
-            let chip = Rect::new(x, y, x + w, y + CHIP_H);
+            let chip = Rect::new(x, y, x + w, y + chip_m.chip_h);
             let swipe_dx = self.swipe_dx_for(i);
             if swipe_dx > 0.0 {
                 Self::draw_swipe_backing(scene, t, theme, chip);
@@ -1268,10 +1333,25 @@ impl Core {
     fn list_metrics(&self) -> ListMetrics {
         ListMetrics::uniform(
             self.over_list_top,
-            CHIP_H,
+            self.chip_metrics().chip_h,
             CHIP_GAP,
             self.model.locations.len(),
         )
+    }
+
+    /// Saved-place row geometry at the captured text scale — one description
+    /// for the row grid, the hit rects, the reorder model and the painter.
+    fn chip_metrics(&self) -> ChipMetrics {
+        ChipMetrics::new(self.text_scale)
+    }
+
+    /// The rounded current temperature a saved-place chip shows, or `None`
+    /// before the city's first snapshot has arrived.
+    fn chip_temperature(&self, loc: &SavedLocation, units: Units) -> Option<String> {
+        self.model.snapshot_for(loc.id).map(|snap| {
+            let temp = snap.temp_in(snap.current.temperature, units).round() as i64;
+            format!("{temp}°")
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1309,32 +1389,27 @@ impl Core {
                 &shape,
             );
         }
+        // Glyph, identity block and temperature all centre on the chip from
+        // their measured heights, so a scaled row keeps them on one axis
+        // instead of colliding at fixed 1× offsets.
+        let m = self.chip_metrics();
+        let sp = &theme.tokens.spacing;
+        let icon_x = chip.x0 + 10.0;
         if let Some(snap) = self.model.snapshot_for(loc.id) {
             let sky = Sky::from_code(snap.current.weather_code);
+            let icon_y = chip.y0 + (chip.height() - m.icon) / 2.0;
             icon::draw_icon(
                 scene,
                 t,
                 sky,
                 snap.current.is_day,
-                Rect::new(
-                    chip.x0 + 10.0,
-                    chip.y0 + 11.0,
-                    chip.x0 + 50.0,
-                    chip.y0 + 51.0,
-                ),
+                Rect::new(icon_x, icon_y, icon_x + m.icon, icon_y + m.icon),
                 theme,
             );
         }
-        text_left(
-            scene,
-            tr,
-            &loc.name,
-            chip.x0 + 58.0,
-            chip.y0 + 12.0,
-            15.0,
-            TextWeight::Semibold,
-            c.text_primary,
-        );
+        let text_x = icon_x + m.icon + f64::from(sp.s2);
+        let block_h = m.name_h + m.sub_h;
+        let name_y = chip.y0 + (chip.height() - block_h) / 2.0;
         // Second line: country + condition word (the "quick per-city info").
         let sub = if let Some(snap) = self.model.snapshot_for(loc.id) {
             format!(
@@ -1345,40 +1420,57 @@ impl Core {
         } else {
             loc.country.clone()
         };
+        // The temperature owns the trailing column; identity text elides
+        // before it rather than running underneath it.
+        let temp_label = self.chip_temperature(loc, units);
+        let (temp_text, temp_size, temp_weight) = match &temp_label {
+            Some(label) => (label.as_str(), CHIP_TEMP_TEXT, TextWeight::Bold),
+            None => ("—", 18.0, TextWeight::Regular),
+        };
+        let (temp_w, temp_h) = tr.measure_weighted(temp_text, temp_size, None, temp_weight);
+        let temp_right = chip.x1 - 14.0;
+        let text_max = ((temp_right - f64::from(temp_w) - f64::from(sp.s3)) - text_x).max(24.0);
+        let name = tr.elide_to_width_weighted(
+            &loc.name,
+            CHIP_NAME_TEXT,
+            text_max as f32,
+            TextWeight::Semibold,
+        );
+        text_left(
+            scene,
+            tr,
+            &name,
+            text_x,
+            name_y,
+            CHIP_NAME_TEXT,
+            TextWeight::Semibold,
+            c.text_primary,
+        );
+        let sub = tr.elide_to_width(&sub, CHIP_SUB_TEXT, text_max as f32);
         text_left(
             scene,
             tr,
             &sub,
-            chip.x0 + 58.0,
-            chip.y0 + 35.0,
-            12.0,
+            text_x,
+            name_y + m.name_h,
+            CHIP_SUB_TEXT,
             TextWeight::Regular,
             c.text_dim,
         );
-        if let Some(snap) = self.model.snapshot_for(loc.id) {
-            let temp = snap.temp_in(snap.current.temperature, units).round() as i64;
-            text_right(
-                scene,
-                tr,
-                &format!("{temp}°"),
-                chip.x1 - 14.0,
-                chip.y0 + 16.0,
-                24.0,
-                TextWeight::Bold,
-                c.text_primary,
-            );
-        } else {
-            text_right(
-                scene,
-                tr,
-                "—",
-                chip.x1 - 16.0,
-                chip.y0 + 20.0,
-                18.0,
-                TextWeight::Regular,
-                c.text_dim,
-            );
-        }
+        text_right(
+            scene,
+            tr,
+            temp_text,
+            temp_right,
+            chip.y0 + (chip.height() - f64::from(temp_h)) / 2.0,
+            temp_size,
+            temp_weight,
+            if temp_label.is_some() {
+                c.text_primary
+            } else {
+                c.text_dim
+            },
+        );
     }
 
     fn draw_swipe_backing(scene: &mut Scene, t: Affine, theme: &Theme, chip: Rect) {
@@ -1550,9 +1642,10 @@ impl Core {
         let rect = self.over_rect;
         let x = rect.x0 + RP;
         let w = (rect.width() - 2.0 * RP).max(80.0);
+        let metrics = self.chip_metrics();
         for i in 0..self.model.locations.len() {
-            let y = self.over_list_top + i as f64 * (CHIP_H + CHIP_GAP);
-            if Rect::new(x, y, x + w, y + CHIP_H).contains(p) {
+            let y = self.over_list_top + i as f64 * metrics.pitch();
+            if Rect::new(x, y, x + w, y + metrics.chip_h).contains(p) {
                 return Some(i);
             }
         }
@@ -1962,12 +2055,12 @@ impl Core {
             return;
         };
         let snap_opt = self.model.selected_snapshot().cloned();
-        let hy = self.draw_detail_header(rect, scene, t, tr, theme, &loc, snap_opt.as_ref());
+        let body_top =
+            self.draw_detail_header(rect, scene, t, tr, theme, &loc, snap_opt.as_ref());
 
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let right = rect.x1 - PAD;
-        let body_top = hy + 74.0;
         scene.fill(
             Fill::NonZero,
             t,
@@ -2087,6 +2180,28 @@ impl Core {
         clippy::too_many_arguments,
         reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/loc/snap identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
     )]
+    /// The header's refresh button: a raised square with the refresh glyph,
+    /// hover-lifted, and recorded as this frame's hit rect.
+    fn draw_refresh_button(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, refresh: Rect) {
+        let c = &theme.tokens.colors;
+        let rshape = RoundedRect::from_rect(refresh, f64::from(theme.tokens.radii.md));
+        let rhover = refresh.contains(self.last_mouse);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            if rhover {
+                c.neutral[2]
+            } else {
+                c.surfaces.raised.with_alpha_factor(0.9)
+            },
+            None,
+            &rshape,
+        );
+        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &rshape);
+        Icon::Refresh.draw(scene, t, refresh.inset(-8.0), c.text_primary);
+        self.refresh_btn = refresh;
+    }
+
     fn draw_detail_header(
         &mut self,
         rect: Rect,
@@ -2106,68 +2221,76 @@ impl Core {
         let mx = rect.x0 + PAD;
         let right = rect.x1 - PAD;
         let hy = rect.y0 + top_pad;
+        let sp = &theme.tokens.spacing;
 
+        // The header stacks from measured lines: city name, then its region
+        // one small gap below; the right-hand date/time column stacks the same
+        // way. The title elides before the right column instead of running
+        // under it, and the header's height (returned as the body top) grows
+        // with the lines rather than staying the authored 74px.
+        let rb = 34.0;
+        let name_h = f64::from(tr.measure_weighted("Ag", 26.0, None, TextWeight::Bold).1);
+        let sub_h = f64::from(tr.measure("Ag", 13.0, None).1);
+        let date_h = f64::from(tr.measure_weighted("Ag", 14.0, None, TextWeight::Medium).1);
+        let (date_str, time_str) = snap.map_or((String::new(), String::new()), |snap| {
+            (
+                fmt_date(&snap.current.time),
+                format!("Local time {}", hhmm(&snap.current.time)),
+            )
+        });
+        let right_col_w = f64::from(
+            tr.measure_weighted(&date_str, 14.0, None, TextWeight::Medium)
+                .0
+                .max(tr.measure(&time_str, 12.0, None).0),
+        );
+        let right_col_x = right - rb - f64::from(sp.s3);
+        let title_max = (right_col_x - right_col_w - f64::from(sp.s4) - mx).max(40.0);
+        let name = tr.elide_to_width_weighted(&loc.name, 26.0, title_max as f32, TextWeight::Bold);
         text_left(
             scene,
             tr,
-            &loc.name,
+            &name,
             mx,
             hy,
             26.0,
             TextWeight::Bold,
             c.text_primary,
         );
+        let sub_y = hy + name_h + f64::from(sp.s1);
         text_left(
             scene,
             tr,
             &loc.subtitle(),
             mx,
-            hy + 32.0,
+            sub_y,
             13.0,
             TextWeight::Regular,
             c.text_dim,
         );
+        let header_h = (name_h + f64::from(sp.s1) + sub_h + f64::from(sp.s6)).max(DETAIL_HEADER_H);
 
         // Refresh button (top-right) — re-fetches this city's forecast.
-        let rb = 34.0;
         let refresh = Rect::new(right - rb, hy - 2.0, right, hy - 2.0 + rb);
-        let rshape = RoundedRect::from_rect(refresh, f64::from(theme.tokens.radii.md));
-        let rhover = refresh.contains(self.last_mouse);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            if rhover {
-                c.neutral[2]
-            } else {
-                c.surfaces.raised.with_alpha_factor(0.9)
-            },
-            None,
-            &rshape,
-        );
-        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &rshape);
-        Icon::Refresh.draw(scene, t, refresh.inset(-8.0), c.text_primary);
-        self.refresh_btn = refresh;
+        self.draw_refresh_button(scene, t, theme, refresh);
 
-        if let Some(snap) = snap {
-            let cur = &snap.current;
-            let date_str = fmt_date(&cur.time);
+        if snap.is_some() {
+            let date_y = hy + 2.0;
             text_right(
                 scene,
                 tr,
                 &date_str,
-                right - rb - 12.0,
-                hy + 2.0,
+                right_col_x,
+                date_y,
                 14.0,
                 TextWeight::Medium,
                 c.text_primary,
             );
-            let time_str = hhmm(&cur.time);
             text_right(
                 scene,
                 tr,
-                &format!("Local time {time_str}"),
-                right - rb - 12.0,
-                hy + 24.0,
+                &time_str,
+                right_col_x,
+                date_y + date_h + f64::from(sp.s1),
                 12.0,
                 TextWeight::Regular,
                 c.text_dim,
@@ -2179,13 +2302,13 @@ impl Core {
                 tr,
                 &self.status,
                 mx,
-                hy + 51.0,
+                sub_y + sub_h,
                 11.0,
                 TextWeight::Medium,
                 c.semantic.warning,
             );
         }
-        hy
+        hy + header_h
     }
 
     /// The hero card: condition glyph, big temperature, condition label,
@@ -3925,6 +4048,30 @@ mod layout_tests {
         }
         // The specific awkward case: a raw 4-wide fit becomes a balanced 3 + 2.
         assert_eq!(balanced_tile_columns(604.0, 5), 3);
+    }
+}
+
+#[cfg(test)]
+mod chip_metrics_tests {
+    use super::{CHIP_GAP, CHIP_H, CHIP_ICON, ChipMetrics};
+
+    #[test]
+    fn one_x_rows_keep_the_authored_chip() {
+        let m = ChipMetrics::new(1.0);
+        assert_eq!(m.chip_h, CHIP_H);
+        assert_eq!(m.icon, CHIP_ICON);
+        assert_eq!(m.pitch(), CHIP_H + CHIP_GAP);
+    }
+
+    #[test]
+    fn scaled_rows_hold_the_name_and_condition_lines() {
+        let m = ChipMetrics::new(2.0);
+        // Both text lines plus the row padding must fit, and the glyph must
+        // not outgrow the text block it sits beside.
+        assert!(m.chip_h >= m.name_h + m.sub_h + 24.0);
+        assert!(m.chip_h > CHIP_H);
+        assert!(m.icon >= CHIP_ICON && m.icon <= m.chip_h);
+        assert!(m.temp_h <= m.chip_h);
     }
 }
 

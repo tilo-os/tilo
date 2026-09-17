@@ -17,6 +17,11 @@ use crate::shell::state::WorkspaceTree;
 const FOOTER_H: f64 = 40.0;
 const WARNING_H: f64 = 24.0;
 const ACTIONS_H: f64 = 40.0;
+/// Roster row pitch.
+const ROW_H: f64 = 48.0;
+/// Minimum pointer target (HIG §9.6): every button in this popover —
+/// Follow/Stop, Invite, Join — is at least this tall.
+const MIN_TARGET: f64 = 32.0;
 const INVITED_TAG: &str = "invited";
 const INVITED_ROW_ALPHA: f32 = 0.55;
 
@@ -306,6 +311,14 @@ impl CollaboratorsOverlay {
         }
     }
 
+    /// The Follow/Stop button of the row whose top edge is `y`: one pointer
+    /// target tall, centred in the row. Paint and hit-testing both read
+    /// this, so they cannot drift apart.
+    fn row_action_rect(panel: Rect, y: f64) -> Rect {
+        let top = y + (ROW_H - MIN_TARGET) / 2.0;
+        Rect::new(panel.x1 - 88.0, top, panel.x1 - 12.0, top + MIN_TARGET)
+    }
+
     fn layout(&mut self, host: Rect, member_count: usize, unavailable: bool, may_invite: bool) {
         let rows = row_count_as_f64(member_count.max(1));
         let warning_h = if unavailable && member_count > 0 {
@@ -332,25 +345,27 @@ impl CollaboratorsOverlay {
         self.row_actions = (0..member_count)
             .map(|index| {
                 let y = self.panel.y0 + 48.0 + warning_h + row_count_as_f64(index) * 48.0;
-                Rect::new(
-                    self.panel.x1 - 88.0,
-                    y + 8.0,
-                    self.panel.x1 - 12.0,
-                    y + 36.0,
-                )
+                Self::row_action_rect(self.panel, y)
             })
             .collect();
         if may_invite {
-            let y0 = self.panel.y1 - FOOTER_H - ACTIONS_H + 6.0;
+            // Buttons are one pointer target tall (HIG §9.6: 32 minimum),
+            // centred in the 40 px action band.
+            let y0 = self.panel.y1 - FOOTER_H - ACTIONS_H + (ACTIONS_H - MIN_TARGET) / 2.0;
             let gap = 8.0;
             let half = (self.panel.width() - 16.0 - gap) / 2.0;
             self.invite = Rect::new(
                 self.panel.x0 + 8.0,
                 y0,
                 self.panel.x0 + 8.0 + half,
-                y0 + 28.0,
+                y0 + MIN_TARGET,
             );
-            self.join = Rect::new(self.invite.x1 + gap, y0, self.panel.x1 - 8.0, y0 + 28.0);
+            self.join = Rect::new(
+                self.invite.x1 + gap,
+                y0,
+                self.panel.x1 - 8.0,
+                y0 + MIN_TARGET,
+            );
         } else {
             self.invite = Rect::ZERO;
             self.join = Rect::ZERO;
@@ -596,14 +611,11 @@ impl CollaboratorsOverlay {
             );
         }
         if row.followable {
-            let action = Rect::new(
-                self.panel.x1 - 88.0,
-                row_y + 8.0,
-                self.panel.x1 - 12.0,
-                row_y + 36.0,
-            );
+            let action = Self::row_action_rect(self.panel, row_y);
+            // Control role (HIG §9.1): a pressable body takes `radii.lg`;
+            // `radii.sm` is for details drawn inside a control.
             let face = ButtonFace::new(action, if followed { "Stop" } else { "Follow" })
-                .radius(f64::from(tokens.radii.sm))
+                .radius(ui::chrome::ChromeRole::Control.radius(theme, action.height()))
                 .hovered(frame.cursor.is_some_and(|point| action.contains(point)));
             Button::paint(scene, transform, text_renderer, theme, &face);
         }
@@ -620,6 +632,8 @@ impl CollaboratorsOverlay {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         if self.invite.area() > 0.0 {
+            // Control role (HIG §9.1): pressable bodies take `radii.lg`.
+            let radius = ui::chrome::ChromeRole::Control.radius(theme, self.invite.height());
             Button::paint(
                 scene,
                 transform,
@@ -627,7 +641,7 @@ impl CollaboratorsOverlay {
                 theme,
                 &ButtonFace::new(self.invite, "Invite")
                     .primary()
-                    .radius(f64::from(tokens.radii.sm))
+                    .radius(radius)
                     .hovered(cursor.is_some_and(|point| self.invite.contains(point))),
             );
             Button::paint(
@@ -636,7 +650,7 @@ impl CollaboratorsOverlay {
                 text_renderer,
                 theme,
                 &ButtonFace::new(self.join, "Join")
-                    .radius(f64::from(tokens.radii.sm))
+                    .radius(radius)
                     .hovered(cursor.is_some_and(|point| self.join.contains(point))),
             );
         }
@@ -779,6 +793,38 @@ fn active_tab_title(tree: &WorkspaceTree, tab_id: u64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_button_is_at_least_one_pointer_target_and_centred_in_its_band() {
+        let mut overlay = CollaboratorsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 3, false, true);
+        let (invite, join) = overlay.action_rects();
+        for rect in [invite, join]
+            .into_iter()
+            .chain(overlay.row_action_rects().iter().copied())
+        {
+            assert!(
+                rect.height() >= MIN_TARGET && rect.width() >= MIN_TARGET,
+                "{rect:?} is at least 32 x 32"
+            );
+        }
+        for (index, rect) in overlay.row_action_rects().iter().enumerate() {
+            let row_top = overlay.panel_rect().y0 + 48.0 + row_count_as_f64(index) * ROW_H;
+            assert!(
+                (rect.center().y - (row_top + ROW_H / 2.0)).abs() < f64::EPSILON,
+                "row {index}'s button is centred in its row"
+            );
+            assert!(rect.y0 >= row_top && rect.y1 <= row_top + ROW_H);
+        }
+        let band_top = overlay.panel_rect().y1 - FOOTER_H - ACTIONS_H;
+        assert!(invite.y0 >= band_top && invite.y1 <= band_top + ACTIONS_H);
+        assert!(
+            (invite.center().y - (band_top + ACTIONS_H / 2.0)).abs() < f64::EPSILON,
+            "footer buttons are centred in the action band"
+        );
+        assert_eq!(invite.y0, join.y0);
+        assert_eq!(invite.y1, join.y1);
+    }
 
     #[test]
     fn hit_testing_uses_the_same_cached_geometry_as_paint() {

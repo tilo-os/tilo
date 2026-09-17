@@ -44,6 +44,16 @@ use ui::{AppKind, AppWidget, IconDescriptor};
 /// placement gets the phone layout.
 pub const NAV_BREAKPOINT: f64 = 720.0;
 
+/// Readable measure (logical px) the External Accounts cards are centred
+/// within on large monitors; see [`SettingsApp::readable_content_measure`].
+const ACCOUNTS_READABLE_WIDTH: f32 = 1040.0;
+
+/// Readable measure (logical px) for a short label/chooser form — the same
+/// default the toolkit's `FormPage` bounds its content to, so a settings form
+/// and an automatic form agree on how far a trailing control may sit from its
+/// label. See [`SettingsApp::readable_content_measure`].
+const FORM_READABLE_WIDTH: f32 = 720.0;
+
 pub struct SettingsApp {
     /// Currently-selected sidebar category.
     selected: Category,
@@ -310,11 +320,11 @@ impl SettingsApp {
         // Account forms and cards are more legible as a column on large
         // desktop displays. Operational panes deliberately keep their full
         // detail width for device tables, channel controls, and bindings.
-        let content: Box<dyn Widget> = if self.uses_readable_content_measure() {
+        let content: Box<dyn Widget> = if let Some(width) = self.readable_content_measure() {
             Box::new(
                 Container::new()
                     .with_no_padding()
-                    .with_centered_max_width(1040.0)
+                    .with_centered_max_width(width)
                     .with_child(Box::new(inner)),
             )
         } else {
@@ -324,11 +334,25 @@ impl SettingsApp {
         Box::new(Container::new().filling().with_child(Box::new(scroll)))
     }
 
-    /// Account forms are intentionally capped to a readable line length on
-    /// large monitors while staying fluid on narrow screens. Other panes keep
-    /// their full width until each has an equivalent content-measure review.
-    fn uses_readable_content_measure(&self) -> bool {
-        self.selected == Category::ExternalAccounts
+    /// The readable measure (logical px) a pane's content is centred within on
+    /// large monitors, or `None` for panes that keep the full detail width.
+    /// Every cap is a maximum, so narrow screens stay fluid.
+    ///
+    /// - Account cards keep the wide review measure their row hierarchy was
+    ///   accepted at.
+    /// - Region & Formats is a short label/chooser form: at the full detail
+    ///   width its trailing dropdowns drifted ~600 px from their labels, so it
+    ///   takes the same readable form measure the toolkit's `FormPage` uses.
+    ///   (UI-review A3, settings-region-wide-balance.)
+    ///
+    /// Other panes keep their full width until each has an equivalent
+    /// content-measure review.
+    fn readable_content_measure(&self) -> Option<f32> {
+        match self.selected {
+            Category::ExternalAccounts => Some(ACCOUNTS_READABLE_WIDTH),
+            Category::RegionFormats => Some(FORM_READABLE_WIDTH),
+            _ => None,
+        }
     }
 
     /// Dispatch to the per-category pane body.

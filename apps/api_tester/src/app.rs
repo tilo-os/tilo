@@ -276,18 +276,27 @@ struct KvRowLayout {
     enabled: bool,
     placeholder: bool,
     indicator: bool,
+    /// Side of the enable checkbox: the 16px design size scaled with the
+    /// text, bounded by the row so it never outgrows the text it toggles.
+    indicator_size: f64,
 }
 
 impl KvRowLayout {
     fn checkbox(&self) -> Rect {
+        let half = self.indicator_size / 2.0;
         Rect::new(
             PAD,
-            self.rect.center().y - 8.0,
-            PAD + 16.0,
-            self.rect.center().y + 8.0,
+            self.rect.center().y - half,
+            PAD + self.indicator_size,
+            self.rect.center().y + half,
         )
     }
 }
+
+/// Design size of the KV row's enable checkbox at 1× text.
+const KV_INDICATOR_SIZE: f64 = 16.0;
+/// Gap between the enable checkbox and the key column.
+const KV_INDICATOR_GAP: f64 = 14.0;
 
 /// Root widget: the whole API tester.
 #[allow(
@@ -1360,6 +1369,13 @@ impl ApiTesterApp {
                 }
     }
 
+    /// Left edge of the KV key column: the row gutter, the text-scaled enable
+    /// checkbox and a gap. Measurement, the `KEY` heading and the rows all
+    /// read this one value, so a 200% checkbox never overprints its key.
+    fn kv_key_x(&self) -> f64 {
+        PAD + KV_INDICATOR_SIZE * self.text_scale + KV_INDICATOR_GAP
+    }
+
     fn automatic_request_height(&self) -> f64 {
         // The provisional pre-measure pass only needs a nonzero editor.
         // Settled layout and paint both consume the retained shaped rows.
@@ -1422,7 +1438,10 @@ impl ApiTesterApp {
         let cy0 = l.urlbar.y0 + 10.0;
         let mut row_x0 = area.x0 + PAD;
         if split == SplitLayout::Overlay {
-            l.hamburger = Rect::new(row_x0, cy0, row_x0 + HAMBURGER_W, cy0 + control_h);
+            // Square toggle: as wide as the row's controls are tall, so it
+            // does not become a narrow slab beside a taller picker at 200%.
+            let side = HAMBURGER_W.max(control_h);
+            l.hamburger = Rect::new(row_x0, cy0, row_x0 + side, cy0 + control_h);
             row_x0 = l.hamburger.x1 + 8.0;
         }
         l.method = Rect::new(
@@ -1859,24 +1878,22 @@ impl ApiTesterApp {
                 c.semantic.warning,
             )
         };
-        let (hw, _) = tr.measure(
-            &hint,
-            tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                .size,
-            None,
-        );
+        let size = tr
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+            .size;
+        let (hw, hh) = tr.measure(&hint, size, None);
         if !tab_strip_has_room_for_hint(l, f64::from(hw)) {
             return;
         }
+        // Centre on the measured line height, not a font-size guess.
         tr.draw_text(
             scene,
             &hint,
-            tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                .size,
+            size,
             hint_col,
             t * Affine::translate((
                 l.main.x1 - PAD - f64::from(hw),
-                l.tab_strip.center().y - 7.0,
+                l.tab_strip.center().y - f64::from(hh) / 2.0,
             )),
             None,
         );
@@ -1949,7 +1966,7 @@ impl ApiTesterApp {
         // RichTextLayout accepts resolved metrics directly; draw_rich paints
         // the same shaped glyphs without another scale or wrapping pass.
         let style = TextStyle::new(self.text_sm);
-        let key_x = PAD + 30.0;
+        let key_x = self.kv_key_x();
         let value_x = width * 0.5;
         let key_width = (value_x - key_x - 12.0).max(1.0) as f32;
         let value_width = (width - PAD - value_x).max(1.0) as f32;
@@ -1986,6 +2003,7 @@ impl ApiTesterApp {
             let height = (key_h.max(value_h).ceil() + 12.0).max(ROW_H);
             let rect = Rect::new(PAD, y, width - PAD, y + height);
             let kx = if indicator { key_x } else { PAD };
+            let indicator_size = (KV_INDICATOR_SIZE * self.text_scale).min(height - 4.0);
             self.kv_rows.push(KvRowLayout {
                 rect,
                 key_rect: Rect::new(
@@ -2009,6 +2027,7 @@ impl ApiTesterApp {
                 enabled,
                 placeholder,
                 indicator,
+                indicator_size,
             });
             y += height;
         }
@@ -2045,7 +2064,7 @@ impl ApiTesterApp {
     ) {
         let c = &theme.tokens.colors;
         let t = t * Affine::translate((area.x0, area.y0));
-        for (label, x) in [("KEY", PAD + 30.0), ("VALUE", area.width() * 0.5)] {
+        for (label, x) in [("KEY", self.kv_key_x()), ("VALUE", area.width() * 0.5)] {
             tr.draw_text_weighted(
                 scene,
                 label,
@@ -2512,10 +2531,11 @@ impl ApiTesterApp {
         let c = &theme.tokens.colors;
         let pretty = vars::pretty_json(&resp.body).unwrap_or_else(|| resp.body.clone());
         let lines = vars::tokenize_json(&pretty);
-        let line_h = (f64::from(tr.measure("Ag", 13.0, None).1) + 4.0).max(JSON_LINE_H);
         let size = tr
             .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
             .size;
+        // Measure the line at the size the lines are drawn with.
+        let line_h = (f64::from(tr.measure("Ag", size, None).1) + 4.0).max(JSON_LINE_H);
         let gutter_w = 44.0;
         let text_x0 = area.x0 + gutter_w + 8.0;
         self.layout.fold_carets.clear();
@@ -2623,10 +2643,11 @@ impl ApiTesterApp {
             t,
             &area,
         );
-        let line_h = (f64::from(tr.measure("Ag", 13.0, None).1) + 4.0).max(JSON_LINE_H);
         let size = tr
             .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
             .size;
+        // Measure the line at the size the lines are drawn with.
+        let line_h = (f64::from(tr.measure("Ag", size, None).1) + 4.0).max(JSON_LINE_H);
         let mut y = area.y0 + 8.0 - self.body_scroll;
         for line in body.lines() {
             if y + line_h >= area.y0 && y <= area.y1 {
@@ -2658,41 +2679,49 @@ impl ApiTesterApp {
         let c = &theme.tokens.colors;
         let x0 = area.x0 + PAD;
         let mut y = area.y0 + 12.0;
+        let caption = "RESPONSE HEADERS";
+        let (_, caption_h) = tr.measure_weighted(caption, 10.0, None, TextWeight::Bold);
         tr.draw_text_weighted(
             scene,
-            "RESPONSE HEADERS",
+            caption,
             10.0,
             c.text_dim,
             t * Affine::translate((x0, y)),
             None,
             TextWeight::Bold,
         );
-        y += 24.0;
+        y += f64::from(caption_h) + 9.0;
+        // Rows advance by the measured line height of the size they paint
+        // with, so a scaled header list never overprints its neighbours.
+        let size = tr
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+            .size;
+        let line_h = f64::from(tr.measure("Ag", size, None).1);
+        let row_h = (line_h + 10.0).max(28.0);
         let key_w = (area.width() * 0.32).min(280.0);
         for h in &resp.headers {
-            if y + 26.0 > area.y1 {
+            if y + row_h > area.y1 {
                 break;
             }
+            let ty = y + (row_h - 1.0 - line_h) / 2.0;
             tr.draw_text_weighted(
                 scene,
                 &h.key,
-                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                    .size,
+                size,
                 c.semantic.info,
-                t * Affine::translate((x0, y)),
+                t * Affine::translate((x0, ty)),
                 Some((key_w - 12.0) as f32),
                 TextWeight::Semibold,
             );
             tr.draw_text(
                 scene,
                 &h.value,
-                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                    .size,
+                size,
                 c.text_primary,
-                t * Affine::translate((x0 + key_w, y)),
+                t * Affine::translate((x0 + key_w, ty)),
                 Some((area.width() - PAD * 2.0 - key_w) as f32),
             );
-            let sep = Rect::new(x0, y + 22.0, area.x1 - PAD, y + 23.0);
+            let sep = Rect::new(x0, y + row_h - 1.0, area.x1 - PAD, y + row_h);
             scene.fill(
                 Fill::NonZero,
                 t,
@@ -2700,7 +2729,7 @@ impl ApiTesterApp {
                 None,
                 &sep,
             );
-            y += 28.0;
+            y += row_h;
         }
     }
 
@@ -4095,6 +4124,49 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// The overlay hamburger is as wide as the row's controls are tall at
+    /// every text scale (a 36px slab beside a 52px picker read as a broken
+    /// button), and the KV enable box scales with the text it toggles.
+    #[test]
+    fn overlay_hamburger_is_square_and_kv_indicator_scales_with_text() {
+        for scale in [1.0f32, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let mut a = app();
+            a.text_scale = f64::from(scale);
+            a.text_sm = theme.tokens.typography.scale.sm;
+            a.control_height = 34.0 * f64::from(scale);
+            a.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
+            a.rail.resolve(a.rect);
+            assert_eq!(a.rail.layout(), SplitLayout::Overlay, "480px collapses the rail");
+            let l = a.compute_layout();
+            assert!(
+                (l.hamburger.width() - l.hamburger.height()).abs() < 0.01,
+                "{scale}x hamburger {:?} is not square",
+                l.hamburger
+            );
+            assert!(l.hamburger.height() >= a.control_height - 0.01);
+            assert!(
+                l.method.x0 >= l.hamburger.x1,
+                "{scale}x the method picker starts after the hamburger"
+            );
+
+            a.measure_kv_table(&mut tr, 448.0);
+            let row = &a.kv_rows[0];
+            let expected = (KV_INDICATOR_SIZE * f64::from(scale)).min(row.rect.height() - 4.0);
+            assert!((row.checkbox().width() - expected).abs() < 0.01);
+            assert!((row.checkbox().height() - expected).abs() < 0.01);
+            assert!(row.checkbox().y0 >= row.rect.y0 && row.checkbox().y1 <= row.rect.y1);
+            assert!(
+                row.checkbox().x1 + KV_INDICATOR_GAP <= row.key_rect.x0 + 0.01,
+                "{scale}x checkbox {:?} runs into the key column at {}",
+                row.checkbox(),
+                row.key_rect.x0
+            );
         }
     }
 

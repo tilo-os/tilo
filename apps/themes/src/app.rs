@@ -37,7 +37,7 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::customizer::{self, Customizer};
+use crate::customizer::Customizer;
 use crate::doc;
 use crate::draw;
 use crate::gallery::Gallery;
@@ -45,10 +45,15 @@ use crate::model::{FONTS, ThemeSpec, TokenId, default_catalog, demo_catalog};
 use crate::preview::PreviewPane;
 use crate::store;
 
-const TOPBAR_H: f32 = 56.0;
+/// Height of the top bar (logical px). Public so geometry tests assert the
+/// relationship "content starts one gutter below the bar" rather than
+/// retyping the number.
+pub const TOPBAR_H: f32 = 56.0;
 const GALLERY_W: f32 = 272.0;
 const CUSTOMIZER_W: f32 = 344.0;
-const NARROW_CONTENT_GUTTER: f32 = 16.0;
+/// Inset (logical px) of the collapsed layout's content from the window edge
+/// and from the top bar — the toolkit's `s4` step.
+pub const NARROW_CONTENT_GUTTER: f32 = 16.0;
 /// Allocated-width breakpoint (logical px). At or above this the gallery is a
 /// docked sidebar beside the preview + customizer; below it the gallery
 /// becomes an overlay flap. Chosen so the gallery, a usable preview, and the
@@ -916,6 +921,14 @@ impl ThemesApp {
         }
         self.preview_node = (!overlay || self.narrow_preview).then_some(preview);
 
+        // The customizer sizes its colour-chip grid to the width it will be
+        // given: the docked column, or the full window when collapsed.
+        let customizer_width = if overlay {
+            self.build_width as f32
+        } else {
+            CUSTOMIZER_W
+        };
+        self.customizer.set_layout_width(customizer_width);
         let customizer = if !overlay || !self.narrow_preview {
             self.customizer.build_layout(taffy, theme, node_map)
         } else {
@@ -927,7 +940,7 @@ impl ThemesApp {
             Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(customizer::intrinsic_height()),
+                    height: Dimension::length(self.customizer.intrinsic_height()),
                 },
                 flex_grow: 0.0,
                 flex_shrink: 0.0,
@@ -1148,10 +1161,12 @@ impl ThemesApp {
             .customizer_node
             .and_then(|n| taffy.layout(n).ok())
             .map_or(0.0, |l| f64::from(l.size.height));
+        // The selector's top margin is part of the scrollable extent, so take
+        // its bottom edge rather than its bare height.
         let tabs_height = self
             .narrow_tabs_node
             .and_then(|n| taffy.layout(n).ok())
-            .map_or(0.0, |l| f64::from(l.size.height));
+            .map_or(0.0, |l| f64::from(l.location.y + l.size.height));
         self.scroll_content_h = ph + ch + tabs_height;
         if self.shot.scroll {
             self.scroll = 260.0;
@@ -1569,13 +1584,17 @@ impl Widget for ThemesApp {
 
         let narrow = if overlay {
             let tabs = self.narrow_tabs.build_layout(taffy, theme, node_map);
+            // The view selector keeps the narrow content gutter on the left
+            // and right, and the same gutter above it so it does not sit flush
+            // on the top bar's hairline. Below it the customizer / preview
+            // supply their own top inset.
             let _ = taffy.set_style(
                 tabs,
                 Style {
                     margin: taffy::Rect {
                         left: length(NARROW_CONTENT_GUTTER),
                         right: length(NARROW_CONTENT_GUTTER),
-                        top: length(0.0_f32),
+                        top: length(NARROW_CONTENT_GUTTER),
                         bottom: length(0.0_f32),
                     },
                     ..taffy.style(tabs).cloned().unwrap_or_default()

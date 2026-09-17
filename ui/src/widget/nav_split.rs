@@ -31,9 +31,12 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::{Element, Widget};
 
 /// Default sidebar width (logical px) when docked or fully revealed.
+/// Predates `Metrics::sidebar_width` (280); `api_tester` and `slides` build
+/// their own breakpoints on this pair, so it is recorded, not moved.
 pub const DEFAULT_SIDEBAR_WIDTH: f64 = 300.0;
 /// Default width breakpoint (logical px). At or above this the sidebar is
-/// docked; below it the sidebar becomes an overlay flap.
+/// docked; below it the sidebar becomes an overlay flap. 180 px over
+/// `Metrics::compact_breakpoint` (720).
 pub const DEFAULT_BREAKPOINT: f64 = 900.0;
 /// Exponential approach rate for the reveal animation — `~0.2s` Adwaita-like
 /// slide.

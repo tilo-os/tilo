@@ -28,6 +28,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::data_table::{centered_text_top, renderer_type_size};
 
 /// Alpha (0–255) of the translucent area fill under a series line. Matches
 /// the concept's `bg-<color>/18` area treatment.
@@ -249,42 +250,48 @@ impl Chart {
         let plot = Rect::new(rect.x0, rect.y0 + HEADER_H, rect.x1, rect.y1);
         let ceil = max.max(1e-3);
 
-        // Title (top-left of header).
+        // Title, legend labels and legend dots share the header band's centre
+        // line, each placed by its measured line box.
+        let title_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         if !title.is_empty() {
+            let (_, title_h) = text_renderer.measure(title, title_size, None);
             text_renderer.draw_text(
                 scene,
                 title,
-                tokens.typography.scale.sm,
+                title_size,
                 tokens.colors.text_primary,
-                translated(transform, rect.x0, rect.y0 + 2.0),
+                translated(
+                    transform,
+                    rect.x0,
+                    centered_text_top(rect.y0, HEADER_H, title_h),
+                ),
                 None,
             );
         }
 
         // Legend (right-aligned, painted right-to-left).
-        let legend_size = tokens.typography.scale.xs;
+        let legend_size = renderer_type_size(text_renderer, tokens.typography.scale.xs);
+        let dot_gap = f64::from(tokens.spacing.s2);
+        let entry_gap = f64::from(tokens.spacing.s3);
         let mut lx = rect.x1;
         for s in series.iter().rev() {
             if s.legend.is_empty() {
                 continue;
             }
-            let (tw, _) = text_renderer.measure(&s.legend, legend_size, None);
+            let (tw, th) = text_renderer.measure(&s.legend, legend_size, None);
             lx -= f64::from(tw);
             text_renderer.draw_text(
                 scene,
                 &s.legend,
                 legend_size,
                 tokens.colors.text_dim,
-                translated(transform, lx, rect.y0 + 4.0),
+                translated(transform, lx, centered_text_top(rect.y0, HEADER_H, th)),
                 None,
             );
-            lx -= 8.0;
-            let dot = Circle::new(
-                Point::new(lx, rect.y0 + 4.0 + f64::from(legend_size) / 2.0),
-                3.0,
-            );
+            lx -= dot_gap;
+            let dot = Circle::new(Point::new(lx, rect.y0 + HEADER_H / 2.0), 3.0);
             scene.fill(Fill::NonZero, transform, s.color, None, &dot);
-            lx -= 12.0;
+            lx -= entry_gap;
         }
 
         // Horizontal grid rules.
@@ -313,13 +320,14 @@ impl Chart {
             );
         }
         if !axis_lo.is_empty() {
-            let (tw, _) = text_renderer.measure(axis_lo, legend_size, None);
+            // Bottom-aligned inside the plot by its measured line box.
+            let (tw, th) = text_renderer.measure(axis_lo, legend_size, None);
             text_renderer.draw_text(
                 scene,
                 axis_lo,
                 legend_size,
                 tokens.colors.text_dim,
-                translated(transform, plot.x1 - f64::from(tw), plot.y1 - 12.0),
+                translated(transform, plot.x1 - f64::from(tw), plot.y1 - f64::from(th)),
                 None,
             );
         }

@@ -29,6 +29,19 @@ pub(crate) enum NumberField {
 }
 
 impl NumberField {
+    /// The widest strings this field can display, in the shared
+    /// `NumberInput`'s own `"{value} {suffix}"` form, so a caller can size
+    /// the value slot once from a measurement instead of a fixed width that
+    /// clips wider digit runs. Two digit variants cover fonts whose widest
+    /// digit is `0` and those where it is `8`.
+    pub(crate) fn widest_displays(&self) -> [&'static str; 2] {
+        match self {
+            Self::FontScale => ["000 %", "888 %"],
+            Self::LineSpacing => ["0.00", "8.88"],
+            Self::FontMult(_) => ["0.00 ×", "8.88 ×"],
+        }
+    }
+
     fn semantic_target(&self) -> String {
         match self {
             Self::FontScale => "books.number.text-size".into(),

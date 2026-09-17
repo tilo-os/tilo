@@ -67,6 +67,13 @@ const PUSH_BREAKPOINT: f64 = 560.0;
 
 /// Top-left toggle (hamburger / Back / close) hit size, logical px.
 const TOGGLE_SIZE: f64 = 34.0;
+/// Inset of the floating top-left toggle from the content band's corner.
+const TOGGLE_PAD: f64 = 10.0;
+/// Where the list's search row starts below the band's top edge, and how tall
+/// it is; the toggle centres itself on this row so the two share one centre
+/// line when the toggle floats beside the search field.
+const SEARCH_TOP: f64 = 10.0;
+const SEARCH_ROW_H: f64 = SEARCH_H - 16.0;
 
 /// What kind of toast is currently showing (auto-dismisses on next event
 /// tick after a short hold — for the headless shot it simply persists).
@@ -1148,16 +1155,22 @@ impl SnippetsApp {
         sidebar_collapsed || push_in_detail
     }
 
+    /// The floating toggle's rect inside `band`: inset from the left edge and
+    /// vertically centred on the list's search row, so it sits level with the
+    /// field it floats beside.
+    fn toggle_rect(band: Rect) -> Rect {
+        let bx = band.x0 + TOGGLE_PAD;
+        let by = band.y0 + SEARCH_TOP + (SEARCH_ROW_H - TOGGLE_SIZE) / 2.0;
+        Rect::new(bx, by, bx + TOGGLE_SIZE, by + TOGGLE_SIZE)
+    }
+
     /// Draw the top-left toggle button + glyph and record its hit region.
     /// In single-pane push showing the detail it's a Back chevron (returns to
     /// the list); otherwise it's a hamburger (open) / close-X (dismiss the
     /// overlay sidebar).
     fn draw_toggle(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, band: Rect) {
         let c = &theme.tokens.colors;
-        let pad = 10.0;
-        let bx = band.x0 + pad;
-        let by = band.y0 + pad;
-        let btn = Rect::new(bx, by, bx + TOGGLE_SIZE, by + TOGGLE_SIZE);
+        let btn = Self::toggle_rect(band);
         draw::fill_round(scene, t, btn, theme.radii_md(), c.surfaces.raised);
         draw::stroke_round(scene, t, btn, theme.radii_md(), 1.0, c.border_standard);
 
@@ -1727,13 +1740,21 @@ impl SnippetsApp {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.neutral[1]);
 
-        // Search bar.
+        // Search bar. When the floating toggle (hamburger / close) sits in
+        // this corner, the field starts past it instead of underneath it —
+        // the same rect feeds the shared input's layout and the hit region,
+        // so paint and pointer routing agree.
         let pad = 12.0;
+        let lead = if self.show_toggle() {
+            Self::toggle_rect(area).x1 - area.x0 + pad
+        } else {
+            pad
+        };
         let search_rect = Rect::new(
-            area.x0 + pad,
-            area.y0 + 10.0,
+            area.x0 + lead,
+            area.y0 + SEARCH_TOP,
             area.x1 - pad,
-            area.y0 + 10.0 + SEARCH_H - 16.0,
+            area.y0 + SEARCH_TOP + SEARCH_ROW_H,
         );
         self.search_rect = search_rect;
         let focused = self.search_input.is_focused();
@@ -2815,6 +2836,58 @@ mod tests {
         );
         app.toggle_sidebar_for_test();
         assert!(!app.sidebar_open_for_test(), "toggling again dismisses it");
+    }
+
+    /// Paint one frame the way the host does, so the recorded hit regions
+    /// (and the shared search input's layout) reflect the production draw.
+    fn draw_once(app: &mut SnippetsApp) {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        Widget::draw(app, &mut scene, Affine::IDENTITY, &mut tr, &theme, &PresenceCtx::empty());
+    }
+
+    fn hit_rect(app: &SnippetsApp, want: &Action) -> Option<Rect> {
+        app.hit
+            .iter()
+            .find(|(_, action)| action == want)
+            .map(|(rect, _)| *rect)
+    }
+
+    /// With the sidebar collapsed the hamburger floats over the list's
+    /// top-left corner. The search field must start past it — both the
+    /// painted field/hit region and the shared input's own layout — and the
+    /// two must share one centre line, instead of the toggle covering the
+    /// start of the placeholder.
+    #[test]
+    fn collapsed_sidebar_toggle_and_search_field_share_a_row_without_overlap() {
+        for width in [700.0, 480.0] {
+            let mut app = SnippetsApp::new_demo();
+            app.layout_at_width_for_test(width).unwrap();
+            draw_once(&mut app);
+            let toggle = hit_rect(&app, &Action::ToggleSidebar).expect("hamburger recorded");
+            let search = hit_rect(&app, &Action::FocusSearch).expect("search recorded");
+            assert!(
+                toggle.x1 <= search.x0,
+                "w={width}: toggle {toggle:?} must end before the search field {search:?}"
+            );
+            let input = Widget::get_rect(&app.search_input);
+            assert!(
+                input.x0 >= toggle.x1,
+                "w={width}: the shared input's layout {input:?} starts past the toggle {toggle:?}"
+            );
+            assert!(
+                (toggle.center().y - search.center().y).abs() < 0.5,
+                "w={width}: toggle {toggle:?} and search {search:?} share a centre line"
+            );
+        }
+        // Docked open: no toggle, and the field keeps its ordinary inset.
+        let mut app = SnippetsApp::new_demo();
+        app.layout_at_width_for_test(1280.0).unwrap();
+        draw_once(&mut app);
+        assert!(hit_rect(&app, &Action::ToggleSidebar).is_none());
+        let search = hit_rect(&app, &Action::FocusSearch).expect("search recorded");
+        assert!((search.x0 - (SIDEBAR_W + 12.0)).abs() < 0.5, "search {search:?}");
     }
 
     #[test]

@@ -8,7 +8,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 
 /// Standard toolbar height, so callers can reserve space consistently.
 pub const TOOLBAR_HEIGHT: f64 = 50.0;
@@ -96,7 +96,13 @@ pub fn draw(
         &Rect::new(rect.x0, rect.y1 - 1.0, rect.x1, rect.y1),
     );
 
-    let white = Color::from_rgb8(0xff, 0xff, 0xff);
+    // Ink on the accent fill comes from the theme (it walks out of white on
+    // a bright accent), not from a literal white that the light and
+    // high-contrast palettes cannot reach.
+    let on_accent = theme
+        .tokens
+        .colors
+        .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
     let cy = rect.y0 + rect.height() / 2.0;
     let mut x = rect.x0 + 14.0;
     let mut rects = Vec::with_capacity(items.len());
@@ -126,11 +132,11 @@ pub fn draw(
                 transform,
                 theme.accent_primary,
                 None,
-                &RoundedRect::from_rect(r, 6.0),
+                &RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md)),
             );
         }
         let color = if item.active {
-            white
+            on_accent
         } else {
             theme.text_primary
         };
@@ -148,7 +154,8 @@ pub fn draw(
         let cue_thickness = 1.5 * f64::from(tr.text_scale());
         match item.cue {
             LabelCue::Underline => {
-                let uy = ly + f64::from(lh);
+                // The underline hugs the measured line box; the strike crosses its middle.
+                let uy = ly + f64::from(lh) - cue_thickness;
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -158,7 +165,7 @@ pub fn draw(
                 );
             }
             LabelCue::Strike => {
-                let sy = ly + f64::from(lh) / 2.0;
+                let sy = ly + f64::from(lh) / 2.0 - cue_thickness / 2.0;
                 scene.fill(
                     Fill::NonZero,
                     transform,

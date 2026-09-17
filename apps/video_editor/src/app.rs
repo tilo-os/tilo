@@ -64,6 +64,12 @@ const INSPECTOR_W: f64 = 300.0;
 const GUTTER_W: f64 = 128.0;
 const RULER_H: f64 = 30.0;
 const TRANSPORT_H: f64 = 58.0;
+/// The transport's control centre line, as an offset into the strip. The
+/// five transport circles, the two history squares and the timecode readout
+/// all centre on it, so the cluster reads as one row rather than three that
+/// happen to be near each other — see `transport_buttons`, `history_buttons`
+/// and `readout_tops`.
+const TRANSPORT_CONTROL_CY: f64 = 20.0;
 const LANE_GAP: f64 = 4.0;
 const VIDEO_LANE_H: f64 = 62.0;
 const AUDIO_LANE_H: f64 = 46.0;
@@ -170,8 +176,19 @@ const BIN_BREAKPOINT: f64 = 900.0;
 /// those panes.
 const TOPBAR_TOUCH_TARGET: f64 = 36.0;
 const TOPBAR_CONTROL_Y: f64 = 6.0;
-const TOPBAR_EDGE: f64 = 14.0;
+/// The topbar's outer inset, the same at both edges (the theme's `spacing.s3`
+/// step). The leading edge used to be 12 and the trailing one 14, so the
+/// project button and Export sat at different distances from their window
+/// edges.
+const TOPBAR_EDGE: f64 = 12.0;
+/// The gap between neighbouring topbar commands. Deliberately between the
+/// theme's `s2` (8) and `s3` (12) steps: at `s3` the compact layout no longer
+/// fits both side-panel toggles beside Import and Export at 420px, and at
+/// `s2` the three labelled commands read as one run.
 const TOPBAR_GAP: f64 = 10.0;
+/// One width for the three labelled commands — Import, Split and Export.
+/// Import was 112 beside two 110s.
+const TOPBAR_BTN_W: f64 = 110.0;
 /// At this width the Split button is redundant with its stable `S` shortcut
 /// and prevents the two independent side-panel toggles from fitting.
 const TOPBAR_COMPACT_BREAKPOINT: f64 = 480.0;
@@ -230,6 +247,26 @@ const INSPECTOR_EMPTY_HINT: &str = "Click a clip in the timeline to edit it";
 /// Height of the inspector's own "INSPECTOR" heading row, which the empty
 /// state starts below.
 const INSPECTOR_HEADER_H: f64 = 26.0;
+
+/// The band a pane's heading row occupies — "MEDIA BIN", "INSPECTOR" and the
+/// controls that share their line (the bin's "+ Title", the inspector's
+/// selection count, the export chip and the project notice in the strip
+/// under the topbar). Text and chips centre on this one band; the bin's words
+/// used to start at a fixed +14 while its chip sat at +6..+26, so the chip
+/// floated some five pixels above the words on either side of it. The band is
+/// the export chip's former 26px, so no pointer target on it got smaller.
+const PANE_HEADING_Y0: f64 = 6.0;
+const PANE_HEADING_H: f64 = 26.0;
+
+/// One size for every inspector control label and caption: the theme type
+/// scale's `sm` step, as a renderer base size like every other size in this
+/// file. It is a literal rather than `theme.tokens.typography.scale.sm`
+/// because the tokens fold the UI scale in as well as the text scale and the
+/// renderer applies its text scale on top — reading the token here drew these
+/// labels in a different size regime from the headings, readouts and faces
+/// beside them at any UI scale other than 1. Moving the whole editor onto
+/// style-based drawing (`renderer_input_style`) is the measured-controls work.
+const INSPECTOR_LABEL_SIZE: f32 = 12.0;
 
 /// Below this window width the inspector collapses to an overlay flap from
 /// the right, exactly as the bin does from the left.
@@ -2018,7 +2055,7 @@ impl VideoEditorApp {
         let overlay = layout == SplitLayout::Overlay;
         let topbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOPBAR_H);
         let export_btn = Rect::new(
-            r.x1 - 124.0,
+            r.x1 - TOPBAR_EDGE - TOPBAR_BTN_W,
             r.y0 + TOPBAR_CONTROL_Y,
             r.x1 - TOPBAR_EDGE,
             r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
@@ -2026,17 +2063,20 @@ impl VideoEditorApp {
         // Directly beneath Export, in the same strip the project notice uses,
         // so the two never share a pixel — see `project_notice_limit`.
         let chip_w = EXPORT_CHIP_W.min((r.width() - 24.0).max(0.0));
+        // On the pane-heading band, so the chip centres on the same line as
+        // the "INSPECTOR" heading it sits beside (and the project notice
+        // plate, which shares the strip).
         let export_chip = Rect::new(
             export_btn.x1 - chip_w,
-            topbar.y1 + 6.0,
+            topbar.y1 + PANE_HEADING_Y0,
             export_btn.x1,
-            topbar.y1 + 32.0,
+            topbar.y1 + PANE_HEADING_Y0 + PANE_HEADING_H,
         );
         let split_btn = if r.width() < TOPBAR_COMPACT_BREAKPOINT {
             Rect::ZERO
         } else {
             Rect::new(
-                export_btn.x0 - TOPBAR_GAP - 110.0,
+                export_btn.x0 - TOPBAR_GAP - TOPBAR_BTN_W,
                 r.y0 + TOPBAR_CONTROL_Y,
                 export_btn.x0 - TOPBAR_GAP,
                 r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
@@ -2048,7 +2088,7 @@ impl VideoEditorApp {
             export_btn.x0 - TOPBAR_GAP
         };
         let import_btn = Rect::new(
-            import_right - 112.0,
+            import_right - TOPBAR_BTN_W,
             r.y0 + TOPBAR_CONTROL_Y,
             import_right,
             r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
@@ -2089,7 +2129,7 @@ impl VideoEditorApp {
         let project_x0 = if overlay {
             menu_btn.x1 + 8.0
         } else {
-            r.x0 + 12.0
+            r.x0 + TOPBAR_EDGE
         };
         let leading_limit = if inspector_btn.width() > 0.0 {
             inspector_btn.x0
@@ -2461,7 +2501,7 @@ impl VideoEditorApp {
     }
 
     fn transport_buttons(&self, r: &Regions) -> [(TransportAction, Rect); 5] {
-        let cy = r.transport.y0 + 20.0;
+        let cy = r.transport.y0 + TRANSPORT_CONTROL_CY;
         let cx0 = r.transport.x0 + 30.0;
         let gap = 40.0;
         let mk = |i: f64, a: TransportAction| {
@@ -2491,7 +2531,7 @@ impl VideoEditorApp {
         if r.transport.width() < HISTORY_MIN_STRIP_W {
             return Vec::new();
         }
-        let cy = r.transport.y0 + 20.0;
+        let cy = r.transport.y0 + TRANSPORT_CONTROL_CY;
         let x0 = r.transport.x0 + HISTORY_X;
         let mk = |i: f64, v: ui::UndoRequest| {
             let x = x0 + i * (HISTORY_W + 4.0);
@@ -2608,7 +2648,8 @@ impl VideoEditorApp {
     /// it at the playhead and opens its words for typing.
     fn add_title_rect(&self, r: &Regions) -> Rect {
         let x1 = r.bin.x0 + 152.0;
-        Rect::new(x1 - 62.0, r.bin.y0 + 6.0, x1, r.bin.y0 + 26.0)
+        let y0 = r.bin.y0 + PANE_HEADING_Y0;
+        Rect::new(x1 - 62.0, y0, x1, y0 + PANE_HEADING_H)
     }
 
     fn bin_item_rects(&self, r: &Regions) -> Vec<(MediaId, Rect)> {
@@ -5927,7 +5968,11 @@ impl VideoEditorApp {
         let half = (x1 - x0) / 2.0 - 6.0;
         l.fade_in = Some(Rect::new(x0, y + 19.0, x0 + half, y + 28.0));
         l.fade_out = Some(Rect::new(x1 - half, y + 19.0, x1, y + 28.0));
-        y += row + 2.0;
+        // The transition caption sits at `transition_y - 20`, five pixels
+        // higher relative to its row than a slider label does to its track,
+        // so it needs that much more advance to keep the clearance every
+        // other caption has over the knobs above it. At `+ 2` it touched them.
+        y += row + 4.0;
 
         // Transition segmented control.
         let seg_w = (x1 - x0) / Transition::ALL.len() as f64;
@@ -6427,7 +6472,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Rate",
-                11.5,
+                INSPECTOR_LABEL_SIZE,
                 c.text_dim,
                 x0,
                 l.project_rate_y,
@@ -6583,7 +6628,7 @@ impl VideoEditorApp {
                     tr,
                     tf,
                     "Nothing marked yet",
-                    11.5,
+                    INSPECTOR_LABEL_SIZE,
                     c.text_dim,
                     x0,
                     rect.y0 - 16.0,
@@ -14204,11 +14249,13 @@ impl VideoEditorApp {
         let room = (self.project_notice_limit(r) - x0).max(80.0);
         let shown = elide_at(&notice.text, (room - 24.0) as f32, 11.5, tr);
         let (w, _) = tr.measure(&shown, 11.5, None);
+        // The same band the export chip and the pane headings use, so the
+        // three centre on one line across the strip under the topbar.
         let plate = Rect::new(
             x0,
-            r.topbar.y1 + 6.0,
+            r.topbar.y1 + PANE_HEADING_Y0,
             (x0 + f64::from(w) + 24.0).min(self.project_notice_limit(r)),
-            r.topbar.y1 + 32.0,
+            r.topbar.y1 + PANE_HEADING_Y0 + PANE_HEADING_H,
         );
         fill_rrect(scene, tf, c.surfaces.raised, plate, 7.0);
         fill_rrect(scene, tf, with_alpha(tint, 0.18), plate, 7.0);
@@ -14530,6 +14577,11 @@ impl VideoEditorApp {
         // promised less than the app accepts (a drop lands anywhere in the
         // window) and vanished entirely when the bin was a closed flap, so on
         // a narrow window a drop that would have worked looked impossible.
+        // The heading row: the pane's name, the "+ Title" control and the
+        // count centre on one line — the `PANE_HEADING_*` band the chip
+        // occupies — measured from the font's real line height.
+        let add = self.add_title_rect(r);
+        let heading_y = text_baseline(add, 11.0, tr);
         text_w(
             scene,
             tr,
@@ -14538,38 +14590,21 @@ impl VideoEditorApp {
             11.0,
             c.text_dim,
             r.bin.x0 + 14.0,
-            r.bin.y0 + 14.0,
+            heading_y,
             TextWeight::Semibold,
         );
         // A title is the one source you make rather than import, so the bin
         // offers it beside the count instead of leaving `MediaKind::Text`
-        // reachable only from the palette.
-        let add = self.add_title_rect(r);
-        let add_hover = add.contains(self.last_mouse);
-        fill_rrect(
-            scene,
-            tf,
-            if add_hover {
-                c.lift(0.72)
-            } else {
-                c.neutral[3]
-            },
-            add,
-            5.0,
-        );
-        stroke_rrect(scene, tf, c.border_standard, add, 5.0, 1.0);
-        let at = text_centre(add, "+ Title", 10.5, TextWeight::Medium, tr);
-        text_w(
-            scene,
-            tr,
-            tf,
-            "+ Title",
-            10.5,
-            c.text_primary,
-            at.x,
-            at.y,
-            TextWeight::Medium,
-        );
+        // reachable only from the palette. Painted through the shared button
+        // face so it carries the fleet's fill, border and hover treatment
+        // rather than a local approximation of them.
+        let add_face = ui::widget::ButtonFace::new(add, "+ Title")
+            .style(ui::widget::ButtonStyle::Neutral)
+            .radius(5.0)
+            .text_size(10.5)
+            .weight(TextWeight::Medium)
+            .hovered(add.contains(self.last_mouse));
+        ui::widget::Button::paint(scene, tf, tr, theme, &add_face);
         let count = format!("{} clips", self.project.media.len());
         let (cw, _) = tr.measure(&count, 11.0, None);
         let count_x = r.bin.x1 - 14.0 - cw as f64;
@@ -14582,7 +14617,7 @@ impl VideoEditorApp {
                 11.0,
                 c.text_dim,
                 count_x,
-                r.bin.y0 + 14.0,
+                heading_y,
             );
         }
 
@@ -15216,12 +15251,21 @@ impl VideoEditorApp {
         // 16px band above the scrubber the old "PLAYING" used, which on a 58px
         // strip sits inside the 18px timecode's own line box.
         let motion = self.motion_words();
-        let (bw, _) = tr.measure_weighted(&big, 18.0, None, TextWeight::Bold);
-        let (tw, _) = tr.measure(&total, 13.0, None);
-        let (mw, _) = tr.measure(&meta, 11.5, None);
-        let motion_w = motion
-            .as_deref()
-            .map_or(0.0, |s| f64::from(tr.measure(s, 10.0, None).0));
+        let (bw, bh) = tr.measure_weighted(&big, 18.0, None, TextWeight::Bold);
+        let (tw, th) = tr.measure(&total, 13.0, None);
+        let (mw, mh) = tr.measure(&meta, 11.5, None);
+        let (motion_w, motion_h) = motion.as_deref().map_or((0.0, 0.0), |s| {
+            let (w, h) = tr.measure(s, 10.0, None);
+            (f64::from(w), f64::from(h))
+        });
+        // Every part's top from one rule — see `readout_tops` — rather than
+        // four hand-tuned offsets that were each right for one size at one
+        // text scale.
+        let [big_y, total_y, motion_y, meta_y] = readout_tops(
+            r.transport,
+            r.transport.y0 + TRANSPORT_CONTROL_CY,
+            [f64::from(bh), f64::from(th), motion_h, f64::from(mh)],
+        );
         let fit = readout_fit(
             r.transport,
             self.transport_content_x(r),
@@ -15239,7 +15283,7 @@ impl VideoEditorApp {
                 18.0,
                 c.text_primary,
                 x,
-                r.transport.y0 + 8.0,
+                big_y,
                 TextWeight::Bold,
             );
         }
@@ -15252,7 +15296,7 @@ impl VideoEditorApp {
                 13.0,
                 c.text_dim,
                 x,
-                r.transport.y0 + 13.0,
+                total_y,
             );
         }
         // Playing is reported in the success tint it always was; a shuttle
@@ -15266,7 +15310,7 @@ impl VideoEditorApp {
             } else {
                 c.accent[5]
             };
-            text(scene, tr, tf, words, 10.0, tint, x, r.transport.y0 + 13.0);
+            text(scene, tr, tf, words, 10.0, tint, x, motion_y);
         }
         if let Some(x) = fit.meta_x {
             text(
@@ -15277,7 +15321,7 @@ impl VideoEditorApp {
                 11.5,
                 c.text_dim,
                 x,
-                r.transport.y0 + 14.0,
+                meta_y,
             );
         }
         // Scrubber.
@@ -15508,6 +15552,20 @@ impl VideoEditorApp {
         // The whole body scrolls together by `inspector_scroll` (clamped to 0
         // when nothing is selected, so the empty state stays put).
         let top = r.inspector.y0 - self.inspector_scroll;
+        // One size for every control label and caption in the panel. The rows
+        // used to mix 12, 11.5 and 11: the fade and transition-length labels
+        // read as a different, smaller kind of row from the opacity and grade
+        // labels directly above them.
+        let label_size = INSPECTOR_LABEL_SIZE;
+        // The heading row shares the media bin's band and centre line, so the
+        // two panes' headings — and the chips beside them — line up.
+        let heading = Rect::new(
+            x0,
+            top + PANE_HEADING_Y0,
+            x1,
+            top + PANE_HEADING_Y0 + PANE_HEADING_H,
+        );
+        let heading_y = text_baseline(heading, 11.0, tr);
         text_w(
             scene,
             tr,
@@ -15516,7 +15574,7 @@ impl VideoEditorApp {
             11.0,
             c.text_dim,
             x0,
-            top + 14.0,
+            heading_y,
             TextWeight::Semibold,
         );
         // With more than one clip selected, say so where the count matters —
@@ -15524,8 +15582,15 @@ impl VideoEditorApp {
         if self.selection.len() > 1 {
             let label = format!("{} clips selected", self.selection.len());
             let (lw, _) = tr.measure_weighted(&label, 10.5, None, TextWeight::Medium);
-            let pillr = Rect::new(x1 - lw as f64 - 14.0, top + 4.0, x1, top + 22.0);
-            fill_rrect(scene, tf, with_alpha(c.accent[5], 0.22), pillr, 9.0);
+            let pillr = Rect::new(x1 - lw as f64 - 14.0, heading.y0, x1, heading.y1);
+            fill_rrect(
+                scene,
+                tf,
+                with_alpha(c.accent[5], 0.22),
+                pillr,
+                PANE_HEADING_H / 2.0,
+            );
+            let pill_y = text_baseline(pillr, 10.5, tr);
             text_w(
                 scene,
                 tr,
@@ -15534,7 +15599,7 @@ impl VideoEditorApp {
                 10.5,
                 c.accent[5],
                 pillr.x0 + 7.0,
-                top + 8.0,
+                pill_y,
                 TextWeight::Medium,
             );
         }
@@ -15715,7 +15780,7 @@ impl VideoEditorApp {
             "Opacity",
             format!("{:.0}%", opacity * 100.0),
             opacity,
-            12.0,
+            label_size,
             dragging(self.drag, Drag::Opacity),
             Some(animated(Param::Opacity)),
         );
@@ -15727,7 +15792,7 @@ impl VideoEditorApp {
             "Volume",
             format!("{:.0}%", volume * 100.0),
             volume,
-            12.0,
+            label_size,
             dragging(self.drag, Drag::Volume),
             Some(animated(Param::Volume)),
         );
@@ -15756,7 +15821,7 @@ impl VideoEditorApp {
                 label,
                 format!("{:.2}×", Filters::gain(v)),
                 v,
-                12.0,
+                label_size,
                 dragging(self.drag, d),
                 Some(animated(p)),
             );
@@ -15772,7 +15837,7 @@ impl VideoEditorApp {
             "Fade In",
             format!("{:.1}s", clip.fade_in),
             (clip.fade_in / cd).clamp(0.0, 1.0),
-            11.0,
+            label_size,
             dragging(self.drag, Drag::FadeIn),
             None,
         );
@@ -15783,7 +15848,7 @@ impl VideoEditorApp {
             "Fade Out",
             format!("{:.1}s", clip.fade_out),
             (clip.fade_out / cd).clamp(0.0, 1.0),
-            11.0,
+            label_size,
             dragging(self.drag, Drag::FadeOut),
             None,
         );
@@ -15794,7 +15859,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Transition",
-                12.0,
+                label_size,
                 c.text_dim,
                 x0,
                 l.transition_y - 20.0,
@@ -15818,7 +15883,7 @@ impl VideoEditorApp {
                 "Transition length",
                 format!("{:.2}s", clip.transition_len()),
                 (clip.transition_len() / max).clamp(0.0, 1.0),
-                11.0,
+                label_size,
                 self.drag == Some(Drag::TransitionLen),
                 None,
             );
@@ -15830,7 +15895,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Label",
-                12.0,
+                label_size,
                 c.text_dim,
                 x0,
                 l.colors_y - 20.0,
@@ -15903,19 +15968,19 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 f.label(),
-                11.5,
+                label_size,
                 label_col,
                 lx,
                 track.y0 - 20.0,
             );
             let readout = f.readout(v);
-            let (pw, _) = tr.measure(&readout, 11.5, None);
+            let (pw, _) = tr.measure(&readout, label_size, None);
             text(
                 scene,
                 tr,
                 tf,
                 &readout,
-                11.5,
+                label_size,
                 c.text_primary,
                 track.x1 - pw as f64,
                 track.y0 - 20.0,
@@ -15939,7 +16004,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Picture in picture",
-                11.5,
+                label_size,
                 c.text_dim,
                 x0,
                 top.y0 - 16.0,
@@ -15989,7 +16054,7 @@ impl VideoEditorApp {
             }
         }
         if l.crop_label_y > 0.0 {
-            text(scene, tr, tf, "Crop", 11.5, c.text_dim, x0, l.crop_label_y);
+            text(scene, tr, tf, "Crop", label_size, c.text_dim, x0, l.crop_label_y);
         }
         if l.anchor_label_y > 0.0 {
             text(
@@ -15997,7 +16062,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Anchor",
-                11.5,
+                label_size,
                 c.text_dim,
                 x0,
                 l.anchor_label_y,
@@ -16093,8 +16158,8 @@ impl VideoEditorApp {
                     1 => format!("{} — this lane, 1 other clip", t.name),
                     n => format!("{} — this lane, {n} other clips", t.name),
                 };
-                let words = elide_at(&words, (x1 - x0) as f32, 11.0, tr);
-                text(scene, tr, tf, &words, 11.0, c.text_dim, x0, l.mix_track_y);
+                let words = elide_at(&words, (x1 - x0) as f32, label_size, tr);
+                text(scene, tr, tf, &words, label_size, c.text_dim, x0, l.mix_track_y);
             }
             if let Some(meter) = l.mix_meter {
                 draw_level_meter(
@@ -16173,7 +16238,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Key colour",
-                11.5,
+                label_size,
                 c.text_dim,
                 x0,
                 l.key_color_y,
@@ -16264,7 +16329,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Words",
-                11.5,
+                label_size,
                 c.text_dim,
                 rect.x0,
                 rect.y0 - 16.0,
@@ -16374,7 +16439,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Font",
-                11.5,
+                label_size,
                 c.text_dim,
                 rect.x0,
                 rect.y0 - 16.0,
@@ -16413,7 +16478,7 @@ impl VideoEditorApp {
                 tr,
                 tf,
                 "Colour",
-                11.5,
+                label_size,
                 c.text_dim,
                 x0,
                 l.title_colors[0].1.y0 - 16.0,
@@ -16567,29 +16632,19 @@ impl VideoEditorApp {
                     ui::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
-            // Add-effect button.
-            let add_hover = l.add_effect.contains(self.last_mouse);
-            fill_rrect(
+            // Add-effect button, through the shared face like every other
+            // button in the panel. It was a local fill-and-stroke with its
+            // label pinned to a font-size offset, and read as a different
+            // control from the "+ Marker at playhead" button two rows down.
+            draw_button(
                 scene,
                 tf,
-                if add_hover {
-                    c.lift(0.72)
-                } else {
-                    c.neutral[3]
-                },
-                l.add_effect,
-                6.0,
-            );
-            stroke_rrect(scene, tf, c.border_standard, l.add_effect, 6.0, 1.0);
-            text(
-                scene,
                 tr,
-                tf,
+                theme,
+                l.add_effect,
                 "+ Add effect",
-                12.0,
-                c.text_primary,
-                l.add_effect.x0 + 12.0,
-                l.add_effect.center().y - 8.0,
+                false,
+                l.add_effect.contains(self.last_mouse),
             );
         }
 
@@ -18132,26 +18187,18 @@ impl VideoEditorApp {
                     first.y0 - 18.0,
                 );
             }
-            for (name, rect, on) in items {
-                let bg = if *on { c.accent[5] } else { c.neutral[3] };
-                fill_rrect(scene, tf, bg, *rect, 6.0);
-                let col = if *on {
-                    on_fill(theme, c.accent[5]).1
-                } else {
-                    c.text_dim
-                };
-                let (lw, _) = tr.measure(name, 12.0, None);
-                text(
-                    scene,
-                    tr,
-                    tf,
-                    name,
-                    12.0,
-                    col,
-                    rect.center().x - f64::from(lw) / 2.0,
-                    rect.center().y - 7.0,
-                );
-            }
+            // The shared segmented face, as the inspector's transition and
+            // preset rows already use — so the dialog's option groups look
+            // like every other segmented control in the fleet instead of a
+            // local set of filled pills with their labels pinned to a
+            // font-size offset.
+            let rects: Vec<Rect> = items.iter().map(|(_, rect, _)| *rect).collect();
+            let labels: Vec<&str> = items.iter().map(|(name, _, _)| name.as_str()).collect();
+            let selected = items
+                .iter()
+                .position(|(_, _, on)| *on)
+                .unwrap_or(usize::MAX);
+            draw_segmented(scene, tf, tr, theme, &rects, &labels, selected, self.last_mouse);
         };
         let res: Vec<_> = l
             .resolution
@@ -18776,6 +18823,32 @@ fn readout_fit(
     fit
 }
 
+/// Where the top of each transport readout part goes, given the strip, the
+/// cluster's control centre line and the measured line-box height of each
+/// part — `[playhead time, total, motion, meta]`, in the order `readout_fit`
+/// names them.
+///
+/// The playhead time is centred on the line the transport buttons share, and
+/// every smaller part stands on that line-box's foot. A line box's descent is
+/// a fixed share of its size, so the parts' baselines land within a fraction
+/// of a pixel of each other at the sizes this strip uses, and the parts keep
+/// that relationship to one another at any text scale — which the four
+/// hand-tuned tops this replaces (+8, +13, +13, +14) did not: each was right
+/// for one size at one scale.
+///
+/// The one guard: a playhead time taller than the strip's upper half is held
+/// at the strip's top inset rather than pushed above its edge, where the
+/// pane's clip would cut the digits' heads off. Whether a strip of
+/// `TRANSPORT_H` can hold a large-text readout above its scrubber at all is
+/// the strip's height to answer, not this function's — see the
+/// measured-controls plan.
+fn readout_tops(transport: Rect, cy: f64, heights: [f64; 4]) -> [f64; 4] {
+    let [big, total, motion, meta] = heights;
+    let big_top = (cy - big / 2.0).max(transport.y0 + 2.0);
+    let foot = big_top + big;
+    [big_top, foot - total, foot - motion, foot - meta]
+}
+
 /// The key control at the head of an animatable inspector row: a diamond,
 /// the standard mark for a keyframe.
 ///
@@ -19292,6 +19365,9 @@ fn nice_tick(px_per_sec: f64) -> f64 {
     }
     600.0
 }
+
+#[cfg(test)]
+mod chrome_geometry_tests;
 
 #[cfg(test)]
 mod tests {

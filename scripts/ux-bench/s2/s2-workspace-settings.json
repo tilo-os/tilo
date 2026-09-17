@@ -1,0 +1,19 @@
+{
+  "name": "Workspace settings lens geometry",
+  "goal": "Open workspace settings, reach the name field as a full-size control, then scroll to the summary and find it inside the body",
+  "viewport": [1280, 800],
+  "budget": {"clicks": 1, "keys": 0},
+  "steps": [
+    {"op": "input", "action": {"click_named": "semantic:topbar:workspace-settings"}},
+    {"op": "checkpoint", "name": "lens", "checks": [
+      {"kind": "visible", "target": "semantic:Workspace settings"},
+      {"kind": "visible", "target": "semantic:Workspace name"},
+      {"kind": "target_size", "target": "semantic:Workspace name", "min": [32, 32]}
+    ]},
+    {"op": "wheel", "target": "semantic:Workspace settings content", "delta": [0, -1000], "unit": "physical_pixels", "phase": "ended"},
+    {"op": "checkpoint", "name": "summary", "checks": [
+      {"kind": "visible", "target": "semantic:At a glance"},
+      {"kind": "target_size", "target": "semantic:At a glance", "min": [32, 32]}
+    ]}
+  ]
+}

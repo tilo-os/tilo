@@ -13,6 +13,17 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+/// The box itself: 24 px (`spacing.s6` at 1×), centred in the interaction
+/// minimum target so the tap area stays 32/48 px while the mark reads at
+/// label size. Fixed rather than read from the scaled spacing tokens because
+/// the target it sits in does not follow `ui_scale` either.
+const BOX_EDGE: f64 = 24.0;
+/// Space between the target's trailing edge and the label; shared by
+/// `measure` and `draw` so the label lands where it was measured. 10 px is
+/// deliberately between `s2` and `s3`: the 24 px box already leaves 4 px of
+/// its 32 px target empty on that side.
+const LABEL_GAP: f32 = 10.0;
+
 /// Interaction state for an immediate-mode checkbox face. Canvas apps keep
 /// their own hit-testing while sharing the retained checkbox's visual states.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -434,7 +445,7 @@ impl Widget for Checkbox {
                 height: known_dimensions.height.unwrap_or(target),
             };
         };
-        let gap = 10.0;
+        let gap = LABEL_GAP;
         let available_width = known_dimensions.width.or(match available_space.width {
             taffy::AvailableSpace::Definite(width) => Some(width),
             taffy::AvailableSpace::MinContent => Some(target + gap),
@@ -486,7 +497,7 @@ impl Widget for Checkbox {
         } else {
             self.rect.center()
         };
-        let visual = Rect::from_center_size(visual_center, (24.0, 24.0));
+        let visual = Rect::from_center_size(visual_center, (BOX_EDGE, BOX_EDGE));
         Self::paint(
             scene,
             transform,
@@ -498,7 +509,7 @@ impl Widget for Checkbox {
         );
         if let Some(label) = self.label.as_ref() {
             let label = crate::i18n!(label);
-            let gap = 10.0;
+            let gap = f64::from(LABEL_GAP);
             let x = self.rect.x0 + target + gap;
             let max_width = (self.rect.x1 - x).max(0.0);
             let style = self.renderer_label_style(text_renderer);

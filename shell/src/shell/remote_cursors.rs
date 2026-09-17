@@ -179,10 +179,13 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             caret.close_path();
             scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &caret);
 
-            let (text_w, _text_h) = text_renderer.measure(&cursor.label, label_size, None);
+            // The chip wraps the label's measured line, not its font size:
+            // a 12 px face lays out taller than 12 px, and sizing the chip
+            // from the size alone let the glyphs ride onto the underline.
+            let (text_w, text_h) = text_renderer.measure(&cursor.label, label_size, None);
             let chip_size = vello::kurbo::Size::new(
                 f64::from(text_w) + CHIP_PADDING_X * 2.0,
-                f64::from(label_size) + CHIP_PADDING_Y * 2.0,
+                f64::from(text_h) + CHIP_PADDING_Y * 2.0,
             );
             let chip_left = apex.x + CARET_SIZE + CHIP_OFFSET;
             let chip_top = apex.y + CARET_SIZE + CHIP_OFFSET;

@@ -234,12 +234,7 @@ impl Widget for Container {
             } else {
                 taffy::Dimension::auto()
             },
-            padding: taffy::Rect {
-                left: length(pad),
-                right: length(pad),
-                top: length(pad),
-                bottom: length(pad),
-            },
+            padding: super::layout::insets_all(pad),
             size: taffy::Size { width, height },
             max_size: taffy::Size {
                 width: self.max_width.map_or(taffy::Dimension::auto(), length),

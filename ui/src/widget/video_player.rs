@@ -22,6 +22,7 @@ use vello::peniko::{
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -32,6 +33,14 @@ use crate::widget::Widget;
 const CONTROLS_AUTO_HIDE: Duration = Duration::from_secs(3);
 const CONTROLS_BAR_HEIGHT: f64 = 44.0;
 const PLAY_BUTTON_SIZE: f64 = 30.0;
+/// Minimum pointer target for every control in the bar (HIG §9.6: a 20 px
+/// glyph gets a 32 px hit rect). Glyphs keep their painted size; the hit
+/// rect stored for input, tooltips and accessibility is at least this on
+/// each axis, clamped to the bar's height.
+const MIN_TARGET: f64 = 32.0;
+/// Opacity of the theme scrim behind the controls: dark enough for the
+/// ink `Theme::on_surface` picks for it to clear contrast over any frame.
+const CONTROLS_SCRIM_ALPHA: f32 = 0.67;
 const SCRUB_TRACK_HEIGHT: f64 = 5.0;
 const SCRUB_THUMB_RADIUS: f64 = 7.0;
 const VOLUME_WIDTH: f64 = 78.0;
@@ -269,8 +278,39 @@ struct ControlsLayout {
     mid_y: f64,
     pad: f64,
     icon: f64,
+    /// Side of the square hit rect every button gets: `MIN_TARGET` clamped
+    /// to the bar. Painted glyph rects stay `icon`-sized inside it.
+    hit: f64,
     play_btn: Rect,
     cluster_x0: f64,
+    /// Ink that clears contrast over the controls scrim, picked by the
+    /// theme — `text_primary` is near-black on light themes and vanishes
+    /// on the dark scrim.
+    ink: Color,
+    ink_dim: Color,
+}
+
+impl ControlsLayout {
+    /// The hit rect for a control whose glyph is painted in `glyph`: at
+    /// least `hit` on each axis, centred on the glyph.
+    fn hit_rect(&self, glyph: Rect) -> Rect {
+        Rect::from_center_size(
+            glyph.center(),
+            (glyph.width().max(self.hit), glyph.height().max(self.hit)),
+        )
+    }
+
+    /// The hit rect for a horizontal track painted `SCRUB_TRACK_HEIGHT`
+    /// tall: the same x-range (so a click maps to the same fraction the
+    /// paint shows) but `hit` tall, centred on the bar's centre line.
+    fn track_hit_rect(&self, track: Rect) -> Rect {
+        Rect::new(
+            track.x0,
+            self.mid_y - self.hit / 2.0,
+            track.x1,
+            self.mid_y + self.hit / 2.0,
+        )
+    }
 }
 
 /// The elapsed/duration label, pre-measured once so every layout helper that
@@ -278,6 +318,9 @@ struct ControlsLayout {
 struct TimeLabel<'a> {
     text: &'a str,
     width: f32,
+    /// Measured line-box height; the label is centred on this, not on
+    /// `size`, so it holds the bar's centre line at every text scale.
+    height: f32,
     size: f32,
 }
 
@@ -1001,11 +1044,17 @@ impl VideoPlayer {
         }
         let colors = &theme.tokens.colors;
 
-        // Scrim so controls read over bright frames.
+        // Scrim so controls read over bright frames — the theme's scrim
+        // colour, so its hue belongs to the theme rather than being a black
+        // hole; the ink on it is chosen against that surface, not against
+        // the app background (near-black `text_primary` on a light theme
+        // would vanish here).
+        let scrim = colors.surfaces.scrim;
+        let on_scrim = theme.on_surface(scrim);
         scene.fill(
             Fill::NonZero,
             transform,
-            Color::from_rgba8(0, 0, 0, 170),
+            scrim.with_alpha_factor(CONTROLS_SCRIM_ALPHA),
             None,
             &bar,
         );
@@ -1014,14 +1063,13 @@ impl VideoPlayer {
         let mid_y = bar.y0 + bar.height() * 0.5;
 
         let icon = PLAY_BUTTON_SIZE.min(bar.height() - 8.0).max(0.0);
+        let hit = MIN_TARGET.min(bar.height()).max(icon);
         let play_btn = Rect::new(
             bar.x0 + pad,
             mid_y - icon * 0.5,
             bar.x0 + pad + icon,
             mid_y + icon * 0.5,
         );
-        self.play_button_rect = play_btn;
-        self.draw_play_glyph(scene, transform, play_btn, colors.text_primary);
 
         // Feeds the left reserve that bounds how many setting icons can fit
         // without crushing the scrubber.
@@ -1030,22 +1078,28 @@ impl VideoPlayer {
             format_ms(self.position_ms),
             format_ms(self.duration_ms)
         );
-        let time_size = 12.0f32;
-        let (tw, _th) = text_renderer.measure(&time_text, time_size, None);
+        let time_size = theme.tokens.typography.scale.sm;
+        let (tw, th) = text_renderer.measure(&time_text, time_size, None);
 
         let mut layout = ControlsLayout {
             bar,
             mid_y,
             pad,
             icon,
+            hit,
             play_btn,
             cluster_x0: 0.0,
+            ink: on_scrim.ink,
+            ink_dim: on_scrim.ink_dim,
         };
+        self.play_button_rect = layout.hit_rect(play_btn);
+        self.draw_play_glyph(scene, transform, play_btn, layout.ink);
         self.paint_settings_cluster(scene, transform, theme, &mut layout, tw);
 
         let time = TimeLabel {
             text: &time_text,
             width: tw,
+            height: th,
             size: time_size,
         };
         self.paint_volume_time_track(scene, transform, text_renderer, theme, &layout, &time);
@@ -1081,6 +1135,7 @@ impl VideoPlayer {
             pad,
             icon,
             play_btn,
+            ink,
             ..
         } = *layout;
         let colors = &theme.tokens.colors;
@@ -1122,14 +1177,8 @@ impl VideoPlayer {
             (true, prio.len().min(max_fit.saturating_sub(1)))
         };
 
-        self.fullscreen_button_rect = fs_btn;
-        draw_fullscreen_glyph(
-            scene,
-            transform,
-            fs_btn,
-            colors.text_primary,
-            self.fullscreen,
-        );
+        self.fullscreen_button_rect = layout.hit_rect(fs_btn);
+        draw_fullscreen_glyph(scene, transform, fs_btn, ink, self.fullscreen);
 
         let mut cx = fs_btn.x0 - gap;
         let gear_btn = if gear_needed {
@@ -1138,30 +1187,35 @@ impl VideoPlayer {
             let tint = if self.open_menu == Some(OpenMenu::Gear) {
                 accent
             } else {
-                colors.text_primary
+                ink
             };
             Icon::Settings2.draw(scene, transform, inset_rect(r, 4.0), tint);
             r
         } else {
             Rect::ZERO
         };
-        self.gear_button_rect = gear_btn;
+        self.gear_button_rect = if gear_needed {
+            layout.hit_rect(gear_btn)
+        } else {
+            Rect::ZERO
+        };
 
         // `shown` is always `<= prio.len()` by construction above; `.get()`
         // plus the full-slice fallback keeps that provable to the reader
         // without a raw range-index.
         let shown_slice = prio.get(..shown).unwrap_or(&prio);
-        self.paint_setting_icons(scene, transform, theme, layout, cx, shown_slice);
+        let leftmost_glyph_x0 =
+            self.paint_setting_icons(scene, transform, theme, layout, cx, shown_slice);
 
         self.gear_entries.clear();
         self.gear_entries.extend(prio.iter().skip(shown).copied());
         self.gear_entries.extend(zero.iter().copied());
 
-        // Leftmost edge the right cluster reached — the volume sits to its left.
-        layout.cluster_x0 = self.setting_icon_rects.last().map_or(
-            if gear_needed { gear_btn.x0 } else { fs_btn.x0 },
-            |(_, r)| r.x0,
-        );
+        // Leftmost *painted* edge the right cluster reached — the volume
+        // sits to its left. Glyph edges, not hit edges, so the widened hit
+        // rects do not shift the layout.
+        layout.cluster_x0 =
+            leftmost_glyph_x0.unwrap_or(if gear_needed { gear_btn.x0 } else { fs_btn.x0 });
     }
 
     /// Priority `>= 1` settings (highest first, ties broken by original
@@ -1193,7 +1247,9 @@ impl VideoPlayer {
     }
 
     /// Draws each of `shown`'s setting icons leftward from `start_cx`,
-    /// pushing its rect into `setting_icon_rects`.
+    /// pushing its hit rect into `setting_icon_rects`. Returns the leftmost
+    /// painted glyph edge, so the caller can lay the volume control out
+    /// against what is visible rather than against the wider hit rect.
     fn paint_setting_icons(
         &mut self,
         scene: &mut Scene,
@@ -1202,7 +1258,7 @@ impl VideoPlayer {
         layout: &ControlsLayout,
         start_cx: f64,
         shown: &[usize],
-    ) {
+    ) -> Option<f64> {
         let colors = &theme.tokens.colors;
         let accent = colors.accent[ACCENT_PRIMARY_IDX];
         let btn = layout.icon;
@@ -1211,22 +1267,21 @@ impl VideoPlayer {
 
         self.setting_icon_rects.clear();
         let mut cx = start_cx;
+        let mut leftmost = None;
         for &idx in shown {
             let Some(s) = self.settings.get(idx) else {
                 continue;
             };
             let r = Rect::new(cx - btn, mid_y - btn * 0.5, cx, mid_y + btn * 0.5);
             cx = r.x0 - gap;
+            leftmost = Some(r.x0);
             let on = matches!(s.control, PlayerSettingControl::Toggle { on: true });
             let menu_open = self.open_menu == Some(OpenMenu::Choice(idx));
-            let tint = if on || menu_open {
-                accent
-            } else {
-                colors.text_primary
-            };
+            let tint = if on || menu_open { accent } else { layout.ink };
             s.icon.draw(scene, transform, inset_rect(r, 4.0), tint);
-            self.setting_icon_rects.push((idx, r));
+            self.setting_icon_rects.push((idx, layout.hit_rect(r)));
         }
+        leftmost
     }
 
     /// Volume slider, elapsed/duration text, and the scrub track (with
@@ -1244,9 +1299,9 @@ impl VideoPlayer {
             mid_y,
             pad,
             play_btn,
+            ink_dim,
             ..
         } = *layout;
-        let colors = &theme.tokens.colors;
 
         let vol_x0 = self.paint_volume_slider(scene, transform, theme, layout);
 
@@ -1256,8 +1311,8 @@ impl VideoPlayer {
             scene,
             time.text,
             time.size,
-            colors.text_dim,
-            translated(transform, time_x0, mid_y - f64::from(time.size) * 0.5),
+            ink_dim,
+            translated(transform, time_x0, mid_y - f64::from(time.height) * 0.5),
             None,
         );
 
@@ -1281,6 +1336,7 @@ impl VideoPlayer {
             icon,
             play_btn,
             cluster_x0,
+            ink,
             ..
         } = *layout;
         let colors = &theme.tokens.colors;
@@ -1294,8 +1350,7 @@ impl VideoPlayer {
             vol_x0 + icon * 0.8,
             mid_y + icon * 0.4,
         );
-        self.mute_button_rect = speaker;
-        draw_speaker_glyph(scene, transform, speaker, colors.text_primary, self.muted);
+        draw_speaker_glyph(scene, transform, speaker, ink, self.muted);
         let vtrack_x0 = speaker.x1 + pad * 0.5;
         let vtrack = Rect::new(
             vtrack_x0,
@@ -1303,8 +1358,18 @@ impl VideoPlayer {
             vol_x1,
             mid_y + SCRUB_TRACK_HEIGHT * 0.5,
         );
+        // The speaker's hit rect grows to the minimum target but stops
+        // where the volume track's own hit rect begins, so the two never
+        // claim the same pixel.
+        let mute_hit = layout.hit_rect(speaker);
+        self.mute_button_rect = Rect::new(
+            mute_hit.x0,
+            mute_hit.y0,
+            mute_hit.x1.min(vtrack_x0),
+            mute_hit.y1,
+        );
         if vtrack.width() > 0.0 {
-            self.volume_track_rect = vtrack;
+            self.volume_track_rect = layout.track_hit_rect(vtrack);
             let shape = RoundedRect::from_rect(vtrack, SCRUB_TRACK_HEIGHT * 0.5);
             scene.fill(
                 Fill::NonZero,
@@ -1358,7 +1423,10 @@ impl VideoPlayer {
             track_x1,
             mid_y + SCRUB_TRACK_HEIGHT * 0.5,
         );
-        self.scrub_track_rect = track;
+        // A 5 px track is not a pointer target; the hit rect keeps the
+        // track's x-range (so the seek fraction is the one painted) at the
+        // minimum target height.
+        self.scrub_track_rect = layout.track_hit_rect(track);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1519,12 +1587,14 @@ impl VideoPlayer {
 
         let mut y = y0 + pad * 0.5;
         if let Some(t) = &panel.title {
+            let title_size = theme.tokens.typography.scale.sm;
+            let (_, th) = text_renderer.measure(t, title_size, None);
             text_renderer.draw_text(
                 scene,
                 t,
-                12.0,
+                title_size,
                 colors.text_dim,
-                translated(transform, x0 + pad, y + row_h * 0.5 - 7.0),
+                translated(transform, x0 + pad, y + (row_h - f64::from(th)) * 0.5),
                 None,
             );
             y += row_h;
@@ -1602,12 +1672,17 @@ impl VideoPlayer {
             y + row_h - 7.0,
         );
         s.icon.draw(scene, transform, icon_r, colors.text_primary);
+        // Control label and value are both `scale.sm` (HIG §9.6), centred on
+        // the row from their measured line box.
+        let label_size = theme.tokens.typography.scale.sm;
+        let (_, lh) = text_renderer.measure(&s.name, label_size, None);
+        let label_top = y + (row_h - f64::from(lh)) * 0.5;
         text_renderer.draw_text(
             scene,
             &s.name,
-            13.0,
+            label_size,
             colors.text_primary,
-            translated(transform, icon_r.x1 + 8.0, y + row_h * 0.5 - 8.0),
+            translated(transform, icon_r.x1 + 8.0, label_top),
             None,
         );
         let value: String = match &s.control {
@@ -1624,16 +1699,20 @@ impl VideoPlayer {
             PlayerSettingControl::Button => String::new(),
         };
         if !value.is_empty() {
-            let (vw, _) = text_renderer.measure(&value, 12.0, None);
+            let (vw, vh) = text_renderer.measure(&value, label_size, None);
             let tint = matches!(s.control, PlayerSettingControl::Toggle { on: true })
                 .then_some(accent)
                 .unwrap_or(colors.text_dim);
             text_renderer.draw_text(
                 scene,
                 &value,
-                12.0,
+                label_size,
                 tint,
-                translated(transform, x1 - pad - f64::from(vw), y + row_h * 0.5 - 7.0),
+                translated(
+                    transform,
+                    x1 - pad - f64::from(vw),
+                    y + (row_h - f64::from(vh)) * 0.5,
+                ),
                 None,
             );
         }
@@ -1697,22 +1776,29 @@ impl VideoPlayer {
         } else {
             colors.text_primary
         };
+        let label_size = theme.tokens.typography.scale.sm;
+        let (_, lh) = text_renderer.measure(&label, label_size, None);
+        let label_top = y + (row_h - f64::from(lh)) * 0.5;
         text_renderer.draw_text(
             scene,
             &label,
-            13.0,
+            label_size,
             tint,
-            translated(transform, x0 + indent, y + row_h * 0.5 - 8.0),
+            translated(transform, x0 + indent, label_top),
             None,
         );
         if selected {
-            let (cw, _) = text_renderer.measure("✓", 13.0, None);
+            let (cw, ch) = text_renderer.measure("✓", label_size, None);
             text_renderer.draw_text(
                 scene,
                 "✓",
-                13.0,
+                label_size,
                 accent,
-                translated(transform, x1 - pad - f64::from(cw), y + row_h * 0.5 - 8.0),
+                translated(
+                    transform,
+                    x1 - pad - f64::from(cw),
+                    y + (row_h - f64::from(ch)) * 0.5,
+                ),
                 None,
             );
         }
@@ -3502,6 +3588,156 @@ mod tests {
         assert!(
             image_count >= 1,
             "expected an IMAGE draw, got {image_count}"
+        );
+    }
+
+    /// Every pointer target the bar exposes, named, in one place.
+    fn bar_targets(vp: &VideoPlayer) -> Vec<(String, Rect)> {
+        let mut out = vec![
+            ("play".to_string(), vp.play_button_rect),
+            ("scrub".to_string(), vp.scrub_track_rect),
+            ("volume".to_string(), vp.volume_track_rect),
+            ("mute".to_string(), vp.mute_button_rect),
+            ("fullscreen".to_string(), vp.fullscreen_button_rect),
+        ];
+        if vp.gear_button_rect.width() > 0.0 {
+            out.push(("gear".to_string(), vp.gear_button_rect));
+        }
+        for (idx, r) in &vp.setting_icon_rects {
+            out.push((format!("setting-{idx}"), *r));
+        }
+        out
+    }
+
+    #[test]
+    fn every_bar_control_meets_the_minimum_pointer_target() {
+        let mut vp = VideoPlayer::new();
+        vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+        vp.show_controls();
+        vp.set_setting(PlayerSetting::toggle(
+            "captions",
+            Icon::FileText,
+            "Captions",
+            2,
+            false,
+        ));
+        vp.set_setting(PlayerSetting::choice(
+            "resolution",
+            Icon::Monitor,
+            "Resolution",
+            0,
+            vec!["1080p".into(), "720p".into()],
+            0,
+        ));
+        draw_once(&mut vp);
+        for (name, r) in bar_targets(&vp) {
+            assert!(
+                r.width() >= MIN_TARGET - 1e-6 && r.height() >= MIN_TARGET - 1e-6,
+                "{name} hit rect {r:?} is under the {MIN_TARGET}px minimum target"
+            );
+        }
+    }
+
+    #[test]
+    fn bar_controls_share_one_centre_line_and_never_overlap() {
+        let mut vp = VideoPlayer::new();
+        vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+        vp.show_controls();
+        vp.set_setting(PlayerSetting::toggle(
+            "captions",
+            Icon::FileText,
+            "Captions",
+            2,
+            false,
+        ));
+        draw_once(&mut vp);
+        let bar = vp.controls_bar_rect();
+        let mid_y = bar.center().y;
+        let targets = bar_targets(&vp);
+        for (name, r) in &targets {
+            assert!(
+                (r.center().y - mid_y).abs() < 1e-6,
+                "{name} centre {} is off the bar's centre line {mid_y}",
+                r.center().y
+            );
+        }
+        for (i, (a_name, a)) in targets.iter().enumerate() {
+            for (b_name, b) in targets.iter().skip(i + 1) {
+                let overlap = a.intersect(*b);
+                assert!(
+                    overlap.is_zero_area(),
+                    "{a_name} {a:?} and {b_name} {b:?} claim the same pixels: {overlap:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_widened_scrub_target_still_seeks_where_the_track_is_painted() {
+        let mut vp = VideoPlayer::new();
+        vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+        vp.show_controls();
+        draw_once(&mut vp);
+        let bar = vp.controls_bar_rect();
+        let pad = f64::from(Theme::dark().tokens.spacing.s2);
+        let icon = PLAY_BUTTON_SIZE.min(bar.height() - 8.0);
+        // The painted track begins one pad after the play glyph; the hit
+        // rect must start at the same x so a click maps to the same fraction
+        // the paint shows.
+        let painted_x0 = bar.x0 + pad + icon + pad;
+        assert!(
+            (vp.scrub_track_rect.x0 - painted_x0).abs() < 1e-6,
+            "scrub hit rect x0 {} drifted from the painted track {painted_x0}",
+            vp.scrub_track_rect.x0
+        );
+        assert!(
+            vp.scrub_track_rect.height() > SCRUB_TRACK_HEIGHT,
+            "the hit rect must be taller than the 5px track it targets"
+        );
+    }
+
+    #[test]
+    fn controls_ink_reads_over_the_scrim_in_the_light_theme() {
+        use crate::offscreen::OffscreenRenderer;
+        let theme = Theme::light();
+        let mut vp = VideoPlayer::new();
+        let (w, h) = (320.0, 120.0);
+        vp.rect = Rect::new(0.0, 0.0, w, h);
+        vp.show_controls();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a 320x120 test surface"
+        )]
+        let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "pixel coordinates inside a 320x120 surface"
+        )]
+        let sample = |p: Point| {
+            let idx = ((p.y as usize) * (w as usize) + p.x as usize) * 4;
+            Color::from_rgb8(rgba[idx], rgba[idx + 1], rgba[idx + 2])
+        };
+        // Inside the paused play triangle: for a glyph box of side `s` the
+        // triangle spans x ∈ [cx − 0.5s·½ … cx + 0.7s·½]; (cx − 4, cy) is
+        // well inside it at the 30px glyph.
+        let c = vp.play_button_rect.center();
+        let glyph = sample(Point::new(c.x - 4.0, c.y));
+        // A bare patch of the painted scrim: just right of the play target,
+        // above the scrub track, inside the bar.
+        let bar = vp.controls_bar_rect();
+        let scrim = sample(Point::new(vp.play_button_rect.x1 + 2.0, bar.y0 + 3.0));
+        let ratio = crate::a11y::contrast_ratio(glyph, scrim);
+        assert!(
+            ratio >= 4.5,
+            "play glyph contrast {ratio:.2}:1 against the painted scrim on the light theme \
+             (WCAG AA is 4.5:1): near-black text_primary on the dark scrim; ink must be \
+             chosen against the scrim"
         );
     }
 }

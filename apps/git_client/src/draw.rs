@@ -129,6 +129,31 @@ pub fn mono_width(tr: &mut TextRenderer, s: &str, size: f32) -> f32 {
         .0
 }
 
+/// Top-of-line `y` that vertically centres `s` (drawn at `size`/`weight`)
+/// inside the band starting at `y0` with height `h`.
+///
+/// Centring uses the measured line height rather than the font size, so a
+/// 12px title, an 11px badge and a 13px tab label placed in one band share
+/// one centre line at every text scale.
+pub fn centered_top(
+    tr: &mut TextRenderer,
+    s: &str,
+    size: f32,
+    weight: TextWeight,
+    y0: f64,
+    h: f64,
+) -> f64 {
+    let (_, th) = tr.measure_weighted(s, size, None, weight);
+    y0 + (h - f64::from(th)) / 2.0
+}
+
+/// Monospace counterpart of [`centered_top`], measured with the same styled
+/// path [`mono`] paints with.
+pub fn mono_centered_top(tr: &mut TextRenderer, s: &str, size: f32, y0: f64, h: f64) -> f64 {
+    let (_, th) = tr.measure_styled(s, size, None, TextWeight::Regular, false, true);
+    y0 + (h - f64::from(th)) / 2.0
+}
+
 /// A small rounded "pill" with a label — used for ref decorations, badges,
 /// ahead/behind counts. Returns the advance width consumed (pill + gap).
 #[allow(clippy::too_many_arguments)]
@@ -146,8 +171,11 @@ pub fn pill(
 ) -> f64 {
     let pad = 6.0;
     let size = (height - 6.0).max(9.0) as f32;
-    let tw = f64::from(tr.measure_weighted(label, size, None, TextWeight::Medium).0);
-    let w = tw + pad * 2.0;
+    // Measure once with the exact style painted below: the width sizes the
+    // pill and the line height centres the label in it. Centring on the
+    // measured line (not the font size) removes the old `- 1.0` nudge.
+    let (tw, th) = tr.measure_weighted(label, size, None, TextWeight::Medium);
+    let w = f64::from(tw) + pad * 2.0;
     let rect = Rect::new(x, y, x + w, y + height);
     fill_round(scene, t, rect, height / 2.0, bg);
     if let Some(bc) = border {
@@ -161,7 +189,7 @@ pub fn pill(
         size,
         fg,
         x + pad,
-        y + (height - f64::from(size)) / 2.0 - 1.0,
+        y + (height - f64::from(th)) / 2.0,
         None,
         TextWeight::Medium,
     );

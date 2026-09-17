@@ -68,6 +68,25 @@ const CONTENT_MAX_W: f64 = 900.0;
 /// Height of the Source step's "no qOS releases" card. Shared by the draw and
 /// layout passes so the two stay in step.
 const RELEASE_ZERO_H: f64 = 84.0;
+/// Vertical pitch of the wide Confirm review rows (Image, Drive, Capacity,
+/// Action). One value so the four rows read as a table instead of the 38/34/30
+/// drift they had when each was placed by hand.
+const CONFIRM_ROW_PITCH: f64 = 34.0;
+/// Gap between a step title and its description line.
+const STEP_SUB_GAP: f64 = 2.0;
+/// The gap between a step's heading group and its first content block is the
+/// theme's `spacing.s3`, cached from `build_layout` into `heading_gap` because
+/// the renderer hook that measures the heading receives no `Theme`. Before it
+/// was measured the description sat ~1px above the Source drop zone's dashed
+/// border at desktop width.
+fn default_heading_gap() -> f64 {
+    f64::from(ui::tokens::spacing::Spacing::default().s3)
+}
+/// Unmeasured floor for the heading group: the 1× constants the Source and
+/// Confirm steps reserved before measurement existed (a wrapped description
+/// needs the taller compact value).
+const STEP_HEADER_FLOOR: f64 = 44.0;
+const STEP_HEADER_FLOOR_COMPACT: f64 = 64.0;
 
 /// A clickable hit-target for one frame. Pure function of the viewport +
 /// state, so `draw` and `handle_event` agree without ordering hazards. The
@@ -146,6 +165,14 @@ pub struct ImagerApp {
     rect: Rect,
     dirty: bool,
     last_mouse: Point,
+    /// Measured height of the current step's heading group (title + wrapped
+    /// description + the gap before content), refreshed from the renderer in
+    /// `adjust_layout_with_measure`. `None` until the first measurement or on
+    /// steps that place their own header; see [`Self::step_header_h`].
+    step_heading_h: Option<f64>,
+    /// `theme.tokens.spacing.s3`, refreshed in `build_layout` for the
+    /// renderer hook (which receives no `Theme`).
+    heading_gap: f64,
     hover_target: Option<usize>,
     /// Vertical offset for the step body. The step rail and footer stay put.
     scroll_y: f64,
@@ -202,6 +229,8 @@ impl ImagerApp {
             rect: Rect::ZERO,
             dirty: true,
             last_mouse: Point::ZERO,
+            step_heading_h: None,
+            heading_gap: default_heading_gap(),
             hover_target: None,
             scroll_y: 0.0,
             keyboard_hit: None,
@@ -1177,6 +1206,76 @@ impl ImagerApp {
         content.width() < 520.0
     }
 
+    /// Title and description painted at the top of the Source step; one
+    /// source for the painter and for the heading measurement.
+    fn source_heading(&self) -> (&'static str, &'static str) {
+        (
+            "Choose the source image",
+            if self.releases().is_empty() {
+                "The image to write. Pick a local .iso or .img file."
+            } else {
+                "The image to write. Pick a local .iso or .img file, or a qOS release below."
+            },
+        )
+    }
+
+    /// Title and description painted at the top of the Confirm step.
+    fn confirm_heading(&self) -> (&'static str, &'static str) {
+        match self.action {
+            Action::Install => (
+                "Confirm & install",
+                "Review the install, then type the drive's name to unlock it.",
+            ),
+            Action::Flash => (
+                "Confirm & write",
+                "Review the write, then type the drive's name to unlock it.",
+            ),
+        }
+    }
+
+    /// The heading group whose measured height positions the step's first
+    /// content block. Steps that lay out their own header return `None`.
+    fn step_heading(&self) -> Option<(&'static str, &'static str)> {
+        match self.step {
+            Step::Source => Some(self.source_heading()),
+            Step::Confirm => Some(self.confirm_heading()),
+            Step::Drive | Step::Customize | Step::Write | Step::Done => None,
+        }
+    }
+
+    /// The unmeasured 1× floor for the heading group at this content width.
+    fn step_header_floor(content: Rect) -> f64 {
+        if Self::compact_content(content) {
+            STEP_HEADER_FLOOR_COMPACT
+        } else {
+            STEP_HEADER_FLOOR
+        }
+    }
+
+    /// Distance from the content top to the first content block: the
+    /// measured heading group when the renderer has supplied one, never less
+    /// than the 1× floor the layout tests pin.
+    fn step_header_h(&self, content: Rect) -> f64 {
+        let floor = Self::step_header_floor(content);
+        self.step_heading_h.map_or(floor, |h| h.max(floor))
+    }
+
+    /// Measure the current heading group at the width the content will get
+    /// for a window `width` logical pixels wide (mirrors
+    /// [`Self::content_viewport_rect`]).
+    fn measure_step_heading(&self, tr: &mut TextRenderer, width: f64) -> Option<f64> {
+        let (title, sub) = self.step_heading()?;
+        let margin = if width < 600.0 { 16.0 } else { OUTER };
+        let content_w = (width - margin * 2.0).min(CONTENT_MAX_W).max(0.0);
+        let (_, title_h) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
+        let sub_h = if sub.is_empty() {
+            0.0
+        } else {
+            f64::from(tr.measure(sub, 13.0, Some(content_w as f32)).1)
+        };
+        Some(f64::from(title_h) + STEP_SUB_GAP + sub_h + self.heading_gap)
+    }
+
     fn content_viewport_rect(&self) -> Rect {
         let v = self.rect;
         let top = CRUMB_TOP + CRUMB_H + 30.0;
@@ -1190,8 +1289,13 @@ impl ImagerApp {
 
     fn content_extent(&self, viewport: Rect) -> f64 {
         let compact = Self::compact_content(viewport);
+        // Steps whose content starts below the measured heading group need
+        // the extent to grow by the same amount, or the bottom-anchored
+        // confirmation field would collide with the review card on a short
+        // viewport instead of scrolling.
+        let heading_extra = (self.step_header_h(viewport) - Self::step_header_floor(viewport)).max(0.0);
         let requested = match self.step {
-            Step::Source => 650.0,
+            Step::Source => 650.0 + heading_extra,
             Step::Drive => {
                 if self.visible_targets().is_empty() {
                     if compact { 350.0 } else { 320.0 }
@@ -1203,9 +1307,9 @@ impl ImagerApp {
             Step::Customize => 462.0,
             Step::Confirm => {
                 if compact {
-                    440.0
+                    440.0 + heading_extra
                 } else {
-                    360.0
+                    360.0 + heading_extra
                 }
             }
             Step::Write => 410.0,
@@ -1333,7 +1437,7 @@ impl ImagerApp {
         let x0 = content.x0;
         let x1 = content.x1;
         let compact = Self::compact_content(content);
-        let mut y = content.y0 + if compact { 64.0 } else { 44.0 };
+        let mut y = content.y0 + self.step_header_h(content);
         // Browse drop-zone.
         let browse = Rect::new(x0, y, x1, y + 96.0);
         hits.push((browse, Hit::PickFile));
@@ -1724,6 +1828,7 @@ impl ImagerApp {
         sub: &str,
     ) {
         let c = &theme.tokens.colors;
+        let (_, title_h) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
         Self::txt(
             scene,
             tr,
@@ -1742,7 +1847,7 @@ impl ImagerApp {
             13.0,
             c.text_dim,
             content.x0,
-            content.y0 + 26.0,
+            content.y0 + f64::from(title_h) + STEP_SUB_GAP,
             Some(content.width() as f32),
             TextWeight::Regular,
         );
@@ -1757,12 +1862,8 @@ impl ImagerApp {
         lay: &Layout,
     ) {
         let content = lay.content;
-        let sub = if self.releases().is_empty() {
-            "The image to write. Pick a local .iso or .img file."
-        } else {
-            "The image to write. Pick a local .iso or .img file, or a qOS release below."
-        };
-        Self::draw_step_title(scene, tr, theme, content, "Choose the source image", sub);
+        let (title, sub) = self.source_heading();
+        Self::draw_step_title(scene, tr, theme, content, title, sub);
         let browse = self.draw_source_dropzone(scene, tr, theme, t, content);
         let y = self.draw_source_selected_card(scene, tr, theme, t, content, browse);
         let y = self.draw_source_releases(scene, tr, theme, t, content, y);
@@ -1781,7 +1882,7 @@ impl ImagerApp {
     ) -> Rect {
         let c = &theme.tokens.colors;
         let compact = Self::compact_content(content);
-        let y = content.y0 + if compact { 64.0 } else { 44.0 };
+        let y = content.y0 + self.step_header_h(content);
         let browse = Rect::new(content.x0, y, content.x1, y + 96.0);
         let hov = browse.contains(self.last_mouse);
         Self::fill_rr(
@@ -2606,16 +2707,7 @@ impl ImagerApp {
         lay: &Layout,
     ) {
         let content = lay.content;
-        let (title, sub) = match self.action {
-            Action::Install => (
-                "Confirm & install",
-                "Review the install, then type the drive's name to unlock it.",
-            ),
-            Action::Flash => (
-                "Confirm & write",
-                "Review the write, then type the drive's name to unlock it.",
-            ),
-        };
+        let (title, sub) = self.confirm_heading();
         Self::draw_step_title(scene, tr, theme, content, title, sub);
         let card_bottom = self.draw_confirm_review_card(scene, tr, theme, t, content);
         self.draw_confirm_danger_banner(scene, tr, theme, t, content, card_bottom);
@@ -2635,7 +2727,7 @@ impl ImagerApp {
     ) -> f64 {
         let c = &theme.tokens.colors;
         let compact = Self::compact_content(content);
-        let top = content.y0 + if compact { 64.0 } else { 46.0 };
+        let top = content.y0 + self.step_header_h(content);
         let height = if compact { 188.0 } else { 150.0 };
         let card = Rect::new(content.x0, top, content.x1, top + height);
         Self::fill_rr(scene, t, card, 14.0, c.surfaces.raised);
@@ -2657,6 +2749,11 @@ impl ImagerApp {
         let compact = card.width() < 520.0;
         let row =
             |scene: &mut Scene, tr: &mut TextRenderer, y: f64, k: &str, v: String, ok: bool| {
+                // Key and value share one measured centre line instead of a
+                // hand-tuned 1px nudge between the two type sizes.
+                let (_, kh) = tr.measure_weighted(k, 12.0, None, TextWeight::Semibold);
+                let (_, vh) = tr.measure_weighted(&v, 14.0, None, TextWeight::Semibold);
+                let value_top = y + (f64::from(kh) - f64::from(vh)) / 2.0;
                 Self::txt(
                     scene,
                     tr,
@@ -2680,7 +2777,7 @@ impl ImagerApp {
                     14.0,
                     col,
                     card.x0 + 96.0,
-                    y - 1.0,
+                    value_top,
                     Some((card.width() - 116.0) as f32),
                     TextWeight::Semibold,
                 );
@@ -2701,10 +2798,12 @@ impl ImagerApp {
             || "—".into(),
             |d| format!("{} · {} · {}", d.model, d.dev_path(), fmt_size(d.size)),
         );
+        // Wide rows step by one pitch (see `CONFIRM_ROW_PITCH`); the compact
+        // card keeps its taller Drive slot for the wrapped device line.
         row(
             scene,
             tr,
-            card.y0 + if compact { 54.0 } else { 58.0 },
+            card.y0 + if compact { 54.0 } else { 20.0 + CONFIRM_ROW_PITCH },
             "Drive",
             tgt_v,
             self.target().is_some(),
@@ -2733,6 +2832,7 @@ impl ImagerApp {
             } else {
                 ("image is larger than the drive".into(), c.semantic.danger)
             };
+            let cap_y = card.y0 + if compact { 98.0 } else { 20.0 + 2.0 * CONFIRM_ROW_PITCH };
             Self::txt(
                 scene,
                 tr,
@@ -2740,7 +2840,7 @@ impl ImagerApp {
                 12.0,
                 c.text_dim,
                 card.x0 + 20.0,
-                card.y0 + if compact { 98.0 } else { 92.0 },
+                cap_y,
                 None,
                 TextWeight::Semibold,
             );
@@ -2751,7 +2851,7 @@ impl ImagerApp {
                 13.0,
                 fit.1,
                 card.x0 + 96.0,
-                card.y0 + if compact { 97.0 } else { 91.0 },
+                cap_y - 1.0,
                 Some((card.width() - 116.0).max(0.0) as f32),
                 TextWeight::Medium,
             );
@@ -2767,6 +2867,7 @@ impl ImagerApp {
             ),
             Action::Flash => "Write the image, then read-back verify".to_string(),
         };
+        let act_y = card.y0 + if compact { 132.0 } else { 20.0 + 3.0 * CONFIRM_ROW_PITCH };
         Self::txt(
             scene,
             tr,
@@ -2774,7 +2875,7 @@ impl ImagerApp {
             12.0,
             c.text_dim,
             card.x0 + 20.0,
-            card.y0 + if compact { 132.0 } else { 122.0 },
+            act_y,
             None,
             TextWeight::Semibold,
         );
@@ -2785,7 +2886,7 @@ impl ImagerApp {
             13.0,
             c.text_primary,
             card.x0 + 96.0,
-            card.y0 + if compact { 131.0 } else { 121.0 },
+            act_y - 1.0,
             Some((card.width() - 116.0) as f32),
             TextWeight::Medium,
         );
@@ -4020,12 +4121,43 @@ impl Widget for ImagerApp {
         self.dirty = true;
     }
 
+    /// Measure the step heading group with the renderer that will paint it,
+    /// so the first content block starts below the real (scaled, wrapped)
+    /// title and description instead of a fixed 44px band.
+    fn adjust_layout_with_measure(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        tr: &mut TextRenderer,
+    ) -> bool {
+        // Prefer the allocation being solved; before the first solve (or on a
+        // probe without one) fall back to the last applied rect rather than
+        // wrapping the description at zero width.
+        let width = taffy
+            .layout(node)
+            .ok()
+            .map(|layout| f64::from(layout.size.width))
+            .filter(|w| *w > 0.0)
+            .unwrap_or(self.rect.width());
+        let measured = self.measure_step_heading(tr, width);
+        let changed = match (self.step_heading_h, measured) {
+            (None, None) => false,
+            (Some(prev), Some(next)) => (prev - next).abs() > 0.5,
+            _ => true,
+        };
+        self.step_heading_h = measured;
+        changed
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // The heading-to-content gap is the theme's `s3`; cache it here for
+        // the renderer hook, which measures the heading without a `Theme`.
+        self.heading_gap = f64::from(theme.tokens.spacing.s3);
         // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
         // cannot actually return `Err` for a fresh leaf (see
         // `ui::widget::TaffyTreeExt`'s doc comment), and `Widget::build_layout`
@@ -5301,6 +5433,65 @@ mod tests {
                 }));
             }
         }
+    }
+
+    /// The Source drop zone starts below the measured heading group plus the
+    /// heading-to-content gap, at 1× and at 2×, and the Confirm review card
+    /// follows the same rule; the 1× floors the compact test pins still hold.
+    #[test]
+    fn step_content_starts_below_the_measured_heading_group() {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut tr = TextRenderer::new();
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+
+        let browse_top = |app: &ImagerApp| {
+            let lay = app.compute_layout();
+            let browse = lay
+                .hits
+                .iter()
+                .find_map(|(rect, hit)| matches!(hit, Hit::PickFile).then_some(*rect))
+                .unwrap();
+            browse.y0 - lay.content.y0
+        };
+        let unmeasured = browse_top(&app);
+        assert!((unmeasured - STEP_HEADER_FLOOR).abs() < 1e-6);
+
+        assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
+        let (title, sub) = app.source_heading();
+        let (_, th) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
+        let (_, sh) = tr.measure(sub, 13.0, Some(CONTENT_MAX_W as f32));
+        let needed = f64::from(th) + STEP_SUB_GAP + f64::from(sh) + app.heading_gap;
+        let at_1x = browse_top(&app);
+        assert!((at_1x - needed).abs() < 1e-6, "drop zone starts after the measured heading");
+        assert!(at_1x > unmeasured, "the measured group needs more than the 1x floor");
+
+        tr.set_text_scale(2.0);
+        assert!(app.adjust_layout_with_measure(&mut taffy, node, &mut tr));
+        let at_2x = browse_top(&app);
+        assert!(at_2x > at_1x * 1.5, "doubled text moves the content down");
+
+        app.goto(&mut doc, Step::Confirm);
+        tr.set_text_scale(1.0);
+        app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
+        let (title, sub) = app.confirm_heading();
+        let (_, th) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
+        let (_, sh) = tr.measure(sub, 13.0, Some(CONTENT_MAX_W as f32));
+        let needed = f64::from(th) + STEP_SUB_GAP + f64::from(sh) + app.heading_gap;
+        let lay = app.compute_layout();
+        assert!((app.step_header_h(lay.content) - needed).abs() < 1e-6);
+        // The scroll extent grows by the same amount, so the bottom-anchored
+        // confirmation field cannot ride up into the review card.
+        let extent = app.content_extent(app.content_viewport_rect());
+        let confirm_field = lay
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::ConfirmField).then_some(*rect))
+            .unwrap();
+        let card_bottom = lay.content.y0 + app.step_header_h(lay.content) + 150.0;
+        assert!(extent >= 360.0 + (needed - STEP_HEADER_FLOOR));
+        assert!(confirm_field.y0 >= card_bottom, "field stays below the review card");
     }
 
     #[test]

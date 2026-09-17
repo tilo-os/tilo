@@ -1103,7 +1103,7 @@ impl Widget for ViewportContent {
     fn get_rect(&self) -> Rect {
         self.inner.get_rect()
     }
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ScrollableContent"
     }
 

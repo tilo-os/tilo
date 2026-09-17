@@ -459,8 +459,13 @@ impl HistoryScrubber {
         // Wide enough for a version name over a change description; the
         // renderer truncates whatever still overflows.
         let want: f64 = if self.groups.is_empty() { 220.0 } else { 260.0 };
-        let w = want.min(self.rect.width() - 16.0).max(80.0);
-        let x0 = (centre.x - w / 2.0).clamp(self.rect.x0 + 8.0, self.rect.x1 - 8.0 - w);
+        // Clamped to the same gutter as the track and the button row, so a
+        // popover pushed to either end lines up with the strip's content
+        // edge instead of overhanging it.
+        let w = want.min(self.rect.width() - 2.0 * TRACK_INSET).max(80.0);
+        let lo = self.rect.x0 + TRACK_INSET;
+        let hi = (self.rect.x1 - TRACK_INSET - w).max(lo);
+        let x0 = (centre.x - w / 2.0).clamp(lo, hi);
         let y0 = self.rect.y0 + 8.0;
         Rect::new(x0, y0, x0 + w, y0 + POPOVER_H)
     }
@@ -766,7 +771,9 @@ impl HistoryScrubber {
         }
         let colors = &theme.tokens.colors;
         let track = self.track_rect();
-        let size = (theme.tokens.typography.scale.sm - 3.0).max(9.0);
+        // `scale.xs` is the floor of the type scale; the band caption was
+        // three points under `sm`, which landed below it.
+        let size = theme.tokens.typography.scale.xs;
 
         // Segments abut at the tick each one ends on so every visible edge is
         // a real boundary; spanning only first-tick..last-tick would leave a
@@ -1061,9 +1068,16 @@ impl HistoryScrubber {
         let budget = pop.width() - 12.0;
         if let Some(head) = group_line {
             let head_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
-            let sub_size = (theme.tokens.typography.scale.sm - 3.0).max(9.0);
+            // The floor of the type scale, not three points under `sm`.
+            let sub_size = theme.tokens.typography.scale.xs;
             let head = fit(text_renderer, &head, head_size, budget);
-            let (hw, _) = text_renderer.measure(&head, head_size, None);
+            let (hw, hh) = text_renderer.measure(&head, head_size, None);
+            let detail = fit(text_renderer, &detail, sub_size, budget);
+            let (dw, dh) = text_renderer.measure(&detail, sub_size, None);
+            // Two lines centred as one block on the popover, each on its own
+            // measured line box, rather than at two hand-picked offsets.
+            let stack_h = f64::from(hh) + f64::from(dh);
+            let head_top = pop.center().y - stack_h / 2.0;
             text_renderer.draw_text(
                 scene,
                 &head,
@@ -1071,12 +1085,10 @@ impl HistoryScrubber {
                 theme.tokens.colors.text_primary,
                 translated(
                     transform,
-                    (pop.x0 + (pop.width() - f64::from(hw)) / 2.0, pop.y0 + 5.0),
+                    (pop.x0 + (pop.width() - f64::from(hw)) / 2.0, head_top),
                 ),
                 None,
             );
-            let detail = fit(text_renderer, &detail, sub_size, budget);
-            let (dw, _) = text_renderer.measure(&detail, sub_size, None);
             text_renderer.draw_text(
                 scene,
                 &detail,
@@ -1084,7 +1096,10 @@ impl HistoryScrubber {
                 theme.tokens.colors.text_dim,
                 translated(
                     transform,
-                    (pop.x0 + (pop.width() - f64::from(dw)) / 2.0, pop.y0 + 21.0),
+                    (
+                        pop.x0 + (pop.width() - f64::from(dw)) / 2.0,
+                        head_top + f64::from(hh),
+                    ),
                 ),
                 None,
             );
@@ -1130,7 +1145,7 @@ impl HistoryScrubber {
             // finish. Enter and Escape are the only two things it does; say so
             // where the buttons were, when there is room left over.
             let hint = "Enter to save \u{00b7} Esc to cancel";
-            let hint_size = (size - 2.0).max(9.0);
+            let hint_size = theme.tokens.typography.scale.xs;
             let (hw, hh) = text_renderer.measure(hint, hint_size, None);
             if box_rect.x1 + 10.0 + f64::from(hw) <= last {
                 text_renderer.draw_text(
@@ -2481,5 +2496,42 @@ mod version_tests {
         dispatch(&mut s, &mouse_release());
         assert_eq!(s.current_tick(), 0);
         assert!(!s.wants_keyboard());
+    }
+
+    /// The popover is clamped to the same gutter as the track and the
+    /// button row, so pushed to either end it lines up with the strip's
+    /// content edge instead of overhanging it by the old 8 px.
+    #[test]
+    fn popover_never_overhangs_the_track_gutter() {
+        let mut s = scrubber(1000.0, 20);
+        let track = s.track_rect();
+
+        s.set_current_tick(19);
+        let at_end = s.popover_rect();
+        assert!(
+            at_end.x1 <= track.x1 + 1e-6,
+            "popover right edge {} overhangs the track end {}",
+            at_end.x1,
+            track.x1
+        );
+
+        s.set_current_tick(0);
+        let at_start = s.popover_rect();
+        assert!(
+            at_start.x0 >= track.x0 - 1e-6,
+            "popover left edge {} overhangs the track start {}",
+            at_start.x0,
+            track.x0
+        );
+    }
+
+    /// A strip narrower than its own gutters plus the popover's floor width
+    /// must degrade, not panic in `clamp`.
+    #[test]
+    fn popover_survives_a_strip_narrower_than_its_floor_width() {
+        let s = scrubber(60.0, 2);
+        let pop = s.popover_rect();
+        assert!(pop.width() > 0.0);
+        assert!((pop.x0 - TRACK_INSET).abs() < 1e-6);
     }
 }

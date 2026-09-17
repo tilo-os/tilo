@@ -50,15 +50,22 @@ fn walk(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Hard failures. Each pattern names a constructor that exists in this tree
+/// and currently has zero production hits, so a first hit is a regression,
+/// not inherited debt. peniko colour literals go through `Color::from_rgb8`
+/// / `from_rgba8` and are ratcheted below (`ratcheted_patterns`), not
+/// forbidden here; spacing literals are ratcheted by
+/// `f1_spacing_token_audit.rs`. (An earlier `Padding::all(` pattern named a
+/// type that does not exist and was dropped; the colour pattern once also
+/// spelled a non-existent `Color::rgb8(` and now names only the live call.)
 fn forbidden_patterns() -> Vec<(Regex, &'static str)> {
     vec![
-        // Hard-coded RGB literal palette values. Require a digit as the first
-        // argument so variable-arg calls like `Color::rgb(c.color[0] as f64, …)`
-        // that route real collaborator data through the constructor don't get
-        // flagged — only *literal* palette values do.
+        // A literal glyph colour through `cosmic_text::Color::rgb(r, g, b)`.
+        // A digit as the first argument keeps variable-arg calls that route
+        // real data through the constructor (`Color::rgb(cr, cg, cb)`) out.
         (
-            Regex::new(r"Color::rgb8?\s*\(\s*\d").unwrap(),
-            "hard-coded Color::rgb8/rgb — use theme.* tokens",
+            Regex::new(r"Color::rgb\s*\(\s*\d").unwrap(),
+            "hard-coded Color::rgb glyph colour — read it from the Theme",
         ),
         // Hard-coded radius literals on rounded rects
         (
@@ -70,12 +77,42 @@ fn forbidden_patterns() -> Vec<(Regex, &'static str)> {
             Regex::new(r"blur\s*:\s*\d").unwrap(),
             "hard-coded shadow blur — use theme.elevation.*",
         ),
-        // Hard-coded spacing like Padding::all(12.0) (allow zero)
-        (
-            Regex::new(r"Padding::all\(\s*[1-9]\d*(\.\d+)?\s*\)").unwrap(),
-            "hard-coded padding — use theme.padding_standard",
-        ),
     ]
+}
+
+/// The forbidden set must still bite: a pattern that no longer matches the
+/// shape it names would let the audit pass empty.
+#[test]
+fn forbidden_patterns_match_the_shapes_they_name() {
+    let patterns = forbidden_patterns();
+    assert_eq!(patterns.len(), 3);
+    assert!(
+        patterns[0]
+            .0
+            .is_match("Some(cosmic_text::Color::rgb(100, 110, 120))")
+    );
+    assert!(
+        !patterns[0]
+            .0
+            .is_match("cosmic_text::Color::rgb(cr, cg, cb)"),
+        "real data routed through the constructor is not a literal"
+    );
+    assert!(
+        !patterns[0].0.is_match("Color::from_rgb8(12, 120, 220)"),
+        "peniko literals belong to the ratchet, not the hard-fail set"
+    );
+    assert!(patterns[1].0.is_match("rect.to_rounded_rect(8.0)"));
+    assert!(
+        !patterns[1]
+            .0
+            .is_match("rect.to_rounded_rect(theme.radius_standard)")
+    );
+    assert!(patterns[2].0.is_match("blur: 16.0,"));
+    assert!(
+        !patterns[2]
+            .0
+            .is_match("blur: theme.tokens.elevation.raised.blur,")
+    );
 }
 
 /// Line ranges (half-open, 0-based) covered by a `#[cfg(test)]` module.
