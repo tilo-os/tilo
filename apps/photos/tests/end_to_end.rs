@@ -1035,7 +1035,7 @@ fn toolbar_labels_fit_inside_the_buttons_they_are_sized_for() {
     // Mirrors `Button::paint`: 14 px, Medium, an icon derived from the
     // button height, and a 6 px gap between the two.
     const TEXT_PX: f32 = 14.0;
-    const BTN_H: f32 = 34.0;
+    const BTN_H: f32 = 44.0;
     const ICON_W: f32 = BTN_H - 14.0;
     const ICON_GAP: f32 = 6.0;
     const LABEL_PAD_X: f32 = 12.0;

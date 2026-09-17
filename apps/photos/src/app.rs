@@ -46,12 +46,14 @@ use crate::strings::tr;
 
 /// Toolbar height, and the status bar's. Both are chrome around the canvas,
 /// which takes everything left over.
-const BAR_H: f32 = 48.0;
+const BAR_H: f32 = 58.0;
 const PAD: f32 = 12.0;
 
 /// Button height. Deliberately shorter than the bar so the controls sit in
-/// the strip rather than filling it edge to edge.
-const BTN_H: f32 = 34.0;
+/// the strip rather than filling it edge to edge. Keeping this at the HIG's
+/// touch minimum also makes the compact phone toolbar comfortable without a
+/// separate, visually inconsistent control implementation.
+const BTN_H: f32 = 44.0;
 
 /// Per-character label width used to size a button in `build_layout`, which
 /// gets a [`Theme`] but no [`TextRenderer`] to shape text with.
@@ -2837,10 +2839,8 @@ impl PhotosApp {
                 .max(1.0);
         let album_h = if self.library_albums.is_empty() {
             0.0
-        } else if large_text {
-            54.0
         } else {
-            38.0
+            54.0
         };
         let heading_y = bounds.y0 + f64::from(PAD);
         text_renderer.draw_text_weighted(
@@ -2902,7 +2902,7 @@ impl PhotosApp {
                 if x + width > bounds.x1 - f64::from(PAD) {
                     break;
                 }
-                let chip = Rect::new(x, y, x + width, y + if large_text { 44.0 } else { 26.0 });
+                let chip = Rect::new(x, y, x + width, y + 44.0);
                 let selected = album_id == self.active_album;
                 scene.fill(
                     Fill::NonZero,
@@ -2927,11 +2927,7 @@ impl PhotosApp {
                     &label,
                     12.0,
                     theme.text_primary,
-                    transform
-                        * Affine::translate((
-                            chip.x0 + 8.0,
-                            chip.y0 + if large_text { 10.0 } else { 6.0 },
-                        )),
+                    transform * Affine::translate((chip.x0 + 8.0, chip.y0 + 10.0)),
                     Some((width - 16.0) as f32),
                     TextWeight::Regular,
                 );
@@ -3022,7 +3018,7 @@ impl PhotosApp {
             if filter_x + width > bounds.x1 - f64::from(PAD) {
                 break;
             }
-            let chip_h = if large_text { 44.0 } else { 28.0 };
+            let chip_h = 44.0;
             let chip = Rect::new(filter_x, filter_y, filter_x + width, filter_y + chip_h);
             let selected = folder.as_ref() == self.active_folder.as_ref()
                 && person.as_ref() == self.active_person.as_ref()
@@ -3051,11 +3047,7 @@ impl PhotosApp {
                 &label,
                 12.0,
                 theme.text_primary,
-                transform
-                    * Affine::translate((
-                        chip.x0 + 8.0,
-                        chip.y0 + if large_text { 10.0 } else { 7.0 },
-                    )),
+                transform * Affine::translate((chip.x0 + 8.0, chip.y0 + 10.0)),
                 Some((width - 16.0) as f32),
                 TextWeight::Medium,
             );
@@ -3077,7 +3069,7 @@ impl PhotosApp {
             } else {
                 0.0
             };
-        let filter_h = if large_text { 50.0 } else { 34.0 };
+        let filter_h = 50.0;
         let pager_h =
             if large_text && bounds.width() < 620.0 && !self.album_editor && self.library_total > 1
             {
@@ -3508,12 +3500,12 @@ impl PhotosApp {
         let album_chips_h = if self.library_albums.is_empty() {
             0.0
         } else {
-            38.0
+            54.0
         };
         let panel_y = if !self.album_editor && narrow {
             // Kept in lock-step with `draw_library`'s album and metadata
             // filter rows before the compact action reserve.
-            bounds.y0 + f64::from(PAD) + 31.0 + album_chips_h + 34.0 + 3.0
+            bounds.y0 + f64::from(PAD) + 31.0 + album_chips_h + 50.0 + 3.0
         } else if narrow {
             bounds.y1 - panel_h - 8.0
         } else {

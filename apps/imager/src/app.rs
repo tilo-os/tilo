@@ -46,7 +46,7 @@ use ui::portal::{PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{TextInput, Widget};
+use ui::widget::{Button, ButtonFace, TextInput, Widget};
 
 use crate::customize::{CustomizePanel, CzField};
 use crate::doc::ImagerDoc;
@@ -1229,6 +1229,10 @@ impl ImagerApp {
         content.width() < 520.0
     }
 
+    fn footer_has_hint_space(content: Rect) -> bool {
+        content.width() >= 700.0
+    }
+
     fn content_viewport_rect(&self) -> Rect {
         let v = self.rect;
         let top = CRUMB_TOP + CRUMB_H + 30.0;
@@ -1631,23 +1635,12 @@ impl ImagerApp {
         // Back.
         if let Some(r) = lay.back {
             let hov = r.contains(self.last_mouse);
-            Self::fill_rr(
+            Button::paint(
                 scene,
                 t,
-                r,
-                10.0,
-                if hov { c.neutral[3] } else { c.neutral[2] },
-            );
-            Self::stroke_rr(scene, t, r, 10.0, c.border_standard, 1.0);
-            Self::txt_center(
-                scene,
                 tr,
-                "‹  Back",
-                14.0,
-                c.text_primary,
-                f64::midpoint(r.x0, r.x1),
-                r.y0 + 12.0,
-                TextWeight::Medium,
+                theme,
+                &ButtonFace::new(r, "‹  Back").radius(10.0).hovered(hov),
             );
         }
 
@@ -1657,7 +1650,10 @@ impl ImagerApp {
         }
 
         // A hint between them (center) — e.g. what's still needed.
-        if !Self::compact_content(lay.content)
+        // The footer hint needs clear space between navigation actions. The
+        // content breakpoint alone still classified a 560 px window as wide,
+        // which painted this sentence underneath the primary button.
+        if Self::footer_has_hint_space(lay.content)
             && let Some(hint) = self.footer_hint()
         {
             Self::txt_center(
@@ -1693,7 +1689,6 @@ impl ImagerApp {
         t: Affine,
         r: Rect,
     ) {
-        let c = &theme.tokens.colors;
         let hov = r.contains(self.last_mouse);
         let (label, enabled, destructive) = match self.step {
             Step::Source => (
@@ -1745,31 +1740,15 @@ impl ImagerApp {
                 _ => ("Start over".to_string(), true, false),
             },
         };
-        let bg = if !enabled {
-            c.neutral[3]
-        } else if destructive {
-            if hov {
-                c.semantic.danger
-            } else {
-                with_alpha(c.semantic.danger, 220)
-            }
-        } else if hov {
-            c.accent[6]
-        } else {
-            c.accent[5]
-        };
-        Self::fill_rr(scene, t, r, 11.0, bg);
-        let fg = if enabled { Color::WHITE } else { c.neutral[6] };
-        Self::txt_center(
-            scene,
-            tr,
-            &label,
-            14.0,
-            fg,
-            f64::midpoint(r.x0, r.x1),
-            r.y0 + 13.0,
-            TextWeight::Bold,
-        );
+        let mut face = ButtonFace::new(r, &label)
+            .radius(11.0)
+            .hovered(hov)
+            .disabled(!enabled)
+            .primary();
+        if destructive {
+            face = face.danger();
+        }
+        Button::paint(scene, t, tr, theme, &face);
     }
 }
 
@@ -5566,6 +5545,18 @@ mod tests {
             assert!(back.x1 + 12.0 <= primary.x0);
             assert!(back.width() >= 130.0 && primary.width() >= 130.0);
         }
+    }
+
+    #[test]
+    fn phone_footer_hides_hint_before_it_can_run_under_actions() {
+        let (mut app, _) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 560.0, 900.0);
+        let lay = app.compute_layout();
+        assert!(!ImagerApp::footer_has_hint_space(lay.content));
+
+        app.rect = Rect::new(0.0, 0.0, 1_440.0, 900.0);
+        let lay = app.compute_layout();
+        assert!(ImagerApp::footer_has_hint_space(lay.content));
     }
 
     #[test]
