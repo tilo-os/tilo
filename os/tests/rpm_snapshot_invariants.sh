@@ -88,6 +88,8 @@ has "$workflow" 'platforms: ${{ matrix.platform }}' \
   'snapshot explicitly selects each native OCI platform'
 has "$workflow" 'needs: snapshot' \
   'snapshot promotion waits for every native build'
+has "$workflow" 'needs: signing-preflight' \
+  'expensive native snapshot builds wait for signing-authority preflight'
 has "$workflow" 'python3 os/dev/promote-native-index.py' \
   'snapshot promotion verifies signed native children'
 has "$workflow" 'test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"' \
