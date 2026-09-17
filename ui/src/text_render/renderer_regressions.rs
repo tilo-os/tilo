@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::font_catalog::{FontCatalog, configured_font_system_with_catalog};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};

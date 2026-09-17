@@ -9,7 +9,7 @@ fi
 shell_repo="$(cd "$(dirname "$0")/.." && pwd)"
 shell_bundle="$shell_repo/target/macos/Tilo.app"
 cd "$shell_repo"
-cargo build --locked -p shell --bin shell --no-default-features --target-dir "$shell_repo/target"
+cargo build --locked -p shell --bin shell --no-default-features
 mkdir -p "$shell_bundle/Contents/MacOS"
 cp "$shell_repo/target/debug/shell" "$shell_bundle/Contents/MacOS/Tilo"
 cat > "$shell_bundle/Contents/Info.plist" <<'PLIST'
