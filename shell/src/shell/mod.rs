@@ -71,6 +71,7 @@ pub mod peer_windows;
 pub mod persist;
 pub mod personal_continuity;
 pub mod personal_continuity_registry;
+pub mod physical_gamepad;
 pub mod placement;
 pub mod portal_dialog;
 mod power_menu;
