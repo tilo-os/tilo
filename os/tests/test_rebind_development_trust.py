@@ -126,6 +126,29 @@ class RebindTests(unittest.TestCase):
             rebind.replace(self.image, **self.arguments)
         self.assertEqual(before, self.snapshot())
 
+    def test_redirected_bundle_root_and_unexpected_file_reject_before_copy_or_writes(self):
+        for field in ('old_bundle', 'new_bundle'):
+            linked = Path(self.temporary.name) / ('linked-' + field)
+            linked.symlink_to(self.arguments[field], target_is_directory=True)
+            before = self.snapshot()
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                rebind.replace(self.image, **(self.arguments | {field: linked}))
+            self.assertEqual(before, self.snapshot())
+        unexpected = self.new / 'unexpected'
+        unexpected.mkdir()
+        # A nested unexpected tree must be rejected without recursively copying
+        # or reading its contents into private staging.
+        (unexpected / 'payload').write_bytes(b'unexpected data')
+        before = self.snapshot()
+        original_read = rebind.installer.trust.read_public
+        def bounded_read(path):
+            self.assertNotIn('unexpected', Path(path).parts)
+            return original_read(path)
+        with patch.object(rebind.installer.trust, 'read_public', side_effect=bounded_read):
+            with self.assertRaises(ValueError):
+                rebind.replace(self.image, **self.arguments)
+        self.assertEqual(before, self.snapshot())
+
     def test_profile_target_changes_but_selection_is_preserved(self):
         definition = dict(schema_version=1, id='fixture', architecture=platform.machine(), devicetree=None, firmware={})
         profile = dict(schema_version=1, id='fixture', architecture=platform.machine(), devicetree=None,
