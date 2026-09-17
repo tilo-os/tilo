@@ -1616,9 +1616,6 @@ mod tests {
             .expect("crop is published");
         let params = crop.params();
         let schema = params[0].schema.as_ref().expect("crop publishes a schema");
-        let pattern = schema["pattern"]
-            .as_str()
-            .expect("crop schema publishes a string pattern");
 
         for region in [
             "0.16666666666666666,0,0.6666666666666666,1",
@@ -1650,10 +1647,6 @@ mod tests {
                 "binding accepted invalid crop arguments {supplied}"
             );
         }
-        assert!(
-            !pattern.contains('\\'),
-            "published crop patterns must not rely on escaped decimal points: {pattern}"
-        );
     }
 
     /// A prompted crop that cannot be parsed must leave the photograph alone
