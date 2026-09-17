@@ -119,6 +119,7 @@ void PublishFilters();
 void Dispatch(CefRefPtr<CefDictionaryValue> command);
 bool closing=false;
 bool clear_on_exit=false;
+bool private_mode=false;
 std::string downloads_directory;
 CefRefPtr<qos::RequestFilter> request_filter;
 CefRefPtr<qos::Downloads> downloads;
@@ -480,7 +481,14 @@ class App final : public CefApp,public CefBrowserProcessHandler {
   }
   void OnContextInitialized() override {
     request_filter=new qos::RequestFilter([] { StringEvent("error","message","Native request matcher failed to check a resource"); });
-    shared_context=CefRequestContext::CreateContext(CefRequestContext::GetGlobalContext(),request_filter);
+    if(private_mode) {
+      CefRequestContextSettings settings;
+      // Empty cache_path is CEF's incognito request context. The separate
+      // root_cache_path below still gives CEF an owned installation-data root.
+      shared_context=CefRequestContext::CreateContext(settings,request_filter);
+    } else {
+      shared_context=CefRequestContext::CreateContext(CefRequestContext::GetGlobalContext(),request_filter);
+    }
     downloads=new qos::Downloads(downloads_directory,[](const std::string& name,CefRefPtr<CefDictionaryValue> fields){ ::Event(name,fields); },[](CefRefPtr<CefBrowser> browser) { for(const auto& entry:clients) if(entry.second->browser_ && browser && entry.second->browser_->IsSame(browser)) return entry.first;return 0; });
     CreateTab(1);if(clients.empty()) CefQuitMessageLoop();
   }
@@ -558,14 +566,15 @@ void CloseHost() {
 int RunHost(int argc,char** argv) {
   signal(SIGPIPE,SIG_IGN);
   std::string profile;
-  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10);if(arg.rfind("--downloads=",0)==0) downloads_directory=arg.substr(12); }
+  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10);if(arg.rfind("--downloads=",0)==0) downloads_directory=arg.substr(12);if(arg=="--private") private_mode=true; }
   if(profile.empty() || profile[0]!='/') {std::cerr<<"--profile requires an absolute directory\n";return 2;}
   std::filesystem::create_directories(profile);
   profile=std::filesystem::canonical(profile).string();
   if(downloads_directory.empty()) downloads_directory=profile+"/downloads";
   Output writer;output=&writer;
   CefSettings settings;settings.windowless_rendering_enabled=true;settings.log_severity=LOGSEVERITY_WARNING;
-  CefString(&settings.root_cache_path)=profile;CefString(&settings.cache_path)=profile+"/default";
+  CefString(&settings.root_cache_path)=profile;
+  if(!private_mode) CefString(&settings.cache_path)=profile+"/default";
   CefString(&settings.log_file)=profile+"/cef.log";
 #if defined(OS_MAC)
   const auto executable=std::filesystem::canonical(argv[0]);
