@@ -42,6 +42,7 @@ use crate::actions::{self, FeedsAction, FeedsResourceCtx};
 use crate::doc::FeedsDoc;
 use crate::fetch::{FetchRequest, FetchResult, FetchWorker};
 use crate::icons;
+use crate::list_layout::{ArticleRowMetrics, article_row_layout};
 use crate::modal::{ModalBody, ModalIntent};
 use crate::model::{
     Article, BlockKind, Feed, FeedKind, Filter, Id, ReadFont, ReadSettings, ReadTheme, Store,
@@ -2013,11 +2014,12 @@ impl FeedsApp {
         for (i, id) in articles.iter().enumerate() {
             let top = content_top + i as f64 * LIST_ROW_H - self.list_scroll;
             let rect = Rect::new(x0, top, x1, top + LIST_ROW_H);
-            let star_rect = Rect::new(
-                x1 - 40.0,
-                top + LIST_ROW_H - 34.0,
-                x1 - 8.0,
-                top + LIST_ROW_H - 2.0,
+            // One rect for the star's paint, pointer, and accessibility bounds:
+            // vertically centred in the row (see `list_layout`).
+            let star_rect = crate::list_layout::star_rect(
+                rect,
+                crate::list_layout::STAR_HIT_SIZE,
+                crate::list_layout::STAR_RIGHT_PAD,
             );
             rows.push(ListRow {
                 rect,
@@ -3202,39 +3204,15 @@ fn draw_list(
             alpha(c.border_standard, 70),
         );
 
-        // Unread / read marker.
-        let mcy = lr.rect.y0 + 22.0;
-        if a.read {
-            icons::ring(
-                scene,
-                t,
-                Point::new(lr.rect.x0 + 18.0, mcy),
-                3.5,
-                alpha(c.text_dim, 150),
-            );
-        } else {
-            icons::dot(
-                scene,
-                t,
-                Point::new(lr.rect.x0 + 18.0, mcy),
-                4.0,
-                c.accent[5],
-            );
-        }
-
+        // Title + source line are one related group, centred in the row (HIG
+        // §7a); the time and unread marker sit on the title's first line and
+        // the star on the row's centre. Everything below is measured with the
+        // style it is painted with and placed by `list_layout`.
         let text_x = lr.rect.x0 + 34.0;
         let right_pad = 16.0;
-        // Time, top-right.
         let time = relative_time(a.published, now);
-        let tw = measure_w(tr, &time, 12.0);
-        tr.draw_text(
-            scene,
-            &time,
-            12.0,
-            c.text_dim,
-            t * Affine::translate((lr.rect.x1 - right_pad - tw, lr.rect.y0 + 12.0)),
-            None,
-        );
+        let (tw, th) = tr.measure(&time, 12.0, None);
+        let tw = f64::from(tw);
 
         let title_w = (lr.rect.x1 - right_pad - tw - 12.0 - text_x).max(60.0) as f32;
         let title_color = if a.read {
@@ -3248,41 +3226,84 @@ fn draw_list(
             TextWeight::Semibold
         };
         let title_text = two_line_elide(tr, &a.title, 15.0, title_w);
-        tr.draw_text_weighted(
-            scene,
-            &title_text,
-            15.0,
-            title_color,
-            t * Affine::translate((text_x, lr.rect.y0 + 12.0)),
-            Some(title_w),
-            title_weight,
-        );
+        let (_, title_h) = tr.measure_weighted(&title_text, 15.0, Some(title_w), title_weight);
+        let (_, title_line_h) = tr.measure_weighted("Ag", 15.0, None, title_weight);
 
-        // Source + summary line.
+        // Source + summary line, stopped before the star so the truncated
+        // source·summary never collides with it.
         let source = store.feed(a.feed_id).map_or("", |f| f.title.as_str());
         let meta = if a.summary.is_empty() {
             source.to_string()
         } else {
             format!("{source}  ·  {}", a.summary)
         };
-        // Stop the meta line before the always-present star glyph (bottom-right)
-        // so the truncated source·summary never collides with it.
         let meta_w = (lr.star_rect.x0 - 8.0 - text_x).max(60.0) as f32;
         let meta_text = elide(tr, &meta, 12.5, meta_w);
+        let (_, meta_h) = tr.measure(&meta_text, 12.5, None);
+
+        let sp = &theme.tokens.spacing;
+        let row = article_row_layout(
+            lr.rect,
+            &ArticleRowMetrics {
+                title_h: f64::from(title_h),
+                title_line_h: f64::from(title_line_h),
+                meta_h: f64::from(meta_h),
+                time_h: f64::from(th),
+                gap: f64::from(sp.s1),
+                pad_min: f64::from(sp.s3),
+            },
+        );
+
+        // Unread / read marker, on the title's first line.
+        if a.read {
+            icons::ring(
+                scene,
+                t,
+                Point::new(lr.rect.x0 + 18.0, row.marker_cy),
+                3.5,
+                alpha(c.text_dim, 150),
+            );
+        } else {
+            icons::dot(
+                scene,
+                t,
+                Point::new(lr.rect.x0 + 18.0, row.marker_cy),
+                4.0,
+                c.accent[5],
+            );
+        }
+        // Time, right-aligned on the title's first line.
+        tr.draw_text(
+            scene,
+            &time,
+            12.0,
+            c.text_dim,
+            t * Affine::translate((lr.rect.x1 - right_pad - tw, row.time_y)),
+            None,
+        );
+        tr.draw_text_weighted(
+            scene,
+            &title_text,
+            15.0,
+            title_color,
+            t * Affine::translate((text_x, row.title_y)),
+            Some(title_w),
+            title_weight,
+        );
         tr.draw_text(
             scene,
             &meta_text,
             12.5,
             c.text_dim,
-            t * Affine::translate((text_x, lr.rect.y1 - 26.0)),
+            t * Affine::translate((text_x, row.meta_y)),
             Some(meta_w),
         );
 
-        // Star, bottom-right.
+        // Star, centred in its (vertically centred) hit rect.
         icons::star(
             scene,
             t,
-            Point::new(lr.star_rect.x1 - 14.0, lr.star_rect.y0 + 16.0),
+            Point::new(lr.star_rect.center().x, row.star_cy),
             6.5,
             a.starred,
             if a.starred {

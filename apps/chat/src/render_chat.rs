@@ -17,6 +17,7 @@ use ui::theme::Theme;
 use ui::widget::Avatar;
 
 use crate::app::{AVATAR, ChatApp, Hit, MenuTarget};
+use crate::geometry::{SidebarHeaderSpec, centered_band, line_top, sidebar_header_layout};
 use crate::model::{self, Attachment, ChannelKind, Message, Presence};
 use crate::paint::{
     band_at_least, blend_toward, fill_circle, fill_rect, fill_round, hline, label, legible_on,
@@ -26,6 +27,67 @@ use crate::paint::{
 /// Body text size for a message. Shared by the measure and the draw so a
 /// mention-carrying row reserves exactly the height it paints.
 const BODY_SIZE: f32 = 15.0;
+
+/// Author name in a message-group header; the header row's height is this
+/// line box (measured) plus one small gap, so it grows with the text scale.
+const NAME_SIZE: f32 = 14.5;
+/// Timestamp beside the author name; bottom-aligned to the name's line box.
+const TIME_SIZE: f32 = 11.5;
+/// 1× height of the "(edited) · view history" band under a message body.
+const EDITED_MIN_H: f64 = 18.0;
+/// Reaction chip label ("🔥  2").
+const REACTION_SIZE: f32 = 12.5;
+/// A reaction chip is never shorter than this capsule at 1×; it grows with
+/// the measured label at larger text. Off the spacing scale on purpose (a
+/// 26px capsule around 12.5px text).
+const REACTION_CHIP_MIN_H: f64 = 26.0;
+/// Space between the reaction strip and whatever follows it.
+const REACTION_STRIP_GAP: f64 = 6.0;
+/// Thread affordance label ("3 replies").
+const THREAD_LABEL_SIZE: f32 = 13.0;
+/// The "N replies" bar is never shorter than this at 1×; it grows with its
+/// measured label. Off-scale by design (a 38px bar carrying 22px avatars).
+const THREAD_BAR_MIN_H: f64 = 38.0;
+/// Space between the thread bar and the row's trailing gap.
+const THREAD_BAR_GAP: f64 = 8.0;
+
+/// Channel name in a sidebar row; the row is this measured line box plus a
+/// small pad, never shorter than the 1× row.
+const CHANNEL_NAME_SIZE: f32 = 14.0;
+/// 1× channel row height (off-scale by design: a 32px row around 14px text).
+const CHANNEL_ROW_MIN_H: f64 = 32.0;
+/// Space between consecutive channel rows.
+const CHANNEL_ROW_GAP: f64 = 2.0;
+/// Member name in a voice-presence row under a voice channel.
+const VOICE_NAME_SIZE: f32 = 12.0;
+/// 1× voice-presence row height.
+const VOICE_ROW_MIN_H: f64 = 24.0;
+/// Unread-count badge text and its 1× capsule height.
+const UNREAD_BADGE_TEXT: f32 = 11.0;
+const UNREAD_BADGE_MIN_H: f64 = 18.0;
+
+/// Height of the channel-sidebar title row. Off the spacing scale on purpose:
+/// it is the 52px band the rest of the sidebar chrome (hairline, "+ Category")
+/// hangs from.
+const SIDEBAR_HEADER_H: f64 = 52.0;
+/// The presence pill's text. Between `xs` and `sm` on the type scale; kept as
+/// the authored 10.5 so the capsule keeps its current density.
+const PRESENCE_PILL_TEXT: f32 = 10.5;
+/// Height of the presence capsule around [`PRESENCE_PILL_TEXT`]; off-scale.
+const PRESENCE_PILL_H: f64 = 18.0;
+/// Radius of the online dot inside the presence pill.
+const PRESENCE_DOT_R: f64 = 3.0;
+/// Below this remaining width the workspace title would be a stub, so the
+/// presence pill drops onto its own row instead.
+const SIDEBAR_TITLE_MIN_W: f64 = 72.0;
+/// Width of the composer's send button (the emoji and attach buttons are
+/// `spacing.s8` squares). Off-scale: a wide target for the primary action.
+const SEND_BTN_W: f64 = 44.0;
+/// Horizontal padding the shared multiline `TextInput` keeps around its text
+/// (its `padding_standard` gutter plus its own inner pad). Used only to pick
+/// the wrap width the composer's draft is measured at; the resulting band is
+/// clamped to the box, so a small mismatch cannot leak outside it.
+const COMPOSER_TEXT_INSET: f64 = 22.0;
 
 /// `RichTextLayout` lays out at `size * 1.4 * mult`; `TextRenderer::measure`
 /// uses `size * 1.25`. Feeding this multiplier keeps a body drawn through the
@@ -550,27 +612,14 @@ impl ChatApp {
             .find(|w| w.id == self.active_ws)
             .map(|w| w.name.clone())
             .unwrap_or_default();
-        let header = Rect::new(side.x0, side.y0, side.x1, side.y0 + 52.0);
-        let ws_title = truncate_to(
-            tr,
-            &format!("{ws_name} channels"),
-            16.0,
-            side.width() - 60.0,
-        );
-        label(
-            scene,
-            tr,
-            tf,
-            &ws_title,
-            16.0,
-            c.text_primary,
-            side.x0 + 16.0,
-            side.y0 + 17.0,
-        );
+        let sp = &theme.tokens.spacing;
+        let title_size = theme.tokens.typography.scale.lg;
+        let title_full = format!("{ws_name} channels");
+        let title_h = f64::from(tr.measure(&title_full, title_size, None).1);
         // Presence is meaningful only when this workspace has another person
         // in it. Do not surface "1 person online" as a pseudo-status in a
         // private workspace.
-        if self.has_other_collaborator() {
+        let pill_txt = self.has_other_collaborator().then(|| {
             let online = self
                 .users
                 .iter()
@@ -587,31 +636,58 @@ impl ChatApp {
             } else {
                 "people"
             };
-            let pill_txt = format!("{online} {noun} online");
-            let (pw, _) = tr.measure(&pill_txt, 10.5, None);
-            let pill = Rect::new(
-                side.x1 - f64::from(pw) - 28.0,
-                side.y0 + 16.0,
-                side.x1 - 12.0,
-                side.y0 + 34.0,
-            );
-            fill_round(scene, tf, pill, 9.0, c.lift(0.72));
+            format!("{online} {noun} online")
+        });
+        // The pill is measured first and reserved in full — dot, its gap, the
+        // text and the capsule's two side pads — and only then is the title
+        // budgeted into the remainder, so the two never paint over each other.
+        let pill_inset = 2.0 * f64::from(sp.s2) + 2.0 * PRESENCE_DOT_R + f64::from(sp.s1);
+        let pill = pill_txt.as_deref().map(|txt| {
+            let (pw, _) = tr.measure(txt, PRESENCE_PILL_TEXT, None);
+            (f64::from(pw) + pill_inset, PRESENCE_PILL_H)
+        });
+        let layout = sidebar_header_layout(&SidebarHeaderSpec {
+            side,
+            row_h: SIDEBAR_HEADER_H,
+            inset_l: f64::from(sp.s4),
+            inset_r: f64::from(sp.s3),
+            gap: f64::from(sp.s2),
+            title_h,
+            pill,
+            min_title_w: SIDEBAR_TITLE_MIN_W,
+        });
+        let header = layout.header;
+        let ws_title = truncate_to(tr, &title_full, title_size, layout.title_max_w);
+        label(
+            scene,
+            tr,
+            tf,
+            &ws_title,
+            title_size,
+            c.text_primary,
+            layout.title_x,
+            layout.title_y,
+        );
+        if let (Some(txt), Some(pill)) = (pill_txt.as_deref(), layout.pill) {
+            fill_round(scene, tf, pill, PRESENCE_PILL_H / 2.0, c.lift(0.72));
+            let dot_cx = pill.x0 + f64::from(sp.s2) + PRESENCE_DOT_R;
             fill_circle(
                 scene,
                 tf,
-                Point::new(pill.x0 + 10.0, pill.center().y),
-                3.0,
+                Point::new(dot_cx, pill.center().y),
+                PRESENCE_DOT_R,
                 c.semantic.success,
             );
+            let (_, ph) = tr.measure(txt, PRESENCE_PILL_TEXT, None);
             label(
                 scene,
                 tr,
                 tf,
-                &pill_txt,
-                10.5,
+                txt,
+                PRESENCE_PILL_TEXT,
                 c.text_dim,
-                pill.x0 + 17.0,
-                pill.center().y - 7.0,
+                dot_cx + PRESENCE_DOT_R + f64::from(sp.s1),
+                line_top(pill.center().y, f64::from(ph)),
             );
         }
         hline(
@@ -972,11 +1048,12 @@ impl ChatApp {
         swipe_dx: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
+        let row_h = channel_row_h(tr, theme);
         let row = Rect::new(
             side.x0 + 8.0 - swipe_dx,
             y,
             side.x1 - 8.0 - swipe_dx,
-            y + 32.0,
+            y + row_h,
         );
         let is_active = ch.id == self.active_channel && ch.kind == ChannelKind::Text;
         let ctx = ChannelRowCtx {
@@ -1003,7 +1080,7 @@ impl ChatApp {
         if !renaming {
             ChatApp::push_hit(hits, row, click_hit);
         }
-        y + 34.0
+        y + row_h + CHANNEL_ROW_GAP
     }
 
     /// The swipe-to-delete red background + trash glyph revealed behind a
@@ -1023,19 +1100,20 @@ impl ChatApp {
         fill_round(
             scene,
             tf,
-            Rect::new(ctx.side.x0 + 8.0, ctx.y, ctx.side.x1 - 8.0, ctx.y + 32.0),
+            Rect::new(ctx.side.x0 + 8.0, ctx.row.y0, ctx.side.x1 - 8.0, ctx.row.y1),
             8.0,
             c.semantic.danger.with_alpha_factor(0.9),
         );
+        let (_, gh) = tr.measure("🗑", CHANNEL_NAME_SIZE, None);
         label(
             scene,
             tr,
             tf,
             "🗑",
-            14.0,
+            CHANNEL_NAME_SIZE,
             Color::WHITE,
             ctx.side.x1 - 30.0,
-            ctx.y + 8.0,
+            line_top(ctx.row.center().y, f64::from(gh)),
         );
     }
 
@@ -1049,9 +1127,10 @@ impl ChatApp {
         ctx: &ChannelRowCtx<'_>,
     ) {
         let c = &theme.tokens.colors;
+        let cy = ctx.row.center().y;
         if ctx.is_active {
             fill_round(scene, tf, ctx.row, 8.0, c.lift(0.72));
-            let bar = Rect::new(ctx.side.x0, ctx.y + 6.0, ctx.side.x0 + 4.0, ctx.y + 26.0);
+            let bar = Rect::new(ctx.side.x0, cy - 10.0, ctx.side.x0 + 4.0, cy + 10.0);
             fill_round(scene, tf, bar, 2.0, c.accent[5]);
         }
         let glyph = ctx.ch.kind.glyph();
@@ -1060,15 +1139,16 @@ impl ChatApp {
         } else {
             c.text_dim
         };
+        let (_, gh) = tr.measure(glyph, CHANNEL_NAME_SIZE, None);
         label(
             scene,
             tr,
             tf,
             glyph,
-            14.0,
+            CHANNEL_NAME_SIZE,
             gcol,
             ctx.row.x0 + 10.0,
-            ctx.y + 8.0,
+            line_top(cy, f64::from(gh)),
         );
     }
 
@@ -1111,16 +1191,17 @@ impl ChatApp {
         } else {
             TextWeight::Regular
         };
-        let name = truncate_to(tr, &ctx.ch.name, 14.0, ctx.row.width() - 80.0);
+        let name = truncate_to(tr, &ctx.ch.name, CHANNEL_NAME_SIZE, ctx.row.width() - 80.0);
+        let (_, nh) = tr.measure_weighted(&name, CHANNEL_NAME_SIZE, None, weight);
         text(
             scene,
             tr,
             tf,
             &name,
-            14.0,
+            CHANNEL_NAME_SIZE,
             name_col,
             ctx.row.x0 + 32.0,
-            ctx.y + 8.0,
+            line_top(ctx.row.center().y, f64::from(nh)),
             weight,
             None,
         );
@@ -1146,24 +1227,28 @@ impl ChatApp {
                 c.semantic.success,
             );
         } else if ctx.ch.unread > 0 {
+            // The badge is a capsule around its measured label, centred on the
+            // row's centre line.
             let txt = ctx.ch.unread.to_string();
-            let (bw, _) = tr.measure(&txt, 11.0, None);
+            let (bw, bh) = tr.measure(&txt, UNREAD_BADGE_TEXT, None);
+            let badge_h = (f64::from(bh) + f64::from(theme.tokens.spacing.s1)).max(UNREAD_BADGE_MIN_H);
+            let cy = ctx.row.center().y;
             let badge = Rect::new(
                 ctx.row.x1 - f64::from(bw) - 22.0,
-                ctx.y + 7.0,
+                cy - badge_h / 2.0,
                 ctx.row.x1 - 8.0,
-                ctx.y + 25.0,
+                cy + badge_h / 2.0,
             );
-            fill_round(scene, tf, badge, 9.0, c.accent[5]);
+            fill_round(scene, tf, badge, badge_h / 2.0, c.accent[5]);
             label(
                 scene,
                 tr,
                 tf,
                 &txt,
-                11.0,
+                UNREAD_BADGE_TEXT,
                 Color::WHITE,
                 badge.x0 + 7.0,
-                badge.center().y - 7.0,
+                line_top(cy, f64::from(bh)),
             );
         }
     }
@@ -1183,9 +1268,10 @@ impl ChatApp {
         mut y: f64,
     ) -> f64 {
         let c = &theme.tokens.colors;
+        let row_h = voice_row_h(tr, theme);
         for m in self.voice_in(channel_id) {
             if let Some(u) = self.user(&m.user) {
-                let mrow = Rect::new(side.x0 + 36.0, y, side.x1 - 8.0, y + 24.0);
+                let mrow = Rect::new(side.x0 + 36.0, y, side.x1 - 8.0, y + row_h);
                 let radius = 9.0;
                 let cc = Point::new(mrow.x0 + radius + 2.0, mrow.center().y);
                 if m.talking && !m.muted {
@@ -1202,47 +1288,45 @@ impl ChatApp {
                     u.color_idx,
                     None,
                 );
-                let nm = truncate_to(tr, &u.name, 12.0, mrow.width() - 60.0);
+                let nm = truncate_to(tr, &u.name, VOICE_NAME_SIZE, mrow.width() - 60.0);
                 let ncol = if m.talking && !m.muted {
                     c.text_primary
                 } else {
                     c.text_dim
                 };
+                let (_, nh) = tr.measure(&nm, VOICE_NAME_SIZE, None);
                 label(
                     scene,
                     tr,
                     tf,
                     &nm,
-                    12.0,
+                    VOICE_NAME_SIZE,
                     ncol,
                     mrow.x0 + 2.0 * radius + 8.0,
-                    mrow.center().y - 7.0,
+                    line_top(mrow.center().y, f64::from(nh)),
                 );
                 // mic / audio-only state glyphs on the right.
-                if m.muted {
-                    label(
-                        scene,
-                        tr,
-                        tf,
-                        "🔇",
-                        11.0,
-                        c.semantic.danger,
-                        mrow.x1 - 18.0,
-                        mrow.center().y - 7.0,
-                    );
+                let state_glyph = if m.muted {
+                    Some(("🔇", c.semantic.danger))
                 } else if m.audio_only {
+                    Some(("🎧", c.text_dim))
+                } else {
+                    None
+                };
+                if let Some((glyph, col)) = state_glyph {
+                    let (_, gh) = tr.measure(glyph, UNREAD_BADGE_TEXT, None);
                     label(
                         scene,
                         tr,
                         tf,
-                        "🎧",
-                        11.0,
-                        c.text_dim,
+                        glyph,
+                        UNREAD_BADGE_TEXT,
+                        col,
                         mrow.x1 - 18.0,
-                        mrow.center().y - 7.0,
+                        line_top(mrow.center().y, f64::from(gh)),
                     );
                 }
-                y += 26.0;
+                y += row_h + CHANNEL_ROW_GAP;
             }
         }
         y
@@ -1357,39 +1441,49 @@ impl ChatApp {
         if !collaborators {
             return h.x1;
         }
-        let call_w = 84.0;
-        let mem_w = 52.0;
-        let gap = 8.0;
+        let sp = &theme.tokens.spacing;
+        let label_size = theme.tokens.typography.scale.sm;
+        let gap = f64::from(sp.s2);
+        let half_h = f64::from(sp.s8) / 2.0;
         let cy = h.center().y;
+        // Both pills size themselves from their measured labels, so a larger
+        // text scale widens the pill instead of pushing the caption past it.
+        let call_label = if self.call.active {
+            "● In call"
+        } else {
+            "📹 Call"
+        };
+        let (call_lw, call_lh) = tr.measure(call_label, label_size, None);
+        let call_pad = f64::from(sp.s3);
+        let call_w = f64::from(call_lw) + 2.0 * call_pad;
         // call button (accent when a call is live).
-        let call_x0 = h.x1 - 16.0 - call_w;
-        let call_btn = Rect::new(call_x0, cy - 16.0, call_x0 + call_w, cy + 16.0);
+        let call_x0 = h.x1 - f64::from(sp.s4) - call_w;
+        let call_btn = Rect::new(call_x0, cy - half_h, call_x0 + call_w, cy + half_h);
         let (cbg, ctx) = if self.call.active {
             (c.accent[5], Color::WHITE)
         } else {
             (c.lift(0.72), c.text_primary)
         };
         fill_round(scene, tf, call_btn, 8.0, cbg);
-        let call_label = if self.call.active {
-            "● In call"
-        } else {
-            "📹 Call"
-        };
         label(
             scene,
             tr,
             tf,
             call_label,
-            12.5,
+            label_size,
             ctx,
-            call_btn.x0 + 12.0,
-            call_btn.center().y - 8.0,
+            call_btn.x0 + call_pad,
+            line_top(cy, f64::from(call_lh)),
         );
         ChatApp::push_hit(hits, call_btn, Hit::StartCall);
 
         // members pill — toggles the right flap (members / thread).
+        let mem_label = format!("👥 {}", self.users.len());
+        let (mem_lw, mem_lh) = tr.measure(&mem_label, label_size, None);
+        let mem_pad = f64::from(sp.s2);
+        let mem_w = f64::from(mem_lw) + 2.0 * mem_pad;
         let mem_x0 = call_x0 - gap - mem_w;
-        let mem = Rect::new(mem_x0, cy - 16.0, mem_x0 + mem_w, cy + 16.0);
+        let mem = Rect::new(mem_x0, cy - half_h, mem_x0 + mem_w, cy + half_h);
         let mem_on = self.right_flap_open();
         fill_round(
             scene,
@@ -1406,11 +1500,11 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            &format!("👥 {}", self.users.len()),
-            12.5,
+            &mem_label,
+            label_size,
             if mem_on { c.accent[7] } else { c.text_dim },
-            mem.x0 + 9.0,
-            mem.center().y - 8.0,
+            mem.x0 + mem_pad,
+            line_top(cy, f64::from(mem_lh)),
         );
         ChatApp::push_hit(hits, mem, Hit::ToggleRightFlap);
         mem_x0
@@ -1499,15 +1593,19 @@ impl ChatApp {
                 h.center().y + 16.0,
             );
             fill_round(scene, tf, btn, 8.0, c.lift(0.72));
+            // Centre the glyph on its measured box so it stays inside the
+            // button at every text scale.
+            let glyph_size = theme.tokens.typography.scale.lg;
+            let (gw, gh) = tr.measure("☰", glyph_size, None);
             label(
                 scene,
                 tr,
                 tf,
                 "☰",
-                16.0,
+                glyph_size,
                 c.text_primary,
-                btn.x0 + 8.0,
-                btn.center().y - 9.0,
+                btn.center().x - f64::from(gw) / 2.0,
+                line_top(btn.center().y, f64::from(gh)),
             );
             ChatApp::push_hit(hits, btn, Hit::ToggleLeftFlap);
         }
@@ -1824,12 +1922,28 @@ impl ChatApp {
                 video_card_size(*w, *h, f64::from(text_w)).1 + 24.0
             }
         };
-        let react_h = if m.reactions.is_empty() { 0.0 } else { 32.0 };
+        // The header, reaction and thread bands are measured through the same
+        // helpers the draw pass uses, so the reserved height is the painted
+        // height at every text scale.
+        let header_h = if show_header {
+            header_row_h(tr, theme)
+        } else {
+            0.0
+        };
+        let react_h = if m.reactions.is_empty() {
+            0.0
+        } else {
+            reaction_chip_h(tr, theme) + REACTION_STRIP_GAP
+        };
         // While editing, the "(edited)" marker is suppressed in favour of the
         // editor's own controls row.
-        let edited_h = if m.edited && !editing { 18.0 } else { 0.0 };
+        let edited_h = if m.edited && !editing {
+            edited_row_h(tr, theme)
+        } else {
+            0.0
+        };
         let thread_h = if model::reply_count(&self.messages, &m.id) > 0 {
-            46.0
+            thread_bar_h(tr, theme) + THREAD_BAR_GAP
         } else {
             0.0
         };
@@ -1837,6 +1951,7 @@ impl ChatApp {
         RowM {
             idx_id: m.id.clone(),
             show_header,
+            header_h,
             body_h,
             att_h,
             react_h,
@@ -1941,29 +2056,33 @@ impl ChatApp {
             status,
         );
         let name = self.user_name(&m.author);
-        let (nw, _) = text(
+        let (nw, nh) = text(
             scene,
             tr,
             tf,
             &name,
-            14.5,
+            NAME_SIZE,
             palette_color(theme, cidx),
             text_x,
             *y,
             TextWeight::Semibold,
             None,
         );
+        // The timestamp's line box is bottom-aligned to the name's, which
+        // keeps their baselines together at any text scale.
+        let clock = model::clock(m.ts);
+        let (_, th) = tr.measure(&clock, TIME_SIZE, None);
         label(
             scene,
             tr,
             tf,
-            &model::clock(m.ts),
-            11.5,
+            &clock,
+            TIME_SIZE,
             c.text_dim,
-            text_x + f64::from(nw) + 10.0,
-            *y + 3.0,
+            text_x + f64::from(nw) + f64::from(theme.tokens.spacing.s2),
+            *y + f64::from(nh) - f64::from(th),
         );
-        *y += 22.0;
+        *y += header_row_h(tr, theme);
     }
 
     /// The editor (while editing) or the plain/mention-attributed body text,
@@ -2058,13 +2177,14 @@ impl ChatApp {
         let c = &theme.tokens.colors;
         if m.edited && !rm.editing {
             let edited_label = "(edited) · view history";
+            let (ew, eh) = tr.measure(edited_label, TIME_SIZE, None);
             let edited_hit = Rect::new(
                 text_x,
                 *y,
-                text_x + f64::from(tr.measure(edited_label, 11.5, None).0) + 4.0,
-                *y + 16.0,
+                text_x + f64::from(ew) + f64::from(theme.tokens.spacing.s1),
+                *y + f64::from(eh),
             );
-            label(scene, tr, tf, edited_label, 11.5, c.text_dim, text_x, *y);
+            label(scene, tr, tf, edited_label, TIME_SIZE, c.text_dim, text_x, *y);
             ChatApp::push_hit(
                 hits,
                 edited_hit,
@@ -2197,30 +2317,31 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         let mut x = text_x;
-        let chip_h = 26.0;
+        let chip_h = reaction_chip_h(tr, theme);
+        let chip_r = chip_h / 2.0;
         for r in &m.reactions {
             let mine = r.reacted_by(&self.me.id);
             let lbl = format!("{}  {}", r.emoji, r.count());
-            let (lw, _) = tr.measure(&lbl, 12.5, None);
+            let (lw, lh) = tr.measure(&lbl, REACTION_SIZE, None);
             let chip = Rect::new(x, y, x + f64::from(lw) + 20.0, y + chip_h);
             let bg = if mine {
                 c.accent[5].with_alpha_factor(0.22)
             } else {
                 c.lift(0.35)
             };
-            fill_round(scene, tf, chip, 13.0, bg);
+            fill_round(scene, tf, chip, chip_r, bg);
             if mine {
-                stroke_round(scene, tf, chip, 13.0, c.accent[5], 1.0);
+                stroke_round(scene, tf, chip, chip_r, c.accent[5], 1.0);
             }
             label(
                 scene,
                 tr,
                 tf,
                 &lbl,
-                12.5,
+                REACTION_SIZE,
                 if mine { c.accent[7] } else { c.text_primary },
                 chip.x0 + 10.0,
-                chip.center().y - 8.0,
+                line_top(chip.center().y, f64::from(lh)),
             );
             ChatApp::push_hit(
                 hits,
@@ -2234,7 +2355,7 @@ impl ChatApp {
         }
         // add-reaction affordance
         let add = Rect::new(x, y, x + 34.0, y + chip_h);
-        fill_round(scene, tf, add, 13.0, c.lift(0.35));
+        fill_round(scene, tf, add, chip_r, c.lift(0.35));
         let (aw, ah) = tr.measure("☺", 14.0, None);
         text(
             scene,
@@ -2274,7 +2395,8 @@ impl ChatApp {
         let c = &theme.tokens.colors;
         let count = model::reply_count(&self.messages, &m.id);
         let parts = model::thread_participants(&self.messages, &m.id);
-        let bar = Rect::new(text_x, y, text_x + f64::from(text_w).min(360.0), y + 38.0);
+        let bar_h = thread_bar_h(tr, theme);
+        let bar = Rect::new(text_x, y, text_x + f64::from(text_w).min(360.0), y + bar_h);
         let open = self.thread_open.as_deref() == Some(m.id.as_str());
         fill_round(
             scene,
@@ -2322,15 +2444,16 @@ impl ChatApp {
             ax += 17.0;
         }
         let txt = format!("{count} {}", if count == 1 { "reply" } else { "replies" });
+        let (_, lh) = tr.measure(&txt, THREAD_LABEL_SIZE, None);
         label(
             scene,
             tr,
             tf,
             &txt,
-            13.0,
+            THREAD_LABEL_SIZE,
             c.accent[6],
             ax + 8.0,
-            bar.center().y - 8.0,
+            line_top(bar.center().y, f64::from(lh)),
         );
         let last_ts = self
             .messages
@@ -2741,13 +2864,15 @@ impl ChatApp {
         // While an inline message edit is in progress the caret lives in the
         // editor, not the composer.
         let focused = matches!(self.focus, crate::app::Focus::Main) && self.editing.is_none();
-        let send_enabled = !self.composer_main.value().trim().is_empty();
+        let draft = self.composer_main.value();
+        let send_enabled = !draft.trim().is_empty();
         let inner = Self::draw_input_box(
             scene,
             tf,
             tr,
             theme,
             rect,
+            draft,
             send_enabled,
             focused,
             Hit::FocusMain,
@@ -2788,6 +2913,12 @@ impl ChatApp {
     /// emoji + send buttons — and record their hit regions. Returns the inner
     /// rect the caller lays the composer [`TextInput`] into; the widget owns
     /// the text, caret, selection, and placeholder inside it.
+    ///
+    /// Every button is the same `spacing.s8` tall and sits on the box's centre
+    /// line. The returned band is sized from the measured `draft` (one line
+    /// when empty) and centred on that same line, so a short draft, its caret
+    /// and the placeholder line up with the buttons instead of hugging the
+    /// top edge; a long draft fills the box, which itself grows with the text.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_input_box(
         scene: &mut Scene,
@@ -2795,6 +2926,7 @@ impl ChatApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
+        draft: &str,
         send_enabled: bool,
         focused: bool,
         focus_hit: Hit,
@@ -2802,6 +2934,10 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) -> Rect {
         let c = &theme.tokens.colors;
+        let sp = &theme.tokens.spacing;
+        let btn = f64::from(sp.s8);
+        let half_btn = btn / 2.0;
+        let cy = rect.center().y;
         fill_round(scene, tf, rect, 14.0, c.neutral[2]);
         stroke_round(
             scene,
@@ -2817,14 +2953,10 @@ impl ChatApp {
         );
         ChatApp::push_hit(hits, rect, focus_hit);
 
-        let mut tx = rect.x0 + 16.0;
+        let mut tx = rect.x0 + f64::from(sp.s4);
         if attach {
-            let plus = Rect::new(
-                rect.x0 + 10.0,
-                rect.center().y - 14.0,
-                rect.x0 + 38.0,
-                rect.center().y + 14.0,
-            );
+            let plus_x0 = rect.x0 + f64::from(sp.s3);
+            let plus = Rect::new(plus_x0, cy - half_btn, plus_x0 + btn, cy + half_btn);
             fill_round(scene, tf, plus, 8.0, c.lift(0.72));
             let (pw, ph) = tr.measure("+", 20.0, None);
             text(
@@ -2835,21 +2967,17 @@ impl ChatApp {
                 20.0,
                 c.text_dim,
                 plus.center().x - f64::from(pw) / 2.0,
-                plus.center().y - f64::from(ph) / 2.0,
+                line_top(plus.center().y, f64::from(ph)),
                 TextWeight::Regular,
                 None,
             );
             ChatApp::push_hit(hits, plus, Hit::Attach);
-            tx = plus.x1 + 12.0;
+            tx = plus.x1 + f64::from(sp.s3);
         }
 
         // right cluster: emoji + send
-        let send = Rect::new(
-            rect.x1 - 56.0,
-            rect.center().y - 16.0,
-            rect.x1 - 12.0,
-            rect.center().y + 16.0,
-        );
+        let send_x1 = rect.x1 - f64::from(sp.s3);
+        let send = Rect::new(send_x1 - SEND_BTN_W, cy - half_btn, send_x1, cy + half_btn);
         fill_round(
             scene,
             tf,
@@ -2874,18 +3002,14 @@ impl ChatApp {
                 c.text_dim
             },
             send.center().x - f64::from(sw) / 2.0,
-            send.center().y - f64::from(sh) / 2.0,
+            line_top(send.center().y, f64::from(sh)),
             TextWeight::Regular,
             None,
         );
         ChatApp::push_hit(hits, send, Hit::Send);
 
-        let emoji = Rect::new(
-            send.x0 - 40.0,
-            rect.center().y - 16.0,
-            send.x0 - 8.0,
-            rect.center().y + 16.0,
-        );
+        let emoji_x1 = send.x0 - f64::from(sp.s2);
+        let emoji = Rect::new(emoji_x1 - btn, cy - half_btn, emoji_x1, cy + half_btn);
         let (ew, eh) = tr.measure("🙂", 16.0, None);
         text(
             scene,
@@ -2895,7 +3019,7 @@ impl ChatApp {
             16.0,
             c.text_dim,
             emoji.center().x - f64::from(ew) / 2.0,
-            emoji.center().y - f64::from(eh) / 2.0,
+            line_top(emoji.center().y, f64::from(eh)),
             TextWeight::Regular,
             None,
         );
@@ -2905,9 +3029,19 @@ impl ChatApp {
             Hit::ComposerEmoji(Point::new(emoji.x0 - 140.0, rect.y0 - 8.0)),
         );
 
-        // Inner rect for the composer widget: from just after the attach glyph
-        // to just before the emoji button, filling the box vertically.
-        Rect::new(tx - 4.0, rect.y0 + 4.0, emoji.x0 - 8.0, rect.y1 - 4.0)
+        // Inner band for the composer widget: from just after the attach
+        // button to just before the emoji button, centred on the buttons'
+        // line and sized from the measured draft (one line when empty).
+        let full = Rect::new(
+            tx - f64::from(sp.s1),
+            rect.y0 + f64::from(sp.s1),
+            emoji.x0 - f64::from(sp.s2),
+            rect.y1 - f64::from(sp.s1),
+        );
+        let wrap_w = (full.width() - COMPOSER_TEXT_INSET).max(40.0) as f32;
+        let probe = if draft.is_empty() { "Ag" } else { draft };
+        let content_h = f64::from(tr.measure(probe, BODY_SIZE, Some(wrap_w)).1);
+        centered_band(full, content_h, f64::from(sp.s2))
     }
 
     // ---------------------------------------------------------------- thread
@@ -2954,13 +3088,15 @@ impl ChatApp {
             return;
         }
         let focused = matches!(self.focus, crate::app::Focus::Thread) && self.editing.is_none();
-        let send_enabled = !self.composer_thread.value().trim().is_empty();
+        let draft = self.composer_thread.value();
+        let send_enabled = !draft.trim().is_empty();
         let inner = Self::draw_input_box(
             scene,
             tf,
             tr,
             theme,
             comp,
+            draft,
             send_enabled,
             focused,
             Hit::FocusThread,
@@ -3740,10 +3876,57 @@ impl ChatApp {
     }
 }
 
+/// Height of one channel row: the measured name plus a pad top and bottom,
+/// never shorter than the 1× row. Shared by the row rect, its hit rect and
+/// the y-advance so a larger text scale grows the list instead of stacking
+/// rows over each other.
+fn channel_row_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+    let (_, nh) = tr.measure_weighted("Ag", CHANNEL_NAME_SIZE, None, TextWeight::Semibold);
+    (f64::from(nh) + 2.0 * f64::from(theme.tokens.spacing.s1)).max(CHANNEL_ROW_MIN_H)
+}
+
+/// Height of one voice-presence row under a voice channel.
+fn voice_row_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+    let (_, nh) = tr.measure("Ag", VOICE_NAME_SIZE, None);
+    (f64::from(nh) + 2.0 * f64::from(theme.tokens.spacing.s1)).max(VOICE_ROW_MIN_H)
+}
+
+/// Line box of a message-group header (author name + timestamp) plus the gap
+/// to the body beneath it. Measured with the name's own style so the header
+/// row, the y-advance in `draw_row_header` and `RowM::height` agree.
+fn header_row_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+    let (_, nh) = tr.measure_weighted("Ag", NAME_SIZE, None, TextWeight::Semibold);
+    f64::from(nh) + f64::from(theme.tokens.spacing.s1)
+}
+
+/// Height of the "(edited) · view history" line: its measured line box plus
+/// a small gap, never shorter than the 1× band, so at larger text it does not
+/// run into the reaction chips beneath it.
+fn edited_row_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+    let (_, lh) = tr.measure("Ag", TIME_SIZE, None);
+    (f64::from(lh) + f64::from(theme.tokens.spacing.s1)).max(EDITED_MIN_H)
+}
+
+/// Height of a reaction chip: its measured label plus a small pad top and
+/// bottom, never shorter than the 1× capsule.
+fn reaction_chip_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+    let (_, lh) = tr.measure("Ag", REACTION_SIZE, None);
+    (f64::from(lh) + 2.0 * f64::from(theme.tokens.spacing.s1)).max(REACTION_CHIP_MIN_H)
+}
+
+/// Height of the "N replies" bar: its measured label plus a pad top and
+/// bottom, never shorter than the 1× bar.
+fn thread_bar_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+    let (_, lh) = tr.measure("Ag", THREAD_LABEL_SIZE, None);
+    (f64::from(lh) + 2.0 * f64::from(theme.tokens.spacing.s2)).max(THREAD_BAR_MIN_H)
+}
+
 /// Per-row measured heights for the timeline layout.
 struct RowM {
     idx_id: String,
     show_header: bool,
+    /// Measured header row (author + timestamp); zero on continuation rows.
+    header_h: f64,
     body_h: f64,
     att_h: f64,
     react_h: f64,
@@ -3756,7 +3939,7 @@ struct RowM {
 }
 impl RowM {
     fn height(&self) -> f64 {
-        let header = if self.show_header { 22.0 } else { 0.0 };
+        let header = if self.show_header { self.header_h } else { 0.0 };
         let top_gap = if self.show_header { 14.0 } else { 3.0 };
         let body = if self.editing {
             self.body_h + EDIT_BOX_PAD + self.edit_ctrl_h
