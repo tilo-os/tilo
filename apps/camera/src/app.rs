@@ -281,9 +281,9 @@ enum Action {
     CycleFacing,
     DismissScan,
     Scan(usize),
-    /// Decode a QR/barcode out of a library photo (used when no camera feed
-    /// is available, so the scanner stays useful offline).
-    ScanLibraryItem(String),
+    /// Choose an existing image through the system portal and scan it without
+    /// turning Camera into a media browser.
+    ImportScanImage,
     CaptureDocument,
     OpenDocumentChoice(DocumentChoice),
     RotateDocument,
@@ -338,14 +338,10 @@ pub struct CameraApp {
     mode: CaptureMode,
     facing: Facing,
     settings: Settings,
-    favorites: HashSet<String>,
     scans: Vec<ScanEntry>,
 
-    // Library (from disk scan or the sample set)
+    // One contextual recent-capture handoff. Camera never owns a media library.
     captures: Vec<Capture>,
-    lib_dirty: bool,
-    library_generation: u64,
-    library_pending: Option<u64>,
 
     // ephemeral UI state
     /// The viewfinder screen the Settings overlay was opened from,
@@ -356,7 +352,6 @@ pub struct CameraApp {
     /// away from their own current camera view.
     navigation: SidebarDrawer,
     selected_capture: Option<String>,
-    pending_delete: Option<String>,
     scan_dismissed: bool,
     scanned: Option<ScannedCode>,
     scan_gen: (u32, u32),
@@ -371,6 +366,7 @@ pub struct CameraApp {
     scanner_devices: Vec<os_actions::printing::Scanner>,
     selected_scanner: Option<String>,
     document_save_picker: Option<ui::portal::PortalChannel>,
+    scan_image_picker: Option<ui::portal::PortalChannel>,
     document_crop_selection: ui::LocalState<CropSelection>,
     document_crop_editor: Option<ImageCropEditor>,
     document_crop_page: Option<usize>,
@@ -478,12 +474,8 @@ impl CameraApp {
             mode: CaptureMode::Photo,
             facing: Facing::Back,
             settings: Settings::default(),
-            favorites: HashSet::new(),
             scans: Vec::new(),
             captures: Vec::new(),
-            lib_dirty: true,
-            library_generation: 0,
-            library_pending: None,
             return_to: Screen::Camera,
             navigation: SidebarDrawer::new()
                 .left()
@@ -491,7 +483,6 @@ impl CameraApp {
                 .overlay_width(NAV_WIDTH.min(320.0))
                 .breakpoint(NAV_BREAKPOINT),
             selected_capture: None,
-            pending_delete: None,
             scan_dismissed: false,
             scanned: None,
             scan_gen: (0, 0),
@@ -506,6 +497,7 @@ impl CameraApp {
             scanner_devices,
             selected_scanner,
             document_save_picker: None,
+            scan_image_picker: None,
             document_crop_selection: ui::LocalState::new(CropSelection::default()),
             document_crop_editor: None,
             document_crop_page: None,
@@ -867,7 +859,7 @@ impl CameraApp {
             Action::CycleFacing => "camera.facing".into(),
             Action::DismissScan => "camera.dismiss-scan".into(),
             Action::Scan(index) => format!("camera.scan:{index}"),
-            Action::ScanLibraryItem(id) => format!("camera.scan-library:{id}"),
+            Action::ImportScanImage => "camera.scan-image".into(),
             Action::CaptureDocument => "camera.document.capture".into(),
             Action::OpenDocumentChoice(choice) => {
                 format!("camera.document.choice:{}", choice.index())
@@ -972,16 +964,12 @@ impl CameraApp {
                 "Use scanned result".into(),
                 AccessState::new().focusable(true),
             ),
-            Action::ScanLibraryItem(id) => (
+            Action::ImportScanImage => (
                 Role::Button,
-                self.captures
-                    .iter()
-                    .find(|capture| capture.id == *id)
-                    .map_or_else(
-                        || "Scan media".into(),
-                        |capture| format!("Scan {}", capture.label),
-                    ),
-                AccessState::new().focusable(true),
+                "Choose an image to scan".into(),
+                AccessState::new()
+                    .focusable(true)
+                    .disabled(self.scan_image_picker.is_some()),
             ),
             Action::CycleResolution => (
                 Role::Button,
@@ -1209,42 +1197,6 @@ impl CameraApp {
             .with_action_target(Self::a11y_target(action))
     }
 
-    fn request_library_reload(&mut self) {
-        if self.library_pending.is_some() {
-            return;
-        }
-        match &self.storage {
-            Storage::Sample => {
-                self.captures = sample_captures();
-                self.refresh_search_provider();
-                self.lib_dirty = false;
-            }
-            Storage::Disk(dir) => {
-                let Some(generation) = self.library_generation.checked_add(1) else {
-                    self.toast = Some("Library refresh counter exhausted; restart Camera".into());
-                    self.lib_dirty = false;
-                    return;
-                };
-                match self.worker.submit_library(crate::worker::LibraryJob {
-                    generation,
-                    dir: dir.clone(),
-                    favorites: self.favorites.clone(),
-                }) {
-                    Ok(()) => {
-                        self.library_generation = generation;
-                        self.library_pending = Some(generation);
-                    }
-                    Err(error) => {
-                        self.toast = Some(error);
-                        // Avoid spinning on a disconnected worker. A later
-                        // explicit mutation/retry may request another refresh.
-                        self.lib_dirty = false;
-                    }
-                }
-            }
-        }
-    }
-
     /// Dispatch one Camera [`CameraAction`](crate::actions::CameraAction) — the
     /// single mutation path shared with the Ctrl+K palette. The action is applied
     /// through the Tilo action executor (a pinned actor + committed change, so it
@@ -1279,32 +1231,25 @@ impl CameraApp {
     /// shots currently in the library cache, with their favorite state. Derived
     /// entirely from state the app already holds; nothing is fabricated.
     pub(crate) fn camera_resource_ctx(&self) -> crate::actions::CameraResourceCtx {
-        let items = self
-            .captures
-            .iter()
-            .take(crate::actions::MAX_CONTEXT_CAPTURE_RESOURCES)
-            .map(Self::capture_item)
-            .collect();
-        self.camera_resource_ctx_with_items(items)
+        self.camera_resource_ctx_with_recent(self.captures.first().map(Self::capture_item))
     }
 
     fn capture_item(capture: &Capture) -> crate::actions::CaptureItem {
         crate::actions::CaptureItem {
             id: capture.id.clone(),
             label: capture.label.clone(),
-            favorite: capture.favorite,
             is_video: capture.is_video(),
             media_id: capture.media_id.clone(),
         }
     }
 
-    fn camera_resource_ctx_with_items(
+    fn camera_resource_ctx_with_recent(
         &self,
-        items: Vec<crate::actions::CaptureItem>,
+        recent: Option<crate::actions::CaptureItem>,
     ) -> crate::actions::CameraResourceCtx {
         let camera_devices = self.available_camera_devices();
         crate::actions::CameraResourceCtx {
-            items,
+            recent,
             mode: self.mode,
             facing: self.facing,
             recording: self.is_recording(),
@@ -1313,6 +1258,15 @@ impl CameraApp {
             camera_devices,
             selected_camera: self.selected_camera.clone(),
             settings: self.settings,
+            scan_import_pending: self.scan_image_picker.is_some(),
+            document_pages: self.document_scan.pages.len(),
+            document_selected: self.document_scan.selected,
+            document_busy: self.document_job.is_some(),
+            document_has_text: self
+                .document_scan
+                .pages
+                .get(self.document_scan.selected)
+                .is_some_and(|page| page.ocr.is_some()),
         }
     }
 
@@ -1321,7 +1275,14 @@ impl CameraApp {
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::Resource> {
-        if matches!(id, "camera.captures" | "camera.settings" | "camera") {
+        if matches!(
+            id,
+            "camera.capture"
+                | "camera.scanner"
+                | "camera.document-scanner"
+                | "camera.settings"
+                | "camera"
+        ) {
             return crate::actions::resolve_resource(&self.camera_resource_ctx(), doc, id);
         }
         let (capture_id, expect_video) = id
@@ -1336,12 +1297,13 @@ impl CameraApp {
             .iter()
             .find(|capture| capture.id == capture_id && capture.is_video() == expect_video)
             .map(Self::capture_item)?;
-        crate::actions::resolve_resource(&self.camera_resource_ctx_with_items(vec![item]), doc, id)
+        crate::actions::resolve_resource(&self.camera_resource_ctx_with_recent(Some(item)), doc, id)
     }
 
-    fn refresh_search_provider(&self) {
-        let items: Vec<_> = self.captures.iter().map(Self::capture_item).collect();
-        self.search_provider.sync(&items);
+    fn refresh_search_provider(&mut self) {
+        if let Err(error) = self.search_provider.sync(&self.camera_resource_ctx()) {
+            self.toast = Some(format!("Camera search kept its previous actions: {error}"));
+        }
     }
 
     fn apply(&mut self, action: Action, doc: &mut AutoCommit, root: &ObjId) {
@@ -1360,7 +1322,7 @@ impl CameraApp {
             Action::CycleFacing => self.apply_cycle_facing(doc, root),
             Action::DismissScan => self.scan_dismissed = true,
             Action::Scan(i) => self.apply_scan_action(i, doc, root),
-            Action::ScanLibraryItem(id) => self.scan_library_item(&id, doc, root),
+            Action::ImportScanImage => self.request_scan_image(),
             Action::RetryCamera => self.retry_camera(),
             Action::OpenCameraPrivacySettings => self.open_camera_privacy_settings(),
             Action::OpenCameraChooser => self.open_camera_chooser(),
@@ -2208,50 +2170,69 @@ impl CameraApp {
         self.toast = Some(format!("Selected {device}"));
     }
 
-    /// Decode a code out of a library photo by id. Real work: the photo is
-    /// decoded to luma and run through the QR detector. Used by the scanner
-    /// when there is no live camera feed, so a saved QR (a screenshot, a
-    /// shared poster) can still be acted on.
-    fn scan_library_item(&mut self, id: &str, _doc: &mut AutoCommit, _root: &ObjId) {
-        self.scan_dismissed = false;
-        let source = self
-            .captures
-            .iter()
-            .find(|c| c.id == id)
-            .and_then(|capture| {
-                capture
-                    .path
-                    .clone()
-                    .map(crate::worker::ScanSource::Path)
-                    .or_else(|| {
-                        capture
-                            .media_id
-                            .as_ref()
-                            .filter(|media_id| crate::media::is_media_id(media_id))
-                            .cloned()
-                            .map(crate::worker::ScanSource::Media)
-                    })
-            });
-        let Some(source) = source else {
-            self.toast = Some("That item isn't available on this device".into());
+    fn request_scan_image(&mut self) {
+        if self.scan_image_picker.is_some() {
+            return;
+        }
+        self.scan_image_picker = Some(
+            ui::portal::PickRequest::open("Scan a code from an image", "Scan")
+                .thread_name("camera-portal-scan-image")
+                .filter(
+                    ui::portal::FileFilter::new("Images")
+                        .mimetype("image/png")
+                        .mimetype("image/jpeg")
+                        .mimetype("image/webp")
+                        .mimetype("image/gif"),
+                )
+                .send(),
+        );
+        self.toast = Some("Choose an image containing a QR code or barcode".into());
+    }
+
+    fn poll_scan_image_picker(&mut self) {
+        let Some(receiver) = self.scan_image_picker.as_ref() else {
             return;
         };
+        let outcome = match receiver.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui::portal::PortalOutcome::Failed("The file picker stopped responding".into())
+            }
+        };
+        self.scan_image_picker = None;
+        match outcome {
+            ui::portal::PortalOutcome::Opened(path) => self.scan_image_path(path),
+            ui::portal::PortalOutcome::Cancelled => {
+                self.toast = Some("Image scan cancelled".into());
+            }
+            ui::portal::PortalOutcome::Failed(error) => {
+                self.toast = Some(format!("Could not choose an image: {error}"));
+            }
+        }
+    }
+
+    /// Decode a code from one portal-selected image. The path is ephemeral and
+    /// never enters Camera's collaborative state or a private media index.
+    fn scan_image_path(&mut self, path: std::path::PathBuf) {
+        self.scan_dismissed = false;
         let Some(generation) = self.scan_generation.checked_add(1) else {
             self.toast = Some("Code scan counter exhausted; restart Camera".into());
             return;
         };
+        let id = format!("portal:{generation}");
         if let Err(error) = self.worker.submit_scan(crate::worker::ScanJob {
             generation,
-            id: id.to_string(),
-            source,
+            id: id.clone(),
+            source: crate::worker::ScanSource::Path(path),
             record_history: true,
         }) {
             self.toast = Some(error);
             return;
         }
         self.scan_generation = generation;
-        self.pending_scan = Some((id.to_string(), generation));
-        self.toast = Some("Scanning photo…".into());
+        self.pending_scan = Some((id, generation));
+        self.toast = Some("Scanning image…".into());
     }
 
     /// Carry out the chosen action for a scanned code. Openable schemes are
@@ -2711,6 +2692,7 @@ impl Widget for CameraApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.poll_document_job();
         self.poll_document_export();
+        self.poll_scan_image_picker();
         if !self.initialized {
             doc::init_defaults(state, path, self.initial_screen);
             self.initialized = true;
@@ -5768,83 +5750,58 @@ impl CameraApp {
         stage: Rect,
     ) {
         let c = &theme.tokens.colors;
-        // Full-bleed "camera off" backdrop; the photo picker floats over it.
         p::fill_rect(scene, t, full, c.neutral[0]);
-
-        let photos: Vec<Capture> = self
-            .captures
-            .iter()
-            .filter(|c| !c.is_video() && c.path.is_some())
-            .cloned()
-            .collect();
-
-        let grid = Rect::new(
+        let content = Rect::new(
             stage.x0 + EDGE,
             full.y0 + 86.0,
-            stage.x1 - 8.0,
+            stage.x1 - EDGE,
             full.y1 - 76.0,
         );
-
-        if photos.is_empty() {
-            let cx = grid.center().x;
-            let cy = grid.center().y;
-            let ic = Rect::new(cx - 24.0, cy - 58.0, cx + 24.0, cy - 10.0);
-            p::icon(scene, t, "scan", ic, p::alpha(white(), 0.5), 2.0);
-            p::text_center(
-                scene,
-                tr,
-                cx,
-                cy + 6.0,
-                "Nothing to scan yet",
-                16.0,
-                p::alpha(white(), 0.9),
-            );
-            p::text_center(
-                scene,
-                tr,
-                cx,
-                cy + 30.0,
-                "Save a photo of a QR or barcode and it can be scanned here",
-                12.5,
-                p::alpha(white(), 0.55),
-            );
-            return;
+        let cx = content.center().x;
+        let cy = content.center().y;
+        let ic = Rect::new(cx - 28.0, cy - 92.0, cx + 28.0, cy - 36.0);
+        p::icon(scene, t, "scan", ic, p::alpha(white(), 0.72), 2.2);
+        p::text_center(
+            scene,
+            tr,
+            cx,
+            cy - 14.0,
+            "Scan without a camera",
+            19.0,
+            white(),
+        );
+        let hint = ellipsize(
+            tr,
+            "Choose a QR or barcode image from this device",
+            12.5,
+            (content.width() - 24.0).max(120.0),
+        );
+        p::text_center(
+            scene,
+            tr,
+            cx,
+            cy + 16.0,
+            &hint,
+            12.5,
+            p::alpha(white(), 0.68),
+        );
+        let button_width = (content.width() - 24.0).min(240.0).max(160.0);
+        let button = Rect::new(
+            cx - button_width / 2.0,
+            cy + 48.0,
+            cx + button_width / 2.0,
+            cy + 96.0,
+        );
+        p::fill_round(scene, t, button, 14.0, theme.accent_primary);
+        let label = if self.scan_image_picker.is_some() {
+            "Waiting for file picker…"
+        } else {
+            "Choose image"
+        };
+        p::text_center(scene, tr, cx, button.y0 + 16.0, label, 14.0, white());
+        if self.scan_image_picker.is_none() {
+            self.push_region(button, Action::ImportScanImage);
         }
-
-        let target_w = 156.0;
-        let gap = 12.0;
-        // Shared reflow math so this grid lines up exactly like every other
-        // card grid in the OS (one canonical formula, not a per-app copy).
-        let cols = ui::widget::card_columns(grid.width(), target_w, gap);
-        let cell_w = ui::widget::card_column_width(grid.width(), cols, gap);
-        let card_h = (cell_w * 0.72).clamp(94.0, 150.0);
-        p::push_clip_rect(scene, t, grid);
-        for (i, cap) in photos.iter().enumerate() {
-            let col = i % cols;
-            let row = i / cols;
-            let x0 = grid.x0 + col as f64 * (cell_w + gap);
-            let y0 = grid.y0 + row as f64 * (card_h + gap);
-            if y0 > grid.y1 {
-                break;
-            }
-            let card = Rect::new(x0, y0, x0 + cell_w, y0 + card_h);
-            self.ensure_thumb(cap);
-            p::push_clip_round(scene, t, card, 14.0);
-            if let Some(img) = self.thumbs.get_mut(&cap.id) {
-                img.paint_at(scene, t, card);
-            }
-            p::pop(scene);
-            p::stroke_round(
-                scene,
-                t,
-                card,
-                14.0,
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-                1.0,
-            );
-            self.push_region(card, Action::ScanLibraryItem(cap.id.clone()));
-        }
-        p::pop(scene);
 
         if let Some(s) = self.scanned.clone()
             && !self.scan_dismissed
