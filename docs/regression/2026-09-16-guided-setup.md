@@ -403,3 +403,34 @@ packaged import delivery and the actual graphical lifecycle remain outstanding.
 The production catalog stays empty. Narrow Windows compilation is not evidence
 of a complete Windows application or retained-Windows boot support. Previously
 recorded strict-Clippy findings remain for the final component review.
+
+## Native virtual-display fix and graphical startup
+
+Commit `ccc2ebae0` replaces connector-name substring filtering with typed DRM
+eligibility. A connected Virtual connector with a usable mode is eligible;
+Writeback, Unknown, disconnected and modeless connectors remain excluded.
+Native RED reproduced the Virtual rejection; the corrected scanout suite passed
+all 20 tests, and independent review approved the change.
+
+The production compositor rebuilt successfully with default features disabled.
+A frozen three-binary payload produced a local Fedora ARM64 RPM with SHA-256
+`800f97c97998b992f67f16396d9546c3e06d8432e1430c5fdd1d8e2bc8036d9f`.
+A guarded, explicitly test-only same-version reinstall updated the disposable
+proof clone. This is runtime-artifact proof, not another execution of the
+production initial-install helper. Installed shell SHA-256 is
+`4dc4c892ac5e5b67401c495eda68cfa2eccb0b32ff027bf97c4f44aee0b5b4eb`;
+`rpm -V qos-session` passed, and existing desktop/default files and signing keys
+were unchanged.
+
+Actual GDM login now finds one live DRM output and renders the qOS identity
+setup screen. Selecting GNOME again renders its normal desktop. Both screens
+were captured and visually inspected. The fixture's original GDM configuration
+was restored byte-for-byte afterward; the original user was not modified.
+This resolves the earlier zero-output startup blocker for this exact guest.
+
+Limits remain: the local RPM is unsigned; identity creation and selected-folder
+import were not completed. DNF reported transient systemd-trigger connection
+warnings, and qOS logged one initial buffer-fence timeout before the observed
+successful render. Neither is hidden as a pristine-run claim. Final first-login
+migration, packaged import delivery and broader distro/architecture evidence
+still require the remaining Desktop tasks.
