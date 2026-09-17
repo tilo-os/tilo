@@ -19,7 +19,7 @@ consequences are concrete, and all three are current behaviour:
   the identical `(dev.tilo.word-processor, room)` pair and merge each other's
   whole document state.
 - Opening a second PDF **deletes your annotations on the first**
-  (`apps/pdf_viewer/src/doc.rs`, commented there as a known cost — annotations
+  (`apps/pdf-viewer/src/doc.rs`, commented there as a known cost — annotations
   are keyed by page number, which only means something for one file).
 - "Share this document" is not expressible. Only "share this app in this
   workspace" is.
@@ -87,7 +87,7 @@ question that otherwise gets answered inconsistently once per app.
 ## What this fixes
 
 - Per-document collaboration, rather than per-app.
-- The pdf_viewer annotation loss, structurally — annotations reference a
+- The pdf-viewer annotation loss, structurally — annotations reference a
   document record, so a second document cannot clobber the first's.
 - "Share one file with someone who is not a collaborator": put that record in a
   room they are in, or make a room containing only it.
