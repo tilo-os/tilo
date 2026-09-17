@@ -1,16 +1,55 @@
 # Native shared-runtime MCP host
 
-`qos-runtime-mcp` exposes the action directories of runtime-managed qOS apps on
-one newline-delimited MCP stdio connection. It starts the production identity
-and collaboration brokers through `runtime_host::Session`, then launches the
-user-selected executables with the same inherited service descriptors as the
-shared-runtime proof. Individual apps contain no MCP registration hook.
+`qos-runtime-mcp` exposes the action directories of native qOS apps on one
+newline-delimited MCP stdio connection. A normal framework GUI launch joins the
+same per-user runtime automatically. The first app starts the background daemon;
+later apps and MCP clients reuse it. Individual apps need no manifest, service
+descriptor setup, MCP registration hook, or app-specific routing.
 
 Build the host on macOS or Linux:
 
 ```sh
 cargo build -p shell --bin qos-runtime-mcp --no-default-features
 ```
+
+In an installed layout, app startup finds the sibling `qos-runtime-mcp` binary,
+then falls back to `PATH`. In a source checkout, the first ordinary `cargo run`
+can bootstrap a missing host with a bounded, serialized Cargo build using the
+checkout's normal Cargo cache, network, target directory, and explicit offline
+settings. Set `QOS_RUNTIME_BINARY` only when packaging or testing must select a
+specific absolute host binary. Startup errors are printed instead of silently
+running an app disconnected.
+
+Without configuration, the persistent profile is
+`$HOME/Library/Application Support/qOS/runtime` on macOS and
+`$HOME/.local/state/qos/runtime` on other Unix systems. An absolute
+`QOS_RUNTIME_PROFILE` selects another profile, which is useful for isolated
+development runs. The daemon owns the profile independently of every app and
+MCP client: closing one app or one MCP connection does not stop the daemon or
+the other apps. Only one daemon may own a profile, and private-directory and
+socket checks reject unsafe or competing owners.
+
+## Assistant connection
+
+Automatic app joining does not install or silently configure an assistant.
+Point the assistant at the existing host with `--connect` and the same profile:
+
+```json
+{
+  "mcpServers": {
+    "qos-runtime": {
+      "command": "/absolute/path/to/qos-runtime-mcp",
+      "args": ["--profile", "/absolute/path/to/persistent-profile", "--connect"]
+    }
+  }
+}
+```
+
+The first ordinary app may start the daemon before the assistant connects. A
+`--connect` client can also start it when no app is running. Stdio EOF ends only
+that proxy connection.
+
+## Explicit manifest mode
 
 Choose a short absolute profile path and create an app manifest at an absolute
 path. Unix socket pathname limits also apply to the profile’s `collab.sock` and
@@ -36,7 +75,7 @@ app ids intentionally create separate live instances:
 }
 ```
 
-One MCP client configuration shape is:
+The original explicit launcher remains available for controlled workflows:
 
 ```json
 {
@@ -52,13 +91,10 @@ One MCP client configuration shape is:
 }
 ```
 
-The profile holds workspace configuration, identity material, app data, MLS
-state, cache, shared blobs and per-instance app logs. Only one host may own a
-profile at a time. Contention is reported as an error; the host does not remove
-another process's lock or sockets. EOF, output failure, app launch failure, or
-an unexpected app exit ends the connection and reaps only children started by
-that host. App stdin is null and app stdout/stderr go to instance-indexed log
-files, so only JSON-RPC replies appear on MCP stdout. Request lines are limited
+Manifest mode owns the processes it launches. EOF, output failure, app launch
+failure, or an unexpected child exit ends that manifest session and reaps only
+its children. App stdin is null and app stdout/stderr go to instance-indexed
+logs, so only JSON-RPC replies appear on MCP stdout. Request lines are limited
 to 1 MiB and the pending input queue is bounded.
 
 ## Discovery and invocation
@@ -79,11 +115,13 @@ arguments to a freshly discovered action in another app. The runtime contains
 no Photos/Writer workflow branch and never treats `Accepted` as `Succeeded` or
 replays a mutation automatically.
 
-App publication is automatic only for apps launched from this manifest. A
-normal `ui::App` connects through its inherited collaboration and identity
-descriptors and publishes its current lazy directory. An app started directly
-from Finder, Cargo, or another process manager has no descriptors for this
-session and does not attach automatically.
+A normal `ui::App` automatically obtains collaboration and identity
+connections from the shared runtime and publishes its current lazy directory.
+Existing qOS or legacy inherited connections remain authoritative and are not
+replaced by another profile. Complete malformed inherited transfers fail
+closed. Diagnostic, audit, shot, headless, and handled-command launches remain
+detached, and an app may explicitly opt a private/local mode out before live
+construction.
 
 ## Authority and scope
 
@@ -94,72 +132,52 @@ authority and current-instance checks. Actions requiring confirmation are
 refused because this stdio host has no real approval ceremony; a caller boolean
 cannot manufacture broker admission.
 
-The concrete launcher uses Unix descriptor inheritance and is currently for
-macOS and Linux. Windows host transport and process inheritance remain
-unqualified. The repository-wide source audit found that all 47 inventoried GUI
-entry points reach the shared production `ui::App` publication path, including
-six custom live handlers. That is source coverage, not native execution proof
-for all 47 apps. The headless Agent is a consumer rather than a GUI publisher.
+The concrete launcher uses Unix sockets, process execution, and descriptor
+inheritance and is currently qualified for macOS and Linux. Windows host
+transport and inheritance remain unsupported. The repository-wide source audit
+found that all 47 inventoried GUI entry points reach the shared production
+`ui::App` publication path, including custom live handlers. That source audit
+is not native execution proof for all 47 apps. The headless Agent is a consumer
+rather than a GUI publisher.
 
-Building or running this binary does not install or configure an MCP client,
-change an account, enable a cloud relay, or add remote federation. Client setup
-and the app manifest remain explicit user configuration.
+Building or running this binary does not configure an MCP client, change an
+account, enable a cloud relay, or add remote federation. Assistant setup remains
+explicit. `QOS_RUNTIME_STANDALONE=1` is a deliberate test/diagnostic opt-out
+when no inherited qOS connection exists; it is not the ordinary default.
 
 ## Native acceptance proof
 
-Build the host, three apps and test-only evidence inspector, then run:
+Build the host, then run the ordinary-launch proof:
 
 ```sh
-cargo build -p shell --bin qos-runtime-mcp --example runtime-mcp-inspect \
-  -p photos --bin photos -p word-processor --bin word-processor \
-  -p calculator --bin calculator --no-default-features
-python3 scripts/runtime-mcp-proof.py --output /absolute/path/to/new-evidence
+cargo build -p shell --bin qos-runtime-mcp --no-default-features
+python3 scripts/runtime-auto-attach-proof.py \
+  --host-source-snapshot /absolute/path/to/host-build-source-hashes.json \
+  --output /absolute/path/to/new-evidence
 ```
 
-This opens real Photos, Writer and Calculator windows. The runner copies the
-executables into the evidence directory and records their SHA256 hashes before
-and after execution. It uses a separate short private temporary profile for the
-Unix sockets, retaining logs and public workspace evidence without copying the
-profile's private identity material.
+The runner opens Writer, Files, and Photos with literal ordinary `cargo run`
+commands, waits for the first app to start the daemon, and only then opens an
+explicit `--connect` proxy. Calculator starts late through its own ordinary
+`cargo run`, demonstrating generic joining rather than a three-app allowlist.
+The runner requires four distinct peer registrations, invokes Calculator's
+declared `add-function` through MCP, and polls its canonical status to
+`succeeded`. It then closes Writer and requires Files, Photos, Calculator, the
+daemon, and MCP client to remain live.
 
-Every crop, export, image insertion and Calculator mutation is an external MCP
-`tools/call`. Discovery is refreshed between operations, and accepted invocations
-are observed to a terminal result without replay. Read-only discovery may retry
-an explicitly stale revision. The fixture is a patterned 48×32 PNG; the centered
-square crop is checked against source pixels `(x + 8, y)` in every RGBA channel.
-The exported BLAKE3 content resource is converted using `qos_actions::content_hash`
-and passed to Writer's freshly discovered `place-image` action.
+Evidence includes exact commands, relevant source hashes before and after the
+run, executable hashes, actual app/runtime/MCP PIDs, the complete MCP transcript,
+terminal action output, app logs, and exact-PID cleanup. App data and runtime
+authority use separate isolated directories. `proof.json` appears only after
+the proxy exits cleanly and every known PID is absent; failed attempts retain
+`failure.txt` instead.
 
-A test-only observer is launched through the same manifest with Writer's app
-identity and ordinary authenticated SDK subscription. It publishes no directory
-and sends no document or action mutation. A bounded readiness wrapper starts
-real Writer after subscription; the inspector independently checks the signed
-envelopes' signatures and exact app/workspace/empty-record route, reconstructs
-Automerge, and verifies the image block's exported hash and dimensions. Native
-untitled Writer does not have a persistent record id, so the proof does not
-invent one or bypass the confirmation required for `save-as`.
-
-The proof also invokes Calculator's declared `add-function` operation and
-checks fresh graph-resource discovery. Negative evidence distinguishes malformed
-typed arguments, an explicitly stale revision, and an unavailable instance id;
-the last is not a previously connected peer-disconnect test. Retained evidence
-includes the transcript, terminal outputs, source/result images, signed events,
-reconstructed document, logs, binary provenance and exact owned-PID cleanup.
-`proof.json` appears only after all checks and shutdown succeed; failed attempts
-retain `failure.txt` instead. This is three-app macOS behavioral evidence when
-run successfully, separate from the 47-app source audit, and does not qualify
-Windows or install an external ChatGPT/Claude client.
-
-Verified on macOS on 2026-09-17: the retained run at
-`target/runtime-proof/mcp-native9/proof.json` passed crop → export → Writer,
-checked all 1,024 result pixels, and reconstructed the Writer image block from
-two verified signed envelopes. The actual exported BLAKE3 hash was
-`9efff46c8f9248809cb22f7ad61bcb71bf5fa54995d2e67af8342f70aceb739e`;
-Writer referenced that same hash with width and height 32. Calculator's fresh
-`calculator.graph` resource contained `sin(x) + 0.314159`. All four workflow
-invocations reached `succeeded`; malformed arguments reached `failed`, and the
-stale revision and unavailable instance were refused. The host exited zero,
-all five known process IDs were absent after cleanup, and retained binary hashes
-were unchanged. The Mac was locked: this verifies background native behavior,
-content and signed document state, not visible presentation or frame rate.
-Earlier failed attempts remain alongside this run and are not passing evidence.
+Verified on macOS on 2026-09-17 at
+`target/runtime-proof/runtime-auto-attach/native-3/proof.json`: Writer, Files,
+Photos, and late Calculator registered as peers 1–4 in daemon PID 28409;
+Calculator invocation 1 reached `succeeded`; after Writer PID 28361 exited, the
+other three registrations, daemon, and MCP PID 28548 remained live. Cleanup
+confirmed all six known PIDs absent. The relevant source snapshot was unchanged
+and exact binary hashes are retained with the run. This qualifies native shared
+runtime behavior, not visible frames, performance, Photos History acceptance,
+all 47 apps, or Windows.
