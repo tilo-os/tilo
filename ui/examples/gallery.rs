@@ -17,6 +17,8 @@ fn build_gallery(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
 }
 
 pub fn run(_args: &[String]) {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     ui::i18n::I18nManager::init("en-US");
 
     let mut state = State::new();
@@ -25,7 +27,7 @@ pub fn run(_args: &[String]) {
     // correct light render).
     let root_widget = build_gallery(&mut state, &Theme::dark());
 
-    let app = App::new(state, root_widget);
+    let app = App::from_scoped_parts(wake_scope, state, root_widget);
     app.run();
 }
 

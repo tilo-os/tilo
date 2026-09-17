@@ -34,10 +34,14 @@
 
 pub mod actions;
 pub mod app;
+pub mod component;
+pub use component::definition;
 pub mod doc;
+pub mod legacy_import;
 pub mod main_panel;
 pub mod markdown;
 pub mod model;
+pub mod notebook;
 pub use ui::num;
 pub mod search_provider;
 pub mod shortcuts_overlay;
@@ -52,3 +56,8 @@ pub use main_panel::MainPanel;
 pub use model::{PageId, PageMeta, Workspace, WorkspaceData};
 pub use shortcuts_overlay::ShortcutsOverlay;
 pub use status_bar::{StatusBarState, StatusModel};
+
+#[cfg(test)]
+extern crate self as notes;
+
+pub mod local_view;

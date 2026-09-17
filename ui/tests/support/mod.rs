@@ -282,3 +282,5 @@ pub fn headless_app(_user: &str, _peer: Peer) -> (App, State) {
     let state2 = State::new();
     (app, state2)
 }
+
+pub mod application;

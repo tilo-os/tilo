@@ -45,7 +45,15 @@ pub struct Text {
     /// An explicit size can follow the accessibility text multiplier without
     /// changing its visual hierarchy at the default scale.
     scales_with_theme: bool,
+    /// The explicit size is already a final logical-pixel size and therefore
+    /// cancels the renderer's accessibility multiplier.
+    has_fixed_size: bool,
     explicit_base_size: f32,
+    /// Sanitized Theme factor that produced any effective size in `style`.
+    /// `measure` has no Theme parameter, so build/draw retain it here.
+    observed_theme_text_scale: f32,
+    /// Renderer scale used for the retained measurement and glyph scene.
+    observed_renderer_text_scale: f32,
     heading_level: Option<u8>,
     /// Announce changes to this text without moving keyboard focus. Static
     /// copy leaves this unset; status and error text opt in explicitly.
@@ -89,7 +97,10 @@ impl Text {
             semantic_role: None,
             follows_role_style: false,
             scales_with_theme: false,
+            has_fixed_size: false,
             explicit_base_size: 16.0,
+            observed_theme_text_scale: 1.0,
+            observed_renderer_text_scale: 1.0,
             heading_level: None,
             live: None,
             layout_engine: None,
@@ -213,10 +224,13 @@ impl Text {
         }
     }
 
+    /// Set a renderer-relative base size. The shared renderer applies its
+    /// accessibility multiplier to this size during measurement and drawing.
     #[must_use]
     pub fn with_size(mut self, size: f32) -> Self {
         self.use_explicit_style();
         self.scales_with_theme = false;
+        self.has_fixed_size = false;
         self.explicit_base_size = size;
         self.style.size = size;
         self.dirty = true;
@@ -226,11 +240,14 @@ impl Text {
 
     /// Sets an explicit size that follows the active accessibility text scale.
     /// Use this for application hierarchy with a deliberate base size that
-    /// still needs to respect the person's large-text preference.
+    /// still needs to respect the person's large-text preference. `Text`
+    /// reconciles this resolved logical size with the renderer so the theme
+    /// multiplier is applied exactly once even when their scales differ.
     #[must_use]
     pub fn with_scaled_size(mut self, size: f32) -> Self {
         self.use_explicit_style();
         self.scales_with_theme = true;
+        self.has_fixed_size = false;
         self.explicit_base_size = size;
         self.style.size = size;
         self.dirty = true;
@@ -238,14 +255,34 @@ impl Text {
         self
     }
 
-    /// Apply a complete style in one operation. Measurement and painting use
-    /// this same value, so leading, weight, face, and italic cannot drift.
+    /// Apply a complete renderer-relative style in one operation. The shared
+    /// renderer applies its accessibility multiplier to the size and letter
+    /// spacing; measurement and painting use the same resulting metrics.
     #[must_use]
     pub fn with_style(mut self, style: TextStyle) -> Self {
         self.use_explicit_style();
         self.scales_with_theme = false;
+        self.has_fixed_size = false;
         self.explicit_base_size = style.size;
         self.style = style;
+        self.dirty = true;
+        self.layout_dirty = true;
+        self
+    }
+
+    /// Set an exact logical font size that does not follow either the theme or
+    /// renderer accessibility multiplier.
+    ///
+    /// This opts out of a preceding semantic role's visual typography while
+    /// retaining its accessibility semantics. Letter spacing remains
+    /// renderer-relative, matching [`Self::with_size`] and [`Self::with_style`].
+    #[must_use]
+    pub fn with_fixed_size(mut self, size: f32) -> Self {
+        self.use_explicit_style();
+        self.scales_with_theme = false;
+        self.has_fixed_size = true;
+        self.explicit_base_size = size;
+        self.style.size = size;
         self.dirty = true;
         self.layout_dirty = true;
         self
@@ -305,6 +342,7 @@ impl Text {
         self.semantic_role = Some(role);
         self.follows_role_style = true;
         self.scales_with_theme = false;
+        self.has_fixed_size = false;
         let style = Theme::default().tokens.typography.style(role);
         self.style = self.merged_semantic_style(&style);
         self.dirty = true;
@@ -326,10 +364,41 @@ impl Text {
         resolved
     }
 
+    fn sanitized_theme_text_scale(theme: &Theme) -> f32 {
+        if theme.text_scale.is_finite() {
+            theme.text_scale.clamp(0.5, 4.0)
+        } else {
+            1.0
+        }
+    }
+
+    fn renderer_input_style(&self, renderer: &TextRenderer) -> TextStyle {
+        let mut style = self.style.clone();
+        if self.follows_role_style || self.scales_with_theme || self.has_fixed_size {
+            style.size /= renderer.text_scale();
+        }
+        style
+    }
+
+    fn observe_renderer_text_scale(&mut self, renderer: &TextRenderer) {
+        let scale = renderer.text_scale();
+        if self.observed_renderer_text_scale.to_bits() != scale.to_bits() {
+            self.observed_renderer_text_scale = scale;
+            self.dirty = true;
+            self.layout_dirty = true;
+        }
+    }
+
     fn observe_theme_role(&mut self, theme: &Theme) {
+        let text_scale = Self::sanitized_theme_text_scale(theme);
+        if self.observed_theme_text_scale.to_bits() != text_scale.to_bits() {
+            self.observed_theme_text_scale = text_scale;
+            self.dirty = true;
+            self.layout_dirty = true;
+        }
         if !self.follows_role_style {
             if self.scales_with_theme {
-                let size = self.explicit_base_size * theme.text_scale;
+                let size = self.explicit_base_size * text_scale;
                 if (self.style.size - size).abs() > f32::EPSILON {
                     self.style.size = size;
                     self.dirty = true;
@@ -665,6 +734,7 @@ impl Widget for Text {
     ) -> taffy::Size<f32> {
         self.observe_i18n_revision();
         self.observe_engine_revision();
+        self.observe_renderer_text_scale(text_renderer);
         let label = self.resolved_label();
 
         let max_w = if let Some(w) = known_dimensions.width {
@@ -689,10 +759,11 @@ impl Widget for Text {
             max_width: max_w,
             max_height: max_h,
         };
+        let renderer_style = self.renderer_input_style(text_renderer);
         let (w, h) = if let Some(engine) = self.layout_engine.as_deref_mut() {
-            engine.measure(text_renderer, &label, constraints, &self.style)
+            engine.measure(text_renderer, &label, constraints, &renderer_style)
         } else {
-            text_renderer.measure_style(&label, max_w, &self.style)
+            text_renderer.measure_style(&label, max_w, &renderer_style)
         };
 
         // Tiny epsilon on width so rounding in Row/Column doesn't read the
@@ -737,6 +808,7 @@ impl Widget for Text {
         self.observe_theme_role(theme);
         self.observe_i18n_revision();
         self.observe_engine_revision();
+        self.observe_renderer_text_scale(text_renderer);
         if self.dirty || self.cache_rect == vello::kurbo::Rect::ZERO {
             self.cached.reset();
             let label = self.resolved_label();
@@ -761,13 +833,14 @@ impl Widget for Text {
                 )]
                 max_height: Some(self.rect.height() as f32),
             };
+            let renderer_style = self.renderer_input_style(text_renderer);
             if let Some(engine) = self.layout_engine.as_deref_mut() {
                 engine.draw(
                     text_renderer,
                     &mut self.cached,
                     &label,
                     constraints,
-                    &self.style,
+                    &renderer_style,
                     color,
                     origin,
                 );
@@ -778,7 +851,7 @@ impl Widget for Text {
                     color,
                     origin,
                     constraints.max_width,
-                    &self.style,
+                    &renderer_style,
                 );
             }
             self.cache_rect = self.rect;
@@ -963,6 +1036,100 @@ mod tests {
         }
     }
 
+    fn assert_close(actual: f32, expected: f32, context: &str) {
+        assert!(
+            (actual - expected).abs() < 0.001,
+            "{context}: expected {expected}, got {actual}",
+        );
+    }
+
+    fn build_measure_draw(
+        text: &mut Text,
+        theme: &Theme,
+        renderer: &mut TextRenderer,
+    ) -> (taffy::Size<f32>, Scene) {
+        let mut taffy = TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        let _node = Widget::build_layout(text, &mut taffy, theme, &mut nodes);
+        let measured = Widget::measure(
+            text,
+            taffy::Size {
+                width: None,
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::MaxContent,
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            renderer,
+        );
+        text.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 800.0, 200.0));
+        let mut scene = Scene::new();
+        Widget::draw(
+            text,
+            &mut scene,
+            Affine::IDENTITY,
+            renderer,
+            theme,
+            &crate::presence::PresenceCtx::empty(),
+        );
+        (measured, scene)
+    }
+
+    fn assert_scene_font_size(scene: &Scene, expected: f32, context: &str) {
+        let runs = &scene.encoding().resources.glyph_runs;
+        assert!(
+            !runs.is_empty(),
+            "{context}: real draw emitted no glyph runs"
+        );
+        for run in runs {
+            assert_close(run.font_size, expected, context);
+            assert!(!run.glyphs.is_empty(), "{context}: emitted an empty run");
+        }
+    }
+
+    fn second_glyph_x(scene: &Scene) -> f32 {
+        let resources = &scene.encoding().resources;
+        let run = resources
+            .glyph_runs
+            .first()
+            .expect("one controlled Latin run");
+        assert!(run.glyphs.len() >= 2, "AA must emit two glyphs");
+        resources.glyphs[run.glyphs.start.saturating_add(1)].x
+    }
+
+    struct DelegatingEngine {
+        measured: std::rc::Rc<std::cell::RefCell<Vec<TextStyle>>>,
+        drawn: std::rc::Rc<std::cell::RefCell<Vec<TextStyle>>>,
+    }
+
+    impl TextLayoutEngine for DelegatingEngine {
+        fn measure(
+            &mut self,
+            renderer: &mut TextRenderer,
+            text: &str,
+            constraints: TextLayoutConstraints,
+            style: &TextStyle,
+        ) -> (f32, f32) {
+            self.measured.borrow_mut().push(style.clone());
+            renderer.measure_style(text, constraints.max_width, style)
+        }
+
+        fn draw(
+            &mut self,
+            renderer: &mut TextRenderer,
+            scene: &mut Scene,
+            text: &str,
+            constraints: TextLayoutConstraints,
+            style: &TextStyle,
+            color: vello::peniko::Color,
+            transform: Affine,
+        ) {
+            self.drawn.borrow_mut().push(style.clone());
+            renderer.draw_style(scene, text, color, transform, constraints.max_width, style);
+        }
+    }
+
     #[test]
     fn custom_layout_engine_keeps_text_widget_lifecycle() {
         let measures = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -973,7 +1140,7 @@ mod tests {
             draws: std::rc::Rc::clone(&draws),
             revision: std::rc::Rc::clone(&revision),
         });
-        let mut renderer = TextRenderer::new();
+        let mut renderer = crate::font_catalog::fixture_renderer();
         let size = Widget::measure(
             &mut text,
             taffy::Size {
@@ -1013,6 +1180,342 @@ mod tests {
         Widget::sync(&mut text, &mut document, &automerge::ROOT);
         assert!(Widget::needs_redraw(&text));
         assert!(Widget::is_layout_dirty(&text));
+    }
+
+    #[test]
+    fn theme_baked_sizes_reach_default_widget_draw_exactly_once() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut role_renderer = crate::font_catalog::fixture_renderer();
+            role_renderer.set_text_scale(scale);
+            let mut role = Text::new("Scale probe").with_role(TextRole::Body);
+            let (role_measure, role_scene) =
+                build_measure_draw(&mut role, &theme, &mut role_renderer);
+            assert_close(role.text_style().size, 14.0 * scale, "effective role style");
+            assert_close(role_measure.height, 14.0 * 1.4 * scale, "role measure");
+            assert_scene_font_size(&role_scene, 14.0 * scale, "role draw");
+
+            let mut scaled_renderer = crate::font_catalog::fixture_renderer();
+            scaled_renderer.set_text_scale(scale);
+            let mut scaled = Text::new("Scale probe").with_scaled_size(16.0);
+            let (scaled_measure, scaled_scene) =
+                build_measure_draw(&mut scaled, &theme, &mut scaled_renderer);
+            assert_close(
+                scaled.text_style().size,
+                16.0 * scale,
+                "effective explicit style",
+            );
+            assert_close(scaled_measure.height, 16.0 * 1.25 * scale, "scaled measure");
+            assert_scene_font_size(&scaled_scene, 16.0 * scale, "scaled draw");
+        }
+    }
+
+    #[test]
+    fn theme_resolved_sizes_are_independent_of_renderer_scale() {
+        for (theme_scale, renderer_scale) in [(1.0, 2.0), (1.25, 1.5), (1.5, 1.25), (2.0, 1.0)] {
+            let theme = Theme::dark().with_text_scale(theme_scale);
+
+            let mut role_renderer = crate::font_catalog::fixture_renderer();
+            role_renderer.set_text_scale(renderer_scale);
+            let mut role = Text::new("Role mismatch").with_role(TextRole::Body);
+            let (role_measure, role_scene) =
+                build_measure_draw(&mut role, &theme, &mut role_renderer);
+            assert_close(
+                role_measure.height,
+                14.0 * 1.4 * theme_scale,
+                "role mismatch measure",
+            );
+            assert_scene_font_size(&role_scene, 14.0 * theme_scale, "role mismatch draw");
+
+            let mut scaled_renderer = crate::font_catalog::fixture_renderer();
+            scaled_renderer.set_text_scale(renderer_scale);
+            let mut scaled = Text::new("Explicit mismatch").with_scaled_size(14.0);
+            let (scaled_measure, scaled_scene) =
+                build_measure_draw(&mut scaled, &theme, &mut scaled_renderer);
+            assert_close(
+                scaled_measure.height,
+                14.0 * 1.25 * theme_scale,
+                "explicit mismatch measure",
+            );
+            assert_scene_font_size(&scaled_scene, 14.0 * theme_scale, "explicit mismatch draw");
+        }
+    }
+
+    #[test]
+    fn fixed_size_is_independent_of_theme_and_renderer_scales() {
+        for (theme_scale, renderer_scale) in [(1.0, 2.0), (1.25, 1.5), (1.5, 1.25), (2.0, 1.0)] {
+            let theme = Theme::dark().with_text_scale(theme_scale);
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            renderer.set_text_scale(renderer_scale);
+            let mut fixed = Text::new("Fixed logical size").with_fixed_size(19.0);
+            let (measured, scene) = build_measure_draw(&mut fixed, &theme, &mut renderer);
+            assert_close(measured.height, 19.0 * 1.25, "fixed measure");
+            assert_scene_font_size(&scene, 19.0, "fixed draw");
+        }
+    }
+
+    #[test]
+    fn later_size_modifier_takes_ownership() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let cases = [
+            (
+                Text::new("role then fixed")
+                    .with_role(TextRole::Body)
+                    .with_fixed_size(19.0),
+                19.0,
+            ),
+            (
+                Text::new("fixed then role")
+                    .with_fixed_size(19.0)
+                    .with_role(TextRole::Body),
+                28.0,
+            ),
+            (
+                Text::new("fixed then scaled")
+                    .with_fixed_size(19.0)
+                    .with_scaled_size(10.0),
+                20.0,
+            ),
+            (
+                Text::new("scaled then fixed")
+                    .with_scaled_size(10.0)
+                    .with_fixed_size(19.0),
+                19.0,
+            ),
+            (
+                Text::new("fixed then base")
+                    .with_fixed_size(19.0)
+                    .with_size(10.0),
+                12.5,
+            ),
+            (
+                Text::new("base then fixed")
+                    .with_size(10.0)
+                    .with_fixed_size(19.0),
+                19.0,
+            ),
+            (
+                Text::new("fixed then style")
+                    .with_fixed_size(19.0)
+                    .with_style(TextStyle::new(11.0)),
+                13.75,
+            ),
+            (
+                Text::new("style then fixed")
+                    .with_style(TextStyle::new(11.0))
+                    .with_fixed_size(19.0),
+                19.0,
+            ),
+        ];
+
+        for (mut text, expected) in cases {
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            renderer.set_text_scale(1.25);
+            let (_, scene) = build_measure_draw(&mut text, &theme, &mut renderer);
+            assert_scene_font_size(&scene, expected, "later size modifier");
+        }
+    }
+
+    #[test]
+    fn fixed_font_size_keeps_letter_spacing_renderer_relative() {
+        let theme = Theme::dark().with_text_scale(1.5);
+        let mut plain_renderer = crate::font_catalog::fixture_renderer();
+        plain_renderer.set_text_scale(2.0);
+        let mut plain = Text::new("AA").with_fixed_size(19.0);
+        let (_, plain_scene) = build_measure_draw(&mut plain, &theme, &mut plain_renderer);
+
+        let mut spaced_renderer = crate::font_catalog::fixture_renderer();
+        spaced_renderer.set_text_scale(2.0);
+        let mut spaced = Text::new("AA")
+            .with_fixed_size(19.0)
+            .with_letter_spacing(2.0);
+        let (_, spaced_scene) = build_measure_draw(&mut spaced, &theme, &mut spaced_renderer);
+
+        assert_scene_font_size(&plain_scene, 19.0, "fixed plain font size");
+        assert_scene_font_size(&spaced_scene, 19.0, "fixed spaced font size");
+        assert_close(
+            second_glyph_x(&spaced_scene) - second_glyph_x(&plain_scene),
+            4.0,
+            "fixed renderer-owned letter spacing",
+        );
+    }
+
+    #[test]
+    fn pluggable_engine_receives_base_font_size_and_delegates_real_runs() {
+        for (theme_scale, renderer_scale) in [(1.0, 2.0), (1.25, 1.5), (1.5, 1.25), (2.0, 1.0)] {
+            let measured = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let drawn = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut text = Text::new("Scale probe")
+                .with_role(TextRole::Body)
+                .with_letter_spacing(2.0)
+                .with_layout_engine(DelegatingEngine {
+                    measured: std::rc::Rc::clone(&measured),
+                    drawn: std::rc::Rc::clone(&drawn),
+                });
+            let theme = Theme::dark().with_text_scale(theme_scale);
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            renderer.set_text_scale(renderer_scale);
+            let (size, scene) = build_measure_draw(&mut text, &theme, &mut renderer);
+            assert_close(size.height, 14.0 * 1.4 * theme_scale, "engine measure");
+            assert_scene_font_size(&scene, 14.0 * theme_scale, "engine draw");
+            let measured_styles = measured.borrow();
+            let drawn_styles = drawn.borrow();
+            for style in measured_styles.iter().chain(drawn_styles.iter()) {
+                assert_close(
+                    style.size,
+                    14.0 * theme_scale / renderer_scale,
+                    "engine renderer-input size",
+                );
+                assert_close(style.letter_spacing, 2.0, "engine letter spacing");
+            }
+            assert_eq!(measured_styles.len(), 1);
+            assert_eq!(drawn_styles.len(), 1);
+        }
+    }
+
+    #[test]
+    fn pluggable_engine_preserves_base_and_fixed_size_ownership() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        for (mut text, expected_input, expected_draw) in [
+            (
+                Text::new("Base engine")
+                    .with_style(TextStyle::new(18.0))
+                    .with_letter_spacing(2.0),
+                18.0,
+                27.0,
+            ),
+            (
+                Text::new("Fixed engine")
+                    .with_fixed_size(19.0)
+                    .with_letter_spacing(2.0),
+                19.0 / 1.5,
+                19.0,
+            ),
+        ] {
+            let measured = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let drawn = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            text = text.with_layout_engine(DelegatingEngine {
+                measured: std::rc::Rc::clone(&measured),
+                drawn: std::rc::Rc::clone(&drawn),
+            });
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            renderer.set_text_scale(1.5);
+            let (_, scene) = build_measure_draw(&mut text, &theme, &mut renderer);
+            assert_scene_font_size(&scene, expected_draw, "engine owned draw");
+            let measured_styles = measured.borrow();
+            let drawn_styles = drawn.borrow();
+            assert_eq!(measured_styles.len(), 1);
+            assert_eq!(drawn_styles.len(), 1);
+            for style in measured_styles.iter().chain(drawn_styles.iter()) {
+                assert_close(style.size, expected_input, "engine owned input");
+                assert_close(style.letter_spacing, 2.0, "engine owned spacing");
+            }
+        }
+    }
+
+    #[test]
+    fn base_sizes_and_letter_spacing_remain_renderer_owned() {
+        for (theme_scale, renderer_scale) in [(1.0, 2.0), (1.25, 1.5), (1.5, 1.25), (2.0, 1.0)] {
+            let theme = Theme::dark().with_text_scale(theme_scale);
+            let mut plain_renderer = crate::font_catalog::fixture_renderer();
+            plain_renderer.set_text_scale(renderer_scale);
+            let mut plain = Text::new("AA").with_size(18.0);
+            let (plain_measure, plain_scene) =
+                build_measure_draw(&mut plain, &theme, &mut plain_renderer);
+
+            let mut spaced_renderer = crate::font_catalog::fixture_renderer();
+            spaced_renderer.set_text_scale(renderer_scale);
+            let mut spaced = Text::new("AA").with_size(18.0).with_letter_spacing(2.0);
+            let (spaced_measure, spaced_scene) =
+                build_measure_draw(&mut spaced, &theme, &mut spaced_renderer);
+            assert_scene_font_size(&plain_scene, 18.0 * renderer_scale, "base draw");
+            assert_scene_font_size(&spaced_scene, 18.0 * renderer_scale, "spaced base draw");
+            assert_close(
+                plain_measure.height,
+                18.0 * 1.25 * renderer_scale,
+                "base measure",
+            );
+            assert_close(
+                spaced_measure.height,
+                plain_measure.height,
+                "spacing height control",
+            );
+            assert_close(
+                second_glyph_x(&spaced_scene) - second_glyph_x(&plain_scene),
+                2.0 * renderer_scale,
+                "letter spacing is scaled once",
+            );
+        }
+    }
+
+    #[test]
+    fn observed_theme_scale_invalidates_role_and_base_caches() {
+        let initial = Theme::dark();
+        let scaled = Theme::dark().with_text_scale(2.0);
+        let mut role = Text::new("Scale probe")
+            .with_role(TextRole::Body)
+            .with_letter_spacing(2.0);
+        let mut role_renderer = crate::font_catalog::fixture_renderer();
+        let _ = build_measure_draw(&mut role, &initial, &mut role_renderer);
+        Widget::mark_drawn(&mut role);
+        role_renderer.set_text_scale(2.0);
+        let (role_measure, role_scene) = build_measure_draw(&mut role, &scaled, &mut role_renderer);
+        assert!(Widget::needs_redraw(&role));
+        assert!(Widget::is_layout_dirty(&role));
+        assert_close(role.text_style().size, 28.0, "public effective style");
+        assert_close(role.text_style().letter_spacing, 2.0, "modifier preserved");
+        assert_close(role_measure.height, 28.0 * 1.4, "role remeasure");
+        assert_scene_font_size(&role_scene, 28.0, "role cache redraw");
+
+        let mut base = Text::new("Base cache").with_size(18.0);
+        let mut base_renderer = crate::font_catalog::fixture_renderer();
+        let _ = build_measure_draw(&mut base, &initial, &mut base_renderer);
+        Widget::mark_drawn(&mut base);
+        base_renderer.set_text_scale(2.0);
+        let (base_measure, base_scene) = build_measure_draw(&mut base, &scaled, &mut base_renderer);
+        assert!(Widget::needs_redraw(&base));
+        assert!(Widget::is_layout_dirty(&base));
+        assert_close(base.text_style().size, 18.0, "public base style");
+        assert_close(base_measure.height, 45.0, "base remeasure");
+        assert_scene_font_size(&base_scene, 36.0, "base cache redraw");
+    }
+
+    #[test]
+    fn renderer_scale_change_invalidates_a_retained_base_size_cache() {
+        let theme = Theme::dark();
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        let mut text = Text::new("Retained renderer scale").with_size(18.0);
+        let (_, initial_scene) = build_measure_draw(&mut text, &theme, &mut renderer);
+        assert_scene_font_size(&initial_scene, 18.0, "initial base draw");
+        Widget::mark_drawn(&mut text);
+
+        renderer.set_text_scale(2.0);
+        let mut scaled_scene = Scene::new();
+        Widget::draw(
+            &mut text,
+            &mut scaled_scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &theme,
+            &crate::presence::PresenceCtx::empty(),
+        );
+        assert!(Widget::needs_redraw(&text));
+        assert!(Widget::is_layout_dirty(&text));
+        assert_scene_font_size(&scaled_scene, 36.0, "retained base redraw");
+
+        let scaled_measure = Widget::measure(
+            &mut text,
+            taffy::Size {
+                width: None,
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::MaxContent,
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut renderer,
+        );
+        assert_close(scaled_measure.height, 45.0, "retained base remeasure");
     }
 
     #[test]
@@ -1327,8 +1830,14 @@ mod tests {
             .push(Box::new(
                 Button::new("localized-action", "action", None).fit_content(40.0),
             ));
-        let mut driver =
-            crate::headless::Driver::new(crate::State::new(), Box::new(root), (700, 300));
+        let mut driver = crate::headless::Driver::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(root),
+            (700, 300),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("text-widget-locale-fixture".into()),
+        );
 
         let before = driver.inspection();
         let before_button = named(&before.root, "localized-action").unwrap();
@@ -1363,10 +1872,12 @@ mod tests {
     #[test]
     fn font_family_override_label_resolves_to_named_family() {
         use crate::presence::PresenceCtx;
-        let mut tr = TextRenderer::new();
-        let fams = tr.system_families();
-        assert!(!fams.is_empty(), "the system font db exposes some families");
-        let fam = fams[0].clone();
+        let mut tr = crate::font_catalog::fixture_renderer();
+        let fam = String::from("Adwaita Sans");
+        assert!(
+            tr.system_families().iter().any(|family| family == &fam),
+            "the controlled fixture ships Adwaita Sans",
+        );
 
         let theme = Theme::dark();
         let presence = PresenceCtx::empty();

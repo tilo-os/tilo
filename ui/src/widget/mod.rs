@@ -118,23 +118,80 @@ pub(crate) fn collect_widget_resources(
     doc: &AutoCommit,
     resources: &mut Vec<tilo_actions::Resource>,
 ) {
-    resources.extend(widget.resources(doc));
-    widget.for_each_child(&mut |child| collect_widget_resources(child, doc, resources));
+    fn visit(
+        widget: &dyn Widget,
+        doc: &AutoCommit,
+        inherited: Option<crate::bound_dispatch::CallbackBinding>,
+        resources: &mut Vec<tilo_actions::Resource>,
+    ) {
+        let boundary = widget.callback_binding();
+        let binding = boundary.clone().or(inherited);
+        let Ok(_entry) = binding
+            .as_ref()
+            .map(crate::bound_dispatch::CallbackBinding::enter)
+            .transpose()
+        else {
+            return;
+        };
+        // Boundary adapters expose their real root as a child. Collect each
+        // declaration once, and release its document borrow before descending.
+        if boundary.is_none() {
+            if let Some(binding) = &binding {
+                if let Ok(found) = binding.read_document(doc, |doc, _| widget.resources(doc)) {
+                    resources.extend(found);
+                }
+            } else {
+                resources.extend(widget.resources(doc));
+            }
+        }
+        widget.for_each_child(&mut |child| visit(child, doc, binding.clone(), resources));
+    }
+    visit(widget, doc, None, resources);
 }
 
-/// Resolve one lazily published resource from the retained widget tree.
+/// Test traversal probe; production callers retain bound provenance.
+#[cfg(test)]
 pub(crate) fn resolve_widget_resource(
     widget: &dyn Widget,
     doc: &AutoCommit,
     id: &str,
 ) -> Option<tilo_actions::Resource> {
-    if let Some(resource) = widget.resource(doc, id) {
-        return Some(resource);
+    resolve_bound_resource(widget, doc, None, &mut |widget, doc| {
+        widget.resource(doc, id)
+    })
+}
+
+#[cfg(test)]
+fn resolve_bound_resource<R>(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    inherited: Option<crate::bound_dispatch::CallbackBinding>,
+    lookup: &mut dyn FnMut(&dyn Widget, &AutoCommit) -> Option<R>,
+) -> Option<R> {
+    let boundary = widget.callback_binding();
+    let binding = boundary.clone().or(inherited);
+    let _entry = binding
+        .as_ref()
+        .map(crate::bound_dispatch::CallbackBinding::enter)
+        .transpose()
+        .ok()?;
+    if boundary.is_none() {
+        let found = if let Some(binding) = &binding {
+            binding
+                .read_document(doc, |doc, _| lookup(widget, doc))
+                .ok()
+                .flatten()
+        } else {
+            lookup(widget, doc)
+        };
+        if found.is_some() {
+            return found;
+        }
     }
     widget
         .children()
         .into_iter()
-        .find_map(|child| resolve_widget_resource(child, doc, id))
+        .find_map(|child| resolve_bound_resource(child, doc, binding.clone(), lookup))
 }
 
 /// One bounded page from a widget-owned remote root catalogue.  `next_cursor`
@@ -146,40 +203,77 @@ pub struct ActionDirectoryResourcePage {
     pub exhausted: bool,
 }
 
-/// Return the retained widget at a stable pre-order position without asking it
-/// to materialize resources.  The app-owned cursor binds this ordinal to the
-/// directory revision, so a structural change invalidates instead of shifting
-/// a caller into an unrelated sibling.
-pub(crate) fn action_directory_widget_at<'a>(
-    widget: &'a dyn Widget,
-    target: usize,
-    ordinal: &mut usize,
-) -> Option<&'a dyn Widget> {
-    if *ordinal == target {
-        return Some(widget);
-    }
-    *ordinal = ordinal.saturating_add(1);
-    for child in widget.children() {
-        if let Some(found) = action_directory_widget_at(child, target, ordinal) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-/// Ask the resource's owning widget for its explicit directory disclosure
-/// capability without traversing or materialising any lazy descendants.
-pub(crate) fn resolve_action_directory_visibility(
+/// Read a bounded page without allowing its retained widget reference or
+/// originating binding to escape the traversal.
+#[allow(
+    clippy::option_option,
+    reason = "outer None means end of traversal; inner None means this ordinal has no bounded provider"
+)]
+pub(crate) fn action_directory_page_at(
     widget: &dyn Widget,
     doc: &AutoCommit,
-    id: &str,
-) -> Option<tilo_actions::ActionAddress> {
-    widget.action_directory_visibility(doc, id).or_else(|| {
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| resolve_action_directory_visibility(child, doc, id))
-    })
+    target: usize,
+    cursor: &[u8],
+    max_results: usize,
+) -> Option<
+    Option<(
+        ActionDirectoryResourcePage,
+        Option<crate::bound_dispatch::CallbackBinding>,
+    )>,
+> {
+    fn visit(
+        widget: &dyn Widget,
+        doc: &AutoCommit,
+        target: usize,
+        ordinal: &mut usize,
+        inherited: Option<crate::bound_dispatch::CallbackBinding>,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<
+        Option<(
+            ActionDirectoryResourcePage,
+            Option<crate::bound_dispatch::CallbackBinding>,
+        )>,
+    > {
+        let boundary = widget.callback_binding();
+        let binding = boundary.clone().or(inherited);
+        let _entry = binding
+            .as_ref()
+            .map(crate::bound_dispatch::CallbackBinding::enter)
+            .transpose()
+            .ok()?;
+        if *ordinal == target {
+            if boundary.is_some() {
+                return Some(None);
+            }
+            return Some(
+                (if let Some(binding) = &binding {
+                    binding
+                        .read_document(doc, |doc, _| {
+                            widget.action_directory_resource_page(doc, cursor, max_results)
+                        })
+                        .ok()
+                        .flatten()
+                } else {
+                    widget.action_directory_resource_page(doc, cursor, max_results)
+                })
+                .map(|page| (page, binding)),
+            );
+        }
+        *ordinal = ordinal.saturating_add(1);
+        widget.children().into_iter().find_map(|child| {
+            visit(
+                child,
+                doc,
+                target,
+                ordinal,
+                binding.clone(),
+                cursor,
+                max_results,
+            )
+        })
+    }
+    visit(widget, doc, target, &mut 0, None, cursor, max_results)
 }
 
 /// Last-resort accessible label for controls whose constructor already
@@ -340,6 +434,46 @@ pub(crate) fn test_number_action_binding() -> tilo_actions::ActionBinding<f64> {
 }
 
 pub trait Widget {
+    /// Owning lifecycle path: capture and close nested components before removing
+    /// their live trees, transferring all recovery reports to the caller.
+    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.children_mut()
+            .into_iter()
+            .flat_map(Widget::close_components)
+            .collect()
+    }
+    /// Drain inert close-report ownership once; never invoke ordinary app callbacks
+    /// through a closed component. Bound owners override this to use cached metadata.
+    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.children_mut()
+            .into_iter()
+            .flat_map(Widget::take_component_close_reports)
+            .collect()
+    }
+
+    /// Runtime binding inherited by descendants in a matching layout topology.
+    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+        None
+    }
+
+    #[doc(hidden)]
+    #[allow(
+        private_interfaces,
+        reason = "opaque toolkit-only request prevents a public root/registry decoder loan"
+    )]
+    fn visit_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::ComponentRequest<'_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        for child in self.children_mut() {
+            if request.target.is_some() && request.found {
+                break;
+            }
+            child.visit_components(request)?;
+        }
+        Ok(())
+    }
+
     /// Session-local broker requests emitted by an application widget. These
     /// are never document mutations; the host drains them onto its already
     /// authenticated collaboration channel.
@@ -442,6 +576,38 @@ pub trait Widget {
     ) -> taffy::Size<f32> {
         taffy::Size::ZERO
     }
+    /// Adjust this node's style using its allocated size, before final geometry
+    /// is applied. Return true only when the style changed. Do not replace
+    /// children or mutate widget structure here. The shared host solver repeats
+    /// layout at most eight times and skips a frame that does not settle.
+    /// Overrides affect only this node; the host visits every registered widget.
+    fn adjust_layout_style(&mut self, _taffy: &mut TaffyTree<()>, _node: NodeId) -> bool {
+        false
+    }
+
+    /// Read-only resolved decisions for widgets with an explicit layout policy.
+    /// `None` means the widget has no such policy; ordinary manual widgets remain
+    /// valid. Values are available after build/settlement and carry real origins.
+    fn layout_info(&self) -> Option<LayoutInfo> {
+        None
+    }
+
+    /// Renderer-aware prepaint policy adjustment. The default preserves the
+    /// existing self-node-only `adjust_layout_style` contract. An override may
+    /// measure its owned children through ordinary references, entering their
+    /// callback binding when present. Never reenter descendants through the raw
+    /// node map while borrowing their parent, change topology, or build another
+    /// layout tree. Change only this node's style; inherited decisions may be
+    /// retained for child hooks. Return true if styles or those decisions change.
+    fn adjust_layout_with_measure(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut TextRenderer,
+    ) -> bool {
+        self.adjust_layout_style(taffy, node)
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);
     fn draw(
         &mut self,
@@ -552,6 +718,13 @@ pub trait Widget {
     }
 
     fn get_rect(&self) -> vello::kurbo::Rect;
+
+    /// Absolute logical clip applied to ordinary children during painting and
+    /// pointer routing. Inspectors and enclosing scroll regions must respect
+    /// this boundary instead of treating clipped descendants as visible extent.
+    fn child_clip_rect(&self) -> Option<vello::kurbo::Rect> {
+        None
+    }
 
     /// One-shot request to hand app content to the shared floating-surface
     /// host. Shell and in-app hosts consume the same description, so `PiP` does
@@ -1323,6 +1496,12 @@ pub trait Widget {
     /// perform its effect and dispatch the exact replayable metadata action in
     /// one host-owned turn instead of publishing a permanently disabled UI.
     ///
+    /// The default preserves a widget's existing read-only admission override.
+    /// Transparent containers that host mutable handlers must forward this
+    /// method to their children (as `Column`, `Row`, `Container` and `TileHost` do).
+    /// They must not then call the read-only fallback: that would visit a
+    /// declining handler twice. Custom containers retain this forwarding duty.
+    ///
     /// # Errors
     ///
     /// Returns the same admission/operation failures as
@@ -1581,6 +1760,9 @@ impl TaffyTreeExt for TaffyTree<()> {
 
 pub type Element = Box<dyn Widget>;
 
+pub(crate) mod layout;
+pub use layout::{WidgetLayoutError, compute_widget_layout};
+
 mod button;
 pub use button::{Button, ButtonFace, ButtonInteract, ButtonStyle, face_colors};
 mod checkbox;
@@ -1588,8 +1770,16 @@ pub use checkbox::{Checkbox, CheckboxFace, CheckboxInteract};
 mod column;
 pub use column::Column;
 mod composition;
+mod composition_parts;
 mod form;
+mod form_composition;
+mod layout_info;
 pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
+pub use form_composition::{Field, Form, FormPage, FormSection};
+pub use layout_info::{
+    Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
+    PageLayout, SectionLayout,
+};
 mod row;
 pub use row::Row;
 mod toggle;
@@ -1690,6 +1880,7 @@ pub use scrollable::{ScrollAxis, Scrollable};
 mod tile_host;
 pub use tile_host::{AppKind, TileContent, TileHost};
 mod app_widget;
+pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{AppCommand, AppHostIntent, AppWidget, IconDescriptor};
 pub mod command_palette;
 pub mod input_hint;
@@ -1806,6 +1997,8 @@ pub mod banner;
 pub use banner::{Banner, BannerKind};
 pub mod chip;
 pub use chip::{Chip, ChipLead, ChipStyle};
+mod card_composition;
+pub use card_composition::{Actions, ContentCard};
 pub mod card;
 pub mod collaboration_overview;
 pub use card::{Card, CardGrid, card_column_width, card_columns};

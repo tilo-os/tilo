@@ -19,30 +19,45 @@
 //! on the next tick.
 
 use std::collections::{BTreeMap, VecDeque};
+#[cfg(target_os = "linux")]
 use std::fs::File;
+#[cfg(target_os = "linux")]
 use std::io::Read;
+#[cfg(target_os = "linux")]
 use std::os::unix::io::{AsFd, FromRawFd, OwnedFd};
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_os = "linux")]
 use smithay::input::Seat;
+#[cfg(target_os = "linux")]
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, generic::Generic};
+#[cfg(target_os = "linux")]
 use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
+#[cfg(target_os = "linux")]
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+#[cfg(target_os = "linux")]
 use smithay::reexports::wayland_server::{Client, DisplayHandle};
+#[cfg(target_os = "linux")]
 use smithay::wayland::selection::data_device::{
     ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
     clear_data_device_selection, request_data_device_client_selection, set_data_device_focus,
     set_data_device_selection,
 };
+#[cfg(target_os = "linux")]
 use smithay::wayland::selection::ext_data_control::DataControlHandler as ExtDataControlHandler;
+#[cfg(target_os = "linux")]
 use smithay::wayland::selection::ext_data_control::DataControlState as ExtDataControlState;
+#[cfg(target_os = "linux")]
 use smithay::wayland::selection::primary_selection::{
     PrimarySelectionHandler, PrimarySelectionState, clear_primary_selection,
     request_primary_client_selection, set_primary_focus, set_primary_selection,
 };
+#[cfg(target_os = "linux")]
 use smithay::wayland::selection::wlr_data_control::{DataControlHandler, DataControlState};
+#[cfg(target_os = "linux")]
 use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
 
+#[cfg(target_os = "linux")]
 use crate::compositor::state::{ClientState, State};
 
 /// Mime type the mirror understands; `text/plain`/`UTF8_STRING`/`STRING`
@@ -76,6 +91,7 @@ pub const SECRET_MIME: &str = "application/x-tilo-secret";
 /// Bytes a fresh pipe accepts before write blocks (Linux default 64 KiB);
 /// kept conservative so the "cannot block" assumption holds even under a
 /// smaller default.
+#[cfg(target_os = "linux")]
 const PIPE_BUFFER_BYTES: usize = 32 * 1024;
 
 /// Which of the two selections a value refers to; serde-friendly mirror of
@@ -88,6 +104,7 @@ pub enum Target {
     Primary,
 }
 
+#[cfg(target_os = "linux")]
 impl From<SelectionTarget> for Target {
     fn from(t: SelectionTarget) -> Self {
         match t {
@@ -97,6 +114,7 @@ impl From<SelectionTarget> for Target {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl From<Target> for SelectionTarget {
     fn from(t: Target) -> Self {
         match t {
@@ -662,7 +680,7 @@ pub fn clear_mirror(store: &SharedSelection, target: Target) {
 
 /// Start mirroring a client-owned selection.  This happens before any pipe
 /// reads, and the returned generation binds those reads to this exact owner.
-fn begin_client_selection(
+pub fn begin_client_selection(
     store: &SharedSelection,
     target: Target,
     mimes: Option<Vec<String>>,
@@ -684,7 +702,7 @@ fn begin_client_selection(
 
 /// Record one completed asynchronous client transfer, but only if it belongs
 /// to the selection owner that was current when the read began.
-fn record_client_bytes(
+pub fn record_client_bytes(
     store: &SharedSelection,
     target: Target,
     generation: u64,
@@ -718,7 +736,7 @@ fn record_client_bytes(
 }
 
 /// Whether the compositor currently owns `target` (i.e. answers `receive` from the mirror).
-fn compositor_owns(store: &SharedSelection, target: Target) -> bool {
+pub fn compositor_owns(store: &SharedSelection, target: Target) -> bool {
     store.lock().is_ok_and(|s| s.slot(target).compositor_owned)
 }
 
@@ -727,6 +745,7 @@ fn compositor_owns(store: &SharedSelection, target: Target) -> bool {
 /// pulling inline would read the previous owner's data; parked here and
 /// drained by [`State::pump_selection`] once the seat holds the new source.
 #[derive(Debug, Clone)]
+#[cfg(target_os = "linux")]
 pub struct PendingMirrorPull {
     /// Which selection changed hands.
     pub target: Target,
@@ -736,6 +755,7 @@ pub struct PendingMirrorPull {
 }
 
 /// Everything the compositor needs to broker selections, hung off [`State`].
+#[cfg(target_os = "linux")]
 pub struct SelectionState {
     /// `wl_data_device_manager` — clipboard + drag-and-drop, every client.
     pub data_device_state: DataDeviceState,
@@ -793,6 +813,7 @@ impl DragLabel {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl std::fmt::Debug for SelectionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SelectionState")
@@ -802,6 +823,7 @@ impl std::fmt::Debug for SelectionState {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl SelectionState {
     /// Advertise all four globals on `display`. Data-control is filtered to
     /// privileged clients only (see module docs); `PrimarySelectionState` is
@@ -919,6 +941,7 @@ fn percent_encode_path(path: &str) -> String {
 
 /// Write `bytes` into `fd` without stalling: small payloads fit the pipe
 /// buffer and go now; larger ones drain on a thread, whose exit closes `fd` as EOF.
+#[cfg(target_os = "linux")]
 fn write_to_pipe(fd: OwnedFd, bytes: Vec<u8>, what: &'static str) {
     use std::io::Write;
     let mut file = File::from(fd);
@@ -938,6 +961,7 @@ fn write_to_pipe(fd: OwnedFd, bytes: Vec<u8>, what: &'static str) {
 /// Data-control filter: only connections on the privileged socket qualify —
 /// the sandbox-reachable public socket never sees this global, so sandboxed
 /// clipboard tools fall back to focus-gated `wl_data_device` instead of a silent firehose.
+#[cfg(target_os = "linux")]
 fn is_privileged(client: &Client) -> bool {
     client
         .get_data::<ClientState>()
@@ -947,6 +971,7 @@ fn is_privileged(client: &Client) -> bool {
 /// Flip `fd` non-blocking. Returns `false` if the kernel refused, in which
 /// case the caller must not register it — a blocking fd on a level-triggered
 /// source would stall the whole compositor.
+#[cfg(target_os = "linux")]
 fn set_nonblocking(fd: &OwnedFd) -> bool {
     use std::os::unix::io::AsRawFd;
     // SAFETY: `fd` is a live descriptor owned by the caller for the duration
@@ -962,6 +987,7 @@ fn set_nonblocking(fd: &OwnedFd) -> bool {
 
 /// Create a close-on-exec pipe for one selection transfer, as
 /// `(read end, write end)`.
+#[cfg(target_os = "linux")]
 fn selection_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
     let mut fds = [0 as libc::c_int; 2];
     // SAFETY: `fds` is a live two-element array, which is exactly what
@@ -979,6 +1005,7 @@ fn selection_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
 /// level-triggered calloop source rather than inline — the client only
 /// writes once the compositor flushes `send`, so a blocking read here would
 /// deadlock against it.
+#[cfg(target_os = "linux")]
 fn read_into_mirror(
     loop_handle: &LoopHandle<'static, State>,
     store: SharedSelection,
@@ -1058,6 +1085,7 @@ fn read_into_mirror(
     }
 }
 
+#[cfg(target_os = "linux")]
 impl State {
     /// Shared handle to the compositor's selection mirror, for installing the
     /// in-process clipboard bridge.
@@ -1273,6 +1301,7 @@ pub fn install_host_clipboard(store: SharedSelection) {
     ui::clipboard::install_clipboard_backend(Arc::new(HostClipboard { store }));
 }
 
+#[cfg(target_os = "linux")]
 impl SelectionHandler for State {
     /// Compositor selections carry no per-selection data — text lives in
     /// [`SelectionStore`], keyed by target, so in-process chrome can read it without a seat.
@@ -1311,24 +1340,28 @@ impl SelectionHandler for State {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl DataDeviceHandler for State {
     fn data_device_state(&self) -> &DataDeviceState {
         &self.selection.data_device_state
     }
 }
 
+#[cfg(target_os = "linux")]
 impl PrimarySelectionHandler for State {
     fn primary_selection_state(&self) -> &PrimarySelectionState {
         &self.selection.primary_selection_state
     }
 }
 
+#[cfg(target_os = "linux")]
 impl DataControlHandler for State {
     fn data_control_state(&self) -> &DataControlState {
         &self.selection.data_control_state
     }
 }
 
+#[cfg(target_os = "linux")]
 impl ExtDataControlHandler for State {
     fn data_control_state(&self) -> &ExtDataControlState {
         &self.selection.ext_data_control_state
@@ -1339,6 +1372,7 @@ impl ExtDataControlHandler for State {
 /// `text/uri-list` (the only mime that carries a name without risking a
 /// large payload). May be asked any number of times without disturbing the
 /// drop; reads happen on a thread since the client can't answer while this loop blocks.
+#[cfg(target_os = "linux")]
 fn request_dragged_name(source: &WlDataSource, label: DragLabel) {
     let (reader, writer) = match std::io::pipe() {
         Ok(pair) => pair,
@@ -1373,6 +1407,7 @@ fn request_dragged_name(source: &WlDataSource, label: DragLabel) {
         });
 }
 
+#[cfg(target_os = "linux")]
 impl ClientDndGrabHandler for State {
     fn started(
         &mut self,
@@ -1433,6 +1468,7 @@ impl ClientDndGrabHandler for State {
 /// dragged out of the hosted file manager onto a client window (started via
 /// `client_input::pump_chrome_drag`, carried as [`ChromeDrag`]). A tab drag
 /// between groups never comes here.
+#[cfg(target_os = "linux")]
 impl ServerDndGrabHandler for State {
     fn accept(&mut self, mime_type: Option<String>, _seat: Seat<Self>) {
         tracing::debug!(target: "shell::selection", ?mime_type, "client accepted a chrome drag mime");
