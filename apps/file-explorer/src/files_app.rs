@@ -235,6 +235,12 @@ enum CollabPanelAction {
         conflict_id: uuid::Uuid,
         version_id: collab_types::FileVersionId,
     },
+    AcceptNearby {
+        transfer_id: [u8; 16],
+    },
+    RetryNearby {
+        transfer_id: [u8; 16],
+    },
 }
 
 fn hex_prefix(bytes: &[u8], count: usize) -> String {
@@ -650,6 +656,8 @@ pub struct FileExplorerWidget {
     /// The folder currently under the cursor during a drag (a valid drop
     /// target), so it can be highlighted. `None` when over no target.
     drag_hover: Option<PathBuf>,
+    nearby_send: crate::nearby_send::NearbySendState,
+    nearby_send_path: Option<PathBuf>,
     /// Read-only sharing/history sheet sourced entirely from bounded FUSE
     /// projections. `None` means no sheet is open.
     collab_panel: Option<CollabPanel>,
@@ -968,6 +976,8 @@ impl FileExplorerWidget {
             drag_seed: Vec::new(),
             drag_origin_is_dir: false,
             drag_hover: None,
+            nearby_send: crate::nearby_send::NearbySendState::default(),
+            nearby_send_path: None,
             collab_panel: None,
             collab_panel_focused: false,
             share_result: Arc::new(std::sync::Mutex::new(None)),
@@ -1407,6 +1417,13 @@ impl FileExplorerWidget {
                 strategy: collab_types::ConflictStrategy::Merge,
                 version_id: *version_id,
             }),
+            CollabPanelAction::AcceptNearby { transfer_id } => Some(FileCommand::DecideNearby {
+                transfer_id: *transfer_id,
+                accept: true,
+            }),
+            CollabPanelAction::RetryNearby { transfer_id } => Some(FileCommand::RetryNearby {
+                transfer_id: *transfer_id,
+            }),
         }
     }
 
@@ -1418,6 +1435,8 @@ impl FileExplorerWidget {
             CollabPanelAction::PermanentDelete(_) => Some(t("files-permanent-delete-confirm")),
             CollabPanelAction::EmptyTrash => Some(t("files-empty-trash-confirm")),
             CollabPanelAction::ApplySafeMerge { .. } => Some(t("files-merge-apply-safe")),
+            CollabPanelAction::AcceptNearby { .. } => Some(t("files-nearby-accept")),
+            CollabPanelAction::RetryNearby { .. } => Some(t("files-nearby-retry")),
         }
     }
 
@@ -1428,6 +1447,8 @@ impl FileExplorerWidget {
                 Some(t("files-permanent-delete-loss"))
             }
             CollabPanelAction::ApplySafeMerge { .. } => Some(t("files-merge-apply-safe-detail")),
+            CollabPanelAction::AcceptNearby { .. } => Some(t("files-nearby-consent-detail")),
+            CollabPanelAction::RetryNearby { .. } => Some(t("files-nearby-retry-detail")),
         }
     }
 
@@ -2907,6 +2928,13 @@ impl FileExplorerWidget {
                 true
             }
             FileCommand::CloseCollabPanel => {
+                if let Some(CollabPanelAction::AcceptNearby { transfer_id }) = self
+                    .collab_panel
+                    .as_ref()
+                    .and_then(|panel| panel.action.as_ref())
+                {
+                    self.nearby_send.decide(*transfer_id, false);
+                }
                 self.close_collab_panel();
                 true
             }
@@ -2955,6 +2983,54 @@ impl FileExplorerWidget {
             FileCommand::ExtractHere => self.apply_extract_here(),
             FileCommand::ExtractCurrentArchive => self.apply_extract_current_archive(),
             FileCommand::CompressSelection => self.apply_compress_selection(),
+            FileCommand::OpenNearbySend => {
+                let selected = self.selected_paths();
+                if selected.len() != 1 {
+                    self.status = Some(t("files-nearby-select-one"));
+                    return true;
+                }
+                self.nearby_send_path = selected.into_iter().next();
+                self.status = Some(t("files-nearby-loading-devices"));
+                self.nearby_send.open_picker();
+                true
+            }
+            FileCommand::SendNearby { device } => {
+                let Some(path) = self.nearby_send_path.clone().or_else(|| {
+                    let mut selected = self.selected_paths().into_iter();
+                    let only = selected.next()?;
+                    selected.next().is_none().then_some(only)
+                }) else {
+                    self.status = Some(t("files-nearby-select-one"));
+                    return true;
+                };
+                self.status = Some(t("files-nearby-queueing"));
+                self.nearby_send.send(&path, device);
+                true
+            }
+            FileCommand::DecideNearby {
+                transfer_id,
+                accept,
+            } => {
+                self.nearby_send.decide(transfer_id, accept);
+                self.close_collab_panel();
+                self.status = Some(if accept {
+                    t("files-nearby-accepted")
+                } else {
+                    t("files-nearby-declined")
+                });
+                true
+            }
+            FileCommand::RetryNearby { transfer_id } => {
+                self.nearby_send.retry(transfer_id);
+                self.close_collab_panel();
+                self.status = Some(t("files-nearby-retrying"));
+                true
+            }
+            FileCommand::CancelNearby { transfer_id } => {
+                self.nearby_send.cancel(transfer_id);
+                self.status = Some(t("files-nearby-cancelled"));
+                true
+            }
             FileCommand::OpenTemplatesMenu => self.apply_open_templates_menu(),
             FileCommand::NewFromTemplate(template) => self.apply_new_from_template(&template),
             FileCommand::ArmDrag { path, is_dir, at } => self.apply_arm_drag(path, is_dir, at),
@@ -4686,7 +4762,11 @@ impl FileExplorerWidget {
             && let Some(label) = self.collab_panel_action_label()
         {
             let action_color = match panel.action.as_ref() {
-                Some(CollabPanelAction::ApplySafeMerge { .. }) => accent,
+                Some(
+                    CollabPanelAction::ApplySafeMerge { .. }
+                    | CollabPanelAction::AcceptNearby { .. }
+                    | CollabPanelAction::RetryNearby { .. },
+                ) => accent,
                 _ => theme.tokens.colors.semantic.danger,
             };
             let action_shape = RoundedRect::from_rect(action_rect, 8.0);
@@ -5199,6 +5279,12 @@ impl FileExplorerWidget {
             spec.push((String::new(), None));
             spec.push((t("files-menu-cut"), Some(FileCommand::Cut)));
             spec.push((t("files-menu-copy"), Some(FileCommand::Copy)));
+            if self.selection.selected().len() == 1 {
+                spec.push((
+                    t("files-menu-send-nearby"),
+                    Some(FileCommand::OpenNearbySend),
+                ));
+            }
             let displayed = self.displayed_entries();
             if self.selection.selected().iter().any(|index| {
                 displayed
@@ -5695,6 +5781,37 @@ impl FileExplorerWidget {
         self.submenu = menu;
         self.submenu_commands = cmds;
         layout_menu_widget(&mut self.submenu);
+    }
+
+    fn open_nearby_device_picker(&mut self, targets: &[ui::collaboration::NearbyTransferTarget]) {
+        let online = targets
+            .iter()
+            .filter(|target| target.online)
+            .collect::<Vec<_>>();
+        if online.is_empty() {
+            self.status = Some(t("files-nearby-no-devices"));
+            return;
+        }
+        self.submenu.close();
+        let mut menu = ContextMenu::new();
+        let mut commands = Vec::with_capacity(online.len());
+        for target in online {
+            menu.push(MenuItem::action(
+                t_args(
+                    "files-nearby-send-to-device",
+                    &[arg("device", target.label.clone())],
+                ),
+                || {},
+            ));
+            commands.push(Some(FileCommand::SendNearby {
+                device: target.device,
+            }));
+        }
+        menu.open_at([self.last_cursor.x as f32, self.last_cursor.y as f32]);
+        self.context_menu = menu;
+        self.menu_commands = commands;
+        layout_menu_widget(&mut self.context_menu);
+        self.status = Some(t("files-nearby-choose-device"));
     }
 
     /// Open `self.context_menu` from a `(label, command)` spec, right-aligned so
@@ -7158,6 +7275,45 @@ impl FileExplorerWidget {
                     ..ActionContract::default()
                 }),
             );
+            resource.actions.push(
+                ActionSpec::operation(
+                    "send-nearby",
+                    t("files-menu-send-nearby"),
+                    OperationKind::View,
+                    "files.entry-command",
+                    &vec!["send-nearby".to_string(), resource_id.clone()],
+                )
+                .expect("nearby picker payload is serializable")
+                .with_contract(ActionContract::view()),
+            );
+            for target in self
+                .nearby_send
+                .targets()
+                .iter()
+                .filter(|target| target.online)
+            {
+                let action_id = format!("send-nearby-{}", hex_prefix(&target.device, 6));
+                resource.actions.push(
+                    ActionSpec::operation(
+                        action_id,
+                        t_args(
+                            "files-action-send-nearby-device",
+                            &[arg("device", target.label.clone())],
+                        ),
+                        OperationKind::Effect,
+                        "files.nearby-send",
+                        &(resource_id.clone(), target.device),
+                    )
+                    .expect("exact nearby target payload is serializable")
+                    .with_contract(ActionContract {
+                        permission: PermissionRequirement::Read,
+                        retry: RetryPolicy::AtMostOnce,
+                        ..ActionContract::default()
+                    })
+                    .execution(ExecutionMode::Background { cancellable: true })
+                    .returns(ResultSpec::Job),
+                );
+            }
         }
         let entry_commands: Vec<(&str, String, &str, bool)> = if self.is_trash_view() {
             vec![
@@ -7317,6 +7473,7 @@ impl Widget for FileExplorerWidget {
             "files.reveal-record",
             "files.folder-command",
             "files.entry-command",
+            "files.nearby-send",
             "files.rename",
             "files.share-link",
             "files.remote-account",
@@ -7326,6 +7483,88 @@ impl Widget for FileExplorerWidget {
             // resource back to the retained widget.
             "tilo.ui.control.invoke",
         ]
+    }
+
+    fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
+        self.nearby_send.poll_if_due(Instant::now());
+        self.nearby_send.take_requests()
+    }
+
+    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        for effect in self.nearby_send.handle_event(event) {
+            match effect {
+                crate::nearby_send::NearbyUiEffect::OpenPicker(targets) => {
+                    self.open_nearby_device_picker(&targets);
+                }
+                crate::nearby_send::NearbyUiEffect::Offer(transfer) => {
+                    self.show_collab_panel(CollabPanel {
+                        title: t_args(
+                            "files-nearby-offer-title",
+                            &[arg("device", transfer.device_label)],
+                        ),
+                        summary: t_args(
+                            "files-nearby-offer-summary",
+                            &[arg("name", transfer.name)],
+                        ),
+                        lines: vec![
+                            t("files-nearby-consent-detail"),
+                            t_args(
+                                "files-nearby-offer-size",
+                                &[arg(
+                                    "bytes",
+                                    i64::try_from(transfer.total_bytes).unwrap_or(i64::MAX),
+                                )],
+                            ),
+                        ],
+                        action: Some(CollabPanelAction::AcceptNearby {
+                            transfer_id: transfer.transfer_id,
+                        }),
+                        history: None,
+                    });
+                }
+                crate::nearby_send::NearbyUiEffect::Failed(transfer) => {
+                    self.show_collab_panel(CollabPanel {
+                        title: t("files-nearby-failed-title"),
+                        summary: transfer.name,
+                        lines: vec![
+                            t_args(
+                                "files-nearby-failed-device",
+                                &[arg("device", transfer.device_label)],
+                            ),
+                            t("files-nearby-retry-detail"),
+                        ],
+                        action: Some(CollabPanelAction::RetryNearby {
+                            transfer_id: transfer.transfer_id,
+                        }),
+                        history: None,
+                    });
+                }
+                crate::nearby_send::NearbyUiEffect::Status(message) => {
+                    self.status = Some(message);
+                }
+                crate::nearby_send::NearbyUiEffect::SendResult(result) => {
+                    let Some(invocation) = self.resource_invocation.take() else {
+                        continue;
+                    };
+                    self.resource_result = Some(match result {
+                        Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
+                            invocation,
+                            output: tilo_actions::ActionOutput::default(),
+                        },
+                        Err(message) => tilo_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "files.nearby_send_failed".into(),
+                                message,
+                                details: None,
+                                retryable: true,
+                            },
+                        },
+                    });
+                }
+            }
+        }
+        self.structure_dirty = true;
     }
 
     #[allow(
@@ -8050,7 +8289,9 @@ impl Widget for FileExplorerWidget {
                     .visible_entry_path(resource_id)
                     .ok_or_else(|| "file entry is no longer visible".to_string())?;
                 let expected_kind = match verb.as_str() {
-                    "properties" | "sharing" | "history" | "availability" => OperationKind::View,
+                    "properties" | "sharing" | "history" | "availability" | "send-nearby" => {
+                        OperationKind::View
+                    }
                     "copy" | "cut" | "restore" | "purge" | "trash" | "keep-offline"
                     | "automatic-storage" | "free-local-space" | "retry-transfer" => {
                         OperationKind::Effect
@@ -8092,11 +8333,30 @@ impl Widget for FileExplorerWidget {
                     "automatic-storage" => FileCommand::RemoveOfflinePin,
                     "free-local-space" => FileCommand::FreeLocalSpace,
                     "retry-transfer" => FileCommand::RetryTransfer,
+                    "send-nearby" => FileCommand::OpenNearbySend,
                     _ => return Ok(false),
                 };
                 if !self.apply_command(command) {
                     return Err("file operation could not be applied".into());
                 }
+            }
+            (OperationKind::Effect, "files.nearby-send") => {
+                let (resource_id, device): (String, [u8; 32]) =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                let target = self
+                    .visible_entry_path(&resource_id)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                if !self
+                    .nearby_send
+                    .targets()
+                    .iter()
+                    .any(|target| target.device == device && target.online)
+                {
+                    return Err("nearby device is no longer available".into());
+                }
+                self.nearby_send_path = Some(target.clone());
+                self.nearby_send.send(&target, device);
+                self.status = Some(t("files-nearby-queueing"));
             }
             (OperationKind::Effect, "files.rename") => {
                 let args: Vec<String> =
@@ -8277,7 +8537,7 @@ impl Widget for FileExplorerWidget {
         if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
             return Ok(None);
         }
-        if type_id == "files.share-link" {
+        if matches!(type_id, "files.share-link" | "files.nearby-send") {
             self.resource_invocation = Some(invocation);
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
@@ -8348,7 +8608,7 @@ impl Widget for FileExplorerWidget {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        Some(self.next_metadata_refresh)
+        Some(self.next_metadata_refresh.min(self.nearby_send.next_poll()))
     }
 
     fn build_layout(

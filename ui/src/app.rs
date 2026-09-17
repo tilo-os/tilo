@@ -5536,6 +5536,7 @@ impl App {
                 | CollabEvent::TaskRunCancellation { .. }
                 | CollabEvent::WorkspaceControl { .. }
                 | CollabEvent::RealtimeCommandResult { .. }
+                | CollabEvent::NearbyTransferCommandResult { .. }
                 | CollabEvent::Realtime(_) => {}
             }
         }
