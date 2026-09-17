@@ -66,5 +66,12 @@ The workspace contains extensive unrelated tracked/staged/untracked edits. Only 
 
 ## Remaining verification
 
-- Build the optimized thin browser artifact once for parent-owned live GUI acceptance.
+- Parent-owned live GUI acceptance remains: toolbar visuals/actions, real OS close choices, private-window saved-file/profile cleanup, and open/reveal. This worker did not launch the GUI, as coordinated.
+- The initial rebuilt-host native run's unexplained prompt/shutdown timeout remains recorded above; the exact fixture then passed twice, including all expanded cases. The separate Task 9/10 startup/rendering defect was not edited or hidden.
+
+## Optimized candidate and owned commits
+
+- Source commit: `4a23e862ce8a96742d7c4a0e821c0de94eb30f22` (`Implement background download ownership and exit flow`). It contains only Task 6 paths and the Task 6 hunks from shared `ui/src/app.rs` and `ui/src/widget/mod.rs`.
+- `cargo build -p browser --profile thin-app` — session `5014`, chunks `4dfb59`/`5426b3`/`90f03f`/`68b638`/`74814a`/`b63960`, exit 0 after 3m48s. It initially waited for the shared Cargo lock, then compiled `ui`, `qos-app`, and `browser` without warnings/errors in the returned build output.
+- Candidate: `target/thin-app/browser`, 27,316,768 bytes, SHA-256 `6ff412a0d6584a8b58c2ec347f44022c4a3c13ba052231e8827761a9f695b1c8`.
 - Review/stage only owned hunks, record commit(s), and report parent-owned live GUI limitations honestly.
