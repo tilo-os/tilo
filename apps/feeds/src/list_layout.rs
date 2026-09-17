@@ -8,11 +8,30 @@
 //! groups. This module holds that rule as a pure function of measured text
 //! heights so `draw_list`, the star hit rect and the tests share one answer.
 //!
-//! Row height itself stays the caller's decision (it is still a fixed
-//! `LIST_ROW_H` in `app.rs`); this only decides where the text block, the
-//! unread marker, the time and the star land inside a given row.
+//! Row height follows the same measured lines ([`row_height`]): the row is
+//! tall enough for a two-line title, its meta line and the padding around
+//! them, never shorter than the authored 1× row, so a larger text scale grows
+//! the list instead of stacking rows over each other. [`article_row_layout`]
+//! then decides where the text block, the unread marker, the time and the
+//! star land inside that row.
 
 use vello::kurbo::Rect;
+
+/// Height of an article row for the measured lines it holds: two title
+/// lines and the meta line, the related `gap` between them, and `pad_min`
+/// above and below the block, never shorter than `min_h` (the authored 1×
+/// row). `pad_min` and `gap` are the same values the caller hands
+/// [`article_row_layout`], so the block that this height makes room for is
+/// the block that gets painted.
+pub(crate) fn row_height(
+    title_line_h: f64,
+    meta_h: f64,
+    gap: f64,
+    pad_min: f64,
+    min_h: f64,
+) -> f64 {
+    (2.0 * pad_min + 2.0 * title_line_h + gap + meta_h).max(min_h)
+}
 
 /// Side of the star's square hit/paint rect (the `s8` spacing step, spelled
 /// out because `build_list_rows` runs without a theme).
@@ -151,6 +170,34 @@ mod tests {
         };
         let l = article_row_layout(row, &m);
         assert!(approx(l.title_y, row.y0 + 12.0));
+    }
+
+    #[test]
+    fn one_x_row_keeps_the_authored_height() {
+        // 18.75 / 15.625 are the 1× line boxes of the 15 px title and the
+        // 12.5 px meta line; the measured block is shorter than the 88 px row.
+        assert!(approx(row_height(18.75, 15.625, 4.0, 12.0, 88.0), 88.0));
+    }
+
+    #[test]
+    fn a_scaled_row_makes_room_for_two_title_lines_and_the_meta_line() {
+        // 200% text: the row reserves 24 + 75 + 8 + 31.25, so it grows past
+        // the 1× row; the painted block (gap 4) then fits with air to spare.
+        let h = row_height(37.5, 31.25, 8.0, 12.0, 88.0);
+        assert!(approx(h, 138.25));
+        // The layout that paints into that row keeps the block inside it.
+        let row = Rect::new(0.0, 0.0, 400.0, h);
+        let m = ArticleRowMetrics {
+            title_h: 75.0,
+            title_line_h: 37.5,
+            meta_h: 31.25,
+            time_h: 30.0,
+            gap: 4.0,
+            pad_min: 12.0,
+        };
+        let l = article_row_layout(row, &m);
+        assert!(l.title_y >= row.y0 + 12.0);
+        assert!(l.meta_y + 31.25 <= row.y1 - 12.0 + 1e-6);
     }
 
     #[test]

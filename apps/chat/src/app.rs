@@ -552,6 +552,12 @@ pub struct ChatApp {
 
     // Call state.
     pub(crate) call: CallState,
+    /// Measured control/header sizes of the expanded call overlay, refreshed
+    /// by the paint pass and read by the renderer-less layout functions.
+    pub(crate) call_overlay_metrics: crate::render_call::CallOverlayMetrics,
+    /// `(renderer scale, theme scale, catalogue revision)` the overlay metrics
+    /// were measured at; unchanged means the measurement is skipped.
+    pub(crate) call_overlay_metrics_key: Option<(u32, u32, u64)>,
     pub(crate) call_chrome_motion: CallChromeMotion,
     pub(crate) pending_floating: Option<ui::floating_surface::FloatingSurfaceRequest>,
     /// Authoritative combined-output bounds supplied by the shell. Standalone
@@ -797,6 +803,8 @@ impl ChatApp {
             rename_input: Self::new_rename_input(),
             swipe: None,
             call: CallState::default(),
+            call_overlay_metrics: crate::render_call::CallOverlayMetrics::default(),
+            call_overlay_metrics_key: None,
             call_chrome_motion: CallChromeMotion::default(),
             pending_floating: None,
             floating_surface_bounds: Rect::ZERO,
@@ -2336,6 +2344,24 @@ impl ChatApp {
             self.rect.y1 - 12.0,
         )
     }
+
+    /// The thread panel's composer: the same control as the main composer,
+    /// so it follows the same height rule — the 1× minimum, growing with the
+    /// measured draft up to the same cap — instead of a separate fixed 48 px
+    /// box. `panel` is the thread panel it sits at the bottom of.
+    pub(crate) fn thread_composer_rect(&self, tr: &mut TextRenderer, panel: Rect) -> Rect {
+        let inset = 12.0;
+        let w = (panel.width() - 2.0 * inset - 48.0).max(40.0) as f32;
+        let (_, h) = tr.measure(self.composer_thread.value(), 15.0, Some(w));
+        let h = (COMPOSER_MIN_H + (f64::from(h) - 19.0).max(0.0))
+            .clamp(COMPOSER_MIN_H, COMPOSER_MAX_H);
+        Rect::new(
+            panel.x0 + inset,
+            panel.y1 - h - inset,
+            panel.x1 - inset,
+            panel.y1 - inset,
+        )
+    }
     pub(crate) fn messages_rect(&self, tr: &mut TextRenderer) -> Rect {
         let composer = self.composer_rect(tr);
         Rect::new(
@@ -2965,6 +2991,9 @@ impl Widget for ChatApp {
         // stray mark at its stale origin before the placeholder lands.
         let host_has_frame = self.video.latest_frame().is_some();
         if self.call.active && self.call.expanded {
+            // Measure the controls and header with this frame's text scale
+            // before anything reads their geometry.
+            self.measure_call_overlay(tr, theme);
             self.draw_call_overlay_bg(scene, tf, tr, theme);
             if host_has_frame {
                 self.video.draw(scene, tf, tr, theme, presence);
