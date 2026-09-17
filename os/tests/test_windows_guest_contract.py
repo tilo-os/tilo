@@ -51,6 +51,25 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(self.contract["transaction_base"], "empty-installroot")
         self.assertEqual(self.contract["package_roots"], ["wine.i686", "wine.x86_64"])
 
+    def test_development_wine_trust_is_bound_to_snapshot(self):
+        trust = self.repo / 'development-wine'
+        trust.mkdir()
+        for name in ('public.asc', 'paired-contract.json', 'development-wine.json'):
+            (trust / name).write_text('public fixture ' + name)
+        (trust / 'reference.txt').write_text(REF + '\n')
+        self.record()
+        self.assertTrue(self.verify()['development_wine']['development_only'])
+        (trust / 'public.asc').write_text('changed trust anchor')
+        with self.assertRaisesRegex(ValueError, 'development_wine'):
+            self.verify()
+
+    def test_development_wine_snapshot_rejects_unexpected_trust_files(self):
+        trust = self.repo / 'development-wine'
+        trust.mkdir()
+        (trust / 'private.key').write_text('must never be exported')
+        with self.assertRaisesRegex(ValueError, 'unexpected files'):
+            self.record()
+
     def test_package_root_changes_invalidate_snapshot(self):
         self.packages.write_text("wine.x86_64\nwine.i686\npython3.x86_64\n")
         with self.assertRaisesRegex(ValueError, "package_roots"):

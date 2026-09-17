@@ -3,13 +3,17 @@
 # from an empty installroot and the complete guest snapshot, not the OS delta.
 ARG WINDOWS_GUEST_BUILDROOT_REF
 ARG WINDOWS_GUEST_RPMS_REF
+ARG DEVELOPMENT_WINE_REF=scratch
+ARG DEVELOPMENT_WINE_KEY_SHA256
 FROM scratch AS external-assets
 COPY --from=github-assets / /
 FROM --platform=linux/amd64 ${WINDOWS_GUEST_RPMS_REF} AS guest-rpms
 FROM --platform=linux/amd64 ${WINDOWS_GUEST_BUILDROOT_REF} AS assemble
 ARG WINDOWS_GUEST_BUILDROOT_REF
 ARG WINDOWS_GUEST_RPMS_REF
-COPY os/dev/windows-guest-packages.txt os/dev/windows_guest_contract.py os/dev/build-windows-guest.sh os/dev/validate-windows-guest.py os/dev/install-windows-guest-dxvk.py /tilo/
+ARG DEVELOPMENT_WINE_REF
+ARG DEVELOPMENT_WINE_KEY_SHA256
+COPY os/dev/windows-guest-packages.txt os/dev/windows_guest_contract.py os/dev/build-windows-guest.sh os/dev/validate-windows-guest.py os/dev/install-windows-guest-dxvk.py os/dev/development-wine-repository.py os/dev/wine-source.json /tilo/
 COPY os/external-assets/github-assets.tsv /tilo/external-assets.tsv
 RUN --network=none --mount=type=bind,from=guest-rpms,source=/repo,target=/repo,ro \
     --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
