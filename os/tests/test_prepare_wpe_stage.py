@@ -34,6 +34,15 @@ class WpeStageTests(unittest.TestCase):
         self.assertNotIn('--secret', argv)
         self.assertNotIn('--build-arg TILO_WITH_BROWSER=0', argv)
 
+    def test_explicit_jobs_preserve_default_and_reject_invalid(self):
+        self.assertIn('WPE_BUILD_JOBS=2', wpe.build_command(self.args, Path('/iid')))
+        self.args.jobs = 6
+        self.assertIn('WPE_BUILD_JOBS=6', wpe.build_command(self.args, Path('/iid')))
+        for value in (0, -1, 65, True, '6'):
+            self.args.jobs = value
+            with self.assertRaises(ValueError):
+                wpe.validate(self.args)
+
     def test_rejects_wrong_arch_cache_mutable_input_and_invalid_epoch(self):
         for field, value in [('cache', self.args.cache + ':latest'),
                              ('cache', self.args.cache.replace('x86_64', 'aarch64')),
