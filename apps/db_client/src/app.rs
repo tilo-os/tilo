@@ -70,6 +70,62 @@ const TOGGLE_SIZE: f64 = 26.0;
 /// Horizontal inset shared by the sidebar's connection rows and its
 /// "New connection" button so they read as one column.
 const SIDEBAR_INSET: f64 = 8.0;
+
+/// Main-panel band heights measured from the renderer the panel paints with.
+///
+/// Refreshed at the top of every draw (and re-laid out in the same frame when
+/// they change), so the tab bar, toolbar, result strip and sidebar toggle grow
+/// with their labels at larger text scales instead of the 26 px "Query" pill
+/// touching the edges of a fixed 38 px bar. At 1× every value equals its
+/// constant: a 13 px label measures 16.25 px, so a tab pill is 16.25 + 2·4 ≤ 26
+/// inside the 38 px bar (6 px inset either side), a toolbar button
+/// 16.25 + 2·5 ≤ 28 inside the 40 px toolbar, and the 12 px result-strip line
+/// (15 px) sits in 15 + 2·5 ≤ 26. Tab bar and toolbar controls are inset 6 px
+/// from their band (`inset`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Bands {
+    tabbar_h: f64,
+    toolbar_h: f64,
+    strip_h: f64,
+    /// Sidebar toggle button side; square, centred in the tab bar.
+    toggle: f64,
+    /// Vertical inset of a tab pill / toolbar button inside its band.
+    inset: f64,
+}
+
+impl Default for Bands {
+    fn default() -> Self {
+        Self {
+            tabbar_h: TABBAR_H,
+            toolbar_h: TOOLBAR_H,
+            strip_h: QUERY_RESULT_STRIP_H,
+            toggle: TOGGLE_SIZE,
+            inset: 6.0,
+        }
+    }
+}
+
+impl Bands {
+    fn measure(tr: &mut TextRenderer, theme: &Theme) -> Self {
+        let one = Self::default();
+        let tab_h = f64::from(tr.measure("Ag", 13.0, None).1);
+        let toolbar_label_h = f64::from(tr.measure("Ag", 13.0, None).1);
+        let strip_label_h = f64::from(tr.measure("Ag", 12.0, None).1);
+        // Label padding: one spacing step inside a tab pill; 5 px (the
+        // toolbar's own off-grid value) inside a button and the strip.
+        let pill_pad = f64::from(theme.tokens.spacing.s1);
+        let tabbar_h = (tab_h + 2.0 * pill_pad + 2.0 * one.inset).max(TABBAR_H);
+        let toolbar_h = (toolbar_label_h + 2.0 * 5.0 + 2.0 * one.inset).max(TOOLBAR_H);
+        let strip_h = (strip_label_h + 2.0 * 5.0).max(QUERY_RESULT_STRIP_H);
+        Self {
+            tabbar_h,
+            toolbar_h,
+            strip_h,
+            toggle: (tabbar_h - 2.0 * one.inset).max(TOGGLE_SIZE),
+            inset: one.inset,
+        }
+    }
+}
 /// Minimum toolbar control widths; measured labels widen them when needed.
 const RUN_MIN_W: f64 = 150.0;
 const SNIPPETS_MIN_W: f64 = 110.0;
@@ -747,6 +803,8 @@ pub struct DbClientApp {
     sidebar_rect: Rect,
     main_rect: Rect,
     query_layout: QueryLayout,
+    /// Main-panel band heights from the last draw (see [`Bands`]).
+    bands: Bands,
     /// User-requested editor height. Relayout clamps only the effective
     /// rectangle so a temporary short window cannot erase this preference.
     query_height_request: Option<f64>,
@@ -903,6 +961,7 @@ impl DbClientApp {
             sidebar_rect: Rect::ZERO,
             main_rect: Rect::ZERO,
             query_layout: QueryLayout::default(),
+            bands: Bands::default(),
             query_height_request: None,
             query_drag: None,
             query_measure_dirty: false,
@@ -1222,22 +1281,24 @@ impl DbClientApp {
         );
         self.tree.set_rect(tree_rect);
 
-        // Main panel: tab bar, then tab content.
-        let content_top = self.main_rect.y0 + TABBAR_H;
+        // Main panel: tab bar, then tab content. Band heights are the ones the
+        // last draw measured (the 1× constants until text grows past them).
+        let bands = self.bands;
+        let content_top = self.main_rect.y0 + bands.tabbar_h;
         match self.session.tab {
             MainTab::Query => {
                 let toolbar = Rect::new(
                     self.main_rect.x0,
                     content_top,
                     self.main_rect.x1,
-                    content_top + TOOLBAR_H,
+                    content_top + bands.toolbar_h,
                 );
                 let editor_top = toolbar.y1;
                 let editor_min = self.editor.line_height() * 3.0;
                 let editor_max = (self.main_rect.y1
                     - editor_top
                     - QUERY_DIVIDER_H
-                    - QUERY_RESULT_STRIP_H
+                    - bands.strip_h
                     - QUERY_GRID_MIN_H
                     - QUERY_BOTTOM_PAD)
                     .max(0.0);
@@ -1257,7 +1318,7 @@ impl DbClientApp {
                     editor.x0,
                     divider.y1,
                     editor.x1,
-                    divider.y1 + QUERY_RESULT_STRIP_H,
+                    divider.y1 + bands.strip_h,
                 );
                 let grid = Rect::new(
                     self.main_rect.x0 + 8.0,
@@ -1287,7 +1348,7 @@ impl DbClientApp {
             MainTab::Data => {
                 let grid_rect = Rect::new(
                     self.main_rect.x0 + 8.0,
-                    content_top + TOOLBAR_H,
+                    content_top + bands.toolbar_h,
                     self.main_rect.x1 - 8.0,
                     self.main_rect.y1 - 8.0,
                 );
@@ -1942,7 +2003,7 @@ impl Widget for DbClientApp {
                 .apply_layout(taffy, empty_state_node, origin);
             self.empty_state.apply_layout_external(Rect::new(
                 self.main_rect.x0,
-                self.main_rect.y0 + TABBAR_H,
+                self.main_rect.y0 + self.bands.tabbar_h,
                 self.main_rect.x1,
                 self.main_rect.y1,
             ));
@@ -1960,6 +2021,17 @@ impl Widget for DbClientApp {
         let p = theme.db();
         // App background.
         scene.fill(Fill::NonZero, transform, p.panel_bg, None, &self.rect);
+
+        // Band heights from the renderer this frame paints with. When they
+        // change (first frame, text-scale change) re-lay out now, so the
+        // frame paints and hit-tests the same geometry.
+        let bands = Bands::measure(tr, theme);
+        if bands != self.bands {
+            self.bands = bands;
+            self.relayout();
+        }
+        self.grid.measure_bands(tr);
+        self.data_grid.measure_bands(tr);
 
         // Bind result sets to grids when the worker has delivered a fresh one
         // (the session bumps these generations as replies land).
@@ -3173,11 +3245,12 @@ impl DbClientApp {
     ) -> Rect {
         let p = theme.db();
         // Tab bar.
+        let bands = self.bands;
         let bar = Rect::new(
             self.main_rect.x0,
             self.main_rect.y0,
             self.main_rect.x1,
-            self.main_rect.y0 + TABBAR_H,
+            self.main_rect.y0 + bands.tabbar_h,
         );
         scene.fill(Fill::NonZero, t, p.header_bg, None, &bar);
         scene.stroke(
@@ -3192,7 +3265,7 @@ impl DbClientApp {
         // Reserve space for the hamburger toggle at the left of the tab bar
         // whenever the sidebar isn't fully docked-open.
         let toggle_inset = if self.show_toggle() {
-            TOGGLE_SIZE + 14.0
+            bands.toggle + 14.0
         } else {
             0.0
         };
@@ -3201,7 +3274,7 @@ impl DbClientApp {
             let label = tab.label();
             let (lw, _) = tr.measure(label, 13.0, None);
             let w = f64::from(lw) + 28.0;
-            let tab_rect = Rect::new(x, bar.y0 + 6.0, x + w, bar.y1 - 6.0);
+            let tab_rect = Rect::new(x, bar.y0 + bands.inset, x + w, bar.y1 - bands.inset);
             self.tab_rects.push((tab, tab_rect));
             let active = tab == self.session.tab;
             if active {
@@ -3280,8 +3353,9 @@ impl DbClientApp {
         let p = theme.db();
         let bar_y0 = self.main_rect.y0;
         let bx = self.main_rect.x0 + 10.0;
-        let by = bar_y0 + (TABBAR_H - TOGGLE_SIZE) / 2.0;
-        let btn = Rect::new(bx, by, bx + TOGGLE_SIZE, by + TOGGLE_SIZE);
+        let size = self.bands.toggle;
+        let by = bar_y0 + (self.bands.tabbar_h - size) / 2.0;
+        let btn = Rect::new(bx, by, bx + size, by + size);
         self.toggle_btn = btn;
 
         let bg = if btn.contains(self.cursor) {
@@ -3298,8 +3372,8 @@ impl DbClientApp {
             &btn.to_rounded_rect(6.0),
         );
 
-        let cx = btn.x0 + TOGGLE_SIZE / 2.0;
-        let cy = btn.y0 + TOGGLE_SIZE / 2.0;
+        let cx = btn.x0 + size / 2.0;
+        let cy = btn.y0 + size / 2.0;
         let open = self.flap.reveal() > 0.5;
         if open {
             // Close "X" while the sidebar is showing.
@@ -3362,9 +3436,9 @@ impl DbClientApp {
         let run_w = (14.0 + f64::from(run_lw) + 16.0 + f64::from(hint_w) + 14.0).max(RUN_MIN_W);
         let run = Rect::new(
             toolbar.x0 + 10.0,
-            toolbar.y0 + 6.0,
+            toolbar.y0 + self.bands.inset,
             toolbar.x0 + 10.0 + run_w,
-            toolbar.y1 - 6.0,
+            toolbar.y1 - self.bands.inset,
         );
         self.run_btn = run;
         let run_color = if self.run_hover {
@@ -3402,9 +3476,9 @@ impl DbClientApp {
         let snip_w = (12.0 + f64::from(snip_lw) + 12.0).max(SNIPPETS_MIN_W);
         let snip = Rect::new(
             run.x1 + 8.0,
-            toolbar.y0 + 6.0,
+            toolbar.y0 + self.bands.inset,
             run.x1 + 8.0 + snip_w,
-            toolbar.y1 - 6.0,
+            toolbar.y1 - self.bands.inset,
         );
         self.snippet_btn = snip;
         let snip_color = if snip.contains(self.cursor) || self.snippets_open {
@@ -3457,6 +3531,7 @@ impl DbClientApp {
                 RunStatus::Busy(m) => (m.clone(), theme.accent_primary),
                 RunStatus::Idle => ("Ready".to_string(), theme.text_dim),
             };
+            let strip_h = self.query_layout.result_strip.height();
             let (_, mh) = tr.measure(&msg, 12.0, None);
             tr.draw_text(
                 scene,
@@ -3465,7 +3540,7 @@ impl DbClientApp {
                 color,
                 t * Affine::translate((
                     self.main_rect.x0 + 12.0,
-                    strip_y + (QUERY_RESULT_STRIP_H - f64::from(mh)) / 2.0,
+                    strip_y + (strip_h - f64::from(mh)) / 2.0,
                 )),
                 None,
             );
@@ -3532,37 +3607,47 @@ impl DbClientApp {
 
     fn draw_data_tab(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let p = theme.db();
+        let bands = self.bands;
         let toolbar = Rect::new(
             self.main_rect.x0,
-            self.main_rect.y0 + TABBAR_H,
+            self.main_rect.y0 + bands.tabbar_h,
             self.main_rect.x1,
-            self.main_rect.y0 + TABBAR_H + TOOLBAR_H,
+            self.main_rect.y0 + bands.tabbar_h + bands.toolbar_h,
         );
         scene.fill(Fill::NonZero, t, p.panel_bg, None, &toolbar);
 
+        // Both toolbar messages centre on the toolbar's measured line rather
+        // than sitting at fixed 11/12 px offsets that only fit 1× text.
+        let centred = |tr: &mut TextRenderer, text: &str, size: f32| {
+            let (_, lh) = tr.measure(text, size, None);
+            toolbar.y0 + (toolbar.height() - f64::from(lh)) / 2.0
+        };
         match (&self.session.selected_table, &self.session.data_result) {
             (Some(name), Some(res)) => {
                 let total = self.session.selected_table_rows();
                 let from = self.session.data_offset + 1;
                 let to = (self.session.data_offset + res.rows.len()).min(total as usize);
                 let info = format!("{name}   ·   rows {from}–{to} of {total}");
+                let iy = centred(tr, &info, 13.0);
                 tr.draw_text(
                     scene,
                     &info,
                     13.0,
                     theme.text_primary,
-                    t * Affine::translate((toolbar.x0 + 12.0, toolbar.y0 + 11.0)),
+                    t * Affine::translate((toolbar.x0 + 12.0, iy)),
                     None,
                 );
                 self.data_grid.draw(scene, t, tr, theme, res);
             }
             _ => {
+                let hint = "Select a table in the schema browser to view its rows.";
+                let hy = centred(tr, hint, 14.0);
                 tr.draw_text(
                     scene,
-                    "Select a table in the schema browser to view its rows.",
+                    hint,
                     14.0,
                     theme.text_dim,
-                    t * Affine::translate((toolbar.x0 + 12.0, toolbar.y0 + 12.0)),
+                    t * Affine::translate((toolbar.x0 + 12.0, hy)),
                     None,
                 );
             }
@@ -3578,7 +3663,7 @@ impl DbClientApp {
     ) {
         let content = Rect::new(
             self.main_rect.x0 + 8.0,
-            self.main_rect.y0 + TABBAR_H + 8.0,
+            self.main_rect.y0 + self.bands.tabbar_h + 8.0,
             self.main_rect.x1 - 8.0,
             self.main_rect.y1 - 8.0,
         );
