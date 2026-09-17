@@ -1,6 +1,7 @@
 """Command/lifecycle proof only: no image or disk installer is executed."""
 from contextlib import contextmanager
 import importlib.util
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -33,6 +34,7 @@ class CreationTests(unittest.TestCase):
         @contextmanager
         def verified(args):
             events.append('verified')
+            self.verifier_auth = os.environ.get('REGISTRY_AUTH_FILE')
             try:
                 yield SimpleNamespace(image_id=self.image, root=Path('/fixture'),
                     public_bundle=Path('/public'), receipt={'source': args.source})
@@ -77,6 +79,8 @@ class CreationTests(unittest.TestCase):
             self.calls.append(argv)
             if argv[-1] == '--help':
                 return ' '.join(disk_creator.FLAGS) if help_text is None else help_text
+            if hasattr(self, 'inspect_install'):
+                self.inspect_install(argv)
             if fail:
                 raise ValueError('installer failed')
             return ''
@@ -110,6 +114,55 @@ class CreationTests(unittest.TestCase):
             self.execute()
         self.assertFalse(self.path.exists())
         self.assertNotIn('retained', self.events)
+
+    def test_private_auth_snapshot_scoped_to_bootc_and_removed(self):
+        original = Path(self.tmp.name) / 'input-auth.json'
+        original.write_text('{"auths":{"registry.invalid":{"auth":"test-secret"}}}')
+        observed = []
+        def inspect(argv):
+            mounts = [argv[i + 1] for i, item in enumerate(argv) if item == '--volume']
+            auth = next(value for value in mounts if '/run/tilo-registry-auth.json:ro' in value)
+            snapshot = Path(auth.split(':')[0])
+            self.assertNotEqual(snapshot, original)
+            self.assertEqual(snapshot.read_bytes(), original.read_bytes())
+            self.assertEqual(snapshot.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(snapshot.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(os.environ['REGISTRY_AUTH_FILE'], str(snapshot))
+            self.assertIn('REGISTRY_AUTH_FILE=/run/tilo-registry-auth.json', argv)
+            self.assertNotIn('test-secret', str(argv))
+            observed.append(snapshot)
+        self.inspect_install = inspect
+        with patch.dict(os.environ, {'REGISTRY_AUTH_FILE': str(original)}):
+            receipt = self.execute()
+            self.assertEqual(os.environ['REGISTRY_AUTH_FILE'], str(original))
+        self.assertFalse(observed[0].exists())
+        self.assertEqual(self.verifier_auth, str(observed[0]))
+        self.assertNotIn('test-secret', str(receipt))
+        self.assertNotIn('/run/tilo-registry-auth.json', str(self.calls[0]))
+
+    def test_auth_snapshot_removed_on_installer_failure(self):
+        original = Path(self.tmp.name) / 'auth.json'
+        original.write_text('{"auths":{}}')
+        snapshots = []
+        self.inspect_install = lambda argv: snapshots.append(Path(os.environ['REGISTRY_AUTH_FILE']))
+        with patch.dict(os.environ, {'REGISTRY_AUTH_FILE': str(original)}):
+            with self.assertRaisesRegex(ValueError, 'installer failed'):
+                self.execute(fail=True)
+            self.assertEqual(os.environ['REGISTRY_AUTH_FILE'], str(original))
+        self.assertFalse(snapshots[0].exists())
+        self.assertFalse(self.path.exists())
+        self.assertTrue(original.exists())
+
+    def test_rejects_redirected_auth_before_source_or_allocation(self):
+        original = Path(self.tmp.name) / 'auth.json'
+        original.write_text('{"auths":{}}')
+        redirected = Path(self.tmp.name) / 'redirect.json'
+        redirected.symlink_to(original)
+        with patch.dict(os.environ, {'REGISTRY_AUTH_FILE': str(redirected)}):
+            with self.assertRaises(OSError):
+                self.execute()
+            self.assertEqual(os.environ['REGISTRY_AUTH_FILE'], str(redirected))
+        self.assertEqual(self.events, [])
 
     def test_missing_policy_flag_never_allocates(self):
         with self.assertRaisesRegex(ValueError, 'required installation flag'):
