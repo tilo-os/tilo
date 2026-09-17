@@ -82,10 +82,6 @@ pub enum RealtimeCommand {
     Register {
         intent: RealtimeResumeIntent,
     },
-    Propose {
-        session: String,
-        target: String,
-    },
     Accept {
         session: String,
         /// Fresh target-local `CaptureBroker` capabilities. These cross only
@@ -107,9 +103,6 @@ impl RealtimeCommand {
     pub fn valid(&self) -> bool {
         match self {
             Self::Register { intent } => intent.valid(),
-            Self::Propose { session, target } => {
-                opaque_token(session) && portable_identifier(target, 256)
-            }
             Self::Accept {
                 session,
                 capture_authorizations,
@@ -138,7 +131,6 @@ impl RealtimeCommand {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RealtimeReply {
     Registered { session: String },
-    Proposed,
     Accepted,
     MediaReady,
     RolledBack,

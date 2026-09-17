@@ -4664,47 +4664,6 @@ impl channel_handle::Server for CapnpChannelHandle {
                 );
                 ui::realtime_continuity::RealtimeReply::Registered { session: token }
             }
-            ui::realtime_continuity::RealtimeCommand::Propose { session, target } => {
-                let target = match crate::shell::personal_continuity::DeviceId::new(target) {
-                    Ok(target) => target,
-                    Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-                };
-                let Some(binding) = bridge.sessions.get(&session) else {
-                    return Promise::err(capnp::Error::failed("unknown realtime session".into()));
-                };
-                if binding.owner_peer != self.peer_id
-                    || binding.app != app
-                    || binding.source != local
-                {
-                    return Promise::err(capnp::Error::failed(
-                        "realtime session binding mismatch".into(),
-                    ));
-                }
-                let (id, source) = (binding.id, binding.source.clone());
-                let proposed = bridge
-                    .broker
-                    .lock()
-                    .map_err(|_| {
-                        crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
-                    })
-                    .and_then(|mut broker| {
-                        broker.propose_target(&app, id, &source, target.clone(), now)
-                    });
-                if let Err(error) = proposed {
-                    return Promise::err(capnp::Error::failed(error.to_string()));
-                }
-                if let Err(error) =
-                    bridge
-                        .fabric
-                        .offer_to(id, &target, realtime_unix_ms().saturating_add(30_000))
-                {
-                    let _ = bridge.broker.lock().map(|mut broker| {
-                        let _ = broker.target_failed(&app, id, &source, &target, now);
-                    });
-                    return Promise::err(capnp::Error::failed(error.to_string()));
-                }
-                ui::realtime_continuity::RealtimeReply::Proposed
-            }
             ui::realtime_continuity::RealtimeCommand::Accept {
                 session,
                 capture_authorizations,
