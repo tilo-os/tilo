@@ -4,30 +4,48 @@
 //! host resolves that stable address against the fresh resource tree before it
 //! navigates, so stale rows never fall through to private activation code.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 
-use tilo_actions::ActionAddress;
+use tilo_actions::{ActionAddress, ActionSpec, OperationKind, Resource};
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
 
+use crate::actions::{EBOOK_OPERATION_TYPE, EbookOperation};
 use crate::model::{AnnoKind, Annotation, Book, LibraryEntry};
 
 pub const BOOK_KIND: &str = "Books";
 pub const CHAPTER_KIND: &str = "Chapters";
 pub const ANNOTATION_KIND: &str = "Annotations";
+
+fn chapter_label(chapter: &crate::model::Chapter, index: usize) -> String {
+    if chapter.title.trim().is_empty() {
+        format!("Chapter {}", index + 1)
+    } else {
+        chapter.title.clone()
+    }
+}
+
 #[derive(Clone)]
 pub struct BookSearchProvider {
     /// Tilo' shared, paged catalogue. It retains every resource row but never
     /// forces Ctrl+K to inspect/materialise the entire library in one turn.
     catalogue: SearchCatalog,
+    /// Search hits only retain a small, canonical view-action projection. The
+    /// full EPUB remains in the reader's content cache; Ctrl+K can materialise
+    /// one exact resource without rebuilding the library tree or duplicating
+    /// a chapter body.
+    resources: Arc<BTreeMap<String, Resource>>,
+    available: bool,
 }
 
 struct SearchEntry {
     haystack: String,
     result: SearchResult,
+    resource: Option<Resource>,
 }
 
 impl BookSearchProvider {
@@ -38,6 +56,10 @@ impl BookSearchProvider {
     /// Build from both locally hydrated books and the collaborative metadata
     /// registry. A peer can therefore find a title/author and its annotations
     /// before the content-addressed EPUB bytes finish hydrating on that device.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one staged builder keeps the complete atomic search projection auditable"
+    )]
     pub fn new_with_registry(
         books: &[Book],
         annotations: &[Annotation],
@@ -61,40 +83,51 @@ impl BookSearchProvider {
         let mut entries = Vec::new();
         for book in books {
             let title = Self::book_title(book);
-            let mut result =
-                SearchResult::for_action(BOOK_KIND, title, Self::book_address(&book.id))
-                    .with_icon(Icon::FileText);
+            let address = Self::book_address(&book.id);
+            let mut result = SearchResult::for_action(BOOK_KIND, title, address.clone())
+                .with_icon(Icon::FileText);
             if !book.author.trim().is_empty() {
                 result = result.with_subtitle(book.author.clone());
             }
             entries.push(SearchEntry {
                 haystack: format!("{} {}", title, book.author).to_lowercase(),
                 result,
+                resource: Self::reveal_resource(
+                    &address.resource,
+                    "ebook.book",
+                    title,
+                    &book.id,
+                    0,
+                    None,
+                ),
             });
             for (chapter, item) in book.chapters.iter().enumerate() {
-                let chapter_title = if item.title.trim().is_empty() {
-                    format!("Chapter {}", chapter + 1)
-                } else {
-                    item.title.clone()
-                };
-                let mut chapter_text = String::new();
+                let chapter_title = chapter_label(item, chapter);
+                // Keep one transient searchable row. The parsed book remains
+                // the sole owner of chapter text; the retained catalogue owns
+                // only its normalized compact index after `replace_all`.
+                let mut haystack = format!("{title} {} {chapter_title}", book.author);
                 for block in &item.blocks {
-                    chapter_text.push_str(&crate::model::Block::plain_text(block));
-                    chapter_text.push(' ');
+                    haystack.push(' ');
+                    haystack.push_str(&crate::model::Block::plain_text(block));
                 }
+                let address = Self::chapter_address(&book.id, chapter);
                 entries.push(SearchEntry {
                     // A chapter is part of its book, not an isolated file.
                     // Include book metadata here too so an author/title search
                     // brings matching passages along with the book row.
-                    haystack: format!("{title} {} {chapter_title} {chapter_text}", book.author)
-                        .to_lowercase(),
-                    result: SearchResult::for_action(
-                        CHAPTER_KIND,
-                        chapter_title,
-                        Self::chapter_address(&book.id, chapter),
-                    )
-                    .with_subtitle(format!("{} · Chapter {}", title, chapter + 1))
-                    .with_icon(Icon::List),
+                    haystack: haystack.to_lowercase(),
+                    result: SearchResult::for_action(CHAPTER_KIND, chapter_title, address.clone())
+                        .with_subtitle(format!("{} · Chapter {}", title, chapter + 1))
+                        .with_icon(Icon::List),
+                    resource: Self::reveal_resource(
+                        &address.resource,
+                        "ebook.chapter",
+                        &chapter_label(item, chapter),
+                        &book.id,
+                        chapter,
+                        None,
+                    ),
                 });
             }
         }
@@ -116,6 +149,10 @@ impl BookSearchProvider {
             entries.push(SearchEntry {
                 haystack: format!("{} {}", title, entry.author).to_lowercase(),
                 result,
+                // Metadata can safely be searched before bytes hydrate, but
+                // it must not advertise a local reveal action until this
+                // device actually has the book content.
+                resource: None,
             });
         }
         Self::append_annotation_entries(
@@ -127,16 +164,38 @@ impl BookSearchProvider {
         );
 
         let catalogue = SearchCatalog::new("Books");
+        let mut resources = BTreeMap::new();
+        let mut rows = Vec::with_capacity(entries.len());
         for entry in entries {
             let Some(address) = entry.result.action_address() else {
-                continue;
+                tracing::error!("withdrawing Books search after a non-canonical staged row");
+                return Self::unavailable(catalogue);
             };
-            // Every row above is constructed with `for_action`, and its
-            // resource id is therefore both stable and canonical. The shared
-            // catalogue enforces that contract defensively at this boundary.
-            let _ = catalogue.upsert(address.resource, entry.haystack, entry.result);
+            if let Some(resource) = entry.resource {
+                resources.insert(address.resource.clone(), resource);
+            }
+            rows.push((address.resource, entry.haystack, entry.result));
         }
-        Self { catalogue }
+        // Validate and publish the complete snapshot in one SearchCatalog
+        // generation. A malformed/duplicate row leaves this provider empty;
+        // it must never advertise a partial directory to agents or history.
+        if let Err(error) = catalogue.replace_all(rows) {
+            tracing::error!(%error, "withdrawing Books search after failed catalogue rebuild");
+            return Self::unavailable(catalogue);
+        }
+        Self {
+            catalogue,
+            resources: Arc::new(resources),
+            available: true,
+        }
+    }
+
+    fn unavailable(catalogue: SearchCatalog) -> Self {
+        Self {
+            catalogue,
+            resources: Arc::new(BTreeMap::new()),
+            available: false,
+        }
     }
 
     fn append_annotation_entries(
@@ -185,6 +244,13 @@ impl BookSearchProvider {
             } else {
                 ""
             };
+            let address = Self::annotation_address(annotation, highlight_groups);
+            let resource_kind = match annotation.kind {
+                AnnoKind::Highlight => "ebook.highlight",
+                AnnoKind::Bookmark => "ebook.bookmark",
+                AnnoKind::Note if !comment_alias.is_empty() => "ebook.comment",
+                AnnoKind::Note => "ebook.note",
+            };
             entries.push(SearchEntry {
                 haystack: format!(
                     "{book_title} {book_author} {kind} {comment_alias} {} {}",
@@ -194,7 +260,7 @@ impl BookSearchProvider {
                 result: SearchResult::for_action(
                     ANNOTATION_KIND,
                     Self::preview(annotation),
-                    Self::annotation_address(annotation, highlight_groups),
+                    address.clone(),
                 )
                 .with_subtitle(format!(
                     "{} · {} · Chapter {}",
@@ -206,6 +272,14 @@ impl BookSearchProvider {
                     AnnoKind::Bookmark => Icon::Star,
                     _ => Icon::List,
                 }),
+                resource: Self::reveal_resource(
+                    &address.resource,
+                    resource_kind,
+                    &Self::preview(annotation),
+                    &annotation.doc_id,
+                    annotation.chapter,
+                    Some(annotation.block),
+                ),
             });
         }
     }
@@ -258,6 +332,30 @@ impl BookSearchProvider {
             collapsed
         }
     }
+
+    fn reveal_resource(
+        id: &str,
+        kind: &str,
+        label: &str,
+        book_id: &str,
+        chapter: usize,
+        block: Option<usize>,
+    ) -> Option<Resource> {
+        let action = ActionSpec::operation(
+            "open",
+            "Open",
+            OperationKind::View,
+            EBOOK_OPERATION_TYPE,
+            &EbookOperation::Reveal {
+                book_id: book_id.to_string(),
+                chapter,
+                page: 0,
+                block,
+            },
+        )
+        .ok()?;
+        Some(Resource::new(id, kind, label).with_action(action))
+    }
 }
 
 impl SearchProvider for BookSearchProvider {
@@ -266,11 +364,11 @@ impl SearchProvider for BookSearchProvider {
     }
 
     fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalogue.stats().generation)
+        self.available.then(|| self.catalogue.stats().generation)
     }
 
     fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalogue.cursor_is_current(cursor)
+        self.available && self.catalogue.cursor_is_current(cursor)
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
@@ -278,7 +376,11 @@ impl SearchProvider for BookSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalogue.search_limited(query, limit)
+        if self.available {
+            self.catalogue.search_limited(query, limit)
+        } else {
+            Vec::new()
+        }
     }
     fn search_page(
         &self,
@@ -287,8 +389,27 @@ impl SearchProvider for BookSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
+        if !self.available {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        }
         self.catalogue
             .query_page(query, cursor, work_budget, result_limit)
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        self.resources
+            .get(&address.resource)
+            .filter(|resource| {
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == address.action)
+            })
+            .cloned()
     }
 }
 
@@ -610,5 +731,50 @@ mod tests {
         );
         assert_eq!(page.results.len(), 1);
         assert_eq!(page.results[0].title, "Late catalogue needle");
+    }
+
+    #[test]
+    fn lazy_result_resolution_materialises_only_the_exact_canonical_target() {
+        let books = sample_books();
+        let provider = BookSearchProvider::new(&books, &[]);
+        let needle = books[0].chapters[0]
+            .blocks
+            .iter()
+            .map(crate::model::Block::plain_text)
+            .find_map(|text| {
+                text.split_whitespace()
+                    .find(|word| word.len() > 7)
+                    .map(str::to_owned)
+            })
+            .expect("sample chapter has searchable prose");
+        let hit = provider
+            .search(&needle)
+            .into_iter()
+            .find(|hit| hit.kind == CHAPTER_KIND)
+            .expect("sample chapter is discoverable");
+        let address = hit.action_address().expect("canonical address");
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("a local chapter search hit resolves lazily");
+
+        assert_eq!(resource.id.as_str(), address.resource);
+        assert_eq!(resource.kind, "ebook.chapter");
+        assert!(resource.children.is_empty());
+        assert_eq!(resource.actions.len(), 1);
+        assert_eq!(resource.actions[0].id, address.action);
+        assert_eq!(resource.actions[0].kind, OperationKind::View);
+    }
+
+    #[test]
+    fn malformed_duplicate_catalogue_withdraws_instead_of_partially_publishing() {
+        let duplicate = Book {
+            id: "book:duplicate".into(),
+            title: "Duplicate title".into(),
+            ..Book::default()
+        };
+        let provider = BookSearchProvider::new(&[duplicate.clone(), duplicate], &[]);
+
+        assert_eq!(provider.action_directory_generation(), None);
+        assert!(provider.search("duplicate").is_empty());
     }
 }
