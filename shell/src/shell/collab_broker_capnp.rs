@@ -6772,6 +6772,13 @@ pub(crate) mod tests {
                 .map(|invocation| invocation.actor)
         }
 
+        pub(crate) fn take_invocation_argument(&mut self) -> Option<Option<String>> {
+            self.invocation_rx
+                .try_recv()
+                .ok()
+                .map(|invocation| invocation.argument)
+        }
+
         pub(crate) fn resolve_count(&self) -> usize {
             self.directory_state.borrow().resolve_count
         }

@@ -302,7 +302,18 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     auto size=qos::FrameSize(width,height);if(!size) return;
     if(type==PET_VIEW && !geometry_.PaintMatches(width,height)) {
       TraceGeometry("paint-stale",id_,width,height,geometry_.scale());
-      if(!stale_paint_recovery_pending_) { stale_paint_recovery_pending_=true;browser->GetHost()->Invalidate(PET_VIEW); }
+      if(!stale_paint_recovery_pending_) {
+        stale_paint_recovery_pending_=true;
+        // A paint invalidation can only repaint the renderer's old viewport.
+        // Reassert the latest geometry after this paint callback completes;
+        // rapid scale/layout changes may race an in-flight resize acknowledgement.
+        CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self) {
+          if(!self->browser_ || !self->visible_ || !self->stale_paint_recovery_pending_)return;
+          TraceGeometry("stale-geometry-reassert",self->id_);
+          auto host=self->browser_->GetHost();
+          host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
+        },CefRefPtr<Client>(this)));
+      }
       return;
     }
     if(type==PET_VIEW) { stale_paint_recovery_pending_=false;pixels_.assign(static_cast<const char*>(buffer),size);pixel_width_=width;pixel_height_=height; }
@@ -482,7 +493,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       const auto effect=geometry_.ResizePhysical(w,h,scale);
       TraceGeometry("resize-applied",id_,w,h,scale);
       stale_paint_recovery_pending_=false;
-      if(effect==qos::ResizeEffect::Repaint) { host->Invalidate(PET_VIEW);return; }
+      if(effect==qos::ResizeEffect::Repaint) { host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);return; }
       popup_.clear();pixels_.clear();host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
     } else if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
       CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/geometry_.scale());event.y=static_cast<int>(Number(d,"y")/geometry_.scale());event.modifiers=mouse_modifiers_|key_modifiers_;
