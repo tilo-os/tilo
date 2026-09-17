@@ -16,6 +16,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tilo_actions::{
     ActionAddress, ActionContract, ActionSpec, ConfirmationPolicy, ExecutionMode, OperationKind,
@@ -965,6 +966,11 @@ impl BookSearchProvider {
     pub(crate) fn action_search_provider(&self) -> BookActionSearchProvider {
         BookActionSearchProvider {
             books: self.clone(),
+            rows: Arc::clone(&self.action_rows),
+            tokens: Arc::clone(&self.action_tokens),
+            live_resources: Arc::new(BTreeMap::new()),
+            live_epoch: Arc::new(AtomicU64::new(self.generation)),
+            snapshot_epoch: self.generation,
         }
     }
 }
@@ -974,6 +980,55 @@ impl BookSearchProvider {
 #[derive(Clone)]
 pub(crate) struct BookActionSearchProvider {
     books: BookSearchProvider,
+    rows: Arc<Vec<(String, SearchResult)>>,
+    tokens: Arc<HashMap<String, Vec<usize>>>,
+    live_resources: Arc<BTreeMap<String, Resource>>,
+    live_epoch: Arc<AtomicU64>,
+    snapshot_epoch: u64,
+}
+
+impl BookActionSearchProvider {
+    pub(crate) fn with_live_resources(
+        mut self,
+        resources: Vec<Resource>,
+        live_epoch: Arc<AtomicU64>,
+        snapshot_epoch: u64,
+    ) -> Self {
+        let mut rows = (*self.rows).clone();
+        let mut tokens = (*self.tokens).clone();
+        let mut exact = BTreeMap::new();
+        let mut seen = rows
+            .iter()
+            .filter_map(|(_, result)| result.action_address())
+            .map(|address| (address.resource, address.action))
+            .collect::<HashSet<_>>();
+        for resource in resources {
+            for action in &resource.actions {
+                if !seen.insert((resource.id.as_str().to_string(), action.id.clone())) {
+                    continue;
+                }
+                let row = rows.len();
+                let result = SearchResult::for_action(
+                    "Book actions",
+                    action.label.clone(),
+                    ActionAddress::new(resource.id.as_str(), action.id.as_str()),
+                )
+                .with_subtitle(resource.label.clone());
+                let text = format!("{} {}", action.label, resource.label);
+                for token in index_metadata_tokens(&text) {
+                    tokens.entry(token).or_default().push(row);
+                }
+                rows.push((text, result));
+            }
+            exact.insert(resource.id.as_str().to_string(), resource);
+        }
+        self.rows = Arc::new(rows);
+        self.tokens = Arc::new(tokens);
+        self.live_resources = Arc::new(exact);
+        self.live_epoch = live_epoch;
+        self.snapshot_epoch = snapshot_epoch;
+        self
+    }
 }
 
 impl SearchProvider for BookActionSearchProvider {
@@ -982,11 +1037,13 @@ impl SearchProvider for BookActionSearchProvider {
     }
 
     fn action_directory_generation(&self) -> Option<u64> {
-        self.books.action_directory_generation()
+        (self.live_epoch.load(Ordering::Acquire) == self.snapshot_epoch)
+            .then_some(self.snapshot_epoch)
     }
 
     fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.books.action_directory_cursor_is_current(cursor)
+        self.live_epoch.load(Ordering::Acquire) == self.snapshot_epoch
+            && cursor.opaque_parts().0 == self.snapshot_epoch
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
@@ -1023,7 +1080,11 @@ impl SearchProvider for BookActionSearchProvider {
             None => 0,
             Some(cursor) => {
                 let (generation, cursor_query, state, ordinal) = cursor.opaque_parts();
-                if generation != self.books.generation || cursor_query != query || state.is_some() {
+                if generation != self.snapshot_epoch
+                    || cursor_query != query
+                    || state.is_some()
+                    || self.live_epoch.load(Ordering::Acquire) != self.snapshot_epoch
+                {
                     return SearchPage {
                         results: Vec::new(),
                         next: None,
@@ -1035,11 +1096,10 @@ impl SearchProvider for BookActionSearchProvider {
         };
         let candidates = query
             .split_whitespace()
-            .filter_map(|token| self.books.action_tokens.get(token))
+            .filter_map(|token| self.tokens.get(token))
             .min_by_key(|rows| rows.len());
-        let (length, at) = candidates.map_or((self.books.action_rows.len(), None), |rows| {
-            (rows.len(), Some(rows))
-        });
+        let (length, at) =
+            candidates.map_or((self.rows.len(), None), |rows| (rows.len(), Some(rows)));
         if offset > length {
             return SearchPage {
                 results: Vec::new(),
@@ -1054,14 +1114,14 @@ impl SearchProvider for BookActionSearchProvider {
             let row = at.map_or(index, |rows| rows[index]);
             index += 1;
             inspected += 1;
-            if let Some((text, result)) = self.books.action_rows.get(row)
+            if let Some((text, result)) = self.rows.get(row)
                 && normalized_contains(text, &query)
             {
                 results.push(result.clone());
             }
         }
         let next = (index < length)
-            .then(|| SearchCursor::opaque(self.books.generation, &query, None, Some(index as u64)));
+            .then(|| SearchCursor::opaque(self.snapshot_epoch, &query, None, Some(index as u64)));
         SearchPage {
             results,
             next,
@@ -1070,7 +1130,19 @@ impl SearchProvider for BookActionSearchProvider {
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
-        self.books.resolve_action_resource(address)
+        if self.live_epoch.load(Ordering::Acquire) != self.snapshot_epoch {
+            return None;
+        }
+        self.live_resources
+            .get(&address.resource)
+            .filter(|resource| {
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == address.action)
+            })
+            .cloned()
+            .or_else(|| self.books.resolve_action_resource(address))
     }
 }
 
@@ -1997,6 +2069,45 @@ mod tests {
                     .any(|action| action.id == address.action)
             );
         }
+    }
+
+    #[test]
+    fn live_action_rows_dedupe_and_stale_epochs_fail_closed() {
+        let book = Book {
+            id: "book".into(),
+            title: "Live book".into(),
+            ..Book::default()
+        };
+        let provider = BookSearchProvider::new(&[book], &[]);
+        let address = ActionAddress::new("ebook.book:book", "open");
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("book resource");
+        let epoch = Arc::new(AtomicU64::new(9));
+        let actions = provider.action_search_provider().with_live_resources(
+            vec![resource],
+            Arc::clone(&epoch),
+            9,
+        );
+        let opens = actions
+            .search("open")
+            .into_iter()
+            .filter(|result| result.action_address().as_ref() == Some(&address))
+            .count();
+        assert_eq!(
+            opens, 1,
+            "a live exact resource must not duplicate indexed actions"
+        );
+        epoch.store(10, Ordering::Release);
+        assert!(
+            !actions.action_directory_cursor_is_current(&SearchCursor::opaque(
+                9,
+                "open",
+                None,
+                Some(0)
+            ))
+        );
+        assert!(actions.resolve_action_resource(&address).is_none());
     }
 
     #[test]
