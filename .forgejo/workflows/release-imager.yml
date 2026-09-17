@@ -818,7 +818,7 @@ jobs:
           set -euo pipefail
           command -v brew >/dev/null
           export HOMEBREW_NO_AUTO_UPDATE=1
-          brew tap tilo/tilo https://code.sandbox.example/tilo/homebrew-tilo.git
+          brew tap tilo/tilo https://code.sandbox.example/qos/homebrew-tilo.git
           if [ "$PACKAGE_KIND" = formula ]; then
             brew install tilo/tilo/tilo-imager
             brew test tilo/tilo/tilo-imager

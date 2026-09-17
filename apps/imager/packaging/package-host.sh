@@ -266,7 +266,7 @@ case "$host" in
     cp apps/imager/packaging/linux/tilo-imager "$appdir/usr/bin/tilo-imager"
     cp apps/imager/packaging/linux/tilo-imager.desktop \
       "$appdir/usr/share/applications/org.tilo.Imager.desktop"
-    sed "s|https://code.sandbox.example/tilo/releases|$release_page|g" \
+    sed "s|https://code.sandbox.example/qos/releases|$release_page|g" \
       apps/imager/packaging/linux/org.tilo.Imager.metainfo.xml \
       >"$appdir/usr/share/metainfo/org.tilo.Imager.appdata.xml"
     cp apps/imager/packaging/linux/AppRun "$appdir/AppRun"

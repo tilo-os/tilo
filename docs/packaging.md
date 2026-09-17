@@ -102,10 +102,10 @@ TILO_DESKTOP_VERSION=0.1.7
 sudo install -d -m 0755 /etc/pki/rpm-gpg
 sudo curl --fail --location \
   --output /etc/pki/rpm-gpg/tilo-rpm-signing-key.asc \
-  "https://code.sandbox.example/tilo/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-rpm-signing-key.asc"
+  "https://code.sandbox.example/qos/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-rpm-signing-key.asc"
 sudo curl --fail --location \
   --output /etc/yum.repos.d/tilo.repo \
-  "https://code.sandbox.example/tilo/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-fedora-44.repo"
+  "https://code.sandbox.example/qos/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-fedora-44.repo"
 ```
 
 `gpgcheck=1` makes DNF/rpm-ostree verify every Tilo RPM. Forgejo's native RPM
@@ -180,10 +180,10 @@ printf 'machine code.sandbox.example login %s password %s\n' \
 TILO_DESKTOP_VERSION=0.1.7
 curl --fail --location --netrc-file "$TILO_NETRC" \
   --output "$TILO_REPO" \
-  "https://code.sandbox.example/tilo/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-fedora-44.repo"
+  "https://code.sandbox.example/qos/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-fedora-44.repo"
 curl --fail --location --netrc-file "$TILO_NETRC" \
   --output "$TILO_KEY" \
-  "https://code.sandbox.example/tilo/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-rpm-signing-key.asc"
+  "https://code.sandbox.example/qos/tilo/releases/download/desktop-v${TILO_DESKTOP_VERSION}/tilo-rpm-signing-key.asc"
 sudo install -o root -g root -m 0600 "$TILO_REPO" /etc/yum.repos.d/tilo.repo
 sudo install -o root -g root -m 0644 "$TILO_KEY" \
   /etc/pki/rpm-gpg/tilo-rpm-signing-key.asc
@@ -241,7 +241,7 @@ The flake exposes both a package and a module:
 
 ```nix
 {
-  inputs.tilo.url = "git+https://code.sandbox.example/tilo/tilo";
+  inputs.tilo.url = "git+https://code.sandbox.example/qos/tilo";
   outputs = { nixpkgs, tilo, ... }: {
     nixosConfigurations.my-machine = nixpkgs.lib.nixosSystem {
       modules = [
