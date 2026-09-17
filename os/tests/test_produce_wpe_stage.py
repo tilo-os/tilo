@@ -61,10 +61,12 @@ class ProducerTests(unittest.TestCase):
             path = Path(temporary) / 'private.log'
             path.write_text('error: registry authentication PRIVATE_AUTH\n'
                 + 'Source/WebCore/file.cpp:123:4: error: missing identifier\n' * 100
+                + 'g++: fatal error: Killed signal terminated program cc1plus\n'
                 + 'TILO_BUILD_TIMING phase=wpe elapsed_seconds=42 exit_code=1\n')
             evidence = producer.compiler_diagnostics(path)
             self.assertEqual(len(evidence['diagnostic_tail']), 80)
             self.assertNotIn('PRIVATE_AUTH', str(evidence))
+            self.assertIn('g++: fatal error: Killed signal terminated program cc1plus', evidence['diagnostic_tail'])
             self.assertEqual(evidence['compiler_timings'][0]['elapsed_seconds'], 42)
 
     def test_deadline_abort_and_nonzero_exit_preserve_failure_without_stage_receipt(self):
