@@ -198,15 +198,22 @@ restores that state; screenshot scenarios never save or consume shell commands.
 The installer registers `dev.tilo.clocks` on the Start menu shortcut and in the
 current user's notification display-name registry. The SDK's `notifications`
 feature provides Windows toast submission and app-scoped history inspection.
-Alerts obey Windows notification settings and Do Not Disturb. Clocks currently
-delivers alarms and completed timers while its window is running; scheduling
-after process exit and activation from a notification are still pending.
+Alerts obey Windows notification settings and Do Not Disturb. Clocks hands timer
+deadlines to Windows, so timers continue to notify after the app closes. Pausing
+or deleting a timer cancels its pending Windows alert. A saved receipt records
+the accepted deadline so reopening after delivery does not submit it again.
+Alarms still require the app to be running; closed-app alarm scheduling and
+activation from notifications are still pending.
 
 For device verification, build `cargo build --locked -p ui --example windows-host
 --features notifications`. The helper accepts `history dev.tilo.clocks` to inspect
 only Clocks' notifications and `remove dev.tilo.clocks TAG` to dismiss one test
 notification. `show ID TAG TITLE BODY` exercises the production SDK API; Windows
 may reject a settings query before the app's first notification is submitted.
+`schedule ID TAG SECONDS TITLE BODY`, `scheduled ID` and `cancel ID TAG` exercise
+the native scheduler. Scheduled IDs are limited to 15 UTF-16 units on this host;
+ordinary toast tags allow 16. First-use scheduler registration submits and removes
+a suppressed, short-lived notification before adding a schedule.
 
 For smaller local development artifacts, set `CARGO_PROFILE_DEV_DEBUG=0` and
 `CARGO_PROFILE_TEST_DEBUG=0` in the PowerShell environment before building. Do not

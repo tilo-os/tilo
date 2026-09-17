@@ -743,9 +743,13 @@ pub struct ClocksApp {
     #[cfg(windows)]
     native_notifications: Option<ui::host_notifications::HostNotifications>,
     #[cfg(windows)]
-    pending_notifications: Vec<(uuid::Uuid, String, String)>,
+    pending_notifications: Vec<(String, String, String)>,
     #[cfg(windows)]
     next_notification_attempt: std::time::Instant,
+    #[cfg(windows)]
+    last_scheduled_timers: String,
+    #[cfg(windows)]
+    next_schedule_attempt: std::time::Instant,
 }
 impl ClocksApp {
     #[must_use]
@@ -794,6 +798,10 @@ impl ClocksApp {
             pending_notifications: Vec::new(),
             #[cfg(windows)]
             next_notification_attempt: std::time::Instant::now(),
+            #[cfg(windows)]
+            last_scheduled_timers: String::new(),
+            #[cfg(windows)]
+            next_schedule_attempt: std::time::Instant::now(),
         }
     }
 
@@ -804,6 +812,15 @@ impl ClocksApp {
     /// shell observes it. A stable notification ID lets the producer keep the
     /// notice attached to later tombstones while the shell deduplicates it.
     fn remember_due(&mut self, event: DueEvent) {
+        #[cfg(windows)]
+        let native = match &event {
+            DueEvent::Timer {
+                id,
+                native_scheduled,
+                ..
+            } => Some((native_timer_id(*id), *native_scheduled)),
+            DueEvent::Alarm { .. } => None,
+        };
         let (title, body) = match event {
             DueEvent::Alarm { label, .. } => ("Alarm".to_owned(), label),
             DueEvent::Timer { label, .. } => ("Timer finished".to_owned(), label),
@@ -811,7 +828,16 @@ impl ClocksApp {
         let notice = (uuid::Uuid::new_v4(), title, body);
         #[cfg(windows)]
         if self.persistent {
-            self.pending_notifications.push(notice.clone());
+            let (tag, scheduled) = native.unwrap_or_else(|| {
+                (
+                    notice.0.simple().to_string().chars().take(16).collect(),
+                    false,
+                )
+            });
+            if !scheduled {
+                self.pending_notifications
+                    .push((tag, notice.1.clone(), notice.2.clone()));
+            }
         }
         self.last_notification = Some(notice);
     }
@@ -831,9 +857,8 @@ impl ClocksApp {
             }
         }
         if let Some(host) = &self.native_notifications {
-            self.pending_notifications.retain(|(id, title, body)| {
-                let tag: String = id.simple().to_string().chars().take(16).collect();
-                match host.show(&tag, title, body) {
+            self.pending_notifications.retain(|(tag, title, body)| {
+                match host.show(tag, title, body) {
                     Ok(()) => false,
                     Err(error) => {
                         eprintln!("Windows Clocks notification delivery: {error}");
@@ -843,6 +868,95 @@ impl ClocksApp {
             });
         }
     }
+
+    #[cfg(windows)]
+    fn schedule_native_timers(&mut self, now: chrono::DateTime<Utc>) {
+        if !self.persistent || std::time::Instant::now() < self.next_schedule_attempt {
+            return;
+        }
+        let encoded = self
+            .state
+            .with(|s| serde_json::to_string(&s.timers).unwrap_or_default());
+        if encoded == self.last_scheduled_timers {
+            return;
+        }
+        let result = self.reconcile_native_timers(now);
+        match result {
+            Ok(()) => {
+                self.last_scheduled_timers = self
+                    .state
+                    .with(|s| serde_json::to_string(&s.timers).unwrap_or_default())
+            }
+            Err(error) => {
+                eprintln!("Windows Clocks scheduling: {error}");
+                self.next_schedule_attempt = std::time::Instant::now() + Duration::from_secs(5);
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn reconcile_native_timers(&mut self, now: chrono::DateTime<Utc>) -> Result<(), String> {
+        if self.native_notifications.is_none() {
+            self.native_notifications = Some(
+                ui::host_notifications::HostNotifications::new("dev.tilo.clocks")
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+        let Some(host) = &self.native_notifications else {
+            return Err("notification host unavailable".into());
+        };
+        let wanted = self.state.with(|s| {
+            s.timers
+                .iter()
+                .filter(|timer| timer.ends_at_utc.is_some())
+                .map(|timer| native_timer_id(timer.id))
+                .collect::<std::collections::HashSet<_>>()
+        });
+        for pending in host.scheduled().map_err(|error| error.to_string())? {
+            // An elapsed toast may still be in the delivery queue. Do not
+            // cancel it just because tick has marked its timer complete.
+            if pending.id.starts_with('t')
+                && !wanted.contains(&pending.id)
+                && pending.delivery_time > std::time::SystemTime::now()
+            {
+                host.cancel_schedule(&pending.id)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        let mut result = Ok(());
+        self.state.update(|s| {
+            for timer in &mut s.timers {
+                let Some(end) = timer.ends_at_utc else {
+                    timer.native_scheduled_end = None;
+                    continue;
+                };
+                if end <= now {
+                    continue;
+                }
+                match host.schedule(
+                    &native_timer_id(timer.id),
+                    "Timer finished",
+                    &timer.label,
+                    end.into(),
+                ) {
+                    Ok(()) => timer.native_scheduled_end = Some(end),
+                    Err(error) => {
+                        timer.native_scheduled_end = None;
+                        result = Err(error.to_string());
+                    }
+                }
+            }
+        });
+        result
+    }
+}
+
+#[cfg(windows)]
+fn native_timer_id(id: uuid::Uuid) -> String {
+    format!(
+        "t{}",
+        id.simple().to_string().chars().take(14).collect::<String>()
+    )
 }
 impl Default for ClocksApp {
     fn default() -> Self {
@@ -923,6 +1037,8 @@ impl Widget for ClocksApp {
                 .update(|state| state.apply_shell_command(&cmd, activity_id, now));
         }
         let mut due = Vec::new();
+        #[cfg(windows)]
+        self.schedule_native_timers(now);
         self.state
             .update(|s| due = s.tick(now, chrono::Local::now()));
         for event in due {
@@ -1059,6 +1175,27 @@ mod tests {
     use chrono::Utc;
     use std::collections::BTreeSet;
     use std::time::Duration;
+
+    #[cfg(windows)]
+    #[test]
+    fn native_handoff_does_not_queue_a_second_live_alert() {
+        let mut app = ClocksApp::scenario("empty");
+        app.persistent = true;
+        let id = uuid::Uuid::new_v4();
+        app.remember_due(DueEvent::Timer {
+            id,
+            label: "Tea".into(),
+            native_scheduled: true,
+        });
+        assert!(app.pending_notifications.is_empty());
+        app.remember_due(DueEvent::Timer {
+            id,
+            label: "Tea".into(),
+            native_scheduled: false,
+        });
+        assert_eq!(app.pending_notifications.len(), 1);
+        assert_eq!(app.pending_notifications[0].0, super::native_timer_id(id));
+    }
 
     #[test]
     fn timer_changes_request_layout_rebuild_and_wake_without_collaboration() {
