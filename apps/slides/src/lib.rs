@@ -48,6 +48,7 @@ pub mod pptx;
 mod presentation;
 pub mod render;
 pub mod search_provider;
+pub mod strings;
 mod toolbar_tools;
 
 pub use app::{PresentSurface, SlidesApp};
