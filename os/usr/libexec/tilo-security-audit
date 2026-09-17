@@ -176,6 +176,11 @@ if grep -Fqx '# CONFIG_ACPI_CUSTOM_METHOD is not set' "$running_kernel_config" 2
 else
   warn "running kernel retains a runtime ACPI or SSDT injection path"
 fi
+if grep -Fqx '# CONFIG_DEBUG_FS is not set' "$running_kernel_config" 2>/dev/null; then
+  ok "kernel debugfs control surface is not compiled"
+else
+  warn "kernel debugfs control surface remains compiled"
+fi
 for interface in \
   DEVKMEM PROC_KCORE COREDUMP FW_LOADER_USER_HELPER \
   FW_LOADER_USER_HELPER_FALLBACK TLS CRYPTO_USER_API; do
