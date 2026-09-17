@@ -7,6 +7,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 workflow="$repo/.forgejo/workflows/snapshot-rpms.yml"
 snapshot="$repo/os/Containerfile.rpms"
 image_workflow="$repo/.forgejo/workflows/build-image.yml"
+relay_workflow="$repo/.forgejo/workflows/tilo-relay.yaml"
 build_script="$repo/os/dev/build-image.sh"
 asset_manifest="$repo/os/external-assets/github-assets.tsv"
 derive="$repo/os/dev/derive-rpm-package-set.py"
@@ -137,6 +138,8 @@ has "$snapshot" 'dnf install -y --downloadonly --setopt=reposdir=/repo ${resolve
   'snapshot proves the frozen repo resolves the complete transaction offline'
 has "$image_workflow" './os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"' \
   'production CI rejects a stale frozen package manifest before building'
+has "$relay_workflow" './os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"' \
+  'relay CI rejects a stale frozen package manifest before building'
 has "$build_script" 'verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF"' \
   'local production builds reject a stale frozen package manifest'
 

@@ -87,6 +87,9 @@ jobs:
           echo "RPMS_REF=$RPMS_REF" >> "$GITHUB_ENV"
           echo "rpms=$RPMS_REF"
 
+      - name: Verify the frozen RPM package set
+        run: ./os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"
+
       - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
