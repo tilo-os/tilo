@@ -3,7 +3,7 @@
 // trips `refining_impl_trait`.
 #![allow(refining_impl_trait)]
 
-//! Native Cap'n Proto server for the qOS collaboration broker.
+//! Native Cap'n Proto server for the Tilo collaboration broker.
 //!
 //! Answers the `runtime-collab` schema on the shell's collaboration socket.
 //!
@@ -93,7 +93,7 @@ fn stage_launch_content(
     }
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map_or_else(std::env::temp_dir, PathBuf::from)
-        .join("qos-opened");
+        .join("tilo-opened");
     std::fs::create_dir_all(&dir).map_err(|error| format!("create launch staging: {error}"))?;
     #[cfg(unix)]
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
@@ -310,10 +310,10 @@ fn verify_join_presentation(
     if presentation.workspace_id != route.cluster_id {
         return Err("certified join is scoped to a different workspace".into());
     }
-    let cert: qos_user_identity::DeviceCert =
+    let cert: tilo_user_identity::DeviceCert =
         serde_json::from_slice(&presentation.device_certificate)
             .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
-    qos_user_identity::verify_device_cert_at(&cert, now_ns)
+    tilo_user_identity::verify_device_cert_at(&cert, now_ns)
         .map_err(|error| format!("device certificate was rejected: {error}"))?;
     if &cert.user_public_key != expected_user_public_key {
         return Err("device certificate belongs to another workspace identity".into());
@@ -350,7 +350,7 @@ fn verify_join_identity(
     else {
         return Err("collaboration join requires a certified device presentation".into());
     };
-    let cert: qos_user_identity::DeviceCert =
+    let cert: tilo_user_identity::DeviceCert =
         serde_json::from_slice(&presentation.device_certificate)
             .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
     let (expected_root, revoked, enrolled) = if let Some(devices) = trusted_devices {
@@ -446,9 +446,9 @@ pub struct PublishedAction {
     pub resource_label: String,
     pub action_label: String,
     pub description: Option<String>,
-    pub operation_kind: qos_actions::OperationKind,
-    pub params: Vec<qos_actions::ActionParam>,
-    pub contract: qos_actions::ActionContract,
+    pub operation_kind: tilo_actions::OperationKind,
+    pub params: Vec<tilo_actions::ActionParam>,
+    pub contract: tilo_actions::ActionContract,
     pub input: PublishedInput,
 }
 
@@ -472,7 +472,7 @@ struct InvocationEnvelope {
     action: String,
     argument: Option<String>,
     actor: String,
-    context: Option<qos_actions::ActionContext>,
+    context: Option<tilo_actions::ActionContext>,
 }
 
 #[derive(Clone, Debug)]
@@ -482,7 +482,7 @@ struct TaskRunEnvelope {
     run_id: u64,
     lease: String,
     planning: runtime_collab::TaskRunPlanning,
-    action_context: qos_actions::ActionContext,
+    action_context: tilo_actions::ActionContext,
 }
 
 #[derive(Clone, Debug)]
@@ -499,7 +499,7 @@ struct PendingTaskRun {
     cluster_id: String,
     task_id: String,
     lease: String,
-    action_context: qos_actions::ActionContext,
+    action_context: tilo_actions::ActionContext,
     terminal: bool,
 }
 
@@ -518,16 +518,16 @@ pub struct InvocationJob {
 struct PendingInvocation {
     peer_id: u64,
     tx: std::sync::mpsc::Sender<InvocationCompletion>,
-    update: qos_actions::InvocationUpdate,
+    update: tilo_actions::InvocationUpdate,
     last_sequence: u64,
     actor: String,
     cancellable: bool,
     retryable_on_disconnect: bool,
-    execution: qos_actions::ExecutionMode,
-    result: qos_actions::ResultSpec,
-    operation_kind: qos_actions::OperationKind,
+    execution: tilo_actions::ExecutionMode,
+    result: tilo_actions::ResultSpec,
+    operation_kind: tilo_actions::OperationKind,
     cluster_id: String,
-    context: qos_actions::ActionContext,
+    context: tilo_actions::ActionContext,
     /// Admission/progress heartbeat. A silent application must not leave a
     /// broker-owned job in `Accepted` forever.
     last_activity: std::time::Instant,
@@ -629,7 +629,7 @@ pub enum DirectoryActionConfirmation {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StartedDirectoryAction {
     pub invocation_id: u64,
-    pub initial_update: qos_actions::InvocationUpdate,
+    pub initial_update: tilo_actions::InvocationUpdate,
 }
 
 /// A bounded bridge failure.  `Busy` is deliberate backpressure: palette
@@ -1274,7 +1274,7 @@ pub struct CapnpBrokerState {
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
-    completed_invocations: Mutex<HashMap<u64, (String, qos_actions::InvocationUpdate)>>,
+    completed_invocations: Mutex<HashMap<u64, (String, tilo_actions::InvocationUpdate)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     task_subscribers: Mutex<HashMap<u64, TaskSubscription>>,
@@ -1564,9 +1564,9 @@ impl CapnpBrokerState {
                 code: code.into(),
                 message: message.into(),
             };
-            let update = qos_actions::InvocationUpdate::Failed {
-                invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
-                error: qos_actions::ActionFailure {
+            let update = tilo_actions::InvocationUpdate::Failed {
+                invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
+                error: tilo_actions::ActionFailure {
                     code: completion.code.clone(),
                     message: completion.message.clone(),
                     details: None,
@@ -1582,7 +1582,7 @@ impl CapnpBrokerState {
         }
     }
 
-    fn record_completion(&self, id: u64, actor: String, update: qos_actions::InvocationUpdate) {
+    fn record_completion(&self, id: u64, actor: String, update: tilo_actions::InvocationUpdate) {
         if let Ok(mut completed) = self.completed_invocations.lock() {
             completed.insert(id, (actor, update));
             while completed.len() > Self::MAX_RETAINED_INVOCATIONS {
@@ -1597,12 +1597,12 @@ impl CapnpBrokerState {
     fn record_effect_receipt(
         &self,
         pending: &PendingInvocation,
-        update: &qos_actions::InvocationUpdate,
+        update: &tilo_actions::InvocationUpdate,
     ) {
-        if pending.operation_kind != qos_actions::OperationKind::Effect {
+        if pending.operation_kind != tilo_actions::OperationKind::Effect {
             return;
         }
-        let Some(status) = qos_actions::EffectReceiptStatus::from_terminal(update) else {
+        let Some(status) = tilo_actions::EffectReceiptStatus::from_terminal(update) else {
             return;
         };
         let Some(membership) = &self.membership else {
@@ -2259,14 +2259,14 @@ impl CapnpBrokerState {
         action: &str,
         argument: Option<&str>,
         actor: &BrokerActor,
-        contract: &qos_actions::ActionContract,
+        contract: &tilo_actions::ActionContract,
         confirmation: Option<DirectoryActionConfirmation>,
     ) -> Result<Option<String>, ActionDirectoryBridgeError> {
         match &contract.confirmation {
-            qos_actions::ConfirmationPolicy::None => return Ok(None),
-            qos_actions::ConfirmationPolicy::Confirm
+            tilo_actions::ConfirmationPolicy::None => return Ok(None),
+            tilo_actions::ConfirmationPolicy::Confirm
                 if matches!(confirmation, Some(DirectoryActionConfirmation::Confirmed)) => {}
-            qos_actions::ConfirmationPolicy::Phrase { phrase } if matches!(&confirmation, Some(DirectoryActionConfirmation::Phrase(value)) if value == phrase) =>
+            tilo_actions::ConfirmationPolicy::Phrase { phrase } if matches!(&confirmation, Some(DirectoryActionConfirmation::Phrase(value)) if value == phrase) =>
                 {}
             _ => return Err(ActionDirectoryBridgeError::ConfirmationRequired),
         }
@@ -2313,16 +2313,17 @@ impl CapnpBrokerState {
                 "action directory contract must be non-empty and bounded".into(),
             ));
         }
-        let contract = serde_json::from_str::<qos_actions::ActionContract>(contract_json).map_err(
-            |error| capnp::Error::failed(format!("invalid action directory contract: {error}")),
-        )?;
+        let contract = serde_json::from_str::<tilo_actions::ActionContract>(contract_json)
+            .map_err(|error| {
+                capnp::Error::failed(format!("invalid action directory contract: {error}"))
+            })?;
         let Some(verb) = (match contract.permission {
-            qos_actions::PermissionRequirement::None => None,
-            qos_actions::PermissionRequirement::Read => Some(Verb::Read),
-            qos_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-            qos_actions::PermissionRequirement::Write => Some(Verb::Write),
-            qos_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-            qos_actions::PermissionRequirement::Admin => Some(Verb::Admin),
+            tilo_actions::PermissionRequirement::None => None,
+            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
+            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
+            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
         }) else {
             return Ok(true);
         };
@@ -2413,12 +2414,12 @@ impl CapnpBrokerState {
                     .into_iter()
                     .filter(|action| {
                         let Some(verb) = (match action.contract.permission {
-                            qos_actions::PermissionRequirement::None => None,
-                            qos_actions::PermissionRequirement::Read => Some(Verb::Read),
-                            qos_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-                            qos_actions::PermissionRequirement::Write => Some(Verb::Write),
-                            qos_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-                            qos_actions::PermissionRequirement::Admin => Some(Verb::Admin),
+                            tilo_actions::PermissionRequirement::None => None,
+                            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
+                            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+                            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
+                            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+                            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
                         }) else {
                             return true;
                         };
@@ -2471,6 +2472,68 @@ impl CapnpBrokerState {
                 })
             })
             .collect::<Vec<_>>();
+        let profile_resource =
+            crate::shell::workspace_settings::permission_profile_resource_with_access(
+                &workspace, true,
+            );
+        let profile_actions = tilo_actions::door::survey(&[profile_resource])
+            .into_iter()
+            .filter(|descriptor| {
+                let verb = match descriptor.contract.permission {
+                    tilo_actions::PermissionRequirement::None => return true,
+                    tilo_actions::PermissionRequirement::Read => Verb::Read,
+                    tilo_actions::PermissionRequirement::Comment => Verb::Comment,
+                    tilo_actions::PermissionRequirement::Write => Verb::Write,
+                    tilo_actions::PermissionRequirement::Invite => Verb::Invite,
+                    tilo_actions::PermissionRequirement::Admin => Verb::Admin,
+                };
+                workspace.decide(
+                    &caller,
+                    &ResourceRef::Action {
+                        app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                        action: descriptor.address.action.clone(),
+                    },
+                    verb,
+                ) == CapDecision::Allow
+            })
+            .map(|descriptor| {
+                let input = match descriptor.input {
+                    tilo_actions::InputSpec::None => serde_json::json!({"kind": "none"}),
+                    tilo_actions::InputSpec::Text {
+                        prompt,
+                        placeholder,
+                        collects,
+                    } => serde_json::json!({
+                        "kind": "text",
+                        "prompt": prompt,
+                        "placeholder": placeholder,
+                        "wants_content": collects == tilo_actions::Collects::Content,
+                    }),
+                };
+                serde_json::json!({
+                    "resource": descriptor.address.resource,
+                    "action": descriptor.address.action,
+                    "resource_kind": descriptor.resource_kind,
+                    "resource_label": descriptor.resource_label,
+                    "action_label": descriptor.action_label,
+                    "description": descriptor.description,
+                    "operation_kind": descriptor.kind,
+                    "params": descriptor.params,
+                    "contract": descriptor.contract,
+                    "input": input,
+                })
+            })
+            .collect::<Vec<_>>();
+        if !profile_actions.is_empty() {
+            surfaces.push(serde_json::json!({
+                "peer_id": 0,
+                "app_id": crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID,
+                "cluster_id": cluster_id,
+                "record_id": "workspace-governance",
+                "live": true,
+                "actions": profile_actions,
+            }));
+        }
         for app in crate::shell::launcher::gui_apps()
             .into_iter()
             .filter(|app| !live_apps.contains(&app.package_id))
@@ -2497,9 +2560,9 @@ impl CapnpBrokerState {
                     "resource_label": display_name,
                     "action_label": format!("Open {display_name}"),
                     "description": "Launch this application into the current workspace",
-                    "operation_kind": qos_actions::OperationKind::Effect,
+                    "operation_kind": tilo_actions::OperationKind::Effect,
                     "params": [],
-                    "contract": qos_actions::ActionContract::default(),
+                    "contract": tilo_actions::ActionContract::default(),
                     "input": {"kind": "none"},
                 }],
             }));
@@ -2540,6 +2603,176 @@ impl CapnpBrokerState {
                 subscribers.remove(&peer);
             }
         }
+    }
+
+    /// Execute the shell-owned permission-profile surface advertised with
+    /// peer id zero. Unlike an application action there is no UI process to
+    /// forward to: the broker already owns the workspace capability authority,
+    /// so it validates, mutates, records history, and returns one terminal
+    /// lifecycle update atomically under that authority.
+    fn invoke_workspace_profile_action(
+        &self,
+        cluster_id: &str,
+        actor: &BrokerActor,
+        resource_id: &str,
+        action_id: &str,
+        argument: Option<&str>,
+        confirmation: &serde_json::Value,
+    ) -> Result<(u64, tilo_actions::InvocationUpdate), String> {
+        fn find_resource<'a>(
+            resource: &'a tilo_actions::Resource,
+            id: &str,
+        ) -> Option<&'a tilo_actions::Resource> {
+            if resource.id.as_str() == id {
+                return Some(resource);
+            }
+            resource
+                .children
+                .iter()
+                .find_map(|child| find_resource(child, id))
+        }
+
+        let membership = self
+            .membership
+            .as_ref()
+            .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
+        let mut tree = membership.write();
+        let workspace_index = tree
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.room.to_string() == cluster_id)
+            .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
+        let caller = if actor.is_agent {
+            tree.workspaces[workspace_index]
+                .actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
+        } else {
+            tree.workspaces[workspace_index].actor_for_person(&actor.id)
+        };
+        let surface = crate::shell::workspace_settings::permission_profile_resource_with_access(
+            &tree.workspaces[workspace_index],
+            true,
+        );
+        let resource = find_resource(&surface, resource_id)
+            .ok_or_else(|| "unknown workspace governance resource".to_string())?;
+        let spec = resource
+            .actions
+            .iter()
+            .find(|candidate| candidate.id == action_id)
+            .ok_or_else(|| "unknown workspace governance action".to_string())?;
+        if confirmation
+            .get("confirm")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            return Err("explicit confirmation is required".into());
+        }
+        if tree.workspaces[workspace_index].decide(
+            &caller,
+            &ResourceRef::Action {
+                app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                action: action_id.into(),
+            },
+            Verb::Admin,
+        ) != CapDecision::Allow
+        {
+            return Err("the caller is not allowed to manage permission profiles".into());
+        }
+        let json = argument
+            .and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
+            .ok_or_else(|| "workspace governance action requires typed arguments".to_string())?;
+        let arguments = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+            .map_err(|error| format!("invalid workspace governance arguments: {error}"))?;
+        let encoded = spec
+            .build_json(&arguments)
+            .map_err(|error| format!("invalid workspace governance arguments: {error}"))?;
+        if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE {
+            return Err(format!(
+                "invalid workspace governance arguments: {}",
+                String::from_utf8_lossy(&encoded.payload)
+            ));
+        }
+        if encoded.type_id != crate::shell::workspace_settings::PERMISSION_PROFILE_ACTION_TYPE {
+            return Err("workspace governance action encoded an unexpected operation".into());
+        }
+        let operation = serde_json::from_slice::<
+            crate::shell::workspace_settings::PermissionProfileOperation,
+        >(&encoded.payload)
+        .map_err(|error| format!("invalid workspace governance operation: {error}"))?;
+        let workspace_id = tree.workspaces[workspace_index].id;
+        match operation {
+            crate::shell::workspace_settings::PermissionProfileOperation::Save {
+                name,
+                description,
+                rules,
+            } => {
+                let profile = collab_types::PermissionProfile {
+                    name,
+                    description,
+                    rules,
+                };
+                tree.workspaces[workspace_index]
+                    .save_permission_profile_as_actor(&caller, profile.clone())
+                    .map_err(|error| error.to_string())?;
+                tree.doc_upsert_permission_profile(workspace_id, &profile);
+            }
+            crate::shell::workspace_settings::PermissionProfileOperation::Assign {
+                profile,
+                subject_kind,
+                subject,
+                expires_unix,
+            } => {
+                let subject = match subject_kind.trim().to_ascii_lowercase().as_str() {
+                    "person" => collab_types::Subject::person(subject.trim()),
+                    "app" => collab_types::Subject::app(subject.trim()),
+                    "agent" => collab_types::Subject::agent(subject.trim()),
+                    _ => return Err("subject_kind must be person, app, or agent".into()),
+                };
+                let expiry = (expires_unix > 0)
+                    .then_some(expires_unix)
+                    .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
+                let ids = tree.workspaces[workspace_index]
+                    .assign_permission_profile_as_actor(&caller, &profile, subject, expiry)
+                    .map_err(|error| error.to_string())?;
+                let capabilities = tree.workspaces[workspace_index]
+                    .capabilities
+                    .iter()
+                    .filter(|capability| ids.contains(&capability.id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for capability in capabilities {
+                    tree.doc_insert_capability(workspace_id, &capability);
+                }
+            }
+        }
+        let id = self.invocation_id.fetch_add(1, Ordering::Relaxed);
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let update = tilo_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: tilo_actions::ActionOutput::default(),
+        };
+        let context = tilo_actions::ActionContext::for_resource(
+            &spec.label,
+            resource.id.as_str(),
+            &resource.kind,
+            &resource.label,
+        )
+        .with_app(
+            crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID,
+            "Workspace permissions",
+        );
+        let _ = tree.append_workspace_effect_receipt(
+            workspace_id,
+            invocation,
+            &actor.id,
+            context,
+            tilo_actions::EffectReceiptStatus::Succeeded,
+        );
+        tree.external_revision = tree.external_revision.wrapping_add(1);
+        tree.flush_to_disk();
+        drop(tree);
+        self.record_completion(id, actor.id.clone(), update.clone());
+        self.publish_action_catalogue();
+        Ok((id, update))
     }
 
     /// Address one operation back to the exact connection that published it.
@@ -2604,11 +2837,11 @@ impl CapnpBrokerState {
                 })
                 .ok_or_else(|| "the application no longer publishes that action".to_string())?;
         match &offered.contract.confirmation {
-            qos_actions::ConfirmationPolicy::None => {
+            tilo_actions::ConfirmationPolicy::None => {
                 return Err("the action does not require confirmation".into());
             }
-            qos_actions::ConfirmationPolicy::Confirm => {}
-            qos_actions::ConfirmationPolicy::Phrase { phrase: expected } => {
+            tilo_actions::ConfirmationPolicy::Confirm => {}
+            tilo_actions::ConfirmationPolicy::Phrase { phrase: expected } => {
                 if phrase != Some(expected.as_str()) {
                     return Err("the confirmation phrase did not match".into());
                 }
@@ -2683,7 +2916,7 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         actor: &BrokerActor,
         confirmation_token: Option<&str>,
-        context: Option<qos_actions::ActionContext>,
+        context: Option<tilo_actions::ActionContext>,
     ) -> Result<InvocationJob, String> {
         let offered = self
             .surfaces
@@ -2725,7 +2958,7 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         actor: &BrokerActor,
         confirmation_token: Option<&str>,
-        context: Option<qos_actions::ActionContext>,
+        context: Option<tilo_actions::ActionContext>,
     ) -> Result<InvocationJob, String> {
         let sender = self
             .invocation_subscribers
@@ -2755,18 +2988,18 @@ impl CapnpBrokerState {
             app: offered.0.app_id.clone(),
             action: offered.1.action.clone(),
         };
-        if let qos_actions::Availability::Unavailable { reason, .. } =
+        if let tilo_actions::Availability::Unavailable { reason, .. } =
             &offered.1.contract.availability
         {
             return Err(format!("the application action is unavailable: {reason}"));
         }
         let verb = match offered.1.contract.permission {
-            qos_actions::PermissionRequirement::None => None,
-            qos_actions::PermissionRequirement::Read => Some(Verb::Read),
-            qos_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-            qos_actions::PermissionRequirement::Write => Some(Verb::Write),
-            qos_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-            qos_actions::PermissionRequirement::Admin => Some(Verb::Admin),
+            tilo_actions::PermissionRequirement::None => None,
+            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
+            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
+            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
         };
         if verb.is_some_and(|verb| workspace.decide(&caller, &target, verb) != CapDecision::Allow) {
             return Err("the caller is not allowed to invoke that application action".into());
@@ -2774,7 +3007,7 @@ impl CapnpBrokerState {
         drop(tree);
         if !matches!(
             offered.1.contract.confirmation,
-            qos_actions::ConfirmationPolicy::None
+            tilo_actions::ConfirmationPolicy::None
         ) {
             let token = confirmation_token.ok_or_else(|| {
                 "action_confirmation_required: request and present a one-use confirmation token"
@@ -2800,7 +3033,7 @@ impl CapnpBrokerState {
         }
         let id = self.invocation_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut receipt_context = qos_actions::ActionContext::for_resource(
+        let mut receipt_context = tilo_actions::ActionContext::for_resource(
             &offered.1.action_label,
             &offered.1.resource,
             &offered.1.resource_kind,
@@ -2818,8 +3051,8 @@ impl CapnpBrokerState {
                 PendingInvocation {
                     peer_id,
                     tx,
-                    update: qos_actions::InvocationUpdate::Accepted {
-                        invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(
+                    update: tilo_actions::InvocationUpdate::Accepted {
+                        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(
                             id,
                         ))),
                     },
@@ -2827,16 +3060,16 @@ impl CapnpBrokerState {
                     actor: actor.id.clone(),
                     cancellable: matches!(
                         offered.1.contract.execution,
-                        qos_actions::ExecutionMode::Background { cancellable: true }
-                            | qos_actions::ExecutionMode::Streaming {
+                        tilo_actions::ExecutionMode::Background { cancellable: true }
+                            | tilo_actions::ExecutionMode::Streaming {
                                 cancellable: true,
                                 ..
                             }
                     ),
                     retryable_on_disconnect: matches!(
                         offered.1.contract.retry,
-                        qos_actions::RetryPolicy::Idempotent
-                            | qos_actions::RetryPolicy::RetryWithInvocationId
+                        tilo_actions::RetryPolicy::Idempotent
+                            | tilo_actions::RetryPolicy::RetryWithInvocationId
                     ),
                     execution: offered.1.contract.execution.clone(),
                     result: offered.1.contract.result.clone(),
@@ -2867,7 +3100,7 @@ impl CapnpBrokerState {
         Ok(InvocationJob { id, completion: rx })
     }
 
-    pub fn invocation_status(&self, id: u64) -> Option<qos_actions::InvocationUpdate> {
+    pub fn invocation_status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
         self.expire_stale_invocations();
         self.pending_invocations
             .lock()
@@ -2881,7 +3114,7 @@ impl CapnpBrokerState {
             })
     }
 
-    pub fn invocation_statuses(&self, actor: &str) -> Vec<(u64, qos_actions::InvocationUpdate)> {
+    pub fn invocation_statuses(&self, actor: &str) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
         self.expire_stale_invocations();
         let mut jobs = self
             .pending_invocations
@@ -3232,7 +3465,10 @@ impl CapnpBrokerState {
             .ok_or_else(|| "the task action is no longer published in this workspace".to_string())?
             .contract
             .confirmation;
-        if !matches!(confirmation_required, qos_actions::ConfirmationPolicy::None) {
+        if !matches!(
+            confirmation_required,
+            tilo_actions::ConfirmationPolicy::None
+        ) {
             return Err(
                 "task action requires an interactive confirmation and cannot run unattended".into(),
             );
@@ -3413,11 +3649,11 @@ impl CapnpBrokerState {
                         code: "action_failed".into(),
                         message: "application disconnected before completing the action".into(),
                     };
-                    let update = qos_actions::InvocationUpdate::Failed {
-                        invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(
+                    let update = tilo_actions::InvocationUpdate::Failed {
+                        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(
                             id,
                         ))),
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: completion.code.clone(),
                             message: completion.message.clone(),
                             details: None,
@@ -3905,7 +4141,7 @@ impl collab_service::Server for CapnpCollabService {
                 }
             }
             tracing::info!(
-                target: "qos_collab_probe",
+                target: "tilo_collab_probe",
                 channel = %channel_id,
                 peer_id,
                 role = ?verified_identity.role,
@@ -4493,13 +4729,13 @@ impl channel_handle::Server for CapnpChannelHandle {
                     .map_err(|error| capnp::Error::failed(error.to_string()))
             })
             .and_then(|json| {
-                serde_json::from_str::<qos_actions::InvocationUpdate>(json)
+                serde_json::from_str::<tilo_actions::InvocationUpdate>(json)
                     .map_err(|error| capnp::Error::failed(error.to_string()))
             }) {
             Ok(update) => update,
             Err(error) => return Promise::err(error),
         };
-        let Some(status) = qos_actions::EffectReceiptStatus::from_terminal(&update) else {
+        let Some(status) = tilo_actions::EffectReceiptStatus::from_terminal(&update) else {
             return Promise::err(capnp::Error::failed(
                 "only a terminal effect may enter workspace activity".into(),
             ));
@@ -4523,12 +4759,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "the application no longer publishes that action".into(),
             ));
         };
-        if offered.operation_kind != qos_actions::OperationKind::Effect {
+        if offered.operation_kind != tilo_actions::OperationKind::Effect {
             return Promise::err(capnp::Error::failed(
                 "only Effects produce durable invocation receipts".into(),
             ));
         }
-        let mut context = qos_actions::ActionContext::for_resource(
+        let mut context = tilo_actions::ActionContext::for_resource(
             offered.action_label,
             offered.resource,
             offered.resource_kind,
@@ -4809,8 +5045,8 @@ impl channel_handle::Server for CapnpChannelHandle {
                 let action = row.get_action()?.to_str()?.to_owned();
                 if resource.is_empty()
                     || action.is_empty()
-                    || resource.contains(qos_actions::KEY_SEP)
-                    || action.contains(qos_actions::KEY_SEP)
+                    || resource.contains(tilo_actions::KEY_SEP)
+                    || action.contains(tilo_actions::KEY_SEP)
                     || actions.iter().any(|candidate: &PublishedAction| {
                         candidate.resource == resource && candidate.action == action
                     })
@@ -4837,9 +5073,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                     action_label: row.get_action_label()?.to_str()?.to_owned(),
                     description: (!description.is_empty()).then_some(description),
                     operation_kind: match row.get_operation_kind()?.to_str()? {
-                        "" | "document" => qos_actions::OperationKind::Document,
-                        "effect" => qos_actions::OperationKind::Effect,
-                        "view" => qos_actions::OperationKind::View,
+                        "" | "document" => tilo_actions::OperationKind::Document,
+                        "effect" => tilo_actions::OperationKind::Effect,
+                        "view" => tilo_actions::OperationKind::View,
                         other => {
                             return Err(capnp::Error::failed(format!(
                                 "unknown exported operation kind `{other}`"
@@ -4862,8 +5098,8 @@ impl channel_handle::Server for CapnpChannelHandle {
                         let json = row.get_contract_json()?.to_str()?;
                         if json.is_empty() {
                             match row.get_operation_kind()?.to_str()? {
-                                "view" => qos_actions::ActionContract::view(),
-                                _ => qos_actions::ActionContract::default(),
+                                "view" => tilo_actions::ActionContract::view(),
+                                _ => tilo_actions::ActionContract::default(),
                             }
                         } else {
                             serde_json::from_str(json).map_err(|error| {
@@ -4917,7 +5153,10 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .actions
                 .iter()
                 .filter(|action| {
-                    !matches!(action.contract.discovery, qos_actions::DiscoveryScope::Live)
+                    !matches!(
+                        action.contract.discovery,
+                        tilo_actions::DiscoveryScope::Live
+                    )
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -5458,7 +5697,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     .get(&id)
                     .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?
                     .result
-                    .validate(&qos_actions::ActionOutput::default())
+                    .validate(&tilo_actions::ActionOutput::default())
                     .map_err(|error| {
                         capnp::Error::failed(format!(
                             "legacy completion violated its published result contract: {error}"
@@ -5468,16 +5707,16 @@ impl channel_handle::Server for CapnpChannelHandle {
             let pending = registry
                 .remove(&id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
-            let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+            let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
             let update = if completion.code.is_empty() {
-                qos_actions::InvocationUpdate::Succeeded {
+                tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 }
             } else {
-                qos_actions::InvocationUpdate::Failed {
+                tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: completion.code.clone(),
                         message: completion.message.clone(),
                         details: None,
@@ -5511,11 +5750,11 @@ impl channel_handle::Server for CapnpChannelHandle {
             let request = params.get()?;
             let id = request.get_id();
             let json = request.get_update_json()?.to_str()?;
-            let update: qos_actions::InvocationUpdate =
+            let update: tilo_actions::InvocationUpdate =
                 serde_json::from_str(json).map_err(|error| {
                     capnp::Error::failed(format!("invalid invocation update: {error}"))
                 })?;
-            let expected = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+            let expected = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
             if update.invocation() != expected {
                 return Err(capnp::Error::failed(
                     "invocation update identity mismatch".into(),
@@ -5530,12 +5769,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .filter(|pending| pending.peer_id == peer_id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
             pending.last_activity = std::time::Instant::now();
-            if matches!(&update, qos_actions::InvocationUpdate::Accepted { .. }) {
+            if matches!(&update, tilo_actions::InvocationUpdate::Accepted { .. }) {
                 return Err(capnp::Error::failed(
                     "invocation acceptance is owned by the broker".into(),
                 ));
             }
-            if let qos_actions::InvocationUpdate::Progress {
+            if let tilo_actions::InvocationUpdate::Progress {
                 sequence,
                 phase,
                 completed,
@@ -5543,7 +5782,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 ..
             } = &update
             {
-                if matches!(pending.execution, qos_actions::ExecutionMode::Immediate) {
+                if matches!(pending.execution, tilo_actions::ExecutionMode::Immediate) {
                     return Err(capnp::Error::failed(
                         "immediate action reported background progress".into(),
                     ));
@@ -5568,11 +5807,11 @@ impl channel_handle::Server for CapnpChannelHandle {
                 }
                 pending.last_sequence = *sequence;
             }
-            if let qos_actions::InvocationUpdate::Item {
+            if let tilo_actions::InvocationUpdate::Item {
                 sequence, value, ..
             } = &update
             {
-                let qos_actions::ExecutionMode::Streaming { item_schema, .. } = &pending.execution
+                let tilo_actions::ExecutionMode::Streaming { item_schema, .. } = &pending.execution
                 else {
                     return Err(capnp::Error::failed(
                         "non-streaming action reported a streamed item".into(),
@@ -5583,21 +5822,21 @@ impl channel_handle::Server for CapnpChannelHandle {
                         "invocation stream sequence must be monotonic".into(),
                     ));
                 }
-                qos_actions::validate_json_schema(value, item_schema).map_err(|error| {
+                tilo_actions::validate_json_schema(value, item_schema).map_err(|error| {
                     capnp::Error::failed(format!(
                         "streamed item violated its published contract: {error}"
                     ))
                 })?;
                 pending.last_sequence = *sequence;
             }
-            if let qos_actions::InvocationUpdate::Succeeded { output, .. } = &update {
+            if let tilo_actions::InvocationUpdate::Succeeded { output, .. } = &update {
                 pending.result.validate(output).map_err(|error| {
                     capnp::Error::failed(format!(
                         "invocation result violated its published contract: {error}"
                     ))
                 })?;
             }
-            if let qos_actions::InvocationUpdate::Failed { error, .. } = &update {
+            if let tilo_actions::InvocationUpdate::Failed { error, .. } = &update {
                 if error.code.trim().is_empty() || error.message.trim().is_empty() {
                     return Err(capnp::Error::failed(
                         "invocation failure requires a code and message".into(),
@@ -5609,7 +5848,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     ));
                 }
             }
-            if matches!(&update, qos_actions::InvocationUpdate::Cancelled { .. })
+            if matches!(&update, tilo_actions::InvocationUpdate::Cancelled { .. })
                 && !pending.cancellable
             {
                 return Err(capnp::Error::failed(
@@ -5619,15 +5858,15 @@ impl channel_handle::Server for CapnpChannelHandle {
             pending.update = update.clone();
             if update.is_terminal() {
                 let completion = match &update {
-                    qos_actions::InvocationUpdate::Succeeded { .. } => InvocationCompletion {
+                    tilo_actions::InvocationUpdate::Succeeded { .. } => InvocationCompletion {
                         code: String::new(),
                         message: String::new(),
                     },
-                    qos_actions::InvocationUpdate::Failed { error, .. } => InvocationCompletion {
+                    tilo_actions::InvocationUpdate::Failed { error, .. } => InvocationCompletion {
                         code: error.code.clone(),
                         message: error.message.clone(),
                     },
-                    qos_actions::InvocationUpdate::Cancelled { message, .. } => {
+                    tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
                         InvocationCompletion {
                             code: "action_cancelled".into(),
                             message: message.clone().unwrap_or_default(),
@@ -5809,6 +6048,31 @@ impl channel_handle::Server for CapnpChannelHandle {
         let state = self.state.clone();
         let cluster = self.route().cluster_id;
         Promise::from_future(async move {
+            if requested_peer_id == 0
+                && matches!(
+                    action.as_str(),
+                    crate::shell::state::PROFILE_SAVE_ACTION_ID
+                        | crate::shell::state::PROFILE_ASSIGN_ACTION_ID
+                )
+            {
+                let actor = current.broker_actor();
+                let (id, update) = state
+                    .invoke_workspace_profile_action(
+                        &cluster,
+                        &actor,
+                        &resource,
+                        &action,
+                        argument.as_deref(),
+                        &confirmation,
+                    )
+                    .map_err(capnp::Error::failed)?;
+                results.get().set_id(id);
+                results.get().set_update_json(
+                    &serde_json::to_string(&update)
+                        .map_err(|error| capnp::Error::failed(error.to_string()))?,
+                );
+                return Ok(());
+            }
             let offered = state
                 .surfaces
                 .lock()
@@ -5826,7 +6090,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .get("confirmation_phrase")
                 .and_then(serde_json::Value::as_str);
             let job = match &offered.contract.confirmation {
-                qos_actions::ConfirmationPolicy::None => state.start_invocation_confirmed_for(
+                tilo_actions::ConfirmationPolicy::None => state.start_invocation_confirmed_for(
                     peer_id,
                     &resource,
                     &action,
@@ -5835,7 +6099,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     None,
                     None,
                 ),
-                qos_actions::ConfirmationPolicy::Confirm => {
+                tilo_actions::ConfirmationPolicy::Confirm => {
                     if confirmation
                         .get("confirm")
                         .and_then(serde_json::Value::as_bool)
@@ -5865,7 +6129,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         None,
                     )
                 }
-                qos_actions::ConfirmationPolicy::Phrase { .. } => {
+                tilo_actions::ConfirmationPolicy::Phrase { .. } => {
                     let token = state
                         .prepare_confirmation(
                             peer_id,
@@ -6030,19 +6294,19 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(capnp::Error::failed(error)),
         };
         let id = self.state.invocation_id.fetch_add(1, Ordering::Relaxed);
-        let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
         let update = match crate::shell::launcher::launch_document_in_workspace(
             &app_id,
             &workspace,
             document.as_deref(),
         ) {
-            Ok(_) => qos_actions::InvocationUpdate::Succeeded {
+            Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             },
-            Err(error) => qos_actions::InvocationUpdate::Failed {
+            Err(error) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "launch_failed".into(),
                     message: error.to_string(),
                     details: None,
@@ -6402,7 +6666,7 @@ fn permits_directory_row(
                 ));
             }
             if descriptor.params_json.len() > DIRECTORY_MAX_PARAMS_BYTES
-                || serde_json::from_str::<Vec<qos_actions::ActionParam>>(&descriptor.params_json)
+                || serde_json::from_str::<Vec<tilo_actions::ActionParam>>(&descriptor.params_json)
                     .is_err()
             {
                 return Err(capnp::Error::failed(
@@ -6508,9 +6772,9 @@ fn published_directory_action(
         ));
     }
     let operation_kind = match descriptor.operation_kind.as_str() {
-        "document" => qos_actions::OperationKind::Document,
-        "effect" => qos_actions::OperationKind::Effect,
-        "view" => qos_actions::OperationKind::View,
+        "document" => tilo_actions::OperationKind::Document,
+        "effect" => tilo_actions::OperationKind::Effect,
+        "view" => tilo_actions::OperationKind::View,
         _ => {
             return Err(capnp::Error::failed(
                 "invalid directory operation kind".into(),
@@ -6895,7 +7159,7 @@ struct CapnpPresenceHandle {
     verified_identity: AdmittedJoinIdentity,
     /// Broker-owned monotonic sequence per invocation. Publishers describe
     /// phases and targets but cannot reorder or resurrect their visual state.
-    interaction_sequences: Mutex<HashMap<qos_actions::InvocationId, u64>>,
+    interaction_sequences: Mutex<HashMap<tilo_actions::InvocationId, u64>>,
 }
 
 impl CapnpPresenceHandle {
@@ -7087,15 +7351,15 @@ impl presence_handle::Server for CapnpPresenceHandle {
                     "interaction payload exceeds 64 KiB".into(),
                 ));
             }
-            let mut update: qos_actions::SemanticInteraction = serde_json::from_str(json)
+            let mut update: tilo_actions::SemanticInteraction = serde_json::from_str(json)
                 .map_err(|error| capnp::Error::failed(format!("invalid interaction: {error}")))?;
             let actor = self.verified_identity.broker_actor();
-            let normalized_actor = qos_actions::InteractionActor {
+            let normalized_actor = tilo_actions::InteractionActor {
                 id: CapnpBrokerState::participant_id(&self.verified_identity),
                 kind: if actor.is_agent {
-                    qos_actions::InteractionActorKind::Agent
+                    tilo_actions::InteractionActorKind::Agent
                 } else {
-                    qos_actions::InteractionActorKind::Person
+                    tilo_actions::InteractionActorKind::Person
                 },
             };
             let sequence = {
@@ -7115,6 +7379,36 @@ impl presence_handle::Server for CapnpPresenceHandle {
                 .validate()
                 .map_err(|error| capnp::Error::failed(format!("invalid interaction: {error}")))?;
             self.publish_keyed(&key_bytes, PresencePayload::Interaction(Box::new(update)));
+            Ok(())
+        })
+    }
+
+    fn publish_status(
+        self: Rc<Self>,
+        params: presence_handle::PublishStatusParams,
+        _results: presence_handle::PublishStatusResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self.revalidate() {
+            return Promise::err(error);
+        }
+        Promise::from_future(async move {
+            let r = params.get()?;
+            let key_bytes = r.get_key_bytes()?.to_vec();
+            let raw = r
+                .get_text()?
+                .to_str()
+                .map_err(|error| capnp::Error::failed(format!("invalid status utf8: {error}")))?;
+            let text = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+            if text.chars().count() > ui::MAX_STATUS_CHARS {
+                return Err(capnp::Error::failed("status exceeds 96 characters".into()));
+            }
+            self.publish_keyed(
+                &key_bytes,
+                PresencePayload::Status {
+                    text,
+                    automatic: r.get_automatic(),
+                },
+            );
             Ok(())
         })
     }
@@ -7378,6 +7672,11 @@ impl presence_stream::Server for PresenceStreamServer {
                     })?;
                     payload.set_interaction_json(&json);
                 }
+                PresencePayload::Status { text, automatic } => {
+                    let mut status = payload.init_status();
+                    status.set_text(&text);
+                    status.set_automatic(automatic);
+                }
                 PresencePayload::Arrived => payload.set_arrived(()),
                 PresencePayload::Left => payload.set_left(()),
             }
@@ -7538,7 +7837,7 @@ pub fn spawn(
     );
 
     let thread = std::thread::Builder::new()
-        .name("qos-collab-broker-capnp".into())
+        .name("tilo-collab-broker-capnp".into())
         .spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -7792,7 +8091,7 @@ async fn authenticate_launcher_handoff(
 
     // `spawn_launch` records immediately after `Command::spawn`; the child
     // can connect first on a fast machine. Retry only this narrow registration
-    // race. A direct qos-launcher command never obtains a record and fails
+    // race. A direct tilo-launcher command never obtains a record and fails
     // closed instead of becoming a way around admin/admission checks.
     for attempt in 0..=LAUNCH_RECORD_RACE_RETRIES {
         if crate::shell::launcher::attest_trusted_service_launch_for_pid(
@@ -8063,7 +8362,7 @@ mod tests {
             None,
             None,
         );
-        let channel = "dev.qos.notes#room:test#record:daily";
+        let channel = "dev.tilo.notes#room:test#record:daily";
         let mut first = state.subscribe_context(channel, 7);
         let mut second = state.subscribe_context(channel, 9);
         let _requester = state.subscribe_context(channel, 12);
@@ -8254,11 +8553,11 @@ mod tests {
             "launcher test",
         );
         assert_eq!(
-            stage_launch_content("dev.qos.photos", "", &mut workspace).expect("plain launch"),
+            stage_launch_content("dev.tilo.photos", "", &mut workspace).expect("plain launch"),
             None
         );
-        assert!(stage_launch_content("dev.qos.photos", "not-a-hash", &mut workspace).is_err());
-        assert!(stage_launch_content("dev.qos.photos", &"a".repeat(64), &mut workspace).is_err());
+        assert!(stage_launch_content("dev.tilo.photos", "not-a-hash", &mut workspace).is_err());
+        assert!(stage_launch_content("dev.tilo.photos", &"a".repeat(64), &mut workspace).is_err());
     }
 
     #[cfg(unix)]
@@ -8272,7 +8571,7 @@ mod tests {
         let hash = qdoc::blobstore::put(b"verified launch fixture").expect("store fixture");
         let staged = runtime
             .path()
-            .join("qos-opened")
+            .join("tilo-opened")
             .join(format!("{hash}.bin"));
         std::fs::create_dir_all(staged.parent().expect("staging parent")).expect("staging dir");
         std::fs::write(&staged, b"corrupt").expect("corrupt fixture");
@@ -8280,12 +8579,12 @@ mod tests {
             crate::shell::state::WorkspaceId::new(),
             "launcher test",
         );
-        assert!(stage_launch_content("dev.qos.photos", &hash, &mut workspace).is_err());
+        assert!(stage_launch_content("dev.tilo.photos", &hash, &mut workspace).is_err());
         std::fs::remove_file(&staged).expect("remove corrupt fixture");
         let target = runtime.path().join("outside");
         std::fs::write(&target, b"outside").expect("outside fixture");
         std::os::unix::fs::symlink(&target, &staged).expect("symlink fixture");
-        assert!(stage_launch_content("dev.qos.photos", &hash, &mut workspace).is_err());
+        assert!(stage_launch_content("dev.tilo.photos", &hash, &mut workspace).is_err());
         // SAFETY: paired with the guarded process-wide override above.
         unsafe {
             if let Some(previous) = previous {
@@ -8315,9 +8614,9 @@ mod tests {
 
     impl TestActionDirectory {
         fn contract_json(&self) -> String {
-            let mut contract = qos_actions::ActionContract::view();
+            let mut contract = tilo_actions::ActionContract::view();
             if self.confirmation_required {
-                contract.confirmation = qos_actions::ConfirmationPolicy::Confirm;
+                contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
             }
             serde_json::to_string(&contract).expect("test action contract")
         }
@@ -8422,7 +8721,7 @@ mod tests {
         tree.workspaces.push(workspace);
         tree.set_active(crate::shell::state::WorkspaceId(71));
         let membership = tree.shared();
-        let route = CrdtRoute::record("dev.qos.atlas", cluster_id.clone(), "atlas");
+        let route = CrdtRoute::record("dev.tilo.atlas", cluster_id.clone(), "atlas");
         let fanout = Arc::new(FanoutState::new());
         let (state, bridge_rx) = CapnpBrokerState::new(
             &fanout,
@@ -8668,7 +8967,7 @@ mod tests {
                     peer_id,
                     ActionDirectoryRoot {
                         peer_id,
-                        app_id: "dev.qos.test".into(),
+                        app_id: "dev.tilo.test".into(),
                         cluster_id: fixture.cluster_id.clone(),
                         record_id: format!("root-{peer_id}"),
                     },
@@ -8771,7 +9070,7 @@ mod tests {
                 &mut doc,
                 &root,
                 &fixture.chrome,
-                &qos_actions::ActionArgs::none(),
+                &tilo_actions::ActionArgs::none(),
             )
             .expect("directory invocation request enqueues") else {
                 panic!("directory action must not claim accepted before LocalSet admission");
@@ -8801,7 +9100,7 @@ mod tests {
                 &mut doc,
                 &root,
                 &fixture.chrome,
-                &qos_actions::ActionArgs::none(),
+                &tilo_actions::ActionArgs::none(),
             )
             .expect("stale request queues");
             let InvocationDisposition::Pending(stale) = stale else {
@@ -8827,7 +9126,7 @@ mod tests {
                 &mut doc,
                 &root,
                 &fixture.chrome,
-                &qos_actions::ActionArgs::none(),
+                &tilo_actions::ActionArgs::none(),
             )
             .expect("revoked request queues") else {
                 panic!("revoked action must be asynchronous");
@@ -8846,7 +9145,7 @@ mod tests {
                 &mut doc,
                 &root,
                 &fixture.chrome,
-                &qos_actions::ActionArgs::none(),
+                &tilo_actions::ActionArgs::none(),
             )
             .expect("disconnect request queues") else {
                 panic!("disconnect action must be asynchronous");
@@ -8880,16 +9179,16 @@ mod tests {
         root: &SigningKey,
         device: &SigningKey,
     ) -> runtime_collab::CertifiedJoinIdentity {
-        let mut cert = qos_user_identity::DeviceCert {
+        let mut cert = tilo_user_identity::DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: device.verifying_key().to_bytes(),
             device_label: "Test device".into(),
-            capabilities: qos_user_identity::DeviceCapabilities::primary(),
+            capabilities: tilo_user_identity::DeviceCapabilities::primary(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
         };
-        qos_user_identity::sign_device_cert(&mut cert, root).expect("root signs device cert");
+        tilo_user_identity::sign_device_cert(&mut cert, root).expect("root signs device cert");
         runtime_collab::CertifiedJoinIdentity {
             workspace_id: workspace.into(),
             device_certificate: serde_json::to_vec(&cert).expect("certificate JSON"),
@@ -8950,7 +9249,7 @@ mod tests {
         );
 
         let mut presentation = certified_join("workspace-a", &root, &device);
-        let mut cert: qos_user_identity::DeviceCert =
+        let mut cert: tilo_user_identity::DeviceCert =
             serde_json::from_slice(&presentation.device_certificate).expect("certificate");
         cert.device_label.push_str(" (tampered)");
         presentation.device_certificate = serde_json::to_vec(&cert).expect("certificate JSON");
@@ -9298,7 +9597,7 @@ mod tests {
         else {
             panic!("the certified document was not published to the peer network");
         };
-        assert_eq!(app_id, "dev.qos.notes");
+        assert_eq!(app_id, "dev.tilo.notes");
         assert_eq!(cluster_id, &route.cluster_id);
         assert_eq!(record_id, "meeting-notes");
         assert_eq!(
@@ -9321,7 +9620,11 @@ mod tests {
             "Typed document room",
         );
         workspace.set_owner(&principal);
-        let route = CrdtRoute::record("dev.qos.notes", workspace.room.to_string(), "meeting-notes");
+        let route = CrdtRoute::record(
+            "dev.tilo.notes",
+            workspace.room.to_string(),
+            "meeting-notes",
+        );
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let membership = tree.shared();
@@ -9465,10 +9768,10 @@ mod tests {
         );
         fanout.attach_capnp(Arc::clone(&state));
 
-        let target = CrdtRoute::record("dev.qos.notes", "room-1", "note-a");
-        let other_record = CrdtRoute::record("dev.qos.notes", "room-1", "note-b");
-        let other_app = CrdtRoute::record("dev.qos.files", "room-1", "note-a");
-        let other_room = CrdtRoute::record("dev.qos.notes", "room-2", "note-a");
+        let target = CrdtRoute::record("dev.tilo.notes", "room-1", "note-a");
+        let other_record = CrdtRoute::record("dev.tilo.notes", "room-1", "note-b");
+        let other_app = CrdtRoute::record("dev.tilo.files", "room-1", "note-a");
+        let other_room = CrdtRoute::record("dev.tilo.notes", "room-2", "note-a");
         let mut target_rx = state.subscribe_ops(&target.channel_key(), 2);
         let mut other_record_rx = state.subscribe_ops(&other_record.channel_key(), 3);
         let mut other_app_rx = state.subscribe_ops(&other_app.channel_key(), 4);
@@ -9525,7 +9828,7 @@ mod tests {
             "Action room",
         );
         workspace.set_owner("owner");
-        let route = CrdtRoute::app("dev.qos.files", workspace.room.to_string());
+        let route = CrdtRoute::app("dev.tilo.files", workspace.room.to_string());
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let membership = tree.shared();
@@ -9541,7 +9844,7 @@ mod tests {
             7,
             PublishedSurface {
                 peer_id: 7,
-                app_id: "dev.qos.files".into(),
+                app_id: "dev.tilo.files".into(),
                 route,
                 actions: vec![
                     PublishedAction {
@@ -9551,9 +9854,9 @@ mod tests {
                         resource_label: "report".into(),
                         action_label: "Reveal".into(),
                         description: None,
-                        operation_kind: qos_actions::OperationKind::View,
+                        operation_kind: tilo_actions::OperationKind::View,
                         params: Vec::new(),
-                        contract: qos_actions::ActionContract::view(),
+                        contract: tilo_actions::ActionContract::view(),
                         input: PublishedInput::None,
                     },
                     PublishedAction {
@@ -9563,12 +9866,12 @@ mod tests {
                         resource_label: "report".into(),
                         action_label: "Erase".into(),
                         description: None,
-                        operation_kind: qos_actions::OperationKind::Effect,
+                        operation_kind: tilo_actions::OperationKind::Effect,
                         params: Vec::new(),
-                        contract: qos_actions::ActionContract {
-                            risk: qos_actions::RiskLevel::Destructive,
-                            confirmation: qos_actions::ConfirmationPolicy::Confirm,
-                            ..qos_actions::ActionContract::default()
+                        contract: tilo_actions::ActionContract {
+                            risk: tilo_actions::RiskLevel::Destructive,
+                            confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                            ..tilo_actions::ActionContract::default()
                         },
                         input: PublishedInput::None,
                     },
@@ -9579,12 +9882,14 @@ mod tests {
                         resource_label: "report".into(),
                         action_label: "Refresh".into(),
                         description: None,
-                        operation_kind: qos_actions::OperationKind::Effect,
+                        operation_kind: tilo_actions::OperationKind::Effect,
                         params: Vec::new(),
-                        contract: qos_actions::ActionContract {
-                            execution: qos_actions::ExecutionMode::Background { cancellable: true },
-                            result: qos_actions::ResultSpec::Job,
-                            ..qos_actions::ActionContract::default()
+                        contract: tilo_actions::ActionContract {
+                            execution: tilo_actions::ExecutionMode::Background {
+                                cancellable: true,
+                            },
+                            result: tilo_actions::ResultSpec::Job,
+                            ..tilo_actions::ActionContract::default()
                         },
                         input: PublishedInput::None,
                     },
@@ -9695,7 +10000,7 @@ mod tests {
         );
         assert!(matches!(
             state.invocation_status(refresh.id),
-            Some(qos_actions::InvocationUpdate::Failed { error, .. })
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. })
                 if error.code == "action_cancellation_timeout"
         ));
         assert_eq!(
@@ -9708,7 +10013,7 @@ mod tests {
         );
         assert!(matches!(
             state.invocation_status(erased.id),
-            Some(qos_actions::InvocationUpdate::Failed { error, .. })
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. })
                 if error.code == "action_timeout"
         ));
         assert_eq!(
@@ -9754,9 +10059,9 @@ mod tests {
 
         let launchable = PublishedSurface {
             peer_id: 99,
-            app_id: "dev.qos.files".into(),
+            app_id: "dev.tilo.files".into(),
             route: CrdtRoute::app(
-                "dev.qos.files",
+                "dev.tilo.files",
                 state
                     .surfaces
                     .lock()
@@ -9774,11 +10079,11 @@ mod tests {
                 resource_label: "Files".into(),
                 action_label: "New window".into(),
                 description: None,
-                operation_kind: qos_actions::OperationKind::View,
+                operation_kind: tilo_actions::OperationKind::View,
                 params: Vec::new(),
-                contract: qos_actions::ActionContract {
-                    discovery: qos_actions::DiscoveryScope::Launchable,
-                    ..qos_actions::ActionContract::view()
+                contract: tilo_actions::ActionContract {
+                    discovery: tilo_actions::DiscoveryScope::Launchable,
+                    ..tilo_actions::ActionContract::view()
                 },
                 input: PublishedInput::None,
             }],
@@ -9806,6 +10111,114 @@ mod tests {
         );
     }
 
+    #[test]
+    fn broker_catalogue_agent_can_create_and_assign_a_permission_profile() {
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(32),
+            "Governance room",
+        );
+        workspace.set_owner("owner");
+        for action in [
+            crate::shell::state::PROFILE_SAVE_ACTION_ID,
+            crate::shell::state::PROFILE_ASSIGN_ACTION_ID,
+        ] {
+            workspace.grant_capability(collab_types::CapOverride::grant(
+                collab_types::Subject::agent("architect"),
+                collab_types::Scope::Action {
+                    app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                    action: action.into(),
+                },
+                collab_types::Verb::Admin,
+            ));
+        }
+        let cluster = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let membership = tree.shared();
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(membership.clone()),
+            None,
+        );
+        let actor = BrokerActor {
+            id: "agent:architect".into(),
+            is_agent: true,
+        };
+        let catalogue = state
+            .action_catalogue_json_for(&cluster, &actor)
+            .expect("authorized agent catalogue");
+        assert!(catalogue.contains(crate::shell::state::PROFILE_SAVE_ACTION_ID));
+        assert!(catalogue.contains(crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID));
+
+        let rules = serde_json::to_value(vec![collab_types::PermissionProfileRule::grant(
+            collab_types::Scope::Action {
+                app: "dev.tilo.notes".into(),
+                action: "note.open".into(),
+            },
+            collab_types::Verb::Read,
+        )])
+        .unwrap();
+        let save_arguments = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::json!({
+                "name": "Notes reader",
+                "description": "Read one Notes action",
+                "rules": rules,
+            })
+        );
+        let root_id = format!("workspace.permissions:{cluster}");
+        let (_, saved) = state
+            .invoke_workspace_profile_action(
+                &cluster,
+                &actor,
+                &root_id,
+                crate::shell::state::PROFILE_SAVE_ACTION_ID,
+                Some(&save_arguments),
+                &serde_json::json!({"confirm": true}),
+            )
+            .expect("broker-owned save succeeds");
+        assert!(matches!(
+            saved,
+            tilo_actions::InvocationUpdate::Succeeded { .. }
+        ));
+
+        let assign_arguments = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::json!({
+                "profile": "Notes reader",
+                "subject": "alice",
+                "subject_kind": "person",
+            })
+        );
+        state
+            .invoke_workspace_profile_action(
+                &cluster,
+                &actor,
+                &root_id,
+                crate::shell::state::PROFILE_ASSIGN_ACTION_ID,
+                Some(&assign_arguments),
+                &serde_json::json!({"confirm": true}),
+            )
+            .expect("broker-owned assignment succeeds");
+
+        let tree = membership.read();
+        let workspace = &tree.workspaces[0];
+        assert!(workspace.allows(
+            &workspace.actor_for_person(&"alice".into()),
+            &collab_types::ResourceRef::Action {
+                app: "dev.tilo.notes".into(),
+                action: "note.open".into(),
+            },
+            collab_types::Verb::Read,
+        ));
+        assert_eq!(workspace.effect_receipts.len(), 2);
+    }
+
     #[allow(
         clippy::significant_drop_tightening,
         clippy::too_many_lines,
@@ -9831,33 +10244,33 @@ mod tests {
             None,
         );
         let (tx, _rx) = std::sync::mpsc::channel();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let pending = PendingInvocation {
             peer_id: 7,
             tx,
-            update: qos_actions::InvocationUpdate::Accepted { invocation },
+            update: tilo_actions::InvocationUpdate::Accepted { invocation },
             last_sequence: 0,
             actor: "agent:Scribe".into(),
             cancellable: false,
             retryable_on_disconnect: false,
-            execution: qos_actions::ExecutionMode::Immediate,
-            result: qos_actions::ResultSpec::None,
-            operation_kind: qos_actions::OperationKind::Effect,
+            execution: tilo_actions::ExecutionMode::Immediate,
+            result: tilo_actions::ResultSpec::None,
+            operation_kind: tilo_actions::OperationKind::Effect,
             cluster_id,
-            context: qos_actions::ActionContext::for_resource(
+            context: tilo_actions::ActionContext::for_resource(
                 "Publish",
                 "document:brief",
                 "document",
                 "Release brief",
             )
-            .with_app("org.qos.Writer", "Writer")
+            .with_app("org.tilo.Writer", "Writer")
             .with_group("task:release", "Release", "task"),
             last_activity: std::time::Instant::now(),
             cancellation_requested_at: None,
         };
-        let update = qos_actions::InvocationUpdate::Failed {
+        let update = tilo_actions::InvocationUpdate::Failed {
             invocation,
-            error: qos_actions::ActionFailure {
+            error: tilo_actions::ActionFailure {
                 code: "publish_denied".into(),
                 message: "authorization=secret-value".into(),
                 details: Some(serde_json::json!({"body": "private draft"})),
@@ -9868,29 +10281,29 @@ mod tests {
         state.record_effect_receipt(&pending, &update);
         state.record_effect_receipt(&pending, &update);
 
-        let succeeded_invocation = qos_actions::InvocationId::new();
+        let succeeded_invocation = tilo_actions::InvocationId::new();
         let mut succeeded_pending = pending;
-        succeeded_pending.update = qos_actions::InvocationUpdate::Accepted {
+        succeeded_pending.update = tilo_actions::InvocationUpdate::Accepted {
             invocation: succeeded_invocation,
         };
         state.record_effect_receipt(
             &succeeded_pending,
-            &qos_actions::InvocationUpdate::Succeeded {
+            &tilo_actions::InvocationUpdate::Succeeded {
                 invocation: succeeded_invocation,
-                output: qos_actions::ActionOutput {
+                output: tilo_actions::ActionOutput {
                     value: Some(serde_json::json!({"token": "output-secret"})),
                     resources: vec!["files.entry:/private/export".into()],
                 },
             },
         );
         let mut private_view = succeeded_pending;
-        private_view.operation_kind = qos_actions::OperationKind::View;
-        let view_invocation = qos_actions::InvocationId::new();
+        private_view.operation_kind = tilo_actions::OperationKind::View;
+        let view_invocation = tilo_actions::InvocationId::new();
         state.record_effect_receipt(
             &private_view,
-            &qos_actions::InvocationUpdate::Succeeded {
+            &tilo_actions::InvocationUpdate::Succeeded {
                 invocation: view_invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             },
         );
 
@@ -9918,7 +10331,7 @@ mod tests {
         assert!(durable.contains("publish_denied"));
         assert!(receipts.iter().any(|receipt| {
             receipt.invocation == succeeded_invocation
-                && receipt.status == qos_actions::EffectReceiptStatus::Succeeded
+                && receipt.status == tilo_actions::EffectReceiptStatus::Succeeded
         }));
     }
 

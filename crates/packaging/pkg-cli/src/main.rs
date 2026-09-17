@@ -1,4 +1,4 @@
-//! `qos-pkg` — CLI driver for the `qos-pkg` foundation crate.
+//! `tilo-pkg` — CLI driver for the `tilo-pkg` foundation crate.
 //!
 //! A `.qpkg` is a plain (uncompressed) tar archive:
 //!
@@ -50,7 +50,7 @@ use pkg::{
 struct QpkgHeader {
     /// `qpkg:<hex>` form.
     package_id: String,
-    /// Format version of the .qpkg layout itself; bumped independently from qos-pkg's signed-root version.
+    /// Format version of the .qpkg layout itself; bumped independently from tilo-pkg's signed-root version.
     format: u32,
 }
 
@@ -58,8 +58,8 @@ const QPKG_FORMAT: u32 = 1;
 
 #[derive(Parser)]
 #[command(
-    name = "qos-pkg",
-    about = "Pack / sign / verify / inspect qOS packages (.qpkg)",
+    name = "tilo-pkg",
+    about = "Pack / sign / verify / inspect Tilo packages (.qpkg)",
     version
 )]
 struct Cli {
@@ -158,7 +158,7 @@ enum Command {
         #[arg(long)]
         url: String,
         /// Publisher identity JSON that signs the entry; a fresh key is
-        /// generated when absent (fine locally — `qos-install` re-verifies
+        /// generated when absent (fine locally — `tilo-install` re-verifies
         /// the package's own signature).
         #[arg(long)]
         identity: Option<PathBuf>,

@@ -107,9 +107,9 @@ pub enum EncoderChoice {
 pub fn load_config() -> DesktopConfig {
     let paths = [
         dirs::config_dir()
-            .map(|d| d.join("quick-desktop").join("desktop.toml"))
+            .map(|d| d.join("tilo-desktop").join("desktop.toml"))
             .unwrap_or_default(),
-        std::path::PathBuf::from("/etc/quick-desktop/desktop.toml"),
+        std::path::PathBuf::from("/etc/tilo-desktop/desktop.toml"),
         std::path::PathBuf::from("desktop.toml"),
     ];
 

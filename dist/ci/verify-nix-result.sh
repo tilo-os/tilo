@@ -7,32 +7,32 @@ result=$(realpath "$1")
 arch=$2
 case "$arch" in amd64|arm64) ;; *) exit 2 ;; esac
 
-for file in bin/qos-shell bin/qos-launcher libexec/qos-unlock-helper libexec/qos-session; do
+for file in bin/tilo-shell bin/tilo-launcher libexec/tilo-unlock-helper libexec/tilo-session; do
     [[ -x $result/$file ]] || { echo "missing executable: $file" >&2; exit 1; }
 done
-for file in etc/pam.d/qos-unlock share/wayland-sessions/qos.desktop \
-            share/xdg-desktop-portal/portals/qos.portal \
-            share/xdg-desktop-portal/nirios-portals.conf \
-            share/systemd/user/qos-graphical-session.target \
-            share/licenses/qos-session/LICENSE; do
+for file in etc/pam.d/tilo-unlock share/wayland-sessions/tilo.desktop \
+            share/xdg-desktop-portal/portals/tilo.portal \
+            share/xdg-desktop-portal/tilo-portals.conf \
+            share/systemd/user/tilo-graphical-session.target \
+            share/licenses/tilo-session/LICENSE; do
     [[ -f $result/$file ]] || { echo "missing file: $file" >&2; exit 1; }
 done
 
-entry=$result/share/wayland-sessions/qos.desktop
-portal=$result/share/xdg-desktop-portal/portals/qos.portal
-wrapper=$result/libexec/qos-session
-grep -Fqx "Exec=$result/libexec/qos-session" "$entry"
-grep -Fqx "TryExec=$result/bin/qos-shell" "$entry"
-grep -q '^DesktopNames=nirios$' "$entry"
-grep -q '^UseIn=nirios$' "$portal"
-grep -q '^default=qos$' "$result/share/xdg-desktop-portal/nirios-portals.conf"
-grep -Fqx "QOS_SHELL=$result/bin/qos-shell" "$wrapper"
+entry=$result/share/wayland-sessions/tilo.desktop
+portal=$result/share/xdg-desktop-portal/portals/tilo.portal
+wrapper=$result/libexec/tilo-session
+grep -Fqx "Exec=$result/libexec/tilo-session" "$entry"
+grep -Fqx "TryExec=$result/bin/tilo-shell" "$entry"
+grep -q '^DesktopNames=tilo$' "$entry"
+grep -q '^UseIn=tilo$' "$portal"
+grep -q '^default=tilo$' "$result/share/xdg-desktop-portal/tilo-portals.conf"
+grep -Fqx "TILO_SHELL=$result/bin/tilo-shell" "$wrapper"
 grep -Eq '^SYSTEMD_CAT=/nix/store/.+/bin/systemd-cat$' "$wrapper"
 grep -Eq '^DBUS_UPDATE=/nix/store/.+/bin/dbus-update-activation-environment$' "$wrapper"
-grep -Fq -- '--identifier=qos-session --level-prefix=false' "$wrapper"
+grep -Fq -- '--identifier=tilo-session --level-prefix=false' "$wrapper"
 grep -q -- '--firstboot' "$wrapper"
 grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' \
-    "$result/share/systemd/user/qos-graphical-session.target"
+    "$result/share/systemd/user/tilo-graphical-session.target"
 
 ldd_command=(ldd)
 if ! command -v ldd >/dev/null 2>&1; then
@@ -41,7 +41,7 @@ if ! command -v ldd >/dev/null 2>&1; then
     # invocation must fail verification instead of looking like clean output.
     ldd_command=(nix shell nixpkgs#glibc.bin --command ldd)
 fi
-for installed in bin/qos-shell bin/qos-launcher libexec/qos-unlock-helper; do
+for installed in bin/tilo-shell bin/tilo-launcher libexec/tilo-unlock-helper; do
     directory=$(dirname "$installed")
     basename=$(basename "$installed")
     elf=$result/$installed

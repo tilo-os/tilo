@@ -300,7 +300,7 @@ mod tests {
     fn dmabuf_size_reads_the_end_offset_of_a_real_fd() {
         // A plain file stands in for a dmabuf here: both answer SEEK_END, and
         // this proves the binding returns the byte length rather than -1.
-        let dir = std::env::temp_dir().join(format!("qos-dmabuf-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-dmabuf-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("buf");
         std::fs::write(&path, vec![0u8; 4096]).unwrap();
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn planes_sharing_one_fd_are_detected_as_one_buffer() {
-        let dir = std::env::temp_dir().join(format!("qos-dmabuf-share-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-dmabuf-share-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a");
         let b = dir.join("b");

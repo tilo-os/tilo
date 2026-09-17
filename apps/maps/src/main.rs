@@ -65,7 +65,7 @@ pub fn main() {
     maps::net::ensure_crypto_provider();
 
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.maps", maps::app_root)
+        &LaunchSpec::new("dev.tilo.maps", maps::app_root)
             .shot_root(shot_root)
             .shot_handler(shot_handler)
             .allowed_flags(&[
@@ -201,14 +201,14 @@ fn render_shot_to_png(
     floating_navigation: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     }
     .with_text_scale(text_scale)
     .with_reduce_motion(matches!(
-        std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
+        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
         Some("1" | "true" | "yes")
     ));
     let presence = PresenceCtx::empty();

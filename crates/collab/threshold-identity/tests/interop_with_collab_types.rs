@@ -67,7 +67,7 @@ fn threshold_sign(a: &ThresholdIdentity, b: &ThresholdIdentity, canon: &[u8]) ->
 }
 
 #[test]
-fn threshold_sig_verifies_via_qos_collab_types_verify_event_on_bytes() {
+fn threshold_sig_verifies_via_tilo_collab_types_verify_event_on_bytes() {
     let (a, b) = dkg_two();
     let value: Vec<u8> = b"hello threshold".to_vec();
     let canon = canonical_bytes(&value).unwrap();

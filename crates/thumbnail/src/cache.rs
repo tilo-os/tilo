@@ -1,6 +1,6 @@
 //! A content-addressed thumbnail cache: disk (survives restart) + memory LRU.
 //!
-//! The key is `(content hash, target edge)` — the same BLAKE3 the rest of qOS
+//! The key is `(content hash, target edge)` — the same BLAKE3 the rest of Tilo
 //! addresses content by. Because it is keyed by *content*, a thumbnail is
 //! invalidated for free when the file changes (the file's hash changes, so the
 //! key changes), and shared for free when the same bytes appear under two paths

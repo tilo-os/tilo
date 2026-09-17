@@ -1797,7 +1797,7 @@ mod version_tests {
             end,
             label: label.map(str::to_string),
             derived: format!("{} edits", end.saturating_add(1).saturating_sub(start)),
-            record_id: label.map(|_| format!("qos:group:{start}")),
+            record_id: label.map(|_| format!("tilo:group:{start}")),
             open: false,
         }
     }
@@ -2107,7 +2107,7 @@ mod version_tests {
         );
         let reqs = captured.borrow();
         assert_eq!(reqs[0].label, "Intro rewrite!");
-        assert_eq!(reqs[0].record_id.as_deref(), Some("qos:group:10"));
+        assert_eq!(reqs[0].record_id.as_deref(), Some("tilo:group:10"));
     }
 
     #[test]
@@ -2146,7 +2146,7 @@ mod version_tests {
         // The host writes it and hands the groups back with one still open.
         let mut groups = s.groups().to_vec();
         groups.last_mut().unwrap().label = Some("Rework the intro".into());
-        groups.last_mut().unwrap().record_id = Some("qos:group:15".into());
+        groups.last_mut().unwrap().record_id = Some("tilo:group:15".into());
         groups.last_mut().unwrap().open = true;
         s.set_groups(groups);
         assert!(s.open_group().is_some());
@@ -2160,7 +2160,7 @@ mod version_tests {
         assert_eq!(
             acts[1],
             VersionAction::Close {
-                record_id: "qos:group:15".to_string(),
+                record_id: "tilo:group:15".to_string(),
                 at: HistoryEntryId(at)
             },
             "finishing closes the open one at the newest change — no typing needed"

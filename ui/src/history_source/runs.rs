@@ -32,7 +32,7 @@ use crate::widget::history_group::{from_hex16, hex16};
 /// Prefix of the root keys holding this document's cross-application runs.
 /// Namespaced like [`GROUPS_KEY`](crate::history_source::groups::GROUPS_KEY) so
 /// it cannot collide with an app's own schema.
-pub const RUNS_KEY: &str = "qos:run:";
+pub const RUNS_KEY: &str = "tilo:run:";
 
 /// Longest label stored. A run's label is the instruction as the person phrased
 /// it, and past this it stops fitting anywhere it is rendered.
@@ -43,7 +43,7 @@ pub const MAX_LABEL_LEN: usize = 200;
 /// Holds no content — only where the work is and which changes it was.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunStep {
-    /// Application that owns the document, e.g. `dev.qos.word-processor`. The
+    /// Application that owns the document, e.g. `dev.tilo.word-processor`. The
     /// same id the collaboration broker routes on, so a coordinator can find
     /// the peer to ask.
     pub app: String,

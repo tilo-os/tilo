@@ -41,6 +41,8 @@ impl Mp4Recording {
         }
     }
 
+    /// # Errors
+    /// Returns framing, stream creation or `FFmpeg` packet-write errors.
     pub fn write_access_unit(&mut self, annex_b: &[u8]) -> Result<(), String> {
         let nals = annex_b_nals(annex_b);
         if nals.is_empty() {
@@ -108,6 +110,8 @@ impl Mp4Recording {
     /// Append interleaved stereo S16LE samples to a named MOV audio track.
     /// Partial sample frames stay with the caller; accepting only aligned
     /// buffers keeps timestamps exact and the muxer contract unambiguous.
+    /// # Errors
+    /// Returns invalid track, sample-shape or `FFmpeg` packet-write errors.
     pub fn write_pcm_audio(&mut self, track_index: usize, pcm: &[u8]) -> Result<(), String> {
         let sample_index = self
             .audio_sample_indices
@@ -145,6 +149,8 @@ impl Mp4Recording {
         Ok(())
     }
 
+    /// # Errors
+    /// Returns an error if `FFmpeg` cannot finish the container trailer.
     pub fn finish(mut self) -> Result<(), String> {
         let Some(mut output) = self.output.take() else {
             return Err("recording ended before its first encoded frame".into());

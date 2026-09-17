@@ -1307,7 +1307,7 @@ impl WordProcessor {
     //
     // These expose the selection/mark resolution the private edit ops use, so
     // the widget can build the matching `WordProcessorAction` and dispatch it
-    // through the qOS executor instead of mutating the document directly. They
+    // through the Tilo executor instead of mutating the document directly. They
     // never mutate — the action's `apply` performs the write.
 
     /// The active [`RegionKind`](crate::actions::RegionKind) the caret + edit ops

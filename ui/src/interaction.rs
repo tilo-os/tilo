@@ -68,7 +68,7 @@ impl ControllerFamily {
     }
 }
 
-/// Physical legends printed on the connected keyboard. qOS may run on Linux
+/// Physical legends printed on the connected keyboard. Tilo may run on Linux
 /// with an Apple keyboard attached, so this cannot be inferred from the OS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyboardFamily {

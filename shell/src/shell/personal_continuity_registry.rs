@@ -86,17 +86,17 @@ fn validate_app_semantic_metadata(app_id: &str, schema: u16, bytes: &[u8]) -> bo
         return false;
     }
     match app_id {
-        "dev.qos.browser" => serde_json::from_slice::<BrowserResume>(bytes)
+        "dev.tilo.browser" => serde_json::from_slice::<BrowserResume>(bytes)
             .is_ok_and(|resume| portable_http_url(&resume.url)),
-        "dev.qos.ebook" => serde_json::from_slice::<EbookResume>(bytes).is_ok_and(|resume| {
+        "dev.tilo.ebook" => serde_json::from_slice::<EbookResume>(bytes).is_ok_and(|resume| {
             let _ = (resume.chapter, resume.page);
             portable_id(&resume.book_id)
         }),
-        "dev.qos.music" => serde_json::from_slice::<MusicResume>(bytes).is_ok_and(|resume| {
+        "dev.tilo.music" => serde_json::from_slice::<MusicResume>(bytes).is_ok_and(|resume| {
             let _ = resume.position_ms;
             resume.paused && portable_id(&resume.track_id)
         }),
-        "dev.qos.chat" => serde_json::from_slice::<ChatResume>(bytes).is_ok_and(|resume| {
+        "dev.tilo.chat" => serde_json::from_slice::<ChatResume>(bytes).is_ok_and(|resume| {
             let _ = resume.controls;
             resume.media.valid()
                 && resume.media.microphone
@@ -437,7 +437,7 @@ mod tests {
         let metadata = browser_checkpoint(url);
         reports.report(
             room,
-            "dev.qos.browser",
+            "dev.tilo.browser",
             instance,
             metadata.schema_version,
             metadata.bytes,
@@ -453,7 +453,7 @@ mod tests {
                 &mut reports,
                 room,
                 AppInstanceId(11),
-                br#"{"url":"https://qos.dev"}"#,
+                br#"{"url":"https://tilo.dev"}"#,
             )
             .unwrap()
         );
@@ -462,14 +462,14 @@ mod tests {
                 &mut reports,
                 room,
                 AppInstanceId(11),
-                br#"{"url":"https://qos.dev"}"#,
+                br#"{"url":"https://tilo.dev"}"#,
             )
             .unwrap()
         );
         assert_eq!(reports.len(), 1);
         assert!(
             reports
-                .resume_for(room, "dev.qos.browser", AppInstanceId(11))
+                .resume_for(room, "dev.tilo.browser", AppInstanceId(11))
                 .is_some()
         );
     }
@@ -479,7 +479,7 @@ mod tests {
         let error = ContinuationRegistry::default()
             .report(
                 RoomId::new(),
-                "dev.qos.browser",
+                "dev.tilo.browser",
                 AppInstanceId(11),
                 1,
                 b"file:///home/alice/private".to_vec(),
@@ -495,7 +495,7 @@ mod tests {
         assert_eq!(
             reports.report(
                 room,
-                "dev.qos.mail",
+                "dev.tilo.mail",
                 AppInstanceId(1),
                 1,
                 br#"{"password":"secret"}"#.to_vec(),
@@ -505,7 +505,7 @@ mod tests {
         assert_eq!(
             reports.report(
                 room,
-                "dev.qos.browser",
+                "dev.tilo.browser",
                 AppInstanceId(2),
                 1,
                 br#"{"url":"https://alice:secret@example.test"}"#.to_vec(),
@@ -523,9 +523,9 @@ mod tests {
             "media":{"microphone":true,"camera":true,"screen_share":false,"share_audio":false},
             "controls":{"microphone_muted":true,"camera_muted":false,"screen_share_paused":false,"share_audio_muted":true}
         }"#;
-        assert!(validate_app_metadata("dev.qos.chat", 1, safe));
+        assert!(validate_app_metadata("dev.tilo.chat", 1, safe));
         assert!(!validate_app_metadata(
-            "dev.qos.chat",
+            "dev.tilo.chat",
             1,
             br#"{
                 "workspace_id":"ws_acme","channel_id":"https://join.invalid/secret",
@@ -534,7 +534,7 @@ mod tests {
             }"#,
         ));
         assert!(!validate_app_metadata(
-            "dev.qos.chat",
+            "dev.tilo.chat",
             1,
             br#"{
                 "workspace_id":"ws_acme","channel_id":"c_huddle","members":["alice"],
@@ -567,7 +567,7 @@ mod tests {
             reports
                 .report(
                     room,
-                    "dev.qos.custom",
+                    "dev.tilo.custom",
                     instance,
                     metadata.schema_version,
                     metadata.bytes,
@@ -575,7 +575,7 @@ mod tests {
                 .unwrap()
         );
         let retained = reports
-            .resume_for(room, "dev.qos.custom", instance)
+            .resume_for(room, "dev.tilo.custom", instance)
             .expect("generic presentation is retained");
         let facets = ui::app::structural_continuation_facets(retained.bytes()).unwrap();
         assert!(facets.presentation());
@@ -600,7 +600,7 @@ mod tests {
         assert_eq!(
             reports.report_with_required_facets(
                 room,
-                "dev.qos.browser".into(),
+                "dev.tilo.browser".into(),
                 instance,
                 presentation_only.schema_version,
                 presentation_only.bytes,
@@ -609,12 +609,12 @@ mod tests {
             Err(ContinuityError::InvalidResumePayload)
         );
 
-        let complete = browser_checkpoint(br#"{"url":"https://qos.dev"}"#);
+        let complete = browser_checkpoint(br#"{"url":"https://tilo.dev"}"#);
         assert!(
             reports
                 .report_with_required_facets(
                     room,
-                    "dev.qos.browser".into(),
+                    "dev.tilo.browser".into(),
                     instance,
                     complete.schema_version,
                     complete.bytes,
@@ -630,10 +630,10 @@ mod tests {
         assert_eq!(
             reports.report_with_required_facets(
                 RoomId::new(),
-                "dev.qos.browser".into(),
+                "dev.tilo.browser".into(),
                 AppInstanceId(73),
                 1,
-                br#"{"url":"https://qos.dev"}"#.to_vec(),
+                br#"{"url":"https://tilo.dev"}"#.to_vec(),
                 &[],
             ),
             Err(ContinuityError::InvalidResumePayload)
@@ -660,7 +660,7 @@ mod tests {
         .unwrap();
         reports.bind_tab(AppInstanceId(101), AppInstanceId(11));
         reports.bind_tab(AppInstanceId(202), AppInstanceId(22));
-        let launch = LaunchIntent::app("dev.qos.browser").unwrap();
+        let launch = LaunchIntent::app("dev.tilo.browser").unwrap();
         assert_eq!(reports.len(), 2);
         assert_ne!(
             reports.resume_for_tab(room, AppInstanceId(101), &launch),
@@ -679,24 +679,24 @@ mod tests {
             report_browser(&mut reports, room, instance, url).unwrap();
         }
 
-        assert!(reports.clear(room, "dev.qos.browser", AppInstanceId(11)));
+        assert!(reports.clear(room, "dev.tilo.browser", AppInstanceId(11)));
         assert!(
             reports
-                .resume_for(room, "dev.qos.browser", AppInstanceId(11))
+                .resume_for(room, "dev.tilo.browser", AppInstanceId(11))
                 .is_none()
         );
         assert!(
             reports
-                .resume_for(room, "dev.qos.browser", AppInstanceId(22))
+                .resume_for(room, "dev.tilo.browser", AppInstanceId(22))
                 .is_some()
         );
-        assert!(!reports.clear(room, "dev.qos.browser", AppInstanceId(11)));
+        assert!(!reports.clear(room, "dev.tilo.browser", AppInstanceId(11)));
     }
 
     #[test]
     fn remote_refresh_does_not_replace_a_live_tab_record() {
         let room = RoomId::new();
-        let launch = LaunchIntent::app("dev.qos.browser").unwrap();
+        let launch = LaunchIntent::app("dev.tilo.browser").unwrap();
         let mut reports = ContinuationRegistry::default();
         reports.bind_tab(AppInstanceId(10), AppInstanceId(101));
         report_browser(
@@ -709,7 +709,7 @@ mod tests {
         reports.store_remote_resume(
             room,
             AppInstanceId(10),
-            "dev.qos.browser".into(),
+            "dev.tilo.browser".into(),
             ResumeMetadata::new(
                 1,
                 ResumeSensitivity::Syncable,
@@ -734,13 +734,13 @@ mod tests {
     fn removing_a_closed_remote_tab_drops_its_staged_checkpoint() {
         let room = RoomId::new();
         let tab = AppInstanceId(10);
-        let launch = LaunchIntent::app("dev.qos.browser").unwrap();
+        let launch = LaunchIntent::app("dev.tilo.browser").unwrap();
         let mut reports = ContinuationRegistry::default();
         let metadata = browser_checkpoint(br#"{"url":"https://closed.test"}"#);
         reports.store_remote_resume(
             room,
             tab,
-            "dev.qos.browser".into(),
+            "dev.tilo.browser".into(),
             ResumeMetadata::new(
                 metadata.schema_version,
                 ResumeSensitivity::Syncable,

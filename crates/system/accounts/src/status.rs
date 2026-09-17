@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn status_round_trips_and_messages_are_bounded_one_line() {
         let root =
-            std::env::temp_dir().join(format!("qos-account-status-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("tilo-account-status-{}", uuid::Uuid::new_v4()));
         let id = AccountId::from("mail@example.test");
         let mut store = AccountSyncStatusStore::default();
         store.report(
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn reporter_preserves_last_success_across_auth_failure() {
         let root =
-            std::env::temp_dir().join(format!("qos-account-reporter-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("tilo-account-reporter-{}", uuid::Uuid::new_v4()));
         let id = AccountId::from("calendar@example.test");
         let reporter = AccountSyncReporter::in_root(id.clone(), &root);
         reporter.started().unwrap();
@@ -341,7 +341,7 @@ mod tests {
     #[test]
     fn reporters_serialize_cross_thread_updates() {
         let root = std::env::temp_dir().join(format!(
-            "qos-account-reporter-lock-{}",
+            "tilo-account-reporter-lock-{}",
             uuid::Uuid::new_v4()
         ));
         let first = AccountId::from("first");

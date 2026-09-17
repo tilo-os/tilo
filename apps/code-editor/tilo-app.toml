@@ -1,0 +1,68 @@
+# Code Editor — Tilo application manifest.
+#
+# The project tree lives in the CRDT; the editor opens and saves files through
+# the consented host paths below.
+#
+# The PTY the terminal tab needs comes from the devpts bwrap mounts at
+# /dev; binding the host's /dev/ptmx + /dev/pts over it splits master
+# and slave across two devpts instances and openpty() fails EACCES.
+#
+# Beyond the system read profile it needs, as a consented capability:
+# read+exec on the host bin dirs, for `$SHELL` in the built-in
+# terminal tab and for any language server enabled through
+# `TILO_CODE_LSP`.
+#
+
+
+[package]
+id       = "dev.tilo.code-editor"
+name     = "Code Editor"
+category = "Development"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+spellcheck = "optional@1"
+
+[entrypoint]
+bin             = "bin/code-editor"
+type            = "gui"
+splash-segments = ["bin/code-editor[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []

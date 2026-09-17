@@ -1,6 +1,6 @@
 //! Signed desired state for optional image extensions.
 //!
-//! qOS's root is a signed, immutable bootc/composefs deployment. Optional
+//! Tilo's root is a signed, immutable bootc/composefs deployment. Optional
 //! kernel modules, GPU stacks, and local-model runtimes must therefore not be
 //! installed by an arbitrary package manager into that root. This crate is the
 //! deliberately small policy seam between a catalogue/downloader and the image
@@ -47,6 +47,7 @@ use thiserror::Error;
 
 /// Wire/schema version for manifests and desired state.
 pub const SCHEMA_VERSION: u16 = 1;
+// Frozen signing bytes retain their historical prefix across product renames.
 const SIGNING_DOMAIN: &str = "qos.system-extension.manifest.v1";
 const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -673,7 +674,7 @@ mod tests {
         HostImage {
             digest: format!("sha256:{}", digest('a')),
             architecture: "x86_64".into(),
-            kernel_abi: "6.17.0-qos.1".into(),
+            kernel_abi: "6.17.0-tilo.1".into(),
         }
     }
 
@@ -684,14 +685,14 @@ mod tests {
             kind: ExtensionKind::LocalModelRuntime,
             version: "1.2.3".into(),
             artifact: PinnedArtifact {
-                source: "oci://registry.qos.example/models/runtime".into(),
+                source: "oci://registry.tilo.example/models/runtime".into(),
                 sha256: hex::encode(Sha256::digest(bytes)),
                 size_bytes: u64::try_from(bytes.len()).unwrap(),
             },
             target: ImageConstraint {
                 base_image_digest: host().digest,
                 architecture: Some("x86_64".into()),
-                kernel_abi: Some("6.17.0-qos.1".into()),
+                kernel_abi: Some("6.17.0-tilo.1".into()),
             },
             requires_reboot: false,
         }
@@ -725,7 +726,7 @@ mod tests {
         let manifest = manifest(b"runtime artifact");
         manifest.preflight(&host()).unwrap();
         let mut wrong = host();
-        wrong.kernel_abi = "6.17.1-qos.1".into();
+        wrong.kernel_abi = "6.17.1-tilo.1".into();
         assert_eq!(
             manifest.preflight(&wrong),
             Err(ExtensionError::KernelAbiMismatch)

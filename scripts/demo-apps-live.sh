@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Assemble target/qos-apps-live — the app payload the YC demo serves.
+# Assemble target/tilo-apps-live — the app payload the YC demo serves.
 #
 #   scripts/demo-apps-live.sh            # optimised (profile: demo)
-#   QOS_DEMO_PROFILE=debug scripts/demo-apps-live.sh
+#   TILO_DEMO_PROFILE=debug scripts/demo-apps-live.sh
 #
 # `scripts/yc-demo.py` reads this tree twice, and both readings are the
 # app a viewer waits for:
@@ -34,11 +34,11 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROFILE="${QOS_DEMO_PROFILE:-demo}"
+PROFILE="${TILO_DEMO_PROFILE:-demo}"
 BIN="$REPO/target/$PROFILE"
-OUT="${QOS_APPS_LIVE_DIR:-$REPO/target/qos-apps-live}"
-IDENTITY="${QOS_DEMO_IDENTITY:-$OUT/publisher-identity.json}"
-PKG_ID="dev.qos.word-processor"
+OUT="${TILO_APPS_LIVE_DIR:-$REPO/target/tilo-apps-live}"
+IDENTITY="${TILO_DEMO_IDENTITY:-$OUT/publisher-identity.json}"
+PKG_ID="dev.tilo.word-processor"
 STAGE="$OUT/.stage"
 
 case "$PROFILE" in
@@ -50,9 +50,9 @@ esac
 say() { printf '\033[1m[demo-apps-live]\033[0m %s\n' "$*"; }
 die() { echo "FATAL: $*" >&2; exit 1; }
 
-say "building word-processor, qos-pkg, qos-install (profile: $PROFILE)"
+say "building word-processor, tilo-pkg, tilo-install (profile: $PROFILE)"
 (cd "$REPO" && cargo build $PROFILE_FLAG -p word-processor -p pkg-cli -p install)
-for b in word-processor qos-pkg qos-install; do
+for b in word-processor tilo-pkg tilo-install; do
     [ -x "$BIN/$b" ] || die "$BIN/$b missing after build"
 done
 
@@ -67,7 +67,7 @@ newer="$(find "$REPO/apps/word-processor/src" "$REPO/ui/src" -name '*.rs' \
 mkdir -p "$OUT"
 if [ ! -f "$IDENTITY" ]; then
     say "minting publisher identity at $IDENTITY"
-    "$BIN/qos-pkg" keygen --out "$IDENTITY" >/dev/null
+    "$BIN/tilo-pkg" keygen --out "$IDENTITY" >/dev/null
 fi
 
 # `cp`, never a hardlink: the payload has to survive the next
@@ -79,21 +79,21 @@ mkdir -p "$STAGE/word-processor/bin"
 cp "$BIN/word-processor" "$STAGE/word-processor/bin/word-processor"
 
 say "packing $PKG_ID"
-"$BIN/qos-pkg" pack \
-    --manifest "$REPO/apps/word-processor/qos-app.toml" \
+"$BIN/tilo-pkg" pack \
+    --manifest "$REPO/apps/word-processor/tilo-app.toml" \
     --payload "$STAGE/word-processor" \
     --identity "$IDENTITY" \
     --output "$STAGE/word-processor.qpkg"
 
 # Installed fresh rather than edited in place. `registry.toml` names a
-# `package_id_hex`, and `qos-install verify` replays that hash down to
+# `package_id_hex`, and `tilo-install verify` replays that hash down to
 # every payload file, so a binary swapped in underneath a kept entry is
 # not a faster demo — it is a package that fails its own integrity
 # check at the least convenient moment.
 say "installing into $OUT"
 rm -rf "$OUT/payloads" "$OUT/registry.toml"
-QOS_APPS_DATA_DIR="$OUT" "$BIN/qos-install" install "$STAGE/word-processor.qpkg" --force
-QOS_APPS_DATA_DIR="$OUT" "$BIN/qos-install" verify "$PKG_ID" \
+TILO_APPS_DATA_DIR="$OUT" "$BIN/tilo-install" install "$STAGE/word-processor.qpkg" --force
+TILO_APPS_DATA_DIR="$OUT" "$BIN/tilo-install" verify "$PKG_ID" \
     || die "the freshly installed package does not verify"
 
 rm -rf "$STAGE"

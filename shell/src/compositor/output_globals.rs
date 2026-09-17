@@ -172,7 +172,7 @@ impl OutputGlobals {
                         continue;
                     };
                     let handle = WlOutputHandle::new(
-                        format!("qOS-{}", id.0),
+                        format!("Tilo-{}", id.0),
                         PhysicalProperties {
                             // The backend reports pixels and derives the
                             // scale itself; the physical millimetres are
@@ -181,7 +181,7 @@ impl OutputGlobals {
                             // size a client might compute a DPI from.
                             size: Size::from((0, 0)),
                             subpixel: Subpixel::Unknown,
-                            make: "qOS".into(),
+                            make: "Tilo".into(),
                             model: format!("Output {}", id.0),
                         },
                     );

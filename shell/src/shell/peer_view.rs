@@ -548,7 +548,7 @@ impl Widget for PeerView {
                     self.set_keyboard_focused(self.pointer_inside);
                 }
                 if (self.pointer_inside || self.keyboard_focused)
-                    && let Some(button) = crate::compositor::client_input::evdev_button(*button)
+                    && let Some(button) = crate::shell::input_policy::evdev_button(*button)
                 {
                     self.record_pointer_button(button, pressed);
                     *handled = true;
@@ -558,7 +558,7 @@ impl Widget for PeerView {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } if self.keyboard_focused => {
-                if let Some(keycode) = crate::compositor::client_input::evdev_keycode(event) {
+                if let Some(keycode) = crate::shell::input_policy::evdev_keycode(event) {
                     self.record_key(
                         keycode,
                         matches!(event.state, winit::event::ElementState::Pressed),
@@ -828,7 +828,7 @@ mod tests {
 
     /// A stream-start label the receiver can't honour must never cost the
     /// viewer the share. Not hypothetical: Fedora's `libavcodec-free`
-    /// (which qOS images ship) is built
+    /// (which Tilo images ship) is built
     /// `--disable-decoder='h264,hevc,vc1,vvc'`, so `HevcDecoder::new`
     /// fails on a stock image.
     #[test]

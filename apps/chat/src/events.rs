@@ -1696,8 +1696,8 @@ mod tests {
             .expect("c_crit is a channel resource");
         let spec = crit.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_spec = match &spec.input {
-            qos_actions::ActionInput::Immediate(e) => e.clone(),
-            qos_actions::ActionInput::Prompted { .. } => {
+            tilo_actions::ActionInput::Immediate(e) => e.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => {
                 panic!("delete is an immediate action")
             }
         };
@@ -1792,12 +1792,12 @@ mod tests {
         // load can't adopt a real chat store left on the dev machine — the test
         // must exercise the fresh-first-run seed, not whatever is on disk.
         let data = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("QOS_CHAT_DATA", data.path()) };
+        unsafe { std::env::set_var("TILO_CHAT_DATA", data.path()) };
         let mut app = ChatApp::new_ephemeral();
         app.is_live = true; // a live view with no disk behind it
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
-        unsafe { std::env::remove_var("QOS_CHAT_DATA") };
+        unsafe { std::env::remove_var("TILO_CHAT_DATA") };
 
         let ws = ChatDoc::list_workspaces(&doc);
         assert!(
@@ -2205,9 +2205,9 @@ mod tests {
         write_real_png(&dir.path().join("shot.png"), 64, 64);
         // Point the workspace picker at the temp dir and open it via the real
         // event path (the composer "+").
-        unsafe { std::env::set_var("QOS_CHAT_ATTACH_DIR", dir.path()) };
+        unsafe { std::env::set_var("TILO_CHAT_ATTACH_DIR", dir.path()) };
         app.on_hit(Hit::Attach, &mut doc);
-        unsafe { std::env::remove_var("QOS_CHAT_ATTACH_DIR") };
+        unsafe { std::env::remove_var("TILO_CHAT_ATTACH_DIR") };
         assert!(app.attach_open, "the picker opens");
         assert!(
             app.attachment_picker_pending.is_some(),
@@ -3816,9 +3816,9 @@ mod tests {
         app.thread_open = Some("m_concept".into());
         app.scroll = -250.0;
         app.focus = Focus::Thread;
-        app.on_hit_workspace("ws_qos".into());
+        app.on_hit_workspace("ws_tilo".into());
         app.reload(&doc);
-        assert_eq!(app.active_ws, "ws_qos");
+        assert_eq!(app.active_ws, "ws_tilo");
         assert!(
             app.thread_open.is_none(),
             "switching workspaces drops the open thread"
@@ -3827,7 +3827,7 @@ mod tests {
         assert_eq!(app.focus, Focus::Main, "focus returns to the main composer");
         assert_eq!(
             app.channel(&app.active_channel).unwrap().workspace,
-            "ws_qos",
+            "ws_tilo",
             "landed on a channel of the new workspace"
         );
     }

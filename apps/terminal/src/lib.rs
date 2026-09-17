@@ -1,5 +1,5 @@
 //! Library target for `quick-terminal`. The binary in `main.rs` delegates
-//! widget construction to this module so the nirios shell can embed a
+//! widget construction to this module so the tilo shell can embed a
 //! `TerminalWidget` as an `AppWidget` inside a tile.
 //!
 //! See [`actions`] for the resource + action-model split: the shared document is
@@ -57,3 +57,27 @@ mod app_widget_impl;
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// Process connections explicitly granted to one hosted Terminal instance.
+#[derive(Default)]
+pub struct HostedProcessServices {
+    pub ush: Option<std::os::unix::net::UnixStream>,
+}
+
+/// A required provider is missing or refused the session. Hosts may retry with a fresh grant.
+#[derive(Debug)]
+pub enum HostedTerminalError {
+    RequiredServiceMissing(&'static str),
+    ServiceFailed(String),
+}
+impl std::fmt::Display for HostedTerminalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RequiredServiceMissing(name) => {
+                write!(f, "required process service {name} is unavailable")
+            }
+            Self::ServiceFailed(detail) => write!(f, "Terminal process service failed: {detail}"),
+        }
+    }
+}
+impl std::error::Error for HostedTerminalError {}

@@ -50,7 +50,7 @@ use collab_types::{
     decide_capability, path_covers,
 };
 
-/// A qOS identity — the 32-byte Ed25519 public key that anchors a
+/// A Tilo identity — the 32-byte Ed25519 public key that anchors a
 /// person (or one of their devices) across the system.
 pub type IdentityKey = [u8; 32];
 

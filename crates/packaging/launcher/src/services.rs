@@ -1,7 +1,7 @@
 //! Service-socket discovery + `SCM_RIGHTS` handoff.
 //!
 //! Each declared service maps to a Unix socket at
-//! `$XDG_RUNTIME_DIR/qos/services/<name>.sock`. The launcher:
+//! `$XDG_RUNTIME_DIR/tilo/services/<name>.sock`. The launcher:
 //!
 //! 1. Looks up the socket per the manifest's service requirements.
 //! 2. For `required@<v>` whose socket is absent → exit 70 with a
@@ -14,7 +14,7 @@
 //!    dup2s it onto the agreed `child_fd` in the forked child, and `dup2`
 //!    leaves that copy without CLOEXEC, so it survives bwrap's exec and
 //!    the `__sandbox-exec` re-exec at that number. The app reads the
-//!    number from `QOS_SVC_<NAME>_FD`. **The launcher's own copy keeps
+//!    number from `TILO_SVC_<NAME>_FD`. **The launcher's own copy keeps
 //!    CLOEXEC** — nothing else it starts has any business holding an
 //!    app's connection to a session service — and is released once the
 //!    child has been forked.
@@ -61,7 +61,7 @@ pub const COMPAT_SERVICE: &str = "compat";
 /// Settings credential operation by merely connecting to the socket.
 pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
 pub const APP_HOST_SERVICE: &str = "app-host";
-const STORE_APP_ID: &str = "dev.qos.store";
+const STORE_APP_ID: &str = "dev.tilo.store";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 const COMPAT_PROTOCOL_VERSION: u16 = 1;
 /// Length-prefixed launcher handoff consumed before Cap'n Proto starts on a
@@ -100,7 +100,7 @@ impl ResolvedService {
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
     #[error(
-        "required service `{name}` (protocol qos.svc.{name}@{version}) was not found at `{path}`"
+        "required service `{name}` (protocol tilo.svc.{name}@{version}) was not found at `{path}`"
     )]
     RequiredMissing {
         name: String,
@@ -131,7 +131,7 @@ pub enum ServiceError {
         #[source]
         source: std::io::Error,
     },
-    #[error("service `app-host` is restricted to the signed qOS Store package")]
+    #[error("service `app-host` is restricted to the signed Tilo Store package")]
     AppHostUnauthorized,
 }
 
@@ -141,7 +141,7 @@ pub struct ServiceLaunchContext<'a> {
     pub workspace_id: Option<&'a str>,
 }
 
-/// Discover `$XDG_RUNTIME_DIR/qos/services/`.
+/// Discover `$XDG_RUNTIME_DIR/tilo/services/`.
 pub fn services_root() -> PathBuf {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
         || {
@@ -150,7 +150,7 @@ pub fn services_root() -> PathBuf {
         },
         PathBuf::from,
     );
-    runtime.join("qos/services")
+    runtime.join("tilo/services")
 }
 
 pub fn socket_for(name: &str) -> PathBuf {
@@ -273,7 +273,7 @@ pub fn resolve_identity_bind(
     }))
 }
 
-/// Create `$XDG_RUNTIME_DIR/qos/services/` if it does not exist.
+/// Create `$XDG_RUNTIME_DIR/tilo/services/` if it does not exist.
 ///
 /// Called by whoever binds a service socket — a `bind` into a missing
 /// parent is `ENOENT`. Mode 0700: the sandbox boundary assumes only
@@ -585,6 +585,7 @@ fn write_model_gateway_handoff(stream: &mut UnixStream, app_id: &str) -> std::io
 
 /// Convert resolved services into `ServiceBind`s consumable by the
 /// sandbox argv builder.
+#[cfg(target_os = "linux")]
 pub fn to_service_binds(resolved: &[ResolvedService]) -> Vec<crate::sandbox::ServiceBind> {
     resolved
         .iter()
@@ -635,13 +636,13 @@ mod tests {
             stream.read_exact(&mut bytes).expect("payload");
             serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
         });
-        let bind = resolve_identity_bind("dev.qos.notes", Some("room-7"), false)
+        let bind = resolve_identity_bind("dev.tilo.notes", Some("room-7"), false)
             .expect("resolve")
             .expect("identity bind");
         assert_eq!(bind.name, IDENTITY_SERVICE);
         assert_eq!(bind.child_fd, 31);
         let handshake = reader.join().expect("reader");
-        assert_eq!(handshake["app_id"], "dev.qos.notes");
+        assert_eq!(handshake["app_id"], "dev.tilo.notes");
         assert_eq!(handshake["workspace_id"], "room-7");
 
         unsafe {
@@ -682,7 +683,7 @@ mod tests {
             &services,
             false,
             ServiceLaunchContext {
-                app_id: "dev.qos.notes",
+                app_id: "dev.tilo.notes",
                 workspace_id: Some("room-7"),
             },
         )
@@ -691,7 +692,7 @@ mod tests {
         let (magic, handoff) = reader.join().expect("reader");
         assert_eq!(magic, COLLAB_LAUNCH_MAGIC);
         assert_eq!(handoff["protocol"], COLLAB_LAUNCH_PROTOCOL_VERSION);
-        assert_eq!(handoff["app_id"], "dev.qos.notes");
+        assert_eq!(handoff["app_id"], "dev.tilo.notes");
         assert_eq!(handoff["workspace_id"], "room-7");
 
         unsafe {
@@ -787,20 +788,21 @@ mod tests {
         let mut services = BTreeMap::new();
         services.insert(SHELL_UI_SERVICE.to_string(), "optional@1".to_string());
         let resolved = resolve_service_binds(&services, false).unwrap();
-        authenticate_shell_ui_bind(&resolved, "dev.qos.chat").unwrap();
+        authenticate_shell_ui_bind(&resolved, "dev.tilo.chat").unwrap();
 
         let (stream, _) = listener.accept().unwrap();
         let mut line = String::new();
         BufReader::new(stream).read_line(&mut line).unwrap();
         let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
         assert_eq!(handshake["protocol"], 1);
-        assert_eq!(handshake["app_id"], "dev.qos.chat");
+        assert_eq!(handshake["app_id"], "dev.tilo.chat");
     }
 
     /// What `/proc/self/fd/<n>` says a descriptor points at — `socket:[<inode>]`
     /// for a connected socket, unique to that connection. Identifying
     /// descriptors this way rather than counting the process's is the
     /// difference between a check and a race.
+    #[cfg(target_os = "linux")]
     fn fd_target(fd: RawFd) -> Option<String> {
         std::fs::read_link(format!("/proc/self/fd/{fd}"))
             .ok()
@@ -810,6 +812,7 @@ mod tests {
     /// Every socket this process still holds a descriptor for. Failing to
     /// read `/proc/self/fd` fails the test — a check that can't see its
     /// subject must not report the subject is fine.
+    #[cfg(target_os = "linux")]
     fn open_sockets() -> std::collections::BTreeSet<String> {
         std::fs::read_dir("/proc/self/fd")
             .expect(
@@ -831,6 +834,7 @@ mod tests {
     /// numbers the fork will need, let the resolution go.
     #[test]
     #[serial_test::serial(process_env)]
+    #[cfg(target_os = "linux")]
     fn a_finished_launch_leaves_no_descriptor_behind() {
         const LAUNCHES: usize = 8;
 
@@ -972,10 +976,12 @@ mod tests {
             other => panic!("unexpected read from a live connection: {other:?}"),
         }
 
-        drop(app_copy);
+        // Darwin refuses timeout changes after peer disconnect. Establish the
+        // same EOF deadline while the final peer descriptor is still alive.
         served
             .set_read_timeout(Some(std::time::Duration::from_secs(2)))
             .unwrap();
+        drop(app_copy);
         assert_eq!(
             served.read(&mut buf).expect("the service must see the end"),
             0,

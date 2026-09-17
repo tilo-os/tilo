@@ -21,15 +21,15 @@
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use qos_actions::Resource;
-use qos_agent::{Config, Session};
+use tilo_actions::Resource;
+use tilo_agent::{Config, Session};
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
 use uuid::Uuid;
 
 mod typed_peer;
 use typed_peer::{TypedPeer as UnixStream, document_mutation, recv, send};
 
-const APP: &str = "dev.qos.word-processor";
+const APP: &str = "dev.tilo.word-processor";
 const RECORD: &str = "file:/var/workspace/Demo/brief.docx";
 
 /// The capability an inviter issues an agent for the app it was invited
@@ -280,7 +280,6 @@ fn drive_peer_to_table(
                     "the relay names presence by the announced handle"
                 );
                 saw_scribe_presence = true;
-                publish_word_processor_actions(&mut peer, &replica);
             }
             CollabEvent::DocumentSnapshotRequested { .. } => {
                 let snap = CollabRequest::document_snapshot(replica.save());
@@ -401,6 +400,11 @@ fn the_agent_inserts_a_table_on_the_peers_replica() {
     };
     send(&mut peer, &hello).unwrap();
     let replica = seed_document();
+    // A real app publishes its action surface when the document opens, not
+    // after a prospective invoker announces itself. Publishing here also
+    // removes the race where the agent can inspect the snapshot before the
+    // peer has processed its arrival event.
+    publish_word_processor_actions(&mut peer, &replica);
     // Let the relay register the peer's Hello before the agent's frames
     // can race it (the relay handles each connection on its own thread).
     std::thread::sleep(Duration::from_millis(100));
@@ -554,7 +558,7 @@ fn connect_files_and_word_processor(
     send(
         &mut files_peer,
         &CollabRequest::Hello {
-            app_id: "dev.qos.file-explorer".into(),
+            app_id: "dev.tilo.file-explorer".into(),
             cluster_id: room,
             record: None,
             handle: Some("files".into()),

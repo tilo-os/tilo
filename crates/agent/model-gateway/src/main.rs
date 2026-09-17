@@ -1,7 +1,7 @@
 //! Per-user hosted model gateway.
 //!
 //! This intentionally is a narrow OpenAI-compatible/Anthropic relay, not a
-//! general `LiteLLM` deployment. qOS needs one profile-selected planning call;
+//! general `LiteLLM` deployment. Tilo needs one profile-selected planning call;
 //! adding `LiteLLM` would introduce an unpinned Python control plane and more
 //! provider surface than is audited here.
 
@@ -16,11 +16,11 @@ use std::time::{Duration, Instant};
 use accounts::{AccountId, Secret, SecretVault};
 use agent_provider_config::{ProviderConfig, ProviderProfile, ProviderProtocol};
 use clap::{Parser, Subcommand};
-use qos_model_gateway::{Frame, RPC_VERSION, Request, Response, read_frame, write_frame};
+use tilo_model_gateway::{Frame, RPC_VERSION, Request, Response, read_frame, write_frame};
 use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Parser)]
-#[command(name = "qos-model-gateway", about = "qOS hosted model gateway")]
+#[command(name = "tilo-model-gateway", about = "Tilo hosted model gateway")]
 struct Cli {
     #[command(subcommand)]
     action: Action,
@@ -45,8 +45,8 @@ enum Action {
 }
 
 const MAX_HANDOFF: usize = 4096;
-const SETTINGS_APP: &str = "dev.qos.settings";
-const AGENT_APP: &str = "dev.qos.agent";
+const SETTINGS_APP: &str = "dev.tilo.settings";
+const AGENT_APP: &str = "dev.tilo.agent";
 
 #[derive(serde::Deserialize)]
 struct Handoff {
@@ -68,13 +68,13 @@ fn main() {
     if let Err(error) = result {
         // Never interpolate a request or provider response here; either could
         // contain a bearer value or user document content.
-        eprintln!("qos-model-gateway: {error}");
+        eprintln!("tilo-model-gateway: {error}");
         std::process::exit(1);
     }
 }
 
 fn control(request: Request) -> Result<(), String> {
-    let response = qos_model_gateway::request(request).map_err(|error| error.to_string())?;
+    let response = tilo_model_gateway::request(request).map_err(|error| error.to_string())?;
     if let Some(configured) = response.configured {
         println!("{configured}");
     }
@@ -164,7 +164,7 @@ fn handle(app_id: &str, request: Request) -> Response {
             configured: None,
             error: None,
         }),
-        Request::Plan { .. } => Err("only qos-agent may plan through the model gateway".into()),
+        Request::Plan { .. } => Err("only tilo-agent may plan through the model gateway".into()),
         Request::SecretStatus { profile_id } if app_id == SETTINGS_APP => {
             secret_status(&profile_id).map(|configured| Response {
                 ok: true,

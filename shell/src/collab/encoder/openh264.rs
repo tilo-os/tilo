@@ -113,7 +113,7 @@ impl Encoder for OpenH264Backend {
                 detail: format!("{e:?}"),
             })?;
         let elapsed = start.elapsed();
-        let is_keyframe = qos_callstream::session::is_h264_keyframe(&bytes);
+        let is_keyframe = tilo_callstream::session::is_h264_keyframe(&bytes);
         let stats = FrameStats {
             encode_wallclock: elapsed,
             keyframe: is_keyframe,

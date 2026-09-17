@@ -1,6 +1,6 @@
 //! End-to-end session-lock test over the headless compositor + the
-//! `QOS_TEST_CONTROL` socket: spawns the real compositor with an injected
-//! unlock password (`QOS_LOCK_TEST_PASSWORD`) and a short idle-lock, then
+//! `TILO_TEST_CONTROL` socket: spawns the real compositor with an injected
+//! unlock password (`TILO_LOCK_TEST_PASSWORD`) and a short idle-lock, then
 //! drives the live `run()` loop — idle auto-lock, wrong password stays
 //! locked, correct password unlocks.
 //!
@@ -8,7 +8,7 @@
 //! gating, overlay, and the async verify where Enter hands the credential
 //! to a worker thread and the per-tick `poll_verification` delivers the
 //! unlock) *except* the credential check itself: [`FixedVerifier`] stands
-//! in for the PAM path (`HelperVerifier` → `qos-unlock-helper`), which
+//! in for the PAM path (`HelperVerifier` → `tilo-unlock-helper`), which
 //! can't run headless.
 //!
 //! `#[ignore]`d by default (spawns a real compositor child). Opt in with:
@@ -42,7 +42,7 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
     // compositor protocol fixture. Besides crossing the build namespace,
     // this keeps every Wayland Unix socket safely below SUN_LEN.
     let runtime_dir = PathBuf::from(format!(
-        "/run/user/{}/qos-lock-{}",
+        "/run/user/{}/tilo-lock-{}",
         unsafe { libc::getuid() },
         std::process::id()
     ));
@@ -58,14 +58,14 @@ fn spawn_headless_locking() -> (Child, PathBuf) {
 
     let mut child = Command::new(&binary)
         .args(["--mode", "native", "--backend", "headless"])
-        .env("QOS_TEST_CONTROL", &socket_path)
+        .env("TILO_TEST_CONTROL", &socket_path)
         // Injected verifier: accept exactly this password (stands in for PAM).
-        .env("QOS_LOCK_TEST_PASSWORD", UNLOCK_PASSWORD)
+        .env("TILO_LOCK_TEST_PASSWORD", UNLOCK_PASSWORD)
         // Auto-lock quickly on idle; keep the display un-blanked so the lock is the
         // only state transition under test.
-        .env("QOS_IDLE_LOCK_SECS", "2")
-        .env("QOS_IDLE_BLANK_SECS", "0")
-        .env("NIRIOS_HEADLESS_SIZE", "1280x800")
+        .env("TILO_IDLE_LOCK_SECS", "2")
+        .env("TILO_IDLE_BLANK_SECS", "0")
+        .env("TILO_HEADLESS_SIZE", "1280x800")
         .env("XDG_RUNTIME_DIR", &runtime_dir)
         .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
         .env("XDG_DATA_HOME", runtime_dir.join("data"))

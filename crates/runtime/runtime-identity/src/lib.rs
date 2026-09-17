@@ -1,8 +1,8 @@
-//! `runtime-identity` — user-identity loader for qOS apps.
+//! `runtime-identity` — user-identity loader for Tilo apps.
 //!
 //! The launcher hands applications a connected signing-broker descriptor via
-//! `QOS_IDENTITY_BROKER_FD`. Apps can inspect public metadata and request a
-//! signature, but private shares stay in the host session. `QOS_USER_IDENTITY`
+//! `TILO_IDENTITY_BROKER_FD`. Apps can inspect public metadata and request a
+//! signature, but private shares stay in the host session. `TILO_USER_IDENTITY`
 //! remains a compatibility path for non-sandboxed development only.
 //!
 //! The on-disk file is the JSON emitted by the identity-flow's
@@ -75,11 +75,11 @@ pub use secure_store::{BrokerFileProvider, SecretProvider};
 
 pub use runtime_portal::NotAvailable;
 
-/// Legacy unsandboxed-development path. The qOS launcher uses
+/// Legacy unsandboxed-development path. The Tilo launcher uses
 /// [`broker::BROKER_ENV_VAR`] and never sets this for packaged apps.
-pub const IDENTITY_ENV_VAR: &str = "QOS_USER_IDENTITY";
+pub const IDENTITY_ENV_VAR: &str = "TILO_USER_IDENTITY";
 pub const IDENTITY_SERVICE: &str = "identity";
-const COLLABORATION_JOIN_TAG: &[u8] = b"qos-collaboration-join-v1\0";
+const COLLABORATION_JOIN_TAG: &[u8] = b"tilo-collaboration-join-v1\0";
 
 /// Domain-separated bytes signed by an enrolled device when joining one
 /// collaboration workspace. The NUL-terminated domain tag and the remaining
@@ -138,7 +138,7 @@ pub mod wire {
             avatar_color: [u8; 3],
             group_public_key: [u8; 32],
             signing_public_key: [u8; 32],
-            /// JSON-encoded root-signed `qos_user_identity::DeviceCert`.
+            /// JSON-encoded root-signed `tilo_user_identity::DeviceCert`.
             device_certificate: Option<Vec<u8>>,
             threshold: u16,
             total_shares: u16,
@@ -245,13 +245,13 @@ pub fn identity_dir_from_env() -> io::Result<PathBuf> {
     if let Some(xdg) = env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         let xdg = PathBuf::from(xdg);
         if xdg.is_absolute() {
-            return Ok(xdg.join("qos").join("identity"));
+            return Ok(xdg.join("tilo").join("identity"));
         }
     }
     if let Some(home) = env::var_os("HOME").filter(|v| !v.is_empty()) {
         let home = PathBuf::from(home);
         if home.is_absolute() {
-            return Ok(home.join(".config").join("qos").join("identity"));
+            return Ok(home.join(".config").join("tilo").join("identity"));
         }
     }
     Err(io::Error::new(
@@ -1054,7 +1054,7 @@ impl SigningIdentity {
     }
 
     /// Aggregate a confirmed quorum's partials into the ordinary Ed25519
-    /// signature consumed by the rest of qOS.
+    /// signature consumed by the rest of Tilo.
     ///
     /// # Errors
     ///
@@ -1146,8 +1146,8 @@ impl SigningIdentity {
             SigningSource::Local(Some(sk)) => Ok(sk.sign(message).to_bytes()),
             SigningSource::Local(None) => Err(NotAvailable::ConnectionFailed(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "threshold-mode signing is not supported by qos-runtime-identity; \
-                 use qos-threshold-identity + the multi-device orchestrator instead",
+                "threshold-mode signing is not supported by tilo-runtime-identity; \
+                 use tilo-threshold-identity + the multi-device orchestrator instead",
             ))),
             SigningSource::LocalThreshold(_) => {
                 Err(NotAvailable::ConnectionFailed(io::Error::new(
@@ -1807,7 +1807,7 @@ mod tests {
                 &mut writer,
                 &wire::Request::CollaborationOp {
                     workspace_id: "workspace".into(),
-                    app_id: "dev.qos.notes".into(),
+                    app_id: "dev.tilo.notes".into(),
                     record_id: "record".into(),
                     unsigned_op: sent,
                 },
@@ -1824,7 +1824,7 @@ mod tests {
     }
 
     fn clear_env() {
-        // SAFETY: tests in this module all touch QOS_USER_IDENTITY
+        // SAFETY: tests in this module all touch TILO_USER_IDENTITY
         // and are logically serial.
         unsafe {
             env::remove_var(IDENTITY_ENV_VAR);
@@ -1869,7 +1869,7 @@ mod tests {
         }
         assert_eq!(
             identity_dir_from_env().unwrap(),
-            PathBuf::from("/home/ada/.config/qos/identity")
+            PathBuf::from("/home/ada/.config/tilo/identity")
         );
         // SAFETY: restore the process environment under the same serial lock.
         unsafe {
@@ -1886,7 +1886,7 @@ mod tests {
 
     #[test]
     fn load_missing_file_surfaces_connection_failed() {
-        let err = load_from_path(PathBuf::from("/nonexistent/qos-identity.json"))
+        let err = load_from_path(PathBuf::from("/nonexistent/tilo-identity.json"))
             .expect_err("should fail");
         match err {
             NotAvailable::ConnectionFailed(io) => {
@@ -2012,7 +2012,7 @@ mod tests {
         let real = SigningKey::from_bytes(&[9u8; 32]);
         let vk = real.verifying_key();
         let mut hasher = Sha512::new();
-        hasher.update(b"qos-identity-flow-v1-placeholder-key");
+        hasher.update(b"tilo-identity-flow-v1-placeholder-key");
         hasher.update(vk.to_bytes());
         let bogus_secret = hasher.finalize()[..32].to_vec();
 

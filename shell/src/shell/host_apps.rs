@@ -1,16 +1,16 @@
-//! Starting applications qOS did not package.
+//! Starting applications Tilo did not package.
 //!
 //! Counterpart to [`crate::shell::launcher`], which starts `.qpkg`
-//! packages; both exec `qos-launcher` and report through the same
+//! packages; both exec `tilo-launcher` and report through the same
 //! [`launcher::LaunchEvent`] queue.
 //!
-//! `qos-launcher run-host` builds **no sandbox** — nesting a Flatpak's
-//! own sandbox inside qOS's baseline filter just fails to start. A host
+//! `tilo-launcher run-host` builds **no sandbox** — nesting a Flatpak's
+//! own sandbox inside Tilo's baseline filter just fails to start. A host
 //! app gets no room id, no capability file, no per-room state
 //! directory. `launch` accepts only an opaque portal-attribution room string:
 //! it lets an existing Flatpak's authenticated portal request resolve to the
 //! workspace containing its window, but is not passed to the app and grants
-//! no qOS service or sandbox authority. The palette labels host apps under
+//! no Tilo service or sandbox authority. The palette labels host apps under
 //! [`ResourceKind::HostApplication`] so a user can tell which kind of
 //! app they're looking at. Host-desktop sessions also pass the private
 //! rootless-Xwayland display for software that cannot speak Wayland.
@@ -43,10 +43,10 @@ pub struct HostApp {
 /// A palette launch held until the compositor can mint its external
 /// `xdg_activation_v1` token on the compositor thread.
 #[derive(Debug, Clone)]
-pub(crate) struct QueuedLaunch {
+pub struct QueuedLaunch {
     pub desktop_id: String,
     pub display_name: String,
-    pub placement: crate::compositor::tab_binding::Placement,
+    pub placement: crate::shell::tab_binding::Placement,
     pub portal_workspace_id: Option<String>,
 }
 
@@ -55,13 +55,36 @@ fn queued_launches() -> &'static std::sync::Mutex<Vec<QueuedLaunch>> {
     QUEUED.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
-pub(crate) fn queue_launch(request: QueuedLaunch) {
+#[cfg_attr(
+    target_os = "linux",
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the shared provider-selection interface must return typed unavailability on other hosts"
+    )
+)]
+fn require_host_execution() -> Result<(), LaunchError> {
+    #[cfg(target_os = "linux")]
+    {
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(LaunchError::ProviderUnavailable {
+            provider: "Linux host application execution",
+        })
+    }
+}
+
+pub(crate) fn queue_launch(request: QueuedLaunch) -> Result<(), LaunchError> {
+    require_host_execution()?;
     queued_launches()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .push(request);
+    Ok(())
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn drain_queued_launches() -> Vec<QueuedLaunch> {
     std::mem::take(
         &mut *queued_launches()
@@ -81,6 +104,7 @@ fn x11_slot() -> &'static RwLock<Option<X11Session>> {
     SESSION.get_or_init(|| RwLock::new(None))
 }
 
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn set_x11_session(session: Option<X11Session>) {
     if let Ok(mut slot) = x11_slot().write() {
         *slot = session;
@@ -182,7 +206,7 @@ pub fn find(desktop_id: &str) -> Option<HostApp> {
 
 /// Pure — no I/O, so the exact command is assertable. No
 /// `--workspace-id` and no `--capabilities`: a host app is in no room
-/// and confined by nothing qOS controls, so passing either would
+/// and confined by nothing Tilo controls, so passing either would
 /// assert something false. Compare [`launcher::build_launch_command`].
 pub(crate) fn build_launch_command(
     app: &HostApp,
@@ -217,7 +241,7 @@ pub(crate) fn build_launch_command(
     if let Some(token) = activation_token.filter(|token| !token.is_empty()) {
         // The launcher is an intermediary. Keep this out of argv/process
         // listings; it converts it into the standard child-facing variable.
-        env.push(("QOS_HOST_ACTIVATION_TOKEN".to_string(), token.to_string()));
+        env.push(("TILO_HOST_ACTIVATION_TOKEN".to_string(), token.to_string()));
     }
     launcher::LaunchCommand {
         program: launcher_bin.to_path_buf(),
@@ -238,7 +262,7 @@ pub(crate) fn build_launch_command(
 ///
 /// Returns [`LaunchError::HostAppNotFound`] when `desktop_id` isn't
 /// registered, or [`LaunchError::NoDisplay`]/a launcher-resolution error
-/// when the compositor or `qos-launcher` binary can't be reached.
+/// when the compositor or `tilo-launcher` binary can't be reached.
 pub fn launch(
     desktop_id: &str,
     portal_workspace_id: Option<String>,
@@ -246,14 +270,14 @@ pub fn launch(
     launch_with_document_and_activation(desktop_id, None, portal_workspace_id, None)
 }
 
-/// Unlike a qOS launch there's no grant to make alongside it — the app
+/// Unlike a Tilo launch there's no grant to make alongside it — the app
 /// already has the user's filesystem, which is what makes it a host app.
 ///
 /// # Errors
 ///
 /// Returns [`LaunchError::HostAppNotFound`] when `desktop_id` isn't
 /// registered, or [`LaunchError::NoDisplay`]/a launcher-resolution error
-/// when the compositor or `qos-launcher` binary can't be reached.
+/// when the compositor or `tilo-launcher` binary can't be reached.
 pub fn launch_with_document(
     desktop_id: &str,
     document: Option<&Path>,
@@ -264,7 +288,7 @@ pub fn launch_with_document(
 
 /// Host launch with a compositor-minted `xdg_activation_v1` token. The token
 /// travels only as the standard desktop environment variable and grants no
-/// qOS sandbox or service authority.
+/// Tilo sandbox or service authority.
 ///
 /// # Errors
 ///
@@ -275,6 +299,10 @@ pub fn launch_with_document_and_activation(
     portal_workspace_id: Option<String>,
     activation_token: Option<&str>,
 ) -> Result<HostApp, LaunchError> {
+    if let Err(error) = require_host_execution() {
+        launcher::clear_pending_placement(desktop_id);
+        return Err(error);
+    }
     // Placement is recorded before this function is called, while the user
     // action's layout is still current.  A refusal before the worker starts
     // must retire that one-shot note or a later independently-opened window
@@ -312,9 +340,9 @@ pub fn launch_with_document_and_activation(
     Ok(app)
 }
 
-/// A foreign toplevel arrives with an `app_id` qOS didn't mint, so the
+/// A foreign toplevel arrives with an `app_id` Tilo didn't mint, so the
 /// note is keyed on every identity the entry might use.
-pub fn note_placement(app: &HostApp, placement: crate::compositor::tab_binding::Placement) {
+pub fn note_placement(app: &HostApp, placement: crate::shell::tab_binding::Placement) {
     launcher::set_pending_placement_for_identities(
         &app.desktop_id,
         &app.window_identities,
@@ -324,7 +352,7 @@ pub fn note_placement(app: &HostApp, placement: crate::compositor::tab_binding::
 
 /// Consulted when a foreign toplevel is adopted, so its tab shows
 /// "Spotify" not "spotify", and so the compositor can tell a host app's
-/// window from a qOS app's at all.
+/// window from a Tilo app's at all.
 pub fn app_for_window_id(app_id: &str) -> Option<HostApp> {
     app_for_window_id_in(app_id, host_apps())
 }
@@ -368,14 +396,14 @@ mod tests {
         let app = app("com.spotify.Client", "Spotify", &["spotify"]);
         let cmd = build_launch_command(
             &app,
-            Path::new("/usr/libexec/qos-launcher"),
+            Path::new("/usr/libexec/tilo-launcher"),
             Path::new("/run/user/1000/wayland-1"),
             None,
             None,
             None,
             None,
         );
-        assert_eq!(cmd.program, PathBuf::from("/usr/libexec/qos-launcher"));
+        assert_eq!(cmd.program, PathBuf::from("/usr/libexec/tilo-launcher"));
         assert_eq!(
             cmd.args,
             vec![
@@ -405,7 +433,7 @@ mod tests {
         );
         let cmd = build_launch_command(
             &app,
-            Path::new("/usr/libexec/qos-launcher"),
+            Path::new("/usr/libexec/tilo-launcher"),
             Path::new("/run/user/1000/wayland-1"),
             Some(Path::new("/home/u/notes.txt")),
             None,
@@ -421,11 +449,11 @@ mod tests {
         let app = app("com.valvesoftware.Steam", "Steam", &["steam"]);
         let x11 = X11Session {
             display: ":1234".into(),
-            authority: PathBuf::from("/run/user/1000/qos-session/Xauthority-1234"),
+            authority: PathBuf::from("/run/user/1000/tilo-session/Xauthority-1234"),
         };
         let cmd = build_launch_command(
             &app,
-            Path::new("/usr/bin/qos-launcher"),
+            Path::new("/usr/bin/tilo-launcher"),
             Path::new("/run/user/1000/wayland-2"),
             None,
             Some(&x11),
@@ -440,7 +468,7 @@ mod tests {
         assert!(cmd.args.windows(2).any(|pair| {
             pair == [
                 "--x11-authority",
-                "/run/user/1000/qos-session/Xauthority-1234",
+                "/run/user/1000/tilo-session/Xauthority-1234",
             ]
         }));
         assert_eq!(cmd.portal_workspace_id.as_deref(), Some("room-7"));
@@ -456,7 +484,7 @@ mod tests {
         let app = app("com.example.Legacy", "Legacy", &["legacy"]);
         set_x11_session(Some(X11Session {
             display: ":1234".into(),
-            authority: PathBuf::from("/run/user/1000/qos-session/Xauthority-1234"),
+            authority: PathBuf::from("/run/user/1000/tilo-session/Xauthority-1234"),
         }));
         assert!(x11_session().is_some(), "fixture published an X11 bridge");
 
@@ -465,7 +493,7 @@ mod tests {
         set_x11_session(None);
         let command = build_launch_command(
             &app,
-            Path::new("/usr/bin/qos-launcher"),
+            Path::new("/usr/bin/tilo-launcher"),
             Path::new("/run/user/1000/wayland-2"),
             None,
             x11_session().as_ref(),
@@ -543,20 +571,34 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn a_refused_host_launch_cannot_leave_a_stale_placement() {
-        const MISSING: &str = "org.qos.test.definitely-not-a-desktop-entry";
+        const MISSING: &str = "org.tilo.test.definitely-not-a-desktop-entry";
         launcher::clear_pending_placements();
-        launcher::set_pending_placement(
-            MISSING,
-            crate::compositor::tab_binding::Placement::NewGroup,
-        );
+        launcher::set_pending_placement(MISSING, crate::shell::tab_binding::Placement::NewGroup);
 
+        let result = launch(MISSING, None);
+        #[cfg(target_os = "linux")]
+        assert!(matches!(result, Err(LaunchError::HostAppNotFound { .. })));
+        #[cfg(not(target_os = "linux"))]
         assert!(matches!(
-            launch(MISSING, None),
-            Err(LaunchError::HostAppNotFound { .. })
+            result,
+            Err(LaunchError::ProviderUnavailable { .. })
         ));
         assert!(
             launcher::placement_for_toplevel(MISSING, 0xC1_05_ED).is_none(),
             "a later unrelated window must not inherit a launch that was refused"
         );
+    }
+}
+
+#[cfg(all(test, not(target_os = "linux")))]
+mod unavailable_provider_tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_host_execution_fails_before_catalogue_discovery() {
+        assert!(matches!(
+            launch("fixture.desktop", None),
+            Err(LaunchError::ProviderUnavailable { .. })
+        ));
     }
 }

@@ -6,7 +6,7 @@ set -euo pipefail
 : "${GITHUB_REF_NAME:?missing release tag}"
 : "${FORGEJO_TOKEN:?missing release token}"
 
-release_repository="${QOS_RELEASE_REPOSITORY:-qos/releases}"
+release_repository="${TILO_RELEASE_REPOSITORY:-tilo/releases}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
 [ "${GITHUB_REPOSITORY:-}" != "$release_repository" ] \
@@ -15,13 +15,13 @@ release_repository="${QOS_RELEASE_REPOSITORY:-qos/releases}"
   || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
 
 asset_root="${1:-release-assets}"
-if find "$asset_root" -type f -name 'qos-imager-linux-*' -print -quit \
+if find "$asset_root" -type f -name 'tilo-imager-linux-*' -print -quit \
    | grep -q .; then
   "$(dirname "$0")/verify-linux-release.sh" "$asset_root"
 fi
 api="${GITHUB_SERVER_URL%/}/api/v1/repos/${release_repository}"
 auth="Authorization: token ${FORGEJO_TOKEN}"
-work="$(mktemp -d /var/tmp/qos-imager-release.XXXXXX)"
+work="$(mktemp -d /var/tmp/tilo-imager-release.XXXXXX)"
 trap 'find "$work" -depth -delete' EXIT
 release_json="$work/release.json"
 assets_json="$work/assets.json"
@@ -93,8 +93,8 @@ tag = sys.argv[1]
 print(json.dumps({
     "tag_name": tag,
     "target_commitish": "main",
-    "name": f"qOS Imager {tag}",
-    "body": "Signed qOS Imager downloads. Verify each adjacent SHA-256 file before opening an artifact. Linux users can authenticate detached signatures with qos-release-key.asc after comparing qos-release-key.fingerprint with the fingerprint published through an independent qOS channel.",
+    "name": f"Tilo Imager {tag}",
+    "body": "Signed Tilo Imager downloads. Verify each adjacent SHA-256 file before opening an artifact. Linux users can authenticate detached signatures with tilo-release-key.asc after comparing tilo-release-key.fingerprint with the fingerprint published through an independent Tilo channel.",
     "draft": True,
     "prerelease": False,
 }))
@@ -259,8 +259,8 @@ import json, sys
 tag = sys.argv[1]
 print(json.dumps({
     "tag_name": tag,
-    "name": f"qOS Imager {tag}",
-    "body": "Signed qOS Imager downloads. Verify each adjacent SHA-256 file before opening an artifact. Linux users can authenticate detached signatures with qos-release-key.asc after comparing qos-release-key.fingerprint with the fingerprint published through an independent qOS channel.",
+    "name": f"Tilo Imager {tag}",
+    "body": "Signed Tilo Imager downloads. Verify each adjacent SHA-256 file before opening an artifact. Linux users can authenticate detached signatures with tilo-release-key.asc after comparing tilo-release-key.fingerprint with the fingerprint published through an independent Tilo channel.",
     "draft": False,
     "prerelease": False,
 }))

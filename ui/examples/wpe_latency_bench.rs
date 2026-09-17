@@ -17,8 +17,8 @@
 //! Run with the prebuilt WPE stack (Fedora ships no WPE packages):
 //!
 //! ```sh
-//! export PKG_CONFIG_PATH=$HOME/.cache/qos-wpe/prefix/lib64/pkgconfig \
-//!        LD_LIBRARY_PATH=$HOME/.cache/qos-wpe/prefix/lib64
+//! export PKG_CONFIG_PATH=$HOME/.cache/tilo-wpe/prefix/lib64/pkgconfig \
+//!        LD_LIBRARY_PATH=$HOME/.cache/tilo-wpe/prefix/lib64
 //! cargo run -p ui --features webview-wpe --example ui-wpe -- wpe_latency_bench [URL]
 //! ```
 
@@ -112,7 +112,7 @@ mod bench {
 
     pub fn run(args: &[String]) {
         // WebKit's bubblewrap sandbox can't nest inside the dev
-        // container; on qOS the workspace sandbox is the outer boundary
+        // container; on Tilo the workspace sandbox is the outer boundary
         // anyway. Must be set before the engine boots.
         unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
 

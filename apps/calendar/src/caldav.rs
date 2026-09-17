@@ -659,7 +659,7 @@ mod live {
     ) -> (SyncResult, SyncOutcome) {
         let client = match reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
-            .user_agent("qOS-Calendar/0.1")
+            .user_agent("Tilo-Calendar/0.1")
             .build()
         {
             Ok(c) => c,
@@ -889,7 +889,7 @@ mod live {
     ) -> Vec<crate::model::Id> {
         let Ok(client) = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
-            .user_agent("qOS-Calendar/0.1")
+            .user_agent("Tilo-Calendar/0.1")
             .build()
         else {
             return Vec::new();
@@ -916,7 +916,7 @@ mod live {
     pub fn push_jobs_live(jobs: &[super::UploadJob]) -> super::MutationResult {
         let Ok(client) = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
-            .user_agent("qOS-Calendar/0.1")
+            .user_agent("Tilo-Calendar/0.1")
             .build()
         else {
             return super::MutationResult::default();
@@ -981,7 +981,7 @@ mod live {
     ) -> Vec<crate::model::Id> {
         let Ok(client) = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
-            .user_agent("qOS-Calendar/0.1")
+            .user_agent("Tilo-Calendar/0.1")
             .build()
         else {
             return Vec::new();
@@ -1006,7 +1006,7 @@ mod live {
     pub fn remove_jobs_live(jobs: &[super::RemoveJob]) -> super::MutationResult {
         let Ok(client) = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(20))
-            .user_agent("qOS-Calendar/0.1")
+            .user_agent("Tilo-Calendar/0.1")
             .build()
         else {
             return super::MutationResult::default();

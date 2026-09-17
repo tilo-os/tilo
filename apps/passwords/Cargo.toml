@@ -19,7 +19,7 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 accounts = { path = "../../crates/system/accounts" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
+ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
 zeroize.workspace = true
 automerge.workspace = true
 taffy.workspace = true

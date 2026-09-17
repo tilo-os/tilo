@@ -32,8 +32,8 @@ pub const DEFAULT_SEARCH_CANDIDATE_LIMIT: usize = 256;
 /// receive an empty page for longer input and can refine it normally.
 pub const MAX_SEARCH_QUERY_SCALARS: usize = 1_024;
 const SEARCH_GRAM_WIDTH: usize = 4;
-use qos_actions::ActionAddress;
 use std::borrow::Borrow;
+use tilo_actions::ActionAddress;
 
 /// A compact, reusable exact substring index for app search providers.
 ///
@@ -43,9 +43,10 @@ use std::borrow::Borrow;
 /// ownership of their domain records and use the returned stable snapshot
 /// offsets to materialise typed [`SearchResult`]s.
 ///
-/// Each suffix is represented by a record id and UTF-8 boundary, so storage is
-/// linear in the amount of normalised searchable text. Embedded NULs and all
-/// Unicode scalar values retain their ordinary string semantics.
+/// Posting lists narrow the candidates; complete-text verification rejects false
+/// gram combinations. Each page bounds verification work and supplies a cursor
+/// when candidates remain. Embedded NULs and all Unicode scalar values retain
+/// their ordinary string semantics.
 #[derive(Clone, Debug, Default)]
 pub struct SearchTextIndex {
     texts: Vec<String>,
@@ -287,6 +288,12 @@ impl SearchTextIndex {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchTextPage {
+        // Treat budgets as caller-requested ceilings, not authority to make a
+        // single UI-thread page arbitrarily large. Untrusted control-socket
+        // and collaboration callers can continue with `next_after`; they may
+        // never turn one request into a full-corpus materialisation.
+        let work_budget = work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT);
+        let result_limit = result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
         if work_budget == 0 || result_limit == 0 {
             return SearchTextPage::default();
         }
@@ -798,6 +805,12 @@ impl SearchCatalog {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
+        // Providers and remote callers may request a smaller page, but no
+        // caller can enlarge one retained-index turn beyond the interactive
+        // latency/materialisation ceilings. Complete discovery remains
+        // available through the returned cursor.
+        let work_budget = work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT);
+        let result_limit = result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
         if work_budget == 0 || result_limit == 0 {
             return SearchPage {
                 results: Vec::new(),
@@ -957,7 +970,7 @@ fn index_tokens(normalized: &str) -> Vec<String> {
 
 /// Marks an `action_id` as a framework-owned canonical activation. The tag
 /// keeps arbitrary legacy ids from becoming actions merely because they happen
-/// to contain qos-actions' wire separator.
+/// to contain tilo-actions' wire separator.
 const ACTION_ADDRESS_PREFIX: &str = "\u{1}action\u{1f}";
 
 /// One typed hit produced by a [`SearchProvider`].
@@ -1071,6 +1084,117 @@ impl SearchResult {
     }
 }
 
+/// Automatic bounded search over the resources an app currently has open.
+///
+/// Apps still provide explicit [`SearchProvider`]s for large or closed
+/// collections (all mail, every file, every contact). This provider closes the
+/// baseline gap: a live resource published by any app is findable by its label,
+/// kind, or stable id even when the app has no bespoke content index. One canonical
+/// representative action activates the resource; the palette continues to
+/// list every action separately from the same fresh authority tree.
+#[derive(Clone)]
+pub struct OpenResourceSearch {
+    catalog: SearchCatalog,
+    resources: Arc<BTreeMap<String, tilo_actions::Resource>>,
+}
+
+impl OpenResourceSearch {
+    #[must_use]
+    pub fn new(resources: &[tilo_actions::Resource]) -> Self {
+        fn collect(
+            resource: &tilo_actions::Resource,
+            resources: &mut BTreeMap<String, tilo_actions::Resource>,
+        ) {
+            resources
+                .entry(resource.id.as_str().to_string())
+                .or_insert_with(|| resource.clone());
+            for child in &resource.children {
+                collect(child, resources);
+            }
+        }
+
+        let mut indexed = BTreeMap::new();
+        for resource in resources {
+            collect(resource, &mut indexed);
+        }
+        let catalog = SearchCatalog::new("Open resources");
+        catalog
+            .replace_all(indexed.values().filter_map(|resource| {
+                let action = resource
+                    .actions
+                    .iter()
+                    .find(|action| action.kind == tilo_actions::OperationKind::View)
+                    .or_else(|| resource.actions.first())?;
+                let address = ActionAddress::new(resource.id.as_str(), &action.id);
+                Some((
+                    resource.id.as_str().to_string(),
+                    format!(
+                        "{} {} {}",
+                        resource.label,
+                        resource.kind,
+                        resource.id.as_str()
+                    ),
+                    SearchResult::for_action("Resources", resource.label.clone(), address)
+                        .with_subtitle(format!("{} · {}", action.label, resource.kind)),
+                ))
+            }))
+            .expect("open resources have unique ids and canonical action addresses");
+        Self {
+            catalog,
+            resources: Arc::new(indexed),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_storage_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.resources, &other.resources)
+    }
+}
+
+impl SearchProvider for OpenResourceSearch {
+    fn name(&self) -> &str {
+        "Open resources"
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.catalog
+            .query_page(
+                query,
+                None,
+                DEFAULT_SEARCH_CANDIDATE_LIMIT,
+                limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+            )
+            .results
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
+        self.resources
+            .get(&address.resource)
+            .filter(|resource| {
+                resource
+                    .actions
+                    .iter()
+                    .any(|action| action.id == address.action)
+            })
+            .cloned()
+    }
+}
+
 /// A source of search results — implemented by an app for each searchable
 /// *type* it exposes (its contacts, its open files, its commands, …).
 ///
@@ -1081,6 +1205,12 @@ impl SearchResult {
 /// the registry floats the strongest title matches without discarding
 /// your field-aware hits.
 pub trait SearchProvider {
+    /// Toolkit provenance for a component-owned proxy. Applications cannot
+    /// construct a CallbackBinding; its payload remains owned by AppComponent.
+    #[doc(hidden)]
+    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+        None
+    }
     /// The kind label this provider produces, used for diagnostics and as the
     /// default group header. Individual results may still carry a different
     /// [`SearchResult::kind`].
@@ -1149,7 +1279,7 @@ pub trait SearchProvider {
 
     /// Lazily resolve a canonical search address that is intentionally absent
     /// from the small open-resource snapshot.
-    fn resolve_action_resource(&self, _address: &ActionAddress) -> Option<qos_actions::Resource> {
+    fn resolve_action_resource(&self, _address: &ActionAddress) -> Option<tilo_actions::Resource> {
         None
     }
 }
@@ -1274,6 +1404,77 @@ mod tests {
     use super::*;
 
     #[test]
+    fn open_resource_search_indexes_nested_resources_and_prefers_view_actions() {
+        let nested = tilo_actions::Resource::new("note:launch", "notes.note", "Launch plan")
+            .with_action(
+                tilo_actions::ActionSpec::operation(
+                    "delete",
+                    "Delete note",
+                    tilo_actions::OperationKind::Effect,
+                    "test.note",
+                    &serde_json::json!({}),
+                )
+                .unwrap(),
+            )
+            .with_action(
+                tilo_actions::ActionSpec::operation(
+                    "open",
+                    "Open note",
+                    tilo_actions::OperationKind::View,
+                    "test.note",
+                    &serde_json::json!({}),
+                )
+                .unwrap(),
+            );
+        let root =
+            tilo_actions::Resource::new("notes", "notes.collection", "Notes").with_child(nested);
+        let provider = OpenResourceSearch::new(&[root]);
+
+        let hit = provider
+            .search("launch")
+            .pop()
+            .expect("resource is findable");
+        let address = hit.action_address().expect("canonical activation");
+        assert_eq!(address, ActionAddress::new("note:launch", "open"));
+        assert_eq!(
+            provider
+                .resolve_action_resource(&address)
+                .expect("fresh authority resource")
+                .label,
+            "Launch plan"
+        );
+        assert_eq!(provider.action_directory_generation(), None);
+    }
+
+    #[test]
+    fn open_resource_search_pages_with_hard_budgets() {
+        let resources = (0..20)
+            .map(|index| {
+                tilo_actions::Resource::new(
+                    format!("item:{index}"),
+                    "test.item",
+                    format!("Item {index}"),
+                )
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "open",
+                        "Open",
+                        tilo_actions::OperationKind::View,
+                        "test.item",
+                        &serde_json::json!({}),
+                    )
+                    .unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let provider = OpenResourceSearch::new(&resources);
+        let page = provider.search_page("", None, 3, 2);
+        assert!(page.inspected <= 3);
+        assert!(page.results.len() <= 2);
+        assert!(page.next.is_some());
+    }
+
+    #[test]
     fn empty_query_matches_everything() {
         assert_eq!(fuzzy_score("", "anything"), Some(0));
     }
@@ -1374,6 +1575,19 @@ mod tests {
         let index = SearchTextIndex::new((0..1_000).map(|i| format!("common item {i}")));
         assert_eq!(index.matching_ids("common", 7).len(), 7);
         assert!(index.matching_ids("common", 0).is_empty());
+    }
+
+    #[test]
+    fn shared_text_index_clamps_hostile_page_budgets() {
+        let index = SearchTextIndex::new((0..1_000).map(|i| format!("common item {i}")));
+        let page = index.matching_page("common", None, usize::MAX, usize::MAX);
+
+        assert_eq!(page.inspected, DEFAULT_SEARCH_CANDIDATE_LIMIT);
+        assert_eq!(page.ids.len(), DEFAULT_SEARCH_RESULT_LIMIT);
+        assert!(
+            page.next_after.is_some(),
+            "the bounded page remains continuable"
+        );
     }
 
     #[test]
@@ -1584,6 +1798,24 @@ mod tests {
         assert!(pages <= 1_001usize.div_ceil(31));
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].title, "Target");
+    }
+
+    #[test]
+    fn catalogue_clamps_hostile_page_budgets_without_truncating_discovery() {
+        let catalog = SearchCatalog::new("Documents");
+        for index in 0..1_000 {
+            let id = format!("document:{index:04}");
+            assert!(
+                catalog
+                    .upsert(&id, "common", catalog_hit(&id, format!("Document {index}")))
+                    .is_ok()
+            );
+        }
+
+        let page = catalog.query_page("common", None, usize::MAX, usize::MAX);
+        assert_eq!(page.inspected, DEFAULT_SEARCH_CANDIDATE_LIMIT);
+        assert_eq!(page.results.len(), DEFAULT_SEARCH_RESULT_LIMIT);
+        assert!(page.next.is_some(), "the bounded page remains continuable");
     }
 
     #[test]

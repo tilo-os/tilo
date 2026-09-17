@@ -37,7 +37,7 @@ pub trait LinuxGamepadDevice: Send {
     fn destroy(&mut self) -> io::Result<()>;
 }
 
-/// Opens exactly the fixed qOS gamepad profile, with no caller-supplied
+/// Opens exactly the fixed Tilo gamepad profile, with no caller-supplied
 /// capabilities or identity strings.
 pub trait LinuxGamepadDeviceProvider: Send + Sync {
     type Device: LinuxGamepadDevice + 'static;
@@ -68,7 +68,7 @@ where
 {
     fn create(&self, plan: VirtualGamepadPlan) -> Result<Box<dyn VirtualGamepad>, String> {
         if plan != VirtualGamepadPlan::default() {
-            return Err("only the fixed qOS virtual-gamepad profile is allowed".into());
+            return Err("only the fixed Tilo virtual-gamepad profile is allowed".into());
         }
         let device = self
             .provider
@@ -208,7 +208,7 @@ mod uinput {
             // is valid. Every field consumed by the kernel is initialized
             // below before its exact byte representation is written.
             let mut setup: libc::uinput_user_dev = unsafe { std::mem::zeroed() };
-            let name = b"qOS Forwarded Gamepad\0";
+            let name = b"Tilo Forwarded Gamepad\0";
             for (target, source) in setup.name.iter_mut().zip(name.iter().copied()) {
                 *target = libc::c_char::try_from(source).unwrap_or_default();
             }

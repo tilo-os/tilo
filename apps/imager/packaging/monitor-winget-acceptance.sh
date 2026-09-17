@@ -4,7 +4,7 @@
 set -euo pipefail
 
 : "${GITHUB_SERVER_URL:?missing Forgejo server URL}"
-: "${QOS_SITE_GIT_TOKEN:?missing short-lived website token}"
+: "${TILO_SITE_GIT_TOKEN:?missing short-lived website token}"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -12,14 +12,14 @@ askpass="$work/askpass.sh"
 cat >"$askpass" <<'SH'
 #!/bin/sh
 case "$1" in
-  *Username*) printf '%s' "${QOS_SITE_GIT_USER:-oauth2}" ;;
-  *) printf '%s' "$QOS_SITE_GIT_TOKEN" ;;
+  *Username*) printf '%s' "${TILO_SITE_GIT_USER:-oauth2}" ;;
+  *) printf '%s' "$TILO_SITE_GIT_TOKEN" ;;
 esac
 SH
 chmod 0700 "$askpass"
 
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git clone --depth 1 \
-  "$GITHUB_SERVER_URL/qos/website.git" "$work/site"
+  "$GITHUB_SERVER_URL/tilo/website.git" "$work/site"
 manifest="$work/site/src/data/imager-release.json"
 test -f "$manifest"
 
@@ -27,7 +27,7 @@ published="$(jq -r '.published' "$manifest")"
 tag="$(jq -r '.tag // empty' "$manifest")"
 state="$(jq -r '.channels.winget // empty' "$manifest")"
 if [ "$published" != true ]; then
-  printf 'landing page has no published qOS Imager release; nothing to reconcile\n'
+  printf 'landing page has no published Tilo Imager release; nothing to reconcile\n'
   exit 0
 fi
 [[ "$tag" =~ ^imager-v[0-9]+\.[0-9]+\.[0-9]+$ ]] \

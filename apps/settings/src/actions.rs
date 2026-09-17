@@ -38,7 +38,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
     ResourceProvider, ResultSpec, RetryPolicy,
@@ -1007,14 +1007,14 @@ pub fn account_operation_binding(
     kind: OperationKind,
     operation: &AccountOperation,
     destructive: bool,
-) -> Option<qos_actions::ActionBinding<()>> {
+) -> Option<tilo_actions::ActionBinding<()>> {
     let mut spec = account_operation_spec(action_id, action_label, kind, operation)?;
     if destructive {
         spec = spec.destructive();
     }
     let resource =
         Resource::new(resource_id, "settings.external-account", resource_label).with_action(spec);
-    qos_actions::ActionBinding::unit_for(&resource, action_id).ok()
+    tilo_actions::ActionBinding::unit_for(&resource, action_id).ok()
 }
 
 fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
@@ -2221,10 +2221,10 @@ fn accessibility_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
 /// real Accessibility resource. The widget still reads its checked state from
 /// the canonical CRDT key; it merely emits through this brokered door instead
 /// of writing the document itself.
-pub fn accessibility_bool_binding(action_id: &str) -> Option<qos_actions::ActionBinding<bool>> {
+pub fn accessibility_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
     let resource = accessibility_section(&AutoCommit::new(), &SystemPrefs::default());
     let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
-    qos_actions::ActionBinding::new(&resource, spec, |value| {
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
         serde_json::Map::from_iter([("value".to_string(), serde_json::Value::Bool(value))])
     })
     .ok()
@@ -2233,10 +2233,10 @@ pub fn accessibility_bool_binding(action_id: &str) -> Option<qos_actions::Action
 /// Bind an Accessibility chooser to its exact typed resource action. The
 /// choices are validated by the same `ActionSpec` used for Ctrl+K before a
 /// control invocation reaches the host.
-pub fn accessibility_text_binding(action_id: &str) -> Option<qos_actions::ActionBinding<String>> {
+pub fn accessibility_text_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<String>> {
     let resource = accessibility_section(&AutoCommit::new(), &SystemPrefs::default());
     let spec = resource.actions.iter().find(|spec| spec.id == action_id)?;
-    qos_actions::ActionBinding::new(&resource, spec, |choice| {
+    tilo_actions::ActionBinding::new(&resource, spec, |choice| {
         serde_json::Map::from_iter([("choice".to_string(), serde_json::Value::String(choice))])
     })
     .ok()
@@ -3165,7 +3165,7 @@ mod tests {
     use super::*;
     use crate::SettingsApp;
     use crate::panes;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -3217,7 +3217,7 @@ mod tests {
                 .find(|pane| pane.id.as_str() == address.resource)
                 .unwrap_or_else(|| panic!("{} owns a resource", category.label()));
             assert_eq!(pane.label, category.label());
-            let open = qos_actions::door::resolve(&resources, &address)
+            let open = tilo_actions::door::resolve(&resources, &address)
                 .unwrap_or_else(|| panic!("{} exports open", category.label()));
             assert_eq!(open.kind, OperationKind::View);
             assert_eq!(open.contract, ActionContract::view());
@@ -3286,10 +3286,10 @@ mod tests {
             .find(|action| action.id == "remove")
             .expect("remove resource action");
         assert_eq!(remove.kind, OperationKind::Effect);
-        assert_eq!(remove.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert_eq!(remove.contract.risk, tilo_actions::RiskLevel::Destructive);
         assert_eq!(
             remove.contract.confirmation,
-            qos_actions::ConfirmationPolicy::Confirm
+            tilo_actions::ConfirmationPolicy::Confirm
         );
     }
 
@@ -3475,7 +3475,7 @@ mod tests {
                     .find(|action| action.id == id)
                     .is_some_and(|action| !matches!(
                         action.contract.confirmation,
-                        qos_actions::ConfirmationPolicy::None
+                        tilo_actions::ConfirmationPolicy::None
                     ))
             );
         }
@@ -3607,7 +3607,7 @@ mod tests {
                 action
                     .contract
                     .result
-                    .validate(&qos_actions::ActionOutput {
+                    .validate(&tilo_actions::ActionOutput {
                         value: Some(serde_json::Value::String("done".into())),
                         resources: Vec::new(),
                     })
@@ -3677,7 +3677,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -3721,8 +3721,8 @@ mod tests {
 
         let action = set_text_action(panes::appearance::THEME_KEY, "Nord");
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -3823,8 +3823,8 @@ mod tests {
 
         let action = set_bool_action(panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY, true);
         let encoded = encode(&action);
-        let envelope = qos_actions::apply_local(&mut a, &action, encoded).expect("apply locally");
-        qos_actions::replay(&mut b, &envelope, &registry()).expect("replay on peer");
+        let envelope = tilo_actions::apply_local(&mut a, &action, encoded).expect("apply locally");
+        tilo_actions::replay(&mut b, &envelope, &registry()).expect("replay on peer");
 
         assert_eq!(
             doc_bool(&a, panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY),
@@ -3853,7 +3853,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         assert_eq!(
             doc.get_heads(),
             before,
@@ -3931,12 +3931,12 @@ mod tests {
 
         let pdf = ResourceKind::extension("pdf").expect("valid extension");
         let browser = AppCandidate {
-            package_id: "org.qos.Reader".into(),
+            package_id: "org.tilo.Reader".into(),
             display_name: "Reader".into(),
             resources: [pdf.clone()].into(),
         };
         let alternate = AppCandidate {
-            package_id: "org.qos.Archive".into(),
+            package_id: "org.tilo.Archive".into(),
             display_name: "Archive".into(),
             resources: [pdf].into(),
         };
@@ -3956,7 +3956,7 @@ mod tests {
         assert_eq!(action.params()[0].choices.len(), 2);
         let args = serde_json::Map::from_iter([(
             "choice".to_owned(),
-            serde_json::Value::String("Reader — org.qos.Reader".to_owned()),
+            serde_json::Value::String("Reader — org.tilo.Reader".to_owned()),
         )]);
         let encoded = action
             .build_json(&args)
@@ -3969,11 +3969,11 @@ mod tests {
             .expect("handler selection is a valid setting target");
         assert_eq!(
             doc_str(&doc, "default_apps.ext.pdf").as_deref(),
-            Some("Reader — org.qos.Reader")
+            Some("Reader — org.tilo.Reader")
         );
         let invalid = serde_json::Map::from_iter([(
             "choice".to_owned(),
-            serde_json::Value::String("Unknown — org.qos.Unknown".to_owned()),
+            serde_json::Value::String("Unknown — org.tilo.Unknown".to_owned()),
         )]);
         assert!(
             action.build_json(&invalid).is_err(),

@@ -16,15 +16,15 @@ path = "src/main.rs"
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
+ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
 # Shared streaming and playback layer. The watch-page `VideoPlayer` uses the
 # same `media::MediaEngine` as the local player and editor preview.
 media = { path = "../../crates/media" }
 automerge.workspace = true
-# The qOS ACTION model: Tube's `actions` module exports its collaborative
+# The Tilo ACTION model: Tube's `actions` module exports its collaborative
 # operations (likes, queue, comment replies) as replayable actions the host's
 # Ctrl+K palette dispatches.
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

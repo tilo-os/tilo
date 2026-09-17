@@ -113,7 +113,7 @@ establish this target. The UI harness also accepts
 different workload, not a replacement for the shell measurement.
 
 For a separate shell diagnostic, run the same release binary with
-`QOS_REDRAW_BENCH_PROFILE=1`. It still performs all 1,000 native-4K action
+`TILO_REDRAW_BENCH_PROFILE=1`. It still performs all 1,000 native-4K action
 redraws, but reports input, registry, layout, scene encoding, submission,
 render-completion/readback mapping, settlement, and CPU copy/swizzle times.
 The completion/map phase is **not** a copy-only measurement. Copy counters

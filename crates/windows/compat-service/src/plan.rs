@@ -12,15 +12,15 @@ use crate::store::{
     CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore, LaunchPaths, validate_id,
 };
 
-const PREFIX_MOUNT: &str = "/run/qos/capsule/prefix";
-const HOME_MOUNT: &str = "/run/qos/capsule/home";
-const FILES_MOUNT: &str = "/run/qos/files";
-const SHIM_HOST: &str = "/usr/bin/qos-launcher";
-const SHIM_MOUNT: &str = "/qos-launcher";
-const LEASE_ROOT: &str = "/run/qos/windows-compat/leases";
+const PREFIX_MOUNT: &str = "/run/tilo/capsule/prefix";
+const HOME_MOUNT: &str = "/run/tilo/capsule/home";
+const FILES_MOUNT: &str = "/run/tilo/files";
+const SHIM_HOST: &str = "/usr/bin/tilo-launcher";
+const SHIM_MOUNT: &str = "/tilo-launcher";
+const LEASE_ROOT: &str = "/run/tilo/windows-compat/leases";
 const PINNED_PROTON: &str = "UMU-Proton-10.0-4";
-const PROTON_HOST: &str = "/usr/lib/qos/windows-runners/proton/UMU-Proton-10.0-4";
-const PROTON_MOUNT: &str = "/opt/qos/proton";
+const PROTON_HOST: &str = "/usr/lib/tilo/windows-runners/proton/UMU-Proton-10.0-4";
+const PROTON_MOUNT: &str = "/opt/tilo/proton";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeBind {
@@ -94,7 +94,7 @@ impl RuntimeRegistry for SystemRuntimeRegistry {
                     // Exact paths installed by os/Containerfile. UMU owns the
                     // Steam Runtime and protonfix invocation contract.
                     binds: vec![
-                        runtime_bind("/usr/libexec/qos-umu-run", "/usr/libexec/qos-umu-run"),
+                        runtime_bind("/usr/libexec/tilo-umu-run", "/usr/libexec/tilo-umu-run"),
                         runtime_bind("/usr/libexec/umu_run.py", "/usr/libexec/umu_run.py"),
                         // The pinned zipapp's shebang is `/usr/bin/env python3`.
                         runtime_bind("/usr/bin/env", "/usr/bin/env"),
@@ -103,7 +103,7 @@ impl RuntimeRegistry for SystemRuntimeRegistry {
                         runtime_bind("/usr/bin/bwrap", "/usr/bin/bwrap"),
                         runtime_bind(PROTON_HOST, PROTON_MOUNT),
                     ],
-                    sandbox_entrypoint: PathBuf::from("/usr/libexec/qos-umu-run"),
+                    sandbox_entrypoint: PathBuf::from("/usr/libexec/tilo-umu-run"),
                     environment: vec![("PROTONPATH", PROTON_MOUNT.to_string())],
                     needs_nested_runtime: true,
                 })
@@ -240,7 +240,7 @@ impl LaunchLease {
         match (network, self.net_gate.as_ref()) {
             (NetworkShape::Filtered, Some(gate)) => {
                 if !gate.host_socket.starts_with(&root)
-                    || gate.sandbox_socket != Path::new("/run/qos/network/gate.sock")
+                    || gate.sandbox_socket != Path::new("/run/tilo/network/gate.sock")
                     || gate.port < 1024
                 {
                     return Err(PlanError::ResourceEscalation("network gate"));
@@ -268,7 +268,7 @@ pub struct CapsuleCommandPlan {
     pub bwrap_argv: Vec<String>,
     /// UMU needs a nested Bubblewrap for Steam Runtime. Proton retains the
     /// outer bwrap, Landlock and network namespace; Wine additionally gets
-    /// the qOS baseline syscall filter.
+    /// the Tilo baseline syscall filter.
     pub seccomp_profile: Option<SeccompProfile>,
     pub capsule_id: String,
     pub runner_label: String,
@@ -358,13 +358,13 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             "/dev".to_string(),
         ]);
         for directory in [
-            "/run/qos",
-            "/run/qos/capsule",
+            "/run/tilo",
+            "/run/tilo/capsule",
             FILES_MOUNT,
-            "/run/qos/files/read",
-            "/run/qos/files/write",
-            "/run/qos/network",
-            "/opt/qos",
+            "/run/tilo/files/read",
+            "/run/tilo/files/write",
+            "/run/tilo/network",
+            "/opt/tilo",
             PROTON_MOUNT,
             "/usr/bin",
             "/usr/libexec",
@@ -450,7 +450,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
 
         Ok(CapsuleCommandPlan {
             bwrap_argv: argv,
-            seccomp_profile: (!runtime.needs_nested_runtime).then_some(SeccompProfile::QosDefault),
+            seccomp_profile: (!runtime.needs_nested_runtime).then_some(SeccompProfile::TiloDefault),
             capsule_id: capsule.id.clone(),
             runner_label: format!("{} {}", capsule.runner.family, capsule.runner.version),
             network,
@@ -549,11 +549,11 @@ fn push_fixed_environment(
 ) -> Result<(), PlanError> {
     for (key, value) in [
         ("HOME", HOME_MOUNT),
-        ("XDG_DATA_HOME", "/run/qos/capsule/home/.local/share"),
-        ("XDG_CONFIG_HOME", "/run/qos/capsule/home/.config"),
-        ("XDG_CACHE_HOME", "/run/qos/capsule/home/.cache"),
+        ("XDG_DATA_HOME", "/run/tilo/capsule/home/.local/share"),
+        ("XDG_CONFIG_HOME", "/run/tilo/capsule/home/.config"),
+        ("XDG_CACHE_HOME", "/run/tilo/capsule/home/.cache"),
         ("WINEPREFIX", PREFIX_MOUNT),
-        ("STEAM_COMPAT_DATA_PATH", "/run/qos/capsule"),
+        ("STEAM_COMPAT_DATA_PATH", "/run/tilo/capsule"),
         (
             "WINEARCH",
             match capsule.settings.architecture {
@@ -562,7 +562,7 @@ fn push_fixed_environment(
             },
         ),
         (
-            "QOS_COMPAT_WINDOWS_VERSION",
+            "TILO_COMPAT_WINDOWS_VERSION",
             capsule.settings.windows_version.as_str(),
         ),
     ] {
@@ -686,7 +686,7 @@ pub enum PlanError {
     ResourceEscalation(&'static str),
     #[error("resource broker returned the same audio protocol twice")]
     DuplicateAudioProtocol,
-    #[error("filtered network launch has no qOS egress gate")]
+    #[error("filtered network launch has no Tilo egress gate")]
     MissingNetworkGate,
     #[error("offline or unrestricted launch unexpectedly has a network gate")]
     UnexpectedNetworkGate,
@@ -752,7 +752,7 @@ mod tests {
     fn session() -> HostSession {
         HostSession {
             uid: 1000,
-            wayland_socket: PathBuf::from("/run/user/1000/nirios-ws-test"),
+            wayland_socket: PathBuf::from("/run/user/1000/tilo-ws-test"),
             render_node: PathBuf::from("/dev/dri/renderD999"),
         }
     }
@@ -778,7 +778,7 @@ mod tests {
         assert!(
             proton
                 .host_paths()
-                .any(|path| path == Path::new("/usr/libexec/qos-umu-run"))
+                .any(|path| path == Path::new("/usr/libexec/tilo-umu-run"))
         );
         assert!(
             proton
@@ -865,7 +865,7 @@ mod tests {
             command
                 .bwrap_argv
                 .iter()
-                .any(|arg| { arg == "/run/qos/capsule/prefix/drive_c/Program Files/App/app.exe" })
+                .any(|arg| { arg == "/run/tilo/capsule/prefix/drive_c/Program Files/App/app.exe" })
         );
         assert!(
             !command
@@ -902,14 +902,14 @@ mod tests {
                 AudioBinding {
                     protocol: AudioProtocol::PipeWire,
                     host_socket: PathBuf::from(
-                        "/run/qos/windows-compat/leases/audio-lease/audio/pipewire-0",
+                        "/run/tilo/windows-compat/leases/audio-lease/audio/pipewire-0",
                     ),
                     input_enabled: true,
                 },
                 AudioBinding {
                     protocol: AudioProtocol::Pulse,
                     host_socket: PathBuf::from(
-                        "/run/qos/windows-compat/leases/audio-lease/audio/pulse/native",
+                        "/run/tilo/windows-compat/leases/audio-lease/audio/pulse/native",
                     ),
                     input_enabled: true,
                 },
@@ -923,13 +923,13 @@ mod tests {
             command
                 .bwrap_argv
                 .iter()
-                .any(|arg| arg == "/run/qos/windows-compat/leases/audio-lease/audio/pipewire-0")
+                .any(|arg| arg == "/run/tilo/windows-compat/leases/audio-lease/audio/pipewire-0")
         );
         assert!(
             command
                 .bwrap_argv
                 .iter()
-                .any(|arg| arg == "/run/qos/windows-compat/leases/audio-lease/audio/pulse/native")
+                .any(|arg| arg == "/run/tilo/windows-compat/leases/audio-lease/audio/pulse/native")
         );
         assert!(!command.bwrap_argv.iter().any(|arg| arg == "/dev/snd"));
         // The sandbox must name its own runtime destination so clients can
@@ -997,7 +997,7 @@ mod tests {
             command
                 .bwrap_argv
                 .iter()
-                .any(|arg| arg == "/usr/libexec/qos-umu-run")
+                .any(|arg| arg == "/usr/libexec/tilo-umu-run")
         );
         assert!(
             command

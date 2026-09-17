@@ -29,7 +29,7 @@ use std::sync::Mutex;
 use ui::diag;
 
 /// Set on the child to select which write it should attempt.
-const ROLE: &str = "QOS_BROKEN_PIPE_ROLE";
+const ROLE: &str = "TILO_BROKEN_PIPE_ROLE";
 
 /// The name libtest filters on: the module path minus the crate root that
 /// `module_path!()` includes. These files are modules of one `it` binary, so

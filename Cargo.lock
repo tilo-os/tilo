@@ -304,17 +304,17 @@ dependencies = [
  "hex",
  "photos",
  "qdoc",
- "qos-actions",
- "qos-app",
- "qos-model-gateway",
- "qos-reference",
- "qos-user-identity",
  "runtime-collab",
  "runtime-dylib",
  "runtime-identity",
  "serde_json",
  "shell",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-model-gateway",
+ "tilo-reference",
+ "tilo-user-identity",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -484,18 +484,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
-name = "api_tester"
+name = "api-tester"
 version = "0.1.0"
 dependencies = [
  "automerge",
  "base64 0.22.1",
- "qos-actions",
- "qos-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -1147,14 +1147,14 @@ name = "backups"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "vello",
  "walkdir",
  "winit",
@@ -1506,14 +1506,14 @@ dependencies = [
  "dirs 6.0.0",
  "png 0.18.1",
  "pollster",
- "qos-actions",
- "qos-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "url",
  "uuid",
@@ -1624,12 +1624,12 @@ name = "calculator"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "vello",
  "winit",
 ]
@@ -1644,8 +1644,6 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "mail",
- "qos-actions",
- "qos-app",
  "reqwest 0.12.28",
  "roxmltree",
  "runtime-dylib",
@@ -1653,6 +1651,8 @@ dependencies = [
  "serde_json",
  "serial_test",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -1736,15 +1736,15 @@ dependencies = [
  "png 0.18.1",
  "qdoc",
  "qdoc-pdf",
- "qos-actions",
- "qos-app",
- "qos-ocr",
  "qrcode",
  "rqrr",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-ocr",
  "vello",
  "winit",
 ]
@@ -2020,16 +2020,16 @@ dependencies = [
  "image",
  "iroh",
  "qdoc",
- "qos-actions",
- "qos-app",
- "qos-callstream",
- "qos-reference",
  "runtime-dylib",
  "runtime-identity",
  "serde",
  "serde_json",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-callstream",
+ "tilo-reference",
  "tokio",
  "uuid",
  "vello",
@@ -2225,12 +2225,12 @@ dependencies = [
  "automerge",
  "chrono",
  "chrono-tz",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -2261,13 +2261,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "code_editor"
+name = "code-editor"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
  "automerge",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -2276,6 +2274,8 @@ dependencies = [
  "taffy",
  "tempfile",
  "terminal",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "url",
  "uuid",
@@ -2505,14 +2505,14 @@ dependencies = [
  "atomic-file",
  "automerge",
  "pkg",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "serial_test",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "unicode-normalization",
  "uuid",
@@ -2527,12 +2527,12 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "vello",
  "winit",
 ]
@@ -3142,20 +3142,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
-name = "db_client"
+name = "db-client"
 version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
  "mysql",
  "postgres",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "rusqlite",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -3322,13 +3322,13 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "similar",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -3425,11 +3425,11 @@ dependencies = [
 name = "disks"
 version = "0.1.0"
 dependencies = [
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
+ "tilo-actions",
+ "tilo-app",
  "zbus 4.4.0",
 ]
 
@@ -3557,8 +3557,6 @@ dependencies = [
  "automerge",
  "blake3",
  "image",
- "qos-actions",
- "qos-app",
  "roxmltree",
  "runtime-dylib",
  "serde",
@@ -3567,6 +3565,8 @@ dependencies = [
  "settings-store",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "unicode-bidi",
  "uuid",
@@ -4079,13 +4079,13 @@ dependencies = [
  "automerge",
  "chrono",
  "feed-rs",
- "qos-actions",
- "qos-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tokio",
  "tokio-rustls",
  "uuid",
@@ -4173,9 +4173,6 @@ dependencies = [
  "mime_guess",
  "open",
  "qdoc",
- "qos-actions",
- "qos-app",
- "qos-user-identity",
  "reqwest 0.12.28",
  "roxmltree",
  "runtime-dylib",
@@ -4187,6 +4184,9 @@ dependencies = [
  "tar",
  "tempfile",
  "thumbnail",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-user-identity",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -4233,12 +4233,12 @@ name = "firewall"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -4582,8 +4582,6 @@ dependencies = [
  "moka",
  "postcard",
  "qdoc",
- "qos-power-mgmt",
- "qos-user-identity",
  "rand 0.8.8",
  "runtime-fs",
  "serde",
@@ -4592,6 +4590,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "thumbnail",
+ "tilo-power-mgmt",
+ "tilo-user-identity",
  "tokio",
  "toml 0.8.23",
  "uuid",
@@ -5015,20 +5015,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "git_client"
+name = "git-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "automerge",
  "chrono",
  "git2",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "vello",
  "winit",
 ]
@@ -5701,16 +5701,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
 
 [[package]]
-name = "hex_editor"
+name = "hex-editor"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "vello",
  "winit",
 ]
@@ -6592,17 +6592,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "image_editor"
+name = "image-editor"
 version = "0.1.0"
 dependencies = [
  "automerge",
  "image",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
 ]
 
@@ -6612,8 +6612,6 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "libc",
- "qos-actions",
- "qos-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
@@ -6621,6 +6619,8 @@ dependencies = [
  "sha2 0.10.9",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "vello",
  "winit",
  "zbus 4.4.0",
@@ -6762,11 +6762,11 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "os-actions",
- "qos-power-mgmt",
  "serde",
  "serde_json",
  "taffy",
  "tempfile",
+ "tilo-power-mgmt",
  "tracing-subscriber",
  "ui",
  "uuid",
@@ -7543,7 +7543,6 @@ dependencies = [
  "landlock",
  "libc",
  "pkg",
- "qos-desktop-entry",
  "runtime-bundle",
  "runtime-identity",
  "seccompiler",
@@ -7552,6 +7551,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-desktop-entry",
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
@@ -8132,12 +8132,12 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "vello",
  "winit",
 ]
@@ -8240,8 +8240,6 @@ dependencies = [
  "mail-builder",
  "mail-parser",
  "qdoc",
- "qos-actions",
- "qos-app",
  "rcgen 0.13.2",
  "reqwest 0.12.28",
  "runtime-dylib",
@@ -8250,6 +8248,8 @@ dependencies = [
  "serde_json",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -8286,14 +8286,14 @@ dependencies = [
  "chrono",
  "futures-util",
  "png 0.18.1",
- "qos-actions",
- "qos-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "rustls",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tokio",
  "tracing",
  "vello",
@@ -8553,13 +8553,13 @@ name = "monitor"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "sysinfo",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "vello",
  "winit",
 ]
@@ -8602,8 +8602,6 @@ dependencies = [
  "gstreamer",
  "image",
  "media",
- "qos-actions",
- "qos-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "rustypipe",
@@ -8611,6 +8609,8 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -9090,16 +9090,18 @@ dependencies = [
 name = "notes"
 version = "0.1.0"
 dependencies = [
+ "app-state",
  "atomic-file",
  "automerge",
+ "blake3",
  "dirs 6.0.0",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "uuid",
  "vello",
@@ -9887,13 +9889,13 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "nix 0.30.1",
- "qos-bluez",
- "qos-power-mgmt",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-bluez",
+ "tilo-power-mgmt",
  "tokio",
  "tracing",
  "zbus 4.4.0",
@@ -9916,13 +9918,13 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "libc",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde_json",
  "swipe",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "vello",
  "wayland-client",
@@ -10126,11 +10128,11 @@ dependencies = [
  "automerge",
  "chacha20poly1305",
  "getrandom 0.2.17",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-app",
  "vello",
  "winit",
  "zeroize",
@@ -10194,7 +10196,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pdf_viewer"
+name = "pdf-viewer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -10203,14 +10205,14 @@ dependencies = [
  "pdf-extract",
  "pdfium-render",
  "qdoc",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "serial_test",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "uuid",
  "vello",
@@ -10451,14 +10453,14 @@ dependencies = [
  "image",
  "png 0.18.1",
  "qdoc",
- "qos-actions",
- "qos-app",
- "qos-reference",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-reference",
  "vello",
  "vello_encoding",
  "winit",
@@ -11016,13 +11018,13 @@ dependencies = [
  "image",
  "os-actions",
  "qdoc-pdf",
- "qos-actions",
- "qos-app",
- "qos-ocr",
  "runtime-dylib",
  "taffy",
  "tempfile",
  "thumbnail",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-ocr",
  "vello",
  "winit",
 ]
@@ -11323,277 +11325,6 @@ name = "qdoc-rtf"
 version = "0.1.0"
 dependencies = [
  "qdoc",
-]
-
-[[package]]
-name = "qos-actions"
-version = "0.1.0"
-dependencies = [
- "automerge",
- "chrono",
- "regex",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "uuid",
-]
-
-[[package]]
-name = "qos-app"
-version = "0.1.0"
-dependencies = [
- "ui",
-]
-
-[[package]]
-name = "qos-bluez"
-version = "0.1.0"
-dependencies = [
- "futures-util",
- "tokio",
- "tracing",
- "zbus 4.4.0",
-]
-
-[[package]]
-name = "qos-callstream"
-version = "0.1.0"
-dependencies = [
- "openh264",
- "serde",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "qos-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
-]
-
-[[package]]
-name = "qos-desktop-entry"
-version = "0.1.0"
-dependencies = [
- "serial_test",
- "tempfile",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "qos-dev"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "fluent",
- "fluent-syntax",
- "image",
- "libc",
- "notify",
- "pkg",
- "qos-headless-schema",
- "qos-ui-graph",
- "serde",
- "serde_json",
- "syn 2.0.117",
- "tempfile",
- "toml 0.8.23",
-]
-
-[[package]]
-name = "qos-dev-template-smoke"
-version = "0.1.0"
-dependencies = [
- "qos-app",
- "qos-dev",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "qos-headless-schema"
-version = "0.1.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
-name = "qos-model-gateway"
-version = "0.1.0"
-dependencies = [
- "accounts",
- "agent-provider-config",
- "clap",
- "libc",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "zeroize",
-]
-
-[[package]]
-name = "qos-ocr"
-version = "0.1.0"
-dependencies = [
- "image",
- "serde",
- "tempfile",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "qos-power"
-version = "0.1.0"
-dependencies = [
- "tempfile",
-]
-
-[[package]]
-name = "qos-power-mgmt"
-version = "0.1.0"
-dependencies = [
- "atomic-file",
- "futures-util",
- "serde",
- "serde_json",
- "settings-store",
- "tempfile",
- "tokio",
- "tracing",
- "zbus 4.4.0",
-]
-
-[[package]]
-name = "qos-projector"
-version = "0.1.0"
-dependencies = [
- "fcast-sender-sdk",
- "futures-util",
- "libc",
- "mdns-sd",
- "qos-callstream",
- "rand 0.8.8",
- "serde",
- "serde_json",
- "tokio",
- "zbus 4.4.0",
-]
-
-[[package]]
-name = "qos-reference"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "qos-actions",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "qos-relay"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "atomic-file",
- "automerge",
- "blake3",
- "chacha20poly1305",
- "clap",
- "collab-types",
- "ed25519-dalek 2.2.0",
- "fs",
- "hex",
- "iroh",
- "iroh-base",
- "libc",
- "postcard",
- "qos-user-identity",
- "rand 0.8.8",
- "runtime-identity",
- "sd-notify",
- "serde",
- "serde_bytes",
- "serde_json",
- "socket2 0.6.3",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "x25519-dalek 2.0.1",
-]
-
-[[package]]
-name = "qos-rollback"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "atomic-file",
- "base64 0.22.1",
- "clap",
- "hex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "zeroize",
-]
-
-[[package]]
-name = "qos-startup-metrics"
-version = "0.1.0"
-dependencies = [
- "parking_lot",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "qos-ui-builder"
-version = "0.1.0"
-dependencies = [
- "atomic-file",
- "ui",
-]
-
-[[package]]
-name = "qos-ui-graph"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "qos-unlock-helper"
-version = "0.1.0"
-dependencies = [
- "libc",
-]
-
-[[package]]
-name = "qos-user-identity"
-version = "0.1.0"
-dependencies = [
- "atomic-file",
- "automerge",
- "base32",
- "blake3",
- "ed25519-dalek 2.2.0",
- "postcard",
- "rand 0.8.8",
- "serde",
- "serde_bytes",
- "tempfile",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -12155,10 +11886,6 @@ dependencies = [
  "automerge",
  "des 0.8.1",
  "iroh",
- "qos-actions",
- "qos-app",
- "qos-callstream",
- "qos-relay",
  "runtime-collab",
  "runtime-dylib",
  "russh",
@@ -12166,6 +11893,10 @@ dependencies = [
  "serde_json",
  "serial_test",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-callstream",
+ "tilo-relay",
  "tokio",
  "uuid",
  "vello",
@@ -12439,9 +12170,9 @@ dependencies = [
  "cli",
  "comemo",
  "iroh",
- "qos-callstream",
  "runtime",
  "rustypipe",
+ "tilo-callstream",
  "tiny-skia",
  "typst",
  "typst-assets",
@@ -12454,14 +12185,19 @@ dependencies = [
 name = "runtime-fs"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "cap-std",
  "capnp",
  "capnp-rpc",
  "capnpc",
  "postcard",
  "runtime-portal",
+ "rustix 1.1.4",
  "serde",
+ "tempfile",
  "tokio",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]
@@ -12493,6 +12229,7 @@ version = "0.1.0"
 dependencies = [
  "capnp",
  "capnp-rpc",
+ "libc",
  "nix 0.30.1",
  "thiserror 2.0.18",
  "tokio",
@@ -12962,6 +12699,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "scratchpad"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atomic-file",
+ "automerge",
+ "dirs 6.0.0",
+ "fs",
+ "iroh-blobs",
+ "runtime-dylib",
+ "tilo-actions",
+ "tilo-app",
+ "serde",
+ "serde_json",
+ "taffy",
+ "tempfile",
+ "tokio",
+ "vello",
+ "winit",
+]
+
+[[package]]
 name = "sctk-adwaita"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13304,13 +13063,6 @@ dependencies = [
  "mail",
  "media",
  "os-actions",
- "qos-actions",
- "qos-app",
- "qos-bluez",
- "qos-desktop-entry",
- "qos-model-gateway",
- "qos-relay",
- "qos-user-identity",
  "quick-xml 0.41.0",
  "rcgen 0.14.7",
  "reqwest 0.12.28",
@@ -13324,6 +13076,13 @@ dependencies = [
  "settings-store",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-bluez",
+ "tilo-desktop-entry",
+ "tilo-model-gateway",
+ "tilo-relay",
+ "tilo-user-identity",
  "tracing",
  "uuid",
  "vello",
@@ -13453,14 +13212,14 @@ dependencies = [
  "automerge",
  "calamine",
  "dirs 6.0.0",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "rust_xlsxwriter",
  "serde",
  "serde_json",
  "settings-store",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -13519,15 +13278,6 @@ dependencies = [
  "postcard",
  "qcms",
  "qdoc",
- "qos-actions",
- "qos-bluez",
- "qos-callstream",
- "qos-desktop-entry",
- "qos-power-mgmt",
- "qos-projector",
- "qos-relay",
- "qos-startup-metrics",
- "qos-user-identity",
  "rand 0.8.8",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
@@ -13552,6 +13302,15 @@ dependencies = [
  "terminal",
  "thiserror 2.0.18",
  "threshold-identity",
+ "tilo-actions",
+ "tilo-bluez",
+ "tilo-callstream",
+ "tilo-desktop-entry",
+ "tilo-power-mgmt",
+ "tilo-projector",
+ "tilo-relay",
+ "tilo-startup-metrics",
+ "tilo-user-identity",
  "tokio",
  "tokio-util",
  "toml 0.8.23",
@@ -13720,13 +13479,13 @@ dependencies = [
  "automerge",
  "image",
  "qdoc",
- "qos-actions",
- "qos-app",
  "quick-xml 0.41.0",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -13882,12 +13641,12 @@ name = "snippets"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -14132,8 +13891,6 @@ dependencies = [
  "getrandom 0.2.17",
  "hex",
  "png 0.18.1",
- "qos-actions",
- "qos-app",
  "registry-types",
  "reqwest 0.12.28",
  "runtime-dylib",
@@ -14144,6 +13901,8 @@ dependencies = [
  "taffy",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-actions",
+ "tilo-app",
  "toml 0.8.23",
  "tracing",
  "vello",
@@ -14668,16 +14427,16 @@ dependencies = [
  "libc",
  "portable-pty",
  "qdoc",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
+ "runtime-portal",
  "serde_json",
  "serial_test",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "unicode-segmentation",
  "unicode-width 0.2.2",
- "ush",
  "uuid",
  "vello",
  "vte",
@@ -14689,13 +14448,13 @@ name = "themes"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "settings-store",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -14803,6 +14562,277 @@ dependencies = [
  "quick-error 2.0.1",
  "weezl",
  "zune-jpeg 0.4.21",
+]
+
+[[package]]
+name = "tilo-actions"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "chrono",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
+name = "tilo-app"
+version = "0.1.0"
+dependencies = [
+ "ui",
+]
+
+[[package]]
+name = "tilo-bluez"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "tokio",
+ "tracing",
+ "zbus 4.4.0",
+]
+
+[[package]]
+name = "tilo-callstream"
+version = "0.1.0"
+dependencies = [
+ "openh264",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "tilo-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+]
+
+[[package]]
+name = "tilo-desktop-entry"
+version = "0.1.0"
+dependencies = [
+ "serial_test",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tilo-dev"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fluent",
+ "fluent-syntax",
+ "image",
+ "libc",
+ "notify",
+ "pkg",
+ "serde",
+ "serde_json",
+ "syn 2.0.117",
+ "tempfile",
+ "tilo-headless-schema",
+ "tilo-ui-graph",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "tilo-dev-template-smoke"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-dev",
+]
+
+[[package]]
+name = "tilo-headless-schema"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "tilo-model-gateway"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "agent-provider-config",
+ "clap",
+ "libc",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-ocr"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tilo-power"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
+name = "tilo-power-mgmt"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "zbus 4.4.0",
+]
+
+[[package]]
+name = "tilo-projector"
+version = "0.1.0"
+dependencies = [
+ "fcast-sender-sdk",
+ "futures-util",
+ "libc",
+ "mdns-sd",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "tilo-callstream",
+ "tokio",
+ "zbus 4.4.0",
+]
+
+[[package]]
+name = "tilo-reference"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "uuid",
+]
+
+[[package]]
+name = "tilo-relay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atomic-file",
+ "automerge",
+ "blake3",
+ "chacha20poly1305",
+ "clap",
+ "collab-types",
+ "ed25519-dalek 2.2.0",
+ "fs",
+ "hex",
+ "iroh",
+ "iroh-base",
+ "libc",
+ "postcard",
+ "rand 0.8.8",
+ "runtime-identity",
+ "sd-notify",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "socket2 0.6.3",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tilo-user-identity",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "x25519-dalek 2.0.1",
+]
+
+[[package]]
+name = "tilo-rollback"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atomic-file",
+ "base64 0.22.1",
+ "clap",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-startup-metrics"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "tilo-ui-builder"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "ui",
+]
+
+[[package]]
+name = "tilo-ui-graph"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tilo-unlock-helper"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "tilo-user-identity"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "automerge",
+ "base32",
+ "blake3",
+ "ed25519-dalek 2.2.0",
+ "postcard",
+ "rand 0.8.8",
+ "serde",
+ "serde_bytes",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -15190,8 +15220,6 @@ dependencies = [
  "getrandom 0.2.17",
  "hmac 0.12.1",
  "image",
- "qos-actions",
- "qos-app",
  "qrcode",
  "rqrr",
  "runtime-dylib",
@@ -15200,6 +15228,8 @@ dependencies = [
  "sha1 0.10.6",
  "sha2 0.10.9",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "uuid",
  "vello",
@@ -15383,8 +15413,6 @@ dependencies = [
  "flate2",
  "media",
  "png 0.18.1",
- "qos-actions",
- "qos-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "runtime-identity",
@@ -15396,6 +15424,8 @@ dependencies = [
  "snow",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -15779,18 +15809,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "typst_editor"
+name = "typst-editor"
 version = "0.1.0"
 dependencies = [
  "automerge",
  "comemo",
  "dirs 6.0.0",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tiny-skia",
  "typst",
  "typst-assets",
@@ -15863,10 +15893,6 @@ dependencies = [
  "pollster",
  "postcard",
  "qdoc",
- "qos-actions",
- "qos-headless-schema",
- "qos-startup-metrics",
- "qos-ui-graph",
  "qrcode",
  "rand_core 0.6.4",
  "regex",
@@ -15888,13 +15914,19 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "threshold-identity",
+ "tilo-actions",
+ "tilo-headless-schema",
+ "tilo-startup-metrics",
+ "tilo-ui-graph",
  "tokio",
  "tokio-util",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
  "tts",
  "unic-langid",
  "unicode-linebreak",
+ "unicode-script",
  "unicode-segmentation",
  "url",
  "uuid",
@@ -16121,6 +16153,7 @@ dependencies = [
  "dirs 6.0.0",
  "landlock",
  "libc",
+ "runtime-portal",
  "seccompiler",
  "serde",
  "serde_json",
@@ -16278,20 +16311,20 @@ dependencies = [
  "automerge",
  "collab-types",
  "media",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "settings-store",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "vello",
  "winit",
 ]
 
 [[package]]
-name = "video_editor"
+name = "video-editor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -16300,13 +16333,13 @@ dependencies = [
  "gstreamer-app",
  "media",
  "png 0.18.1",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "serial_test",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tracing",
  "uuid",
  "vello",
@@ -16330,13 +16363,13 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "os-actions",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "serde",
  "serde_json",
  "serial_test",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "uuid",
  "vello",
  "winit",
@@ -17100,14 +17133,14 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
- "qos-actions",
- "qos-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
  "serde_json",
  "settings-store",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "tokio",
  "tracing-subscriber",
  "uuid",
@@ -17474,14 +17507,14 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "compat-service",
- "qos-actions",
- "qos-app",
  "runtime-dylib",
  "runtime-portal",
  "serde",
  "serde_json",
  "taffy",
  "tempfile",
+ "tilo-actions",
+ "tilo-app",
  "vello",
  "winit",
 ]
@@ -18234,14 +18267,14 @@ dependencies = [
  "qdoc-html",
  "qdoc-pdf",
  "qdoc-rtf",
- "qos-actions",
- "qos-app",
  "regex",
  "runtime-dylib",
  "serde",
  "serde_json",
  "spellcheck",
  "taffy",
+ "tilo-actions",
+ "tilo-app",
  "unic-langid",
  "url",
  "vello",

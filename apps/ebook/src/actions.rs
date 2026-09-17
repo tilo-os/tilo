@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use uuid::Uuid;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionArgs, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider,
     ResultSpec, RetryPolicy, RiskLevel,
@@ -164,10 +164,10 @@ fn open_book_operation() -> ActionSpec {
             }
         },
     )
-    .with_contract(qos_actions::ActionContract {
+    .with_contract(tilo_actions::ActionContract {
         execution: ExecutionMode::Background { cancellable: true },
         result: ResultSpec::Job,
-        ..qos_actions::ActionContract::default()
+        ..tilo_actions::ActionContract::default()
     })
 }
 
@@ -194,13 +194,13 @@ fn share_book_operation(book_id: &str) -> ActionSpec {
             }
         },
     )
-    .with_contract(qos_actions::ActionContract {
+    .with_contract(tilo_actions::ActionContract {
         risk: RiskLevel::Low,
         retry: RetryPolicy::Idempotent,
         execution: ExecutionMode::Background { cancellable: true },
         result: ResultSpec::Job,
         tags: vec!["workspace".into(), "materialize".into()],
-        ..qos_actions::ActionContract::default()
+        ..tilo_actions::ActionContract::default()
     })
 }
 
@@ -1152,7 +1152,7 @@ pub fn register(registry: &mut ActionRegistry) {
 /// Panics if `action` fails to serialize to JSON. `EbookAction`'s fields are
 /// all primitive (`String`, `usize`, `Vec<String>`/`Vec<HiPiece>`), so this
 /// cannot happen in practice. The alternative — threading `Result` through
-/// every builder in this file and through `qos_actions::ActionSpec::prompted`,
+/// every builder in this file and through `tilo_actions::ActionSpec::prompted`,
 /// whose `build: Fn(&str) -> EncodedAction` closure signature is infallible
 /// by contract — would push a theoretical error through call sites that can
 /// never observe it.
@@ -1776,13 +1776,13 @@ fn font_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
         ));
         child = child.with_action(
             encode_spec("delete", "Remove font", &delete_font_action(&id)).with_contract(
-                qos_actions::ActionContract {
+                tilo_actions::ActionContract {
                     risk: RiskLevel::Destructive,
                     confirmation: ConfirmationPolicy::Confirm,
                     retry: RetryPolicy::Idempotent,
                     reversible: true,
                     tags: vec!["font".into(), "tombstone".into()],
-                    ..qos_actions::ActionContract::default()
+                    ..tilo_actions::ActionContract::default()
                 },
             ),
         );
@@ -1832,13 +1832,13 @@ fn scheme_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
             ));
             child = child.with_action(
                 encode_spec("delete", "Delete scheme", &delete_color_scheme_action(&id))
-                    .with_contract(qos_actions::ActionContract {
+                    .with_contract(tilo_actions::ActionContract {
                         risk: RiskLevel::Destructive,
                         confirmation: ConfirmationPolicy::Confirm,
                         retry: RetryPolicy::Idempotent,
                         reversible: true,
                         tags: vec!["colour-scheme".into(), "tombstone".into()],
-                        ..qos_actions::ActionContract::default()
+                        ..tilo_actions::ActionContract::default()
                     }),
             );
         }
@@ -1900,13 +1900,13 @@ fn book_resource_shallow(
                 "Remove from library",
                 &remove_library_book_action(&book.id),
             )
-            .with_contract(qos_actions::ActionContract {
+            .with_contract(tilo_actions::ActionContract {
                 risk: RiskLevel::Destructive,
                 confirmation: ConfirmationPolicy::Confirm,
                 retry: RetryPolicy::Idempotent,
                 reversible: true,
                 tags: vec!["library".into(), "tombstone".into()],
-                ..qos_actions::ActionContract::default()
+                ..tilo_actions::ActionContract::default()
             }),
         );
     let mut root = match current {
@@ -2141,7 +2141,7 @@ impl ResourceProvider for crate::app::BooksApp {
 mod tests {
     use super::*;
     use crate::app::BooksApp;
-    use qos_actions::{ActionInput, ActionRegistry, LocalTransport};
+    use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -2345,11 +2345,11 @@ mod tests {
         assert!(cm_actions.contains(&"edit-comment"), "{cm_actions:?}");
         assert!(cm_actions.contains(&"delete-comment"), "{cm_actions:?}");
         for address in [
-            qos_actions::ActionAddress::new(book.id.as_str(), "open"),
-            qos_actions::ActionAddress::new(comment.id.as_str(), "open"),
+            tilo_actions::ActionAddress::new(book.id.as_str(), "open"),
+            tilo_actions::ActionAddress::new(comment.id.as_str(), "open"),
         ] {
             assert!(
-                qos_actions::door::encode(&resources, &address, None).is_ok(),
+                tilo_actions::door::encode(&resources, &address, None).is_ok(),
                 "recursive resource address {address:?} resolves from the library root"
             );
         }
@@ -2393,8 +2393,8 @@ mod tests {
         let doc = AutoCommit::new();
         let resources = provide_resources(&[], None, &doc);
         assert_eq!(resources.len(), 1);
-        let address = qos_actions::ActionAddress::new("ebook.library", "open-book");
-        let encoded = qos_actions::door::encode(&resources, &address, None)
+        let address = tilo_actions::ActionAddress::new("ebook.library", "open-book");
+        let encoded = tilo_actions::door::encode(&resources, &address, None)
             .expect("library action resolves through the canonical tree");
         assert_eq!(
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
@@ -2419,8 +2419,8 @@ mod tests {
         let mut b = AutoCommit::load(&a.save()).unwrap();
         let action = remove_library_book_action(&entry.id);
         let encoded = encode(&action);
-        let envelope = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
 
         for peer in [&a, &b] {
             assert!(BooksDoc::library_is_removed(peer, &entry.id));
@@ -2444,9 +2444,9 @@ mod tests {
         let action = restore_library_book_action(&entry);
         let encoded = encode(&action);
         let mut author = AutoCommit::new();
-        let envelope = qos_actions::apply_local(&mut author, &action, encoded).unwrap();
+        let envelope = tilo_actions::apply_local(&mut author, &action, encoded).unwrap();
         let mut peer = AutoCommit::new();
-        qos_actions::replay(&mut peer, &envelope, &registry()).unwrap();
+        tilo_actions::replay(&mut peer, &envelope, &registry()).unwrap();
 
         assert_eq!(BooksDoc::read_library_entries(&author), vec![entry.clone()]);
         assert_eq!(BooksDoc::read_library_entries(&peer), vec![entry]);
@@ -2554,7 +2554,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let left = BooksDoc::annotations_for(&doc, &book_id);
         assert_eq!(left.len(), 2, "only the standalone note + bookmark survive");
@@ -2673,7 +2673,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -2732,8 +2732,8 @@ mod tests {
         let encoded = encode(&action);
 
         // A applies locally, producing the envelope; B replays it.
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -2837,8 +2837,8 @@ mod tests {
             },
         );
         let encoded = encode(&action);
-        let envelope = qos_actions::apply_local(&mut a, &action, encoded).expect("action applies");
-        qos_actions::replay(&mut b, &envelope, &registry()).expect("action replays");
+        let envelope = tilo_actions::apply_local(&mut a, &action, encoded).expect("action applies");
+        tilo_actions::replay(&mut b, &envelope, &registry()).expect("action replays");
 
         assert_eq!(a.get_heads(), b.get_heads(), "position converges exactly");
         assert_eq!(
@@ -2864,9 +2864,9 @@ mod tests {
         a.commit();
         let mut b = AutoCommit::load(&a.save()).expect("replica loads");
         let action = finalize_annotation_action(id, 1_700_000_123_456);
-        let envelope = qos_actions::apply_local(&mut a, &action, encode(&action))
+        let envelope = tilo_actions::apply_local(&mut a, &action, encode(&action))
             .expect("finalisation applies");
-        qos_actions::replay(&mut b, &envelope, &registry()).expect("finalisation replays");
+        tilo_actions::replay(&mut b, &envelope, &registry()).expect("finalisation replays");
 
         assert_eq!(a.get_heads(), b.get_heads(), "peers converge exactly");
         assert_eq!(
@@ -2912,8 +2912,8 @@ mod tests {
             },
         );
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),

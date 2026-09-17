@@ -383,7 +383,7 @@ impl EmptyState {
     /// current resource tree before dispatch, so empty-state recovery controls
     /// follow the same policy/history path as ordinary buttons.
     #[must_use]
-    pub fn on_action(mut self, binding: qos_actions::ActionBinding<()>) -> Self {
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
         self.action_path = None;
         self.action_fired = false;
@@ -617,6 +617,16 @@ impl Widget for EmptyState {
         }
     }
 
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        self.action_id.as_deref() == Some(target) && self.perform_action(action, state, path)
+    }
+
     fn name(&self) -> &'static str {
         "EmptyState"
     }
@@ -674,14 +684,14 @@ impl Widget for EmptyState {
 
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         if let Some(action) = &mut self.action {
             action.refresh_availability(allowed);
         }
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
 
@@ -695,15 +705,24 @@ impl Widget for EmptyState {
                 ),
             ];
         }
-        self.action_path.as_ref().map_or_else(Vec::new, |path| {
-            vec![crate::widget::ControlBindingMetadata {
-                control_id: self
-                    .action_id
+        self.action_path.as_ref().map_or_else(
+            || {
+                self.action_id
                     .clone()
-                    .unwrap_or_else(|| format!("empty-state:{}", self.title)),
-                kind: crate::widget::ControlBindingKind::CollaborativeDocument(path.clone()),
-            }]
-        })
+                    .map(crate::widget::ControlBindingMetadata::semantic)
+                    .into_iter()
+                    .collect()
+            },
+            |path| {
+                vec![crate::widget::ControlBindingMetadata {
+                    control_id: self
+                        .action_id
+                        .clone()
+                        .unwrap_or_else(|| format!("empty-state:{}", self.title)),
+                    kind: crate::widget::ControlBindingKind::CollaborativeDocument(path.clone()),
+                }]
+            },
+        )
     }
 }
 
@@ -1006,17 +1025,17 @@ mod tests {
 
     #[test]
     fn canonical_action_binding_replaces_the_legacy_document_channel() {
-        let resource = qos_actions::Resource::new("catalog", "catalog", "Catalog").with_action(
-            qos_actions::ActionSpec::operation(
+        let resource = tilo_actions::Resource::new("catalog", "catalog", "Catalog").with_action(
+            tilo_actions::ActionSpec::operation(
                 "refresh",
                 "Refresh catalog",
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 "test.refresh",
                 &(),
             )
             .unwrap(),
         );
-        let binding = qos_actions::ActionBinding::unit_for(&resource, "refresh").unwrap();
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "refresh").unwrap();
         let mut es = EmptyState::new("Unavailable")
             .with_action("Refresh catalog")
             .with_action_id("catalog.empty.refresh")
@@ -1031,7 +1050,7 @@ mod tests {
         let invocation = Widget::take_control_invocation(&mut es).expect("canonical invocation");
         assert_eq!(
             invocation.address,
-            qos_actions::ActionAddress::new("catalog", "refresh")
+            tilo_actions::ActionAddress::new("catalog", "refresh")
         );
         assert!(
             !es.take_action(),
@@ -1043,7 +1062,7 @@ mod tests {
                 control_id,
                 kind: crate::widget::ControlBindingKind::Action(address),
             }] if control_id == "catalog.empty.refresh"
-                && address == &qos_actions::ActionAddress::new("catalog", "refresh")
+                && address == &tilo_actions::ActionAddress::new("catalog", "refresh")
         ));
     }
 

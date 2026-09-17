@@ -2,7 +2,7 @@
 """Read a recorded demo back — the pixels, not the assertions.
 
 `scripts/yc-demo.py --record` writes a run directory and composes
-`qos-demo.mp4` from it. Everything in that run is a claim until someone
+`tilo-demo.mp4` from it. Everything in that run is a claim until someone
 looks at the frames, and a claim that passes every byte-level check can
 still be a peer's caret hovering over an empty page. This script is the
 looking: it finds where each beat lives in the finished video and cuts
@@ -13,7 +13,7 @@ It changes nothing and it re-derives everything from artifacts:
   track.txt      which source frame is on screen, and for how long
   frames/*.png   the frames themselves, and their capture times
   captions/*.txt every string the band draws, verbatim
-  qos-demo.mp4   what actually shipped
+  tilo-demo.mp4   what actually shipped
 
 The transcript supplies the clock. Run the recorder through a stamper so
 each line carries the wall-clock second it was printed:
@@ -246,12 +246,12 @@ def main() -> int:
                     help="where to write the extracted frames "
                          "(default <directory>/verify)")
     ap.add_argument("--video", default=None,
-                    help="the composed file (default <directory>/qos-demo.mp4)")
+                    help="the composed file (default <directory>/tilo-demo.mp4)")
     ap.add_argument("--per-beat", type=int, default=4,
                     help="frames to cut out of each beat (default 4)")
     args = ap.parse_args()
 
-    video = args.video or os.path.join(args.directory, "qos-demo.mp4")
+    video = args.video or os.path.join(args.directory, "tilo-demo.mp4")
     out = args.out or os.path.join(args.directory, "verify")
     os.makedirs(out, exist_ok=True)
 

@@ -14,7 +14,9 @@ use crate::service::FormatRouterService;
 
 pub fn default_socket_path() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
-    base.join("qos").join("services").join("format-router.sock")
+    base.join("tilo")
+        .join("services")
+        .join("format-router.sock")
 }
 
 /// Bind the Unix socket, accept connections, and serve capnp RPC. Returns the

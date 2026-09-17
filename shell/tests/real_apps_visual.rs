@@ -8,7 +8,7 @@
 //! `#[ignore]` — needs a GPU adapter and spawns a real shell; a review
 //! tool, not a gate.
 //! ```text
-//! QOS_SHOT_DIR=/tmp/shots cargo test -p shell --test real_apps_visual \
+//! TILO_SHOT_DIR=/tmp/shots cargo test -p shell --test real_apps_visual \
 //!     -- --ignored --nocapture
 //! ```
 
@@ -34,8 +34,8 @@ const W: u32 = 1600;
 const H: u32 = 900;
 
 fn shot_dir() -> std::path::PathBuf {
-    std::env::var("QOS_SHOT_DIR").map_or_else(
-        |_| std::env::temp_dir().join("qos-apps-shots"),
+    std::env::var("TILO_SHOT_DIR").map_or_else(
+        |_| std::env::temp_dir().join("tilo-apps-shots"),
         std::path::PathBuf::from,
     )
 }

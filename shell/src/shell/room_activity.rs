@@ -34,7 +34,7 @@ use ui::{
     StepState, Theme, Widget, format_relative_time, participant_display_label,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -112,7 +112,9 @@ enum ActivityFocus {
     Period(Period),
     Author(Option<String>),
     MorePeople,
+    Resume,
     Brief(usize),
+    WorkSessionBoundary(WorkSessionBoundary),
     MoreBriefs,
     NewTask,
     Task(String),
@@ -128,6 +130,19 @@ enum ActivityFocus {
     ReplayBack,
     ReplayPlay,
     ReplayForward,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BoundaryDirection {
+    IntoNewer,
+    IntoOlder,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WorkSessionBoundary {
+    older: usize,
+    newer: usize,
+    direction: BoundaryDirection,
 }
 
 #[derive(Clone, Debug)]
@@ -247,6 +262,217 @@ impl ExplorerPane {
 /// `arithmetic_side_effects` can't see that for a non-primitive `Mul`
 /// impl, so every call site funnels through this one function instead of
 /// an `#[allow]` at each of them.
+struct ResumeSnapshot {
+    target: ui::HistoryResourceTarget,
+    author: ui::widget::history::HistoryAuthor,
+    app: Option<String>,
+    timestamp: SystemTime,
+}
+
+fn author_is_local(author: &ui::widget::history::HistoryAuthor) -> bool {
+    let local = crate::shell::state::local_user_id();
+    if local.is_empty() {
+        return false;
+    }
+    author.name.eq_ignore_ascii_case(&local)
+        || author
+            .name
+            .eq_ignore_ascii_case(&participant_display_label(&local))
+        || author.identity_short == ui::history_source::short_id(&local)
+}
+
+fn local_resume_snapshot(entries: &[HistoryEntry]) -> Option<ResumeSnapshot> {
+    entries
+        .iter()
+        .filter(|entry| author_is_local(&entry.author))
+        .filter_map(|entry| {
+            let context = entry.context.as_ref()?;
+            let resource = context.resource.as_ref()?;
+            Some(ResumeSnapshot {
+                target: ui::HistoryResourceTarget {
+                    app_id: context.app.as_ref().map(|app| app.id.clone()),
+                    app_label: context.app.as_ref().map(|app| app.label.clone()),
+                    id: resource.id.clone(),
+                    kind: resource.kind.clone(),
+                    label: resource.label.clone(),
+                },
+                author: entry.author.clone(),
+                app: context.app.as_ref().map(|app| app.label.clone()),
+                timestamp: entry.timestamp,
+            })
+        })
+        .max_by_key(|resume| resume.timestamp)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "resume card rendering receives the ordinary immediate-mode scene and typography context"
+)]
+fn draw_resume_card(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    resume: &ResumeSnapshot,
+    now: SystemTime,
+) {
+    let colors = &theme.tokens.colors;
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.accent[5].with_alpha_factor(0.13),
+        None,
+        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+    );
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.accent[5],
+        None,
+        &RoundedRect::new(rect.x0, rect.y0 + 8.0, rect.x0 + 3.0, rect.y1 - 8.0, 1.5),
+    );
+    let (r, g, b) = ui::widget::history::hue_to_rgb(resume.author.avatar_hue);
+    let initial = resume
+        .author
+        .name
+        .chars()
+        .next()
+        .unwrap_or('\u{2022}')
+        .to_uppercase()
+        .collect::<String>();
+    ui::widget::Avatar::draw_at(
+        scene,
+        transform,
+        Rect::new(
+            rect.x0 + 12.0,
+            rect.y0 + 22.0,
+            rect.x0 + 36.0,
+            rect.y0 + 46.0,
+        ),
+        &initial,
+        vello::peniko::Color::from_rgba8(r, g, b, 255),
+        theme,
+        tr,
+    );
+    tr.draw_text(
+        scene,
+        "YOU LEFT OFF",
+        (theme.tokens.typography.scale.sm - 2.0).max(9.0),
+        colors.accent[4],
+        at(transform, rect.x0 + 46.0, rect.y0 + 7.0),
+        None,
+    );
+    let title = tr.elide_to_width(
+        &resume.target.label,
+        theme.tokens.typography.scale.sm,
+        text_width(rect.width() - 144.0),
+    );
+    tr.draw_text_weighted(
+        scene,
+        &title,
+        theme.tokens.typography.scale.sm,
+        colors.text_primary,
+        at(transform, rect.x0 + 46.0, rect.y0 + 27.0),
+        None,
+        ui::text_render::TextWeight::Medium,
+    );
+    let context = resume.app.as_ref().map_or_else(
+        || format_relative_time(resume.timestamp, now),
+        |app| format!("{app} · {}", format_relative_time(resume.timestamp, now)),
+    );
+    let context = tr.elide_to_width(
+        &context,
+        theme.tokens.typography.scale.sm,
+        text_width(rect.width() - 144.0),
+    );
+    tr.draw_text(
+        scene,
+        &context,
+        theme.tokens.typography.scale.sm,
+        colors.text_dim,
+        at(transform, rect.x0 + 46.0, rect.y0 + 46.0),
+        None,
+    );
+    let button = Rect::new(
+        rect.x1 - 84.0,
+        rect.y0 + 19.0,
+        rect.x1 - 10.0,
+        rect.y0 + 49.0,
+    );
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.accent[5],
+        None,
+        &RoundedRect::from_rect(button, f64::from(theme.tokens.radii.sm)),
+    );
+    tr.draw_text_weighted(
+        scene,
+        "Resume →",
+        theme.tokens.typography.scale.sm,
+        colors.ink_on_any(&[colors.accent[5]], colors.text_primary, 4.5),
+        at(transform, button.x0 + 10.0, button.y0 + 8.0),
+        None,
+        ui::text_render::TextWeight::Medium,
+    );
+}
+
+#[cfg(test)]
+mod resume_card_tests {
+    use super::*;
+    use collab_types::{ArtifactKind, OpClass};
+    use ui::tilo_actions::ActionContext;
+    use ui::widget::history::{HistoryAuthor, HistoryEntryId};
+
+    fn resume_entry(id: u8, author: &str, timestamp: SystemTime) -> HistoryEntry {
+        HistoryEntry {
+            id: HistoryEntryId([id; 16]),
+            author: HistoryAuthor::new(author, 210.0, ui::history_source::short_id(author)),
+            op_class: OpClass::Splice,
+            artifact_kind: ArtifactKind::File,
+            timestamp,
+            summary: "Edited assumptions".into(),
+            text_delta: Some((4, 1)),
+            diff_payload: None,
+            redaction: None,
+            context: Some(
+                ActionContext::for_resource("Edit", "finance:q2", "sheet", "Q2 finance report")
+                    .with_app("org.tilo.Sheets", "Sheets"),
+            ),
+        }
+    }
+
+    #[test]
+    fn resume_uses_the_local_users_latest_targeted_action() {
+        let local = crate::shell::state::local_user_id();
+        let now = SystemTime::now();
+        let older = now.checked_sub(Duration::from_secs(60)).unwrap_or(now);
+        let entries = vec![resume_entry(1, &local, older), resume_entry(2, "Ada", now)];
+        let resume = local_resume_snapshot(&entries).expect("local targeted work is resumable");
+        assert_eq!(resume.target.label, "Q2 finance report");
+        assert_eq!(resume.timestamp, older, "a peer's newer work is not yours");
+    }
+
+    #[test]
+    fn resume_card_click_opens_the_exact_resource() {
+        let mut pane = RoomActivityPane::new();
+        let mut tree = WorkspaceTree::bootstrap_default();
+        pane.resume_rect = Rect::new(10.0, 10.0, 200.0, 70.0);
+        pane.resume_target = Some(ui::HistoryResourceTarget {
+            app_id: Some("org.tilo.Sheets".into()),
+            app_label: Some("Sheets".into()),
+            id: "finance:q2".into(),
+            kind: "sheet".into(),
+            label: "Q2 finance report".into(),
+        });
+        let outcome = pane
+            .handle_catchup_click(Point::new(40.0, 30.0), &mut tree)
+            .expect("resume card handles its click");
+        assert_eq!(outcome.open_target, pane.resume_target);
+    }
+}
+
 #[allow(
     clippy::arithmetic_side_effects,
     reason = "Affine composition is float matrix multiplication; it cannot overflow or panic"
@@ -396,6 +622,7 @@ struct UndoApply {
     reason = "each flag represents an independently focusable activity-pane mode or asynchronous visual state"
 )]
 pub struct RoomActivityPane {
+    explicit_local_user: Option<String>,
     timeline: ActivityTimeline,
     source: HistorySource,
     /// Set by the timeline's `FnMut` callback, drained right after — it
@@ -456,10 +683,13 @@ pub struct RoomActivityPane {
     view: ActivityView,
     view_rects: Vec<(ActivityView, Rect)>,
     brief_rects: Vec<(usize, Rect)>,
+    boundary_rects: Vec<(WorkSessionBoundary, Rect)>,
     brief_more_rect: Option<Rect>,
     brief_more_advance: usize,
     brief_offset: usize,
     expanded_brief: Option<usize>,
+    resume_rect: Rect,
+    resume_target: Option<ui::HistoryResourceTarget>,
     tasks: Vec<WorkspaceTask>,
     selected_task: Option<String>,
     task_rects: Vec<(String, Rect)>,
@@ -534,11 +764,19 @@ impl RoomActivityPane {
         }
     }
 
+    pub fn new() -> Self {
+        Self::from_local_user(None)
+    }
+
+    pub(crate) fn with_local_user(local: String) -> Self {
+        Self::from_local_user(Some(local))
+    }
+
     #[allow(
         clippy::too_many_lines,
-        reason = "the pane constructor wires mutually dependent retained UI controllers and their one-shot intents in a single ownership transfer"
+        reason = "the shared pane constructor wires retained controllers and one-shot intents"
     )]
-    pub fn new() -> Self {
+    fn from_local_user(explicit_local_user: Option<String>) -> Self {
         let revert_intent = Rc::new(Cell::new(None));
         let name_intent: Rc<RefCell<Option<GroupNameRequest>>> = Rc::new(RefCell::new(None));
         let undo_intent: Rc<RefCell<Option<BandUndoRequest>>> = Rc::new(RefCell::new(None));
@@ -548,6 +786,7 @@ impl RoomActivityPane {
         let ui = Rc::clone(&undo_intent);
         let ci = Rc::clone(&clear_filters_intent);
         Self {
+            explicit_local_user,
             timeline: {
                 let mut t = ActivityTimeline::new()
                     .on_revert(move |id| ri.set(Some(*id)))
@@ -599,10 +838,13 @@ impl RoomActivityPane {
             view: ActivityView::default(),
             view_rects: Vec::new(),
             brief_rects: Vec::new(),
+            boundary_rects: Vec::new(),
             brief_more_rect: None,
             brief_more_advance: 0,
             brief_offset: 0,
             expanded_brief: None,
+            resume_rect: Rect::ZERO,
+            resume_target: None,
             tasks: Vec::new(),
             selected_task: None,
             task_rects: Vec::new(),
@@ -1032,6 +1274,89 @@ impl RoomActivityPane {
         self.expanded_brief = None;
     }
 
+    fn move_work_session_boundary(
+        &mut self,
+        tree: &mut WorkspaceTree,
+        boundary: WorkSessionBoundary,
+    ) -> bool {
+        let Some(older) = self.digest.briefs.get(boundary.older).cloned() else {
+            return false;
+        };
+        let Some(newer) = self.digest.briefs.get(boundary.newer).cloned() else {
+            return false;
+        };
+        let (Some(older_start), Some(older_end), Some(newer_start), Some(newer_end)) = (
+            older.entry_ids.first().copied(),
+            older.entry_ids.last().copied(),
+            newer.entry_ids.first().copied(),
+            newer.entry_ids.last().copied(),
+        ) else {
+            return false;
+        };
+        let (new_left_end, new_right_start) = match boundary.direction {
+            BoundaryDirection::IntoNewer if older.entry_ids.len() > 1 => (
+                older.entry_ids[older.entry_ids.len() - 2],
+                older.entry_ids[older.entry_ids.len() - 1],
+            ),
+            BoundaryDirection::IntoOlder if newer.entry_ids.len() > 1 => {
+                (newer.entry_ids[0], newer.entry_ids[1])
+            }
+            _ => return false,
+        };
+        if ui::history_groups::materialize_and_move_boundary(
+            &mut tree.doc,
+            older.work_session_id.as_deref(),
+            &older_start,
+            &older_end,
+            &older.title,
+            newer.work_session_id.as_deref(),
+            &newer_start,
+            &newer_end,
+            &newer.title,
+            &new_left_end,
+            &new_right_start,
+        )
+        .is_none()
+        {
+            return false;
+        }
+        tree.commit_room_change();
+        self.last_heads.clear();
+        self.refresh(tree);
+        true
+    }
+
+    #[cfg(feature = "hosted-test-control")]
+    pub fn expand_work_session_for_shots(&mut self, index: usize) -> bool {
+        if index >= self.digest.briefs.len() {
+            return false;
+        }
+        self.expanded_brief = Some(index);
+        true
+    }
+
+    #[cfg(feature = "hosted-test-control")]
+    pub fn move_work_session_boundary_for_shots(
+        &mut self,
+        tree: &mut WorkspaceTree,
+        older: usize,
+        newer: usize,
+        into_newer: bool,
+    ) -> bool {
+        self.move_work_session_boundary(
+            tree,
+            WorkSessionBoundary {
+                older,
+                newer,
+                direction: if into_newer {
+                    BoundaryDirection::IntoNewer
+                } else {
+                    BoundaryDirection::IntoOlder
+                },
+            },
+        )
+    }
+
     fn advance_lenses(&mut self) {
         let next = self.lens_offset.saturating_add(self.lens_more_advance);
         self.lens_offset = if next < self.lens_candidates().len() {
@@ -1279,7 +1604,7 @@ impl RoomActivityPane {
             LensSelection::WorkGroup(group) => filter.work_groups.push(group.clone()),
             LensSelection::Facet(key, value) => filter
                 .facets
-                .push(ui::qos_actions::ActionFacet::new(key, value)),
+                .push(ui::tilo_actions::ActionFacet::new(key, value)),
             LensSelection::Unclassified => {
                 filter.classification = HistoryClassification::Unclassified;
             }
@@ -1345,33 +1670,72 @@ impl RoomActivityPane {
         }
         self.last_heads = heads;
 
-        // Bind the local automerge actor to the qOS identity, or local user
+        // Bind the local automerge actor to the Tilo identity, or local user
         // id; a peer's actor stays unresolved until collaboration says who.
         let actor = tree.doc.get_actor().to_hex_string();
         if !self.source.authors().is_registered(&actor) {
-            let registered = self.source.authors_mut().register_local_identity(&actor);
-            if !registered {
-                let me = crate::shell::state::local_user_id();
-                if !me.is_empty() {
-                    self.source.authors_mut().register(
-                        &actor,
-                        ui::widget::HistoryAuthor::new(
-                            me,
-                            ui::history_source::stable_hue(&actor),
-                            ui::history_source::short_id(&actor),
-                        ),
-                    );
+            let principal = if let Some(local) = &self.explicit_local_user {
+                Some(local.clone())
+            } else {
+                #[cfg(test)]
+                crate::shell::test_support::ambient_start("history author identity");
+                if self.source.authors_mut().register_local_identity(&actor) {
+                    None
+                } else {
+                    let me = crate::shell::state::local_user_id();
+                    (!me.is_empty()).then_some(me)
                 }
+            };
+            if let Some(principal) = principal {
+                self.source.authors_mut().register(
+                    &actor,
+                    ui::widget::HistoryAuthor::new(
+                        principal,
+                        ui::history_source::stable_hue(&actor),
+                        ui::history_source::short_id(&actor),
+                    ),
+                );
             }
         }
 
         let mut entries = self.source.entries(&mut tree.doc);
         let mut tags = describe_room_changes(&mut tree.doc, &mut entries);
+        // A receipt is committed by the room host, but its authenticated
+        // `actor` is the person (or agent) who performed the semantic action.
+        // Attribute the projected CRDT row to that actor rather than to the
+        // host's Automerge key; otherwise every collaborative work session
+        // misleadingly appears to have been done by the same machine.
+        let receipt_actors = tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.effect_receipts.iter())
+            .map(|receipt| (receipt.invocation.0.to_string(), receipt.actor.as_str()))
+            .collect::<HashMap<_, _>>();
+        for entry in &mut entries {
+            let Some(actor) = entry
+                .context
+                .as_ref()
+                .and_then(|context| {
+                    context
+                        .facets
+                        .iter()
+                        .find(|facet| facet.key == "tilo.invocation")
+                })
+                .and_then(|facet| receipt_actors.get(facet.value.as_str()))
+            else {
+                continue;
+            };
+            entry.author = ui::widget::HistoryAuthor::new(
+                participant_display_label(actor),
+                ui::history_source::stable_hue(actor),
+                ui::history_source::short_id(actor),
+            );
+        }
         let represented_receipts = entries
             .iter()
             .filter_map(|entry| entry.context.as_ref())
             .flat_map(|context| context.facets.iter())
-            .filter(|facet| facet.key == "qos.invocation")
+            .filter(|facet| facet.key == "tilo.invocation")
             .map(|facet| facet.value.clone())
             .collect::<HashSet<_>>();
         for workspace in &tree.workspaces {
@@ -1528,13 +1892,13 @@ impl RoomActivityPane {
                         let mut context =
                             e.context
                                 .take()
-                                .unwrap_or_else(|| ui::qos_actions::ActionContext {
+                                .unwrap_or_else(|| ui::tilo_actions::ActionContext {
                                     action_label: e.summary.clone(),
-                                    ..ui::qos_actions::ActionContext::default()
+                                    ..ui::tilo_actions::ActionContext::default()
                                 });
                         context
                             .facets
-                            .push(ui::qos_actions::ActionFacet::new("workspace", label));
+                            .push(ui::tilo_actions::ActionFacet::new("workspace", label));
                         e.context = Some(context);
                     }
                     rows.push(e);
@@ -1713,14 +2077,14 @@ impl RoomActivityPane {
                         let label = labels.join(" + ");
                         projected.summary = format!("{label} \u{00b7} {}", projected.summary);
                         let mut context = projected.context.take().unwrap_or_else(|| {
-                            ui::qos_actions::ActionContext {
+                            ui::tilo_actions::ActionContext {
                                 action_label: projected.summary.clone(),
-                                ..ui::qos_actions::ActionContext::default()
+                                ..ui::tilo_actions::ActionContext::default()
                             }
                         });
                         context
                             .facets
-                            .push(ui::qos_actions::ActionFacet::new("workspace", label));
+                            .push(ui::tilo_actions::ActionFacet::new("workspace", label));
                         projected.context = Some(context);
                     }
                     self.projected_origins.insert(projected.id, row.id.clone());
@@ -1752,13 +2116,22 @@ impl RoomActivityPane {
             .map(WorkspaceHistoryEntry::timeline_entry)
             .collect();
         self.passive_unread = passive_rows.len();
-        self.passive_digest =
-            ActivityDigest::from_entries(&passive_rows, SystemTime::UNIX_EPOCH, 5);
+        self.passive_digest = ActivityDigest::from_entries_with_ranges(
+            &passive_rows,
+            SystemTime::UNIX_EPOCH,
+            5,
+            &self.named,
+        );
         let catchup_rows: Vec<HistoryEntry> = unseen(&self.catchup_frontier, tree)
             .into_iter()
             .map(WorkspaceHistoryEntry::timeline_entry)
             .collect();
-        self.digest = ActivityDigest::from_entries(&catchup_rows, SystemTime::UNIX_EPOCH, 5);
+        self.digest = ActivityDigest::from_entries_with_ranges(
+            &catchup_rows,
+            SystemTime::UNIX_EPOCH,
+            5,
+            &self.named,
+        );
         self.reset_narrative();
     }
 
@@ -1834,7 +2207,12 @@ impl RoomActivityPane {
         }
         self.total_entries = rows.len();
         self.facet_index = HistoryFacetIndex::from_entries(&rows);
-        self.digest = ActivityDigest::from_entries(&digest_rows, SystemTime::UNIX_EPOCH, 5);
+        self.digest = ActivityDigest::from_entries_with_ranges(
+            &digest_rows,
+            SystemTime::UNIX_EPOCH,
+            5,
+            &self.named,
+        );
         self.passive_unread = digest_rows.len();
         self.passive_digest = self.digest.clone();
         self.reset_narrative();
@@ -2243,7 +2621,7 @@ impl RoomActivityPane {
             let width = text_width(bounds.width() - 24.0);
             tr.draw_text(
                 scene,
-                "Select an outcome or a range of actions",
+                "Select a work session or a range of actions",
                 theme.tokens.typography.scale.base,
                 theme.tokens.colors.text_primary,
                 at(transform, bounds.x0 + 12.0, bounds.y0 + 44.0),
@@ -2790,11 +3168,21 @@ impl RoomActivityPane {
         theme: &Theme,
     ) {
         self.brief_rects.clear();
+        self.boundary_rects.clear();
         self.brief_more_rect = None;
         self.brief_more_advance = 0;
+        self.resume_rect = Rect::ZERO;
+        self.resume_target = None;
         let mut y = self.sheet.y0 + self.chrome_height() + 8.0;
         let x0 = self.sheet.x0 + 12.0;
         let x1 = self.sheet.x1 - 12.0;
+        if let Some(resume) = local_resume_snapshot(self.timeline.entries()) {
+            let rect = Rect::new(x0, y, x1, y + 66.0);
+            draw_resume_card(scene, transform, tr, theme, rect, &resume, self.now());
+            self.resume_rect = rect;
+            self.resume_target = Some(resume.target);
+            y += 74.0;
+        }
         if self.digest.briefs.is_empty() {
             tr.draw_text(
                 scene,
@@ -2807,7 +3195,7 @@ impl RoomActivityPane {
             return;
         }
         if let Some(narrative) = self.narrative.as_ref() {
-            let generated = narrative.generator != "qos-deterministic";
+            let generated = narrative.generator != "tilo-deterministic";
             let card = Rect::new(x0, y, x1, y + 62.0);
             scene.fill(
                 Fill::NonZero,
@@ -2858,14 +3246,46 @@ impl RoomActivityPane {
             self.brief_offset = 0;
         }
         let mut shown = 0usize;
-        for (index, brief) in self
-            .digest
-            .briefs
-            .iter()
-            .enumerate()
-            .skip(self.brief_offset)
-        {
+        let mut previous_index = None;
+        for index in self.brief_offset..self.digest.briefs.len() {
+            let brief = &self.digest.briefs[index];
             let expanded = self.expanded_brief == Some(index);
+            if let Some(newer) = previous_index
+                && (expanded || self.expanded_brief == Some(newer))
+            {
+                let rail = Rect::new(x0 + 8.0, y - 5.0, x1 - 8.0, y + 21.0);
+                draw_work_session_boundary(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    rail,
+                    brief.changes > 1,
+                    self.digest.briefs[newer].changes > 1,
+                );
+                let (into_newer, into_older) = work_session_boundary_button_rects(rail);
+                if self.digest.briefs[newer].changes > 1 {
+                    self.boundary_rects.push((
+                        WorkSessionBoundary {
+                            older: index,
+                            newer,
+                            direction: BoundaryDirection::IntoOlder,
+                        },
+                        into_older,
+                    ));
+                }
+                if brief.changes > 1 {
+                    self.boundary_rects.push((
+                        WorkSessionBoundary {
+                            older: index,
+                            newer,
+                            direction: BoundaryDirection::IntoNewer,
+                        },
+                        into_newer,
+                    ));
+                }
+                y += 26.0;
+            }
             // Outcome, who/when, and affected context must all be scannable
             // without opening the card.
             let title_lines = tr.clamp_to_lines(
@@ -2902,6 +3322,7 @@ impl RoomActivityPane {
             );
             y += height + 8.0;
             shown = shown.saturating_add(1);
+            previous_index = Some(index);
         }
         let remaining = self
             .digest
@@ -2910,9 +3331,9 @@ impl RoomActivityPane {
             .saturating_sub(self.brief_offset.saturating_add(shown));
         if remaining > 0 || self.brief_offset > 0 {
             let label = if remaining > 0 {
-                "More outcomes…"
+                "More work sessions…"
             } else {
-                "First outcomes…"
+                "First work sessions…"
             };
             self.brief_more_rect = draw_more_row(
                 scene,
@@ -3714,7 +4135,7 @@ impl RoomActivityPane {
             return Some(handled_outcome());
         }
         let view_outcome = match self.view {
-            ActivityView::CatchUp => self.handle_catchup_click(point),
+            ActivityView::CatchUp => self.handle_catchup_click(point, tree),
             ActivityView::Tasks => self.handle_tasks_click(point, tree),
             ActivityView::Explore => self.handle_explore_click(point, tree, records),
             ActivityView::Replay => self.handle_replay_click(point),
@@ -3813,6 +4234,12 @@ impl RoomActivityPane {
         self.task_attachment = None;
     }
 
+    fn local_user(&self) -> String {
+        self.explicit_local_user
+            .clone()
+            .unwrap_or_else(crate::shell::state::local_user_id)
+    }
+
     fn create_task_from_draft(&mut self, tree: &mut WorkspaceTree) -> RoomActivityOutcome {
         let workspace = tree.active;
         let assigned_agent = (self.task_route != WorkspaceTaskRoute::Manual)
@@ -3821,7 +4248,7 @@ impl RoomActivityPane {
         let created = tree.create_workspace_task(
             workspace,
             self.task_draft.clone(),
-            crate::shell::state::local_user_id(),
+            self.local_user(),
             assigned_agent,
             self.task_route,
             self.task_attachment.clone(),
@@ -3945,12 +4372,8 @@ impl RoomActivityPane {
                 return handled_outcome();
             }
         };
-        let changed = tree.set_workspace_task_status(
-            tree.active,
-            &task_id,
-            status,
-            &crate::shell::state::local_user_id(),
-        );
+        let changed =
+            tree.set_workspace_task_status(tree.active, &task_id, status, &self.local_user());
         if changed {
             self.refresh(tree);
         }
@@ -4029,7 +4452,20 @@ impl RoomActivityPane {
         }
     }
 
-    fn handle_catchup_click(&mut self, point: Point) -> Option<RoomActivityOutcome> {
+    fn handle_catchup_click(
+        &mut self,
+        point: Point,
+        tree: &mut WorkspaceTree,
+    ) -> Option<RoomActivityOutcome> {
+        if self.resume_rect.contains(point)
+            && let Some(open_target) = self.resume_target.clone()
+        {
+            return Some(RoomActivityOutcome {
+                handled: true,
+                open_target: Some(open_target),
+                ..RoomActivityOutcome::default()
+            });
+        }
         if let Some(index) = hit_value(&self.brief_rects, point) {
             self.keyboard_focus = Some(ActivityFocus::Brief(index));
             if self.expanded_brief == Some(index) {
@@ -4038,6 +4474,14 @@ impl RoomActivityPane {
                 self.expanded_brief = Some(index);
             }
             return Some(handled_outcome());
+        }
+        if let Some(boundary) = hit_value(&self.boundary_rects, point) {
+            self.keyboard_focus = Some(ActivityFocus::WorkSessionBoundary(boundary));
+            return Some(RoomActivityOutcome {
+                handled: true,
+                named: self.move_work_session_boundary(tree, boundary),
+                ..RoomActivityOutcome::default()
+            });
         }
         if self
             .brief_more_rect
@@ -4379,11 +4823,21 @@ impl RoomActivityPane {
                 .map(|(view, _)| ActivityFocus::View(*view)),
         );
         match self.view {
-            ActivityView::CatchUp => order.extend(
-                self.brief_rects
-                    .iter()
-                    .map(|(index, _)| ActivityFocus::Brief(*index)),
-            ),
+            ActivityView::CatchUp => {
+                if self.resume_target.is_some() && self.resume_rect.area() > 0.0 {
+                    order.push(ActivityFocus::Resume);
+                }
+                order.extend(
+                    self.brief_rects
+                        .iter()
+                        .map(|(index, _)| ActivityFocus::Brief(*index)),
+                );
+                order.extend(
+                    self.boundary_rects
+                        .iter()
+                        .map(|(boundary, _)| ActivityFocus::WorkSessionBoundary(*boundary)),
+                );
+            }
             ActivityView::Tasks => {
                 if self.new_task_rect.is_some() {
                     order.push(ActivityFocus::NewTask);
@@ -4483,8 +4937,13 @@ impl RoomActivityPane {
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::MorePeople => self.author_more_rect,
+            ActivityFocus::Resume => Some(self.resume_rect),
             ActivityFocus::Brief(value) => self
                 .brief_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::WorkSessionBoundary(value) => self
+                .boundary_rects
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::MoreBriefs => self.brief_more_rect,
@@ -4573,12 +5032,16 @@ impl RoomActivityPane {
             ActivityFocus::Period(value) => self.set_period(value),
             ActivityFocus::Author(value) => self.set_author_filter(value),
             ActivityFocus::MorePeople => self.advance_people(),
+            ActivityFocus::Resume => outcome.open_target.clone_from(&self.resume_target),
             ActivityFocus::Brief(index) => {
                 if self.expanded_brief == Some(index) {
                     self.open_brief_in_explorer(index);
                 } else {
                     self.expanded_brief = Some(index);
                 }
+            }
+            ActivityFocus::WorkSessionBoundary(boundary) => {
+                outcome.named = self.move_work_session_boundary(tree, boundary);
             }
             ActivityFocus::MoreBriefs => self.advance_briefs(),
             ActivityFocus::NewTask => self.open_task_composer(tree),
@@ -4694,12 +5157,24 @@ impl RoomActivityPane {
             ) => Some(value.clone()),
             ActivityFocus::Author(None) => Some("Everyone".to_string()),
             ActivityFocus::MorePeople => Some("More people".to_string()),
+            ActivityFocus::Resume => self
+                .resume_target
+                .as_ref()
+                .map(|target| format!("Resume {}", target.label)),
             ActivityFocus::Brief(index) => self
                 .digest
                 .briefs
                 .get(*index)
                 .map(|brief| brief.title.clone()),
-            ActivityFocus::MoreBriefs => Some("More outcomes".to_string()),
+            ActivityFocus::WorkSessionBoundary(boundary) => Some(match boundary.direction {
+                BoundaryDirection::IntoNewer => {
+                    "Move the last action into the newer work session".to_string()
+                }
+                BoundaryDirection::IntoOlder => {
+                    "Move the first action into the older work session".to_string()
+                }
+            }),
+            ActivityFocus::MoreBriefs => Some("More work sessions".to_string()),
             ActivityFocus::NewTask => Some("New task".to_string()),
             ActivityFocus::Task(id) => self
                 .tasks
@@ -4765,6 +5240,15 @@ impl RoomActivityPane {
             ActivityFocus::MorePeople => {
                 control(Role::Button, false, None, "Show more contributor filters")
             }
+            ActivityFocus::Resume => {
+                let target = self.resume_target.as_ref()?;
+                control(
+                    Role::Button,
+                    false,
+                    None,
+                    &format!("Open the last resource you worked on: {}", target.label),
+                )
+            }
             ActivityFocus::Brief(index) => {
                 let brief = self.digest.briefs.get(*index)?;
                 let change_noun = if brief.changes == 1 {
@@ -4797,8 +5281,21 @@ impl RoomActivityPane {
                     description,
                 }
             }
+            ActivityFocus::WorkSessionBoundary(boundary) => control(
+                Role::Button,
+                false,
+                None,
+                match boundary.direction {
+                    BoundaryDirection::IntoNewer => {
+                        "Redraw this boundary by moving one action into the newer work session"
+                    }
+                    BoundaryDirection::IntoOlder => {
+                        "Redraw this boundary by moving one action into the older work session"
+                    }
+                },
+            ),
             ActivityFocus::MoreBriefs => {
-                control(Role::Button, false, None, "Show more outcome summaries")
+                control(Role::Button, false, None, "Show more work sessions")
             }
             ActivityFocus::NewTask => control(
                 Role::Button,
@@ -5063,8 +5560,13 @@ impl RoomActivityPane {
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::MorePeople => self.author_more_rect,
+            ActivityFocus::Resume => Some(self.resume_rect),
             ActivityFocus::Brief(value) => self
                 .brief_rects
+                .iter()
+                .find_map(|(item, rect)| (item == value).then_some(*rect)),
+            ActivityFocus::WorkSessionBoundary(value) => self
+                .boundary_rects
                 .iter()
                 .find_map(|(item, rect)| (item == value).then_some(*rect)),
             ActivityFocus::MoreBriefs => self.brief_more_rect,
@@ -5954,13 +6456,24 @@ fn draw_brief_card(
         brief.detail,
         format_relative_time(brief.last_at, now)
     );
-    let byline = tr.elide_to_width(&byline, theme.tokens.typography.scale.sm, width);
+    let byline_y = rect.y0 + 34.0 + title_extra;
+    let byline_x = draw_brief_author_stack(
+        scene,
+        transform,
+        tr,
+        theme,
+        &brief.authors,
+        rect.x0 + 12.0,
+        byline_y,
+    );
+    let byline_width = text_width((rect.x1 - 12.0 - byline_x).max(0.0));
+    let byline = tr.elide_to_width(&byline, theme.tokens.typography.scale.sm, byline_width);
     tr.draw_text(
         scene,
         &byline,
         theme.tokens.typography.scale.sm,
         theme.tokens.colors.text_dim,
-        at(transform, rect.x0 + 12.0, rect.y0 + 34.0 + title_extra),
+        at(transform, byline_x, byline_y),
         None,
     );
     let mut provenance = brief.apps.join(", ");
@@ -5989,6 +6502,29 @@ fn draw_brief_card(
     if expanded {
         let mut action_y = rect.y0 + 78.0 + title_extra;
         for action in &brief.actions {
+            let (r, g, b) = ui::widget::history::hue_to_rgb(action.author.avatar_hue);
+            let initial = action
+                .author
+                .name
+                .chars()
+                .next()
+                .unwrap_or('\u{2022}')
+                .to_uppercase()
+                .collect::<String>();
+            ui::widget::Avatar::draw_at(
+                scene,
+                transform,
+                Rect::new(
+                    rect.x0 + 18.0,
+                    action_y - 2.0,
+                    rect.x0 + 34.0,
+                    action_y + 14.0,
+                ),
+                &initial,
+                vello::peniko::Color::from_rgba8(r, g, b, 255),
+                theme,
+                tr,
+            );
             let action_line = format!(
                 "{} · {} · {}",
                 action.author.name,
@@ -5998,21 +6534,21 @@ fn draw_brief_card(
             let action_line = tr.elide_to_width(
                 &action_line,
                 theme.tokens.typography.scale.sm,
-                text_width(rect.width() - 32.0),
+                text_width(rect.width() - 58.0),
             );
             tr.draw_text(
                 scene,
                 &action_line,
                 theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_primary,
-                at(transform, rect.x0 + 20.0, action_y),
+                at(transform, rect.x0 + 40.0, action_y),
                 None,
             );
             action_y += 18.0;
         }
     }
     let affordance = if expanded {
-        "Open this outcome in Explorer →"
+        "Open this work session in Explorer →"
     } else {
         "Show affected resources and actions ⌄"
     };
@@ -6036,6 +6572,150 @@ fn draw_brief_card(
         ),
         Some(width),
     );
+}
+
+fn draw_work_session_boundary(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    can_move_up: bool,
+    can_move_down: bool,
+) {
+    let center = rect.x0 + rect.width() / 2.0;
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        theme.tokens.colors.border_standard,
+        None,
+        &Line::new((rect.x0, rect.y0 + 13.0), (rect.x1, rect.y0 + 13.0)),
+    );
+    let seam = vello::kurbo::Circle::new((center, rect.y0 + 13.0), 3.5);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        ui::chrome::shell::panel_ground(theme),
+        None,
+        &seam,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        theme.tokens.colors.border_standard,
+        None,
+        &seam,
+    );
+    let (into_newer, into_older) = work_session_boundary_button_rects(rect);
+    // The neighboring cards already carry the session names. Keep the seam
+    // itself spatial: each half transfers the bordering action across it in
+    // the direction shown, instead of repeating two long explanatory labels.
+    let buttons = [
+        (into_newer, "↑  1 action", can_move_up),
+        (into_older, "1 action  ↓", can_move_down),
+    ];
+    for (button, label, enabled) in buttons {
+        let shape = RoundedRect::from_rect(button, 13.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.lift(if enabled { 0.65 } else { 0.25 }),
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            if enabled {
+                theme.tokens.colors.accent[4].with_alpha_factor(0.65)
+            } else {
+                theme.tokens.colors.border_standard
+            },
+            None,
+            &shape,
+        );
+        let label = tr.elide_to_width(
+            label,
+            theme.tokens.typography.scale.sm,
+            text_width(button.width() - 18.0),
+        );
+        let (width, _) = tr.measure(&label, theme.tokens.typography.scale.sm, None);
+        tr.draw_text(
+            scene,
+            &label,
+            theme.tokens.typography.scale.sm,
+            if enabled {
+                theme.tokens.colors.text_primary
+            } else {
+                theme.tokens.colors.text_dim
+            },
+            at(
+                transform,
+                button.x0 + (button.width() - f64::from(width)) / 2.0,
+                button.y0 + 6.0,
+            ),
+            None,
+        );
+    }
+}
+
+fn work_session_boundary_button_rects(rect: Rect) -> (Rect, Rect) {
+    let center = rect.x0 + rect.width() / 2.0;
+    let button_width = 104.0_f64.min((rect.width() - 16.0).max(0.0) / 2.0);
+    (
+        Rect::new(center - 6.0 - button_width, rect.y0, center - 6.0, rect.y1),
+        Rect::new(center + 6.0, rect.y0, center + 6.0 + button_width, rect.y1),
+    )
+}
+
+fn draw_brief_author_stack(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    authors: &[ui::widget::history::HistoryAuthor],
+    x: f64,
+    y: f64,
+) -> f64 {
+    let visible = authors.len().min(2);
+    for (index, author) in authors.iter().take(visible).enumerate() {
+        let avatar_x = x + index as f64 * 12.0;
+        let (r, g, b) = ui::widget::history::hue_to_rgb(author.avatar_hue);
+        let initial = author
+            .name
+            .chars()
+            .next()
+            .unwrap_or('\u{2022}')
+            .to_uppercase()
+            .collect::<String>();
+        ui::widget::Avatar::draw_at(
+            scene,
+            transform,
+            Rect::new(avatar_x, y - 2.0, avatar_x + 18.0, y + 16.0),
+            &initial,
+            vello::peniko::Color::from_rgba8(r, g, b, 255),
+            theme,
+            tr,
+        );
+    }
+    if authors.len() > visible {
+        let badge_x = x + visible as f64 * 12.0;
+        ui::widget::Avatar::draw_at(
+            scene,
+            transform,
+            Rect::new(badge_x, y - 2.0, badge_x + 18.0, y + 16.0),
+            &format!("+{}", authors.len() - visible),
+            theme.tokens.colors.surfaces.raised,
+            theme,
+            tr,
+        );
+    }
+    let badges = visible + usize::from(authors.len() > visible);
+    if badges == 0 {
+        x
+    } else {
+        x + badges as f64 * 12.0 + 10.0
+    }
 }
 
 /// Chips that would overflow the row are neither painted nor returned,
@@ -6710,20 +7390,20 @@ mod tests {
     #[test]
     fn persisted_effect_receipt_reappears_in_workspace_activity_without_revert() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         assert!(
             tree.append_workspace_effect_receipt(
                 tree.active,
                 invocation,
                 "ada",
-                qos_actions::ActionContext::for_resource(
+                tilo_actions::ActionContext::for_resource(
                     "Export",
                     "document:brief",
                     "document",
                     "Release brief",
                 )
-                .with_app("org.qos.Writer", "Writer"),
-                qos_actions::EffectReceiptStatus::Succeeded,
+                .with_app("org.tilo.Writer", "Writer"),
+                tilo_actions::EffectReceiptStatus::Succeeded,
             )
         );
         let persisted = serde_json::to_vec(&tree).expect("persist workspace tree");
@@ -6772,13 +7452,13 @@ mod tests {
                 (22, "outro", "Keep the pricing table", "Preserve pricing"),
             ] {
                 doc.put(automerge::ROOT, field, value).unwrap();
-                let context = ui::qos_actions::ActionContext::for_resource(
+                let context = ui::tilo_actions::ActionContext::for_resource(
                     action,
                     record.as_str(),
                     "document",
                     "Campaign brief",
                 )
-                .with_app("org.qos.Writer", "Writer")
+                .with_app("org.tilo.Writer", "Writer")
                 .with_purpose("Make the opening concrete")
                 .with_group(
                     "agent-run:test",
@@ -6800,7 +7480,7 @@ mod tests {
                 Some("Rewrite the opening and preserve the pricing table"),
                 Some("The opening was vague; the pricing table was already correct."),
                 &[ui::RunStep {
-                    app: "org.qos.Writer".to_string(),
+                    app: "org.tilo.Writer".to_string(),
                     record: record.to_string(),
                     run: change,
                     summary: "Rewrote the launch story".to_string(),
@@ -6996,13 +7676,13 @@ mod tests {
             diff_payload: None,
             redaction: None,
             context: Some(
-                ui::qos_actions::ActionContext::for_resource(
+                ui::tilo_actions::ActionContext::for_resource(
                     "Edit",
                     "document:launch-brief",
                     "document",
                     "Launch brief",
                 )
-                .with_app("org.qos.Writer", "Writer"),
+                .with_app("org.tilo.Writer", "Writer"),
             ),
         };
         pane.timeline_mut().set_entries(vec![resource_entry]);
@@ -7304,13 +7984,13 @@ mod tests {
         let unread_before = pane.passive_unread;
         let id = HistoryEntryId::from_bytes([9; 16]);
         let resource = "signed-file-record".to_string();
-        let context = ui::qos_actions::ActionContext::for_resource(
+        let context = ui::tilo_actions::ActionContext::for_resource(
             "Edited",
             resource.clone(),
             "files.entry",
             "Launch brief.md",
         )
-        .with_app("org.qos.Files", "Files");
+        .with_app("org.tilo.Files", "Files");
         pane.open_external_entry(HistoryEntry {
             id,
             author: ui::widget::HistoryAuthor::new("Ada", 280.0, "01010101"),
@@ -8864,5 +9544,224 @@ mod tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].start, entries[1].id);
         assert_eq!(merged[0].end, Some(entries[3].id));
+    }
+
+    #[test]
+    fn catch_up_redraws_work_session_boundaries_without_rewriting_history() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        let entries = pane.entries().to_vec();
+        assert!(entries.len() >= 4);
+        let original_ids = entries.iter().map(|entry| entry.id).collect::<Vec<_>>();
+        assert!(pane.apply_name(
+            &mut tree,
+            &GroupNameRequest {
+                record_id: None,
+                start: entries[0].id,
+                end: entries[1].id,
+                label: "Write Q3 financial report".into(),
+            },
+        ));
+        assert!(pane.apply_name(
+            &mut tree,
+            &GroupNameRequest {
+                record_id: None,
+                start: entries[2].id,
+                end: entries[3].id,
+                label: "Work on onboarding Sarah".into(),
+            },
+        ));
+        pane.set_view(ActivityView::CatchUp);
+
+        let older = pane
+            .digest
+            .briefs
+            .iter()
+            .position(|brief| brief.title == "Write Q3 financial report")
+            .expect("older named work session is projected into Catch up");
+        let newer = pane
+            .digest
+            .briefs
+            .iter()
+            .position(|brief| brief.title == "Work on onboarding Sarah")
+            .expect("newer named work session is projected into Catch up");
+        assert!(pane.move_work_session_boundary(
+            &mut tree,
+            WorkSessionBoundary {
+                older,
+                newer,
+                direction: BoundaryDirection::IntoNewer,
+            },
+        ));
+
+        let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
+        let finance = ranges
+            .iter()
+            .find(|range| range.label == "Write Q3 financial report")
+            .unwrap();
+        let onboarding = ranges
+            .iter()
+            .find(|range| range.label == "Work on onboarding Sarah")
+            .unwrap();
+        assert_eq!(finance.start, entries[0].id);
+        assert_eq!(finance.end, Some(entries[0].id));
+        assert_eq!(onboarding.start, entries[1].id);
+        assert_eq!(onboarding.end, Some(entries[3].id));
+        assert_eq!(
+            pane.entries()
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            original_ids,
+            "redrawing a work-session seam never rewrites or reorders actions"
+        );
+        assert_eq!(
+            pane.digest
+                .briefs
+                .iter()
+                .find(|brief| brief.title == "Write Q3 financial report")
+                .unwrap()
+                .changes,
+            1
+        );
+        assert_eq!(
+            pane.digest
+                .briefs
+                .iter()
+                .find(|brief| brief.title == "Work on onboarding Sarah")
+                .unwrap()
+                .changes,
+            3
+        );
+
+        let older = pane
+            .digest
+            .briefs
+            .iter()
+            .position(|brief| brief.title == "Write Q3 financial report")
+            .unwrap();
+        let newer = pane
+            .digest
+            .briefs
+            .iter()
+            .position(|brief| brief.title == "Work on onboarding Sarah")
+            .unwrap();
+        assert!(
+            !pane.move_work_session_boundary(
+                &mut tree,
+                WorkSessionBoundary {
+                    older,
+                    newer,
+                    direction: BoundaryDirection::IntoNewer,
+                },
+            ),
+            "a work session cannot be emptied"
+        );
+        assert!(pane.move_work_session_boundary(
+            &mut tree,
+            WorkSessionBoundary {
+                older,
+                newer,
+                direction: BoundaryDirection::IntoOlder,
+            },
+        ));
+    }
+
+    #[test]
+    fn first_correction_materializes_automatic_work_sessions_as_shared_ranges() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        for (group_id, group_label, action) in [
+            ("finance", "Write Q3 financial report", "Draft totals"),
+            ("finance", "Write Q3 financial report", "Check forecast"),
+            ("onboarding", "Onboard Sarah", "Open welcome notes"),
+            ("onboarding", "Onboard Sarah", "Assign mentor"),
+        ] {
+            assert!(
+                tree.append_workspace_effect_receipt(
+                    tree.active,
+                    tilo_actions::InvocationId::new(),
+                    "ada",
+                    tilo_actions::ActionContext::for_resource(
+                        action,
+                        format!("test:{group_id}"),
+                        "document",
+                        group_label,
+                    )
+                    .with_app("org.tilo.Writer", "Writer")
+                    .with_group(group_id, group_label, "work-session"),
+                    tilo_actions::EffectReceiptStatus::Succeeded,
+                )
+            );
+        }
+        let mut pane = RoomActivityPane::new();
+        pane.refresh(&mut tree);
+        pane.set_view(ActivityView::CatchUp);
+        let finance = pane
+            .digest
+            .briefs
+            .iter()
+            .position(|brief| brief.title == "Write Q3 financial report")
+            .expect("automatic finance session");
+        let onboarding = pane
+            .digest
+            .briefs
+            .iter()
+            .position(|brief| brief.title == "Onboard Sarah")
+            .expect("automatic onboarding session");
+        assert_eq!(
+            pane.digest.briefs[finance]
+                .authors
+                .iter()
+                .map(|author| author.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ada"],
+            "receipt-backed history is attributed to its authenticated action actor, not the room host"
+        );
+        assert!(pane.digest.briefs[finance].work_session_id.is_none());
+        assert!(pane.digest.briefs[onboarding].work_session_id.is_none());
+        let finance_first = pane
+            .entry_position(&pane.digest.briefs[finance].entry_ids[0])
+            .unwrap();
+        let onboarding_first = pane
+            .entry_position(&pane.digest.briefs[onboarding].entry_ids[0])
+            .unwrap();
+        let (older, newer) = if finance_first < onboarding_first {
+            (finance, onboarding)
+        } else {
+            (onboarding, finance)
+        };
+
+        assert!(pane.move_work_session_boundary(
+            &mut tree,
+            WorkSessionBoundary {
+                older,
+                newer,
+                direction: BoundaryDirection::IntoNewer,
+            },
+        ));
+        let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
+        assert!(
+            ranges
+                .iter()
+                .any(|range| range.label == "Write Q3 financial report")
+        );
+        assert!(ranges.iter().any(|range| range.label == "Onboard Sarah"));
+        assert_eq!(
+            pane.digest
+                .briefs
+                .iter()
+                .find(|brief| brief.title == "Write Q3 financial report")
+                .unwrap()
+                .changes
+                + pane
+                    .digest
+                    .briefs
+                    .iter()
+                    .find(|brief| brief.title == "Onboard Sarah")
+                    .unwrap()
+                    .changes,
+            4,
+            "materializing and moving a seam must preserve every atomic action"
+        );
     }
 }

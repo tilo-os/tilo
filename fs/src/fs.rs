@@ -93,7 +93,7 @@ fn keep_both_uuid(
     actor: collab_types::FileActor,
 ) -> uuid::Uuid {
     let mut hash = blake3::Hasher::new();
-    hash.update(b"qos.collaborative-fs.keep-both.v2\0");
+    hash.update(b"tilo.collaborative-fs.keep-both.v2\0");
     hash.update(domain);
     hash.update(workspace_id.as_bytes());
     hash.update(source_record.0.as_bytes());
@@ -119,7 +119,7 @@ fn merge_uuid(
     let mut versions = versions.to_vec();
     versions.sort_unstable();
     let mut hash = blake3::Hasher::new();
-    hash.update(b"qos.collaborative-fs.merge.v2\0");
+    hash.update(b"tilo.collaborative-fs.merge.v2\0");
     hash.update(domain);
     hash.update(workspace_id.as_bytes());
     hash.update(source_record.0.as_bytes());
@@ -267,7 +267,7 @@ pub struct QuickFS {
     /// replaced while the mount is up — see [`crate::CapabilityFile`].
     enforcement: Option<(AclHandle, crate::acl::IdentityKey)>,
     /// Host-side thumbnail generation + cache. `Some` when the mount has a
-    /// persistent cache directory (serves previews via `user.qos.thumb` and
+    /// persistent cache directory (serves previews via `user.tilo.thumb` and
     /// gossips the hash); `None` leaves the mount thumbnail-less.
     thumbs: Option<crate::thumbs::ThumbProvider>,
     /// Durable local pin/replica/transfer registry. The FUSE path only reads
@@ -389,7 +389,7 @@ impl QuickFS {
             && namespace.document_codec(ino).is_some()
     }
 
-    /// The hydration state of `ino`, served for the `user.qos.sync` xattr.
+    /// The hydration state of `ino`, served for the `user.tilo.sync` xattr.
     /// `None` when the inode doesn't exist. Directories, CRDT documents and
     /// empty files are always [`SyncState::Local`]; a regular file's state
     /// comes from the hydrator (is every chunk in the cache?).
@@ -562,7 +562,7 @@ impl QuickFS {
     }
 
     /// Attach a host-side thumbnail provider (cache under `dir`). The mount then
-    /// answers the `user.qos.thumb` xattr with a generated preview and records
+    /// answers the `user.tilo.thumb` xattr with a generated preview and records
     /// each thumbnail's hash on the namespace node so it projects to peers.
     #[must_use]
     pub fn with_thumbs(mut self, provider: crate::thumbs::ThumbProvider) -> Self {
@@ -1136,7 +1136,7 @@ impl QuickFS {
 
     fn record_catalog_revision_from_index(index_revision: &str, acl_revision: u64) -> String {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"qos.fs.record-index.v2.revision\\0");
+        hasher.update(b"tilo.fs.record-index.v2.revision\\0");
         let index_revision = index_revision.as_bytes();
         hasher.update(&(index_revision.len() as u64).to_be_bytes());
         hasher.update(index_revision);
@@ -1216,7 +1216,7 @@ impl QuickFS {
         // observe (and its ACL generation), with unambiguous field framing.
         // Hidden namespace edits cannot perturb it.
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"qos.fs.record-index.v3.visible-catalogue\\0");
+        hasher.update(b"tilo.fs.record-index.v3.visible-catalogue\\0");
         hasher.update(&acl_revision.to_be_bytes());
         hasher.update(&(records.len() as u64).to_be_bytes());
         for record in &records {
@@ -4907,10 +4907,15 @@ impl Filesystem for QuickFS {
     ) {
         let name = name.as_bytes();
         let newname = newname.as_bytes();
-        if !flags.difference(RenameFlags::RENAME_NOREPLACE).is_empty() {
+        #[cfg(target_os = "linux")]
+        let unsupported_flags = flags.difference(RenameFlags::RENAME_NOREPLACE);
+        #[cfg(not(target_os = "linux"))]
+        let unsupported_flags = flags;
+        if !unsupported_flags.is_empty() {
             reply.error(to_errno(libc::ENOTSUP));
             return;
         }
+        #[cfg(target_os = "linux")]
         if flags.contains(RenameFlags::RENAME_NOREPLACE)
             && self.ns().lookup(newparent.0, newname).is_some()
         {
@@ -5020,7 +5025,7 @@ impl Filesystem for QuickFS {
         }
     }
 
-    /// Serve the `user.qos.sync` extended attribute: the entry's hydration
+    /// Serve the `user.tilo.sync` extended attribute: the entry's hydration
     /// state (`local`/`projected`/`downloading`). Every other attribute name
     /// reports absent (`ENODATA`) — the collaborative FS owns only this one.
     // One dispatch point owns the bounded collaborative xattr protocol.
@@ -5132,7 +5137,7 @@ impl Filesystem for QuickFS {
         }
         if let Some((revision, cursor)) = name
             .to_str()
-            .and_then(|name| name.strip_prefix("user.qos.record-index.v3."))
+            .and_then(|name| name.strip_prefix("user.tilo.record-index.v3."))
             .and_then(|page| page.split_once('.'))
         {
             if ino.0 != crate::namespace::ROOT_INO || self.enforcement.is_none() {
@@ -5163,7 +5168,7 @@ impl Filesystem for QuickFS {
         }
         if let Some((revision, offset)) = name
             .to_str()
-            .and_then(|name| name.strip_prefix("user.qos.record-index.v2."))
+            .and_then(|name| name.strip_prefix("user.tilo.record-index.v2."))
             .and_then(|page| page.rsplit_once('.'))
             .and_then(|(revision, offset)| {
                 offset
@@ -5254,7 +5259,7 @@ impl Filesystem for QuickFS {
         reply_xattr_bytes(reply, state.as_str().as_bytes(), size);
     }
 
-    /// List the extended attributes on `ino`: just `user.qos.sync` (NUL
+    /// List the extended attributes on `ino`: just `user.tilo.sync` (NUL
     /// terminated), so `getfattr`/`listxattr` discover the sync attribute.
     fn listxattr(&self, _req: &Request, ino: INodeNo, size: u32, reply: ReplyXattr) {
         if !self.ino_in_view(ino.0) {
@@ -6092,7 +6097,7 @@ mod share_projection_tests {
 #[cfg(test)]
 mod thumb_tests {
     //! The host-side thumbnail metadata path: `QuickFS::thumbnail_for` is
-    //! the exact code `getxattr(user.qos.thumb)` runs, so driving it
+    //! the exact code `getxattr(user.tilo.thumb)` runs, so driving it
     //! exercises the production path end to end.
     use super::*;
     use crate::namespace::ROOT_INO;

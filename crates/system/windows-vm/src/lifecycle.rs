@@ -1,8 +1,8 @@
-//! Typed lifecycle operations exposed to the qOS management service.
+//! Typed lifecycle operations exposed to the Tilo management service.
 //!
 //! This module intentionally has no UI and no policy prompts.  The session
 //! service resolves polkit and workspace ownership before calling these
-//! methods; this crate enforces that every operation targets the one qOS
+//! methods; this crate enforces that every operation targets the one Tilo
 //! domain and that internet access is a short-lived, purpose-bound lease.
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,7 +28,7 @@ pub enum LifecycleAction {
 pub struct VmStatus {
     pub appliance: ApplianceState,
     pub domain: DomainState,
-    /// qOS intentionally supports one owner-managed Windows user/session.
+    /// Tilo intentionally supports one owner-managed Windows user/session.
     /// This is a state label, not a Windows username or credential.
     pub managed_session: ManagedSessionState,
 }
@@ -213,8 +213,8 @@ mod tests {
         WindowsVmService::new(
             ApplianceConfig::recommended(
                 "01234567-89ab-cdef-0123-456789abcdef",
-                "/var/lib/qos/windows/system.qcow2",
-                "/var/lib/qos/windows/nvram.fd",
+                "/var/lib/tilo/windows/system.qcow2",
+                "/var/lib/tilo/windows/nvram.fd",
             ),
             store,
             backend,
@@ -264,8 +264,8 @@ mod tests {
         let service = WindowsVmService::new(
             ApplianceConfig::recommended(
                 "01234567-89ab-cdef-0123-456789abcdef",
-                "/var/lib/qos/windows/system.qcow2",
-                "/var/lib/qos/windows/nvram.fd",
+                "/var/lib/tilo/windows/system.qcow2",
+                "/var/lib/tilo/windows/nvram.fd",
             ),
             store,
             Backend {

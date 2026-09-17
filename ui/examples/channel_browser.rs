@@ -42,7 +42,11 @@ fn ch(
 }
 
 pub fn run(_args: &[String]) {
-    // Cover multiple spaces, roles, pin states, and unread counts.
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
+    // Mocked entries — two spaces, a mix of roles, pins, and unread
+    // counts. Matches the shape the shell will produce in Phase 5
+    // once the wheel-disc auto-promote algorithm runs.
     let entries = vec![
         ch("engineering", "Company", 220.0, 5, 12, true, Some("Editor")),
         ch("design", "Company", 220.0, 25, 0, false, Some("Editor")),
@@ -76,6 +80,6 @@ pub fn run(_args: &[String]) {
             eprintln!("dismissed");
         });
 
-    let app = App::new(state, Box::new(browser));
+    let app = App::from_scoped_parts(wake_scope, state, Box::new(browser));
     app.run();
 }

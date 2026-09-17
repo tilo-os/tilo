@@ -187,7 +187,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // invocation may write both wide and narrow PNGs. The ordinary live and
     // headless modes use the standard persisted lifecycle.
     ui::launch::run(
-        &LaunchSpec::new("dev.qos.calendar", calendar::app_root).configure_app(configure_app),
+        &LaunchSpec::new("dev.tilo.calendar", calendar::app_root).configure_app(configure_app),
     )?;
     Ok(())
 }
@@ -306,9 +306,9 @@ fn render_shot_to_png(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
     // theme-driven chrome can be proven across palettes; defaults to dark.
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),

@@ -11,9 +11,9 @@ digest="$2"
   || die "composefs digest must be exactly 128 lowercase hexadecimal characters"
 podman image exists "$image" || die "image is not present in local storage: $image"
 
-stage="$(mktemp -d "${TMPDIR:-/tmp}/qos-reseal.XXXXXX")"
+stage="$(mktemp -d "${TMPDIR:-/tmp}/tilo-reseal.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
-cp "$QOS_OS_DIR/dev/uki-cmdline.py" "$stage/uki-cmdline.py"
+cp "$TILO_OS_DIR/dev/uki-cmdline.py" "$stage/uki-cmdline.py"
 build_args=(-t "$image" -f - --build-arg "BASE_IMAGE=$image")
 if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
   case "$SOURCE_DATE_EPOCH" in *[!0-9]*|'') die "SOURCE_DATE_EPOCH must be an integer" ;; esac
@@ -26,8 +26,8 @@ ARG BASE_IMAGE
 FROM \${BASE_IMAGE}
 RUN --mount=type=bind,source=uki-cmdline.py,target=/run/uki-cmdline.py,z \
     python3 /run/uki-cmdline.py set "composefs=$digest" \
- && if [ -f /boot/qos-target/qos-target.efi ]; then \
-      python3 /run/uki-cmdline.py set "composefs=$digest" /boot/qos-target/qos-target.efi; \
+ && if [ -f /boot/tilo-target/tilo-target.efi ]; then \
+      python3 /run/uki-cmdline.py set "composefs=$digest" /boot/tilo-target/tilo-target.efi; \
     fi \
  && python3 /run/uki-cmdline.py show
 EOF

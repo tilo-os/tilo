@@ -1,0 +1,18 @@
+[Desktop Entry]
+# Wayland session entry for a host that runs Tilo as one session among
+# others (GDM, SDDM, greetd — anything that scans
+# /usr/share/wayland-sessions). The Tilo image ships its own entries under
+# os/usr/share/wayland-sessions/; this one differs in that it names
+# /usr/bin/tilo-shell rather than /usr/bin/shell, because a package installed
+# onto someone else's distribution has no business claiming a name as generic
+# as `shell` in /usr/bin.
+#
+# DesktopNames=tilo is what the xdg-desktop-portal `tilo.portal` file
+# matches via UseIn=tilo to activate the Tilo portal backend.
+Name=Tilo
+GenericName=Collaborative spatial desktop
+Comment=Tilo compositor as a session on this machine
+Exec=/usr/libexec/tilo-session
+TryExec=/usr/bin/tilo-shell
+Type=Application
+DesktopNames=tilo

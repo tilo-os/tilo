@@ -1,8 +1,8 @@
-# qOS product focus
+# Tilo product focus
 
 The **main-focus apps** below are the priority — for building, fixing, and
-demoing. Everything else in `apps/` (dev/system tools: disks, hex_editor,
-db_client, logs, api_tester, snippets, firewall, vpn, containers, backups,
+demoing. Everything else in `apps/` (dev/system tools: disks, hex-editor,
+db-client, logs, api-tester, snippets, firewall, vpn, containers, backups,
 permissions, remote, imager, themes, store, monitor…) is secondary for
 now: keep them working, but do not prioritize them over the focus list.
 
@@ -43,7 +43,7 @@ now: keep them working, but do not prioritize them over the focus list.
 
 ## Chat / video — DECIDED: bespoke, over MoQ
 
-Not Matrix. Rationale: qOS already provides most of what Matrix buys (identity,
+Not Matrix. Rationale: Tilo already provides most of what Matrix buys (identity,
 ad-hoc P2P, permissions), and Matrix's home-server + auth model is
 architecturally incompatible with our ad-hoc P2P model — integrating it would be
 customization hell.
@@ -61,7 +61,7 @@ customization hell.
 ## Browser engine
 
 The browser embeds WPE WebKit behind `ui`'s webview interface. This provides a
-maintained, non-Chromium engine that can render offscreen inside the qOS shell.
+maintained, non-Chromium engine that can render offscreen inside the Tilo shell.
 Ad blocking uses WebKit content filters compiled from standard filter lists.
 Extension packages can be downloaded and inspected, but activation remains
 disabled until the embedded WebKit API exposes a supported runtime path.

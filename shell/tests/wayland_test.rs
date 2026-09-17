@@ -116,7 +116,7 @@ fn test_wayland_handshake_fixed() {
     );
     let mut cmd = container.build_command("./click_test_client", &socket_name);
     cmd.env("WAYLAND_DEBUG", "1");
-    let log_path = format!("/tmp/quick-desktop-app-{tab_id}.log");
+    let log_path = format!("/tmp/tilo-desktop-app-{tab_id}.log");
     let log_file = std::fs::File::create(&log_path).unwrap();
     cmd.stdout(std::process::Stdio::from(log_file.try_clone().unwrap()));
     cmd.stderr(std::process::Stdio::from(log_file));

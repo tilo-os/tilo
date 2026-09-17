@@ -132,7 +132,7 @@ From `/docs/dsh/`:
 
 `/docs/os/rooting/` describes bootloader unlock as designed and **not implemented**, and the intended flow ends in a **full data wipe**. The announcement says it is *"closer to unlocking an Android bootloader than to typing a password."*
 
-That is precisely the thing this workstream is required not to do. Sinty and qOS agree about the layer model and disagree about the escape hatch, and the disagreement is the whole point of the design below.
+That is precisely the thing this workstream is required not to do. Sinty and Tilo agree about the layer model and disagree about the escape hatch, and the disagreement is the whole point of the design below.
 
 ### 1.2 Prior art, compared honestly
 
@@ -205,7 +205,7 @@ whole `/etc/subuid` range fixes it. The consequence is that layer files belong t
 subordinate ids the plain host user has no authority over, so **anything that
 reads or deletes layer contents must re-enter the same mapping**.
 
-### 1.4 What qOS already has
+### 1.4 What Tilo already has
 
 Read from the tree; build on these rather than duplicating them.
 
@@ -215,7 +215,7 @@ Read from the tree; build on these rather than duplicating them.
 
 - **`netgate.rs` is the design precedent to imitate.** Per-host egress enforced by a SOCKS5/HTTP-CONNECT broker over a bind-mounted socket, with the property `plan/security.md:150` calls out: it *"needs no privilege and no kernel feature bwrap does not already require."* An earlier nftables draft was explicitly retracted because it needed `CAP_NET_ADMIN` the launcher does not have. That rejected-alternative note is the shape of argument this codebase expects.
 
-- **The typed capability vocabulary already exists** in `crates/collab/collab-types/src/caps.rs`: `Verb`, `Principal`, `Subject`, `Scope` (including `FsPath`, `Device`, `NetHost`), `Expiry`, `Effect`, `CapOverride`, and a fail-closed `decide()`. `shell/src/shell/state.rs` aliases `Expiry` as `GrantScope` with `GRANT_ONCE` / `GRANT_SESSION` / `GRANT_ALWAYS`, where session grants are **never written to disk**. Grants live on the workspace CRDT (`Workspace::capabilities: Vec<CapOverride>`), are evaluated at `shell/src/portal/mod.rs::permits`, and reach the launcher as a `0600` JSON file under `$XDG_RUNTIME_DIR/qos/capabilities/` that is deliberately *not* bound into the sandbox. **Do not add a second vocabulary.**
+- **The typed capability vocabulary already exists** in `crates/collab/collab-types/src/caps.rs`: `Verb`, `Principal`, `Subject`, `Scope` (including `FsPath`, `Device`, `NetHost`), `Expiry`, `Effect`, `CapOverride`, and a fail-closed `decide()`. `shell/src/shell/state.rs` aliases `Expiry` as `GrantScope` with `GRANT_ONCE` / `GRANT_SESSION` / `GRANT_ALWAYS`, where session grants are **never written to disk**. Grants live on the workspace CRDT (`Workspace::capabilities: Vec<CapOverride>`), are evaluated at `shell/src/portal/mod.rs::permits`, and reach the launcher as a `0600` JSON file under `$XDG_RUNTIME_DIR/tilo/capabilities/` that is deliberately *not* bound into the sandbox. **Do not add a second vocabulary.**
 
 - **The prompt UI exists**: `ui/src/widget/permission_prompt.rs`, with Allow / Allow this session / Always allow / Deny, and "Always" disabled for non-owners.
 
@@ -225,9 +225,9 @@ Read from the tree; build on these rather than duplicating them.
 
 - **distrobox and podman are installed in the image and completely unconfigured.** `os/Containerfile:255-268` installs `distrobox podman fuse3 bubblewrap`. There is **no `/etc/subuid` or `/etc/subgid` entry**, no `/etc/containers/{containers,storage}.conf`, no `user_allow_other` in `/etc/fuse.conf`, no podman socket. `apps/containers/` is a podman/distrobox manager built on `ui` but is not packaged and its binary is not in the image.
 
-- **`os/config.toml` puts `quickuser` in `wheel`.** qOS today has ordinary password `sudo`. There is one polkit rule, for the greeter's power actions. No `run0` usage. `os/dev/switch-to-stock-kernel.sh` is the tree's only `bootc usr-overlay` use, and it needs root.
+- **`os/config.toml` puts `quickuser` in `wheel`.** Tilo today has ordinary password `sudo`. There is one polkit rule, for the greeter's power actions. No `run0` usage. `os/dev/switch-to-stock-kernel.sh` is the tree's only `bootc usr-overlay` use, and it needs root.
 
-- SELinux targeted and expected Enforcing, with `qos_fs_t` shipped `permissive`. Kargs include `lockdown=integrity`. Unprivileged user namespaces intentionally allowed (bwrap needs them). `grep -rni tinker` returned nothing — greenfield.
+- SELinux targeted and expected Enforcing, with `tilo_fs_t` shipped `permissive`. Kargs include `lockdown=integrity`. Unprivileged user namespaces intentionally allowed (bwrap needs them). `grep -rni tinker` returned nothing — greenfield.
 
 ---
 
@@ -260,7 +260,7 @@ manager must not put you on the path that weakens the OS.**
 where you break things. Needs no privilege, prompts for nothing, cannot affect
 the next boot. This is the answer for approximately everything.
 
-**`qos-hold` — capability leases.** For the genuinely host-level operations a
+**`tilo-hold` — capability leases.** For the genuinely host-level operations a
 layer cannot contain: change the firewall, mount a disk, restart a unit, load a
 signed module. Sub-root granular, brokered, leased, revocable, visible.
 
@@ -269,7 +269,7 @@ is, and what makes `bootc usr-overlay` the wrong convenient answer.
 
 ### 2.3 `tinker`: what it feels like
 
-The session's hostname is the layer name and `$QOS_LAYER` carries it too, so an
+The session's hostname is the layer name and `$TILO_LAYER` carries it too, so an
 ordinary prompt already says where you are. (A tint or an explicit `[layer …]`
 prefix, in the spirit of `run0`'s red background, is not built — see Part 3.)
 
@@ -311,7 +311,7 @@ The commands:
 Store layout, per user, on writable storage, outside every path the image owns:
 
 ```
-$XDG_DATA_HOME/qos/tinker/
+$XDG_DATA_HOME/tilo/tinker/
   bases/<name>/                 unpacked base rootfs, owned by the user
   layers/<name>/upper/          the layer's writes — and its diff
   layers/<name>/work/           overlayfs scratch
@@ -406,7 +406,7 @@ moves. That is a genuinely useful affordance nothing else on the survey offers �
 Four reasons `diff` earns its place: *what did that installer do*; *before I keep
 this, show me*; *turn accident into a recipe*; *revert the specific thing*.
 
-### 2.5 `qos-hold`: the sub-root answer
+### 2.5 `tilo-hold`: the sub-root answer
 
 `sudo`'s failure is that needing one capability grants all of them, permanently,
 to a whole process tree. The naive fix — prompt per operation — fails differently:
@@ -447,7 +447,7 @@ decorative.
 expiry)`. Default expiry is the session that asked. The existing
 `Expiry::{AfterUse, EndOfSession, Never}` is exactly this vocabulary, the existing
 prompt widget already offers exactly these four buttons, and `EndOfSession` is
-already never written to disk. `qos-hold list` shows live leases; `qos-hold drop`
+already never written to disk. `tilo-hold list` shows live leases; `tilo-hold drop`
 revokes one; the same list appears in the permissions panel.
 
 **Denial is legible.** For the user's own shell, every refusal prints what was
@@ -458,8 +458,8 @@ $ nft add rule inet filter input tcp dport 8080 accept
 nft: operation not permitted
 
   this needs the capability   net.firewall.rule
-  ask for it with             qos-hold net.firewall.rule --why "open 8080 for testing"
-  see what you hold           qos-hold list
+  ask for it with             tilo-hold net.firewall.rule --why "open 8080 for testing"
+  see what you hold           tilo-hold list
 ```
 
 This is in direct, deliberate tension with the `security-denial-as-absence` work,
@@ -474,7 +474,7 @@ session, an out-of-tree driver. `usr.overlay` is that door. It is `bootc
 usr-overlay --read-only` remounted read-write **in a private mount namespace**,
 so — unlike plain `usr-overlay`, which unlocks `/usr` for everything on the
 machine for the rest of the boot — only the holding session sees a writable
-`/usr`. It is transient by default, loud (`qos-hold list` shows it; the terminal
+`/usr`. It is transient by default, loud (`tilo-hold list` shows it; the terminal
 is tinted, per `run0`), recorded, and **it does not wipe anything**. That is the
 bootloader-unlock equivalent minus the punishment, and it is discoverable: the
 denial message names it.
@@ -523,7 +523,7 @@ the docs must match:
 - **Multi-tenancy.** Same-user confinement only. Not a boundary between users.
 - **A `dsh`-style profile, if one is added.** Nested rootless podman means nested
   userns plus `/dev/fuse` plus subuid — a much larger surface. Sinty says out
-  loud that `dsh` is not a security boundary; any qOS equivalent must say the
+  loud that `dsh` is not a security boundary; any Tilo equivalent must say the
   same, in the tool's own output, not only in docs.
 
 ### 2.7 Why this is not gimmicky
@@ -544,7 +544,7 @@ The argument, made explicitly, because if it cannot be made the design is wrong.
    feel fought.
 4. **Elevation exists, is reachable, and never wipes.** This is the requirement,
    and it is where the design diverges most sharply from Sinty, whose rooting
-   path ends in a full data wipe. `qos-hold` is bounded, revocable, visible, and
+   path ends in a full data wipe. `tilo-hold` is bounded, revocable, visible, and
    costs nothing but a prompt.
 5. **You can change your mind.** Retroactive `keep`, per-path `revert`, and a
    discard that returns exactly to the base. Nothing about a session is a
@@ -575,7 +575,7 @@ Reuse:
 - `collab-types::caps` as the lease vocabulary. `Expiry` already *is* lease
   duration. Add `Scope::Elevated(ElevatedCap)` rather than a second enum.
 - `ui/src/widget/permission_prompt.rs` for the lease prompt.
-- The `0600` capability-file handoff under `$XDG_RUNTIME_DIR/qos/capabilities/`,
+- The `0600` capability-file handoff under `$XDG_RUNTIME_DIR/tilo/capabilities/`,
   which already deliberately does not let the sandbox see its own permissions.
 
 Must change:
@@ -585,11 +585,11 @@ Must change:
   the default. `[sandbox].seccomp` is already a named profile string.
 - **`/etc/subuid` and `/etc/subgid` must be provisioned by the image.** Nothing
   in `os/` writes them today, and without them `apt` fails in a layer and
-  rootless podman cannot work either. `os/usr/libexec/qos-firstboot-user` is the
+  rootless podman cannot work either. `os/usr/libexec/tilo-firstboot-user` is the
   place.
-- **`sudo` should go.** `os/config.toml` puts `quickuser` in `wheel`, so qOS has
+- **`sudo` should go.** `os/config.toml` puts `quickuser` in `wheel`, so Tilo has
   ambient password root today. Removing it is the point of this workstream, and
-  it should not be removed before `qos-hold` covers the operations people
+  it should not be removed before `tilo-hold` covers the operations people
   actually need — a lockdown that lands before its replacement is exactly how the
   gimmicky feeling gets established.
 - **`docs/app-model/sandbox.md`**'s hostname-allowlist section still describes a
@@ -633,7 +633,7 @@ at any point:**
 
 **On paper only:**
 
-- `qos-hold` entirely. No broker, no lease store, no `ElevatedCap` enum, no
+- `tilo-hold` entirely. No broker, no lease store, no `ElevatedCap` enum, no
   prompt wiring. This is the larger and more contentious half of the design.
 - Reuse of `launcher`'s seccomp and Landlock. The prototype's sessions are
   namespace-confined but carry **no seccomp filter and no Landlock ruleset** —

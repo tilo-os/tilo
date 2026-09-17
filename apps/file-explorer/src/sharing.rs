@@ -457,7 +457,7 @@ mod tests {
             let response = ShareControlResponseV1 {
                 protocol_version: SHARE_CONTROL_VERSION,
                 result: ShareControlResultV1::BearerCreatedV2 {
-                    uri: "qos-file://one-use".into(),
+                    uri: "tilo-file://one-use".into(),
                 },
             };
             let bytes = collab_types::canonical_bytes(&response).unwrap();
@@ -469,7 +469,7 @@ mod tests {
 
         assert_eq!(
             create_one_use_view_link(&socket, record_id).unwrap(),
-            "qos-file://one-use"
+            "tilo-file://one-use"
         );
         server.join().unwrap();
     }

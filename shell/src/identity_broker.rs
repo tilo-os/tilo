@@ -52,14 +52,14 @@ pub fn spawn(path: PathBuf, tree: WorkspaceTreeHandle) -> io::Result<IdentityBro
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let listener_thread = thread::Builder::new()
-        .name("qos-identity-broker".into())
+        .name("tilo-identity-broker".into())
         .spawn(move || {
             while !thread_stop.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let tree = tree.clone();
                         if let Err(error) = thread::Builder::new()
-                            .name("qos-identity-client".into())
+                            .name("tilo-identity-client".into())
                             .spawn(move || serve(stream, &tree))
                         {
                             tracing::warn!(%error, "identity broker could not spawn client worker");
@@ -83,6 +83,12 @@ pub fn spawn(path: PathBuf, tree: WorkspaceTreeHandle) -> io::Result<IdentityBro
 }
 
 fn serve(mut stream: UnixStream, tree: &WorkspaceTreeHandle) {
+    // Darwin inherits the listener's nonblocking flag on accept. This worker
+    // uses blocking framed I/O; an empty receive is not the end of a session.
+    if let Err(error) = stream.set_nonblocking(false) {
+        tracing::warn!(%error, "cannot configure blocking service connection");
+        return;
+    }
     let Ok(handshake) = read_frame::<Handshake>(&mut stream) else {
         return;
     };
@@ -338,15 +344,15 @@ fn sign_collaboration_op(
 /// either key; this check makes revocation effective at the local broker too.
 fn require_trusted_current_device(
     profile: &crate::identity_registry::IdentityProfile,
-) -> io::Result<(ed25519_dalek::SigningKey, qos_user_identity::DeviceCert)> {
+) -> io::Result<(ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert)> {
     let paths = crate::firstboot::collaboration_identity_paths();
-    let device = qos_user_identity::persist::read_device_key(&paths.device_privkey)
+    let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let device_key = device.verifying_key().to_bytes();
     let cert_path = paths.device_cert_for_user(&profile.user_public_key);
-    let cert = qos_user_identity::persist::read_device_cert(&cert_path)
+    let cert = tilo_user_identity::persist::read_device_cert(&cert_path)
         .map_err(|error| io::Error::other(error.to_string()))?;
-    qos_user_identity::verify_device_cert(&cert)
+    tilo_user_identity::verify_device_cert(&cert)
         .map_err(|error| io::Error::other(error.to_string()))?;
     if cert.user_public_key != profile.user_public_key || cert.device_public_key != device_key {
         return Err(io::Error::new(
@@ -447,14 +453,14 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp");
         let xdg = temp.path().join("config");
         let previous = std::env::var_os("XDG_CONFIG_HOME");
-        let old_root = std::env::var_os("QOS_IDENTITY_ROOT");
+        let old_root = std::env::var_os("TILO_IDENTITY_ROOT");
         let system_root = temp.path().join("system");
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", &xdg);
-            std::env::set_var("QOS_IDENTITY_ROOT", &system_root);
+            std::env::set_var("TILO_IDENTITY_ROOT", &system_root);
         }
-        let identity_dir = xdg.join("qos/identity");
-        let paths = qos_user_identity::IdentityPaths::under(&system_root);
+        let identity_dir = xdg.join("tilo/identity");
+        let paths = tilo_user_identity::IdentityPaths::under(&system_root);
         crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
         let room = RoomId::new();
@@ -468,32 +474,32 @@ mod tests {
         let tree = tree.shared();
 
         assert!(matches!(
-            sign(&tree, &room, "dev.qos.notes", "document.save", b"payload"),
+            sign(&tree, &room, "dev.tilo.notes", "document.save", b"payload"),
             Response::Denied(_)
         ));
         tree.write().workspaces[0]
             .capabilities
             .push(CapOverride::grant(
-                Subject::app("dev.qos.notes"),
+                Subject::app("dev.tilo.notes"),
                 Scope::Action {
-                    app: "dev.qos.notes".into(),
+                    app: "dev.tilo.notes".into(),
                     action: "document.save".into(),
                 },
                 Verb::Write,
             ));
         let Response::Signature(signature) =
-            sign(&tree, &room, "dev.qos.notes", "document.save", b"payload")
+            sign(&tree, &room, "dev.tilo.notes", "document.save", b"payload")
         else {
             panic!("granted action was not signed");
         };
         let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
             .expect("registry")
             .expect("profile");
-        let cert = qos_user_identity::persist::read_device_cert(
+        let cert = tilo_user_identity::persist::read_device_cert(
             &paths.device_cert_for_user(&profile.user_public_key),
         )
         .expect("device certificate");
-        qos_user_identity::verify_device_cert(&cert).expect("root-signed certificate");
+        tilo_user_identity::verify_device_cert(&cert).expect("root-signed certificate");
         assert_eq!(cert.user_public_key, profile.user_public_key);
         VerifyingKey::from_bytes(&cert.device_public_key)
             .expect("key")
@@ -503,11 +509,17 @@ mod tests {
             )
             .expect("valid device signature");
         assert!(matches!(
-            sign(&tree, &room, "dev.qos.notes", "document.delete", b"payload"),
+            sign(
+                &tree,
+                &room,
+                "dev.tilo.notes",
+                "document.delete",
+                b"payload"
+            ),
             Response::Denied(_)
         ));
 
-        let device_key = qos_user_identity::persist::read_device_key(&paths.device_privkey)
+        let device_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
             .expect("device key")
             .verifying_key()
             .to_bytes();
@@ -515,12 +527,12 @@ mod tests {
             .revoke(
                 &profile.id,
                 device_key,
-                qos_user_identity::RevocationReason::Compromised,
+                tilo_user_identity::RevocationReason::Compromised,
                 1,
             )
             .expect("revoke current device");
         assert!(matches!(
-            sign(&tree, &room, "dev.qos.notes", "document.save", b"payload"),
+            sign(&tree, &room, "dev.tilo.notes", "document.save", b"payload"),
             Response::Denied(reason) if reason.contains("revoked")
         ));
 
@@ -530,8 +542,8 @@ mod tests {
                 None => std::env::remove_var("XDG_CONFIG_HOME"),
             }
             match old_root {
-                Some(value) => std::env::set_var("QOS_IDENTITY_ROOT", value),
-                None => std::env::remove_var("QOS_IDENTITY_ROOT"),
+                Some(value) => std::env::set_var("TILO_IDENTITY_ROOT", value),
+                None => std::env::remove_var("TILO_IDENTITY_ROOT"),
             }
         }
     }
@@ -543,24 +555,24 @@ mod tests {
         let xdg = temp.path().join("config");
         let system_root = temp.path().join("system");
         let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
-        let old_root = std::env::var_os("QOS_IDENTITY_ROOT");
+        let old_root = std::env::var_os("TILO_IDENTITY_ROOT");
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", &xdg);
-            std::env::set_var("QOS_IDENTITY_ROOT", &system_root);
+            std::env::set_var("TILO_IDENTITY_ROOT", &system_root);
         }
-        let identity_dir = xdg.join("qos/identity");
-        let paths = qos_user_identity::IdentityPaths::under(&system_root);
+        let identity_dir = xdg.join("tilo/identity");
+        let paths = tilo_user_identity::IdentityPaths::under(&system_root);
         crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
         let room = RoomId::new();
         let workspace_id = room.to_string();
-        let app_id = "dev.qos.notes";
+        let app_id = "dev.tilo.notes";
         let record_id = "meeting-notes";
         let profile = crate::identity_registry::selected_identity_profile(&workspace_id)
             .expect("registry")
             .expect("profile");
-        let device =
-            qos_user_identity::persist::read_device_key(&paths.device_privkey).expect("device key");
+        let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+            .expect("device key");
         let author = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
 
         let mut workspace = crate::shell::state::Workspace::test_default(
@@ -654,7 +666,7 @@ mod tests {
                 &room,
                 app_id,
                 &workspace_id,
-                "dev.qos.calendar",
+                "dev.tilo.calendar",
                 record_id,
                 &unsigned,
             ),
@@ -742,8 +754,8 @@ mod tests {
                 None => std::env::remove_var("XDG_CONFIG_HOME"),
             }
             match old_root {
-                Some(value) => std::env::set_var("QOS_IDENTITY_ROOT", value),
-                None => std::env::remove_var("QOS_IDENTITY_ROOT"),
+                Some(value) => std::env::set_var("TILO_IDENTITY_ROOT", value),
+                None => std::env::remove_var("TILO_IDENTITY_ROOT"),
             }
         }
     }
@@ -754,16 +766,16 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp");
         let xdg = temp.path().join("config");
         let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
-        let old_root = std::env::var_os("QOS_IDENTITY_ROOT");
-        let service_var = "QOS_SVC_IDENTITY_FD";
+        let old_root = std::env::var_os("TILO_IDENTITY_ROOT");
+        let service_var = "TILO_SVC_IDENTITY_FD";
         let old_service = std::env::var_os(service_var);
         let system_root = temp.path().join("system");
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", &xdg);
-            std::env::set_var("QOS_IDENTITY_ROOT", &system_root);
+            std::env::set_var("TILO_IDENTITY_ROOT", &system_root);
         }
-        let identity_dir = xdg.join("qos/identity");
-        let paths = qos_user_identity::IdentityPaths::under(system_root);
+        let identity_dir = xdg.join("tilo/identity");
+        let paths = tilo_user_identity::IdentityPaths::under(system_root);
         crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
 
         let room = RoomId::new();
@@ -778,9 +790,9 @@ mod tests {
         workspace.room = room;
         workspace.set_owner(profile.principal_id());
         workspace.capabilities.push(CapOverride::grant(
-            Subject::app("dev.qos.notes"),
+            Subject::app("dev.tilo.notes"),
             Scope::Action {
-                app: "dev.qos.notes".into(),
+                app: "dev.tilo.notes".into(),
                 action: "document.save".into(),
             },
             Verb::Write,
@@ -794,7 +806,7 @@ mod tests {
             &mut client,
             &Handshake {
                 workspace_id: room.to_string(),
-                app_id: "dev.qos.notes".into(),
+                app_id: "dev.tilo.notes".into(),
             },
         )
         .expect("handshake");
@@ -803,15 +815,18 @@ mod tests {
 
         let identity = runtime_identity::load().expect("broker metadata");
         assert!(!identity.group_public_key().iter().all(|byte| *byte == 0));
-        let cert: qos_user_identity::DeviceCert = serde_json::from_slice(
+        let cert: tilo_user_identity::DeviceCert = serde_json::from_slice(
             identity
                 .device_certificate()
                 .expect("broker supplies identity-to-device certificate"),
         )
         .expect("certificate JSON");
-        qos_user_identity::verify_device_cert(&cert).expect("root-signed certificate");
+        tilo_user_identity::verify_device_cert(&cert).expect("root-signed certificate");
         assert_eq!(cert.user_public_key, identity.group_public_key());
         assert_eq!(cert.device_public_key, identity.signing_public_key());
+        // Leave the accepted worker waiting between frames; Darwin must not treat
+        // a temporarily empty nonblocking receive as the end of this session.
+        std::thread::sleep(Duration::from_millis(50));
         let signature = identity
             .sign_for("document.save", b"saved")
             .expect("granted sign");
@@ -841,9 +856,9 @@ mod tests {
             DocumentMutation::Incremental(b"automerge changes".to_vec())
                 .encode()
                 .expect("typed mutation"),
-            document_artifact_id("dev.qos.notes", &workspace_id, record_id),
+            document_artifact_id("dev.tilo.notes", &workspace_id, record_id),
             Ed25519PublicKey::from_bytes(identity.signing_public_key()),
-            document_attestation_id("dev.qos.notes", &workspace_id, record_id),
+            document_attestation_id("dev.tilo.notes", &workspace_id, record_id),
             collab_types::OpClass::Splice,
             now,
             1,
@@ -851,7 +866,7 @@ mod tests {
         let op_signature = identity
             .sign_collaboration_op(
                 &workspace_id,
-                "dev.qos.notes",
+                "dev.tilo.notes",
                 record_id,
                 &postcard::to_stdvec(&op).expect("unsigned envelope"),
             )
@@ -871,8 +886,8 @@ mod tests {
                 None => std::env::remove_var("XDG_CONFIG_HOME"),
             }
             match old_root {
-                Some(value) => std::env::set_var("QOS_IDENTITY_ROOT", value),
-                None => std::env::remove_var("QOS_IDENTITY_ROOT"),
+                Some(value) => std::env::set_var("TILO_IDENTITY_ROOT", value),
+                None => std::env::remove_var("TILO_IDENTITY_ROOT"),
             }
         }
     }

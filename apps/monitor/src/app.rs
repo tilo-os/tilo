@@ -29,16 +29,16 @@ use std::rc::Rc;
 use ui::format::bytes as format_bytes;
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{
-    ActionAddress, ActionContract, ActionSpec, ConfirmationPolicy, ControlInvocation,
-    OperationKind, PermissionRequirement, Resource, RetryPolicy, RiskLevel,
-};
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tilo_actions::{
+    ActionAddress, ActionContract, ActionSpec, ConfirmationPolicy, ControlInvocation,
+    OperationKind, PermissionRequirement, Resource, RetryPolicy, RiskLevel,
+};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::popover::Popover;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};

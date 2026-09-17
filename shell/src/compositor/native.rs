@@ -3,18 +3,24 @@
 //! `wayland-2`, …) handed to `DisplayHandle::insert_client`. Doesn't open a
 //! TTY, talk to DRM/KMS, render, or forward input — those live elsewhere.
 
+use crate::shell::input_policy::{
+    is_lock_chord, is_remote_input_kill_switch, winit_event_to_lock_key,
+};
+pub use crate::shell::session_policy::*;
+pub use crate::shell::test_control::{
+    ReadLineError, TEST_CONTROL_MAX_LINE_BYTES, keyboard_input_event, read_bounded_line,
+};
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
-use rand_core::{OsRng, RngCore};
 
 use crate::shell::search::action_api::{ActionArgs, ActionVisibility, ResourceRef};
 use crate::shell::search::visibility::CapabilityVisibility;
@@ -66,8 +72,8 @@ use smithay::wayland::socket::ListeningSocketSource;
 use taffy::NodeId;
 use vello::kurbo::Rect;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
+use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 use crate::compositor::accessibility::{NativeAccessibility, Request as AccessibilityRequest};
 use crate::compositor::backend::drm::runtime::{DirectTouchDown, DirectTouchOwnership};
@@ -83,7 +89,7 @@ use crate::compositor::foreign;
 use crate::compositor::frame::{FrameBuilder, FramePaint};
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
 use crate::compositor::lock_auth;
-use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
+use crate::compositor::lock_controller::{LockController, UnlockOutcome};
 use crate::compositor::lock_screen::{self, LockOutput, LockView};
 use crate::compositor::metrics;
 use crate::compositor::output_globals;
@@ -894,7 +900,7 @@ fn pump_floating_toplevel_events(service: &FloatingSurfaceService, state: &mut S
 /// `tests/compositor_test.rs` polls it to assert foreign-tab adoption +
 /// teardown without a public shell-state API. Unset means the compositor
 /// never touches the filesystem here.
-const TEST_STATE_DUMP_ENV: &str = "NIRIOS_TEST_STATE_DUMP";
+const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 
 /// Env var for the real-input e2e control protocol: when set to a writable
 /// path, [`run`] binds a unix socket there accepting newline-delimited JSON
@@ -902,7 +908,7 @@ const TEST_STATE_DUMP_ENV: &str = "NIRIOS_TEST_STATE_DUMP";
 /// reads back state as if it were the person at the keyboard — even while
 /// locked — so it is a **developer-build** surface, gated on
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
-const TEST_CONTROL_ENV: &str = "QOS_TEST_CONTROL";
+const TEST_CONTROL_ENV: &str = "TILO_TEST_CONTROL";
 
 /// RAII guard that unlinks a unix-socket file when dropped. `process::exit`
 /// skips destructors, so [`run`] drops this explicitly before exiting —
@@ -955,21 +961,18 @@ fn bind_test_control_socket() -> Option<(UnixListener, UnlinkOnDrop)> {
     match UnixListener::bind(&path) {
         Ok(listener) => {
             if let Err(e) = listener.set_nonblocking(true) {
-                eprintln!("nirios compositor: test_control set_nonblocking: {e}");
+                eprintln!("tilo compositor: test_control set_nonblocking: {e}");
                 return None;
             }
             eprintln!(
-                "nirios compositor test_control listening on {}",
+                "tilo compositor test_control listening on {}",
                 path.display()
             );
             let guard = UnlinkOnDrop(path);
             Some((listener, guard))
         }
         Err(e) => {
-            eprintln!(
-                "nirios compositor: test_control bind {}: {e}",
-                path.display()
-            );
+            eprintln!("tilo compositor: test_control bind {}: {e}", path.display());
             None
         }
     }
@@ -977,7 +980,7 @@ fn bind_test_control_socket() -> Option<(UnixListener, UnlinkOnDrop)> {
 
 /// Directory under `$XDG_RUNTIME_DIR` where a running compositor publishes
 /// facts the next terminal command needs; torn down with the session.
-pub const SESSION_RUNTIME_SUBDIR: &str = "qos-session";
+pub const SESSION_RUNTIME_SUBDIR: &str = "tilo-session";
 
 /// File inside [`SESSION_RUNTIME_SUBDIR`] holding the bare socket name (no
 /// trailing newline), so `WAYLAND_DISPLAY=$(cat …)` is exactly right.
@@ -997,7 +1000,7 @@ pub(crate) fn session_display_path(runtime_dir: Option<std::ffi::OsString>) -> O
 }
 
 /// Publish the compositor's Wayland socket name to
-/// `$XDG_RUNTIME_DIR/qos-session/wayland-display`. Last writer wins — the
+/// `$XDG_RUNTIME_DIR/tilo-session/wayland-display`. Last writer wins — the
 /// file answers "what do I connect to *now*"; the printed stderr line stays
 /// authoritative for a specific compositor. Never fatal on failure. Returns
 /// the unlink guard so the file disappears with the process.
@@ -1006,7 +1009,7 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     if let Some(dir) = path.parent()
         && let Err(e) = std::fs::create_dir_all(dir)
     {
-        eprintln!("nirios compositor: publishing {}: {e}", path.display());
+        eprintln!("tilo compositor: publishing {}: {e}", path.display());
         return None;
     }
     // 0600: not a secret, but nothing else should write it; applied before
@@ -1014,7 +1017,7 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
     match atomic_file::write_with_mode(&path, socket_name.as_encoded_bytes(), 0o600) {
         Ok(()) => Some(UnlinkOnDrop(path)),
         Err(e) => {
-            eprintln!("nirios compositor: publishing {}: {e}", path.display());
+            eprintln!("tilo compositor: publishing {}: {e}", path.display());
             None
         }
     }
@@ -1023,18 +1026,18 @@ fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop
 /// Env var naming the compositor's privileged Wayland socket, exported to
 /// trusted session services outside app sandboxes. Clipboard managers and
 /// the session-lock integration connect here instead of `WAYLAND_DISPLAY`.
-pub const PRIVILEGED_SOCKET_ENV: &str = "QOS_WAYLAND_PRIVILEGED";
+pub const PRIVILEGED_SOCKET_ENV: &str = "TILO_WAYLAND_PRIVILEGED";
 
 /// Bind the privileged Wayland socket and publish its name, carrying the
 /// compositor's pid so concurrent sessions can't collide. The pid is only a
 /// collision-free socket name; authorization comes from which acceptor made
 /// the immutable per-connection `ClientState`.
 fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString), String> {
-    let name = format!("qos-privileged-{}", std::process::id());
+    let name = format!("tilo-privileged-{}", std::process::id());
     let socket = ListeningSocketSource::with_name(&name).map_err(|e| e.to_string())?;
     let socket_name = socket.socket_name().to_os_string();
     // Published for privileged children only; sandboxed apps get an explicit
-    // environment from `qos-launcher` and never inherit this.
+    // environment from `tilo-launcher` and never inherit this.
     // SAFETY: single-threaded compositor startup, before any thread that
     // reads the environment has been spawned.
     unsafe { std::env::set_var(PRIVILEGED_SOCKET_ENV, &socket_name) };
@@ -1046,7 +1049,7 @@ fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString
 /// clipboard socket it is never exported in the session environment.
 fn bind_osk_socket() -> Result<(ListeningSocketSource, PathBuf), String> {
     let name = format!(
-        "qos-osk-{}-{}",
+        "tilo-osk-{}-{}",
         std::process::id(),
         uuid::Uuid::new_v4().simple()
     );
@@ -1065,7 +1068,7 @@ struct TestControlConn {
 impl TestControlConn {
     fn new(stream: UnixStream) -> Option<Self> {
         if let Err(e) = stream.set_nonblocking(true) {
-            eprintln!("nirios compositor: test_control conn set_nonblocking: {e}");
+            eprintln!("tilo compositor: test_control conn set_nonblocking: {e}");
             return None;
         }
         Some(Self {
@@ -1586,34 +1589,6 @@ fn keytag_into_winit_key(tag: KeyTag) -> Key {
     }
 }
 
-/// Build a `WindowEvent::KeyboardInput` for `key`. Mirrors
-/// `shots/driver.rs::key_press_event`: winit's `KeyEvent` has a
-/// `pub(crate)` `platform_specific` field, so we zero-init and overwrite
-/// only the fields the host reads; `text` is set for `Character` keys so
-/// text-input branches see the same glyph real hardware would send.
-fn keyboard_input_event(key: &Key, pressed: bool) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key.clone();
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = if pressed {
-        ElementState::Pressed
-    } else {
-        ElementState::Released
-    };
-    ev.repeat = false;
-    ev.text = if let Key::Character(s) = key {
-        Some(s.clone())
-    } else {
-        None
-    };
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
-
 fn switch_action_event(action: SwitchAction, pressed: bool) -> WindowEvent {
     keyboard_input_event(
         &Key::Named(match action {
@@ -1888,7 +1863,7 @@ fn execute_invoke_action(
     }) {
         Ok(catalog) => catalog,
         Err(why) => {
-            eprintln!("nirios compositor: cannot invoke ({provider}, {id}): {why}");
+            eprintln!("tilo compositor: cannot invoke ({provider}, {id}): {why}");
             return Err(InvokeFailure {
                 code: "action_failed".into(),
                 message: why,
@@ -1910,7 +1885,7 @@ fn execute_invoke_action(
             Ok(receipt) => Ok(receipt),
             Err(failure) => {
                 eprintln!(
-                    "nirios compositor: ({provider}, {id}) did not run: {}",
+                    "tilo compositor: ({provider}, {id}) did not run: {}",
                     failure.message
                 );
                 Err(failure)
@@ -1920,7 +1895,7 @@ fn execute_invoke_action(
         let message = format!(
             "action ({provider}, {id}) vanished between resolve and invoke; nothing was run"
         );
-        eprintln!("nirios compositor: {message}");
+        eprintln!("tilo compositor: {message}");
         Err(InvokeFailure {
             code: "action_failed".to_string(),
             message,
@@ -2157,9 +2132,7 @@ fn write_snapshot_png(
         h.round().clamp(0.0, f64::from(u32::MAX)) as u32,
     );
     if w == 0 || h == 0 {
-        eprintln!(
-            "nirios compositor: test_control snapshot: viewport is {w}x{h}, nothing to write"
-        );
+        eprintln!("tilo compositor: test_control snapshot: viewport is {w}x{h}, nothing to write");
         return;
     }
     let mut scene = fb.paint();
@@ -2207,9 +2180,7 @@ fn write_snapshot_png(
                     *slot = Some(renderer);
                 }
                 Err(e) => {
-                    eprintln!(
-                        "nirios compositor: test_control snapshot: no offscreen renderer: {e}"
-                    );
+                    eprintln!("tilo compositor: test_control snapshot: no offscreen renderer: {e}");
                     *slot = None;
                     return;
                 }
@@ -2227,7 +2198,7 @@ fn write_snapshot_png(
         Ok(f) => f,
         Err(e) => {
             eprintln!(
-                "nirios compositor: test_control snapshot: create {}: {e}",
+                "tilo compositor: test_control snapshot: create {}: {e}",
                 path.display()
             );
             return;
@@ -2241,7 +2212,7 @@ fn write_snapshot_png(
         Ok(w) => w,
         Err(e) => {
             eprintln!(
-                "nirios compositor: test_control snapshot: png header {}: {e}",
+                "tilo compositor: test_control snapshot: png header {}: {e}",
                 path.display()
             );
             return;
@@ -2249,7 +2220,7 @@ fn write_snapshot_png(
     };
     if let Err(e) = png_writer.write_image_data(&rgba) {
         eprintln!(
-            "nirios compositor: test_control snapshot: png write {}: {e}",
+            "tilo compositor: test_control snapshot: png write {}: {e}",
             path.display()
         );
         return;
@@ -2259,7 +2230,7 @@ fn write_snapshot_png(
     drop(png_writer);
     if let Err(e) = writer.flush() {
         eprintln!(
-            "nirios compositor: test_control snapshot: flush {}: {e}",
+            "tilo compositor: test_control snapshot: flush {}: {e}",
             path.display()
         );
     }
@@ -2274,89 +2245,6 @@ fn write_snapshot_png(
 /// Cap on the per-line size: `read_line` buffers the whole line regardless
 /// of size, so an unbounded no-newline stream could OOM the compositor. 64
 /// KiB is well above any legitimate command and below meaningful memory pressure.
-pub(crate) const TEST_CONTROL_MAX_LINE_BYTES: usize = 64 * 1024;
-
-/// Read up to one `\n`-terminated line from `reader`, capped at
-/// `TEST_CONTROL_MAX_LINE_BYTES`. Returns:
-///
-/// * `Ok(Some(line))` — complete line, trailing newline included (so
-///   `parse_command` needs no change).
-/// * `Ok(None)` — EOF with no newline seen (peer closed mid-line).
-/// * `Err(TooLarge)` — cap fired before a newline; caller must close.
-/// * `Err(Io(e))` — I/O failure, including `WouldBlock`.
-pub(crate) enum ReadLineError {
-    TooLarge,
-    Io(std::io::Error),
-}
-
-pub(crate) fn read_bounded_line<R: BufRead>(
-    reader: &mut R,
-    out: &mut String,
-    max_bytes: usize,
-) -> Result<Option<()>, ReadLineError> {
-    let mut buf = Vec::with_capacity(256);
-    loop {
-        let available = match reader.fill_buf() {
-            Ok(b) => b,
-            Err(e) => return Err(ReadLineError::Io(e)),
-        };
-        if available.is_empty() {
-            // EOF: return accumulated bytes as a best-effort line if any, else None.
-            if buf.is_empty() {
-                return Ok(None);
-            }
-            match String::from_utf8(buf) {
-                Ok(s) => {
-                    out.push_str(&s);
-                    return Ok(Some(()));
-                }
-                Err(e) => {
-                    return Err(ReadLineError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    )));
-                }
-            }
-        }
-        // Find the newline (if any) in the available slice.
-        let (consumed, found_nl) = match available.iter().position(|&b| b == b'\n') {
-            Some(idx) => (idx.saturating_add(1), true),
-            None => (available.len(), false),
-        };
-        if buf.len().saturating_add(consumed) > max_bytes {
-            // Cap reached: consume up to the cap so we don't leave garbage in the reader, then bail.
-            let remaining = max_bytes.saturating_sub(buf.len());
-            // `remaining < consumed <= available.len()` by construction, so this
-            // never misses — `unwrap_or(available)` is just a defensive fallback.
-            let take = available.get(..remaining).unwrap_or(available);
-            let taken = take.len();
-            buf.extend_from_slice(take);
-            reader.consume(taken);
-            return Err(ReadLineError::TooLarge);
-        }
-        // `consumed` is either `idx + 1` (a valid position in `available`) or
-        // `available.len()`, so this too never misses.
-        let take = available.get(..consumed).unwrap_or(available);
-        let taken = take.len();
-        buf.extend_from_slice(take);
-        reader.consume(taken);
-        if found_nl {
-            match String::from_utf8(buf) {
-                Ok(s) => {
-                    out.push_str(&s);
-                    return Ok(Some(()));
-                }
-                Err(e) => {
-                    return Err(ReadLineError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    )));
-                }
-            }
-        }
-    }
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "Connection pumping preserves request order, response framing, and frame-state mutation in one transaction to make test-control behavior deterministic."
@@ -2486,7 +2374,7 @@ fn pump_test_control_conn(
                 let mut out = serialise_response(&resp);
                 out.push('\n');
                 if let Err(e) = conn.reader.get_mut().write_all(out.as_bytes()) {
-                    eprintln!("nirios compositor: test_control write: {e}");
+                    eprintln!("tilo compositor: test_control write: {e}");
                     conn.closed = true;
                     return injected_input;
                 }
@@ -2500,7 +2388,7 @@ fn pump_test_control_conn(
                 return injected_input;
             }
             Err(ReadLineError::Io(e)) => {
-                eprintln!("nirios compositor: test_control read: {e}");
+                eprintln!("tilo compositor: test_control read: {e}");
                 conn.closed = true;
                 return injected_input;
             }
@@ -2536,43 +2424,6 @@ fn apply_session_transition(
         // gated by the inhibitor registry + issued through the power service, never here.
         SessionTransition::Locked | SessionTransition::Unlocked | SessionTransition::Suspend => {}
     }
-}
-
-/// Result of waiting for the precise lock frame which allows a pending sleep
-/// request to proceed.  Kept pure so the failure policy is testable without a
-/// compositor, logind, seat, or GPU.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SleepLockFrameStatus {
-    /// The frame is still in the healthy render queue.
-    Awaiting,
-    /// The required frame has retired; it is safe to acknowledge the delay
-    /// inhibitor.
-    Retired,
-    /// The render worker exited before retiring the required frame.  This is
-    /// intentionally not an acknowledgement: fail closed and let logind's
-    /// own bounded delay-inhibitor policy decide when to proceed.
-    PresenterLost,
-}
-
-fn sleep_lock_frame_status(
-    serial: u64,
-    presented: u64,
-    presenter_finished: bool,
-) -> SleepLockFrameStatus {
-    if presented >= serial {
-        SleepLockFrameStatus::Retired
-    } else if presenter_finished {
-        SleepLockFrameStatus::PresenterLost
-    } else {
-        SleepLockFrameStatus::Awaiting
-    }
-}
-
-/// Only unlock a failed suspend when the compositor actually entered the
-/// pre-sleep state and that state created the lock. A `CanSuspend` denial can
-/// arrive before preparation, and must not clear a user's unrelated lock.
-fn should_unlock_after_suspend_failure(was_prepared: bool, was_locked: bool) -> bool {
-    was_prepared && !was_locked
 }
 
 /// Whether an event is the hardware power key being pressed — detected by
@@ -3153,7 +3004,7 @@ fn is_power_key(event: &WindowEvent) -> bool {
 /// Build an OS notification toast from a power-service notification.
 fn power_notification_to_incoming(
     bridge: &crate::notifications::NotificationBridge,
-    n: qos_power_mgmt::PowerNotification,
+    n: tilo_power_mgmt::PowerNotification,
 ) -> crate::notifications::IncomingNotification {
     crate::notifications::IncomingNotification {
         dbus_id: bridge.alloc_id(),
@@ -3209,170 +3060,8 @@ fn vt_switch_chord(event: &WindowEvent, modifiers: Modifiers) -> Option<i32> {
     Some(n)
 }
 
-/// Is `event` the remote-input kill switch, `Super+Esc`, on key *press*?
-/// The panic key for a shared session — stops whatever a guest is doing.
-/// Checked ahead of the client router and the shell's own Escape handling
-/// so an open overlay or a keyboard-grabbing client can't swallow it.
-fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: Modifiers) -> bool {
-    let WindowEvent::KeyboardInput { event, .. } = event else {
-        return false;
-    };
-    event.state == ElementState::Pressed
-        && modifiers.state().super_key()
-        && matches!(event.logical_key, Key::Named(NamedKey::Escape))
-}
-
-fn is_lock_chord(event: &WindowEvent, modifiers: Modifiers) -> bool {
-    let config = settings_store::hardware::ShortcutConfig::load();
-    let Some(chord) = config
-        .bindings
-        .get(&settings_store::hardware::ShortcutAction::Lock)
-    else {
-        return false;
-    };
-    lock_chord_matches(event, modifiers, chord)
-}
-
-/// Session-lock bindings run before client routing, so their matching must
-/// accept every key the editable shortcut UI can persist.  In particular,
-/// named keys such as F12 are already withheld from the focused client by
-/// `configured_shortcut_matches`.
-fn lock_chord_matches(
-    event: &WindowEvent,
-    modifiers: Modifiers,
-    chord: &settings_store::hardware::KeyChord,
-) -> bool {
-    let WindowEvent::KeyboardInput { event, .. } = event else {
-        return false;
-    };
-    if event.state != ElementState::Pressed {
-        return false;
-    }
-    crate::shell::overlay_host::shortcut_chord_matches(&event.logical_key, modifiers, chord)
-}
-
-/// Map a live winit key event to the lock screen's normalised [`LockKey`]
-/// while locked. Non-press/unhandled keys become [`LockKey::Ignored`] —
-/// still swallowed (never routed to apps behind the overlay), but inert on
-/// the password buffer. The test-control path produces the same `LockKey`s so both drive one routing.
-fn winit_event_to_lock_key(event: &WindowEvent) -> LockKey {
-    let WindowEvent::KeyboardInput { event, .. } = event else {
-        return LockKey::Ignored;
-    };
-    if event.state != ElementState::Pressed {
-        return LockKey::Ignored;
-    }
-    match &event.logical_key {
-        Key::Named(NamedKey::Enter) => LockKey::Submit,
-        Key::Named(NamedKey::Escape) => LockKey::Cancel,
-        Key::Named(NamedKey::Backspace) => LockKey::Backspace,
-        Key::Named(NamedKey::Space) => LockKey::Text(" ".to_string()),
-        Key::Character(s) => LockKey::Text(s.to_string()),
-        _ => {
-            // Some layouts deliver typed text on otherwise-Named keys.
-            match &event.text {
-                Some(t) if !t.is_empty() && !t.chars().all(char::is_control) => {
-                    LockKey::Text(t.to_string())
-                }
-                _ => LockKey::Ignored,
-            }
-        }
-    }
-}
-
 /// How long an invite minted from the palette stays valid.
 const INVITE_EXPIRY_SECONDS: u64 = 3600;
-
-/// Sequence for same-directory workspace-salt claim files. The final file is
-/// published with a hard link, so concurrent sessions can never replace the
-/// salt another session already used to mint durable object ids.
-static WORKSPACE_SALT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-fn read_workspace_salt(path: &Path) -> std::io::Result<u16> {
-    let bytes = std::fs::read(path)?;
-    let bytes: [u8; 2] = bytes.try_into().map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "workspace peer salt must contain exactly two bytes",
-        )
-    })?;
-    let salt = u16::from_be_bytes(bytes);
-    if salt == 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "workspace peer salt must be non-zero",
-        ));
-    }
-    Ok(salt)
-}
-
-/// Load the namespace salt used for durable workspace object ids, creating a
-/// non-secret random one without creating or advertising a transport identity.
-/// Existing installations retain the salt derived from their existing device
-/// key on first migration.
-pub(super) fn load_or_create_workspace_salt(
-    state_path: &Path,
-    peer_key_path: &Path,
-) -> std::io::Result<u16> {
-    let parent = state_path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent)?;
-    let path = parent.join("workspace-peer-salt");
-    if path.try_exists()? {
-        return read_workspace_salt(&path);
-    }
-
-    let salt = if peer_key_path.try_exists()? {
-        let key = crate::network::behaviour::load_or_create_keypair(peer_key_path)?;
-        crate::network::behaviour::peer_salt_from_keypair(&key).max(1)
-    } else {
-        let mut bytes = [0_u8; 2];
-        OsRng.fill_bytes(&mut bytes);
-        u16::from_be_bytes(bytes).max(1)
-    };
-
-    for _ in 0..16 {
-        let sequence = WORKSPACE_SALT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let temporary = parent.join(format!(
-            ".workspace-peer-salt-{}-{sequence}",
-            std::process::id()
-        ));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = match options.open(&temporary) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        };
-        if let Err(error) = file
-            .write_all(&salt.to_be_bytes())
-            .and_then(|()| file.sync_all())
-        {
-            let _ = std::fs::remove_file(&temporary);
-            return Err(error);
-        }
-        let claim = std::fs::hard_link(&temporary, &path);
-        let _ = std::fs::remove_file(&temporary);
-        match claim {
-            Ok(()) => {
-                std::fs::File::open(parent)?.sync_all()?;
-                return Ok(salt);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return read_workspace_salt(&path);
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AlreadyExists,
-        "could not allocate a workspace-salt claim file",
-    ))
-}
 
 /// Load this machine's desktop state and bring it up to the invariants
 /// later stages assume: a persist path, a durable room identity per
@@ -3774,7 +3463,42 @@ fn attach_peer_presence(
             };
             let payload = ui::collaboration::PresencePayload::Following { target };
             if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
-                follow_network.publish_app_presence("qos-shell".into(), room.to_string(), frame);
+                follow_network.publish_app_presence("tilo-shell".into(), room.to_string(), frame);
+            }
+        }));
+    let status_network = Arc::clone(net);
+    frame_builder
+        .host_mut()
+        .set_status_presence_bridge(std::rc::Rc::new(move |room, status| {
+            let key = ui::presence::PresenceKey::Workspace {
+                id: room.to_string(),
+            };
+            let payload = ui::collaboration::PresencePayload::Status {
+                text: status
+                    .as_ref()
+                    .map_or_else(String::new, |status| status.text.clone()),
+                automatic: status.as_ref().is_some_and(|status| {
+                    matches!(status.origin, ui::StatusOrigin::Inferred { .. })
+                }),
+            };
+            if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
+                status_network.publish_app_presence("tilo-shell".into(), room.to_string(), frame);
+            }
+        }));
+    let tab_network = Arc::clone(net);
+    frame_builder
+        .host_mut()
+        .set_active_tab_presence_bridge(std::rc::Rc::new(move |room, tab, present| {
+            let key = ui::presence::PresenceKey::Tab {
+                id: format!("{tab:x}"),
+            };
+            let payload = if present {
+                ui::collaboration::PresencePayload::Arrived
+            } else {
+                ui::collaboration::PresencePayload::Left
+            };
+            if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
+                tab_network.publish_app_presence("tilo-shell".into(), room.to_string(), frame);
             }
         }));
     let rooms = {
@@ -3795,26 +3519,6 @@ fn attach_peer_presence(
         Arc::clone(net),
         rooms,
     ));
-}
-
-/// A deferred first-login transport starts precisely once: after the trusted
-/// identity ceremony has released the desktop, never while it is still
-/// collecting secrets.
-fn take_deferred_peer_sync_activation(deferred: &mut bool, onboarding_active: bool) -> bool {
-    if *deferred && !onboarding_active {
-        *deferred = false;
-        true
-    } else {
-        false
-    }
-}
-
-fn should_activate_first_use(
-    identity_missing: bool,
-    progress_pending: bool,
-    test_control_session: bool,
-) -> bool {
-    !test_control_session && (identity_missing || progress_pending)
 }
 
 fn spawn_session_identity_broker(
@@ -3959,10 +3663,6 @@ struct PortalBackend {
     capture_pending: Arc<AtomicBool>,
     documents: crate::portal::DocumentStoreHandle,
     interactive_screenshot: std::sync::Mutex<Option<PendingInteractiveScreenshot>>,
-}
-
-fn portal_screencast_should_publish(has_streams: bool, session_locked: bool) -> bool {
-    has_streams && !session_locked
 }
 
 struct PendingInteractiveScreenshot {
@@ -4162,13 +3862,13 @@ fn start_portal_backend(
     tree_handle: crate::shell::state::WorkspaceTreeHandle,
     notifications: crate::notifications::NotificationBridge,
     zones: Vec<crate::portal::CaptureZone>,
-    inhibit_registry: qos_power_mgmt::InhibitRegistry,
+    inhibit_registry: tilo_power_mgmt::InhibitRegistry,
     selection: crate::compositor::selection::SharedSelection,
 ) -> Option<PortalBackend> {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(2)
-        .thread_name("qos-portal")
+        .thread_name("tilo-portal")
         .build()
     {
         Ok(rt) => rt,
@@ -4308,7 +4008,7 @@ fn build_backend(kind: BackendKind) -> Box<dyn Backend> {
             let mut b = match WinitBackend::new() {
                 Ok(b) => b,
                 Err(e) => {
-                    eprintln!("nirios compositor: --backend winit failed: {e}");
+                    eprintln!("tilo compositor: --backend winit failed: {e}");
                     std::process::exit(1);
                 }
             };
@@ -4320,18 +4020,18 @@ fn build_backend(kind: BackendKind) -> Box<dyn Backend> {
         BackendKind::Drm => match DrmBackend::new() {
             Ok(b) => Box::new(b),
             Err(e) => {
-                eprintln!("nirios compositor: --backend drm failed: {e}");
+                eprintln!("tilo compositor: --backend drm failed: {e}");
                 std::process::exit(1);
             }
         },
         BackendKind::Headless => {
-            // Initial size from `NIRIOS_HEADLESS_SIZE` (shots-default fallback), keeping
+            // Initial size from `TILO_HEADLESS_SIZE` (shots-default fallback), keeping
             // headless env-var-driven. Skip `set_base_color`: no window to clear.
             let (w, h) = headless::resolve_initial_size();
             match HeadlessBackend::new(w, h) {
                 Ok(b) => Box::new(b),
                 Err(e) => {
-                    eprintln!("nirios compositor: --backend headless failed: {e}");
+                    eprintln!("tilo compositor: --backend headless failed: {e}");
                     std::process::exit(1);
                 }
             }
@@ -4352,7 +4052,7 @@ fn size_to_signed(size: (u32, u32)) -> (i32, i32) {
 
 /// Bind the primary public Wayland socket (`wayland-1..32`, first free
 /// name), print the two lines a human or test relies on, and publish the
-/// name to `$XDG_RUNTIME_DIR/qos-session/wayland-display`. Split out of
+/// name to `$XDG_RUNTIME_DIR/tilo-session/wayland-display`. Split out of
 /// [`run`] to keep that function's line count down.
 #[allow(
     clippy::exit,
@@ -4367,7 +4067,7 @@ fn bind_and_publish_wayland_socket() -> (
     let listening_socket = match ListeningSocketSource::new_auto() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("nirios compositor: bind listening wayland socket failed: {e}");
+            eprintln!("tilo compositor: bind listening wayland socket failed: {e}");
             std::process::exit(1);
         }
     };
@@ -4381,7 +4081,7 @@ fn bind_and_publish_wayland_socket() -> (
                   contract in tests/compositor_test.rs::extract_socket_name — switching to \
                   `to_string_lossy()` would drop the quotes that test strips"
     )]
-    let banner = format!("nirios compositor listening on {socket_name:?}");
+    let banner = format!("tilo compositor listening on {socket_name:?}");
     eprintln!("{banner}");
     // The two lines below are for a human who just ran `cargo run -p shell` —
     // publishing to a file too lets the next command read it instead of copying from a log.
@@ -4410,17 +4110,6 @@ fn xwayland_start_follows_public_socket_registration(source: &str) -> bool {
         return false;
     };
     registration < dispatch && dispatch < start
-}
-
-fn update_output_presentation_repaint_pending(
-    pending: &mut bool,
-    previous_surface_count: &mut usize,
-    current_surface_count: usize,
-    frame_changed: bool,
-) -> bool {
-    *pending |= frame_changed || *previous_surface_count != current_surface_count;
-    *previous_surface_count = current_surface_count;
-    *pending
 }
 
 /// Entry point for the smithay-on-Wayland compositor. Diverges (`-> !`) so
@@ -4457,7 +4146,7 @@ pub fn run() -> ! {
     let mut event_loop: EventLoop<'static, State> = match EventLoop::try_new() {
         Ok(el) => el,
         Err(e) => {
-            eprintln!("nirios compositor: create calloop event loop failed: {e}");
+            eprintln!("tilo compositor: create calloop event loop failed: {e}");
             std::process::exit(1);
         }
     };
@@ -4467,7 +4156,7 @@ pub fn run() -> ! {
     let mut display: Display<State> = match Display::new() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("nirios compositor: create wayland display failed: {e}");
+            eprintln!("tilo compositor: create wayland display failed: {e}");
             std::process::exit(1);
         }
     };
@@ -4507,7 +4196,7 @@ pub fn run() -> ! {
     // debug-only control socket. Their deliberately empty XDG roots are test
     // isolation, not a first-login fixture; letting OOBE capture input would
     // make every real-client input test time out before its first keypress.
-    // Release builds ignore QOS_TEST_CONTROL entirely via DEV_ENV_OVERRIDES.
+    // Release builds ignore TILO_TEST_CONTROL entirely via DEV_ENV_OVERRIDES.
     let test_control_session = test_control_path(
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
         std::env::var_os(TEST_CONTROL_ENV),
@@ -4591,12 +4280,10 @@ pub fn run() -> ! {
         if crate::compositor::parse_install_mode_from_args()
             == crate::compositor::InstallMode::HostDesktop
         {
-            eprintln!(
-                "nirios compositor: showing host-desktop identity setup from the first frame"
-            );
+            eprintln!("tilo compositor: showing host-desktop identity setup from the first frame");
             frame_builder.enable_host_desktop_onboarding(identity_dir);
         } else {
-            eprintln!("nirios compositor: showing full first-login setup from the first frame");
+            eprintln!("tilo compositor: showing full first-login setup from the first frame");
             frame_builder.enable_onboarding(identity_dir);
         }
     }
@@ -4630,7 +4317,7 @@ pub fn run() -> ! {
     // it owns — see `start_portal_backend` for why not the separate daemon.
     let notif_bridge = crate::notifications::NotificationBridge::new();
     frame_builder.with_chrome(|st| st.set_notification_bridge(notif_bridge.clone()));
-    let inhibit_registry = qos_power_mgmt::InhibitRegistry::new();
+    let inhibit_registry = tilo_power_mgmt::InhibitRegistry::new();
     frame_builder
         .host_mut()
         .set_session_inhibitors(inhibit_registry.clone());
@@ -4644,7 +4331,7 @@ pub fn run() -> ! {
     );
 
     // Peer sync is constructed here (not only in hosted mode) because this is
-    // the compositor that boots as the qOS session.
+    // the compositor that boots as the Tilo session.
     let mut peer_sync = enable_peer_sync
         .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone()))
         .flatten();
@@ -4704,7 +4391,7 @@ pub fn run() -> ! {
     // `new_auto` walks `wayland-1..wayland-32`, binding the first free name.
     let (listening_socket, socket_name, _display_file) = bind_and_publish_wayland_socket();
     // Publish to the app launcher: every app is pointed at this socket
-    // explicitly (`qos-launcher --wayland-socket`), never at the compositor's own env.
+    // explicitly (`tilo-launcher --wayland-socket`), never at the compositor's own env.
     crate::shell::launcher::set_wayland_socket(&socket_name);
     let _windows_compat = match crate::shell::windows_compat::spawn(
         frame_builder.chrome_handle().borrow().tree_handle(),
@@ -4734,17 +4421,15 @@ pub fn run() -> ! {
                     .display_handle
                     .insert_client(client_stream, client_state)
                 {
-                    eprintln!("nirios compositor: failed to insert client: {err}");
+                    eprintln!("tilo compositor: failed to insert client: {err}");
                 }
             })
     {
-        eprintln!(
-            "nirios compositor: insert listening socket source into event loop failed: {err}"
-        );
+        eprintln!("tilo compositor: insert listening socket source into event loop failed: {err}");
         std::process::exit(1);
     }
 
-    // The complete qOS image deliberately remains Wayland-only. A host
+    // The complete Tilo image deliberately remains Wayland-only. A host
     // desktop session is a different trust tier: it promises to keep the
     // distro applications the person already installed usable, including
     // legacy X11 software, and labels those launches as unconfined.
@@ -4778,27 +4463,27 @@ pub fn run() -> ! {
                 osk_socket,
                 move |client_stream, (), state| {
                     if !authorization.allows(&client_stream) {
-                        tracing::warn!(target: "qos::osk", "rejected connection to private OSK display");
+                        tracing::warn!(target: "tilo::osk", "rejected connection to private OSK display");
                         return;
                     }
                     if let Err(error) = state
                         .display_handle
                         .insert_client(client_stream, ClientState::osk_arc())
                     {
-                        tracing::warn!(target: "qos::osk", %error, "could not accept OSK Wayland connection");
+                        tracing::warn!(target: "tilo::osk", %error, "could not accept OSK Wayland connection");
                     }
                 },
             ) {
-                tracing::warn!(target: "qos::osk", %error, "private OSK socket source rejected");
+                tracing::warn!(target: "tilo::osk", %error, "private OSK socket source rejected");
                 None
             } else {
-                tracing::info!(target: "qos::osk", socket = %path.display(), "private OSK display ready");
+                tracing::info!(target: "tilo::osk", socket = %path.display(), "private OSK display ready");
                 service.reload_preference();
                 Some(service)
             }
         }
         Err(error) => {
-            tracing::warn!(target: "qos::osk", %error, "private OSK display unavailable");
+            tracing::warn!(target: "tilo::osk", %error, "private OSK display unavailable");
             None
         }
     };
@@ -4811,7 +4496,7 @@ pub fn run() -> ! {
     // bind-mounts only the public socket (`crates/packaging/launcher/src/sandbox.rs`); bind failure is logged and non-fatal.
     match bind_privileged_socket() {
         Ok((privileged_socket, path)) => {
-            eprintln!("nirios compositor privileged socket on {}", path.display());
+            eprintln!("tilo compositor privileged socket on {}", path.display());
             if let Err(err) = event_loop.handle().insert_source(
                 privileged_socket,
                 move |client_stream, (), state| {
@@ -4819,21 +4504,21 @@ pub fn run() -> ! {
                         .display_handle
                         .insert_client(client_stream, ClientState::privileged_arc())
                     {
-                        eprintln!("nirios compositor: failed to insert privileged client: {err}");
+                        eprintln!("tilo compositor: failed to insert privileged client: {err}");
                     }
                 },
             ) {
-                eprintln!("nirios compositor: privileged socket source rejected: {err}");
+                eprintln!("tilo compositor: privileged socket source rejected: {err}");
             }
         }
         Err(e) => {
             eprintln!(
-                "nirios compositor: no privileged wayland socket ({e}); clipboard managers will not be able to connect"
+                "tilo compositor: no privileged wayland socket ({e}); clipboard managers will not be able to connect"
             );
         }
     }
 
-    // When `NIRIOS_TEST_STATE_DUMP` is set, serializes `WorkspaceTree` there
+    // When `TILO_TEST_STATE_DUMP` is set, serializes `WorkspaceTree` there
     // each tick for `tests/compositor_test.rs`; zero-cost when unset.
     let test_dump_path = test_state_dump_path(
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
@@ -4841,7 +4526,7 @@ pub fn run() -> ! {
     );
 
     // Opt-in unix socket for newline-delimited JSON commands
-    // (`compositor::test_control`), bound at `QOS_TEST_CONTROL`; unset means never created.
+    // (`compositor::test_control`), bound at `TILO_TEST_CONTROL`; unset means never created.
     let (test_control_listener, test_control_unlink) = match bind_test_control_socket() {
         Some((l, g)) => (Some(l), Some(g)),
         None => (None, None),
@@ -4862,7 +4547,7 @@ pub fn run() -> ! {
     // lock-overlay paints. The power policy from `settings.json` owns the
     // blank and suspend timeouts at startup and on live reload; environment
     // values only seed the headless/default config before that policy applies.
-    let mut power_policy = qos_power_mgmt::config::load_policy();
+    let mut power_policy = tilo_power_mgmt::config::load_policy();
     let mut session = SessionManager::new(
         IdleConfig::from_env()
             .with_blank(power_policy.idle_blank)
@@ -4870,7 +4555,7 @@ pub fn run() -> ! {
         Instant::now(),
     );
     // Session-lock unlock: input + auth state machine. Verifier is the fixed
-    // test password (`QOS_LOCK_TEST_PASSWORD`) or real greetd/PAM; fail-closed otherwise.
+    // test password (`TILO_LOCK_TEST_PASSWORD`) or real greetd/PAM; fail-closed otherwise.
     let mut lock = LockController::new(
         lock_auth::verifier_from_env(),
         std::env::var("USER").unwrap_or_else(|_| "user".to_string()),
@@ -4897,7 +4582,7 @@ pub fn run() -> ! {
     // `inhibit_registry.acquire(reason)`; power service mirrors it into a real logind lock, idle loop checks `is_inhibited()` before suspending.
     // Mailbox the async power service uses to reach this loop (lock, battery
     // toast, idle-reset on resume) and this loop uses to reach it (request suspend).
-    let power_bridge = qos_power_mgmt::PowerBridge::new();
+    let power_bridge = tilo_power_mgmt::PowerBridge::new();
 
     // The `org.freedesktop.Notifications` D-Bus service — the compositor owns
     // it so sandboxed apps' toasts render as OS-drawn chrome. The bridge is the
@@ -4918,7 +4603,7 @@ pub fn run() -> ! {
     match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(1)
-        .thread_name("nirios-notify")
+        .thread_name("tilo-notify")
         .build()
     {
         Ok(rt) => {
@@ -4972,10 +4657,10 @@ pub fn run() -> ! {
         let registry = inhibit_registry.clone();
         let policy = power_policy;
         rt.spawn(async move {
-            match qos_power_mgmt::PowerService::connect(bridge, registry, policy).await {
+            match tilo_power_mgmt::PowerService::connect(bridge, registry, policy).await {
                 Ok(service) => service.run().await,
                 Err(e) => tracing::warn!(
-                    target: "qos::power",
+                    target: "tilo::power",
                     "power service unavailable ({e}); suspend/lid/battery inactive"
                 ),
             }
@@ -4986,19 +4671,19 @@ pub fn run() -> ! {
 
     // Presentation cadence via `FrameClock` (`compositor::pacing`): interval
     // comes from the backend's display; a fixed post-tick sleep instead
-    // measures 21.9ms/45.6Hz regardless of actual rate. `QOS_REFRESH_HZ` overrides for testing.
+    // measures 21.9ms/45.6Hz regardless of actual rate. `TILO_REFRESH_HZ` overrides for testing.
     let refresh_override = pacing::refresh_override_from_env();
     let mut frame_clock =
         if let Some(interval) = refresh_override.or_else(|| backend.refresh_interval()) {
             eprintln!(
-                "nirios compositor: pacing to {:.3} Hz",
+                "tilo compositor: pacing to {:.3} Hz",
                 1.0 / interval.as_secs_f64()
             );
             pacing::FrameClock::new(interval, Instant::now())
         } else {
             // No display to follow (headless, or a host that won't say) — fall back rather than invent a rate.
             eprintln!(
-                "nirios compositor: backend reports no refresh rate; pacing to {:.3} Hz",
+                "tilo compositor: backend reports no refresh rate; pacing to {:.3} Hz",
                 1.0 / pacing::FALLBACK_INTERVAL.as_secs_f64()
             );
             pacing::FrameClock::fallback(Instant::now())
@@ -5009,20 +4694,20 @@ pub fn run() -> ! {
     // Move presentation onto its own thread where the backend supports it.
     // Headless declines: its bytes are read back synchronously by `snapshot`.
     let mut present_pipe = backend.take_presenter().map(|p| {
-        eprintln!("nirios compositor: presenting on a dedicated render thread");
+        eprintln!("tilo compositor: presenting on a dedicated render thread");
         // Wake the loop when a frame retires — otherwise a tick that declined to
         // paint for lack of pipe capacity would park out the whole interval, halving throughput.
         let (ping, ping_source) = match calloop::ping::make_ping() {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("nirios compositor: create present-retire ping failed: {e}");
+                eprintln!("tilo compositor: create present-retire ping failed: {e}");
                 std::process::exit(1);
             }
         };
         if let Err(e) = event_loop.handle().insert_source(ping_source, |(), (), _| {
             // Waking is the whole effect: the loop re-evaluates its paint gate next iteration and now finds room.
         }) {
-            eprintln!("nirios compositor: insert present-retire ping source failed: {e}");
+            eprintln!("tilo compositor: insert present-retire ping source failed: {e}");
             std::process::exit(1);
         }
         present::PresentPipe::spawn(p, Box::new(move || ping.ping()))
@@ -5075,12 +4760,12 @@ pub fn run() -> ! {
     // cheap idempotent mount every network tick.
     let mut pending_legacy_streams: HashMap<(u64, u64), PendingLegacyStream> = HashMap::new();
     let legacy_share_config = crate::config::load_config().flatpak_share;
-    // Optional paint-rate diagnostics (`QOS_PAINT_STATS=1`).
-    let paint_stats = std::env::var("QOS_PAINT_STATS").is_ok();
-    // Optional per-iteration timing (`QOS_LOOP_TIMING=1`): logs any tick over
+    // Optional paint-rate diagnostics (`TILO_PAINT_STATS=1`).
+    let paint_stats = std::env::var("TILO_PAINT_STATS").is_ok();
+    // Optional per-iteration timing (`TILO_LOOP_TIMING=1`): logs any tick over
     // 100ms non-sleeping work with a phase breakdown, so a stall is measured, not guessed.
-    let loop_timing = std::env::var("QOS_LOOP_TIMING").is_ok();
-    // Frame-loop instrumentation (`QOS_FRAME_TRACE`/`QOS_FRAME_SUMMARY`), free
+    let loop_timing = std::env::var("TILO_LOOP_TIMING").is_ok();
+    // Frame-loop instrumentation (`TILO_FRAME_TRACE`/`TILO_FRAME_SUMMARY`), free
     // when neither is set. See `compositor::metrics`.
     let mut metrics = metrics::FrameRecorder::from_env();
     metrics.set_target_period(frame_period);
@@ -5090,7 +4775,7 @@ pub fn run() -> ! {
     // "no deadline" rather than panicking a session over a bench-only knob.
     let run_deadline = metrics::run_seconds_from_env().and_then(|d| {
         eprintln!(
-            "nirios compositor: {}={:?}; will exit cleanly after that",
+            "tilo compositor: {}={:?}; will exit cleanly after that",
             metrics::RUN_SECONDS_ENV,
             d
         );
@@ -5105,7 +4790,7 @@ pub fn run() -> ! {
         metrics.begin_tick(iter_t0);
         // Logout is requested from an off-thread power-menu action. Exit the
         // compositor through this normal cleanup path; its package wrapper
-        // then stops qOS's graphical targets and clears the shared user-manager
+        // then stops Tilo's graphical targets and clears the shared user-manager
         // environment before GDM admits the next desktop.
         if os_actions::take_logout_request() {
             close_requested = true;
@@ -5229,7 +4914,7 @@ pub fn run() -> ! {
                             && frame_clock.set_interval(interval)
                         {
                             eprintln!(
-                                "nirios compositor: display changed; now pacing to {:.3} Hz",
+                                "tilo compositor: display changed; now pacing to {:.3} Hz",
                                 1.0 / interval.as_secs_f64()
                             );
                             metrics.set_target_period(interval);
@@ -5282,13 +4967,13 @@ pub fn run() -> ! {
                         // Hardware power key resolves per the power policy (logind delegates via
                         // the service's block inhibitor); a deliberate press bypasses the idle inhibitor.
                         match power_policy.on_power_key() {
-                            Some(qos_power_mgmt::PowerAction::Suspend) => {
-                                tracing::info!(target: "qos::power", "power key: requesting suspend");
+                            Some(tilo_power_mgmt::PowerAction::Suspend) => {
+                                tracing::info!(target: "tilo::power", "power key: requesting suspend");
                                 sleep_lock_was_locked = session.is_locked();
                                 session_changed = true;
                                 power_bridge.request_suspend();
                             }
-                            Some(qos_power_mgmt::PowerAction::Lock) => {
+                            Some(tilo_power_mgmt::PowerAction::Lock) => {
                                 for t in session.request_lock(Instant::now()) {
                                     apply_session_transition(
                                         t,
@@ -5297,7 +4982,7 @@ pub fn run() -> ! {
                                     );
                                 }
                             }
-                            Some(qos_power_mgmt::PowerAction::Ignore) | None => {}
+                            Some(tilo_power_mgmt::PowerAction::Ignore) | None => {}
                         }
                     } else if let Some(vt) = vt_switch_chord(wev, test_control_ctx.modifiers) {
                         // Ahead of every other chord, never offered to a client: leaving the
@@ -5525,7 +5210,7 @@ pub fn run() -> ! {
         // before doing any layout/render work.  The later flush remains necessary
         // for protocol events produced while dispatching client requests.
         if had_backend_events && let Err(err) = display.flush_clients() {
-            eprintln!("nirios compositor: input flush_clients error: {err}");
+            eprintln!("tilo compositor: input flush_clients error: {err}");
             break;
         }
 
@@ -5548,7 +5233,7 @@ pub fn run() -> ! {
             {
                 tracing::warn!(?error, "compositor: rejected invalid shortcut settings");
             }
-            let policy = qos_power_mgmt::config::load_policy();
+            let policy = tilo_power_mgmt::config::load_policy();
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
             session.set_suspend_timeout(policy.idle_suspend);
@@ -5618,7 +5303,7 @@ pub fn run() -> ! {
                 && frame_clock.set_interval(interval)
             {
                 eprintln!(
-                    "nirios compositor: display configuration changed; now pacing to {:.3} Hz",
+                    "tilo compositor: display configuration changed; now pacing to {:.3} Hz",
                     1.0 / interval.as_secs_f64()
                 );
                 metrics.set_target_period(interval);
@@ -5650,12 +5335,12 @@ pub fn run() -> ! {
                 if inhibit_registry.is_inhibited() {
                     session.cancel_suspend();
                     tracing::debug!(
-                        target: "qos::power",
+                        target: "tilo::power",
                         reasons = ?inhibit_registry.active_reasons(),
                         "idle-suspend deferred: inhibitor held"
                     );
                 } else {
-                    tracing::info!(target: "qos::power", "idle threshold reached: requesting suspend");
+                    tracing::info!(target: "tilo::power", "idle threshold reached: requesting suspend");
                     sleep_lock_was_locked = session.is_locked();
                     power_bridge.request_suspend();
                 }
@@ -5671,12 +5356,12 @@ pub fn run() -> ! {
         for sig in power_bridge.drain_signals() {
             session_changed = true;
             match sig {
-                qos_power_mgmt::PowerSignal::Lock => {
+                tilo_power_mgmt::PowerSignal::Lock => {
                     for t in session.request_lock(Instant::now()) {
                         apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
                 }
-                qos_power_mgmt::PowerSignal::PreparingForSleep => {
+                tilo_power_mgmt::PowerSignal::PreparingForSleep => {
                     // Preserve a lock that was already present at request
                     // time, and also observe a manual/lid lock that arrived
                     // while the async suspend request was in flight.
@@ -5688,7 +5373,7 @@ pub fn run() -> ! {
                     sleep_lock_frame_serial = None;
                     sleep_lock_frame_failed = false;
                 }
-                qos_power_mgmt::PowerSignal::SuspendFailed => {
+                tilo_power_mgmt::PowerSignal::SuspendFailed => {
                     let was_prepared = sleep_lock_frame_pending;
                     sleep_lock_frame_pending = false;
                     sleep_lock_frame_serial = None;
@@ -5704,9 +5389,9 @@ pub fn run() -> ! {
                         }
                     }
                     sleep_lock_was_locked = false;
-                    tracing::warn!(target: "qos::power", "suspend request failed; session remains awake");
+                    tracing::warn!(target: "tilo::power", "suspend request failed; session remains awake");
                 }
-                qos_power_mgmt::PowerSignal::ResumedFromSleep => {
+                tilo_power_mgmt::PowerSignal::ResumedFromSleep => {
                     // Reset the idle timer so a stale pre-sleep timestamp doesn't immediately re-blank/re-suspend on resume.
                     for t in session.resume_from_sleep(Instant::now()) {
                         apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
@@ -5722,11 +5407,11 @@ pub fn run() -> ! {
                     outputs_dirty = false;
                     session_changed = true;
                 }
-                qos_power_mgmt::PowerSignal::IdleSuspendChanged(timeout) => {
+                tilo_power_mgmt::PowerSignal::IdleSuspendChanged(timeout) => {
                     session.set_suspend_timeout(timeout);
-                    tracing::info!(target: "qos::power", ?timeout, "live idle-suspend timeout updated");
+                    tracing::info!(target: "tilo::power", ?timeout, "live idle-suspend timeout updated");
                 }
-                qos_power_mgmt::PowerSignal::Notify(n) => {
+                tilo_power_mgmt::PowerSignal::Notify(n) => {
                     let inc = power_notification_to_incoming(&notif_bridge, n);
                     notif_bridge.push_incoming(inc);
                 }
@@ -5755,7 +5440,7 @@ pub fn run() -> ! {
                 SleepLockFrameStatus::PresenterLost => {
                     if !sleep_lock_frame_failed {
                         tracing::error!(
-                            target: "qos::power",
+                            target: "tilo::power",
                             serial,
                             "presenter exited before the required lock frame retired; retaining sleep delay inhibitor"
                         );
@@ -6365,7 +6050,7 @@ pub fn run() -> ! {
         }
         let should_paint = content_changed && cadence_due && pipe_ready;
 
-        // Diagnostic: `QOS_PAINT_STATS=1` logs every ~2s how many frames painted
+        // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
         if paint_stats {
             frames_total = frames_total.saturating_add(1);
@@ -6790,7 +6475,7 @@ pub fn run() -> ! {
                 // Presentation is dead but the session isn't — clients stay served and
                 // protocol state is kept, a far better failure mode than tearing the seat down.
                 eprintln!(
-                    "nirios compositor: render thread gone; presentation stopped \
+                    "tilo compositor: render thread gone; presentation stopped \
                      (clients keep running)"
                 );
                 if sleep_lock_frame_pending {
@@ -6869,7 +6554,7 @@ pub fn run() -> ! {
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(e) => {
-                        eprintln!("nirios compositor: test_control accept: {e}");
+                        eprintln!("tilo compositor: test_control accept: {e}");
                         break;
                     }
                 }
@@ -6901,7 +6586,7 @@ pub fn run() -> ! {
         // Drain wayland client traffic and push updates back out: `dispatch_clients`
         // advances each client's request queue through the `*Handler` impls, `flush_clients` pumps server events back. Mirrors smithay 0.7's minimal example.
         if let Err(err) = display.dispatch_clients(&mut state) {
-            eprintln!("nirios compositor: dispatch_clients error: {err}");
+            eprintln!("tilo compositor: dispatch_clients error: {err}");
             break;
         }
         // Selection bookkeeping after dispatch, not in the protocol handler:
@@ -6911,7 +6596,7 @@ pub fn run() -> ! {
         }
         state.pump_selection();
         if let Err(err) = display.flush_clients() {
-            eprintln!("nirios compositor: flush_clients error: {err}");
+            eprintln!("tilo compositor: flush_clients error: {err}");
             break;
         }
         let t_work_done = iter_t0.elapsed();
@@ -6934,7 +6619,7 @@ pub fn run() -> ! {
         let park = frame_clock.park(Instant::now());
         let t_sleep_start = Instant::now();
         if let Err(err) = event_loop.dispatch(park, &mut state) {
-            eprintln!("nirios compositor: event loop dispatch error: {err}");
+            eprintln!("tilo compositor: event loop dispatch error: {err}");
             break;
         }
         if xwayland_enabled && xwayland.is_none() {
@@ -6990,7 +6675,7 @@ pub fn run() -> ! {
 /// Settings exits. Missing sensors/backlights simply produce no write.
 fn spawn_auto_brightness_worker() {
     let _ = std::thread::Builder::new()
-        .name("qos-auto-brightness".into())
+        .name("tilo-auto-brightness".into())
         .spawn(|| {
             let mut controller = os_actions::AmbientBrightnessController::default();
             loop {
@@ -7006,7 +6691,7 @@ fn spawn_auto_brightness_worker() {
                         && let Some(percent) = controller.update(lux)
                         && let Err(error) = os_actions::set_brightness(percent)
                     {
-                        tracing::warn!(target: "qos::display", %error, "automatic brightness write failed");
+                        tracing::warn!(target: "tilo::display", %error, "automatic brightness write failed");
                     }
                 } else {
                     controller.reset();
@@ -7027,68 +6712,6 @@ mod tests {
     //! `#[ignore]` by default; these exercise the same `execute_planned_action`
     //! → `FrameBuilder::dispatch_event` wire without a process, so CI without winit still gates here.
     use super::*;
-
-    #[test]
-    fn deferred_peer_sync_starts_in_the_session_that_finishes_onboarding() {
-        let mut deferred = true;
-        assert!(!take_deferred_peer_sync_activation(&mut deferred, true));
-        assert!(deferred, "onboarding retains the pending start");
-        assert!(take_deferred_peer_sync_activation(&mut deferred, false));
-        assert!(!deferred, "the current-session start is one-shot");
-        assert!(!take_deferred_peer_sync_activation(&mut deferred, false));
-    }
-
-    #[test]
-    fn output_presentation_removal_stays_pending_until_a_full_frame_submits() {
-        let mut pending = false;
-        let mut previous_surface_count = 1;
-
-        assert!(update_output_presentation_repaint_pending(
-            &mut pending,
-            &mut previous_surface_count,
-            0,
-            false,
-        ));
-        assert_eq!(previous_surface_count, 0);
-        assert!(
-            pending,
-            "an off-cadence removal must survive until the next submitted frame"
-        );
-
-        pending = false;
-        assert!(!update_output_presentation_repaint_pending(
-            &mut pending,
-            &mut previous_surface_count,
-            0,
-            false,
-        ));
-        assert!(update_output_presentation_repaint_pending(
-            &mut pending,
-            &mut previous_surface_count,
-            0,
-            true,
-        ));
-    }
-
-    #[test]
-    fn unfinished_post_identity_setup_reactivates_trusted_first_use_chrome() {
-        assert!(should_activate_first_use(false, true, false));
-        assert!(
-            !should_activate_first_use(false, false, false),
-            "an established user without a journal must not see first-use again"
-        );
-        assert!(
-            !should_activate_first_use(true, true, true),
-            "the explicit development control session remains isolated"
-        );
-    }
-
-    #[test]
-    fn portal_screencast_never_publishes_a_locked_frame() {
-        assert!(portal_screencast_should_publish(true, false));
-        assert!(!portal_screencast_should_publish(true, true));
-        assert!(!portal_screencast_should_publish(false, false));
-    }
 
     #[test]
     fn switching_tabs_leaves_the_hidden_surface_and_enters_the_visible_one() {
@@ -7234,54 +6857,10 @@ mod tests {
     }
 
     #[test]
-    fn fresh_workspace_salt_does_not_create_a_transport_identity() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state_path = dir.path().join("config/state.json");
-        let peer_key_path = dir.path().join("system/device-key");
-
-        let first = load_or_create_workspace_salt(&state_path, &peer_key_path)
-            .expect("create workspace salt");
-        let second = load_or_create_workspace_salt(&state_path, &peer_key_path)
-            .expect("reload workspace salt");
-
-        assert_ne!(first, 0);
-        assert_eq!(first, second);
-        assert!(
-            !peer_key_path.exists(),
-            "allocating an object-id namespace must not mint a network identity"
-        );
-    }
-
-    #[test]
-    fn existing_transport_identity_keeps_its_historical_workspace_salt() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state_path = dir.path().join("config/state.json");
-        let peer_key_path = dir.path().join("system/device-key");
-        let key = crate::network::behaviour::load_or_create_keypair(&peer_key_path)
-            .expect("create existing transport identity");
-        let expected = crate::network::behaviour::peer_salt_from_keypair(&key).max(1);
-
-        let actual = load_or_create_workspace_salt(&state_path, &peer_key_path)
-            .expect("migrate historical salt");
-
-        assert_eq!(actual, expected);
-        assert_eq!(
-            read_workspace_salt(
-                &state_path
-                    .parent()
-                    .expect("fixture state path has a parent")
-                    .join("workspace-peer-salt"),
-            )
-            .expect("read persisted salt"),
-            expected
-        );
-    }
-
-    #[test]
     fn onboarding_blocks_every_client_input_route() {
         let mut fb = FrameBuilder::new((800, 600));
         assert!(client_input_allowed(&fb));
-        fb.enable_onboarding(std::path::PathBuf::from("/tmp/qos-onboarding-test"));
+        fb.enable_onboarding(std::path::PathBuf::from("/tmp/tilo-onboarding-test"));
         assert!(fb.host().onboarding_active());
         assert!(
             !client_input_allowed(&fb),
@@ -7329,7 +6908,7 @@ mod tests {
             &services,
             false,
             launcher::services::ServiceLaunchContext {
-                app_id: "dev.qos.socket-contract-test",
+                app_id: "dev.tilo.socket-contract-test",
                 workspace_id: Some("socket-contract-workspace"),
             },
         )
@@ -7471,7 +7050,7 @@ mod tests {
     fn display_path_lands_under_the_runtime_dir() {
         assert_eq!(
             session_display_path(Some(std::ffi::OsString::from("/run/user/1000"))),
-            Some(PathBuf::from("/run/user/1000/qos-session/wayland-display")),
+            Some(PathBuf::from("/run/user/1000/tilo-session/wayland-display")),
         );
     }
 
@@ -7491,12 +7070,12 @@ mod tests {
 
         // Round-trip through the real writer: what lands on disk must be usable as
         // `WAYLAND_DISPLAY=$(cat …)` — no trailing newline, no quoting.
-        let dir = std::env::temp_dir().join(format!("qos-display-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-display-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp runtime dir");
         let path = session_display_path(Some(dir.clone().into_os_string()))
             .expect("absolute temp dir yields a path");
-        std::fs::create_dir_all(path.parent().unwrap()).expect("create qos-session dir");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("create tilo-session dir");
         atomic_file::write_with_mode(&path, b"wayland-7", 0o600).expect("write display file");
 
         let read = std::fs::read_to_string(&path).expect("read back");
@@ -7778,7 +7357,7 @@ mod tests {
     // state_dump
 
     /// `chrome_state_json` returns an object with an `overlays` key carrying
-    /// the four flags — matches what `qos-control state-dump` queries, so a regression here silently breaks the CLI.
+    /// the four flags — matches what `tilo-control state-dump` queries, so a regression here silently breaks the CLI.
     #[test]
     fn state_dump_chrome_includes_overlays_field() {
         let fb = FrameBuilder::new((1600, 900));
@@ -7931,7 +7510,7 @@ mod tests {
     #[test]
     fn unlink_on_drop_removes_socket_file_on_drop() {
         let tmpdir = tempfile::tempdir().expect("tempdir");
-        let path = tmpdir.path().join("nirios-test-control.sock");
+        let path = tmpdir.path().join("tilo-test-control.sock");
         // Use an arbitrary regular-file stand-in — the guard removes anything
         // `remove_file` accepts, no real unix socket needed to exercise the contract.
         std::fs::write(&path, b"").expect("create stand-in file");
@@ -7945,186 +7524,7 @@ mod tests {
         );
     }
 
-    /// `read_bounded_line` caps a malicious/buggy client's input at
-    /// `TEST_CONTROL_MAX_LINE_BYTES`; the caller closes the connection on `TooLarge`.
-    #[test]
-    fn pump_drops_oversized_lines() {
-        use std::io::BufReader;
-        let stream: Vec<u8> = vec![b'A'; 100_000];
-        let mut reader = BufReader::new(&stream[..]);
-        let mut out = String::new();
-        let res = read_bounded_line(&mut reader, &mut out, TEST_CONTROL_MAX_LINE_BYTES);
-        match res {
-            Err(ReadLineError::TooLarge) => {
-                // Expected: `out` is intentionally still empty — truncated bytes aren't
-                // surfaced to the parser since they'd parse as garbage anyway.
-                assert!(
-                    out.is_empty(),
-                    "read_bounded_line must not hand a truncated line \
-                     to the parser; got {} bytes",
-                    out.len()
-                );
-            }
-            Err(ReadLineError::Io(e)) => {
-                panic!("expected TooLarge on a 100k newline-less stream; got io: {e}")
-            }
-            Ok(opt) => panic!(
-                "expected TooLarge on a 100k newline-less stream; got Ok({:?})",
-                opt.is_some()
-            ),
-        }
-    }
-
     // session lock chord / unlock detection
-
-    fn mods_with_super(on: bool) -> Modifiers {
-        let mut mask = ModifiersState::empty();
-        if on {
-            mask |= ModifiersState::SUPER;
-        }
-        Modifiers::from(mask)
-    }
-
-    /// Super+L on key press is the lock chord.
-    #[test]
-    fn super_l_press_is_lock_chord() {
-        let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
-        assert!(is_lock_chord(&ev, mods_with_super(true)));
-        // A layout/caps state may report an upper-case logical key without an
-        // extra Shift modifier; key comparison remains case-insensitive.
-        let ev_upper = keyboard_input_event(&Key::Character(SmolStr::new("L")), true);
-        assert!(is_lock_chord(&ev_upper, mods_with_super(true)));
-    }
-
-    #[test]
-    fn other_super_chords_and_extra_modifiers_do_not_lock() {
-        let search = keyboard_input_event(&Key::Character(SmolStr::new("k")), true);
-        assert!(
-            !is_lock_chord(&search, mods_with_super(true)),
-            "Super+K must reach Search instead of locking the session"
-        );
-
-        let lock = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
-        let shifted = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
-        assert!(
-            !is_lock_chord(&lock, shifted),
-            "an extra modifier must not broaden Super+L into a lock chord"
-        );
-    }
-
-    /// Without Super held, plain `l` is not the lock chord (it types).
-    #[test]
-    fn l_without_super_is_not_lock_chord() {
-        let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), true);
-        assert!(!is_lock_chord(&ev, mods_with_super(false)));
-    }
-
-    /// The lock chord only fires on press, not release — else key-up would re-trigger and toggle twice.
-    #[test]
-    fn super_l_release_is_not_lock_chord() {
-        let ev = keyboard_input_event(&Key::Character(SmolStr::new("l")), false);
-        assert!(!is_lock_chord(&ev, mods_with_super(true)));
-    }
-
-    #[test]
-    fn configured_named_lock_keys_use_the_editor_matcher_without_claiming_neighbours() {
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        let f12 = settings_store::hardware::KeyChord::parse("Ctrl+F12")
-            .expect("the shortcut editor accepts named function keys");
-        let f12_press = keyboard_input_event(&Key::Named(NamedKey::F12), true);
-        assert!(lock_chord_matches(&f12_press, ctrl, &f12));
-
-        let f11_press = keyboard_input_event(&Key::Named(NamedKey::F11), true);
-        assert!(
-            !lock_chord_matches(&f11_press, ctrl, &f12),
-            "a nearby client-owned function key must not be claimed"
-        );
-        let f12_release = keyboard_input_event(&Key::Named(NamedKey::F12), false);
-        assert!(
-            !lock_chord_matches(&f12_release, ctrl, &f12),
-            "only the captured press may lock; its release stays non-actioning"
-        );
-
-        let navigation = settings_store::hardware::KeyChord::parse("Ctrl+Left")
-            .expect("the shortcut editor accepts named navigation keys");
-        let left_press = keyboard_input_event(&Key::Named(NamedKey::ArrowLeft), true);
-        assert!(
-            lock_chord_matches(&left_press, ctrl, &navigation),
-            "a named navigation binding must use the same matcher as the editor"
-        );
-    }
-
-    /// `Super+Esc` on press is the remote-input kill switch.
-    #[test]
-    fn super_escape_press_is_the_remote_input_kill_switch() {
-        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
-        assert!(is_remote_input_kill_switch(&ev, mods_with_super(true)));
-    }
-
-    /// Escape on its own closes an overlay and reaches modal clients; must not stop a shared session by accident.
-    #[test]
-    fn escape_without_super_is_not_the_kill_switch() {
-        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
-        assert!(!is_remote_input_kill_switch(&ev, mods_with_super(false)));
-    }
-
-    /// Press only — a re-firing release would engage the latch twice and post a second toast for one keystroke.
-    #[test]
-    fn super_escape_release_is_not_the_kill_switch() {
-        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), false);
-        assert!(!is_remote_input_kill_switch(&ev, mods_with_super(true)));
-    }
-
-    /// The panic key is not a key a client can be handed — `Super` is the
-    /// compositor modifier the shell's chord table already claims, so no client can steal it.
-    #[test]
-    fn super_escape_is_a_shell_chord_and_never_reaches_a_client() {
-        let ev = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
-        assert!(client_input::is_shell_chord(
-            &ev,
-            &mods_with_super(true),
-            false
-        ));
-        assert!(
-            client_input::is_shell_chord(&ev, &mods_with_super(true), true),
-            "an open overlay must not swallow the panic key either"
-        );
-    }
-
-    /// A non-keyboard event (cursor move) is never the lock chord even with Super held.
-    #[test]
-    fn cursor_move_is_not_lock_chord() {
-        let ev = WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(10.0, 10.0),
-        };
-        assert!(!is_lock_chord(&ev, mods_with_super(true)));
-    }
-
-    /// Enter and Escape on press are the explicit unlock action.
-    #[test]
-    fn enter_and_escape_press_map_to_submit_and_cancel() {
-        let enter = keyboard_input_event(&Key::Named(NamedKey::Enter), true);
-        let escape = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
-        assert_eq!(winit_event_to_lock_key(&enter), LockKey::Submit);
-        assert_eq!(winit_event_to_lock_key(&escape), LockKey::Cancel);
-    }
-
-    /// A plain character keypress feeds the password buffer as text — it doesn't itself unlock.
-    #[test]
-    fn char_key_maps_to_text() {
-        let ev = keyboard_input_event(&Key::Character(SmolStr::new("a")), true);
-        assert_eq!(winit_event_to_lock_key(&ev), LockKey::Text("a".to_string()));
-    }
-
-    /// Backspace maps to a buffer edit; a key *release* is ignored (only presses type).
-    #[test]
-    fn backspace_maps_and_release_is_ignored() {
-        let bs = keyboard_input_event(&Key::Named(NamedKey::Backspace), true);
-        assert_eq!(winit_event_to_lock_key(&bs), LockKey::Backspace);
-        let release = keyboard_input_event(&Key::Named(NamedKey::Enter), false);
-        assert_eq!(winit_event_to_lock_key(&release), LockKey::Ignored);
-    }
 
     /// `apply_session_transition` maps Blanked/Woke to `set_dpms`;
     /// Locked/Unlocked are pure state and touch no backend — asserted via a spy backend recording `set_dpms` calls.
@@ -8156,32 +7556,6 @@ mod tests {
         apply_session_transition(SessionTransition::Unlocked, &mut backend, None);
         // Blanked → set_dpms(false), Woke → set_dpms(true); Locked/Unlocked produce no backend calls.
         assert_eq!(backend.dpms_calls, vec![false, true]);
-    }
-
-    #[test]
-    fn sleep_lock_ack_waits_for_its_exact_frame_and_fails_closed_on_presenter_loss() {
-        // A prior desktop frame has retired, but lock frame #42 has not: it
-        // cannot release the sleep-delay inhibitor.  If the presenter dies
-        // first, the only safe result is likewise no acknowledgement.
-        assert_eq!(
-            sleep_lock_frame_status(42, 41, false),
-            SleepLockFrameStatus::Awaiting
-        );
-        assert_eq!(
-            sleep_lock_frame_status(42, 42, false),
-            SleepLockFrameStatus::Retired
-        );
-        assert_eq!(
-            sleep_lock_frame_status(42, 41, true),
-            SleepLockFrameStatus::PresenterLost
-        );
-    }
-
-    #[test]
-    fn failed_suspend_only_unlocks_a_lock_it_prepared() {
-        assert!(should_unlock_after_suspend_failure(true, false));
-        assert!(!should_unlock_after_suspend_failure(true, true));
-        assert!(!should_unlock_after_suspend_failure(false, false));
     }
 }
 
@@ -8746,21 +8120,21 @@ mod external_floating_security_tests {
     fn authenticated_app_region_is_translated_and_clipped_to_its_surface() {
         let app = Rect::new(300.0, 80.0, 1100.0, 680.0);
         let source = FloatingSource::AppRegion {
-            app_id: "dev.qos.chat".into(),
+            app_id: "dev.tilo.chat".into(),
             region: Rect::new(720.0, 20.0, 880.0, 220.0),
         };
-        let translated = translate_external_source(source, "dev.qos.chat", app).unwrap();
+        let translated = translate_external_source(source, "dev.tilo.chat", app).unwrap();
         let FloatingSource::AppRegion { region, .. } = translated else {
             panic!("app region must remain an app region");
         };
         assert_eq!(region, Rect::new(1020.0, 100.0, 1100.0, 300.0));
 
         let semantic = FloatingSource::AppElement {
-            app_id: "dev.qos.chat".into(),
+            app_id: "dev.tilo.chat".into(),
             element_id: "call:shared-screen".into(),
             region: Rect::new(40.0, 30.0, 440.0, 280.0),
         };
-        let translated = translate_external_source(semantic, "dev.qos.chat", app).unwrap();
+        let translated = translate_external_source(semantic, "dev.tilo.chat", app).unwrap();
         let FloatingSource::AppElement {
             app_id,
             element_id,
@@ -8769,7 +8143,7 @@ mod external_floating_security_tests {
         else {
             panic!("semantic app element must retain its identity");
         };
-        assert_eq!(app_id, "dev.qos.chat");
+        assert_eq!(app_id, "dev.tilo.chat");
         assert_eq!(element_id, "call:shared-screen");
         assert_eq!(region, Rect::new(340.0, 110.0, 740.0, 360.0));
     }
@@ -8790,10 +8164,10 @@ mod external_floating_security_tests {
         assert!(
             translate_external_source(
                 FloatingSource::AppRegion {
-                    app_id: "dev.qos.mail".into(),
+                    app_id: "dev.tilo.mail".into(),
                     region: Rect::new(0.0, 0.0, 200.0, 120.0),
                 },
-                "dev.qos.chat",
+                "dev.tilo.chat",
                 app,
             )
             .is_err()
@@ -8801,7 +8175,7 @@ mod external_floating_security_tests {
         assert!(
             translate_external_source(
                 FloatingSource::Surface { surface_id: 42 },
-                "dev.qos.chat",
+                "dev.tilo.chat",
                 app,
             )
             .is_err()
@@ -8811,21 +8185,21 @@ mod external_floating_security_tests {
     #[test]
     fn app_owned_native_surface_accepts_local_source_but_not_spoofed_identity() {
         let source = FloatingSource::AppRegion {
-            app_id: "dev.qos.chat".into(),
+            app_id: "dev.tilo.chat".into(),
             region: Rect::new(420.0, 80.0, 780.0, 300.0),
         };
-        assert!(validate_app_owned_source(&source, "dev.qos.chat").is_ok());
+        assert!(validate_app_owned_source(&source, "dev.tilo.chat").is_ok());
         assert_eq!(
             app_owned_source_region(
                 &source,
-                "dev.qos.chat",
+                "dev.tilo.chat",
                 vello::kurbo::Size::new(1_000.0, 700.0)
             ),
             Some(Rect::new(420.0, 80.0, 780.0, 300.0))
         );
-        assert!(validate_app_owned_source(&source, "dev.qos.maps").is_err());
+        assert!(validate_app_owned_source(&source, "dev.tilo.maps").is_err());
         assert!(
-            validate_app_owned_source(&FloatingSource::Surface { surface_id: 42 }, "dev.qos.chat")
+            validate_app_owned_source(&FloatingSource::Surface { surface_id: 42 }, "dev.tilo.chat")
                 .is_err()
         );
     }
@@ -8833,7 +8207,7 @@ mod external_floating_security_tests {
     #[test]
     fn app_owned_transfer_keeps_visible_soft_chrome_at_the_parent_edge() {
         let source = FloatingSource::AppElement {
-            app_id: "dev.qos.chat".into(),
+            app_id: "dev.tilo.chat".into(),
             element_id: "active-call".into(),
             // A live drag has already carried most of the content beyond the
             // primary window. Its final visible strip is still a valid source
@@ -8844,7 +8218,7 @@ mod external_floating_security_tests {
         let visible = app_owned_transfer_region(
             &source,
             Some(presentation),
-            "dev.qos.chat",
+            "dev.tilo.chat",
             vello::kurbo::Size::new(1_200.0, 700.0),
         )
         .expect("the visible decorated edge becomes the warm-up proxy");
@@ -8854,7 +8228,7 @@ mod external_floating_security_tests {
     #[test]
     fn app_owned_transfer_prefers_decoration_over_content_only_source() {
         let source = FloatingSource::AppRegion {
-            app_id: "dev.qos.maps".into(),
+            app_id: "dev.tilo.maps".into(),
             region: Rect::new(720.0, 120.0, 1_080.0, 276.0),
         };
         let window = Rect::new(712.0, 112.0, 1_088.0, 284.0);
@@ -8862,7 +8236,7 @@ mod external_floating_security_tests {
             app_owned_transfer_region(
                 &source,
                 Some(window),
-                "dev.qos.maps",
+                "dev.tilo.maps",
                 vello::kurbo::Size::new(1_280.0, 720.0),
             ),
             Some(window),

@@ -11,14 +11,14 @@ set -euo pipefail
 [ "${1:-}" = clone ] || { printf 'unexpected git operation\n' >&2; exit 1; }
 destination="${!#}"
 mkdir -p "$destination/src/data"
-cp "$QOS_TEST_SITE_MANIFEST" "$destination/src/data/imager-release.json"
+cp "$TILO_TEST_SITE_MANIFEST" "$destination/src/data/imager-release.json"
 SH
 chmod +x "$tmp/bin/git"
 
 run_monitor() {
-  QOS_TEST_SITE_MANIFEST="$1" \
+  TILO_TEST_SITE_MANIFEST="$1" \
   GITHUB_SERVER_URL=https://forgejo.invalid \
-  QOS_SITE_GIT_TOKEN=test-token \
+  TILO_SITE_GIT_TOKEN=test-token \
   PATH="$tmp/bin:$PATH" \
     "$repo/apps/imager/packaging/monitor-winget-acceptance.sh"
 }
@@ -27,7 +27,7 @@ cat >"$tmp/unpublished.json" <<'JSON'
 {"published":false,"tag":null,"channels":{"winget":"unavailable"}}
 JSON
 run_monitor "$tmp/unpublished.json" \
-  | grep -Fq 'has no published qOS Imager release'
+  | grep -Fq 'has no published Tilo Imager release'
 
 cat >"$tmp/available.json" <<'JSON'
 {"published":true,"tag":"imager-v1.2.3","channels":{"winget":"available"}}

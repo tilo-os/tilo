@@ -181,7 +181,7 @@ impl Addr {
 /// A decoded attachment. When the bytes are present locally (`hydrated`) they
 /// are held in `content`, so the reader can save the real file to disk; in the
 /// live app the bytes are hydrated on demand (same projection-vs-hydration
-/// story as the qOS FUSE layer) and `content` is empty until then.
+/// story as the Tilo FUSE layer) and `content` is empty until then.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attachment {
     pub filename: String,
@@ -927,7 +927,7 @@ mod tests {
             rfc_message_id: None,
             in_reply_to: None,
             from: Addr::new("Ada Lovelace", "ada@analytical.example"),
-            to: vec![Addr::bare("you@qos.example")],
+            to: vec![Addr::bare("you@tilo.example")],
             cc: vec![],
             subject: subject.into(),
             body: "First line.\nSecond line.".into(),

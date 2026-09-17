@@ -1,4 +1,4 @@
-//! Disks — qOS native disk utility (CRDT-native, built on the `ui` toolkit).
+//! Disks — Tilo native disk utility (CRDT-native, built on the `ui` toolkit).
 //!
 //! A drive list on the left, and a detail pane with a proportional
 //! partition map, filesystem usage bars and a SMART health summary on

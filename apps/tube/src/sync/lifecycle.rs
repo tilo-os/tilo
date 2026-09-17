@@ -407,7 +407,7 @@ fn production_parts(device_name: &str) -> SyncResult<(GrayjaySyncTransport, Peer
         ));
     }
     let mut digest = Sha256::new();
-    digest.update(b"qos.tube.grayjay-noise-static-v1\0");
+    digest.update(b"tilo.tube.grayjay-noise-static-v1\0");
     digest.update(portal_secret.as_slice());
     let private = Zeroizing::new(digest.finalize().to_vec());
     let key = DeviceKey::from_private(private.as_slice())?;
@@ -419,7 +419,7 @@ fn production_parts(device_name: &str) -> SyncResult<(GrayjaySyncTransport, Peer
         .ok_or_else(|| SyncError::Persistence("no private state directory is available".into()))?;
     Ok((
         transport,
-        PeerStore::new(base.join("qos-tube").join("grayjay-peers.json")),
+        PeerStore::new(base.join("tilo-tube").join("grayjay-peers.json")),
         public_key,
     ))
 }

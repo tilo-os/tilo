@@ -4,7 +4,7 @@
 //! current [`Screen`], and the per-screen interaction state. The whole UI
 //! is custom-drawn into the Vello scene: this gives precise control over
 //! the connection list, the add/edit form, and the two session surfaces
-//! (an SSH terminal grid and a VNC/RDP/qOS framebuffer canvas).
+//! (an SSH terminal grid and a VNC/RDP/Tilo framebuffer canvas).
 //!
 //! Interaction is region-based. Each frame `draw` registers clickable
 //! [`Hit`] regions; `handle_event` hit-tests pointer presses against the
@@ -57,7 +57,7 @@ use crate::vnc::{VncConfig, VncInput, VncSession};
 enum LiveSession {
     Ssh(Box<SshSession>),
     Vnc(VncSession),
-    Qos(QosSession),
+    Tilo(TiloSession),
     Error(String),
     /// A saved profile that cannot start in this process. This is a distinct
     /// state from a failed connection: no socket was opened and no credential
@@ -77,7 +77,7 @@ impl LiveSession {
         match self {
             LiveSession::Ssh(s) => s.status(),
             LiveSession::Vnc(s) => s.status(),
-            LiveSession::Qos(s) => s.status.clone(),
+            LiveSession::Tilo(s) => s.status.clone(),
             LiveSession::Error(e) => SessionStatus::Failed(e.clone()),
             LiveSession::Unavailable { readiness, kind } => {
                 SessionStatus::Unavailable(readiness.detail(*kind).into())
@@ -87,11 +87,11 @@ impl LiveSession {
     }
 }
 
-struct QosSession {
+struct TiloSession {
     id: u64,
     status: SessionStatus,
     size: Option<(u32, u32)>,
-    /// qOS collaboration events arrive on the UI thread. Keep their H.264
+    /// Tilo collaboration events arrive on the UI thread. Keep their H.264
     /// payloads bounded and hand decoding to this private worker so a hostile
     /// or merely busy peer cannot make event dispatch stutter.
     /// A replace-latest encoded frame slot plus a capacity-one wake channel.
@@ -100,10 +100,10 @@ struct QosSession {
     encoded: Arc<Mutex<Option<Vec<u8>>>>,
     encoded_wake: SyncSender<()>,
     decoder_available: Arc<AtomicBool>,
-    decoded: Arc<Mutex<Option<qos_callstream::DecodedFrame>>>,
+    decoded: Arc<Mutex<Option<tilo_callstream::DecodedFrame>>>,
 }
 
-impl QosSession {
+impl TiloSession {
     fn new(id: u64) -> Result<Self, String> {
         let (encoded_wake, encoded_rx) = sync_channel::<()>(1);
         let encoded: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
@@ -115,9 +115,9 @@ impl QosSession {
         let decoded = Arc::new(Mutex::new(None));
         let decoded_worker = Arc::clone(&decoded);
         std::thread::Builder::new()
-            .name("remote-qos-decode".into())
+            .name("remote-tilo-decode".into())
             .spawn(move || {
-                let mut h264_decoder = qos_callstream::H264Decoder::new();
+                let mut h264_decoder = tilo_callstream::H264Decoder::new();
                 while encoded_rx.recv().is_ok() {
                     let Some(encoded) = lock_recover(&encoded_worker).take() else {
                         continue;
@@ -129,7 +129,7 @@ impl QosSession {
                 }
                 decoder_available_worker.store(false, Ordering::Release);
             })
-            .map_err(|error| format!("could not start qOS frame decoder: {error}"))?;
+            .map_err(|error| format!("could not start Tilo frame decoder: {error}"))?;
         Ok(Self {
             id,
             status: SessionStatus::Connecting,
@@ -143,7 +143,7 @@ impl QosSession {
 
     fn queue_frame(&self, encoded: Vec<u8>) -> Result<(), String> {
         if !self.decoder_available.load(Ordering::Acquire) {
-            return Err("qOS frame decoder is unavailable".into());
+            return Err("Tilo frame decoder is unavailable".into());
         }
         // Store first, then wake. If a wake is already pending, that worker
         // pass observes this replacement; at most one stale decode can be
@@ -153,12 +153,12 @@ impl QosSession {
             Ok(()) | Err(TrySendError::Full(())) => Ok(()),
             Err(TrySendError::Disconnected(())) => {
                 self.decoder_available.store(false, Ordering::Release);
-                Err("qOS frame decoder stopped".into())
+                Err("Tilo frame decoder stopped".into())
             }
         }
     }
 
-    fn take_latest_frame(&self) -> Option<qos_callstream::DecodedFrame> {
+    fn take_latest_frame(&self) -> Option<tilo_callstream::DecodedFrame> {
         lock_recover(&self.decoded).take()
     }
 }
@@ -169,12 +169,12 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 enum PendingResourceOperation {
     Connect {
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         connection_id: ConnectionId,
         session_generation: u64,
     },
     SshInput {
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         connection_id: ConnectionId,
         session_generation: u64,
         acknowledgement: std::sync::mpsc::Receiver<Result<(), String>>,
@@ -265,8 +265,8 @@ enum Action {
     ToggleFullscreen,
     /// Disconnect from the active session.
     Disconnect,
-    /// Pick one of the discovered qOS devices into the form.
-    PickQosDevice(usize),
+    /// Pick one of the discovered Tilo devices into the form.
+    PickTiloDevice(usize),
     /// Open/close the navigation rail (hamburger toggle in overlay mode).
     ToggleRail,
 }
@@ -362,7 +362,7 @@ impl FormValidation {
         match problem {
             p if p.starts_with("Name is required") => self.touched.0,
             p if p.starts_with("Host is required")
-                || p.starts_with("qOS device node must be an exact certified endpoint id") =>
+                || p.starts_with("Tilo device node must be an exact certified endpoint id") =>
             {
                 self.touched.1
             }
@@ -453,10 +453,10 @@ impl FieldInputs {
     }
 }
 
-/// A discoverable qOS peer, surfaced in the form's device picker. Offline
+/// A discoverable Tilo peer, surfaced in the form's device picker. Offline
 /// we seed a representative set so the picker is populated.
 #[derive(Clone, Debug)]
-struct QosDevice {
+struct TiloDevice {
     name: String,
     node: String,
     online: bool,
@@ -531,7 +531,7 @@ pub struct RemoteApp {
     focus: Option<Field>,
     /// The shared [`TextInput`] behind each editable field.
     inputs: FieldInputs,
-    /// The live transport for the open session. Production qOS control always
+    /// The live transport for the open session. Production Tilo control always
     /// creates one; gated SSH/VNC leave it `None` and show the honest "not
     /// connected" surface until explicitly enabled.
     live: Option<LiveSession>,
@@ -553,10 +553,10 @@ pub struct RemoteApp {
     scale_to_fit: bool,
     /// Whether the session surface is in fullscreen (hides chrome).
     fullscreen: bool,
-    /// Discoverable qOS peers for the form's device picker.
-    qos_devices: Vec<QosDevice>,
+    /// Discoverable Tilo peers for the form's device picker.
+    tilo_devices: Vec<TiloDevice>,
     collab_outbox: Vec<ui::collaboration::CollabRequest>,
-    next_qos_session_id: u64,
+    next_tilo_session_id: u64,
 
     /// Root rect, from `apply_layout`.
     rect: Rect,
@@ -823,10 +823,10 @@ impl RemoteApp {
         for c in seed_connections() {
             workspace.upsert(c);
         }
-        Self::from_parts(workspace, seed_qos_devices())
+        Self::from_parts(workspace, seed_tilo_devices())
     }
 
-    fn from_parts(workspace: Workspace, qos_devices: Vec<QosDevice>) -> Self {
+    fn from_parts(workspace: Workspace, tilo_devices: Vec<TiloDevice>) -> Self {
         let selected = workspace.filtered("").first().map(|c| c.id);
         Self {
             workspace,
@@ -845,9 +845,9 @@ impl RemoteApp {
             session_generation: 0,
             scale_to_fit: true,
             fullscreen: false,
-            qos_devices,
+            tilo_devices,
             collab_outbox: Vec::new(),
-            next_qos_session_id: 1,
+            next_tilo_session_id: 1,
             rect: Rect::ZERO,
             hits: Vec::new(),
             pointer: Point::ZERO,
@@ -890,9 +890,9 @@ impl RemoteApp {
         let mut doc = AutoCommit::new();
         match which {
             "form" => self.apply(Action::NewConnection, &mut doc),
-            "form-qos" => {
+            "form-tilo" => {
                 self.apply(Action::NewConnection, &mut doc);
-                self.apply(Action::SetKind(ConnectionKind::Qos), &mut doc);
+                self.apply(Action::SetKind(ConnectionKind::Tilo), &mut doc);
             }
             "session-ssh" => {
                 if let Some(id) = self.first_of_kind(ConnectionKind::Ssh) {
@@ -914,8 +914,8 @@ impl RemoteApp {
                     ),
                 );
             }
-            "session-qos" => {
-                self.dev_preview_session(ConnectionKind::Qos, SessionStatus::Connecting);
+            "session-tilo" => {
+                self.dev_preview_session(ConnectionKind::Tilo, SessionStatus::Connecting);
             }
             // Preview-only session states (no transport) for `--shots` grading
             // of the composed status surfaces.
@@ -929,7 +929,7 @@ impl RemoteApp {
                 );
             }
             "confirm-connect" => {
-                if let Some(id) = self.first_of_kind(ConnectionKind::Qos) {
+                if let Some(id) = self.first_of_kind(ConnectionKind::Tilo) {
                     self.request_connect(id);
                 }
             }
@@ -1032,7 +1032,7 @@ impl RemoteApp {
                 self.draft.kind = k;
                 // Keep the port in step with the kind's default unless the
                 // user already typed a custom one for this kind.
-                if k == ConnectionKind::Qos {
+                if k == ConnectionKind::Tilo {
                     self.draft.port = String::new();
                     self.draft.auth = AuthMethod::DeviceIdentity;
                 } else if self.draft.port.trim().is_empty() || self.draft.port.trim() == "0" {
@@ -1060,11 +1060,11 @@ impl RemoteApp {
             Action::Disconnect => {
                 self.disconnect_session();
             }
-            Action::PickQosDevice(i) => {
-                if let Some(d) = self.qos_devices.get(i) {
+            Action::PickTiloDevice(i) => {
+                if let Some(d) = self.tilo_devices.get(i) {
                     self.draft.name = d.name.clone();
                     self.draft.host = d.node.clone();
-                    self.draft.kind = ConnectionKind::Qos;
+                    self.draft.kind = ConnectionKind::Tilo;
                     self.draft.auth = AuthMethod::DeviceIdentity;
                     self.draft.port = String::new();
                     self.reload_inputs();
@@ -1129,7 +1129,7 @@ impl RemoteApp {
             state,
             crate::actions::REMOTE_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+            tilo_actions::ActionContext::for_action("org.tilo.Remote", "Remote", &action),
         );
     }
 
@@ -1140,7 +1140,7 @@ impl RemoteApp {
             state,
             crate::actions::REMOTE_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+            tilo_actions::ActionContext::for_action("org.tilo.Remote", "Remote", &action),
         );
         if self.selected == Some(id) {
             self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
@@ -1336,7 +1336,7 @@ impl RemoteApp {
         }
     }
 
-    /// Open the session surface for a connection. qOS always uses its real
+    /// Open the session surface for a connection. Tilo always uses its real
     /// shell-broker transport; SSH/VNC require the explicit live-session
     /// capability. A missing capability or RDP backend gets a first-class
     /// recovery surface — no socket is opened, and it is not misreported as a
@@ -1384,7 +1384,7 @@ impl RemoteApp {
     fn disconnect_session(&mut self) {
         // Dropping the live session closes the transport (the worker thread
         // sees its channel close and disconnects).
-        if let Some(LiveSession::Qos(session)) = self.live.as_ref() {
+        if let Some(LiveSession::Tilo(session)) = self.live.as_ref() {
             self.collab_outbox
                 .push(ui::collaboration::CollabRequest::CloseWorkspaceControl {
                     session_id: session.id,
@@ -1452,24 +1452,24 @@ impl RemoteApp {
                 Ok(s) => LiveSession::Vnc(s),
                 Err(e) => LiveSession::Error(e.to_string()),
             },
-            ConnectionKind::Qos => {
+            ConnectionKind::Tilo => {
                 let target = match c.host.parse::<iroh::EndpointId>() {
                     Ok(target) => *target.as_bytes(),
                     Err(_) => {
                         return LiveSession::Error(
-                            "qOS host must be an exact certified device endpoint id".into(),
+                            "Tilo host must be an exact certified device endpoint id".into(),
                         );
                     }
                 };
-                let id = self.next_qos_session_id;
-                self.next_qos_session_id = self.next_qos_session_id.saturating_add(1);
+                let id = self.next_tilo_session_id;
+                self.next_tilo_session_id = self.next_tilo_session_id.saturating_add(1);
                 self.collab_outbox
                     .push(ui::collaboration::CollabRequest::OpenWorkspaceControl {
                         session_id: id,
                         target_device: target,
                     });
-                match QosSession::new(id) {
-                    Ok(session) => LiveSession::Qos(session),
+                match TiloSession::new(id) {
+                    Ok(session) => LiveSession::Tilo(session),
                     Err(error) => LiveSession::Error(error),
                 }
             }
@@ -1507,7 +1507,7 @@ impl RemoteApp {
                     changed = true;
                 }
             }
-            Some(LiveSession::Qos(session)) => {
+            Some(LiveSession::Tilo(session)) => {
                 if let Some(frame) = session.take_latest_frame() {
                     session.size = Some((frame.width, frame.height));
                     self.fb_image = Some(PenikoImage {
@@ -1579,8 +1579,8 @@ impl RemoteApp {
         }
     }
 
-    fn qos_pointer_target(&self, p: Point) -> Option<(f64, f64)> {
-        let Some(LiveSession::Qos(session)) = self.live.as_ref() else {
+    fn tilo_pointer_target(&self, p: Point) -> Option<(f64, f64)> {
+        let Some(LiveSession::Tilo(session)) = self.live.as_ref() else {
             return None;
         };
         if session.status != SessionStatus::Connected {
@@ -1599,8 +1599,8 @@ impl RemoteApp {
         ))
     }
 
-    fn queue_qos_input(&mut self, event: runtime_collab::WorkspaceControlInput) -> bool {
-        let Some(LiveSession::Qos(session)) = self.live.as_ref() else {
+    fn queue_tilo_input(&mut self, event: runtime_collab::WorkspaceControlInput) -> bool {
+        let Some(LiveSession::Tilo(session)) = self.live.as_ref() else {
             return false;
         };
         if session.status != SessionStatus::Connected {
@@ -1614,7 +1614,7 @@ impl RemoteApp {
         true
     }
 
-    fn qos_keycode(code: KeyCode) -> Option<u32> {
+    fn tilo_keycode(code: KeyCode) -> Option<u32> {
         Some(match code {
             KeyCode::KeyA => 30,
             KeyCode::KeyB => 48,
@@ -1701,7 +1701,7 @@ impl RemoteApp {
             state,
             crate::actions::REMOTE_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+            tilo_actions::ActionContext::for_action("org.tilo.Remote", "Remote", &action),
         );
         self.selected = Some(id);
         self.screen = Screen::List;
@@ -1715,7 +1715,7 @@ impl RemoteApp {
         if self.draft.name.trim().is_empty() {
             Some(Field::Name)
         } else if self.draft.host.trim().is_empty()
-            || (self.draft.kind == ConnectionKind::Qos
+            || (self.draft.kind == ConnectionKind::Tilo
                 && !self.draft.host.trim().is_empty()
                 && !self.draft.problems().is_empty())
         {
@@ -1769,8 +1769,8 @@ impl RemoteApp {
     fn reload_inputs(&mut self) {
         self.inputs
             .get(Field::Host)
-            .set_placeholder(if self.draft.kind == ConnectionKind::Qos {
-                "certified qOS endpoint id"
+            .set_placeholder(if self.draft.kind == ConnectionKind::Tilo {
+                "certified Tilo endpoint id"
             } else {
                 Field::Host.placeholder()
             });
@@ -1868,9 +1868,9 @@ impl RemoteApp {
     }
 
     /// The last action an on-screen affordance dispatched, for the
-    /// affordance == [`ActionSpec`](qos_actions::ActionSpec) covenant test.
+    /// affordance == [`ActionSpec`](tilo_actions::ActionSpec) covenant test.
     #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 }
@@ -1882,7 +1882,7 @@ impl Default for RemoteApp {
 }
 
 // ===========================================================================
-// Seed data — a populated, lived-in connection list + qOS device roster so
+// Seed data — a populated, lived-in connection list + Tilo device roster so
 // the offline screenshot and first launch are immediately meaningful.
 // ===========================================================================
 
@@ -1950,11 +1950,11 @@ fn seed_connections_lab_and_office() -> Vec<Connection> {
             &studio_node,
             0,
             "",
-            ConnectionKind::Qos,
+            ConnectionKind::Tilo,
             AuthMethod::DeviceIdentity,
             "just now",
             Presence::Online,
-            "qOS",
+            "Tilo",
             true,
         ),
         seeded_connection(
@@ -2018,11 +2018,11 @@ fn seed_connections_remote_and_backup() -> Vec<Connection> {
             &workshop_laptop,
             0,
             "",
-            ConnectionKind::Qos,
+            ConnectionKind::Tilo,
             AuthMethod::DeviceIdentity,
             "5h ago",
             Presence::Online,
-            "qOS",
+            "Tilo",
             false,
         ),
         seeded_connection(
@@ -2040,28 +2040,28 @@ fn seed_connections_remote_and_backup() -> Vec<Connection> {
     ]
 }
 
-fn seed_qos_devices() -> Vec<QosDevice> {
+fn seed_tilo_devices() -> Vec<TiloDevice> {
     let studio_node = iroh::SecretKey::from_bytes(&[17; 32]).public().to_string();
     let workshop_laptop = iroh::SecretKey::from_bytes(&[29; 32]).public().to_string();
     let living_room_tv = iroh::SecretKey::from_bytes(&[41; 32]).public().to_string();
     let garage_pi = iroh::SecretKey::from_bytes(&[53; 32]).public().to_string();
     vec![
-        QosDevice {
+        TiloDevice {
             name: "Studio Node".into(),
             node: studio_node,
             online: true,
         },
-        QosDevice {
+        TiloDevice {
             name: "Workshop Laptop".into(),
             node: workshop_laptop,
             online: true,
         },
-        QosDevice {
+        TiloDevice {
             name: "Living Room TV".into(),
             node: living_room_tv,
             online: true,
         },
-        QosDevice {
+        TiloDevice {
             name: "Garage Pi".into(),
             node: garage_pi,
             online: false,
@@ -2093,7 +2093,7 @@ impl Widget for RemoteApp {
         let ui::collaboration::CollabEvent::WorkspaceControl { session_id, event } = event else {
             return;
         };
-        let Some(LiveSession::Qos(session)) = self.live.as_mut() else {
+        let Some(LiveSession::Tilo(session)) = self.live.as_mut() else {
             return;
         };
         if session.id != *session_id {
@@ -2139,10 +2139,10 @@ impl Widget for RemoteApp {
 
     /// Publish each saved connection as a Ctrl+K resource (rename / favourite /
     /// delete) so the shell's one action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
         if let Some(id) = self.session_for
             && let Some(connection) = self.workspace.get(id)
         {
@@ -2172,13 +2172,13 @@ impl Widget for RemoteApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -2280,14 +2280,14 @@ impl Widget for RemoteApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != qos_actions::OperationKind::Effect {
+        if kind != tilo_actions::OperationKind::Effect {
             return Ok(None);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -2329,7 +2329,7 @@ impl Widget for RemoteApp {
                     }
                     Some(SessionStatus::Connected) => {
                         Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                            qos_actions::ActionOutput::default(),
+                            tilo_actions::ActionOutput::default(),
                         )))
                     }
                     Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
@@ -2370,7 +2370,7 @@ impl Widget for RemoteApp {
                     return Ok(None);
                 }
                 Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    qos_actions::ActionOutput::default(),
+                    tilo_actions::ActionOutput::default(),
                 )))
             }
         }
@@ -2382,11 +2382,11 @@ impl Widget for RemoteApp {
     )]
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         let pending = self.pending_resource_operation.as_ref()?;
         if cancellation_requested
             && let PendingResourceOperation::Connect {
@@ -2406,7 +2406,7 @@ impl Widget for RemoteApp {
                 self.disconnect_session();
             }
             self.pending_resource_operation = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("remote connection attempt cancelled".into()),
             });
@@ -2420,9 +2420,9 @@ impl Widget for RemoteApp {
                 if self.session_for != Some(*connection_id)
                     || self.session_generation != *session_generation
                 {
-                    qos_actions::InvocationUpdate::Failed {
+                    tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "remote.session_replaced".into(),
                             message: "the connection attempt was superseded by a newer session"
                                 .into(),
@@ -2434,15 +2434,15 @@ impl Widget for RemoteApp {
                     match self.live.as_ref().map(LiveSession::status) {
                         Some(SessionStatus::Connecting) => return None,
                         Some(SessionStatus::Connected) => {
-                            qos_actions::InvocationUpdate::Succeeded {
+                            tilo_actions::InvocationUpdate::Succeeded {
                                 invocation,
-                                output: qos_actions::ActionOutput::default(),
+                                output: tilo_actions::ActionOutput::default(),
                             }
                         }
                         Some(SessionStatus::Failed(message)) => {
-                            qos_actions::InvocationUpdate::Failed {
+                            tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "remote.connect_failed".into(),
                                     message,
                                     details: None,
@@ -2451,9 +2451,9 @@ impl Widget for RemoteApp {
                             }
                         }
                         Some(SessionStatus::Unavailable(message)) => {
-                            qos_actions::InvocationUpdate::Failed {
+                            tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "remote.transport_unavailable".into(),
                                     message,
                                     details: None,
@@ -2462,9 +2462,9 @@ impl Widget for RemoteApp {
                             }
                         }
                         Some(SessionStatus::Closed) | None => {
-                            qos_actions::InvocationUpdate::Failed {
+                            tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "remote.connection_closed".into(),
                                     message: "remote connection closed before it became ready"
                                         .into(),
@@ -2485,9 +2485,9 @@ impl Widget for RemoteApp {
                 if self.session_for != Some(*connection_id)
                     || self.session_generation != *session_generation
                 {
-                    qos_actions::InvocationUpdate::Failed {
+                    tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "remote.session_replaced".into(),
                             message: "the SSH session ended before input delivery was acknowledged"
                                 .into(),
@@ -2497,13 +2497,13 @@ impl Widget for RemoteApp {
                     }
                 } else {
                     match acknowledgement.try_recv() {
-                        Ok(Ok(())) => qos_actions::InvocationUpdate::Succeeded {
+                        Ok(Ok(())) => tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
-                            output: qos_actions::ActionOutput::default(),
+                            output: tilo_actions::ActionOutput::default(),
                         },
-                        Ok(Err(message)) => qos_actions::InvocationUpdate::Failed {
+                        Ok(Err(message)) => tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "remote.input_failed".into(),
                                 message,
                                 details: None,
@@ -2512,9 +2512,9 @@ impl Widget for RemoteApp {
                         },
                         Err(std::sync::mpsc::TryRecvError::Empty) => return None,
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            qos_actions::InvocationUpdate::Failed {
+                            tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "remote.input_worker_lost".into(),
                                     message: "remote input worker stopped before acknowledgement"
                                         .into(),
@@ -2829,7 +2829,7 @@ impl Widget for RemoteApp {
             }
             WindowEvent::MouseInput { state, button, .. }
                 if self.pending_confirmation.is_none()
-                    && self.qos_pointer_target(self.pointer).is_some() =>
+                    && self.tilo_pointer_target(self.pointer).is_some() =>
             {
                 let button = match button {
                     MouseButton::Left => Some(272),
@@ -2839,11 +2839,11 @@ impl Widget for RemoteApp {
                 };
                 if let Some(button) = button {
                     if *state == ElementState::Pressed && button == 272 {
-                        self.queue_qos_input(
+                        self.queue_tilo_input(
                             runtime_collab::WorkspaceControlInput::KeyboardFocus { focused: true },
                         );
                     }
-                    self.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerButton {
+                    self.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerButton {
                         button,
                         pressed: *state == ElementState::Pressed,
                     });
@@ -2891,11 +2891,11 @@ impl Widget for RemoteApp {
                     },
                 ..
             } if self.pending_confirmation.is_none()
-                && matches!(self.live.as_ref(), Some(LiveSession::Qos(session)) if session.status == SessionStatus::Connected)
+                && matches!(self.live.as_ref(), Some(LiveSession::Tilo(session)) if session.status == SessionStatus::Connected)
                 && !(self.fullscreen && *code == KeyCode::Escape) =>
             {
-                if let Some(keycode) = Self::qos_keycode(*code) {
-                    self.queue_qos_input(runtime_collab::WorkspaceControlInput::Key {
+                if let Some(keycode) = Self::tilo_keycode(*code) {
+                    self.queue_tilo_input(runtime_collab::WorkspaceControlInput::Key {
                         keycode,
                         pressed: *key_state == ElementState::Pressed,
                         modifiers: 0,
@@ -3074,7 +3074,7 @@ impl Widget for RemoteApp {
                     screen.push(
                         AccessNode::new(Role::StaticText)
                             .with_name(if self.workspace.connections().is_empty() {
-                                "No machines yet. Add a connection to reach it over SSH, VNC, or the qOS relay."
+                                "No machines yet. Add a connection to reach it over SSH, VNC, or the Tilo relay."
                             } else {
                                 "No machines match your search."
                             })
@@ -3116,18 +3116,18 @@ impl Widget for RemoteApp {
                 if self.draft.kind == ConnectionKind::Rdp {
                     children.push(
                         AccessNode::new(Role::StaticText)
-                            .with_name("Legacy RDP profile. RDP has no client backend in this build; select SSH, VNC, or qOS to migrate this profile.")
+                            .with_name("Legacy RDP profile. RDP has no client backend in this build; select SSH, VNC, or Tilo to migrate this profile.")
                             .with_live(Politeness::Polite)
                             .with_hashed_key("remote.form.legacy-rdp"),
                     );
                 }
-                if self.draft.kind == ConnectionKind::Qos {
+                if self.draft.kind == ConnectionKind::Tilo {
                     children.push(
                         AccessNode::new(Role::List)
-                            .with_name("Discovered qOS devices")
+                            .with_name("Discovered Tilo devices")
                             .with_hashed_key("remote.form.devices")
                             .with_children(
-                                self.qos_devices
+                                self.tilo_devices
                                     .iter()
                                     .enumerate()
                                     .map(|(index, device)| {
@@ -3141,7 +3141,7 @@ impl Widget for RemoteApp {
                                             })
                                             .with_action_target(format!("remote.device:{index}"))
                                             .with_optional_bounds(
-                                                self.action_bounds(Action::PickQosDevice(index)),
+                                                self.action_bounds(Action::PickTiloDevice(index)),
                                             )
                                             .with_state(
                                                 focusable()
@@ -3154,16 +3154,16 @@ impl Widget for RemoteApp {
                     children.push(
                         AccessNode::new(Role::StaticText)
                             .with_name(
-                                "Authentication: qOS device identity. No password is stored or requested.",
+                                "Authentication: Tilo device identity. No password is stored or requested.",
                             )
-                            .with_hashed_key("remote.form.qos-authentication"),
+                            .with_hashed_key("remote.form.tilo-authentication"),
                     );
                 }
                 for (field, name) in [
                     (Field::Name, "Connection name"),
                     (
                         Field::Host,
-                        if self.draft.kind == ConnectionKind::Qos {
+                        if self.draft.kind == ConnectionKind::Tilo {
                             "Device node"
                         } else {
                             "Host name or IP address"
@@ -3173,7 +3173,7 @@ impl Widget for RemoteApp {
                     (Field::User, "User name"),
                     (Field::Group, "Group"),
                 ] {
-                    if (self.draft.kind == ConnectionKind::Qos
+                    if (self.draft.kind == ConnectionKind::Tilo
                         && matches!(field, Field::Port | Field::User | Field::Group))
                         || (self.draft.kind == ConnectionKind::Vnc && field == Field::User)
                     {
@@ -3188,7 +3188,7 @@ impl Widget for RemoteApp {
                             .with_state(focusable().focused(self.focus == Some(field))),
                     );
                 }
-                if self.draft.kind != ConnectionKind::Qos {
+                if self.draft.kind != ConnectionKind::Tilo {
                     children.push(
                         AccessNode::new(Role::Group)
                             .with_name("Authentication")
@@ -3463,7 +3463,7 @@ impl Widget for RemoteApp {
             .and_then(|value| value.parse::<usize>().ok())
             && matches!(action, A11yAction::Activate | A11yAction::Focus)
         {
-            self.apply(Action::PickQosDevice(index), state);
+            self.apply(Action::PickTiloDevice(index), state);
             return true;
         }
         if let Some(rest) = target.strip_prefix("remote.connection:") {
@@ -3568,8 +3568,8 @@ impl RemoteApp {
             // Stream pointer motion to a live remote desktop.
             if self.pending_confirmation.is_none() {
                 self.forward_vnc_pointer(p);
-                if let Some((x, y)) = self.qos_pointer_target(p) {
-                    self.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerMotion {
+                if let Some((x, y)) = self.tilo_pointer_target(p) {
+                    self.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerMotion {
                         x,
                         y,
                     });
@@ -4424,7 +4424,7 @@ impl RemoteApp {
         );
         y += 30.0;
 
-        let sub = "Add one to reach it over SSH, VNC, or the qOS relay.";
+        let sub = "Add one to reach it over SSH, VNC, or the Tilo relay.";
         let (sw, _) = text_renderer.measure(sub, 13.5, None);
         text_renderer.draw_text(
             scene,
@@ -4853,7 +4853,7 @@ impl RemoteApp {
             y,
         );
         let y =
-            self.draw_form_qos_picker(scene, transform, text_renderer, theme, card_x, card_w, y);
+            self.draw_form_tilo_picker(scene, transform, text_renderer, theme, card_x, card_w, y);
         let y = self.draw_form_name_field(
             scene,
             transform,
@@ -4978,7 +4978,7 @@ impl RemoteApp {
 
     /// Legacy RDP profiles are deliberately editable rather than discarded.
     /// Make their migration path explicit: the selector offers only real
-    /// backends, so choosing SSH, VNC, or qOS replaces the unavailable kind.
+    /// backends, so choosing SSH, VNC, or Tilo replaces the unavailable kind.
     #[allow(
         clippy::too_many_arguments,
         reason = "this small drawing section receives the same scene/render context and geometry cursor as the adjacent form sections"
@@ -5023,7 +5023,7 @@ impl RemoteApp {
         );
         text_renderer.draw_text(
             scene,
-            "RDP has no client backend here. Select SSH, VNC, or qOS to migrate this profile.",
+            "RDP has no client backend here. Select SSH, VNC, or Tilo to migrate this profile.",
             11.5,
             tokens.colors.text_dim,
             transform * Affine::translate((note.x0 + 12.0, note.y0 + 29.0)),
@@ -5032,7 +5032,7 @@ impl RemoteApp {
         y + 66.0
     }
 
-    /// `draw_form`'s qOS device picker — a no-op (returns `y` unchanged) for
+    /// `draw_form`'s Tilo device picker — a no-op (returns `y` unchanged) for
     /// any other protocol kind.
     #[allow(
         clippy::too_many_arguments,
@@ -5040,7 +5040,7 @@ impl RemoteApp {
                   (x/width) and running layout cursor `y` through the \
                   discovered-devices list"
     )]
-    fn draw_form_qos_picker(
+    fn draw_form_tilo_picker(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -5052,7 +5052,7 @@ impl RemoteApp {
     ) -> f64 {
         let tokens = &theme.tokens;
         let mut y = y;
-        if self.draft.kind == ConnectionKind::Qos {
+        if self.draft.kind == ConnectionKind::Tilo {
             y = Self::draw_form_label(
                 scene,
                 transform,
@@ -5060,9 +5060,9 @@ impl RemoteApp {
                 theme,
                 card_x,
                 y,
-                "Discovered qOS devices",
+                "Discovered Tilo devices",
             );
-            for (i, d) in self.qos_devices.clone().into_iter().enumerate() {
+            for (i, d) in self.tilo_devices.clone().into_iter().enumerate() {
                 let chip = Rect::new(card_x, y, card_x + card_w, y + 36.0);
                 let hovered = chip.contains(self.pointer);
                 let rr = RoundedRect::from_rect(chip, 8.0);
@@ -5107,7 +5107,7 @@ impl RemoteApp {
                     None,
                     TextWeight::Medium,
                 );
-                let compact_node = crate::model::compact_qos_endpoint(&d.node);
+                let compact_node = crate::model::compact_tilo_endpoint(&d.node);
                 text_renderer.draw_text(
                     scene,
                     &compact_node,
@@ -5116,7 +5116,7 @@ impl RemoteApp {
                     transform * Affine::translate((chip.x1 - 160.0, chip.center().y - 7.0)),
                     None,
                 );
-                self.push_hit(chip, Action::PickQosDevice(i));
+                self.push_hit(chip, Action::PickTiloDevice(i));
                 y += 44.0;
             }
             y += 4.0;
@@ -5158,7 +5158,7 @@ impl RemoteApp {
         y
     }
 
-    /// `draw_form`'s Host + Port row (Port hidden for qOS).
+    /// `draw_form`'s Host + Port row (Port hidden for Tilo).
     #[allow(
         clippy::too_many_arguments,
         reason = "one draw_form section threading the shared card geometry \
@@ -5175,7 +5175,7 @@ impl RemoteApp {
         card_w: f64,
         y: f64,
     ) -> f64 {
-        let host_label = if self.draft.kind == ConnectionKind::Qos {
+        let host_label = if self.draft.kind == ConnectionKind::Tilo {
             "Device node"
         } else {
             "Host"
@@ -5189,8 +5189,8 @@ impl RemoteApp {
             y,
             host_label,
         );
-        let qos = self.draft.kind == ConnectionKind::Qos;
-        let host_w = if qos { card_w } else { card_w - 130.0 };
+        let tilo = self.draft.kind == ConnectionKind::Tilo;
+        let host_w = if tilo { card_w } else { card_w - 130.0 };
         let host = Rect::new(card_x, y, card_x + host_w, y + 40.0);
         self.draw_field(
             scene,
@@ -5202,7 +5202,7 @@ impl RemoteApp {
             Field::Host,
         );
         self.push_hit(host, Action::FocusField(Field::Host));
-        if !qos {
+        if !tilo {
             let port = Rect::new(card_x + host_w + 12.0, y, card_x + card_w, y + 40.0);
             self.draw_field(
                 scene,
@@ -5219,8 +5219,8 @@ impl RemoteApp {
         y
     }
 
-    /// `draw_form`'s User + Group row for non-qOS kinds, or the implicit-auth
-    /// info card for qOS.
+    /// `draw_form`'s User + Group row for non-Tilo kinds, or the implicit-auth
+    /// info card for Tilo.
     #[allow(
         clippy::too_many_arguments,
         clippy::too_many_lines,
@@ -5240,10 +5240,10 @@ impl RemoteApp {
         y: f64,
     ) -> f64 {
         let tokens = &theme.tokens;
-        let qos = self.draft.kind == ConnectionKind::Qos;
+        let tilo = self.draft.kind == ConnectionKind::Tilo;
         let mut y = y;
-        if qos {
-            // qOS: authentication is implicit via device identity.
+        if tilo {
+            // Tilo: authentication is implicit via device identity.
             y = Self::draw_form_label(
                 scene,
                 transform,
@@ -5263,7 +5263,7 @@ impl RemoteApp {
             );
             text_renderer.draw_text(
                 scene,
-                "Authenticated by qOS device identity over the P2P fabric — no password needed.",
+                "Authenticated by Tilo device identity over the P2P fabric — no password needed.",
                 12.5,
                 tokens.colors.text_dim,
                 transform * Affine::translate((info.x0 + 12.0, info.center().y - 7.0)),
@@ -5559,7 +5559,7 @@ impl RemoteApp {
         };
 
         // No live transport object: the honest "not connected" card. Only
-        // app-owned SSH/VNC transports use the developer gate; production qOS
+        // app-owned SSH/VNC transports use the developer gate; production Tilo
         // control always creates a real broker session or an honest error.
         let Some(status) = self.live.as_ref().map(LiveSession::status) else {
             self.draw_status_session(
@@ -5583,7 +5583,7 @@ impl RemoteApp {
         // Live path: reflect the real transport state.
         match status {
             SessionStatus::Connecting => {
-                let (title, detail) = if c.kind == ConnectionKind::Qos {
+                let (title, detail) = if c.kind == ConnectionKind::Tilo {
                     (
                         "Waiting for consent…",
                         "Opening an authenticated route to the exact target, then waiting for it to share a workspace surface…",
@@ -5627,12 +5627,12 @@ impl RemoteApp {
             SessionStatus::Unavailable(detail) => {
                 let recovery = match c.kind {
                     ConnectionKind::Rdp => {
-                        "Edit this saved profile to use SSH, VNC, or qOS device control."
+                        "Edit this saved profile to use SSH, VNC, or Tilo device control."
                     }
                     ConnectionKind::Ssh | ConnectionKind::Vnc => {
-                        "Use qOS device control now, or install Remote with live network and host-key trust access."
+                        "Use Tilo device control now, or install Remote with live network and host-key trust access."
                     }
-                    ConnectionKind::Qos => "No connection was attempted.",
+                    ConnectionKind::Tilo => "No connection was attempted.",
                 };
                 self.draw_status_session(
                     scene,
@@ -6157,7 +6157,7 @@ impl RemoteApp {
         );
         let (nw, _) = text_renderer.measure_weighted(&c.name, 14.0, None, TextWeight::Semibold);
         // Kind chip + connection label after the name.
-        let mode = if c.kind == ConnectionKind::Qos {
+        let mode = if c.kind == ConnectionKind::Tilo {
             format!("· {} · workspace stream", c.address())
         } else if c.kind.is_terminal() {
             format!("· {} · shell", c.address())
@@ -6460,7 +6460,7 @@ fn kind_color(kind: ConnectionKind, theme: &Theme) -> Color {
         ConnectionKind::Ssh => c.semantic.success,
         ConnectionKind::Vnc => c.semantic.info,
         ConnectionKind::Rdp => c.semantic.warning,
-        ConnectionKind::Qos => c.accent[6],
+        ConnectionKind::Tilo => c.accent[6],
     }
 }
 
@@ -6468,7 +6468,7 @@ fn kind_color(kind: ConnectionKind, theme: &Theme) -> Color {
 /// kind shows.
 fn next_field(cur: Option<Field>, kind: ConnectionKind) -> Field {
     let order: Vec<Field> = match kind {
-        ConnectionKind::Qos => vec![Field::Name, Field::Host],
+        ConnectionKind::Tilo => vec![Field::Name, Field::Host],
         ConnectionKind::Vnc => vec![Field::Name, Field::Host, Field::Port, Field::Group],
         ConnectionKind::Ssh | ConnectionKind::Rdp => {
             vec![
@@ -6648,7 +6648,7 @@ mod tests {
             "live app starts empty"
         );
         assert!(
-            app.qos_devices.is_empty(),
+            app.tilo_devices.is_empty(),
             "no fabricated discovered devices"
         );
         assert!(app.selected.is_none());
@@ -6720,7 +6720,7 @@ mod tests {
             .connections()
             .iter()
             .find(|connection| connection_readiness(connection).can_connect())
-            .expect("demo has a production-available qOS connection")
+            .expect("demo has a production-available Tilo connection")
             .id;
         let tree = app.accessibility().expect("Remote window semantics");
         for target in [
@@ -6787,14 +6787,14 @@ mod tests {
     fn view_resource_operations_open_the_exact_requested_ui() {
         let mut app = RemoteApp::new_demo();
         let id = app.workspace.connections()[0].id;
-        let edit = qos_actions::EncodedAction::encode_operation(
+        let edit = tilo_actions::EncodedAction::encode_operation(
             crate::actions::REMOTE_OPERATION_TYPE,
             &crate::actions::RemoteOperation::EditConnection { connection_id: id },
         )
         .expect("serializable view operation");
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 &edit.type_id,
                 &edit.payload,
                 &doc(),
@@ -6806,7 +6806,7 @@ mod tests {
 
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 &edit.type_id,
                 &edit.payload,
                 &doc(),
@@ -7012,8 +7012,8 @@ mod tests {
             .workspace
             .connections()
             .iter()
-            .find(|connection| connection.kind == ConnectionKind::Qos)
-            .expect("demo qOS connection")
+            .find(|connection| connection.kind == ConnectionKind::Tilo)
+            .expect("demo Tilo connection")
             .id;
 
         app.apply(Action::RequestConnect(id), &mut doc());
@@ -7036,8 +7036,8 @@ mod tests {
             .workspace
             .connections()
             .iter()
-            .find(|connection| connection.kind == ConnectionKind::Qos)
-            .expect("demo qOS connection")
+            .find(|connection| connection.kind == ConnectionKind::Tilo)
+            .expect("demo Tilo connection")
             .id;
         app.apply(Action::RequestConnect(id), &mut doc());
         app.workspace.get_mut(id).expect("profile").host =
@@ -7122,21 +7122,21 @@ mod tests {
     }
 
     #[test]
-    fn connect_qos_starts_the_production_broker_transport_without_dev_gate() {
+    fn connect_tilo_starts_the_production_broker_transport_without_dev_gate() {
         let mut app = RemoteApp::new_demo();
         let target = iroh::SecretKey::generate().public();
         let id = app
             .workspace
             .connections()
             .iter()
-            .find(|connection| connection.kind == ConnectionKind::Qos)
-            .expect("demo qOS connection")
+            .find(|connection| connection.kind == ConnectionKind::Tilo)
+            .expect("demo Tilo connection")
             .id;
-        app.workspace.get_mut(id).expect("qOS connection").host = target.to_string();
+        app.workspace.get_mut(id).expect("Tilo connection").host = target.to_string();
 
         app.apply(Action::Connect(id), &mut doc());
 
-        assert!(matches!(app.live, Some(LiveSession::Qos(_))));
+        assert!(matches!(app.live, Some(LiveSession::Tilo(_))));
         assert!(matches!(
             app.collab_outbox.as_slice(),
             [ui::collaboration::CollabRequest::OpenWorkspaceControl { target_device, .. }]
@@ -7145,21 +7145,21 @@ mod tests {
     }
 
     #[test]
-    fn qos_session_setup_uses_authenticated_broker_transport() {
+    fn tilo_session_setup_uses_authenticated_broker_transport() {
         let mut app = RemoteApp::new_demo();
         let mut connection = app
             .workspace
             .connections()
             .iter()
-            .find(|connection| connection.kind == ConnectionKind::Qos)
-            .expect("demo qOS connection")
+            .find(|connection| connection.kind == ConnectionKind::Tilo)
+            .expect("demo Tilo connection")
             .clone();
         let target = iroh::SecretKey::generate().public();
         connection.host = target.to_string();
         let session = app.start_live(&connection);
         assert!(matches!(
             session,
-            LiveSession::Qos(QosSession {
+            LiveSession::Tilo(TiloSession {
                 status: SessionStatus::Connecting,
                 ..
             })
@@ -7172,25 +7172,25 @@ mod tests {
     }
 
     #[test]
-    fn qos_widget_never_queues_input_before_consent_or_after_revocation() {
+    fn tilo_widget_never_queues_input_before_consent_or_after_revocation() {
         let mut app = RemoteApp::new_demo();
         let mut connection = app
             .workspace
             .connections()
             .iter()
-            .find(|connection| connection.kind == ConnectionKind::Qos)
-            .expect("demo qOS connection")
+            .find(|connection| connection.kind == ConnectionKind::Tilo)
+            .expect("demo Tilo connection")
             .clone();
         connection.host = iroh::SecretKey::generate().public().to_string();
         let live = app.start_live(&connection);
         app.live = Some(live);
         let session_id = match app.live.as_ref() {
-            Some(LiveSession::Qos(session)) => session.id,
-            _ => panic!("qOS session"),
+            Some(LiveSession::Tilo(session)) => session.id,
+            _ => panic!("Tilo session"),
         };
         app.collab_outbox.clear();
         assert!(
-            !app.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerMotion {
+            !app.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerMotion {
                 x: 1.0,
                 y: 2.0
             })
@@ -7206,7 +7206,7 @@ mod tests {
             },
         });
         assert!(
-            app.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerMotion {
+            app.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerMotion {
                 x: 1.0,
                 y: 2.0
             })
@@ -7220,7 +7220,7 @@ mod tests {
             ),
         });
         assert!(
-            !app.queue_qos_input(runtime_collab::WorkspaceControlInput::PointerMotion {
+            !app.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerMotion {
                 x: 1.0,
                 y: 2.0
             })
@@ -7229,21 +7229,21 @@ mod tests {
     }
 
     #[test]
-    fn pick_qos_device_fills_draft() {
+    fn pick_tilo_device_fills_draft() {
         let mut app = RemoteApp::new_demo();
         app.apply(Action::NewConnection, &mut doc());
-        app.apply(Action::SetKind(ConnectionKind::Qos), &mut doc());
-        app.apply(Action::PickQosDevice(0), &mut doc());
-        assert_eq!(app.draft.kind, ConnectionKind::Qos);
+        app.apply(Action::SetKind(ConnectionKind::Tilo), &mut doc());
+        app.apply(Action::PickTiloDevice(0), &mut doc());
+        assert_eq!(app.draft.kind, ConnectionKind::Tilo);
         assert!(!app.draft.host.is_empty());
         assert_eq!(app.draft.auth, AuthMethod::DeviceIdentity);
     }
 
     #[test]
-    fn set_kind_qos_clears_port_and_sets_device_auth() {
+    fn set_kind_tilo_clears_port_and_sets_device_auth() {
         let mut app = RemoteApp::new();
         app.apply(Action::NewConnection, &mut doc());
-        app.apply(Action::SetKind(ConnectionKind::Qos), &mut doc());
+        app.apply(Action::SetKind(ConnectionKind::Tilo), &mut doc());
         assert!(app.draft.port.is_empty());
         assert_eq!(app.draft.auth, AuthMethod::DeviceIdentity);
     }
@@ -7387,11 +7387,11 @@ mod tests {
     }
 
     #[test]
-    fn dev_set_screen_qos_form_selects_qos_kind() {
+    fn dev_set_screen_tilo_form_selects_tilo_kind() {
         let mut app = RemoteApp::new();
-        app.dev_set_screen("form-qos");
+        app.dev_set_screen("form-tilo");
         assert!(matches!(app.screen, Screen::Form { .. }));
-        assert_eq!(app.draft.kind, ConnectionKind::Qos);
+        assert_eq!(app.draft.kind, ConnectionKind::Tilo);
     }
 
     #[test]
@@ -7417,7 +7417,7 @@ mod tests {
     #[test]
     fn unavailable_connect_operation_reports_a_distinct_non_retryable_result() {
         let mut app = RemoteApp::new_demo();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.live = Some(LiveSession::Unavailable {
             readiness: TransportReadiness::BackendUnavailable,
             kind: ConnectionKind::Rdp,
@@ -7435,7 +7435,7 @@ mod tests {
             .expect("unavailable transport reaches a terminal operation result");
         assert!(matches!(
             update,
-            qos_actions::InvocationUpdate::Failed { error, .. }
+            tilo_actions::InvocationUpdate::Failed { error, .. }
                 if error.code == "remote.transport_unavailable" && !error.retryable
         ));
     }
@@ -7443,8 +7443,8 @@ mod tests {
     #[test]
     fn cancelling_connect_settles_only_the_matching_session_generation() {
         let mut app = RemoteApp::new_demo();
-        let id = app.first_of_kind(ConnectionKind::Qos).unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
+        let invocation = tilo_actions::InvocationId::new();
         app.session_for = Some(id);
         app.session_generation = 42;
         app.live = Some(LiveSession::Preview(SessionStatus::Connecting));
@@ -7456,14 +7456,14 @@ mod tests {
 
         assert!(matches!(
             app.poll_resource_operation(invocation, true, &doc(), &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
         assert!(app.live.is_none());
         assert!(app.pending_resource_operation.is_none());
 
         // A delayed cancel for an older generation reports terminally but
         // cannot tear down a replacement session for the same saved profile.
-        let stale = qos_actions::InvocationId::new();
+        let stale = tilo_actions::InvocationId::new();
         app.session_for = Some(id);
         app.session_generation = 99;
         app.live = Some(LiveSession::Preview(SessionStatus::Connecting));
@@ -7474,7 +7474,7 @@ mod tests {
         });
         assert!(matches!(
             app.poll_resource_operation(stale, true, &doc(), &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
         assert!(
             app.live.is_some(),
@@ -7485,7 +7485,7 @@ mod tests {
     #[test]
     fn exhausted_session_generation_fails_closed_without_reuse() {
         let mut app = RemoteApp::new_demo();
-        let id = app.first_of_kind(ConnectionKind::Qos).unwrap();
+        let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
         app.session_generation = u64::MAX;
 
         app.open_session(id);
@@ -7504,7 +7504,7 @@ mod tests {
             ("session-ssh", ConnectionKind::Ssh),
             ("session-vnc", ConnectionKind::Vnc),
             ("session-rdp", ConnectionKind::Rdp),
-            ("session-qos", ConnectionKind::Qos),
+            ("session-tilo", ConnectionKind::Tilo),
         ] {
             let mut app = RemoteApp::new_demo();
             app.dev_set_screen(which);
@@ -7517,7 +7517,7 @@ mod tests {
         }
 
         let mut app = RemoteApp::new_demo();
-        app.dev_set_screen("session-qos");
+        app.dev_set_screen("session-tilo");
         assert!(matches!(
             app.live,
             Some(LiveSession::Preview(SessionStatus::Connecting))

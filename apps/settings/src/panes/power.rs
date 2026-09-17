@@ -362,10 +362,10 @@ impl PowerPane {
                     "This laptop exposes a discrete conservation mode, so only its real hardware choices are offered."
                 }
                 ChargeCapBackend::HuaweiWmi => {
-                    "The platform uses paired start/end thresholds; qOS preserves a safe charging window."
+                    "The platform uses paired start/end thresholds; Tilo preserves a safe charging window."
                 }
                 ChargeCapBackend::PowerSupply if capability.supports_start_threshold => {
-                    "The kernel exposes start and stop thresholds; qOS adjusts the start only when required by a lower cap."
+                    "The kernel exposes start and stop thresholds; Tilo adjusts the start only when required by a lower cap."
                 }
                 ChargeCapBackend::PowerSupply => {
                     "The kernel exposes a hardware stop threshold. A lower cap can reduce long-term battery wear."
@@ -526,7 +526,7 @@ impl PowerPane {
         let mut p = SystemPrefs::load();
         p.power = self.prefs;
         if let Err(e) = p.save() {
-            warn!(target: "qos::settings", op = "power_prefs_save", error = %e, "failed to persist power prefs");
+            warn!(target: "tilo::settings", op = "power_prefs_save", error = %e, "failed to persist power prefs");
         }
     }
 
@@ -588,7 +588,7 @@ impl PowerPane {
                 Err(e) => {
                     let _ = state.put(root, PROFILE_KEY, profile_label(self.last_profile));
                     self.profile_notice = Some(format!("Could not change the power profile: {e}"));
-                    warn!(target: "qos::settings", op = "set_power_profile", error = %e, "power pane dispatch failed");
+                    warn!(target: "tilo::settings", op = "set_power_profile", error = %e, "power pane dispatch failed");
                 }
             }
         } else {
@@ -627,7 +627,7 @@ impl PowerPane {
             Err(e) => {
                 self.charge_notice = Some(format!("Charge cap was not applied: {e}"));
                 self.operation_finished(limit, Err(format!("Charge cap was not applied: {e}")));
-                warn!(target: "qos::settings", op = "set_charge_limit", error = %e, "battery cap failed");
+                warn!(target: "tilo::settings", op = "set_charge_limit", error = %e, "battery cap failed");
             }
         }
     }
@@ -853,7 +853,7 @@ impl Widget for PowerPane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         let pending = std::mem::take(&mut self.commit_context_pending)
             || self
                 .composed
@@ -936,7 +936,7 @@ mod tests {
     #[test]
     fn reads_battery_from_sysfs_tree() {
         // Build a throwaway /sys/class/power_supply-like tree.
-        let base = std::env::temp_dir().join(format!("qos-power-test-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("tilo-power-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let bat = base.join("BAT0");
         let ac = base.join("ADP1");
@@ -961,7 +961,7 @@ mod tests {
 
     #[test]
     fn missing_battery_degrades_honestly() {
-        let base = std::env::temp_dir().join(format!("qos-power-empty-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("tilo-power-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let info = BatteryInfo::from_root(&base);

@@ -1,7 +1,7 @@
 //! `guard`, `scan` and `quarantine` — and what they honestly are.
 //!
 //! The reference runtime backs these with a resident daemon that carries
-//! signatures. qOS has no such thing, and this module does not pretend to
+//! signatures. Tilo has no such thing, and this module does not pretend to
 //! one — it reports and acts on facts the runtime actually knows:
 //!
 //! - `guard status` — the enforcement really in place right now, read back

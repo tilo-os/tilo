@@ -35,22 +35,22 @@ struct QpkgHeader {
 /// Same TOML shape as the pkg crate's fixtures.
 pub const SAMPLE_APP_MANIFEST_TEMPLATE: &str = r#"
 [package]
-id          = "dev.qos.editor"
+id          = "dev.tilo.editor"
 version     = "1.4.2"
 kind        = "app"
-runtime     = "qos-runtime/2025.06"
+runtime     = "tilo-runtime/2025.06"
 
 [publisher]
 identity    = "ed25519:<HEX>"
 signature   = ""
 
 [[trust.attested_by]]
-attestor    = "qos-curated/2025.06"
+attestor    = "tilo-curated/2025.06"
 claim       = "deadbeef"
 
 [sandbox]
 namespaces  = ["user", "pid", "uts", "ipc", "mount", "net"]
-seccomp     = "qos-default"
+seccomp     = "tilo-default"
 landlock    = "strict"
 
 [sandbox.net]
@@ -61,7 +61,7 @@ file-chooser = "via-host"
 
 [sandbox.services]
 collab      = "required@1"
-qos-fs      = "required@1"
+tilo-fs      = "required@1"
 spellcheck  = "optional@1"
 
 [entrypoint]

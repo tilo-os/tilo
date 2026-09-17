@@ -1,4 +1,4 @@
-//! qOS's single broker for launching Windows software.
+//! Tilo's single broker for launching Windows software.
 //!
 //! The catalogue chooses a route, but grants no authority. This service
 //! resolves the ordinary [`collab_types::caps::CapOverride`] records through
