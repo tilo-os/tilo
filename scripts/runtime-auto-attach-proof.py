@@ -438,6 +438,12 @@ def terminate_pid(pid):
     terminate_owned_pids([pid])
 
 
+def remove_profile(profile):
+    shutil.rmtree(profile)
+    if profile.exists() or profile.is_symlink():
+        raise ProofError(f"runtime profile remains after cleanup: {profile}")
+
+
 def proof_environment(profile, app_state):
     env = {key: value for key, value in os.environ.items() if not key.startswith(("QOS_", "QUICK_"))}
     env.update(
@@ -612,9 +618,14 @@ def run_proof(repo, root, host_source_snapshot):
         cleanup["remaining"] = processes_for_pids(known)
         if (profile / "daemon.log").exists():
             shutil.copy2(profile / "daemon.log", root / "daemon.log")
+        try:
+            remove_profile(profile)
+            cleanup["profile_removed"] = True
+        except Exception as error:
+            cleanup["profile_removed"] = False
+            cleanup["profile_cleanup_error"] = repr(error)
         save(root / "cleanup.json", cleanup)
-        shutil.rmtree(profile, ignore_errors=True)
-    if cleanup["mcp_exit"] != 0 or cleanup["remaining"]:
+    if cleanup["mcp_exit"] != 0 or cleanup["remaining"] or not cleanup["profile_removed"]:
         raise ProofError(f"cleanup incomplete: {cleanup}")
     if proof is None:
         raise ProofError("proof did not reach its success gate")
@@ -624,11 +635,22 @@ def run_proof(repo, root, host_source_snapshot):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=pathlib.Path, required=True)
+    parser.add_argument("--output", type=pathlib.Path)
     parser.add_argument("--repo", type=pathlib.Path, default=pathlib.Path(__file__).resolve().parents[1])
-    parser.add_argument("--host-source-snapshot", type=pathlib.Path, required=True)
+    parser.add_argument("--host-source-snapshot", type=pathlib.Path)
+    parser.add_argument("--capture-host-source-snapshot", type=pathlib.Path)
     args = parser.parse_args()
     repo = args.repo.resolve()
+    if args.capture_host_source_snapshot is not None:
+        if args.output is not None or args.host_source_snapshot is not None:
+            parser.error("snapshot capture cannot be combined with proof-run arguments")
+        snapshot = args.capture_host_source_snapshot.resolve()
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        save(snapshot, source_snapshot(repo))
+        print(json.dumps({"captured": str(snapshot)}))
+        return
+    if args.output is None or args.host_source_snapshot is None:
+        parser.error("proof runs require --output and --host-source-snapshot")
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
     try:
