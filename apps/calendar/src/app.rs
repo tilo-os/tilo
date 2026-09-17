@@ -2772,18 +2772,7 @@ impl CalendarApp {
     /// Route input through the self-contained popover controller, then apply
     /// any semantic edit it emits through the calendar action model.
     fn handle_popover_event(&mut self, input: &mut InputContext<'_>) {
-        let (consumed, edit) = self.event_popovers.handle_event(
-            input.event,
-            self.last_mouse,
-            input.scale_factor,
-            input.modifiers,
-            input.state,
-            input.path,
-            input.focus_target,
-            input.node_id,
-            input.taffy,
-        );
-        *input.handled |= consumed;
+        let edit = self.event_popovers.handle_event(input, self.last_mouse);
         match edit {
             Some(PopoverEdit::Date(which, date)) => {
                 self.set_event_date(which, date, input.state);
