@@ -102,14 +102,14 @@ pub enum FileCommand {
     /// Resolve an incoming Nearby Send offer locally; consent is never inferred
     /// from device certification or from merely opening Files.
     DecideNearby {
-        transfer_id: [u8; 16],
+        handle: ui::collaboration::NearbyTransferHandle,
         accept: bool,
     },
     RetryNearby {
-        transfer_id: [u8; 16],
+        handle: ui::collaboration::NearbyTransferHandle,
     },
     CancelNearby {
-        transfer_id: [u8; 16],
+        handle: ui::collaboration::NearbyTransferHandle,
     },
     /// Open the "New File" flyout populated from the Templates directory.
     /// Handled by the app's menu routing (opens a submenu), not applied.
