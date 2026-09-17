@@ -706,7 +706,10 @@ pub fn encode(action: &ChatAction) -> EncodedAction {
 // affordances (see `crate::events`) and the Ctrl+K resource tree below.
 // ===========================================================================
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "canonical leaf constructor mirrors the replayable SendMessage action payload; callers must supply every authored field before dispatch"
+)]
 pub fn send_message_action(
     channel: &str,
     id: &str,
