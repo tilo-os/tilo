@@ -35,6 +35,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::data_table::renderer_type_size;
 use crate::widget::merge_strategy::{Alternative, ConflictKind};
 
 const PADDING: f64 = 16.0;
@@ -345,9 +346,14 @@ fn draw_card(
         card.x1 - 12.0,
         card.y1 - 10.0,
     );
-    let text_size_sm = theme.tokens.typography.scale.sm;
-    let text_size_md = theme.tokens.typography.scale.base;
+    let text_size_sm = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+    let text_size_md = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
+    // Author/timestamp and label/summary are two tight pairs separated by one
+    // group gap; each line advances by its measured line box.
+    let tight = f64::from(theme.tokens.spacing.s1);
+    let group = f64::from(theme.tokens.spacing.s2);
 
+    let (_, author_h) = text_renderer.measure(content.author, text_size_md, None);
     text_renderer.draw_text(
         scene,
         content.author,
@@ -356,7 +362,8 @@ fn draw_card(
         translated(transform, inner.x0, inner.y0),
         None,
     );
-    let ts_y = inner.y0 + f64::from(text_size_md) + 4.0;
+    let ts_y = inner.y0 + f64::from(author_h) + tight;
+    let (_, ts_h) = text_renderer.measure(content.timestamp_label, text_size_sm, None);
     text_renderer.draw_text(
         scene,
         content.timestamp_label,
@@ -366,7 +373,8 @@ fn draw_card(
         None,
     );
 
-    let label_y = ts_y + f64::from(text_size_sm) + 8.0;
+    let label_y = ts_y + f64::from(ts_h) + group;
+    let (_, label_h) = text_renderer.measure(content.label, text_size_md, None);
     text_renderer.draw_text(
         scene,
         content.label,
@@ -377,7 +385,7 @@ fn draw_card(
     );
 
     // Single-line, not wrapped — matches the picker's compact shape.
-    let summary_y = label_y + f64::from(text_size_md) + 6.0;
+    let summary_y = label_y + f64::from(label_h) + tight;
     text_renderer.draw_text(
         scene,
         content.summary,
@@ -493,7 +501,7 @@ impl Widget for ConflictPicker {
 
         let title = self.title_rect();
         let title_text = format!("{} conflict", self.family);
-        let title_size = theme.tokens.typography.scale.lg;
+        let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.lg);
         let (_tw, th) = text_renderer.measure(&title_text, title_size, None);
         text_renderer.draw_text(
             scene,
@@ -723,7 +731,7 @@ impl ConflictPicker {
             &keep_shape,
         );
         let keep_label = "Pick neither (keep current)";
-        let keep_size = theme.tokens.typography.scale.sm;
+        let keep_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let (kw, kh) = text_renderer.measure(keep_label, keep_size, None);
         text_renderer.draw_text(
             scene,
@@ -759,7 +767,7 @@ fn draw_merged_overlay(
         &btn_shape,
     );
     let bl = "Use merged";
-    let bsize = theme.tokens.typography.scale.sm;
+    let bsize = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
     let (bw, bh) = text_renderer.measure(bl, bsize, None);
     text_renderer.draw_text(
         scene,
