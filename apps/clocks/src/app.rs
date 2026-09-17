@@ -1,4 +1,6 @@
 //! Responsive Clocks UI. All controls mutate the durable engine state directly.
+#[cfg(windows)]
+use crate::native_timers::timer_id as native_timer_id;
 use crate::{Alarm, ClockState, DueEvent, ShellSnapshot, Timer, WeekdayKey, WorldClock};
 use automerge::{AutoCommit, ObjId};
 use chrono::{NaiveTime, Utc};
@@ -778,6 +780,12 @@ impl ClocksApp {
         } else {
             ClockState::default()
         };
+        // Migrate ownership before the first UI event can delete a timer from
+        // a profile written by an older version.
+        #[cfg(windows)]
+        value
+            .native_timer_owners
+            .extend(value.timers.iter().map(|timer| timer.id));
         if name == "running" {
             let mut t = Timer::new("Tea", Duration::from_secs(272));
             t.start(Utc::now());
@@ -909,59 +917,16 @@ impl ClocksApp {
         let Some(host) = &self.native_notifications else {
             return Err("notification host unavailable".into());
         };
-        let wanted = self.state.with(|s| {
-            s.timers
-                .iter()
-                .filter(|timer| timer.ends_at_utc.is_some())
-                .map(|timer| native_timer_id(timer.id))
-                .collect::<std::collections::HashSet<_>>()
-        });
-        for pending in host.scheduled().map_err(|error| error.to_string())? {
-            // An elapsed toast may still be in the delivery queue. Do not
-            // cancel it just because tick has marked its timer complete.
-            if pending.id.starts_with('t')
-                && !wanted.contains(&pending.id)
-                && pending.delivery_time > std::time::SystemTime::now()
-            {
-                host.cancel_schedule(&pending.id)
-                    .map_err(|error| error.to_string())?;
-            }
-        }
         let mut result = Ok(());
-        self.state.update(|s| {
-            for timer in &mut s.timers {
-                let Some(end) = timer.ends_at_utc else {
-                    timer.native_scheduled_end = None;
-                    continue;
-                };
-                if end <= now {
-                    continue;
-                }
-                match host.schedule(
-                    &native_timer_id(timer.id),
-                    "Timer finished",
-                    &timer.label,
-                    end.into(),
-                ) {
-                    Ok(()) => timer.native_scheduled_end = Some(end),
-                    Err(error) => {
-                        timer.native_scheduled_end = None;
-                        result = Err(error.to_string());
-                    }
-                }
-            }
+        self.state.update(|state| {
+            result = crate::native_timers::reconcile(state, host, now, |state| {
+                state.save().map_err(|error| error.to_string())
+            });
         });
         result
     }
 }
 
-#[cfg(windows)]
-fn native_timer_id(id: uuid::Uuid) -> String {
-    format!(
-        "t{}",
-        id.simple().to_string().chars().take(14).collect::<String>()
-    )
-}
 impl Default for ClocksApp {
     fn default() -> Self {
         Self::new()

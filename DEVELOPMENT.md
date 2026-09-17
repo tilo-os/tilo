@@ -285,6 +285,9 @@ Alerts obey Windows notification settings and Do Not Disturb. Clocks hands timer
 deadlines to Windows, so timers continue to notify after the app closes. Pausing
 or deleting a timer cancels its pending Windows alert. A saved receipt records
 the accepted deadline so reopening after delivery does not submit it again.
+Each state profile durably records the timer schedules it owns before submitting
+them to Windows. Opening another profile cannot cancel those schedules; deleted
+timers retain ownership until cancellation succeeds, including across restarts.
 Alarms still require the app to be running; closed-app alarm scheduling remains
 pending. Alarms persist their next UTC deadline, resolved from the requested
 local time and weekdays. A newly added past-time alarm waits for its next day;
