@@ -1412,15 +1412,11 @@ impl DisksApp {
     }
 
     // ---- content: overview --------------------------------------------
-    fn draw_overview(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-        drive: &Drive,
-    ) {
+    fn draw_overview(&self, paint: &mut PaintContext<'_>, lay: &Layout, drive: &Drive) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let area = lay.content;
         // Section heading + "Whole disk" selector (top-right).
@@ -1486,7 +1482,7 @@ impl DisksApp {
         self.draw_partition_map(scene, tr, theme, t, map, drive);
         // Legend.
         let legend_y = map.y1 + 12.0;
-        Self::draw_legend(scene, tr, theme, t, area.x0, legend_y, area.x1, drive);
+        Self::draw_legend(paint, area.x0, legend_y, area.x1, drive);
 
         // Two columns below: capacity (left) + SMART summary (right). Sized to
         // their natural content height (not the viewport) so scrolling can
@@ -1498,8 +1494,22 @@ impl DisksApp {
         let left = Rect::new(area.x0, cols_top, area.x0 + left_w, cols_bottom);
         let right = Rect::new(left.x1 + gap, cols_top, area.x1, cols_bottom);
 
-        self.draw_capacity(scene, tr, theme, t, left, drive);
-        Self::draw_smart_card(scene, tr, theme, t, right, drive);
+        self.draw_capacity(
+            paint.scene,
+            paint.text,
+            paint.theme,
+            paint.transform,
+            left,
+            drive,
+        );
+        Self::draw_smart_card(
+            paint.scene,
+            paint.text,
+            paint.theme,
+            paint.transform,
+            right,
+            drive,
+        );
     }
 
     /// Natural pixel height of the current tab's content, used to size the
@@ -1623,17 +1633,11 @@ impl DisksApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
-    fn draw_legend(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        x0: f64,
-        y: f64,
-        x1: f64,
-        drive: &Drive,
-    ) {
+    fn draw_legend(paint: &mut PaintContext<'_>, x0: f64, y: f64, x1: f64, drive: &Drive) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let mut x = x0;
         let mut yy = y;
@@ -3721,7 +3725,16 @@ impl Widget for DisksApp {
                 &lay.content,
             );
             match self.tab {
-                Tab::Overview => self.draw_overview(scene, tr, theme, ct, &lay, drive),
+                Tab::Overview => self.draw_overview(
+                    &mut PaintContext {
+                        scene,
+                        text: tr,
+                        theme,
+                        transform: ct,
+                    },
+                    &lay,
+                    drive,
+                ),
                 Tab::Smart => Self::draw_smart_tab(scene, tr, theme, ct, ext, drive),
                 Tab::Partitions => self.draw_partitions_tab(scene, tr, theme, ct, ext, drive),
             }
