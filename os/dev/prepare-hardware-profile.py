@@ -53,7 +53,7 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
     if profile == "generic":
         return
     definition = load_definition(profile, profiles_dir)
-    validate_target_imgref(target_update_ref)
+    validate_target_imgref(target_update_ref, root=root)
     architecture = definition["architecture"]
     if platform.machine() != architecture:
         raise ValueError(f"{profile} hardware profile requires a native {architecture} builder")

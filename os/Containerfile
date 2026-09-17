@@ -1279,23 +1279,26 @@ COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules /usr/lib/udev/rules.d/90-ti
 # reference below binds production mode to the unchanged official keys.
 ARG TILO_PUBLIC_TRUST_MODE=production
 ARG TILO_PUBLIC_TRUST_MANIFEST_SHA256
+ARG TILO_TARGET_IMGREF
 ARG TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY
 COPY --from=public-trust / /run/tilo-public-trust/
 COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /run/tilo-official-trust/
-COPY os/dev/development-trust.py os/dev/install-public-trust.py /run/tilo-trust-tools/
+COPY os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_profile.py /run/tilo-trust-tools/
+COPY os/etc/containers/policy.json /etc/containers/policy.json
+COPY os/etc/containers/registries.d/code.sandbox.example.yaml /etc/containers/registries.d/code.sandbox.example.yaml
 RUN python3 /run/tilo-trust-tools/install-public-trust.py \
       --source /run/tilo-public-trust --official /run/tilo-official-trust \
       --destination /usr/share/tilo --mode "$TILO_PUBLIC_TRUST_MODE" \
       --manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256" \
       --registry-owner "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" \
+      --target-ref "$TILO_TARGET_IMGREF" --image-root / \
  && rm -rf /run/tilo-public-trust /run/tilo-official-trust /run/tilo-trust-tools
 
 # Container signature policy: REQUIRE a valid cosign signature for
 # code.sandbox.example/qos/tilo (everything else stays permissive), so a tampered or
 # unsigned OS image is refused at `bootc upgrade`. registries.d points the
 # verifier at cosign's sigstore attachment in the same repo.
-COPY os/etc/containers/policy.json /etc/containers/policy.json
-COPY os/etc/containers/registries.d/code.sandbox.example.yaml /etc/containers/registries.d/code.sandbox.example.yaml
+
 
 # First-boot setup service
 COPY \

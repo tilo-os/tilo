@@ -96,7 +96,8 @@ exit {BUILD_INTERCEPTED}
         return {"TILO_PUBLIC_TRUST_MODE": "development",
                 "TILO_PUBLIC_TRUST_BUNDLE": str(public),
                 "TILO_PUBLIC_TRUST_MANIFEST_SHA256": "b" * 64,
-                "TILO_IMAGE": "localhost/tilo-development:fixture"}
+                "TILO_IMAGE": "localhost/tilo-development:fixture",
+                "TILO_TARGET_IMGREF": "127.0.0.1:5000/tilo-development/os:fixture"}
 
     def test_development_forwards_pinned_public_context(self):
         result = self.run_builder(**self.development_inputs())
