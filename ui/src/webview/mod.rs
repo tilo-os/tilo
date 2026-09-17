@@ -171,6 +171,8 @@ pub enum WebViewCommand {
     GoForward,
     Reload,
     StopLoading,
+    /// Ask the native browser host to leave document/video fullscreen.
+    ExitFullscreen,
     /// Mute or restore native page audio without installing an audio capture handler.
     SetAudioMuted(bool),
     Find {
@@ -365,6 +367,10 @@ pub enum WebViewEvent {
         document_generation: u64,
         playing: bool,
     },
+    /// The page's CEF content-fullscreen intent changed.
+    FullscreenChanged(bool),
+    /// The renderer owning this tab exited without a reliable fullscreen edge.
+    RendererTerminated,
     /// Load progress in `0.0..=1.0`.
     LoadProgress(f64),
     LoadFinished,

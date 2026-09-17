@@ -231,6 +231,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::RequestSiteStatus { .. }
             | WebViewCommand::SiteAction { .. }
             | WebViewCommand::StopLoading
+            | WebViewCommand::ExitFullscreen
             | WebViewCommand::MouseMove { .. }
             | WebViewCommand::MouseButton { .. }
             | WebViewCommand::Scroll { .. }

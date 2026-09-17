@@ -4,6 +4,8 @@ use crate::BrowserWidget;
 use crate::browser_tab_strip::BrowserTabStrip;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
+use taffy::style_helpers::{auto, length};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -16,6 +18,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
+
+const FULLSCREEN_HINT_DURATION: Duration = Duration::from_secs(3);
+
+fn fullscreen_hint_visible(deadline: Option<Instant>, now: Instant) -> bool {
+    deadline.is_some_and(|deadline| now < deadline)
+}
 
 struct Tab {
     id: u64,
@@ -69,6 +77,9 @@ pub struct BrowserTabs {
     exit_choice: ui::LocalState<Option<bool>>,
     exit_panel: Option<Box<dyn Widget>>,
     close_intent: bool,
+    window_fullscreen_active: bool,
+    fullscreen_hint_deadline: Option<Instant>,
+    fullscreen_hint: Option<Box<dyn Widget>>,
 }
 
 impl BrowserTabs {
@@ -105,7 +116,38 @@ impl BrowserTabs {
             exit_choice: ui::LocalState::new(None),
             exit_panel: None,
             close_intent: false,
+            window_fullscreen_active: false,
+            fullscreen_hint_deadline: None,
+            fullscreen_hint: None,
         }
+    }
+    fn immersive(&self) -> bool {
+        self.window_fullscreen_active && self.active().content_fullscreen()
+    }
+    fn make_fullscreen_hint() -> Box<dyn Widget> {
+        use ui::a11y::Politeness;
+        use ui::widget::{Container, Text};
+        Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_height(48.0)
+                .with_child(Box::new(
+                    Container::new()
+                        .with_centered_max_width(240.0)
+                        .with_fill(vello::peniko::Color::from_rgba8(16, 16, 20, 242))
+                        .with_child(Box::new(
+                            Text::new("Esc to exit full screen")
+                                .with_id("browser.fullscreen-hint")
+                                .with_live(Politeness::Polite)
+                                .with_color(vello::peniko::Color::WHITE)
+                                .with_size(14.0),
+                        )),
+                )),
+        )
+    }
+    fn clear_fullscreen_hint(&mut self) {
+        self.fullscreen_hint_deadline = None;
+        self.fullscreen_hint = None;
     }
     fn make_exit_panel(&self, cancelling: bool) -> Box<dyn Widget> {
         use ui::widget::{Button, Column, Container, Row, Text};
@@ -358,11 +400,17 @@ impl BrowserTabs {
         if id == self.active_id || !self.tabs.iter().any(|tab| tab.id == id) {
             return;
         }
+        self.active_mut().exit_content_fullscreen();
         self.active().engine_handle().set_visible(false);
         self.active_id = id;
         self.address_focus_node = None;
         self.bar.set_active(id);
         self.active().engine_handle().set_visible(true);
+        self.active_mut().exit_content_fullscreen();
+        let window_fullscreen_active = self.window_fullscreen_active;
+        self.active_mut()
+            .set_window_fullscreen_active(window_fullscreen_active);
+        self.clear_fullscreen_hint();
         self.active_mut().refresh_shared_history();
         self.active_mut().activate_session_uri();
         self.dirty = true;
@@ -631,6 +679,12 @@ impl BrowserTabs {
 
 impl Widget for BrowserTabs {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        if self.fullscreen_hint_deadline.is_some()
+            && !fullscreen_hint_visible(self.fullscreen_hint_deadline, Instant::now())
+        {
+            self.clear_fullscreen_hint();
+            self.dirty = true;
+        }
         if self.recovery.is_some() {
             if let Some(choice) = self.recovery_choice.get() {
                 self.recovery_choice.set(None);
@@ -745,6 +799,36 @@ impl Widget for BrowserTabs {
             nodes.insert(root, std::ptr::from_mut::<dyn Widget>(self));
             return root;
         }
+        if self.immersive() {
+            let page = self.active_mut().build_layout(taffy, theme, nodes);
+            self.layout_active_id = Some(self.active_id);
+            let mut children = vec![page];
+            if let Some(hint) = self.fullscreen_hint.as_mut() {
+                let hint = hint.build_layout(taffy, theme, nodes);
+                let mut style = taffy.style(hint).cloned().unwrap_or_default();
+                style.position = taffy::Position::Absolute;
+                style.inset = taffy::Rect {
+                    left: length(0.0_f32),
+                    right: length(0.0_f32),
+                    top: length(24.0_f32),
+                    bottom: auto(),
+                };
+                let _ = taffy.set_style(hint, style);
+                children.push(hint);
+            }
+            let root = taffy.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Style::default()
+                },
+                &children,
+            );
+            nodes.insert(root, std::ptr::from_mut::<dyn Widget>(self));
+            return root;
+        }
         let bar = self.bar.build_layout(taffy, theme, nodes);
         let panel = self
             .exit_panel
@@ -805,6 +889,18 @@ impl Widget for BrowserTabs {
                 }
                 return;
             }
+            if self.immersive() {
+                if let Some(page) = children.first() {
+                    let origin = self.rect.origin();
+                    self.active_mut().apply_layout(taffy, *page, origin);
+                }
+                if let Some(hint) = self.fullscreen_hint.as_mut()
+                    && let Some(node) = children.get(1)
+                {
+                    hint.apply_layout(taffy, *node, self.rect.origin());
+                }
+                return;
+            }
             if let Some(bar) = children.first() {
                 self.bar.apply_layout(taffy, *bar, self.rect.origin());
             }
@@ -833,6 +929,14 @@ impl Widget for BrowserTabs {
                 .as_mut()
                 .unwrap()
                 .draw(scene, transform, tr, theme, presence);
+            return;
+        }
+        if self.immersive() {
+            self.active_mut()
+                .draw(scene, transform, tr, theme, presence);
+            if let Some(hint) = self.fullscreen_hint.as_mut() {
+                hint.draw(scene, transform, tr, theme, presence);
+            }
             return;
         }
         self.bar.draw(scene, transform, tr, theme, presence);
@@ -865,6 +969,19 @@ impl Widget for BrowserTabs {
                     );
                 }
             }
+            return;
+        }
+        if matches!(
+            event,
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == ElementState::Pressed
+                    && key.logical_key == Key::Named(NamedKey::Escape)
+        ) && self.active().content_fullscreen()
+        {
+            self.active_mut().exit_content_fullscreen();
+            self.clear_fullscreen_hint();
+            self.dirty = true;
+            *handled = true;
             return;
         }
         if self.tab_menu.is_open() {
@@ -945,6 +1062,14 @@ impl Widget for BrowserTabs {
         let Ok(children) = taffy.children(node) else {
             return;
         };
+        if self.immersive() {
+            if let Some(page) = children.first() {
+                self.active_mut().handle_event(
+                    event, scale, modifiers, state, path, handled, focus, *page, taffy,
+                );
+            }
+            return;
+        }
         if let Some(panel) = self.exit_panel.as_mut() {
             if let Some(panel_node) = children.get(1) {
                 panel.handle_event(
@@ -1086,6 +1211,11 @@ impl Widget for BrowserTabs {
         if self.recovery.is_some() {
             return vec![self.recovery_panel.as_ref().unwrap().as_ref()];
         }
+        if self.immersive() {
+            return std::iter::once(self.active() as &dyn Widget)
+                .chain(self.fullscreen_hint.as_deref())
+                .collect();
+        }
         let mut children: Vec<&dyn Widget> = vec![self.bar.as_ref()];
         if let Some(panel) = self.exit_panel.as_ref() {
             children.push(panel.as_ref());
@@ -1096,6 +1226,18 @@ impl Widget for BrowserTabs {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.recovery.is_some() {
             return vec![self.recovery_panel.as_mut().unwrap().as_mut()];
+        }
+        if self.immersive() {
+            let active_id = self.active_id;
+            let (tabs, hint) = (&mut self.tabs, &mut self.fullscreen_hint);
+            let mut children: Vec<&mut dyn Widget> = Vec::new();
+            if let Some(tab) = tabs.iter_mut().find(|tab| tab.id == active_id) {
+                children.push(tab.widget.as_mut());
+            }
+            if let Some(hint) = hint.as_mut() {
+                children.push(hint.as_mut());
+            }
+            return children;
         }
         let active_id = self.active_id;
         let mut children: Vec<&mut dyn Widget> = vec![self.bar.as_mut()];
@@ -1157,6 +1299,13 @@ impl Widget for BrowserTabs {
             Vec::new()
         };
         let mut children = Vec::new();
+        if self.fullscreen_hint.is_some() {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name("Esc to exit full screen")
+                    .with_hashed_key("browser.fullscreen-hint-status"),
+            );
+        }
         if self.tab_menu.is_open() {
             children.push(
                 AccessNode::new(Role::Menu)
@@ -1180,13 +1329,35 @@ impl Widget for BrowserTabs {
         dirty || page || self.bar.take_structure_dirty()
     }
     fn needs_animation_frame(&self) -> bool {
-        self.bar.needs_animation_frame() || self.active().needs_animation_frame()
+        fullscreen_hint_visible(self.fullscreen_hint_deadline, Instant::now())
+            || self.bar.needs_animation_frame()
+            || self.active().needs_animation_frame()
     }
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.bar.set_motion_reduced(reduced);
         for tab in &mut self.tabs {
             tab.widget.set_motion_reduced(reduced);
         }
+    }
+    fn fullscreen_intent(&self) -> Option<bool> {
+        Some(self.active().content_fullscreen())
+    }
+    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
+        ui::fullscreen::FullscreenRequest::mirror(ui::fullscreen::FullscreenTarget::Largest)
+    }
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        self.window_fullscreen_active = active;
+        self.active_mut().set_window_fullscreen_active(active);
+        if active && self.active().content_fullscreen() {
+            self.fullscreen_hint_deadline = Some(Instant::now() + FULLSCREEN_HINT_DURATION);
+            self.fullscreen_hint = Some(Self::make_fullscreen_hint());
+        } else {
+            if !active {
+                self.active_mut().exit_content_fullscreen();
+            }
+            self.clear_fullscreen_hint();
+        }
+        self.dirty = true;
     }
     fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
         if self.recovery.is_some() {
@@ -1321,6 +1492,42 @@ mod tests {
     use std::sync::Arc;
     use ui::webview::test_engine::TestEngine;
     use ui::webview::{FrameSlot, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent};
+    #[derive(Default)]
+    struct FullscreenEngine {
+        events: std::sync::Mutex<Vec<WebViewEvent>>,
+        commands: std::sync::Mutex<Vec<WebViewCommand>>,
+        children: std::sync::Mutex<Vec<Arc<FullscreenEngine>>>,
+        frames: FrameSlot,
+    }
+    impl FullscreenEngine {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                events: Default::default(),
+                commands: Default::default(),
+                children: Default::default(),
+                frames: Arc::new(std::sync::Mutex::new(None)),
+            })
+        }
+        fn emit(&self, event: WebViewEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+    impl WebViewEngine for FullscreenEngine {
+        fn create_tab(&self) -> Result<SharedEngine, String> {
+            let child = Self::new();
+            self.children.lock().unwrap().push(child.clone());
+            Ok(child)
+        }
+        fn send(&self, command: WebViewCommand) {
+            self.commands.lock().unwrap().push(command);
+        }
+        fn frames(&self) -> FrameSlot {
+            self.frames.clone()
+        }
+        fn drain_events(&self) -> Vec<WebViewEvent> {
+            std::mem::take(&mut *self.events.lock().unwrap())
+        }
+    }
     struct Engine(Arc<TestEngine>);
     impl WebViewEngine for Engine {
         fn create_tab(&self) -> Result<SharedEngine, String> {
@@ -1341,6 +1548,169 @@ mod tests {
             Arc::new(Engine(TestEngine::new())),
             true,
         ))
+    }
+    fn fullscreen_workspace() -> (BrowserTabs, Arc<FullscreenEngine>) {
+        let engine = FullscreenEngine::new();
+        (
+            BrowserTabs::new(BrowserWidget::with_engine(engine.clone(), true)),
+            engine,
+        )
+    }
+    fn key_event(named: NamedKey) -> WindowEvent {
+        let mut key: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        key.logical_key = Key::Named(named);
+        key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        key.location = winit::keyboard::KeyLocation::Standard;
+        key.state = ElementState::Pressed;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: key,
+            is_synthetic: false,
+        }
+    }
+    fn layout_rects(tabs: &mut BrowserTabs) -> HashMap<String, Rect> {
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let root = tabs.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+        tree.compute_layout(
+            root,
+            Size {
+                width: taffy::AvailableSpace::Definite(1000.0),
+                height: taffy::AvailableSpace::Definite(700.0),
+            },
+        )
+        .unwrap();
+        tabs.apply_layout(&tree, root, Point::ORIGIN);
+        nodes
+            .values()
+            .filter_map(|widget| unsafe {
+                let widget = &**widget;
+                widget
+                    .test_id()
+                    .map(|id| (id.to_owned(), widget.get_rect()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn active_content_fullscreen_uses_root_window_contract_and_hides_both_chrome_layers() {
+        let (mut tabs, engine) = fullscreen_workspace();
+        engine.emit(WebViewEvent::FullscreenChanged(true));
+        tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        assert_eq!(tabs.fullscreen_intent(), Some(true));
+
+        tabs.on_fullscreen_changed(true);
+        let rects = layout_rects(&mut tabs);
+        assert!(rects.contains_key("browser.surface"), "{rects:?}");
+        assert!(
+            rects.contains_key("browser.fullscreen-hint"),
+            "{rects:?}"
+        );
+        assert!(!rects.contains_key("browser.tab-strip"), "{rects:?}");
+        assert!(!rects.contains_key("browser.url_input"), "{rects:?}");
+        assert_eq!(rects["browser.surface"], Rect::new(0.0, 0.0, 1000.0, 700.0));
+        assert!(rects["browser.fullscreen-hint"].height() > 0.0);
+        assert!(rects["browser.fullscreen-hint"].y0 >= 24.0);
+        assert!(tabs.needs_animation_frame());
+
+        let mut tree = TaffyTree::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        tabs.handle_event(
+            &key_event(NamedKey::Escape),
+            1.0,
+            &Default::default(),
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+            &mut None,
+            node,
+            &tree,
+        );
+        assert!(handled);
+        assert_eq!(tabs.fullscreen_intent(), Some(false));
+        assert_eq!(
+            engine
+                .commands
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|command| matches!(command, WebViewCommand::ExitFullscreen))
+                .count(),
+            1
+        );
+        tabs.on_fullscreen_changed(false);
+        let rects = layout_rects(&mut tabs);
+        assert!(rects.contains_key("browser.tab-strip"), "{rects:?}");
+        assert!(rects.contains_key("browser.url_input"), "{rects:?}");
+        assert!(
+            !rects.contains_key("browser.fullscreen-hint"),
+            "{rects:?}"
+        );
+    }
+
+    #[test]
+    fn ordinary_os_fullscreen_keeps_browser_chrome_and_has_no_hint() {
+        let (mut tabs, _engine) = fullscreen_workspace();
+        tabs.on_fullscreen_changed(true);
+        assert_eq!(tabs.fullscreen_intent(), Some(false));
+        let rects = layout_rects(&mut tabs);
+        assert!(rects.contains_key("browser.tab-strip"), "{rects:?}");
+        assert!(rects.contains_key("browser.url_input"), "{rects:?}");
+        assert!(
+            !rects.contains_key("browser.fullscreen-hint"),
+            "{rects:?}"
+        );
+    }
+
+    #[test]
+    fn tab_switch_and_active_close_exit_the_outgoing_fullscreen_owner() {
+        let (mut tabs, engine) = fullscreen_workspace();
+        engine.emit(WebViewEvent::FullscreenChanged(true));
+        tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        tabs.on_fullscreen_changed(true);
+        tabs.open(Some("https://next.test/".into()), true).unwrap();
+        let replacement = tabs.tabs[1].id;
+        tabs.activate(replacement);
+        assert_eq!(tabs.fullscreen_intent(), Some(false));
+        assert!(
+            engine
+                .commands
+                .lock()
+                .unwrap()
+                .contains(&WebViewCommand::ExitFullscreen)
+        );
+        assert!(!tabs.needs_animation_frame());
+
+        let child = engine.children.lock().unwrap()[0].clone();
+        child.emit(WebViewEvent::FullscreenChanged(true));
+        tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        tabs.on_fullscreen_changed(true);
+        tabs.finish_close(replacement);
+        assert_eq!(tabs.fullscreen_intent(), Some(false));
+        assert!(
+            child
+                .commands
+                .lock()
+                .unwrap()
+                .contains(&WebViewCommand::ExitFullscreen)
+        );
+    }
+
+    #[test]
+    fn fullscreen_hint_lifetime_is_exactly_three_seconds() {
+        let entered = std::time::Instant::now();
+        let deadline = entered + FULLSCREEN_HINT_DURATION;
+        assert!(fullscreen_hint_visible(Some(deadline), entered));
+        assert!(fullscreen_hint_visible(
+            Some(deadline),
+            deadline - std::time::Duration::from_nanos(1)
+        ));
+        assert!(!fullscreen_hint_visible(Some(deadline), deadline));
+        assert!(!fullscreen_hint_visible(None, entered));
+        assert_eq!(FULLSCREEN_HINT_DURATION, std::time::Duration::from_secs(3));
     }
     #[test]
     fn crash_recovery_waits_for_explicit_choice_and_survives_prompt_close() {
