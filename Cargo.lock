@@ -5003,6 +5003,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "git2"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddddbf932745a6be37109b6112d3ee09696106f848449069d3a57bba937ab82e"
+dependencies = [
+ "bitflags 2.11.0",
+ "libc",
+ "libgit2-sys",
+ "log",
+]
+
+[[package]]
 name = "git-client"
 version = "0.1.0"
 dependencies = [
@@ -5019,18 +5031,6 @@ dependencies = [
  "tilo-app",
  "vello",
  "winit",
-]
-
-[[package]]
-name = "git2"
-version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddddbf932745a6be37109b6112d3ee09696106f848449069d3a57bba937ab82e"
-dependencies = [
- "bitflags 2.11.0",
- "libc",
- "libgit2-sys",
- "log",
 ]
 
 [[package]]
@@ -5695,6 +5695,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-literal"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
+
+[[package]]
 name = "hex-editor"
 version = "0.1.0"
 dependencies = [
@@ -5708,12 +5714,6 @@ dependencies = [
  "vello",
  "winit",
 ]
-
-[[package]]
-name = "hex-literal"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
 
 [[package]]
 name = "hexane"
@@ -6582,6 +6582,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "image-webp"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
+dependencies = [
+ "byteorder-lite",
+ "quick-error 2.0.1",
+]
+
+[[package]]
 name = "image-editor"
 version = "0.1.0"
 dependencies = [
@@ -6594,16 +6604,6 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "uuid",
-]
-
-[[package]]
-name = "image-webp"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
-dependencies = [
- "byteorder-lite",
- "quick-error 2.0.1",
 ]
 
 [[package]]
@@ -10184,6 +10184,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pdf-writer"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92a79477295a713c2ed425aa82a8b5d20cec3fdee203706cbe6f3854880c1c81"
+dependencies = [
+ "bitflags 2.11.0",
+ "itoa",
+ "memchr",
+ "ryu",
+]
+
+[[package]]
 name = "pdf-viewer"
 version = "0.1.0"
 dependencies = [
@@ -10205,18 +10217,6 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
-]
-
-[[package]]
-name = "pdf-writer"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92a79477295a713c2ed425aa82a8b5d20cec3fdee203706cbe6f3854880c1c81"
-dependencies = [
- "bitflags 2.11.0",
- "itoa",
- "memchr",
- "ryu",
 ]
 
 [[package]]
@@ -12687,13 +12687,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "scrypt"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d87af57419b594aa23fa95f09f0e06d80d84ba01c26148c43844cad6ff4485f0"
+dependencies = [
+ "cfg-if",
+ "pbkdf2",
+ "salsa20",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "scratchpad"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "atomic-file",
  "automerge",
- "clap",
  "dirs 6.0.0",
  "fs",
  "iroh-blobs",
@@ -12706,18 +12717,6 @@ dependencies = [
  "tokio",
  "vello",
  "winit",
-]
-
-[[package]]
-name = "scrypt"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d87af57419b594aa23fa95f09f0e06d80d84ba01c26148c43844cad6ff4485f0"
-dependencies = [
- "cfg-if",
- "pbkdf2",
- "salsa20",
- "sha2 0.11.0",
 ]
 
 [[package]]
@@ -15521,28 +15520,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5613cb719a6222fe9b74027c3625d107767ec187bff26b8fc931cf58942c834f"
 
 [[package]]
-name = "typst-editor"
-version = "0.1.0"
-dependencies = [
- "automerge",
- "comemo",
- "dirs 6.0.0",
- "runtime-dylib",
- "serde",
- "serde_json",
- "taffy",
- "tilo-actions",
- "tilo-app",
- "tiny-skia",
- "typst",
- "typst-assets",
- "typst-pdf",
- "typst-render",
- "vello",
- "winit",
-]
-
-[[package]]
 name = "typst-eval"
 version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15828,6 +15805,28 @@ dependencies = [
  "siphasher",
  "thin-vec",
  "unicode-math-class",
+]
+
+[[package]]
+name = "typst-editor"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "comemo",
+ "dirs 6.0.0",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "taffy",
+ "tilo-actions",
+ "tilo-app",
+ "tiny-skia",
+ "typst",
+ "typst-assets",
+ "typst-pdf",
+ "typst-render",
+ "vello",
+ "winit",
 ]
 
 [[package]]
@@ -16305,6 +16304,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "video-player"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "collab-types",
+ "media",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "taffy",
+ "tilo-actions",
+ "tilo-app",
+ "tracing",
+ "vello",
+ "winit",
+]
+
+[[package]]
 name = "video-editor"
 version = "0.1.0"
 dependencies = [
@@ -16323,25 +16341,6 @@ dependencies = [
  "tilo-app",
  "tracing",
  "uuid",
- "vello",
- "winit",
-]
-
-[[package]]
-name = "video-player"
-version = "0.1.0"
-dependencies = [
- "automerge",
- "collab-types",
- "media",
- "runtime-dylib",
- "serde",
- "serde_json",
- "settings-store",
- "taffy",
- "tilo-actions",
- "tilo-app",
- "tracing",
  "vello",
  "winit",
 ]
