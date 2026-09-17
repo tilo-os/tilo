@@ -4908,7 +4908,7 @@ impl CalendarApp {
             t,
             tr,
             theme,
-            FieldButtonFace {
+            &FieldButtonFace {
                 rect: due_rect,
                 label: &due,
                 active: due_rect.contains(self.last_mouse),
@@ -4924,7 +4924,7 @@ impl CalendarApp {
             t,
             tr,
             theme,
-            FieldButtonFace {
+            &FieldButtonFace {
                 rect: priority_rect,
                 label: &priority,
                 active: priority_rect.contains(self.last_mouse),
@@ -4949,7 +4949,7 @@ impl CalendarApp {
             t,
             tr,
             theme,
-            FieldButtonFace {
+            &FieldButtonFace {
                 rect: project_rect,
                 label: &project,
                 active: project_rect.contains(self.last_mouse),
@@ -5164,7 +5164,7 @@ impl CalendarApp {
                 t,
                 tr,
                 theme,
-                FieldButtonFace {
+                &FieldButtonFace {
                     rect: date_rect,
                     label: date_str,
                     active: date_active,
@@ -5179,7 +5179,7 @@ impl CalendarApp {
                     t,
                     tr,
                     theme,
-                    FieldButtonFace {
+                    &FieldButtonFace {
                         rect: time_rect,
                         label: time_str,
                         active: time_active,
@@ -5446,7 +5446,7 @@ impl CalendarApp {
                     t,
                     tr,
                     theme,
-                    FieldButtonFace {
+                    &FieldButtonFace {
                         rect: clear,
                         label: "Clear due date",
                         active: false,
@@ -7458,6 +7458,7 @@ pub(crate) fn draw_upload(scene: &mut Scene, t: Affine, color: Color, center: Po
 /// value and an optional trailing disclosure caret. Backs the date/time/
 /// calendar fields, mirroring the `TextInput` chrome so the whole form looks
 /// uniformly editable.
+#[derive(Clone, Copy)]
 struct FieldButtonFace<'a> {
     rect: Rect,
     label: &'a str,
@@ -7470,9 +7471,9 @@ fn draw_field_button(
     t: Affine,
     tr: &mut TextRenderer,
     theme: &Theme,
-    face: FieldButtonFace<'_>,
+    face: &FieldButtonFace<'_>,
 ) {
-    let FieldButtonFace {
+    let &FieldButtonFace {
         rect: r,
         label,
         active,
