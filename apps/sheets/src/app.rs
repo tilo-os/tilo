@@ -3294,14 +3294,23 @@ impl SheetsApp {
     fn relayout(&mut self) {
         let r = self.rect;
         let scale = self.text_scale;
-        self.menubar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + MENUBAR_H * scale);
+        // A phone-class sheet is still pointer-driven, but its primary chrome
+        // must also be comfortable for touch. Keep the denser spreadsheet
+        // geometry on larger windows and expand every narrow chrome band as a
+        // unit so the visible face and hit target never diverge.
+        let narrow = r.width() <= 600.0;
+        let menubar_h = if narrow { 56.0 } else { MENUBAR_H } * scale;
+        let formula_h = if narrow { 56.0 } else { FORMULA_H } * scale;
+        let tabs_h = if narrow { 56.0 } else { TABS_H } * scale;
+        let target_h = if narrow { 48.0 } else { 32.0 } * scale;
+        self.menubar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + menubar_h);
         self.formula_rect = Rect::new(
             r.x0,
             self.menubar_rect.y1,
             r.x1,
-            self.menubar_rect.y1 + FORMULA_H * scale,
+            self.menubar_rect.y1 + formula_h,
         );
-        self.tabs_rect = Rect::new(r.x0, r.y1 - TABS_H * scale, r.x1, r.y1);
+        self.tabs_rect = Rect::new(r.x0, r.y1 - tabs_h, r.x1, r.y1);
         self.grid_rect = Rect::new(r.x0, self.formula_rect.y1, r.x1, self.tabs_rect.y0);
         self.grid.rect = self.grid_rect;
 
@@ -3309,8 +3318,8 @@ impl SheetsApp {
         self.menu_buttons.clear();
         // Fine-pointer controls still honour the shared 32 px minimum; the
         // same geometry grows for accessibility text and coarse input.
-        let bh = 32.0 * scale;
-        let by = self.menubar_rect.y0 + (MENUBAR_H * scale - bh) / 2.0;
+        let bh = target_h;
+        let by = self.menubar_rect.y0 + (menubar_h - bh) / 2.0;
         let mut x = self.menubar_rect.x0 + 10.0 * scale;
         let pad = 6.0 * scale;
         let mk = |label: &str,
@@ -3379,13 +3388,13 @@ impl SheetsApp {
         self.tab_rects.clear();
         let mut tx = self.tabs_rect.x0 + 8.0 * scale;
         let ty = self.tabs_rect.y0 + 4.0 * scale;
-        let th = TABS_H * scale - 6.0 * scale;
+        let th = tabs_h - 8.0 * scale;
         for (i, name) in self.sheet_names.iter().enumerate() {
             let w = tab_width(name).max(58.0 * scale);
             self.tab_rects.push((Rect::new(tx, ty, tx + w, ty + th), i));
             tx += w + 4.0 * scale;
         }
-        self.add_tab_rect = Rect::new(tx, ty, tx + 30.0 * scale, ty + th);
+        self.add_tab_rect = Rect::new(tx, ty, tx + target_h, ty + th);
 
         self.relayout_overlays();
     }
@@ -7868,14 +7877,15 @@ mod tests {
     }
 
     /// Custom-painted controls have no toolkit button wrapper to enforce the
-    /// interaction minimum. Keep their hit geometry aligned with the shared
-    /// fine-pointer contract, and prove the same surfaces expand at 2× type.
+    /// interaction minimum. Phone-class chrome uses the shared coarse target,
+    /// while the same surfaces continue to expand at 2× type.
     #[test]
     fn chrome_targets_meet_the_pointer_minimum_and_scale_with_type() {
         let (mut app, _doc) = seeded_app();
         app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
         app.relayout();
         let minimum = f64::from(ui::interaction::InteractionEnvironment::POINTER.minimum_target());
+        let coarse = f64::from(ui::interaction::InteractionEnvironment::TOUCH.minimum_target());
         assert!(
             app.menu_buttons
                 .iter()
@@ -7888,6 +7898,18 @@ mod tests {
                 .iter()
                 .all(|(rect, _)| rect.height() >= minimum)
         );
+        for (name, target) in [
+            ("menu", app.menu_buttons[0].rect),
+            ("name box", app.name_box_rect),
+            ("formula field", app.formula_field_rect),
+            ("sheet tab", app.tab_rects[0].0),
+            ("add sheet", app.add_tab_rect),
+        ] {
+            assert!(
+                target.height() >= coarse,
+                "narrow {name} must keep a touch-sized target"
+            );
+        }
 
         app.text_scale = 2.0;
         app.grid.set_text_scale(2.0);
