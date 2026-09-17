@@ -13,12 +13,13 @@ use crate::{
     },
 };
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io,
     path::{Path, PathBuf},
     process::{Child, Command},
 };
 
+pub mod daemon;
 pub mod mcp;
 pub mod mcp_process;
 mod unix;
@@ -43,12 +44,7 @@ impl Session {
     /// Rejects a locked profile, invalid persisted state, or failed provisioning.
     pub fn start(root: &Path) -> io::Result<Self> {
         unix::private_directory(root)?;
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(root.join("runtime.lock"))?;
+        let lock = unix::private_file(&root.join("runtime.lock"))?;
         lock.try_lock().map_err(io::Error::other)?;
         let identity_dir = runtime_identity::identity_dir_from_env()?;
         crate::firstboot::ensure_collaboration_identity(
@@ -115,3 +111,7 @@ impl Session {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_host/daemon_process_tests.rs"]
+mod daemon_process_tests;

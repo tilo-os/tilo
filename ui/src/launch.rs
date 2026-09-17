@@ -89,6 +89,7 @@ pub struct LaunchSpec {
     live_handler: Option<LiveHandler>,
     command_handler: Option<CommandHandler>,
     headless_enabled: bool,
+    runtime_attachment: fn(&LaunchArgs) -> bool,
     open_state: OpenState,
     open_state_with_args: Option<OpenStateWithArgs>,
     allowed_flags: &'static [&'static str],
@@ -131,6 +132,15 @@ impl LaunchSpec {
     pub fn open_app_global_state(mut self, open: OpenState) -> Self {
         self = self.open_state(open);
         self.history_app_global_storage = true;
+        self
+    }
+
+    /// Select automatic runtime attachment for native launches. The default is
+    /// enabled. Disabling bootstrap does not revoke inherited service handles;
+    /// privacy-sensitive apps must also construct a local-only application.
+    #[must_use]
+    pub fn runtime_attachment(mut self, policy: fn(&LaunchArgs) -> bool) -> Self {
+        self.runtime_attachment = policy;
         self
     }
 
@@ -192,6 +202,7 @@ impl LaunchSpec {
             live_handler: None,
             command_handler: None,
             headless_enabled: true,
+            runtime_attachment: |_| true,
             open_state: crate::persist::open,
             open_state_with_args: None,
             allowed_flags: &[],
@@ -222,6 +233,7 @@ impl LaunchSpec {
             live_handler: None,
             command_handler: None,
             headless_enabled: true,
+            runtime_attachment: |_| true,
             open_state: crate::persist::open,
             open_state_with_args: None,
             allowed_flags: &[],
@@ -587,6 +599,10 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     run_with_args(spec, &args)
 }
 
+fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchError> {
+    run_with_args_with_attachment(spec, raw_args, runtime_portal::native::ensure_attached)
+}
+
 #[allow(
     clippy::exit,
     reason = "the --headless-drive path reports the harness's pass/fail \
@@ -598,7 +614,11 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     clippy::too_many_lines,
     reason = "one ordered dispatch preserves legacy and prepared mode delivery"
 )]
-fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchError> {
+fn run_with_args_with_attachment(
+    spec: &LaunchSpec,
+    raw_args: &[String],
+    attach: impl FnOnce(&str) -> std::io::Result<()>,
+) -> Result<(), LaunchError> {
     let _detached = crate::wake::WakeScope::enter_detached();
     let args = parse_args_extended(
         raw_args,
@@ -616,6 +636,9 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     });
 
     if spec.definition.is_some() {
+        if args.headless.is_none() && args.shots.is_none() && args.responsive_matrix.is_none() && !args.native_audit && (spec.runtime_attachment)(&args) {
+            attach(spec.app_id).map_err(|error| LaunchError::Operation(format!("native runtime attachment failed: {error}")))?;
+        }
         match dispatch_definition(spec, &args)? {
             DefinitionDispatch::Native(app) => (*app).run(),
             DefinitionDispatch::Headless(status) => std::process::exit(status),
@@ -638,7 +661,12 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         return Ok(());
     }
 
-    if let Some(handler) = spec.command_handler
+    // An automatic host exec resumes the already-selected live branch. Command
+    // handlers may have side effects even when returning false; run them once.
+    let resumed_live = std::env::var_os("QOS_RUNTIME_RESUME_LIVE").as_deref() == Some(std::ffi::OsStr::new(spec.app_id))
+        && runtime_portal::service_fd("collab").is_some()
+        && runtime_portal::service_fd("identity").is_some();
+    if !resumed_live && let Some(handler) = spec.command_handler
         && handler(&args)?
     {
         return Ok(());
@@ -715,6 +743,9 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         return Ok(());
     }
 
+    if (spec.runtime_attachment)(&args) {
+        attach(spec.app_id).map_err(|error| LaunchError::Operation(format!("native runtime attachment failed: {error}")))?;
+    }
     if let Some(handler) = spec.live_handler {
         return handler(&args);
     }
@@ -1663,8 +1694,91 @@ mod tests {
     fn custom_live_pipeline_runs_after_standard_mode_dispatch() {
         CUSTOM_LIVE_RAN.store(false, Ordering::SeqCst);
         let spec = LaunchSpec::new("dev.qos.test", dummy_root).live_handler(custom_live);
-        run_with_args(&spec, &strings(&["app"])).unwrap();
+        run_with_args_with_attachment(&spec, &strings(&["app"]), |_| Ok(())).unwrap();
         assert!(CUSTOM_LIVE_RAN.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn native_runtime_attachment_precedes_default_custom_and_definition_construction() {
+        fn fail_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+            Err(LaunchError::Operation("root was constructed before attachment".into()))
+        }
+        fn fail_prepare(_: &crate::application::ApplicationDefinition, _: &LaunchArgs) -> Result<crate::application::PreparedComponentInputs, LaunchError> {
+            Err(LaunchError::Operation("definition was prepared before attachment".into()))
+        }
+        let specs = [
+            LaunchSpec::new_with_args("dev.qos.test", fail_root),
+            LaunchSpec::new("dev.qos.test", dummy_root).live_handler(unexpected_live),
+            LaunchSpec::from_definition(crate::application_test_support::runner_probe_definition()).component_host(fail_prepare),
+        ];
+        for spec in specs {
+            let result = run_with_args_with_attachment(&spec, &strings(&["app"]), |app_id| {
+                assert_eq!(app_id, spec.app_id);
+                Err(std::io::Error::other("attachment stopped before construction"))
+            });
+            assert!(matches!(result, Err(LaunchError::Operation(message)) if message.contains("attachment stopped before construction")));
+        }
+    }
+
+    #[test]
+    fn diagnostics_and_handled_commands_never_attach_runtime() {
+        fn fail_prepare(_: &crate::application::ApplicationDefinition, _: &LaunchArgs) -> Result<crate::application::PreparedComponentInputs, LaunchError> {
+            Err(LaunchError::Operation("detached preparation".into()))
+        }
+        let spec = LaunchSpec::from_definition(crate::application_test_support::runner_probe_definition()).component_host(fail_prepare);
+        for args in [strings(&["app", "--shots", "/tmp/not-written.png"]), strings(&["app", "--responsive-matrix", "/tmp/not-written"]), strings(&["app", "--native-audit"]), strings(&["app", "--headless-drive", "{}"]) ] {
+            let result = run_with_args_with_attachment(&spec, &args, |_| panic!("diagnostic attached runtime"));
+            assert!(matches!(result, Err(LaunchError::Operation(message)) if message == "detached preparation"));
+        }
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root).command_handler(custom_command);
+        run_with_args_with_attachment(&spec, &strings(&["app"]), |_| panic!("handled command attached runtime")).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn automatic_reexec_skips_only_the_already_run_command_handler() {
+        use std::os::{fd::AsRawFd, unix::{net::UnixStream, process::CommandExt}};
+        static COMMANDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn command(_: &LaunchArgs) -> Result<bool, LaunchError> {
+            COMMANDS.fetch_add(1, Ordering::SeqCst);
+            Ok(false)
+        }
+        fn live(_: &LaunchArgs) -> Result<(), LaunchError> { Ok(()) }
+        if let Ok(mode) = std::env::var("QOS_LAUNCH_REEXEC_TEST") {
+            let spec = LaunchSpec::new("dev.qos.reexec-test", dummy_root).command_handler(command).live_handler(live);
+            if mode == "local" {
+                let spec = spec.runtime_attachment(|_| false);
+                run_with_args_with_attachment(&spec, &strings(&["app"]), |_| panic!("local policy attached inherited runtime")).unwrap();
+            } else {
+                run_with_args(&spec, &strings(&["app"])).unwrap();
+            }
+            assert_eq!(COMMANDS.load(Ordering::SeqCst), usize::from(mode != "resumed"));
+            return;
+        }
+        for mode in ["initial", "resumed", "local"] {
+            let (collab, _collab_peer) = UnixStream::pair().unwrap();
+            let (identity, _identity_peer) = UnixStream::pair().unwrap();
+            let fds = [collab.as_raw_fd(), identity.as_raw_fd()];
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child.args(["--exact", "launch::tests::automatic_reexec_skips_only_the_already_run_command_handler", "--nocapture"])
+                .env("QOS_LAUNCH_REEXEC_TEST", mode)
+                .env("QOS_SVC_COLLAB_FD", fds[0].to_string())
+                .env("QOS_SVC_IDENTITY_FD", fds[1].to_string())
+                .env_remove("QOS_RUNTIME_RESUME_LIVE");
+            if mode == "resumed" { child.env("QOS_RUNTIME_RESUME_LIVE", "dev.qos.reexec-test"); }
+            // SAFETY: only fcntl runs after fork; both sockets stay owned by
+            // this parent until the isolated assertion process exits.
+            unsafe { child.pre_exec(move || { for fd in fds { if libc::fcntl(fd, libc::F_SETFD, 0) < 0 { return Err(std::io::Error::last_os_error()); } } Ok(()) }); }
+            assert!(child.status().unwrap().success());
+        }
+    }
+
+    #[test]
+    fn explicit_runtime_attachment_policy_skips_bootstrap_for_native_launch() {
+        let spec = LaunchSpec::new("dev.qos.test", dummy_root)
+            .runtime_attachment(|_| false).live_handler(unexpected_live);
+        let result = run_with_args_with_attachment(&spec, &strings(&["app"]), |_| Err(std::io::Error::other("unexpected attachment")));
+        assert!(matches!(result, Err(LaunchError::Operation(message)) if message == "screenshot dispatch reached the live handler"));
     }
 
     fn custom_open_state(app_id: &'static str) -> (State, crate::persist::Autosave) {
