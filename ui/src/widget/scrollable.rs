@@ -1420,11 +1420,20 @@ impl Widget for Scrollable {
         }
         let rect = child.get_rect();
         let viewport = self.content_viewport_rect();
+        let x = (rect.x0 - viewport.x0 + f64::from(self.offset_x)) as f32;
+        let y = (rect.y0 - viewport.y0 + f64::from(self.offset_y)) as f32;
+        // Keep enough surrounding context to identify a form control after
+        // keyboard traversal. Merely placing a focused field flush against
+        // the viewport edge can hide its label and the adjacent action,
+        // producing an apparently anonymous text box on compact setup pages.
+        // The margin is capped so very small viewports still prioritise the
+        // control itself.
+        let context = (self.effective_viewport_h() * 0.12).clamp(16.0, 56.0);
         self.scroll_into_view(
-            (rect.x0 - viewport.x0 + f64::from(self.offset_x)) as f32,
-            (rect.y0 - viewport.y0 + f64::from(self.offset_y)) as f32,
-            rect.width() as f32,
-            rect.height() as f32,
+            (x - context).max(0.0),
+            (y - context).max(0.0),
+            rect.width() as f32 + context * 2.0,
+            rect.height() as f32 + context * 2.0,
         );
         true
     }
@@ -1577,6 +1586,36 @@ mod tests {
         fn get_rect(&self) -> Rect {
             self.rect
         }
+
+        fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
+            std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(self), target)
+        }
+    }
+
+    #[test]
+    fn focus_reveal_keeps_context_above_a_form_control_visible() {
+        let mut scroll = vertical(900.0).with_child(Box::new(EventSpy {
+            rect: Rect::new(12.0, 520.0, 188.0, 568.0),
+            pointer_events: Rc::default(),
+            draw_viewport: Rc::default(),
+            activations: Rc::default(),
+        }));
+        scroll.rect = Rect::new(0.0, 0.0, 200.0, 300.0);
+        let target = {
+            let child = scroll.child.as_deref_mut().expect("child");
+            std::ptr::from_ref::<dyn Widget>(child)
+        };
+
+        assert!(scroll.reveal_descendant(target));
+        assert!(
+            scroll.offset_y() <= 484.0,
+            "focus reveal should retain at least 36px of label/context above the field; offset={} ",
+            scroll.offset_y()
+        );
+        assert!(
+            scroll.offset_y() + 300.0 >= 604.0,
+            "the focused field plus context below must remain visible"
+        );
     }
 
     #[test]
