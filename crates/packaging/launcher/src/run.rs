@@ -124,6 +124,11 @@ impl CapturedResourcePlan {
     pub const MAX_WALL_TIME: Duration = Duration::from_secs(10 * 60);
 
     /// Reject absent or excessively broad limits before a process exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunError::InvalidCapturePlan`] when any limit is zero,
+    /// below the safe memory floor, or above the launcher's hard ceiling.
     pub fn validate(self) -> Result<Self, RunError> {
         if self.cpu_seconds == 0
             || self.cpu_seconds > Self::MAX_CPU_SECONDS
@@ -1966,8 +1971,8 @@ fn reserve_output(counter: &AtomicUsize, requested: usize, limit: usize) -> usiz
 
 fn drain_bounded(
     mut reader: impl std::io::Read,
-    used: Arc<AtomicUsize>,
-    exceeded: Arc<AtomicBool>,
+    used: &AtomicUsize,
+    exceeded: &AtomicBool,
     limit: usize,
 ) -> std::io::Result<Vec<u8>> {
     let mut captured = Vec::new();
@@ -1977,7 +1982,7 @@ fn drain_bounded(
         if read == 0 {
             break;
         }
-        let accepted = reserve_output(&used, read, limit);
+        let accepted = reserve_output(used, read, limit);
         if let Some(bytes) = chunk.get(..accepted) {
             captured.extend_from_slice(bytes);
         }
@@ -2035,15 +2040,15 @@ mod captured_resource_tests {
         let exceeded = Arc::new(AtomicBool::new(false));
         let first = drain_bounded(
             std::io::Cursor::new(b"123456"),
-            Arc::clone(&used),
-            Arc::clone(&exceeded),
+            used.as_ref(),
+            exceeded.as_ref(),
             8,
         )
         .unwrap();
         let second = drain_bounded(
             std::io::Cursor::new(b"abcdef"),
-            Arc::clone(&used),
-            Arc::clone(&exceeded),
+            used.as_ref(),
+            exceeded.as_ref(),
             8,
         )
         .unwrap();
@@ -2063,7 +2068,11 @@ mod captured_resource_tests {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the bounded supervisor keeps pipe ownership, process-group teardown, and every terminal reason in one auditable transaction"
+)]
 fn spawn_and_capture_bounded(
     mut argv: Vec<String>,
     passthrough: Vec<String>,
@@ -2076,7 +2085,7 @@ fn spawn_and_capture_bounded(
         Option<std::thread::JoinHandle<()>>,
     ),
     plan: CapturedResourcePlan,
-    cancellation: CaptureCancellation,
+    cancellation: &CaptureCancellation,
 ) -> Result<CapturedRunOutput, RunError> {
     const SECCOMP_CHILD_FD: i32 = 16;
     let plan = plan.validate()?;
@@ -2146,12 +2155,22 @@ fn spawn_and_capture_bounded(
     let stdout_used = Arc::clone(&used);
     let stdout_exceeded = Arc::clone(&exceeded);
     let stdout_thread = std::thread::spawn(move || {
-        drain_bounded(stdout, stdout_used, stdout_exceeded, plan.output_bytes)
+        drain_bounded(
+            stdout,
+            stdout_used.as_ref(),
+            stdout_exceeded.as_ref(),
+            plan.output_bytes,
+        )
     });
     let stderr_used = Arc::clone(&used);
     let stderr_exceeded = Arc::clone(&exceeded);
     let stderr_thread = std::thread::spawn(move || {
-        drain_bounded(stderr, stderr_used, stderr_exceeded, plan.output_bytes)
+        drain_bounded(
+            stderr,
+            stderr_used.as_ref(),
+            stderr_exceeded.as_ref(),
+            plan.output_bytes,
+        )
     });
 
     let deadline = Instant::now()
@@ -2174,7 +2193,8 @@ fn spawn_and_capture_bounded(
             let pid = i32::try_from(child.id()).unwrap_or(i32::MAX);
             // SAFETY: the child created its own process group before exec;
             // a negative pid addresses only that exact group.
-            let killed = unsafe { libc::kill(-pid, libc::SIGKILL) } == 0;
+            let process_group = pid.saturating_neg();
+            let killed = unsafe { libc::kill(process_group, libc::SIGKILL) } == 0;
             if !killed {
                 let _ = child.kill();
             }
@@ -2197,6 +2217,12 @@ fn spawn_and_capture_bounded(
     })
 }
 
+type IdentityBrokerHandles = (
+    Option<UnixStream>,
+    Option<UnixStream>,
+    Option<std::thread::JoinHandle<()>>,
+);
+
 /// [`run_with`] sibling that captures the child's stdout instead of inheriting
 /// it. It deliberately uses the same Landlock, seccomp, runtime, portal,
 /// identity, filesystem and egress decisions as a normal qpkg launch.
@@ -2213,12 +2239,6 @@ fn spawn_and_capture_bounded(
 /// empty argv — it always appends the entrypoint binary as the last
 /// element, so this would indicate a bug in that builder, not a runtime
 /// condition.
-type IdentityBrokerHandles = (
-    Option<UnixStream>,
-    Option<UnixStream>,
-    Option<std::thread::JoinHandle<()>>,
-);
-
 pub fn run_with_captured(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -2230,6 +2250,11 @@ pub fn run_with_captured(
 /// Captured sandbox launch with launcher-enforced resource limits and
 /// cancellation. Sandbox construction is exactly the same as
 /// [`run_with_captured`]; only process supervision differs.
+///
+/// # Errors
+///
+/// Returns [`RunError`] when the plan is invalid, sandbox construction fails,
+/// or the bounded child cannot be spawned, supervised, or collected.
 pub fn run_with_captured_bounded(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -2251,7 +2276,7 @@ pub fn run_with_captured_bounded(
                 services,
                 identity,
                 plan,
-                cancellation,
+                &cancellation,
             )
         },
     )
