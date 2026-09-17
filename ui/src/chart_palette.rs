@@ -1,6 +1,7 @@
 //! Theme-aware reusable colour palettes for charts and data visualisation.
 
 use crate::animation::Lerp;
+use crate::num;
 use crate::theme::Theme;
 use vello::peniko::Color;
 
@@ -69,7 +70,13 @@ impl ChartPalette {
 
     /// Stable wraparound lookup, suitable for an arbitrary number of series.
     pub fn categorical(&self, index: usize) -> Color {
-        self.categorical[index % self.categorical.len()]
+        let wrapped = index
+            .checked_rem(self.categorical.len())
+            .unwrap_or_default();
+        self.categorical
+            .get(wrapped)
+            .copied()
+            .unwrap_or(self.diverging.0)
     }
 
     pub fn categorical_colors(&self, count: usize) -> Vec<Color> {
@@ -78,7 +85,7 @@ impl ChartPalette {
 
     /// Sample the sequential ramp. Values outside `0..=1` are clamped.
     pub fn sequential(&self, value: f64) -> Color {
-        let value = value.clamp(0.0, 1.0) as f32;
+        let value = num::f32_of_f64(value.clamp(0.0, 1.0));
         <Color as Lerp>::lerp(self.sequential.0, self.sequential.1, value)
     }
 
@@ -87,9 +94,9 @@ impl ChartPalette {
     pub fn diverging(&self, value: f64) -> Color {
         let value = value.clamp(-1.0, 1.0);
         if value < 0.0 {
-            <Color as Lerp>::lerp(self.diverging.1, self.diverging.0, (-value) as f32)
+            <Color as Lerp>::lerp(self.diverging.1, self.diverging.0, num::f32_of_f64(-value))
         } else {
-            <Color as Lerp>::lerp(self.diverging.1, self.diverging.2, value as f32)
+            <Color as Lerp>::lerp(self.diverging.1, self.diverging.2, num::f32_of_f64(value))
         }
     }
 }
@@ -107,6 +114,7 @@ mod tests {
         assert!(!palette.is_empty());
         assert_eq!(palette.categorical(0), first);
         assert_eq!(palette.categorical(2), first);
+        assert_eq!(palette.categorical(usize::MAX), second);
     }
 
     #[test]
