@@ -33,8 +33,14 @@ use crate::accounts::{
     AccountConfig, AccountDirectory, AccountKind, AccountView, NEXTCLOUD_TYPE, WEBDAV_TYPE,
 };
 use crate::widgets::{
-    El, caption, card, card_with_action, hgap, rows, setting_row, status_pill, value_row,
+    El, caption, card, card_with_action, rows, setting_row, status_pill, value_row,
 };
+
+/// Height (logical px) of the per-account maintenance buttons. The shared
+/// `Button` default — the same height as the card's trailing "Add account"
+/// button and every dropdown in Settings — so one card never mixes two
+/// control heights.
+const ACTION_BUTTON_H: f32 = 40.0;
 
 /// Key the "Add" button on the Email card writes to open the form.
 pub const ADD_MAIL_KEY: &str = "settings.accounts.add.mail";
@@ -521,7 +527,6 @@ impl AccountsPane {
                                 "Remove from this device",
                                 Some(REMOVE_CONFIRM_KEY),
                             )))
-                            .push(hgap(8.0))
                             .push(Box::new(Button::new(
                                 "settings.accounts.remove.cancel",
                                 "Cancel",
@@ -678,9 +683,8 @@ impl AccountsPane {
                         },
                         false,
                     )
-                    .fit_content(34.0),
+                    .fit_content(ACTION_BUTTON_H),
                 ))
-                .push(hgap(8.0))
                 .push(Box::new(
                     account_action_button(
                         &format!("settings.accounts.reauth.{}", view.id),
@@ -694,7 +698,7 @@ impl AccountsPane {
                         },
                         false,
                     )
-                    .fit_content(34.0),
+                    .fit_content(ACTION_BUTTON_H),
                 ))
                 .push(Box::new(Spacer::new()));
             let secondary_actions = Row::new()
@@ -715,7 +719,7 @@ impl AccountsPane {
                         },
                         false,
                     )
-                    .fit_content(34.0),
+                    .fit_content(ACTION_BUTTON_H),
                 ))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
@@ -732,7 +736,7 @@ impl AccountsPane {
                         true,
                     )
                     .danger()
-                    .fit_content(34.0),
+                    .fit_content(ACTION_BUTTON_H),
                 ));
             column = column
                 .push(Box::new(primary_actions))
@@ -889,7 +893,6 @@ impl AccountsPane {
                     crate::actions::AccountOperation::SubmitReauthentication,
                     false,
                 )))
-                .push(hgap(8.0))
                 .push(Box::new(account_action_button(
                     "settings.accounts.reauth.cancel",
                     "Cancel",
