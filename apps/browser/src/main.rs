@@ -88,6 +88,7 @@ pub fn main() {
 
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("dev.qos.browser", browser_root)
+            .runtime_attachment(|args| !launch_browsing_mode(args).is_private())
             .shot_handler(render_shot)
             .open_state_with_args(open_browser_state)
             .allowed_live_options(&[
@@ -147,13 +148,17 @@ fn requested_browsing_mode(
     }
 }
 
+fn launch_browsing_mode(args: &LaunchArgs) -> BrowsingMode {
+    requested_browsing_mode(
+        args.has("--private"),
+        std::env::var_os("QOS_BROWSER_PRIVATE").as_deref(),
+    )
+}
+
 fn prepare_launch(args: &LaunchArgs) -> Result<&'static LaunchPolicy, String> {
     LAUNCH_POLICY
         .get_or_init(|| {
-            let mode = requested_browsing_mode(
-                args.has("--private"),
-                std::env::var_os("QOS_BROWSER_PRIVATE").as_deref(),
-            );
+            let mode = launch_browsing_mode(args);
             if mode.is_private() {
                 let root = browser::storage::allocate_private_root()?;
                 let root_text = root
@@ -303,8 +308,13 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
     }
 
     let (state, autosave) = open_browser_state("dev.qos.browser", args);
-    let mut app =
-        ui::App::from_scoped_parts(wake_scope, state, Box::new(widget)).with_autosave(autosave);
+    let mode = prepare_launch(args).map_err(LaunchError::Operation)?.mode;
+    let mut app = if mode.is_private() {
+        ui::App::from_scoped_parts_local(wake_scope, state, Box::new(widget))
+    } else {
+        ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
+    }
+    .with_autosave(autosave);
     browser::actions::register(app.action_registry_mut());
     // Wake the (otherwise event-driven) winit loop whenever the engine
     // publishes a frame or a navigation event, so pages animate and
