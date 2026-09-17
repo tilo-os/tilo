@@ -4,7 +4,7 @@
 //! hardware discovery on the render path. Remote clipboard entries become
 //! history, not the live Wayland selection, until explicitly activated.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
@@ -620,6 +620,8 @@ pub struct DeviceFabricRuntime {
         BTreeMap<[u8; 16], (crate::shell::personal_continuity::DeviceId, String)>,
     waiting_incoming_media: BTreeMap<[u8; 16], PendingIncomingMedia>,
     notification_bridge: NotificationBridge,
+    realtime_adapter: Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter>,
+    realtime_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
 }
 
 impl DeviceFabricRuntime {
@@ -636,7 +638,16 @@ impl DeviceFabricRuntime {
             pending_incoming_media: BTreeMap::new(),
             waiting_incoming_media: BTreeMap::new(),
             notification_bridge,
+            realtime_adapter: None,
+            realtime_online_peers: BTreeSet::new(),
         }
+    }
+
+    pub fn set_realtime_adapter(
+        &mut self,
+        adapter: crate::shell::realtime_session::SharedRealtimeFabricAdapter,
+    ) {
+        self.realtime_adapter = Some(adapter);
     }
 
     /// Sample local state and project authenticated remote state into the OS.
@@ -648,6 +659,7 @@ impl DeviceFabricRuntime {
     ) {
         pump_bluetooth_handoffs(network);
         self.handle_fabric_actions(network);
+        self.pump_realtime_continuity(network);
         self.pump_notification_continuity(network);
         resume_nearby_transfers(network);
         pump_personal_displays(network);
@@ -778,6 +790,9 @@ impl DeviceFabricRuntime {
             if self.handle_notification_action(network, &envelope) {
                 continue;
             }
+            if self.handle_realtime_action(&envelope) {
+                continue;
+            }
             match envelope.action {
                 PersonalFabricAction::ResumeMedia {
                     session_id,
@@ -853,6 +868,80 @@ impl DeviceFabricRuntime {
                 }
                 action => handle_spatial_action(envelope.source, &envelope.target, action),
             }
+        }
+    }
+
+    fn handle_realtime_action(
+        &self,
+        envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+    ) -> bool {
+        use crate::shell::realtime_session::RealtimeFabricSignal;
+
+        let signal = match &envelope.action {
+            PersonalFabricAction::RealtimeOffer { offer } => {
+                RealtimeFabricSignal::Offer(offer.clone())
+            }
+            PersonalFabricAction::RealtimeAccept { session_id } => {
+                RealtimeFabricSignal::Accept(*session_id)
+            }
+            PersonalFabricAction::RealtimeMediaReady { session_id } => {
+                RealtimeFabricSignal::MediaReady(*session_id)
+            }
+            PersonalFabricAction::RealtimeStopSource { session_id } => {
+                RealtimeFabricSignal::StopSource(*session_id)
+            }
+            PersonalFabricAction::RealtimeCancel { session_id } => {
+                RealtimeFabricSignal::Cancel(*session_id)
+            }
+            _ => return false,
+        };
+        if let Some(adapter) = self.realtime_adapter.as_ref() {
+            let _ = adapter.receive_authenticated(
+                &envelope.source,
+                &envelope.target,
+                signal,
+                Instant::now(),
+                unix_ms(),
+            );
+        }
+        true
+    }
+
+    fn pump_realtime_continuity(&mut self, network: &ShellNetwork) {
+        use crate::shell::realtime_session::RealtimeFabricSignal;
+
+        let Some(adapter) = self.realtime_adapter.as_ref() else {
+            return;
+        };
+        let online = network
+            .device_fabric()
+            .snapshots()
+            .values()
+            .filter(|snapshot| snapshot.presence.online)
+            .map(|snapshot| snapshot.owner.clone())
+            .collect::<BTreeSet<_>>();
+        for peer in self.realtime_online_peers.difference(&online) {
+            adapter.peer_offline(peer, Instant::now());
+        }
+        self.realtime_online_peers = online;
+        adapter.tick(Instant::now());
+        for egress in adapter.drain_egress() {
+            let action = match egress.signal {
+                RealtimeFabricSignal::Offer(offer) => PersonalFabricAction::RealtimeOffer { offer },
+                RealtimeFabricSignal::Accept(session_id) => {
+                    PersonalFabricAction::RealtimeAccept { session_id }
+                }
+                RealtimeFabricSignal::MediaReady(session_id) => {
+                    PersonalFabricAction::RealtimeMediaReady { session_id }
+                }
+                RealtimeFabricSignal::StopSource(session_id) => {
+                    PersonalFabricAction::RealtimeStopSource { session_id }
+                }
+                RealtimeFabricSignal::Cancel(session_id) => {
+                    PersonalFabricAction::RealtimeCancel { session_id }
+                }
+            };
+            let _ = network.send_personal_fabric_action(&egress.target, action);
         }
     }
 
@@ -1480,7 +1569,12 @@ fn handle_spatial_action(
         | PersonalFabricAction::NotificationProject { .. }
         | PersonalFabricAction::NotificationRetire { .. }
         | PersonalFabricAction::NotificationDismiss { .. }
-        | PersonalFabricAction::NotificationInvoke { .. } => {}
+        | PersonalFabricAction::NotificationInvoke { .. }
+        | PersonalFabricAction::RealtimeOffer { .. }
+        | PersonalFabricAction::RealtimeAccept { .. }
+        | PersonalFabricAction::RealtimeMediaReady { .. }
+        | PersonalFabricAction::RealtimeStopSource { .. }
+        | PersonalFabricAction::RealtimeCancel { .. } => {}
     }
 }
 
