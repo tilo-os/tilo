@@ -1,0 +1,105 @@
+#!/usr/bin/python3
+"""Rootful development-only EFI/PCR signer, installed outside the checkout.
+
+Provision with setup-development-signer.py. This is not a privileged service:
+it requires an already-root caller and never changes firmware or enrolls keys.
+"""
+import os
+from pathlib import Path
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+PURPOSE = b'tilo-development-signer-v1\n'
+
+
+def trusted(path, *, private=False, directory=False):
+    path = Path(path)
+    if not path.is_absolute():
+        raise ValueError('signer paths must be absolute')
+    for current in (path, *path.parents):
+        info = current.lstat()
+        if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError('signer paths must be root-owned, non-writable and not redirected')
+        if current == path:
+            if directory and not stat.S_ISDIR(info.st_mode):
+                raise ValueError('expected signer directory')
+            if not directory and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+                raise ValueError('expected singly linked signer file')
+            if private and info.st_mode & 0o077:
+                raise ValueError('private signing material must be owner-only')
+        elif not stat.S_ISDIR(info.st_mode):
+            raise ValueError('signer parent is not a directory')
+    return path
+
+
+def run(argv, *, pass_fds=()):
+    # Never expose private-key contents or potentially sensitive tool diagnostics.
+    result = subprocess.run(argv, pass_fds=pass_fds, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, env={'PATH': '/usr/bin:/bin', 'LANG': 'C'})
+    if result.returncode:
+        raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
+    return result.stdout
+
+
+def sign(home, operation, source, destination):
+    if operation not in ('export-efi-cert', 'sign-efi', 'sign-sha256-rsa-pkcs1'):
+        raise ValueError('unsupported signing operation')
+    if os.getuid() != 0:
+        raise ValueError('development signer requires an already-root caller')
+    trusted(home, private=True, directory=True)
+    marker = trusted(home / 'purpose')
+    if marker.read_bytes() != PURPOSE:
+        raise ValueError('missing development-only signer purpose')
+    certificate = trusted(home / 'efi-signing.crt')
+    destination = Path(destination)
+    # Exclusive output prevents accidental overwrite, including key files.
+    with destination.open('xb') as output:
+        os.fchmod(output.fileno(), 0o644)
+        try:
+            if operation == 'export-efi-cert':
+                output.write(certificate.read_bytes())
+                return
+            descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 1024 * 1024 * 1024:
+                    raise ValueError('signing input must be a bounded nonempty regular file')
+                source_fd = f'/proc/self/fd/{descriptor}'
+                with tempfile.TemporaryDirectory(prefix='operation-', dir=home) as temporary:
+                    signed = Path(temporary) / 'signed'
+                    if operation == 'sign-efi':
+                        key = trusted(home / 'efi-signing.key', private=True)
+                        argv = ['/usr/bin/sbsign', '--key', str(key), '--cert', str(certificate),
+                                '--output', str(signed), source_fd]
+                    else:
+                        key = trusted(home / 'pcr-signing.key', private=True)
+                        argv = ['/usr/bin/openssl', 'dgst', '-sha256', '-sign', str(key),
+                                '-sigopt', 'rsa_padding_mode:pkcs1', '-out', str(signed), source_fd]
+                    run(argv, pass_fds=(descriptor,))
+                    with signed.open('rb') as result:
+                        shutil.copyfileobj(result, output)
+            finally:
+                os.close(descriptor)
+        except BaseException:
+            # Remove only the exclusive output owned by this invocation.
+            destination.unlink()
+            raise
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or (args[0] == 'export-efi-cert' and len(args) != 2) or (
+            args[0] in ('sign-efi', 'sign-sha256-rsa-pkcs1') and len(args) != 3):
+        raise ValueError('expected export-efi-cert OUTPUT or sign-efi/sign-sha256-rsa-pkcs1 INPUT OUTPUT')
+    executable = trusted(Path(__file__).absolute())
+    sign(executable.parent, args[0], args[1] if len(args) == 3 else None, args[-1])
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError) as error:
+        sys.exit(f'development signer: {error}')
