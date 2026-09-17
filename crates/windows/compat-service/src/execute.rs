@@ -10,6 +10,7 @@ use thiserror::Error;
 use crate::CapsuleCommandPlan;
 
 pub const SECCOMP_CHILD_FD: i32 = 32;
+use launcher::performance::apply_game_performance_hints;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionOutcome {
@@ -45,11 +46,15 @@ impl SandboxExecutor for BwrapExecutor {
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        if let Some(filter_fd) = filter_fd {
-            // SAFETY: `pre_exec` calls only async-signal-safe libc functions.
-            // The owned memfd remains alive until spawn returns.
-            unsafe {
-                command.pre_exec(move || {
+        let latency_sensitive = plan.latency_sensitive;
+        // SAFETY: `pre_exec` calls only direct, async-signal-safe libc syscalls.
+        // The owned memfd remains alive until spawn returns.
+        unsafe {
+            command.pre_exec(move || {
+                if latency_sensitive {
+                    apply_game_performance_hints()?;
+                }
+                if let Some(filter_fd) = filter_fd {
                     if libc::dup2(filter_fd, SECCOMP_CHILD_FD) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
@@ -61,9 +66,9 @@ impl SandboxExecutor for BwrapExecutor {
                     {
                         return Err(std::io::Error::last_os_error());
                     }
-                    Ok(())
-                });
-            }
+                }
+                Ok(())
+            });
         }
         let mut child = command.spawn().map_err(ExecutionError::Spawn)?;
         drop(filter_file.take());

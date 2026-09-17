@@ -6,6 +6,8 @@ Wants=network-online.target
 PartOf=tilo-graphical-session.target
 Requires=tilo-model-storage.service
 After=tilo-model-storage.service
+# Started by tilo-models.socket only when an app connects. Network readiness is
+# a request concern; it must not delay daemon activation or user login.
 
 [Service]
 Type=simple
@@ -17,6 +19,14 @@ UMask=0077
 # tmpfiles creates the persistent model and rootless-Container directories.
 RuntimeDirectory=tilo
 RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+# Have the service manager guarantee both persistent roots without forking a
+# second tmpfiles process on every cold socket activation. The ordinary user
+# tmpfiles pass still creates the nested model directory at login; the manager
+# creates its content-addressed leaves on demand.
+StateDirectory=tilo containers
+StateDirectoryMode=0700
+
 # Settings receives only the connected models@1 descriptor. This service owns
 # network transfers, the content-addressed user store, and Podman supervision.
 ProtectSystem=strict
@@ -34,6 +44,3 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictSUIDSGID=yes
 LockPersonality=yes
 SystemCallArchitectures=native
-
-[Install]
-WantedBy=default.target

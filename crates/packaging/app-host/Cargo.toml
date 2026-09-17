@@ -23,6 +23,7 @@ path = "src/lib.rs"
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
+bounded-command = { path = "../../system/bounded-command" }
 pkg = { path = "../pkg" }
 app-registry = { path = "../app-registry" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
@@ -48,6 +49,7 @@ thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+libc.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 

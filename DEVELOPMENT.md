@@ -30,7 +30,6 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `dbus-1` | `dbus-devel` | portals |
 | `libavcodec` `libavformat` `libavutil` | `libavcodec-free-devel` `libavformat-free-devel` | shell's default hdr-decode feature |
 | `gstreamer-1.0` `gstreamer-app-1.0` | `gstreamer1-devel` `gstreamer1-plugins-base-devel` | media apps |
-| `openssl` | `openssl-devel` | |
 | `capnp` (binary) | `capnproto` | runtime-collab schema |
 | `bwrap` (binary) | `bubblewrap` | the launcher's confinement tests drive the real sandbox |
 | `rust-analyzer` (binary) | `rustup component add rust-analyzer` | the code editor's language-server test drives a real server |

@@ -21,10 +21,10 @@
 
 #[cfg(target_os = "linux")]
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
-#[cfg(target_os = "linux")]
+use std::process::Command;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use zeroize::Zeroizing;
 
 /// The single non-leaky rejection line shown for any wrong credential, shared by every verifier so unlock never reveals more than login does.
 pub const INCORRECT_MSG: &str = "Incorrect username or password";
@@ -142,23 +142,6 @@ impl HelperVerifier {
     }
 }
 
-/// Poll a spawned child to completion or `None` on timeout, using `try_wait` so the parent keeps the handle and can kill a hung child. Runs on the verify worker thread, so the sleep never touches the compositor loop.
-fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) => {
-                if start.elapsed() >= timeout {
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            Err(_) => return None,
-        }
-    }
-}
-
 impl PasswordVerifier for HelperVerifier {
     fn verify(&self, username: &str, password: &str) -> Result<(), String> {
         let Some((program, args)) = self.program.split_first() else {
@@ -167,35 +150,19 @@ impl PasswordVerifier for HelperVerifier {
         let mut cmd = Command::new(program);
         cmd.args(args);
         cmd.arg(username);
-        cmd.stdin(Stdio::piped());
-        // Discard the helper's output so no raw PAM/diagnostic text can leak.
-        cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::null());
-
-        // Could not even launch the helper — fail closed, non-leaky.
-        let Ok(mut child) = cmd.spawn() else {
+        let mut input = Zeroizing::new(Vec::with_capacity(password.len().saturating_add(1)));
+        input.extend_from_slice(password.as_bytes());
+        input.push(b'\n');
+        let Ok(output) =
+            bounded_command::run_prepared(cmd, Some(input.as_slice()), 1024, self.timeout)
+        else {
             return Err(UNAVAILABLE_MSG.to_string());
         };
-
-        // Hand the password over on stdin (newline-terminated), then close the pipe so the helper sees EOF — the payload is tiny (< pipe buffer), so this write never blocks.
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            let _ = stdin.write_all(password.as_bytes());
-            let _ = stdin.write_all(b"\n");
-            // `stdin` drops here → EOF for the helper.
-        }
-
-        match wait_with_timeout(&mut child, self.timeout) {
-            Some(status) if status.success() => Ok(()),
-            Some(status) if status.code() == Some(1) => Err(INCORRECT_MSG.to_string()),
+        match output.status.code() {
+            Some(0) => Ok(()),
+            Some(1) => Err(INCORRECT_MSG.to_string()),
             // Exit 2, another code, or a signal: the check itself failed.
-            Some(_) => Err(UNAVAILABLE_MSG.to_string()),
-            None => {
-                // Timed out — kill the hung helper and fail closed.
-                let _ = child.kill();
-                let _ = child.wait();
-                Err(UNAVAILABLE_MSG.to_string())
-            }
+            _ => Err(UNAVAILABLE_MSG.to_string()),
         }
     }
 }
@@ -291,6 +258,7 @@ pub fn verifier_from_env() -> std::sync::Arc<dyn PasswordVerifier> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     // select_verifier: the developer-override gate — drives the policy function with `dev_overrides`
     // explicitly, so shipped behaviour is exercised from an ordinary debug test run instead of only being reachable in a build the suite never runs.

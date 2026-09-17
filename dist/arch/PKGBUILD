@@ -4,7 +4,7 @@ pkgname=(tilo-session tilo-session-devel)
 pkgver=0.1.9
 pkgrel=1
 pkgdesc='Tilo collaborative compositor as a Wayland session'
-url='https://code.podesta.ai/qos/tilo'
+url='https://code.podesta.ai/tilo/tilo'
 license=('AGPL-3.0-only')
 arch=('x86_64' 'aarch64')
 # Arch enables split debug packages through makepkg.conf on some builders.
@@ -18,7 +18,7 @@ options=('!debug' '!lto')
 makedepends=(
   'rustup' 'clang' 'cmake' 'pkgconf' 'capnproto'
   'libxkbcommon' 'wayland' 'seatd' 'libinput' 'systemd-libs' 'libdrm' 'mesa'
-  'pipewire' 'dbus' 'openssl' 'fontconfig' 'freetype2' 'harfbuzz' 'fuse3'
+  'pipewire' 'dbus' 'fontconfig' 'freetype2' 'harfbuzz' 'fuse3'
   'gstreamer' 'gst-plugins-base-libs'
 )
 source=("tilo-$pkgver.tar.gz")
@@ -37,7 +37,7 @@ package_tilo-session() {
   depends=(
     'glibc' 'pam' 'vulkan-icd-loader' 'libglvnd' 'libxkbcommon' 'wayland'
     'seatd' 'libinput' 'systemd-libs' 'libdrm' 'mesa' 'pipewire' 'dbus'
-    'openssl' 'fontconfig' 'freetype2' 'harfbuzz' 'bubblewrap' 'systemd'
+    'fontconfig' 'freetype2' 'harfbuzz' 'bubblewrap' 'systemd'
     'xwayland-satellite' 'xdg-desktop-portal' 'xdg-dbus-proxy'
   )
   optdepends=('vulkan-driver: hardware-appropriate Vulkan ICD' 'greetd: display manager')

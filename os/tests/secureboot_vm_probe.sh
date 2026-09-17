@@ -1,0 +1,141 @@
+#!/bin/bash
+# Enroll Rust-generated owner keys in OVMF, then prove enforcement with signed
+# and unsigned instances of the same EFI application.
+set -euo pipefail
+
+: "${TILO_KERNEL_AUDIT_DIR:=/data/tilo-kernel-audit}"
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+arch="${TILO_SECUREBOOT_VM_ARCH:-$(uname -m)}"
+kernel="${TILO_KERNEL_PATH:-$TILO_KERNEL_AUDIT_DIR/linux/arch/x86/boot/bzImage}"
+gen_cpio="${TILO_GEN_INIT_CPIO:-$TILO_KERNEL_AUDIT_DIR/linux/usr/gen_init_cpio}"
+crypto="${TILO_CRYPTO_BIN:-$repo/target/release/tilo-crypto}"
+case "$arch" in
+  x86_64)
+    firmware_code="${TILO_SECUREBOOT_VM_CODE:-/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd}"
+    firmware_vars="${TILO_SECUREBOOT_VM_VARS:-/usr/share/edk2/ovmf/OVMF_VARS.fd}"
+    qemu=qemu-system-x86_64
+    efi_target=x86_64-pc-win32-coff
+    ld_emulation=i386pep
+    boot_name=BOOTX64.EFI
+    console=ttyS0
+    ;;
+  aarch64)
+    for directory in /usr/share/edk2/aarch64 /usr/share/AAVMF /usr/share/qemu-efi-aarch64; do
+      if [ -f "$directory/QEMU_EFI-pflash.raw" ]; then
+        firmware_code="$directory/QEMU_EFI-pflash.raw"
+        firmware_vars="$directory/vars-template-pflash.raw"
+        break
+      elif [ -f "$directory/AAVMF_CODE.fd" ]; then
+        firmware_code="$directory/AAVMF_CODE.fd"
+        firmware_vars="$directory/AAVMF_VARS.fd"
+        break
+      fi
+    done
+    firmware_code="${TILO_SECUREBOOT_VM_CODE:-${firmware_code:-}}"
+    firmware_vars="${TILO_SECUREBOOT_VM_VARS:-${firmware_vars:-}}"
+    qemu=qemu-system-aarch64
+    efi_target=aarch64-pc-win32-coff
+    ld_emulation=aarch64pe
+    boot_name=BOOTAA64.EFI
+    console=ttyAMA0
+    ;;
+  *) echo "unsupported Secure Boot VM architecture: $arch" >&2; exit 1 ;;
+esac
+work_root="${TILO_SECUREBOOT_VM_WORK_ROOT:-$TILO_KERNEL_AUDIT_DIR}"
+mkdir -p "$work_root"
+work="$(mktemp -d "$work_root/secureboot-vm.XXXXXX")"
+printf 'secureboot-vm-work=%s\n' "$work"
+
+for required in "$kernel" "$gen_cpio" "$crypto" "$firmware_code" "$firmware_vars"; do
+  test -f "$required" || { echo "missing Secure Boot VM input: $required" >&2; exit 1; }
+done
+
+if [ -n "${TILO_SECUREBOOT_VM_APP:-}" ]; then
+  test -f "$TILO_SECUREBOOT_VM_APP" \
+    || { echo "missing prebuilt EFI probe: $TILO_SECUREBOOT_VM_APP" >&2; exit 1; }
+  cp "$TILO_SECUREBOOT_VM_APP" "$work/app.efi"
+else
+  clang -target "$efi_target" -ffreestanding -fno-stack-protector \
+    -fshort-wchar -c "$repo/os/tests/secureboot_vm_app.c" -o "$work/app.obj"
+  ld -m"$ld_emulation" --subsystem 10 -e efi_main "$work/app.obj" -o "$work/app.efi"
+fi
+
+for key in PK KEK db; do
+  "$crypto" generate-secure-boot-cert "Tilo VM $key" \
+    "$work/$key.key" "$work/$key.crt"
+  "$crypto" certificate-esl "$work/$key.crt" "$work/$key.esl"
+done
+"$crypto" sign-efi "$work/db.key" "$work/db.crt" \
+  "$work/app.efi" "$work/app.signed.efi"
+"$crypto" verify-efi "$work/db.crt" "$work/app.signed.efi"
+
+gcc -O2 -Wall -Wextra -Werror -o "$work/init" \
+  "$repo/os/tests/secureboot_vm_enroll.c"
+loader=$(ldd "$work/init" | awk '/ld-linux/ { print $1; exit }')
+libc=$(ldd "$work/init" | awk '/libc\.so/ { print $3; exit }')
+libgcc=$(ldd "$crypto" | awk '/libgcc_s/ { print $3; exit }')
+list="$work/initramfs.list"
+{
+  printf 'dir /sys 0755 0 0\n'
+  printf 'dir /lib64 0755 0 0\n'
+  printf 'file /init %s 0755 0 0\n' "$work/init"
+  printf 'file /tilo-crypto %s 0755 0 0\n' "$crypto"
+  for key in PK KEK db; do
+    printf 'file /%s.esl %s 0600 0 0\n' "$key" "$work/$key.esl"
+  done
+  printf 'file /PK.key %s 0600 0 0\n' "$work/PK.key"
+  printf 'file /PK.crt %s 0600 0 0\n' "$work/PK.crt"
+  printf 'file %s %s 0755 0 0\n' "$loader" "$loader"
+  printf 'file %s %s 0755 0 0\n' "$libc" "$libc"
+  printf 'file %s %s 0755 0 0\n' "$libgcc" "$libgcc"
+} > "$list"
+"$gen_cpio" -o "$work/enroll.cpio" "$list"
+
+cp "$firmware_vars" "$work/vars.enrolled.fd"
+if [ "$arch" = x86_64 ]; then
+  machine=(-machine q35,accel=tcg -cpu max)
+else
+  machine=(-machine virt,accel=tcg,gic-version=max -cpu max)
+fi
+timeout 40s "$qemu" "${machine[@]}" -m 1024 \
+  -drive if=pflash,format=raw,readonly=on,file="$firmware_code" \
+  -drive if=pflash,format=raw,file="$work/vars.enrolled.fd" \
+  -kernel "$kernel" -initrd "$work/enroll.cpio" \
+  -append "console=$console rdinit=/init panic=-1" -nographic -no-reboot \
+  > "$work/enroll.log" 2>&1 || status=$?
+status=${status:-0}
+case "$status" in 0|124) ;; *) cat "$work/enroll.log"; exit "$status" ;; esac
+grep -F 'TILO_SECURE_BOOT_ENROLL_PASS' "$work/enroll.log"
+grep -F 'TILO_SECURE_BOOT_SETUP_MODE=1' "$work/enroll.log"
+grep -F 'TILO_SECURE_BOOT_SECURE_BOOT=0' "$work/enroll.log"
+
+make_esp() {
+  local image="$1" executable="$2"
+  truncate -s 64M "$image"
+  mkfs.vfat -n TILO_SB_TEST "$image" >/dev/null
+  mmd -i "$image" ::/EFI ::/EFI/BOOT
+  mcopy -i "$image" "$executable" "::/EFI/BOOT/$boot_name"
+  mcopy -i "$image" "$repo/os/tests/fixtures/secureboot-startup.nsh" ::/startup.nsh
+}
+make_esp "$work/signed.img" "$work/app.signed.efi"
+make_esp "$work/unsigned.img" "$work/app.efi"
+cp "$work/vars.enrolled.fd" "$work/vars.signed.fd"
+cp "$work/vars.enrolled.fd" "$work/vars.unsigned.fd"
+
+boot_efi() {
+  local vars="$1" disk="$2" log="$3"
+  timeout 35s "$qemu" "${machine[@]}" -m 512 \
+    -drive if=pflash,format=raw,readonly=on,file="$firmware_code" \
+    -drive if=pflash,format=raw,file="$vars" \
+    -drive if=virtio,format=raw,file="$disk" -nographic -no-reboot \
+    > "$log" 2>&1 || test "$?" -eq 124
+}
+boot_efi "$work/vars.unsigned.fd" "$work/unsigned.img" "$work/unsigned.log"
+grep -F 'Access Denied -- rejected probably by Secure Boot' "$work/unsigned.log"
+if grep -Fq 'TILO_SECURE_BOOT_SIGNED_EFI_PASS' "$work/unsigned.log"; then
+  echo 'unsigned EFI application executed under enrolled Secure Boot' >&2
+  exit 1
+fi
+boot_efi "$work/vars.signed.fd" "$work/signed.img" "$work/signed.log"
+grep -F 'TILO_SECURE_BOOT_SIGNED_EFI_PASS' "$work/signed.log"
+printf 'secureboot-vm-probe=PASS\n'

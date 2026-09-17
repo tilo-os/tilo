@@ -50,8 +50,8 @@ TILO_WITH_BROWSER=0 TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=<published-64-hex-owner-
 # …or don't build at all. The image builds in CI here, so the local half of
 # the pipeline is often just the disk step: pull what CI published and image
 # that. Needs `podman login code.podesta.ai` once.
-podman pull code.podesta.ai/qos/tilo:<tag>
-podman tag  code.podesta.ai/qos/tilo:<tag> localhost/tilo:latest
+podman pull code.podesta.ai/tilo/tilo:<tag>
+podman tag  code.podesta.ai/tilo/tilo:<tag> localhost/tilo:latest
 TILO_SKIP_BUILD=1 ./os/dev/build-image.sh
 
 # 2. Boot + greeter + login + desktop, screenshots into a dir:
@@ -125,7 +125,6 @@ capture.
 
 ```bash
 distrobox enter my-distrobox -- sudo dnf install -y swtpm swtpm-tools \
-    sbsigntools efitools
 ```
 
 | Flag | Effect |
@@ -263,7 +262,7 @@ How it works:
 - The backend (`/usr/libexec/tilo-install`) does: `bootc image copy-to-storage`
   → privileged `podman run … localhost/bootc bootc install to-disk --wipe
   --filesystem btrfs --target-imgref "$TILO_TARGET_IMGREF" <disk>` → mounts the
-  fresh root and writes `name:hash` (password via `openssl passwd -6`) into the
+  fresh root and writes `name:hash` (password via the pure-Rust `tilo-crypto`) into the
   deployment's writable `/etc/tilo/install-user.conf`.
 - On the installed system's first boot, `tilo-firstboot-user.service` creates the
   account from that file (`useradd -G wheel` + `chpasswd -e`) and shreds it.
@@ -295,7 +294,7 @@ network must not expose a repository-known maintenance credential. The
 explicit `--dev-login` build is for isolated local diagnostics only.
 
 The installed system's update origin defaults to
-`code.podesta.ai/qos/tilo:latest`. `TILO_TARGET_IMGREF` may select a tag or digest
+`code.podesta.ai/tilo/tilo:latest`. `TILO_TARGET_IMGREF` may select a tag or digest
 in that same signature-required repository; the backend rejects other origins.
 
 ## Configuration (env vars)

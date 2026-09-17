@@ -1,16 +1,18 @@
 //! Shared `Command` helpers used by every per-domain module.
 //!
-//! Wraps the `which`-check + `Command::output` flow once so every shell-out shares one error
+//! Wraps bounded subprocess execution once so every shell-out shares one error
 //! vocabulary — missing binary, non-zero exit, spawn failure — returned as `Result<_, String>`
 //! so call-sites can hand it straight to `tracing::warn!`.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
 
 use crate::DEFAULT_TIMEOUT;
+
+/// Maximum stdout or stderr retained from one OS helper. Eight MiB is far
+/// above legitimate status/list output while bounding a compromised daemon or
+/// network-derived response before it can exhaust the desktop process.
+const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Memo for [`which`]. A binary doesn't appear on or vanish from `$PATH` during a session;
 /// Quick-settings alone asked seven times per open, so caching cuts the probe to one spawn
@@ -74,68 +76,16 @@ pub(crate) fn run_capture(binary: &str, args: &[&str]) -> Result<String, String>
     if !which(binary) {
         return Err(format!("{binary} not installed"));
     }
-    let mut child = Command::new(binary)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("{binary} spawn failed: {e}"))?;
-
-    let mut out_pipe = child.stdout.take();
-    let mut err_pipe = child.stderr.take();
-    let out_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(p) = out_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf);
-        }
-        buf
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(p) = err_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf);
-        }
-        buf
-    });
-
-    // `Instant + Duration` panics on overflow; a deadline this near can never overflow in
-    // practice, but fall back to "already due" rather than let the operator panic.
-    let deadline = Instant::now()
-        .checked_add(DEFAULT_TIMEOUT)
-        .unwrap_or_else(Instant::now);
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break Some(s),
-            Ok(None) => {}
-            Err(e) => return Err(format!("{binary} wait failed: {e}")),
-        }
-        if Instant::now() >= deadline {
-            // Killing closes both pipes, letting the reader threads below finish rather than parking forever.
-            let _ = child.kill();
-            let _ = child.wait();
-            break None;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(4));
-    };
-
-    let stdout = out_reader.join().unwrap_or_default();
-    let stderr = err_reader.join().unwrap_or_default();
-
-    let Some(status) = status else {
-        return Err(format!(
-            "{binary} timed out after {} ms",
-            DEFAULT_TIMEOUT.as_millis()
-        ));
-    };
-    if !status.success() {
-        let stderr = String::from_utf8_lossy(&stderr).trim().to_string();
+    let output = bounded_command::run(binary, args, None, MAX_CAPTURE_BYTES, DEFAULT_TIMEOUT)
+        .map_err(|error| bounded_error(binary, error))?;
+    if !output.status.success() {
+        let stderr = sanitized_diagnostic(&output.stderr);
         return Err(format!(
             "{binary} exited with status {:?}: {stderr}",
-            status.code()
+            output.status.code()
         ));
     }
-    String::from_utf8(stdout).map_err(|e| format!("{binary} stdout not utf-8: {e}"))
+    String::from_utf8(output.stdout).map_err(|e| format!("{binary} stdout not utf-8: {e}"))
 }
 
 /// Run `binary args...` and discard stdout. Same error semantics as [`run_capture`]. Used
@@ -156,71 +106,60 @@ pub(crate) fn run_with_input(
     if !which(binary) {
         return Err(format!("{binary} not installed"));
     }
-    let mut child = Command::new(binary)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("{binary} spawn failed: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(input)
-            .map_err(|e| format!("{binary} stdin failed: {e}"))?;
-    }
-    let mut out_pipe = child.stdout.take();
-    let mut err_pipe = child.stderr.take();
-    let out_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        if let Some(pipe) = out_pipe.as_mut() {
-            let _ = pipe.read_to_end(&mut bytes);
-        }
-        bytes
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        if let Some(pipe) = err_pipe.as_mut() {
-            let _ = pipe.read_to_end(&mut bytes);
-        }
-        bytes
-    });
-    let started = Instant::now();
-    let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|e| format!("{binary} wait failed: {e}"))?
-        {
-            break Some(status);
-        }
-        if started.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            break None;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    };
-    let stdout = out_reader.join().unwrap_or_default();
-    // Drain stderr to avoid a pipe deadlock, but deliberately never return it:
-    // interactive clients may echo a rejected secret in diagnostics.
-    let _stderr = err_reader.join().unwrap_or_default();
-    let Some(status) = status else {
-        return Err(format!(
-            "{binary} timed out after {} ms",
-            timeout.as_millis()
-        ));
-    };
-    if !status.success() {
+    let output = bounded_command::run(binary, args, Some(input), MAX_CAPTURE_BYTES, timeout)
+        .map_err(|error| bounded_error(binary, error))?;
+    // Never return stderr: interactive clients may echo a rejected secret in diagnostics.
+    if !output.status.success() {
         return Err(format!(
             "{binary} rejected the request (status {:?})",
-            status.code()
+            output.status.code()
         ));
     }
-    String::from_utf8(stdout).map_err(|e| format!("{binary} stdout not utf-8: {e}"))
+    String::from_utf8(output.stdout).map_err(|e| format!("{binary} stdout not utf-8: {e}"))
+}
+
+fn bounded_error(binary: &str, error: bounded_command::Error) -> String {
+    match error {
+        bounded_command::Error::InputTooLarge => {
+            format!("{binary} input exceeded the safety limit")
+        }
+        bounded_command::Error::OutputTooLarge { limit, .. } => {
+            format!("{binary} output exceeded the {limit} byte safety limit")
+        }
+        bounded_command::Error::Timeout(milliseconds) => {
+            format!("{binary} timed out after {milliseconds} ms")
+        }
+        other => format!("{binary} process failed: {other}"),
+    }
+}
+
+fn sanitized_diagnostic(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
+        .take(512)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn helper_output_limits_fail_closed_on_real_subprocesses() {
+        assert!(which("head"), "head is required for the output-limit probe");
+        let bytes = (MAX_CAPTURE_BYTES + 4096).to_string();
+        let args = ["-c", bytes.as_str(), "/dev/zero"];
+        let capture = run_capture("head", &args).expect_err("oversized stdout must be rejected");
+        assert!(capture.contains("output exceeded"), "{capture}");
+
+        let with_input = run_with_input("head", &args, b"", DEFAULT_TIMEOUT)
+            .expect_err("secret-input helper must share the same output ceiling");
+        assert!(with_input.contains("output exceeded"), "{with_input}");
+    }
 
     /// A command that never exits is killed at the deadline and reported as a timeout rather
     /// than blocking its caller forever — the property the compositor depends on, since the

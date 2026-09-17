@@ -31,8 +31,11 @@ use store::FlatpakRef;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
 fn main() {
-    // rustls needs an explicit provider: the tree carries both ring and
-    // aws-lc-rs, and 0.23 will not pick one on its own.
+    // Install the workspace-standard rustls ring provider explicitly. The
+    // dependency was already declared for this — the call was not there, so every
+    // https registry and every Flathub request failed at the TLS
+    // handshake rather than anywhere a reader would look. Same line the
+    // maps app and `tilo-catalogue` run.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     ui::launch::run_or_exit(

@@ -195,7 +195,7 @@ else
 fi
 
 # --- the units ---------------------------------------------------------------
-for unit in tilo-rollback-harden.service tilo-rollback-confirm.timer; do
+for unit in tilo-rollback-harden.timer tilo-rollback-confirm.timer; do
   if systemctl list-unit-files "$unit" >/dev/null 2>&1 && \
      [ "$(systemctl is-enabled "$unit" 2>/dev/null)" = "enabled" ]; then
     ok "$unit is enabled"

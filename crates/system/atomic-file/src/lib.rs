@@ -38,9 +38,12 @@
     )
 )]
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Replace `path`'s contents with `bytes`, durably. On success the file holds exactly
 /// `bytes`, and a crash at any point leaves either the previous contents or the new ones.
@@ -99,22 +102,12 @@ pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
 }
 
 fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
-    let tmp = temp_path(path);
-
-    // Scoped so the handle is closed before the rename.
-    {
-        let mut f = File::create(&tmp)?;
-        #[cfg(unix)]
-        if let Some(mode) = mode {
-            use std::os::unix::fs::PermissionsExt;
-            f.set_permissions(fs::Permissions::from_mode(mode))?;
-        }
-        #[cfg(not(unix))]
-        let _ = mode;
-        f.write_all(bytes)?;
-        // The step the copies of this pattern kept omitting: without it the rename below can be
-        // durable while these bytes are not.
-        f.sync_all()?;
+    let (tmp, mut file) = create_temp(path, mode)?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(error) = written {
+        let _ = fs::remove_file(&tmp);
+        return Err(error);
     }
 
     if let Err(e) = fs::rename(&tmp, path) {
@@ -123,18 +116,22 @@ fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
         return Err(e);
     }
 
-    // Make the rename itself durable. Failure here isn't fatal (data is already fsync'd, entry
-    // visible), and some filesystems refuse to open a directory for this, so it's best-effort.
-    if let Some(dir) = path.parent() {
-        let dir = if dir.as_os_str().is_empty() {
-            Path::new(".")
-        } else {
-            dir
-        };
-        if let Ok(d) = File::open(dir) {
-            let _ = d.sync_all();
-        }
-    }
+    // The data is durable before rename, but the new directory entry is not
+    // durable until its containing directory is synced. Reporting success
+    // without this step can resurrect an old rollback floor after power loss.
+    // A failure happens after publication, so callers may observe the new file,
+    // but they must not treat it as crash-durable and may safely retry.
+    let dir = path.parent().map_or_else(
+        || Path::new("."),
+        |parent| {
+            if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            }
+        },
+    );
+    File::open(dir)?.sync_all()?;
     Ok(())
 }
 
@@ -142,15 +139,54 @@ fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
 /// boundary, dot-prefixed so a directory listing (or a `pages/*.md` glob) doesn't treat it
 /// as real content, and process-id-suffixed so two processes writing the same file don't
 /// clobber each other's temp file.
-fn temp_path(path: &Path) -> PathBuf {
+fn temp_path(path: &Path, sequence: u64) -> PathBuf {
     let name = path
         .file_name()
         .map_or_else(|| "file".to_string(), |n| n.to_string_lossy().into_owned());
-    let tmp_name = format!(".{name}.{}.tmp", std::process::id());
+    let tmp_name = format!(".{name}.{}.{sequence}.tmp", std::process::id());
     match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.join(tmp_name),
         _ => PathBuf::from(tmp_name),
     }
+}
+
+fn create_temp(path: &Path, mode: Option<u32>) -> io::Result<(PathBuf, File)> {
+    for _ in 0..32 {
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let tmp = temp_path(path, sequence);
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if let Some(mode) = mode {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(mode);
+        }
+        #[cfg(not(unix))]
+        let _ = mode;
+        match options.open(&tmp) {
+            Ok(file) => {
+                #[cfg(unix)]
+                if let Some(mode) = mode {
+                    use std::os::unix::fs::PermissionsExt;
+                    // `mode()` is filtered by umask. Restore the caller's
+                    // exact contract while the file still has only its hidden
+                    // temporary name; the initial mode can only be stricter.
+                    if let Err(error) = file.set_permissions(fs::Permissions::from_mode(mode)) {
+                        drop(file);
+                        let _ = fs::remove_file(&tmp);
+                        return Err(error);
+                    }
+                }
+                return Ok((tmp, file));
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a unique atomic-write temporary file",
+    ))
 }
 
 #[cfg(test)]
@@ -193,7 +229,7 @@ mod tests {
     fn the_temp_file_sits_beside_the_target() {
         // A temp file in /tmp would make the rename cross a filesystem and fail with EXDEV on any
         // machine where /tmp is a separate mount.
-        let t = temp_path(Path::new("/var/lib/tilo/state.automerge"));
+        let t = temp_path(Path::new("/var/lib/tilo/state.automerge"), 7);
         assert_eq!(t.parent(), Some(Path::new("/var/lib/tilo")));
         assert!(
             t.file_name().unwrap().to_string_lossy().starts_with('.'),
@@ -207,8 +243,10 @@ mod tests {
     }
 
     #[test]
-    fn two_processes_would_not_share_a_temp_path() {
-        let a = temp_path(Path::new("/x/doc"));
+    fn two_writes_do_not_share_a_temp_path() {
+        let a = temp_path(Path::new("/x/doc"), 1);
+        let b = temp_path(Path::new("/x/doc"), 2);
+        assert_ne!(a, b, "every write needs a no-clobber temporary path");
         assert!(
             a.to_string_lossy()
                 .contains(&std::process::id().to_string()),
@@ -259,18 +297,45 @@ mod tests {
     }
 
     #[test]
-    fn an_existing_file_survives_a_failed_write() {
-        // The point of the whole dance: a write that cannot complete must leave the previous contents readable.
+    fn a_failed_rename_cleans_up_and_preserves_the_target() {
         let d = TempDir::new().unwrap();
-        let p = d.path().join("a.json");
-        write(&p, b"original").unwrap();
+        let target = d.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("marker"), b"original").unwrap();
 
-        // A directory where the temp file wants to be makes File::create fail.
-        let tmp = temp_path(&p);
-        fs::create_dir(&tmp).unwrap();
-        assert!(write(&p, b"replacement").is_err());
-        assert_eq!(fs::read(&p).unwrap(), b"original", "old contents survive");
-        fs::remove_dir(&tmp).unwrap();
+        assert!(write(&target, b"replacement").is_err());
+        assert_eq!(fs::read(target.join("marker")).unwrap(), b"original");
+        let leftovers = fs::read_dir(d.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "failed rename must remove its temporary file");
+    }
+
+    #[test]
+    fn concurrent_writers_publish_only_complete_values() {
+        use std::sync::{Arc, Barrier};
+
+        let d = TempDir::new().unwrap();
+        let target = Arc::new(d.path().join("state"));
+        let barrier = Arc::new(Barrier::new(8));
+        let mut threads = Vec::new();
+        for byte in 0_u8..8 {
+            let target = Arc::clone(&target);
+            let barrier = Arc::clone(&barrier);
+            threads.push(std::thread::spawn(move || {
+                let payload = vec![byte; 64 * 1024];
+                barrier.wait();
+                write(&target, &payload).unwrap();
+            }));
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let final_value = fs::read(&*target).unwrap();
+        assert_eq!(final_value.len(), 64 * 1024);
+        assert!(final_value.iter().all(|byte| *byte == final_value[0]));
     }
 
     #[test]

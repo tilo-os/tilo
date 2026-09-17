@@ -4,9 +4,8 @@
 //! and reads the daemon's once-per-second metrics snapshot for live status.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
@@ -45,6 +44,11 @@ const RELAY_ADMIN: &str = "/usr/bin/tilo-relay-admin";
 const STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const STATUS_FRESHNESS: Duration = Duration::from_secs(5);
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const COMMAND_OUTPUT_LIMIT: usize = 1024 * 1024;
+const APPLY_TIMEOUT: Duration = Duration::from_secs(120);
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
+const ENROLLMENT_TIMEOUT: Duration = Duration::from_secs(600);
+const MANAGEMENT_TIMEOUT: Duration = Duration::from_secs(60);
 const ROLE_PERSONAL: &str = "Personal device";
 const ROLE_ACTIVE: &str = "Available while active";
 const ROLE_SERVER: &str = "Always-on server";
@@ -215,14 +219,14 @@ pub struct DeviceMeshPane {
     roaming_provenance: Option<RoamingProvenance>,
     roaming_provenance_status: Option<String>,
     personal_remove_armed: std::collections::HashSet<[u8; 32]>,
-    management_child: Option<Child>,
+    management_child: Option<bounded_command::AsyncCommand>,
     management_device: Option<String>,
     next_peer_health: usize,
     remove_armed: std::collections::HashSet<String>,
     pending_role: Option<DeviceRole>,
-    apply_child: Option<Child>,
+    apply_child: Option<bounded_command::AsyncCommand>,
     apply_queued: bool,
-    pairing_child: Option<Child>,
+    pairing_child: Option<bounded_command::AsyncCommand>,
     pairing_discovery: bool,
     pairing_candidate: Option<PairCandidate>,
     pairing_target: PairingTarget,
@@ -486,26 +490,17 @@ pub(crate) fn identity_root() -> PathBuf {
     )
 }
 
-fn poll_child(child: &mut Child) -> std::io::Result<Option<ExitStatus>> {
-    child.try_wait()
-}
-
-fn take_reaped_child(slot: &mut Option<Child>) -> Option<Child> {
-    let mut child = slot.take()?;
-    let _ = child.wait();
-    Some(child)
-}
-
-fn child_error(child: &mut Child, fallback: &str) -> String {
-    let mut detail = String::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_string(&mut detail);
-    }
+fn command_error(stderr: &[u8], fallback: &str) -> String {
+    let detail = String::from_utf8_lossy(stderr);
     let detail = detail.trim();
     if detail.is_empty() {
         fallback.to_owned()
     } else {
-        detail.to_owned()
+        detail
+            .chars()
+            .filter(|character| !character.is_control() || *character == ' ')
+            .take(512)
+            .collect()
     }
 }
 
@@ -958,7 +953,7 @@ impl DeviceMeshPane {
             || "Add another personal device to make it an eligible Continuity target.".into(),
             |device| {
                 format!(
-                    "Certified by your qOS identity · fingerprint {}. Private keys and pairing credentials never appear here.",
+                    "Certified by your Tilo identity · fingerprint {}. Private keys and pairing credentials never appear here.",
                     device.fingerprint
                 )
             },
@@ -1298,7 +1293,7 @@ impl DeviceMeshPane {
         };
     }
 
-    fn spawn_apply(&self) -> Result<Child, String> {
+    fn spawn_apply(&self) -> Result<bounded_command::AsyncCommand, String> {
         let request = serde_json::json!({
             "identity_root": identity_root(),
             "role": match self.config.device_role {
@@ -1317,20 +1312,15 @@ impl DeviceMeshPane {
             "app_serving": self.config.services.app_serving,
             "compute": self.config.services.compute,
         });
-        let mut child = Command::new("pkexec")
-            .args([CONTROL_HELPER, "apply"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| format!("could not start system setup: {error}"))?;
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| "system setup input was unavailable".to_string())?
-            .write_all(request.to_string().as_bytes())
-            .map_err(|error| format!("could not send system setup: {error}"))?;
-        Ok(child)
+        let mut command = Command::new("pkexec");
+        command.args([CONTROL_HELPER, "apply"]);
+        bounded_command::spawn_prepared(
+            command,
+            Some(request.to_string().as_bytes()),
+            COMMAND_OUTPUT_LIMIT,
+            APPLY_TIMEOUT,
+        )
+        .map_err(|error| format!("could not start system setup: {error}"))
     }
 
     fn start_apply(&mut self) {
@@ -1353,13 +1343,14 @@ impl DeviceMeshPane {
                 PairingTarget::HomePeer => "discover",
                 PairingTarget::PersonalDevice => "discover-device",
             };
-            self.load_status = match Command::new("/usr/bin/tilo-enroll")
-                .args([discover_command, "--timeout", "15"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-            {
+            let mut command = Command::new("/usr/bin/tilo-enroll");
+            command.args([discover_command, "--timeout", "15"]);
+            self.load_status = match bounded_command::spawn_prepared(
+                command,
+                None,
+                COMMAND_OUTPUT_LIMIT,
+                DISCOVERY_TIMEOUT,
+            ) {
                 Ok(child) => {
                     self.pairing_child = Some(child);
                     self.pairing_discovery = true;
@@ -1421,12 +1412,12 @@ impl DeviceMeshPane {
                 command.args(["--workspace-id", &id.to_string()]);
             }
         }
-        self.load_status = match command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
+        self.load_status = match bounded_command::spawn_prepared(
+            command,
+            None,
+            COMMAND_OUTPUT_LIMIT,
+            ENROLLMENT_TIMEOUT,
+        ) {
             Ok(child) => {
                 self.pairing_child = Some(child);
                 self.pairing_discovery = false;
@@ -1459,12 +1450,12 @@ impl DeviceMeshPane {
         if let Some(label) = label {
             command.args(["--label", label]);
         }
-        match command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
+        match bounded_command::spawn_prepared(
+            command,
+            None,
+            COMMAND_OUTPUT_LIMIT,
+            MANAGEMENT_TIMEOUT,
+        ) {
             Ok(child) => {
                 self.management_child = Some(child);
                 self.management_device = Some(peer.device_node_id.clone());
@@ -1489,15 +1480,17 @@ impl DeviceMeshPane {
             .and_then(|bytes| serde_json::from_slice::<Vec<serde_json::Value>>(&bytes).ok())
             .is_some_and(|pending| !pending.is_empty())
         {
-            if let Ok(child) = Command::new(RELAY_ADMIN)
+            let mut command = Command::new(RELAY_ADMIN);
+            command
                 .arg("home-peer-retry-removals")
                 .arg("--identity-root")
-                .arg(identity_root())
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-            {
+                .arg(identity_root());
+            if let Ok(child) = bounded_command::spawn_prepared(
+                command,
+                None,
+                COMMAND_OUTPUT_LIMIT,
+                MANAGEMENT_TIMEOUT,
+            ) {
                 self.management_child = Some(child);
                 self.management_device = Some("__pending__".into());
             }
@@ -1519,15 +1512,14 @@ impl DeviceMeshPane {
         reason = "polling keeps each child-process completion transition together so success, retry, error text, and UI rebuild state cannot drift apart"
     )]
     fn poll_background_tasks(&mut self) {
-        let apply_result = self.apply_child.as_mut().map(poll_child);
+        let apply_result = self
+            .apply_child
+            .as_mut()
+            .and_then(bounded_command::AsyncCommand::try_wait);
         match apply_result {
-            Some(Ok(Some(status))) => {
-                let Some(mut child) = take_reaped_child(&mut self.apply_child) else {
-                    self.load_status = "Not saved: setup process disappeared".into();
-                    self.structure_dirty = true;
-                    return;
-                };
-                if status.success() {
+            Some(Ok(output)) => {
+                self.apply_child = None;
+                if output.status.success() {
                     if self.apply_queued {
                         self.apply_queued = false;
                         self.start_apply();
@@ -1538,7 +1530,7 @@ impl DeviceMeshPane {
                     self.apply_queued = false;
                     self.load_status = format!(
                         "Not saved: {}",
-                        child_error(&mut child, "administrator approval was not granted")
+                        command_error(&output.stderr, "administrator approval was not granted")
                     );
                 }
                 self.structure_dirty = true;
@@ -1549,23 +1541,18 @@ impl DeviceMeshPane {
                 self.load_status = format!("Not saved: {error}");
                 self.structure_dirty = true;
             }
-            Some(Ok(None)) | None => {}
+            None => {}
         }
 
-        let pairing_result = self.pairing_child.as_mut().map(poll_child);
+        let pairing_result = self
+            .pairing_child
+            .as_mut()
+            .and_then(bounded_command::AsyncCommand::try_wait);
         match pairing_result {
-            Some(Ok(Some(status))) => {
-                let Some(mut child) = take_reaped_child(&mut self.pairing_child) else {
-                    self.load_status = "Pairing stopped: setup process disappeared".into();
-                    self.structure_dirty = true;
-                    return;
-                };
-                if status.success() && self.pairing_discovery {
-                    let mut output = String::new();
-                    if let Some(mut stdout) = child.stdout.take() {
-                        let _ = stdout.read_to_string(&mut output);
-                    }
-                    match serde_json::from_str::<PairCandidate>(output.trim()) {
+            Some(Ok(output)) => {
+                self.pairing_child = None;
+                if output.status.success() && self.pairing_discovery {
+                    match serde_json::from_slice::<PairCandidate>(&output.stdout) {
                         Ok(candidate) => {
                             self.load_status = format!(
                                 "Found {}. Confirm code {} on both devices, then approve.",
@@ -1578,7 +1565,7 @@ impl DeviceMeshPane {
                                 "Nearby discovery returned an invalid identity".into();
                         }
                     }
-                } else if status.success() {
+                } else if output.status.success() {
                     self.registered_home_peers = registered_home_peer_count();
                     self.refresh_runtime_status();
                     self.load_status = match self.pairing_target {
@@ -1598,7 +1585,7 @@ impl DeviceMeshPane {
                 } else {
                     self.load_status = format!(
                         "Device was not paired: {}. Choose the pairing action to retry.",
-                        child_error(&mut child, "the pairing window closed or was cancelled")
+                        command_error(&output.stderr, "the pairing window closed or was cancelled")
                     );
                 }
                 self.pairing_discovery = false;
@@ -1610,24 +1597,21 @@ impl DeviceMeshPane {
                     format!("Pairing stopped: {error}. Choose the pairing action to retry.");
                 self.structure_dirty = true;
             }
-            Some(Ok(None)) | None => {}
+            None => {}
         }
 
-        let management_result = self.management_child.as_mut().map(poll_child);
+        let management_result = self
+            .management_child
+            .as_mut()
+            .and_then(bounded_command::AsyncCommand::try_wait);
         match management_result {
-            Some(Ok(Some(status))) => {
-                let Some(mut child) = take_reaped_child(&mut self.management_child) else {
-                    self.load_status = "Home-server check stopped unexpectedly".into();
-                    self.structure_dirty = true;
-                    return;
-                };
+            Some(Ok(output)) => {
+                self.management_child = None;
                 let device = self.management_device.take().unwrap_or_default();
-                if status.success() {
-                    let mut output = String::new();
-                    if let Some(mut stdout) = child.stdout.take() {
-                        let _ = stdout.read_to_string(&mut output);
-                    }
-                    if let Ok(response) = serde_json::from_str::<serde_json::Value>(output.trim()) {
+                if output.status.success() {
+                    if let Ok(response) =
+                        serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                    {
                         let ready = response
                             .get("files_ready")
                             .and_then(serde_json::Value::as_bool)
@@ -1657,7 +1641,7 @@ impl DeviceMeshPane {
                         self.registered_home_peers = self.home_peers.len();
                     }
                 } else {
-                    let detail = child_error(&mut child, "not reachable");
+                    let detail = command_error(&output.stderr, "not reachable");
                     let label = self.home_peer_last_seen.get(&device).map_or_else(
                         || format!("Offline · {detail}"),
                         |last_seen| last_seen_label(*last_seen),
@@ -1674,7 +1658,7 @@ impl DeviceMeshPane {
                 }
                 self.structure_dirty = true;
             }
-            Some(Ok(None)) | None => {}
+            None => {}
         }
     }
 }
@@ -2594,7 +2578,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
         pane.config_path = PathBuf::from(DEFAULT_CONFIG);
-        pane.apply_child = Some(Command::new("sleep").arg("2").spawn().unwrap());
+        let mut command = Command::new("sleep");
+        command.arg("2");
+        pane.apply_child = Some(
+            bounded_command::spawn_prepared(command, None, 64, Duration::from_secs(5)).unwrap(),
+        );
 
         let started = Instant::now();
         pane.persist();
@@ -2603,18 +2591,24 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(250));
         assert!(pane.apply_child.is_some());
         assert!(pane.apply_queued);
-        let mut child = pane.apply_child.take().unwrap();
-        let _ = child.kill();
-        let _ = child.wait();
+        pane.apply_child = None;
     }
 
     #[test]
     fn pairing_process_transitions_to_success_and_allows_another_pairing() {
         let dir = tempfile::tempdir().unwrap();
         let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
-        pane.pairing_child = Some(Command::new("true").spawn().unwrap());
-        pane.pairing_child.as_mut().unwrap().wait().unwrap();
-        pane.poll_background_tasks();
+        pane.pairing_child = Some(
+            bounded_command::spawn_prepared(Command::new("true"), None, 64, Duration::from_secs(1))
+                .unwrap(),
+        );
+        for _ in 0..100 {
+            pane.poll_background_tasks();
+            if pane.pairing_child.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert!(pane.pairing_child.is_none());
         assert_eq!(pane.load_status, "Home server paired");
     }
@@ -2623,13 +2617,14 @@ mod tests {
     fn duplicate_pair_action_is_ignored_while_pairing_is_active() {
         let dir = tempfile::tempdir().unwrap();
         let mut pane = DeviceMeshPane::with_path(&dir.path().join("relay.toml"));
-        pane.pairing_child = Some(Command::new("sleep").arg("2").spawn().unwrap());
-        let child_id = pane.pairing_child.as_ref().unwrap().id();
+        let mut command = Command::new("sleep");
+        command.arg("2");
+        pane.pairing_child = Some(
+            bounded_command::spawn_prepared(command, None, 64, Duration::from_secs(5)).unwrap(),
+        );
         pane.approve_enrollment(PairingTarget::HomePeer);
-        assert_eq!(pane.pairing_child.as_ref().unwrap().id(), child_id);
-        let mut child = pane.pairing_child.take().unwrap();
-        let _ = child.kill();
-        let _ = child.wait();
+        assert!(pane.pairing_child.is_some());
+        pane.pairing_child = None;
     }
 
     #[test]

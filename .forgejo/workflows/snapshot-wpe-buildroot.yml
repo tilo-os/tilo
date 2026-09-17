@@ -46,6 +46,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Validate the native runner architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
+      - name: Require the OIDC credential broker
+        env:
+          WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
+        run: test -n "$WPE_SNAPSHOT_CREDENTIAL_BROKER"
       - name: Restore checksum-pinned Cosign
         id: cosign-cache
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
@@ -67,16 +71,8 @@ jobs:
       - name: Load the mirrored Fedora base
         run: grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
       - name: Acquire a short-lived base-image read lease
-        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER != ''
         env:
           WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
-        run: os/dev/acquire-wpe-snapshot-credentials.sh "resolve-${{ matrix.arch }}"
-      - name: Use explicitly expiring static credentials to read the base image
-        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER == ''
-        env:
-          WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP: ${{ vars.WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP }}
-          WPE_STATIC_BOOTSTRAP_EXPIRES_AT: ${{ vars.WPE_STATIC_BOOTSTRAP_EXPIRES_AT }}
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: os/dev/acquire-wpe-snapshot-credentials.sh "resolve-${{ matrix.arch }}"
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Resolve and build the native buildroot locally
@@ -90,54 +86,32 @@ jobs:
           no-cache: true
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
-          tags: code.podesta.ai/qos/tilo-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}
+          tags: code.podesta.ai/tilo/tilo-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}
       - name: Revoke the base-image read lease
         run: docker logout code.podesta.ai || true
       - name: Acquire a fresh short-lived publish and signing lease
-        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER != ''
         env:
           WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
-        run: os/dev/acquire-wpe-snapshot-credentials.sh "publish-${{ matrix.arch }}"
-      - name: Renew explicitly expiring static credentials for bootstrap publication
-        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER == ''
-        env:
-          WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP: ${{ vars.WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP }}
-          WPE_STATIC_BOOTSTRAP_EXPIRES_AT: ${{ vars.WPE_STATIC_BOOTSTRAP_EXPIRES_AT }}
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: os/dev/acquire-wpe-snapshot-credentials.sh "publish-${{ matrix.arch }}"
       - name: Publish and audit the immutable buildroot
         run: |
           set -euo pipefail
-          tag="code.podesta.ai/qos/tilo-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}"
+          tag="code.podesta.ai/tilo/tilo-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}"
           docker push "$tag"
           digest_ref="$(docker image inspect --format '{{index .RepoDigests 0}}' "$tag")"
           DIGEST="${digest_ref##*@}"
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          ref="code.podesta.ai/qos/tilo-wpe-buildroot@$DIGEST"
+          ref="code.podesta.ai/tilo/tilo-wpe-buildroot@$DIGEST"
           actual_arch="$(docker run --rm --entrypoint cat "$ref" /usr/lib/tilo/wpe-buildroot-arch)"
           test "$actual_arch" = '${{ matrix.arch }}'
           docker run --rm --entrypoint sh "$ref" -c \
             'test -s /usr/lib/tilo/wpe-buildroot-packages.txt && ! find /etc/yum.repos.d -type f -print -quit | grep -q .'
           printf 'TILO_WPE_REF=%s\n' "$ref" >> "$GITHUB_ENV"
       - name: Sign through the non-exportable leased key
-        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER != ''
         run: |
           set -euo pipefail
           test -n "${TILO_WPE_SIGNER:-}"
           "$TILO_WPE_SIGNER" "$TILO_WPE_REF"
-      - name: Sign with the explicitly expiring bootstrap key
-        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER == '' && vars.WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP == '1'
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-          WPE_STATIC_BOOTSTRAP_EXPIRES_AT: ${{ vars.WPE_STATIC_BOOTSTRAP_EXPIRES_AT }}
-        run: |
-          set -euo pipefail
-          test "${TILO_WPE_STATIC_BOOTSTRAP:-}" = 1
-          [[ "$WPE_STATIC_BOOTSTRAP_EXPIRES_AT" =~ ^[0-9]+$ ]]
-          (( WPE_STATIC_BOOTSTRAP_EXPIRES_AT > $(date +%s) ))
-          test -n "$COSIGN_PRIVATE_KEY" && test -n "$COSIGN_PASSWORD"
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$TILO_WPE_REF"
       - name: Verify the signature and record the immutable reference
         run: |
           set -euo pipefail
@@ -200,17 +174,13 @@ jobs:
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: refs
-      - name: Acquire a short-lived registry lease
-        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER != ''
+      - name: Require the OIDC credential broker
         env:
           WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
-        run: os/dev/acquire-wpe-snapshot-credentials.sh promote
-      - name: Use an explicitly expiring static registry credential for initial bootstrap
-        if: vars.WPE_SNAPSHOT_CREDENTIAL_BROKER == ''
+        run: test -n "$WPE_SNAPSHOT_CREDENTIAL_BROKER"
+      - name: Acquire a short-lived registry lease
         env:
-          WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP: ${{ vars.WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP }}
-          WPE_STATIC_BOOTSTRAP_EXPIRES_AT: ${{ vars.WPE_STATIC_BOOTSTRAP_EXPIRES_AT }}
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
         run: os/dev/acquire-wpe-snapshot-credentials.sh promote
       - name: Verify signatures and advance both architecture pins atomically
         run: |

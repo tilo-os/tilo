@@ -9,7 +9,6 @@ out="${1:-provenance.json}"
 : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH is required}"
 : "${BASE_REF:?BASE_REF is required}"
 : "${RPMS_REF:?RPMS_REF is required}"
-: "${KERNEL_RPMS_REF:?KERNEL_RPMS_REF is required}"
 : "${GITHUB_SHA:?GITHUB_SHA is required}"
 
 require_digest_ref() {
@@ -26,7 +25,24 @@ require_digest_ref() {
 }
 require_digest_ref BASE_REF "$BASE_REF"
 require_digest_ref RPMS_REF "$RPMS_REF"
-require_digest_ref KERNEL_RPMS_REF "$KERNEL_RPMS_REF"
+kernel_refs="${TILO_KERNEL_REFS_JSON:-}"
+if [ -n "$kernel_refs" ]; then
+  printf '%s' "$kernel_refs" | jq -e '
+    type == "array" and length == 2
+    and (map(.architecture) | sort) == ["aarch64", "x86_64"]
+    and (map(.ref) | unique | length) == 2
+    and all(.[].ref;
+      type == "string"
+      and test("^code\\.podesta\\.ai/tilo/tilo-kernel@sha256:[0-9a-f]{64}$"))
+  ' >/dev/null || {
+    printf 'release provenance: invalid TILO_KERNEL_REFS_JSON\n' >&2
+    exit 1
+  }
+else
+  : "${KERNEL_RPMS_REF:?KERNEL_RPMS_REF is required}"
+  require_digest_ref KERNEL_RPMS_REF "$KERNEL_RPMS_REF"
+  kernel_refs="$(jq -cn --arg ref "$KERNEL_RPMS_REF" '[{ref:$ref}]')"
+fi
 release_hash="${RELEASE_DIGEST#sha256:}"
 [ "$release_hash" != "$RELEASE_DIGEST" ] && [ "${#release_hash}" -eq 64 ] \
   && case "$release_hash" in *[!0-9a-f]*) false ;; *) true ;; esac \
@@ -57,11 +73,11 @@ printf '%s' "$release_children" | jq -e '
 }
 
 jq -n \
-  --arg source "git+ssh://code.podesta.ai/qos/tilo@$GITHUB_SHA" \
+  --arg source "git+ssh://code.podesta.ai/tilo/tilo@$GITHUB_SHA" \
   --arg digest "$RELEASE_DIGEST" \
   --arg base "$BASE_REF" \
   --arg rpms "$RPMS_REF" \
-  --arg kernel "$KERNEL_RPMS_REF" \
+  --argjson kernels "$kernel_refs" \
   --arg app_collection "$app_collection" \
   --arg desktop_payload "$desktop_payload" \
   --argjson release_children "$release_children" \
@@ -73,13 +89,17 @@ jq -n \
       externalParameters: ({generation: ($generation|tonumber)}
         + if ($release_children | length) == 0 then {}
           else {children: $release_children}
+          end
+        + if ($kernels | length) == 1 then {}
+          else {kernelInputs: $kernels}
           end),
       internalParameters: {
         sourceDateEpoch: ($epoch|tonumber),
         expectedReleaseDigest: $digest
       },
       resolvedDependencies: (
-        [{uri: $source}, {uri: $base}, {uri: $rpms}, {uri: $kernel}]
+        ([{uri: $source}, {uri: $base}, {uri: $rpms}]
+        + ($kernels | map({uri: .ref})))
         + if $app_collection == "" then []
           else [{uri: ("tilo-app-collection:sha256:" + $app_collection)}]
           end
@@ -89,7 +109,7 @@ jq -n \
       )
     },
     runDetails: {
-      builder: {id: "https://code.podesta.ai/qos/forgejo/actions/bootc-release-v1"},
+      builder: {id: "https://code.podesta.ai/tilo/forgejo/actions/bootc-release-v1"},
       metadata: {invocationId: (env.GITHUB_RUN_ID // "local")},
       byproducts: [{
         name: "independent-rebuild",
