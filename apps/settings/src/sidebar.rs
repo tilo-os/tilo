@@ -37,56 +37,46 @@ use ui::theme::Theme;
 use ui::widget::{Column, Container, Scrollable, Text, Widget};
 
 use crate::categories::{Category, Section};
-use crate::widgets::{caption, vgap};
-
-/// Gap (logical px) injected above the first section header so it has clear
-/// breathing room at the top of the sidebar surface.
-const TITLE_GAP: f32 = 14.0;
-
-/// Extra gap (logical px) injected ABOVE each section header (beyond the
-/// first). Combined with the column's own inter-child gap this makes the
-/// space above a header noticeably larger than the space below it.
-const SECTION_GAP_ABOVE: f32 = 18.0;
-
-/// Small gap (logical px) injected BELOW a section header, before its
-/// first row. Deliberately smaller than [`SECTION_GAP_ABOVE`] so the
-/// header reads as belonging to the rows beneath it.
-const SECTION_GAP_BELOW: f32 = 2.0;
+use crate::widgets::{El, caption, spacing};
 
 /// Width (logical px) of the docked sidebar. Sized so the widest row
 /// ("Device Privacy & Security" with its glyph, plus the row's horizontal
 /// padding) fits without clipping, with margin to spare.
 pub const SIDEBAR_WIDTH: f64 = 264.0;
 
-/// Height (logical px) of a single category row. Generous enough to read as a
-/// touch target and to seat the icon + label comfortably.
+/// Height (logical px) of a single category row. Deliberately off the token
+/// scale: it seats a 32 px pill (the toolkit's fine-pointer minimum target)
+/// plus one `s1` inset above and below it.
 const ROW_HEIGHT: f32 = 40.0;
-
-/// Inset (logical px) of the selection/hover pill from the row's left/right
-/// edges, so the highlight reads as a chip with margin to the panel border.
-const ROW_INSET_X: f64 = 8.0;
-
-/// Inset (logical px) of the pill from the row's top/bottom edges.
-const ROW_INSET_Y: f64 = 4.0;
-
-/// Left padding (logical px) of the icon + label from the *pill's* left edge.
-/// Matched to feel even against the pill's vertical padding so the content
-/// sits centred inside the highlight.
-const ROW_CONTENT_GUTTER: f64 = 12.0;
 
 /// Fixed width (logical px) of the icon column. The glyph is centred within
 /// it so every label starts at the same x regardless of glyph advance.
 const ROW_ICON_COL: f64 = 20.0;
 
-/// Gap (logical px) between the icon column and the label.
-const ROW_ICON_LABEL_GAP: f64 = 12.0;
-
-/// Font size (logical px) of a category label.
+/// Font size (logical px) of a category label — the theme's base type size.
 const ROW_TEXT_SIZE: f32 = 14.0;
 
-/// Line-height ratio `TextRenderer` shapes with (`size * 1.25`); used to
-/// centre a single text line's box within the row.
-const LINE_HEIGHT_RATIO: f64 = 1.25;
+/// Inset (logical px) at which the shared `AppShell` places the search field
+/// from the sidebar edge (its band padding, which `ui` does not export yet —
+/// see the review's open item for `F1`). The selection pill and the search
+/// field share that left edge, so every horizontal measure in this file
+/// derives from it; the geometry tests import this one constant rather than
+/// retyping the number.
+pub const SHELL_FIELD_INSET: f32 = 12.0;
+
+/// Horizontal margin of each row inside the sidebar column: the pill is inset
+/// `s2` from the row, so the row starts `SHELL_FIELD_INSET - s2` in and the
+/// pill lands exactly under the search field's left edge.
+fn row_margin_x() -> f32 {
+    SHELL_FIELD_INSET - spacing().s2
+}
+
+/// Left inset of a section header from the sidebar column edge: the pill inset
+/// plus the pill's own content gutter, so the header starts on the same x as
+/// the icon column beneath it.
+fn header_inset_x() -> f32 {
+    spacing().s2 + spacing().s3
+}
 
 /// Text and icon ink for a sidebar row. A selected row is painted with the
 /// accent fill, whose luminance varies by theme; primary surface text is not
@@ -108,14 +98,14 @@ fn row_ink(theme: &Theme, active: bool) -> vello::peniko::Color {
 /// with even breathing room.
 #[derive(Clone, Copy, Debug)]
 pub struct RowGeometry {
-    /// The selection / hover pill, inset from the row edges.
+    /// The selection / hover pill, inset `s2` / `s1` from the row edges.
     pub pill: Rect,
     /// Left edge (logical px) where the icon column begins, inset from the
-    /// pill by [`ROW_CONTENT_GUTTER`].
+    /// pill by the `s3` content gutter.
     pub content_left: f64,
     /// X translate for the icon glyph — centred within the icon column.
     pub icon_x: f64,
-    /// X translate for the label, one gap past the icon column.
+    /// X translate for the label, one `s3` gap past the icon column.
     pub label_x: f64,
     /// Y translate (top of the text line box) that centres the line in the row.
     pub text_y: f64,
@@ -123,24 +113,33 @@ pub struct RowGeometry {
 
 impl RowGeometry {
     /// Resolve the row geometry for a row of `rect` whose icon glyph measured
-    /// `glyph_w` wide at [`ROW_TEXT_SIZE`].
-    pub fn compute(rect: Rect, glyph_w: f64) -> Self {
+    /// `glyph_w` wide and whose label shaped to a line box `line_height` tall
+    /// at [`ROW_TEXT_SIZE`]. Every inset and gap is a step of the theme's
+    /// spacing scale, so the pill and the shell's search field share an edge
+    /// by construction rather than by coincidence.
+    pub fn compute(
+        rect: Rect,
+        glyph_w: f64,
+        line_height: f64,
+        spacing: &ui::tokens::Spacing,
+    ) -> Self {
+        let inset_x = f64::from(spacing.s2);
+        let inset_y = f64::from(spacing.s1);
         let pill = Rect::new(
-            rect.x0 + ROW_INSET_X,
-            rect.y0 + ROW_INSET_Y,
-            rect.x1 - ROW_INSET_X,
-            rect.y1 - ROW_INSET_Y,
+            rect.x0 + inset_x,
+            rect.y0 + inset_y,
+            rect.x1 - inset_x,
+            rect.y1 - inset_y,
         );
-        let content_left = pill.x0 + ROW_CONTENT_GUTTER;
+        let content_left = pill.x0 + f64::from(spacing.s3);
         // Centre the glyph within a fixed-width column so every label starts at
         // the same x regardless of the glyph's advance width.
         let icon_x = content_left + (ROW_ICON_COL - glyph_w).max(0.0) / 2.0;
-        let label_x = content_left + ROW_ICON_COL + ROW_ICON_LABEL_GAP;
-        // `draw_text` treats the translate as the top-left of a line box of
-        // height `size * LINE_HEIGHT_RATIO`; centre that box in the row so the
-        // glyphs sit on the pill's optical centre.
-        let line_box = f64::from(ROW_TEXT_SIZE) * LINE_HEIGHT_RATIO;
-        let text_y = rect.y0 + (rect.height() - line_box) / 2.0;
+        let label_x = content_left + ROW_ICON_COL + f64::from(spacing.s3);
+        // `draw_text` treats the translate as the top-left of the shaped line
+        // box; centre the *measured* box in the row so the glyphs sit on the
+        // pill's optical centre whatever the renderer's line metrics are.
+        let text_y = rect.y0 + (rect.height() - line_height) / 2.0;
         Self {
             pill,
             content_left,
@@ -258,8 +257,17 @@ impl Widget for SidebarRow {
         let radius = f64::from(theme.tokens.radii.md);
         let icon_size = 18.0;
         // All positions come from one geometry pass so the drawn layout and the
-        // alignment test read the exact same math.
-        let geo = RowGeometry::compute(self.rect, icon_size);
+        // alignment test read the exact same math. The label's line box is
+        // measured with the style it is drawn with, never derived from the
+        // font size.
+        //
+        // The pill inset must be the same scale the row margins in [`build`]
+        // were laid out with — the default toolkit scale, because the sidebar
+        // tree is composed before a theme is resolved. Reading a theme-retuned
+        // `s2` here would detach the pill from the search field it aligns to.
+        let label = self.category.label();
+        let (_, line_height) = text_renderer.measure(label, ROW_TEXT_SIZE, None);
+        let geo = RowGeometry::compute(self.rect, icon_size, f64::from(line_height), &spacing());
 
         let highlight = if self.active {
             Some(theme.accent_primary)
@@ -302,7 +310,6 @@ impl Widget for SidebarRow {
             ),
             fg,
         );
-        let label = self.category.label();
         text_renderer.draw_text(
             scene,
             label,
@@ -461,58 +468,59 @@ pub fn build(
     query: &str,
     selection_request: &ui::LocalState<Option<Category>>,
 ) -> Box<dyn Widget> {
-    // An intrinsic-height column lays out as a block stack and ignores the
-    // toolkit's inter-child gap, so we place explicit fixed-height spacers
-    // to control the vertical rhythm.
+    // Three explicit steps of the spacing scale carry the whole rhythm, so
+    // the eye reads groups rather than a list of equally spaced lines:
+    //
+    // - rows inside a section sit `s1` apart (their pills, inset `s1` each,
+    //   end up `s3` apart);
+    // - a header sits `s2` above its first row, close enough to own it;
+    // - sections are `s6` apart, the largest step on the surface.
     //
     // The sidebar draws **no app title and no search field**: the app name is
     // shown by the OS window-group pill (an app-drawn "Settings" header would
     // duplicate it), and the search field lives in the app's top strip so it
-    // is reachable by keyboard focus (see [`crate::settings_app`]). The
-    // sidebar starts directly with its first section, inset from the top.
-    let mut col = Column::new().with_intrinsic_height().push(vgap(TITLE_GAP));
+    // is reachable by keyboard focus (see [`crate::settings_app`]). The list
+    // starts `s2` below that strip, and every row is inset so its pill shares
+    // the search field's left edge.
+    let sp = spacing();
+    let mut col = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_horizontal_padding(row_margin_x(), row_margin_x())
+        .with_vertical_padding(sp.s2)
+        .with_gap(sp.s6);
+
+    let row = |category: Category| -> El {
+        Box::new(SidebarRow::with_selection_request(
+            category,
+            category == selected,
+            selection_request.clone(),
+        ))
+    };
 
     let trimmed = query.trim();
     if trimmed.is_empty() {
-        // Normal sectioned list. A clearly LARGER gap ABOVE each section
-        // header than below it groups the rows beneath the header.
-        for (i, section) in Section::ALL.iter().enumerate() {
-            if i != 0 {
-                col = col.push(vgap(SECTION_GAP_ABOVE));
-            }
-            col = col.push(section_header(section.label()));
-            col = col.push(vgap(SECTION_GAP_BELOW));
-            for category in Category::in_section(*section) {
-                col = col.push(Box::new(SidebarRow::with_selection_request(
-                    category,
-                    category == selected,
-                    selection_request.clone(),
-                )));
-            }
+        for section in Section::ALL.iter().copied() {
+            let rows: Vec<El> = Category::in_section(section).map(row).collect();
+            col = col.push(section_block(section.label(), rows));
         }
     } else {
         // Filtered results — a flat list of matching categories under a
         // "RESULTS" header, or an honest empty state.
-        col = col.push(section_header("Results"));
-        col = col.push(vgap(SECTION_GAP_BELOW));
-        let matches: Vec<Category> = Category::ALL
+        let matches: Vec<El> = Category::ALL
             .iter()
             .copied()
             .filter(|c| c.matches(trimmed))
+            .map(row)
             .collect();
-        if matches.is_empty() {
-            col = col.push(caption(&format!(
+        let body = if matches.is_empty() {
+            vec![caption(&format!(
                 "No settings match \u{201c}{trimmed}\u{201d}"
-            )));
+            ))]
         } else {
-            for category in matches {
-                col = col.push(Box::new(SidebarRow::with_selection_request(
-                    category,
-                    category == selected,
-                    selection_request.clone(),
-                )));
-            }
-        }
+            matches
+        };
+        col = col.push(section_block("Results", body));
     }
 
     let scroll = Scrollable::new_vertical().with_child(Box::new(col));
@@ -533,9 +541,36 @@ pub fn build(
 /// groups remain comfortably readable instead of becoming low-contrast chrome.
 fn section_header(label: &str) -> Box<dyn Widget> {
     Box::new(
-        Text::new(&label.to_uppercase())
-            .with_size(12.0)
-            .with_color(Theme::dark().text_dim),
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_horizontal_padding(header_inset_x(), 0.0)
+            .push(Box::new(
+                Text::new(&label.to_uppercase()).with_size(12.0).dimmed(),
+            )),
+    )
+}
+
+/// One navigation section: its header hugging the rows it names (`s2`), the
+/// rows themselves one `s1` apart. The enclosing column separates sections by
+/// `s6`, so the header always sits closer to its own rows than to the section
+/// above it.
+fn section_block(label: &str, rows: Vec<El>) -> El {
+    let sp = spacing();
+    let mut list = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(sp.s1);
+    for row in rows {
+        list = list.push(row);
+    }
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(sp.s2)
+            .push(section_header(label))
+            .push(Box::new(list)),
     )
 }
 
@@ -591,21 +626,26 @@ mod tests {
 
     #[test]
     fn row_geometry_aligns_icon_and_label_inside_the_pill() {
+        let sp = spacing();
         // A representative row rect (full sidebar width, one ROW_HEIGHT tall).
         let rect = Rect::new(0.0, 100.0, SIDEBAR_WIDTH, 100.0 + f64::from(ROW_HEIGHT));
-        // A glyph narrower than the icon column — the common case.
+        // A glyph narrower than the icon column — the common case — and a
+        // measured line box for the label (what the renderer reports for the
+        // base size; the maths must hold for any value).
         let glyph_w = 13.0;
-        let g = RowGeometry::compute(rect, glyph_w);
+        let line_box = 17.5;
+        let g = RowGeometry::compute(rect, glyph_w, line_box, &sp);
 
-        // The pill is inset evenly from every row edge.
-        assert!((g.pill.x0 - (rect.x0 + ROW_INSET_X)).abs() < f64::EPSILON);
-        assert!((g.pill.x1 - (rect.x1 - ROW_INSET_X)).abs() < f64::EPSILON);
-        assert!((g.pill.y0 - (rect.y0 + ROW_INSET_Y)).abs() < f64::EPSILON);
-        assert!((g.pill.y1 - (rect.y1 - ROW_INSET_Y)).abs() < f64::EPSILON);
+        // The pill is inset evenly from every row edge, by the `s2` / `s1`
+        // steps of the scale.
+        assert!((g.pill.x0 - (rect.x0 + f64::from(sp.s2))).abs() < f64::EPSILON);
+        assert!((g.pill.x1 - (rect.x1 - f64::from(sp.s2))).abs() < f64::EPSILON);
+        assert!((g.pill.y0 - (rect.y0 + f64::from(sp.s1))).abs() < f64::EPSILON);
+        assert!((g.pill.y1 - (rect.y1 - f64::from(sp.s1))).abs() < f64::EPSILON);
 
-        // Content starts one gutter inside the pill's left edge (even left
+        // Content starts one `s3` gutter inside the pill's left edge (even left
         // padding), and both icon and label sit inside the pill.
-        assert!((g.content_left - (g.pill.x0 + ROW_CONTENT_GUTTER)).abs() < f64::EPSILON);
+        assert!((g.content_left - (g.pill.x0 + f64::from(sp.s3))).abs() < f64::EPSILON);
         assert!(
             g.icon_x >= g.pill.x0,
             "icon must not spill past the pill's left"
@@ -622,16 +662,15 @@ mod tests {
             "icon should be centred in its column (icon_center={icon_center}, column_center={column_center})"
         );
 
-        // The label clears the icon column by exactly the icon/label gap, so
-        // every label starts at the same x regardless of glyph width.
+        // The label clears the icon column by exactly one `s3` gap, so every
+        // label starts at the same x regardless of glyph width.
         assert!(
-            (g.label_x - (g.content_left + ROW_ICON_COL + ROW_ICON_LABEL_GAP)).abs() < f64::EPSILON,
+            (g.label_x - (g.content_left + ROW_ICON_COL + f64::from(sp.s3))).abs() < f64::EPSILON,
             "label starts one gap past the icon column"
         );
 
-        // The text line box is vertically centred in the row (equal top/bottom
-        // slack), so the content sits on the pill's optical centre.
-        let line_box = f64::from(ROW_TEXT_SIZE) * LINE_HEIGHT_RATIO;
+        // The *measured* text line box is vertically centred in the row (equal
+        // top/bottom slack), so the content sits on the pill's optical centre.
         let top_slack = g.text_y - rect.y0;
         let bottom_slack = rect.y1 - (g.text_y + line_box);
         assert!(
@@ -644,12 +683,37 @@ mod tests {
     fn row_geometry_label_start_is_glyph_width_independent() {
         // Two rows whose icon glyphs measure differently must still align their
         // labels to the same x — the point of the fixed icon column.
+        let sp = spacing();
         let rect = Rect::new(0.0, 0.0, SIDEBAR_WIDTH, f64::from(ROW_HEIGHT));
-        let narrow = RowGeometry::compute(rect, 8.0);
-        let wide = RowGeometry::compute(rect, 18.0);
+        let narrow = RowGeometry::compute(rect, 8.0, 17.5, &sp);
+        let wide = RowGeometry::compute(rect, 18.0, 17.5, &sp);
         assert!(
             (narrow.label_x - wide.label_x).abs() < f64::EPSILON,
             "labels must start at the same x regardless of glyph advance width"
+        );
+    }
+
+    #[test]
+    fn pill_shares_the_shell_search_fields_left_edge() {
+        // The row margin plus the pill inset must land on the shell's field
+        // inset, so the selection highlight and the search field read as one
+        // column edge instead of two.
+        let sp = spacing();
+        let row = Rect::new(
+            f64::from(row_margin_x()),
+            0.0,
+            SIDEBAR_WIDTH - f64::from(row_margin_x()),
+            f64::from(ROW_HEIGHT),
+        );
+        let g = RowGeometry::compute(row, 13.0, 17.5, &sp);
+        assert!((g.pill.x0 - f64::from(SHELL_FIELD_INSET)).abs() < f64::EPSILON);
+        // The section header shares the pill's content edge (the icon column).
+        assert!(
+            (f64::from(row_margin_x() + header_inset_x()) - g.content_left).abs() < f64::EPSILON,
+            "header inset {} + margin {} must equal content_left {}",
+            header_inset_x(),
+            row_margin_x(),
+            g.content_left
         );
     }
 

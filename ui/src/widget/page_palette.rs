@@ -366,7 +366,8 @@ impl PageJumpPalette {
         let row_size = 14.0;
         if self.visible.is_empty() {
             let label = "No pages match";
-            let y = list_top + (ROW_HEIGHT * scale - f64::from(row_size) * scale) / 2.0;
+            let (_, label_h) = text_renderer.measure(label, row_size, None);
+            let y = list_top + (ROW_HEIGHT * scale - f64::from(label_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 label,
@@ -405,12 +406,15 @@ impl PageJumpPalette {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.accent[5],
+                    tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
                     None,
                     &hl,
                 );
             }
-            let ty = row_rect.y0 + (row_rect.height() - f64::from(row_size) * scale) / 2.0;
+            // Centre on the measured line (already at the renderer's scale),
+            // not on the font size.
+            let (_, title_h) = text_renderer.measure(&row.title, row_size, None);
+            let ty = row_rect.y0 + (row_rect.height() - f64::from(title_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &row.title,

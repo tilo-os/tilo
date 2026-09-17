@@ -77,6 +77,10 @@ pub struct WeatherApp {
     /// Whether the city list is collapsed to a rail in the side-by-side
     /// layout. Drives the overview width the shell is rebuilt with.
     overview_collapsed: bool,
+    /// The theme's text scale the shell was last built for. The push
+    /// breakpoint and the overview width are sized by the text the panes
+    /// hold, so a scale change rebuilds the shell like a collapse toggle.
+    text_scale: f32,
     /// Set when the shell is rebuilt (collapse toggle) so the event loop
     /// re-runs `build_layout` on the fresh shell before the next draw.
     structure_dirty: bool,
@@ -191,23 +195,30 @@ impl WeatherApp {
 
     /// Build the responsive shell at the overview width implied by `collapsed`
     /// (full list vs. rail). Both pane widgets share the one [`Core`].
-    fn build_nav(core: Rc<RefCell<Core>>, collapsed: bool) -> NavShell {
+    fn build_nav(core: Rc<RefCell<Core>>, collapsed: bool, text_scale: f32) -> NavShell {
         let overview: Box<dyn Widget> = Box::new(OverviewPane::new(core.clone()));
         let detail: Box<dyn Widget> = Box::new(DetailPane::new(core));
+        // Both panes are content sized by the text they hold, so the width
+        // the city list needs and the width at which the two still fit side by
+        // side grow with the text scale. At 1× this is the authored geometry.
+        let grow = f64::from(text_scale.max(1.0));
         let width = if collapsed {
             OVERVIEW_RAIL_WIDTH
         } else {
-            OVERVIEW_WIDTH
+            OVERVIEW_WIDTH * grow
         };
-        NavShell::new(overview, detail).with_overview_width(width)
+        NavShell::new(overview, detail)
+            .with_overview_width(width)
+            .with_breakpoint(ui::widget::DEFAULT_NAVSHELL_BREAKPOINT * grow)
     }
 
     fn assemble(core: Rc<RefCell<Core>>, live: bool) -> Self {
-        let nav = Self::build_nav(core.clone(), false);
+        let nav = Self::build_nav(core.clone(), false, 1.0);
         Self {
             core,
             nav,
             overview_collapsed: false,
+            text_scale: 1.0,
             structure_dirty: false,
             live,
             service: None,
@@ -228,7 +239,7 @@ impl WeatherApp {
             return;
         }
         self.overview_collapsed = collapsed;
-        self.nav = Self::build_nav(self.core.clone(), collapsed);
+        self.nav = Self::build_nav(self.core.clone(), collapsed, self.text_scale);
         self.structure_dirty = true;
     }
 
@@ -748,6 +759,18 @@ impl Widget for WeatherApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // The shell's breakpoint and overview width are sized for a text
+        // scale; when the theme's changes, rebuild the shell exactly as a
+        // collapse toggle does. Both panes read the shared `Core`, so no pane
+        // state is lost in the rebuild.
+        if (theme.text_scale - self.text_scale).abs() > f32::EPSILON {
+            self.text_scale = theme.text_scale;
+            // Keep the pane the person was on: a scale change must not pop a
+            // pushed forecast back to the city list.
+            let pane = self.nav.pane();
+            self.nav = Self::build_nav(self.core.clone(), self.overview_collapsed, self.text_scale);
+            self.nav.snap_pane(pane);
+        }
         self.nav.build_layout(taffy, theme, node_map)
     }
 

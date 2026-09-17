@@ -92,7 +92,7 @@ impl Column {
         self
     }
 
-    /// Skip the default `padding_standard * 2` on all sides. Used by
+    /// Skip the default `spacing.s6` inset on all sides. Used by
     /// the shell's foreground column so the topbar lands at y=0
     /// instead of inset by the column's gutter.
     #[must_use]
@@ -108,7 +108,7 @@ impl Column {
     }
 
     /// Extra padding on the left, on top of the default
-    /// `padding_standard * 2`. Used to displace a workspace area to the
+    /// `spacing.s6` inset. Used to displace a workspace area to the
     /// right of an absolutely-positioned sidebar without shifting the
     /// surrounding chrome.
     #[must_use]
@@ -127,7 +127,7 @@ impl Column {
     }
 
     /// Extra padding on the bottom, on top of the default
-    /// `padding_standard * 2`.
+    /// `spacing.s6` inset.
     #[must_use]
     pub fn with_extra_bottom_padding(mut self, px: f32) -> Self {
         self.extra_bottom_padding = px;
@@ -135,7 +135,7 @@ impl Column {
     }
 
     /// Override the column's top + bottom padding (default
-    /// `padding_standard * 2`); left/right are unaffected. For layouts
+    /// `spacing.s6`); left/right are unaffected. For layouts
     /// that need to hug the viewport's top/bottom edges.
     #[must_use]
     pub fn with_vertical_padding(mut self, px: f32) -> Self {
@@ -275,21 +275,28 @@ impl Widget for Column {
                     height: length(resolved_gap),
                 },
                 padding: {
+                    // The page gutter: the `s6` token (24). Tokens are the
+                    // source of truth; on every theme built through
+                    // `Theme::from_tokens` / `with_ui_scale` / a custom
+                    // spec this is exactly twice `padding_standard`. A host
+                    // theme that overrides the legacy `padding_standard`
+                    // alias alone (`Theme::with_component_scales` preserves
+                    // such aliases) no longer moves this gutter.
                     let base = if self.no_padding {
                         0.0
                     } else {
-                        theme.padding_standard * 2.0
+                        theme.tokens.spacing.s6
                     };
                     let vert = self.vertical_padding_override.unwrap_or(base);
                     let (left, right) = self
                         .horizontal_padding_override
                         .unwrap_or((base + self.extra_left_padding, base));
-                    taffy::Rect {
-                        left: length(left),
-                        right: length(right),
-                        top: length(vert + self.extra_top_padding),
-                        bottom: length(vert + self.extra_bottom_padding),
-                    }
+                    super::layout::insets(
+                        vert + self.extra_top_padding,
+                        right,
+                        vert + self.extra_bottom_padding,
+                        left,
+                    )
                 },
                 size: taffy::Size {
                     width: percent(1.0_f32),
@@ -674,6 +681,53 @@ mod tests {
             .iter()
             .filter(|t| matches!(**t, DrawTag::IMAGE) || **t == DrawTag::COLOR)
             .count()
+    }
+
+    /// The default inset is the `s6` token — 24 on the stock scale and still
+    /// exactly twice `padding_standard` once `ui_scale` or a custom theme's
+    /// `spacing_px` has rescaled the whole spacing scale.
+    #[test]
+    fn default_inset_is_the_s6_token_on_every_scale() {
+        for theme in [
+            Theme::dark(),
+            Theme::dark().with_ui_scale(1.5),
+            Theme::from_custom_spec(&crate::theme::CustomThemeSpec {
+                schema_version: crate::theme::CUSTOM_THEME_SCHEMA_VERSION,
+                id: "dense".into(),
+                name: "Dense".into(),
+                dark_base: true,
+                accent: [12, 120, 220],
+                accent_hover: [8, 96, 190],
+                surface_base: [9, 18, 30],
+                surface_raised: [18, 32, 48],
+                text_primary: [238, 244, 250],
+                text_dim: [170, 184, 199],
+                border: [48, 68, 88],
+                success: [50, 190, 110],
+                warning: [230, 170, 50],
+                danger: [225, 75, 80],
+                info: [70, 165, 230],
+                radius_px: 6.0,
+                spacing_px: 9.0,
+                font: "Inter".into(),
+            })
+            .unwrap(),
+        ] {
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let mut column = Column::new().push(Box::new(Text::new("body")));
+            let node = column.build_layout(&mut taffy, &theme, &mut node_map);
+            let padding = taffy.style(node).unwrap().padding;
+            let expected = taffy::style_helpers::length(theme.tokens.spacing.s6);
+            assert_eq!(padding.left, expected, "{}", theme.name);
+            assert_eq!(padding.top, expected, "{}", theme.name);
+            assert_eq!(
+                padding.left,
+                taffy::style_helpers::length(theme.padding_standard * 2.0),
+                "{}: s6 is twice padding_standard",
+                theme.name
+            );
+        }
     }
 
     #[test]

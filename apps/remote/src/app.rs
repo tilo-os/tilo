@@ -37,7 +37,10 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::tooltip::draw_hover_tooltip;
-use ui::widget::{Button, ButtonFace, FlapState, SplitLayout, TextInput, TooltipHost};
+use ui::widget::{
+    Button, ButtonFace, FlapState, SegmentedFace, SplitLayout, TextInput, ToggleGroup,
+    TooltipHost,
+};
 
 use crate::doc::RemoteDoc;
 use crate::model::{
@@ -568,6 +571,11 @@ pub struct RemoteApp {
     /// list. Kept as view state: collaborators can browse independently.
     list_scroll: f64,
     list_scroll_max: f64,
+    /// Distance from the list screen's top to the first row, as the last draw
+    /// measured it (header + search + gap). Keyboard scrolling sizes its
+    /// viewport from this so it agrees with the painted list when the header
+    /// grows with the text scale.
+    list_top_offset: f64,
     /// Repaint gate.
     dirty: bool,
     /// True once the in-memory workspace has been mirrored into the CRDT.
@@ -853,6 +861,7 @@ impl RemoteApp {
             pointer: Point::ZERO,
             list_scroll: 0.0,
             list_scroll_max: 0.0,
+            list_top_offset: HEADER_H + 56.0,
             dirty: true,
             seeded: false,
             actions: ui::ActionHost::new(),
@@ -3978,7 +3987,7 @@ impl RemoteApp {
             ROW_H
         };
         let stride = row_h + 10.0;
-        let viewport = (self.rect.height() - (HEADER_H + 56.0)).max(row_h);
+        let viewport = (self.rect.height() - self.list_top_offset).max(row_h);
         self.list_scroll_max = (count as f64 * stride - 10.0 - viewport).max(0.0);
         let top = index as f64 * stride;
         let bottom = top + row_h;
@@ -4216,15 +4225,24 @@ impl RemoteApp {
         let pad = 24.0;
 
         // --- Header ---
-        let header = Rect::new(content.x0, content.y0, content.x1, content.y0 + HEADER_H);
+        // The heading group is measured: the tally starts below the title's
+        // real height and the header grows when the scaled pair no longer
+        // fits the 1× band, so nothing overlaps at 2×.
         let compact_header = content.width() < 520.0;
+        let title = if compact_header {
+            "Remote"
+        } else {
+            "Remote Machines"
+        };
+        let (_, title_h) = text_renderer.measure_weighted(title, 22.0, None, TextWeight::Bold);
+        let title_h = f64::from(title_h);
+        let (_, stat_h) = text_renderer.measure("0", 13.0, None);
+        let stat_h = f64::from(stat_h);
+        let header_h = HEADER_H.max(14.0 + title_h + 2.0 + stat_h + 10.0);
+        let header = Rect::new(content.x0, content.y0, content.x1, content.y0 + header_h);
         text_renderer.draw_text_weighted(
             scene,
-            if compact_header {
-                "Remote"
-            } else {
-                "Remote Machines"
-            },
+            title,
             22.0,
             tokens.colors.text_primary,
             transform * Affine::translate((header.x0 + pad, header.y0 + 14.0)),
@@ -4249,17 +4267,26 @@ impl RemoteApp {
             &stat,
             13.0,
             tokens.colors.text_dim,
-            transform * Affine::translate((header.x0 + pad, header.y0 + 40.0)),
+            transform * Affine::translate((header.x0 + pad, header.y0 + 14.0 + title_h + 2.0)),
             None,
         );
 
-        // New-connection button (top-right).
-        let add_w = if compact_header { 88.0 } else { 150.0 };
+        // New-connection button (top-right), sized from its label and centred
+        // on the title's line.
+        let add_label = if compact_header {
+            "+ New"
+        } else {
+            "+ New connection"
+        };
+        let (add_tw, _) =
+            text_renderer.measure_weighted(add_label, 13.0, None, TextWeight::Semibold);
+        let add_w = (f64::from(add_tw) + 28.0).max(if compact_header { 88.0 } else { 150.0 });
+        let add_cy = header.y0 + 14.0 + title_h / 2.0;
         let add = Rect::new(
             content.x1 - pad - add_w,
-            header.y0 + 16.0,
+            add_cy - 16.0,
             content.x1 - pad,
-            header.y0 + 48.0,
+            add_cy + 16.0,
         );
         self.draw_button(
             scene,
@@ -4267,11 +4294,7 @@ impl RemoteApp {
             text_renderer,
             theme,
             add,
-            if compact_header {
-                "+ New"
-            } else {
-                "+ New connection"
-            },
+            add_label,
             true,
         );
         self.push_hit(add, Action::NewConnection);
@@ -4296,6 +4319,7 @@ impl RemoteApp {
 
         // --- Rows ---
         let list_top = search.y1 + 16.0;
+        self.list_top_offset = list_top - content.y0;
         let rows: Vec<Connection> = self
             .workspace
             .filtered(&self.search)
@@ -4411,8 +4435,10 @@ impl RemoteApp {
         );
         y += 2.0 * r + 24.0;
 
+        // Each line advances by its measured height plus one gap, so the
+        // heading, subtitle and action stay a group at every text scale.
         let title = "No machines yet";
-        let (tw, _) = text_renderer.measure_weighted(title, 19.0, None, TextWeight::Bold);
+        let (tw, th) = text_renderer.measure_weighted(title, 19.0, None, TextWeight::Bold);
         text_renderer.draw_text_weighted(
             scene,
             title,
@@ -4422,21 +4448,24 @@ impl RemoteApp {
             None,
             TextWeight::Bold,
         );
-        y += 30.0;
+        y += f64::from(th) + 6.0;
 
         let sub = "Add one to reach it over SSH, VNC, or the qOS relay.";
-        let (sw, _) = text_renderer.measure(sub, 13.5, None);
+        let sub_max_w = (region.width() - 2.0 * 24.0).max(120.0) as f32;
+        let (sw, sh) = text_renderer.measure(sub, 13.5, Some(sub_max_w));
         text_renderer.draw_text(
             scene,
             sub,
             13.5,
             tokens.colors.text_dim,
             transform * Affine::translate((mid - f64::from(sw) / 2.0, y)),
-            None,
+            Some(sub_max_w),
         );
-        y += 34.0;
+        y += f64::from(sh) + 16.0;
 
-        let bw = 168.0;
+        let action = "+ New connection";
+        let (aw, _) = text_renderer.measure_weighted(action, 13.0, None, TextWeight::Semibold);
+        let bw = (f64::from(aw) + 32.0).max(168.0);
         let btn = Rect::new(mid - bw / 2.0, y, mid + bw / 2.0, y + 40.0);
         self.draw_button(
             scene,
@@ -4444,7 +4473,7 @@ impl RemoteApp {
             text_renderer,
             theme,
             btn,
-            "+ New connection",
+            action,
             true,
         );
         self.push_hit(btn, Action::NewConnection);
@@ -4639,8 +4668,15 @@ impl RemoteApp {
         self.draw_button(scene, transform, text_renderer, theme, edit, "Edit", false);
         self.push_hit(edit, Action::EditConnection(c.id));
 
-        // last_used, right-aligned just left of the Edit button.
-        let (uw, _) = text_renderer.measure(&c.last_used, 12.0, None);
+        // last_used, right-aligned just left of the Edit button and centred on
+        // the buttons' line (the row centre when wide, the action line when
+        // the row has stacked into its compact form).
+        let (uw, uh) = text_renderer.measure(&c.last_used, 12.0, None);
+        let used_cy = if compact {
+            connect.center().y
+        } else {
+            row.center().y
+        };
         text_renderer.draw_text(
             scene,
             &c.last_used,
@@ -4648,9 +4684,9 @@ impl RemoteApp {
             tokens.colors.neutral[5],
             transform
                 * Affine::translate(if compact {
-                    (row.x0 + 44.0, row.y0 + 81.0)
+                    (row.x0 + 44.0, used_cy - f64::from(uh) / 2.0)
                 } else {
-                    (edit.x0 - 20.0 - f64::from(uw), row.center().y - 7.0)
+                    (edit.x0 - 20.0 - f64::from(uw), used_cy - f64::from(uh) / 2.0)
                 }),
             None,
         );
@@ -4668,9 +4704,11 @@ impl RemoteApp {
     ) -> f64 {
         let (label, accent) = (kind.tag(), kind_color(kind, theme));
         let size = 11.0f32;
-        let (tw, _) = text_renderer.measure(label, size, None);
+        // Measure at the painted weight; the badge height and the label's
+        // centring both come from that line so nothing is nudged by hand.
+        let (tw, th) = text_renderer.measure_weighted(label, size, None, TextWeight::Semibold);
         let w = f64::from(tw) + 16.0;
-        let h = 18.0;
+        let h = f64::from(th) + 4.0;
         let badge = Rect::new(top_left.x, top_left.y, top_left.x + w, top_left.y + h);
         scene.fill(
             Fill::NonZero,
@@ -4684,8 +4722,7 @@ impl RemoteApp {
             label,
             size,
             accent,
-            transform
-                * Affine::translate((badge.x0 + 8.0, badge.y0 + (h - f64::from(size)) / 2.0 - 1.0)),
+            transform * Affine::translate((badge.x0 + 8.0, badge.y0 + (h - f64::from(th)) / 2.0)),
             None,
             TextWeight::Semibold,
         );
@@ -4721,14 +4758,17 @@ impl RemoteApp {
             None,
             &badge,
         );
-        let (tw, _) = text_renderer.measure_weighted(label, 11.5, None, TextWeight::Semibold);
+        let (tw, th) = text_renderer.measure_weighted(label, 11.5, None, TextWeight::Semibold);
         text_renderer.draw_text_weighted(
             scene,
             label,
             11.5,
             color,
             transform
-                * Affine::translate((rect.center().x - f64::from(tw) / 2.0, rect.center().y - 7.0)),
+                * Affine::translate((
+                    rect.center().x - f64::from(tw) / 2.0,
+                    rect.center().y - f64::from(th) / 2.0,
+                )),
             None,
             TextWeight::Semibold,
         );
@@ -4951,27 +4991,22 @@ impl RemoteApp {
         );
         let kinds = ConnectionKind::available_to_create();
         let seg_w = card_w / kinds.len() as f64;
-        for (i, k) in kinds.into_iter().enumerate() {
+        let mut rects = Vec::with_capacity(kinds.len());
+        let mut labels = Vec::with_capacity(kinds.len());
+        for (i, k) in kinds.iter().enumerate() {
             let seg = Rect::new(
                 card_x + i as f64 * seg_w,
                 y,
                 card_x + (i + 1) as f64 * seg_w,
                 y + 40.0,
             );
-            let active = self.draft.kind == k;
-            self.draw_segment(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                seg,
-                k.tag(),
-                active,
-                i == 0,
-                i.saturating_add(1) == kinds.len(),
-            );
-            self.push_hit(seg, Action::SetKind(k));
+            rects.push(seg);
+            labels.push(k.tag());
+            self.push_hit(seg, Action::SetKind(*k));
         }
+        // A legacy draft kind (RDP) is not offered here: nothing is selected.
+        let selected = kinds.iter().position(|k| *k == self.draft.kind);
+        self.draw_segments(scene, transform, text_renderer, theme, &rects, &labels, selected);
         y += 56.0;
         y
     }
@@ -5324,6 +5359,8 @@ impl RemoteApp {
             );
             let auth_methods = AuthMethod::available_for(self.draft.kind);
             let aseg = card_w / auth_methods.len() as f64;
+            let mut rects = Vec::with_capacity(auth_methods.len());
+            let mut labels = Vec::with_capacity(auth_methods.len());
             for (i, a) in auth_methods.iter().copied().enumerate() {
                 let seg = Rect::new(
                     card_x + i as f64 * aseg,
@@ -5331,20 +5368,12 @@ impl RemoteApp {
                     card_x + (i + 1) as f64 * aseg,
                     y + 40.0,
                 );
-                let active = self.draft.auth == a;
-                self.draw_segment(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    seg,
-                    a.label(),
-                    active,
-                    i == 0,
-                    i.saturating_add(1) == auth_methods.len(),
-                );
+                rects.push(seg);
+                labels.push(a.label());
                 self.push_hit(seg, Action::SetAuth(a));
             }
+            let selected = auth_methods.iter().position(|a| *a == self.draft.auth);
+            self.draw_segments(scene, transform, text_renderer, theme, &rects, &labels, selected);
             y += 56.0;
         }
         y
@@ -5435,7 +5464,7 @@ impl RemoteApp {
                 None,
                 &rr,
             );
-            let (tw, _) =
+            let (tw, th) =
                 text_renderer.measure_weighted("Delete", 13.0, None, TextWeight::Semibold);
             text_renderer.draw_text_weighted(
                 scene,
@@ -5445,7 +5474,7 @@ impl RemoteApp {
                 transform
                     * Affine::translate((
                         del.center().x - f64::from(tw) / 2.0,
-                        del.center().y - 8.0,
+                        del.center().y - f64::from(th) / 2.0,
                     )),
                 None,
                 TextWeight::Semibold,
@@ -5454,7 +5483,8 @@ impl RemoteApp {
         }
     }
 
-    /// Draw a small section label and return the y just below it.
+    /// Draw a small section label and return the y just below it (its
+    /// measured height plus the label-to-control gap).
     fn draw_form_label(
         scene: &mut Scene,
         transform: Affine,
@@ -5464,6 +5494,7 @@ impl RemoteApp {
         y: f64,
         label: &str,
     ) -> f64 {
+        let (_, lh) = text_renderer.measure_weighted(label, 12.0, None, TextWeight::Semibold);
         text_renderer.draw_text_weighted(
             scene,
             label,
@@ -5473,58 +5504,38 @@ impl RemoteApp {
             None,
             TextWeight::Semibold,
         );
-        y + 22.0
+        y + f64::from(lh) + 6.0
     }
 
-    /// Draw one segment of a segmented control.
+    /// Paint one segmented control over rects the caller already pushed as
+    /// hits: the shared face owns selection, hover, separators and measured
+    /// label centring, so this canvas keeps only its pointer routing.
     #[allow(clippy::too_many_arguments)]
-    fn draw_segment(
+    fn draw_segments(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        rect: Rect,
-        label: &str,
-        active: bool,
-        _first: bool,
-        _last: bool,
+        rects: &[Rect],
+        labels: &[&str],
+        selected: Option<usize>,
     ) {
-        let tokens = &theme.tokens;
-        let hovered = rect.contains(self.pointer);
-        let rr = RoundedRect::from_rect(rect.inset(-0.0), 8.0);
-        let bg = if active {
-            tokens.colors.accent[5]
-        } else if hovered {
-            tokens.colors.lift(0.72)
-        } else {
-            tokens.colors.neutral[0]
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &rr);
-        if !active {
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                tokens.colors.border_standard,
-                None,
-                &rr,
-            );
-        }
-        let color = if active {
-            Color::WHITE
-        } else {
-            tokens.colors.text_primary
-        };
-        let (tw, _) = text_renderer.measure_weighted(label, 13.0, None, TextWeight::Medium);
-        text_renderer.draw_text_weighted(
+        let hovered = rects.iter().position(|r| r.contains(self.pointer));
+        // The shared face compares `i == selected`; an index past the end
+        // paints no selection, which is what a draft whose value is not on
+        // offer (a legacy RDP kind) must show.
+        let selected = selected.unwrap_or(rects.len());
+        ToggleGroup::paint(
             scene,
-            label,
-            13.0,
-            color,
-            transform
-                * Affine::translate((rect.center().x - f64::from(tw) / 2.0, rect.center().y - 8.0)),
-            None,
-            TextWeight::Medium,
+            transform,
+            text_renderer,
+            theme,
+            &SegmentedFace::new(rects, labels, selected)
+                .radius(8.0)
+                .text_size(13.0)
+                .weight(TextWeight::Medium)
+                .hovered(hovered),
         );
     }
 
@@ -6146,16 +6157,18 @@ impl RemoteApp {
             None,
             &Circle::new(dot, 5.0),
         );
+        // Name and mode sit on the bar's centre line by their measured
+        // heights, the same line the tool buttons are centred on.
+        let (nw, nh) = text_renderer.measure_weighted(&c.name, 14.0, None, TextWeight::Semibold);
         text_renderer.draw_text_weighted(
             scene,
             &c.name,
             14.0,
             tokens.colors.text_primary,
-            transform * Affine::translate((bar.x0 + 32.0, bar.center().y - 9.0)),
+            transform * Affine::translate((bar.x0 + 32.0, bar.center().y - f64::from(nh) / 2.0)),
             None,
             TextWeight::Semibold,
         );
-        let (nw, _) = text_renderer.measure_weighted(&c.name, 14.0, None, TextWeight::Semibold);
         // Kind chip + connection label after the name.
         let mode = if c.kind == ConnectionKind::Qos {
             format!("· {} · workspace stream", c.address())
@@ -6164,12 +6177,17 @@ impl RemoteApp {
         } else {
             format!("· {} · framebuffer", c.address())
         };
+        let (_, mh) = text_renderer.measure(&mode, 12.0, None);
         text_renderer.draw_text(
             scene,
             &mode,
             12.0,
             tokens.colors.text_dim,
-            transform * Affine::translate((bar.x0 + 40.0 + f64::from(nw), bar.center().y - 7.0)),
+            transform
+                * Affine::translate((
+                    bar.x0 + 40.0 + f64::from(nw),
+                    bar.center().y - f64::from(mh) / 2.0,
+                )),
             None,
         );
 
@@ -6227,8 +6245,8 @@ impl RemoteApp {
         bar: Rect,
         label: &str,
     ) -> Rect {
-        let tokens = &theme.tokens;
-        let (tw, _) = text_renderer.measure(label, 12.5, None);
+        // Shared neutral face (same as Edit/Disconnect) sized from the label.
+        let (tw, _) = text_renderer.measure_weighted(label, 13.0, None, TextWeight::Semibold);
         let w = f64::from(tw) + 24.0;
         let rect = Rect::new(
             right_x - w,
@@ -6236,29 +6254,7 @@ impl RemoteApp {
             right_x,
             bar.center().y + 16.0,
         );
-        let hovered = rect.contains(self.pointer);
-        let rr = RoundedRect::from_rect(rect, 8.0);
-        let bg = if hovered {
-            tokens.colors.lift(0.72)
-        } else {
-            tokens.colors.neutral[0]
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &rr);
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            tokens.colors.border_standard,
-            None,
-            &rr,
-        );
-        text_renderer.draw_text(
-            scene,
-            label,
-            12.5,
-            tokens.colors.text_primary,
-            transform * Affine::translate((rect.x0 + 12.0, rect.center().y - 8.0)),
-            None,
-        );
+        self.draw_button(scene, transform, text_renderer, theme, rect, label, false);
         rect
     }
 

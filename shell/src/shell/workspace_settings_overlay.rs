@@ -258,11 +258,13 @@ impl WorkspaceSettingsOverlay {
     }
 
     pub fn close_rect_for(rect: Rect) -> Rect {
+        // One pointer target (HIG §9.6: 32 × 32 minimum) on the identity
+        // card's centre line; it was a 30 px square.
         Rect::new(
-            rect.x1 - 58.0,
-            rect.y0 + 25.0,
+            rect.x1 - 60.0,
+            rect.y0 + 24.0,
             rect.x1 - 28.0,
-            rect.y0 + 55.0,
+            rect.y0 + 56.0,
         )
     }
 
@@ -1208,22 +1210,49 @@ impl WorkspaceSettingsOverlay {
             &nav_rr,
         );
         let segment_w = nav.width() / usize_to_f64_lossy(tabs.len());
+        // Every pill gets the same treatment: the plan is measured once for
+        // the whole strip, so the strip never shows one elided label next to
+        // four intact ones or one icon next to four bare labels.
+        let plan = tab_strip_plan(text_renderer, lsize, segment_w - 6.0);
+        // Segment widths follow the measured labels once equal fifths cannot
+        // hold the widest one (3 px pill margins each side are part of the
+        // need), so "General" at 200 % is not elided beside pills with slack.
+        let reserved = TAB_LABEL_INSET
+            + 6.0
+            + if plan.icons {
+                TAB_ICON_PX + TAB_ICON_GAP
+            } else {
+                0.0
+            };
+        let needs: Vec<f64> = tabs
+            .iter()
+            .map(|tab| {
+                let label = if plan.compact {
+                    tab.compact_label()
+                } else {
+                    tab.label()
+                };
+                f64::from(text_renderer.measure(label, lsize, None).0) + reserved
+            })
+            .collect();
+        let widths = tab_pill_widths(&needs, nav.width());
         // Written into the component's cache after the loop
         // so one source of geometry feeds draw and click-routing.
         let mut pill_rects = [Rect::ZERO; 5];
         for (i, tab) in tabs.iter().enumerate() {
             let active = *tab == active_tab;
-            let label = if rect.width() < 680.0 {
+            let label = if plan.compact {
                 tab.compact_label()
             } else {
                 tab.label()
             };
 
-            let ix = usize_to_f64_lossy(i);
+            let seg_x0 = nav.x0 + widths.iter().take(i).sum::<f64>();
+            let seg_w = widths.get(i).copied().unwrap_or(segment_w);
             let pill_rect = Rect::new(
-                nav.x0 + segment_w * ix + 3.0,
+                seg_x0 + 3.0,
                 nav.y0 + 3.0,
-                nav.x0 + segment_w * (ix + 1.0) - 3.0,
+                seg_x0 + seg_w - 3.0,
                 nav.y1 - 3.0,
             );
             if let Some(slot) = pill_rects.get_mut(i) {
@@ -1258,10 +1287,9 @@ impl WorkspaceSettingsOverlay {
                 WsTab::Permissions => ui::icons::Icon::Shield,
                 WsTab::Apps => ui::icons::Icon::LayoutGrid,
             };
-            let show_icon =
-                f64::from(text_renderer.measure(label, lsize, None).0) + 30.0 <= pill_rect.width();
-            let icon_size = if show_icon { 15.0 } else { 0.0 };
-            let icon_gap = if show_icon { 7.0 } else { 0.0 };
+            let show_icon = plan.icons;
+            let icon_size = if show_icon { TAB_ICON_PX } else { 0.0 };
+            let icon_gap = if show_icon { TAB_ICON_GAP } else { 0.0 };
             let label = text_renderer.elide_to_width(
                 label,
                 lsize,
@@ -2043,6 +2071,85 @@ impl WorkspaceSettingsOverlay {
     clippy::cast_precision_loss,
     reason = "workspace-settings has at most a handful of rows"
 )]
+/// Glyph size and gap for a tab pill's leading icon.
+const TAB_ICON_PX: f64 = 15.0;
+const TAB_ICON_GAP: f64 = 7.0;
+/// Text inset inside a tab pill, both sides together.
+const TAB_LABEL_INSET: f64 = 8.0;
+
+/// One decision for the whole tab strip: which label set to show, and
+/// whether the pills have room for their icons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TabStripPlan {
+    /// Use every tab's `compact_label` instead of its full label.
+    pub compact: bool,
+    /// Paint the leading icon in every pill.
+    pub icons: bool,
+}
+
+/// Measure the strip's labels at the size they are drawn and choose the
+/// densest treatment where **every** tab still fits its pill intact.
+///
+/// The previous rule switched to compact labels on the lens width alone
+/// and decided icons per pill, so at 200 % text the active "General"
+/// pill elided while its neighbours did not and one pill out of five kept
+/// an icon. Elision is the last resort, applied uniformly, never the first.
+pub(crate) fn tab_strip_plan(text_renderer: &mut TextRenderer, size: f32, pill_w: f64) -> TabStripPlan {
+    let mut widest = |labels: &[&str]| -> f64 {
+        labels
+            .iter()
+            .map(|label| f64::from(text_renderer.measure(label, size, None).0))
+            .fold(0.0, f64::max)
+    };
+    let full: Vec<&str> = WsTab::all().iter().map(|tab| tab.label()).collect();
+    let compact: Vec<&str> = WsTab::all().iter().map(|tab| tab.compact_label()).collect();
+    let icon_w = TAB_ICON_PX + TAB_ICON_GAP;
+    let fits = |label_w: f64, with_icon: bool| {
+        label_w + TAB_LABEL_INSET + if with_icon { icon_w } else { 0.0 } <= pill_w
+    };
+    let full_w = widest(&full);
+    if fits(full_w, true) {
+        return TabStripPlan {
+            compact: false,
+            icons: true,
+        };
+    }
+    let compact_w = widest(&compact);
+    if fits(compact_w, true) {
+        return TabStripPlan {
+            compact: true,
+            icons: true,
+        };
+    }
+    if fits(full_w, false) {
+        return TabStripPlan {
+            compact: false,
+            icons: false,
+        };
+    }
+    TabStripPlan {
+        compact: true,
+        icons: false,
+    }
+}
+
+/// Segment widths for the tab strip. Equal shares while every label fits
+/// its share; otherwise each segment takes its measured share of the strip,
+/// so one long label is not elided while its neighbours keep slack. Always
+/// sums to `nav_width`.
+pub(crate) fn tab_pill_widths(needs: &[f64], nav_width: f64) -> Vec<f64> {
+    let count = needs.len();
+    if count == 0 {
+        return Vec::new();
+    }
+    let equal = nav_width / usize_to_f64_lossy(count);
+    let total: f64 = needs.iter().sum();
+    if needs.iter().all(|need| *need <= equal) || total <= 0.0 {
+        return vec![equal; count];
+    }
+    needs.iter().map(|need| need / total * nav_width).collect()
+}
+
 fn usize_to_f64_lossy(value: usize) -> f64 {
     value as f64
 }
@@ -2109,6 +2216,69 @@ mod tests {
                 .transition
                 .is_visible(now + Duration::from_millis(MODAL_OPEN_ANIM_MS + 500))
         );
+    }
+
+    #[test]
+    fn tab_strip_plan_compacts_every_label_before_it_elides_any() {
+        let mut text = TextRenderer::new();
+        // The 540 px laptop lens at 100 %: five ~95 px pills.
+        let base = Theme::dark();
+        let plan = tab_strip_plan(&mut text, base.tokens.typography.scale.base, 95.6);
+        assert!(plan.icons, "at 100% every pill has room for its icon");
+        // The same lens at 200 % text: no pill can hold a full label, so the
+        // whole strip drops to compact labels (and icons only if they all
+        // fit) instead of eliding the active tab alone.
+        let large = Theme::dark().with_text_scale(2.0);
+        let lsize = large.tokens.typography.scale.base;
+        // In the 540 px lens even compact labels overflow a 95.6 px pill at
+        // 28 px type, so the plan drops to compact labels without icons and
+        // every pill elides by the same rule — never the active tab alone.
+        let plan = tab_strip_plan(&mut text, lsize, 95.6);
+        assert_eq!(
+            plan,
+            TabStripPlan {
+                compact: true,
+                icons: false
+            }
+        );
+        // In the 800 px lens (145.6 px pills) compact labels fit with icons.
+        let plan = tab_strip_plan(&mut text, lsize, 145.6);
+        assert_eq!(
+            plan,
+            TabStripPlan {
+                compact: true,
+                icons: true
+            }
+        );
+        let widest = WsTab::all()
+            .iter()
+            .map(|tab| f64::from(text.measure(tab.compact_label(), lsize, None).0))
+            .fold(0.0, f64::max);
+        assert!(
+            widest + TAB_LABEL_INSET + TAB_ICON_PX + TAB_ICON_GAP <= 145.6,
+            "the chosen plan fits its widest label ({widest}) into the pill"
+        );
+    }
+
+    #[test]
+    fn tab_pills_take_measured_widths_only_when_equal_shares_cannot_hold_the_widest_label() {
+        let equal = tab_pill_widths(&[80.0, 60.0, 70.0, 75.0, 50.0], 500.0);
+        assert_eq!(equal.len(), 5);
+        assert!(equal.iter().all(|w| (*w - 100.0).abs() < f64::EPSILON));
+
+        let measured = tab_pill_widths(&[120.0, 80.0, 80.0, 90.0, 70.0], 500.0);
+        assert!((measured.iter().sum::<f64>() - 500.0).abs() < 1e-9, "fills the strip exactly");
+        for (need, width) in [120.0, 80.0, 80.0, 90.0, 70.0].iter().zip(&measured) {
+            assert!(width >= need, "every label fits its pill: {measured:?}");
+        }
+        assert!(measured[0] > measured[4]);
+        assert!(tab_pill_widths(&[], 500.0).is_empty());
+    }
+
+    #[test]
+    fn close_button_is_one_pointer_target() {
+        let close = WorkspaceSettingsOverlay::close_rect_for(Rect::new(0.0, 0.0, 540.0, 700.0));
+        assert!(close.width() >= 32.0 && close.height() >= 32.0);
     }
 
     #[test]

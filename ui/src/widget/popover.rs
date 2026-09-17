@@ -359,24 +359,17 @@ impl Widget for Popover {
         let c = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.md);
 
-        // Drop shadow rings (themed black at low alpha) so the menu reads as
-        // floating above the content — the same 4-ring pattern the toolkit's
-        // popover chrome uses.
-        for (spread, alpha) in [(2.0_f64, 60u8), (5.0, 32), (9.0, 16), (14.0, 8)] {
-            let sr = Rect::new(
-                self.rect.x0 - spread,
-                self.rect.y0 - spread + 4.0,
-                self.rect.x1 + spread,
-                self.rect.y1 + spread + 4.0,
-            );
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                vello::peniko::Color::from_rgba8(0, 0, 0, alpha),
-                None,
-                &RoundedRect::from_rect(sr, radius + spread),
-            );
-        }
+        // A floating Panel casts the `e4` tier (HIG §9.1) through the one
+        // shadow painter, so its shadow follows the panel's own outline and
+        // its strength comes from the theme rather than a literal black
+        // ring stack that weighed the same on a paper-white ground.
+        crate::surface::shadow(
+            scene,
+            transform,
+            self.rect,
+            radius,
+            &theme.tokens.elevation.e4,
+        );
 
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(

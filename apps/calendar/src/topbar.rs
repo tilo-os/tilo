@@ -237,8 +237,10 @@ impl Topbar {
         center_y: f64,
     ) -> f64 {
         let colors = &theme.tokens.colors;
+        // Trailing inset mirrors the leading one in `draw_navigation` so the
+        // bar's contents sit symmetrically inside the content column.
         let segmented_x0 = if self.switcher_visible {
-            let x1 = self.rect.x1 - 14.0;
+            let x1 = self.rect.x1 - 16.0;
             let x0 = x1 - SEGMENTED_WIDTH;
             let segmented = Rect::new(x0, center_y - 16.0, x1, center_y + 16.0);
             fill_round(scene, transform, colors.surfaces.raised, segmented, 9.0);
@@ -291,7 +293,7 @@ impl Topbar {
             }
             x0
         } else {
-            self.rect.x1 - 14.0
+            self.rect.x1 - 16.0
         };
 
         let new_width = if self.compact() {
@@ -387,7 +389,9 @@ fn switcher_fits(content_width: f64, leading: LeadingControl, text_scale: f32) -
         38.0
     };
     let title_x = 16.0 + leading_width + 74.0 + 60.0 + 14.0;
-    let segmented_x0 = content_width - 14.0 - SEGMENTED_WIDTH;
+    // Same trailing inset `draw_actions` paints, so the fit rule and the
+    // painted switcher never disagree about where the segments start.
+    let segmented_x0 = content_width - 16.0 - SEGMENTED_WIDTH;
     let new_event_x0 = segmented_x0 - NEW_BUTTON_WIDTH - 10.0;
     let title_right = new_event_x0 - 12.0;
     title_right - title_x >= MINIMUM_TITLE_WIDTH

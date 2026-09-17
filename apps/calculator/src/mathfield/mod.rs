@@ -54,6 +54,12 @@ pub struct MathField {
     /// it (which used to make the formula appear to resize the row). Updated to
     /// keep the caret in view while typing, and by the mouse wheel.
     scroll: Vec2,
+    /// Whether this field is the focused one and so keeps its caret in view
+    /// on every layout pass. Tracked from `draw`'s `focused` flag; on the
+    /// frame focus is lost the scroll snaps back to the formula's start, and
+    /// an unfocused field then only clamps its scroll (so wheel scrolling an
+    /// inactive row still sticks) instead of chasing a parked caret.
+    follows_caret: bool,
 }
 
 impl MathField {
@@ -68,6 +74,7 @@ impl MathField {
             text_scale: 1.0,
             dragging: false,
             scroll: Vec2::ZERO,
+            follows_caret: true,
         }
     }
 
@@ -144,8 +151,21 @@ impl MathField {
             self.layout_sig = Some(sig);
         }
         // Track the caret every pass (a caret move doesn't change the content
-        // signature, but must still bring the caret back into view).
-        self.ensure_caret_visible();
+        // signature, but must still bring the caret back into view) — but only
+        // in the focused field; an inactive row keeps whatever the user
+        // scrolled it to, clamped to its content.
+        if self.follows_caret {
+            self.ensure_caret_visible();
+        } else {
+            self.clamp_scroll();
+        }
+    }
+
+    /// Keep both scroll axes inside the content extent.
+    fn clamp_scroll(&mut self) {
+        let (max_x, max_y) = self.scroll_bounds();
+        self.scroll.x = self.scroll.x.clamp(0.0, max_x);
+        self.scroll.y = self.scroll.y.clamp(0.0, max_y);
     }
 
     /// Left padding between the field edge and the content.
@@ -242,6 +262,16 @@ impl MathField {
         text_color: Color,
         focused: bool,
     ) {
+        if self.follows_caret != focused {
+            self.follows_caret = focused;
+            if !focused {
+                // Only the focused field follows its caret. A row that just
+                // lost focus reads from its start again, so a long neighbouring
+                // formula is never shown as a left-clipped tail
+                // (`)·05 · (x² + y²) − 3`).
+                self.scroll = Vec2::ZERO;
+            }
+        }
         self.relayout(tr);
         let Some(layout) = self.layout.as_ref() else {
             return;
