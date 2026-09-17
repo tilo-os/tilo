@@ -68,6 +68,10 @@ pub enum PermissionProfileError {
 }
 
 impl PermissionProfile {
+    /// # Errors
+    ///
+    /// Returns the corresponding [`PermissionProfileError`] when profile metadata or rules are
+    /// invalid or ambiguous.
     pub fn validate(&self) -> Result<(), PermissionProfileError> {
         if self.name.trim().is_empty()
             || self.name.chars().count() > MAX_NAME_CHARS
@@ -100,10 +104,14 @@ impl PermissionProfile {
     /// Compile one atomic assignment. Callers validate first, then append the
     /// returned vector as one governance transaction; a partial role can
     /// therefore never become effective.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PermissionProfileError`] when the profile does not pass [`Self::validate`].
     pub fn assign_to(
         &self,
-        subject: Subject,
-        granted_by: Principal,
+        subject: &Subject,
+        granted_by: &Principal,
         expiry: Expiry,
     ) -> Result<Vec<CapOverride>, PermissionProfileError> {
         self.validate()?;
@@ -133,7 +141,7 @@ fn canonical_scope(scope: &Scope) -> String {
 
 fn short_hash(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    hex::encode(&digest[..12])
+    hex::encode(digest.iter().copied().take(12).collect::<Vec<_>>())
 }
 
 #[cfg(test)]
@@ -159,8 +167,8 @@ mod tests {
         };
         let caps = profile
             .assign_to(
-                Subject::person("ada"),
-                Principal::Person("owner".into()),
+                &Subject::person("ada"),
+                &Principal::Person("owner".into()),
                 Expiry::Never,
             )
             .unwrap();
@@ -219,8 +227,8 @@ mod tests {
         };
         assert_eq!(
             profile.assign_to(
-                Subject::person("ada"),
-                Principal::Person("owner".into()),
+                &Subject::person("ada"),
+                &Principal::Person("owner".into()),
                 Expiry::Never
             ),
             Err(PermissionProfileError::ContradictoryRule)
