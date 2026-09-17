@@ -2,6 +2,7 @@ use super::*;
 use crate::widget::{
     Actions, Button, Field, Form, FormSection, LabelPlacement, LayoutInfo, TextInput,
 };
+use automerge::ReadDoc;
 
 fn form_layout(app: &mut App, width: u32) {
     app.layout_dirty = true;
@@ -68,7 +69,6 @@ fn form_host_preserves_entry_selection_focus_and_click_geometry_across_modes() {
     let save = app.focusable_order[2];
     let bounds = app.inspect_node(save, |widget| widget.get_rect()).unwrap();
     assert!(app.dispatch_semantic_click(bounds.center().x, bounds.center().y));
-    use automerge::ReadDoc;
     assert!(
         app.state
             .doc

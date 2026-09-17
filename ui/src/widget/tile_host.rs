@@ -2008,7 +2008,7 @@ mod tests {
             _node_id: NodeId,
             _taffy: &TaffyTree<()>,
         ) {
-            self.0.set(self.0.get() + 1);
+            self.0.set(self.0.get().checked_add(1).unwrap());
         }
         fn name(&self) -> &'static str {
             "EventProbe"

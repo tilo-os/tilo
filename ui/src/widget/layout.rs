@@ -300,7 +300,7 @@ mod tests {
         measures: usize,
     }
     impl Widget for UnsettledStyles {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "UnsettledStyles"
         }
         fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
@@ -311,7 +311,7 @@ mod tests {
             nodes: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             let node = tree.leaf_node(taffy::Style::default());
-            nodes.insert(node, self as *mut dyn Widget);
+            nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             node
         }
         fn measure(
@@ -320,16 +320,16 @@ mod tests {
             _: Size<AvailableSpace>,
             _: &mut TextRenderer,
         ) -> Size<f32> {
-            self.measures += 1;
+            self.measures = self.measures.checked_add(1).unwrap();
             Size {
                 width: 40.0,
                 height: 20.0,
             }
         }
         fn adjust_layout_style(&mut self, tree: &mut TaffyTree<()>, node: NodeId) -> bool {
-            self.adjustments += 1;
+            self.adjustments = self.adjustments.checked_add(1).unwrap();
             let mut style = tree.style(node).unwrap().clone();
-            style.size.width = taffy::Dimension::length(if self.adjustments % 2 == 0 {
+            style.size.width = taffy::Dimension::length(if self.adjustments.is_multiple_of(2) {
                 40.0
             } else {
                 80.0
