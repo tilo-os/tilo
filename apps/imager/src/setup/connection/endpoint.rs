@@ -1393,3 +1393,61 @@ mod windows_fixture_tests {
         assert!(probe_endpoint(&path).is_err());
     }
 }
+
+// Narrow retained-handle bridge for the private Connected native executor. A
+// caller cannot manufacture this capability from a path or serialized identity.
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+pub(super) struct NativeDirectory(Arc<Pin>);
+#[cfg(target_os = "linux")]
+impl NativeDirectory {
+    pub(super) fn file(&self) -> &File {
+        &self.0.file
+    }
+    pub(super) fn validate(&self, writable: bool) -> Result<(), EndpointError> {
+        self.0.validate()?;
+        if writable {
+            validate_write_namespace(&self.0)?;
+        }
+        native::check_metadata(&readable_directory(&self.0.file)?, true)?;
+        Ok(())
+    }
+    pub(super) fn child(
+        &self,
+        name: &std::ffi::OsStr,
+        writable: bool,
+    ) -> Result<Self, EndpointError> {
+        let child = Self(self.0.child(name)?);
+        native::same_mount(&self.0.file, &child.0.file)?;
+        child.validate(writable)?;
+        Ok(child)
+    }
+}
+#[cfg(target_os = "linux")]
+impl PinnedEndpoint {
+    pub(super) fn native_directory(
+        &self,
+        writable: bool,
+    ) -> Result<NativeDirectory, EndpointError> {
+        if writable {
+            self.revalidate_for_write()?;
+        } else {
+            self.revalidate()?;
+        }
+        let directory = NativeDirectory(Arc::clone(&self.root));
+        directory.validate(writable)?;
+        Ok(directory)
+    }
+}
+#[cfg(target_os = "linux")]
+pub(super) fn native_regular_metadata(file: &File) -> Result<bool, EndpointError> {
+    native::check_metadata(file, false)
+}
+#[cfg(target_os = "linux")]
+pub(super) fn native_same_mount(a: &File, b: &File) -> Result<(), EndpointError> {
+    native::same_mount(a, b)
+}
+#[cfg(target_os = "linux")]
+pub(super) fn native_object_generation(file: &File) -> Result<Vec<u8>, EndpointError> {
+    native::object_generation(file)
+}
