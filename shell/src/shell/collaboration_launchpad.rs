@@ -115,7 +115,20 @@ pub(crate) struct CollaborationLaunchpad {
     focused: bool,
     selected: usize,
     app_button_size: (f64, f64),
+    /// Measured line height of the keyboard hint under the grid. The
+    /// "Open an app" button is centred on the hint's line, so the two read
+    /// as one footer row; measured during `draw`, defaulting to the
+    /// toolkit's line metrics for the caption size before the first frame.
+    hint_line_h: f64,
 }
+
+/// Top of the keyboard hint, from the bottom of the last card.
+const HINT_TOP: f64 = 22.0;
+/// Top of the footer band, from the bottom of the last card, and the band's
+/// minimum height (the "Open an app" button's minimum height).
+const FOOTER_TOP: f64 = 14.0;
+const FOOTER_MIN_H: f64 = 36.0;
+const KEYBOARD_HINT: &str = "Arrow keys move  ·  Enter opens  ·  Super+N shows every app";
 
 impl CollaborationLaunchpad {
     pub(crate) fn new() -> Self {
@@ -126,6 +139,10 @@ impl CollaborationLaunchpad {
             focused: false,
             selected: 0,
             app_button_size: (160.0, 36.0),
+            hint_line_h: f64::from(
+                ui::text_render::TextStyle::new(ui::tokens::TypeScale::default().xs)
+                    .line_height_px(),
+            ),
         }
     }
 
@@ -133,13 +150,32 @@ impl CollaborationLaunchpad {
         let _ = state.put(path, action.path(), true);
     }
 
-    fn app_button_rect(&self) -> Rect {
+    /// The footer reservation under the grid: `FOOTER_TOP` below the last
+    /// card, at least the button's minimum height tall. Card overflow is
+    /// measured against this band, so the grid does not move when the
+    /// button is repositioned inside it.
+    fn footer_band(&self) -> Rect {
         let last = self.card_rects[5];
         Rect::new(
-            last.x1 - self.app_button_size.0,
-            last.y1 + 14.0,
+            last.x0,
+            last.y1 + FOOTER_TOP,
             last.x1,
-            last.y1 + 14.0 + self.app_button_size.1,
+            last.y1 + FOOTER_TOP + FOOTER_MIN_H,
+        )
+    }
+
+    fn app_button_rect(&self) -> Rect {
+        let last = self.card_rects[5];
+        // Centred on the keyboard hint's line: it used to start 14 px below
+        // the grid while the hint started 22 px below it, leaving their
+        // centres ~4 px apart (HIG §7: controls in one row share a line).
+        let centre = last.y1 + HINT_TOP + self.hint_line_h / 2.0;
+        let top = centre - self.app_button_size.1 / 2.0;
+        Rect::new(
+            last.x1 - self.app_button_size.0,
+            top,
+            last.x1,
+            top + self.app_button_size.1,
         )
     }
 
@@ -274,11 +310,17 @@ impl Widget for CollaborationLaunchpad {
         let (button_w, button_h) = text.measure("Open an app", base, None);
         self.app_button_size = (
             (f64::from(button_w) + 32.0).max(160.0),
-            (f64::from(button_h) + 16.0).max(36.0),
+            (f64::from(button_h) + 16.0).max(FOOTER_MIN_H),
         );
+        let (_, hint_h) = text.measure(KEYBOARD_HINT, caption, None);
+        self.hint_line_h = f64::from(hint_h);
         self.card_rects = Self::card_geometry(self.rect).0;
         // Leave the persistent help affordance its bottom band on laptops.
-        let overflow = (self.app_button_rect().y1 - (self.rect.y1 - 64.0)).max(0.0);
+        // The grid is pushed up by the footer *band* (a fixed reservation),
+        // not by where the button happens to sit inside it, so centring the
+        // button on the hint's line cannot move the hint.
+        let footer_bottom = self.footer_band().y1.max(self.app_button_rect().y1);
+        let overflow = (footer_bottom - (self.rect.y1 - 64.0)).max(0.0);
         for card in &mut self.card_rects {
             *card = *card + vello::kurbo::Vec2::new(0.0, -overflow);
         }
@@ -321,7 +363,12 @@ impl Widget for CollaborationLaunchpad {
             } else {
                 theme.bg_primary.with_alpha_factor(0.78)
             };
-            let shape = RoundedRect::from_rect(rect, 16.0);
+            // Control role (HIG §9.1): an action tile takes `radii.lg`; the
+            // former literal 16 is off the 4/8/12/24 radius scale.
+            let shape = RoundedRect::from_rect(
+                rect,
+                ui::chrome::ChromeRole::Control.radius(theme, rect.height()),
+            );
             scene.fill(Fill::NonZero, transform, surface, None, &shape);
             scene.stroke(
                 &Stroke::new(if self.focused && self.selected == index {
@@ -376,13 +423,14 @@ impl Widget for CollaborationLaunchpad {
         }
 
         let button = self.app_button_rect();
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.bg_primary,
-            None,
-            &RoundedRect::from_rect(button, 8.0),
+        // Control role (HIG §9.1): the button body takes `radii.lg`, and its
+        // label is centred on the measured line box (HIG §7a) rather than at
+        // an authored (16, 8) offset that only matched one font size.
+        let button_shape = RoundedRect::from_rect(
+            button,
+            ui::chrome::ChromeRole::Control.radius(theme, button.height()),
         );
+        scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &button_shape);
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -392,29 +440,32 @@ impl Widget for CollaborationLaunchpad {
                 theme.border_standard
             },
             None,
-            &RoundedRect::from_rect(button, 8.0),
+            &button_shape,
         );
+        let (label_w, label_h) = text.measure("Open an app", base, None);
         text.draw_text(
             scene,
             "Open an app",
             base,
             theme.text_primary,
-            transform * Affine::translate((button.x0 + 16.0, button.y0 + 8.0)),
+            transform
+                * Affine::translate((
+                    button.x0 + (button.width() - f64::from(label_w)) / 2.0,
+                    button.y0 + (button.height() - f64::from(label_h)) / 2.0,
+                )),
             None,
         );
         if let Some(last) = cards.last() {
             let hint_width = (button.x0 - content_left - 12.0).max(0.0) as f32;
-            let hint = text.elide_to_width(
-                "Arrow keys move  ·  Enter opens  ·  Super+N shows every app",
-                caption,
-                hint_width,
-            );
+            let hint = text.elide_to_width(KEYBOARD_HINT, caption, hint_width);
+            // The button is centred on this line (`app_button_rect`), so the
+            // hint stays where it was and the pair share one centre.
             text.draw_text(
                 scene,
                 &hint,
                 caption,
                 theme.text_primary,
-                transform * Affine::translate((content_left, last.y1 + 22.0)),
+                transform * Affine::translate((content_left, last.y1 + HINT_TOP)),
                 None,
             );
         }
