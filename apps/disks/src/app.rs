@@ -2613,15 +2613,10 @@ impl DisksApp {
     }
 
     // ---- modal ---------------------------------------------------------
-    fn draw_modal(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        ml: &ModalLayout,
-        pending: Pending,
-    ) {
+    fn draw_modal(&mut self, paint: &mut PaintContext<'_>, ml: &ModalLayout, pending: Pending) {
+        let scene = &mut *paint.scene;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         // `surfaces.overlay` is intentionally opaque in the high-contrast
         // palette, which previously erased all surrounding context whenever a
@@ -2638,22 +2633,23 @@ impl DisksApp {
         Self::stroke_rr(scene, t, ml.card, 16.0, c.border_standard, 1.0);
         let danger = pending.action.destructive();
 
-        self.draw_modal_card_text(scene, tr, theme, ml.card, pending, danger);
-        let ready = self.draw_modal_input(scene, tr, theme, t, ml, pending);
-        self.draw_modal_buttons(scene, tr, theme, t, ml, danger, ready);
+        self.draw_modal_card_text(paint, ml.card, pending, danger);
+        let ready = self.draw_modal_input(paint, ml, pending);
+        self.draw_modal_buttons(paint, ml, danger, ready);
     }
 
     /// The title + body text on the confirm card (part of
     /// [`Self::draw_modal`]).
     fn draw_modal_card_text(
         &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         card: Rect,
         pending: Pending,
         danger: bool,
     ) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
         let c = &theme.tokens.colors;
         let target = self.pending_target_name(pending);
         let title_c = if danger {
@@ -2690,13 +2686,14 @@ impl DisksApp {
     /// currently matches.
     fn draw_modal_input(
         &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         ml: &ModalLayout,
         pending: Pending,
     ) -> bool {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let card = ml.card;
         let inp = ml.input;
@@ -2736,17 +2733,17 @@ impl DisksApp {
 
     /// The Cancel + Confirm buttons — Confirm is locked (dimmed, inert)
     /// until the typed name matches (part of [`Self::draw_modal`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_modal_buttons(
         &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         ml: &ModalLayout,
         danger: bool,
         ready: bool,
     ) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let cancel_hov = ml.cancel.contains(self.last_mouse);
         Button::paint(
             scene,
@@ -3788,7 +3785,16 @@ impl Widget for DisksApp {
         );
 
         if let (Some(ml), Some(p)) = (lay.modal, self.pending) {
-            self.draw_modal(scene, tr, theme, transform, &ml, p);
+            self.draw_modal(
+                &mut PaintContext {
+                    scene,
+                    text: tr,
+                    theme,
+                    transform,
+                },
+                &ml,
+                p,
+            );
         }
     }
 
