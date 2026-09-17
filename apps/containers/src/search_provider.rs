@@ -7,11 +7,11 @@
 use std::sync::{Arc, RwLock};
 
 use ui::icons::Icon;
-use ui::qos_actions::ActionAddress;
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
+use ui::tilo_actions::ActionAddress;
 
 use crate::model::Engine;
 

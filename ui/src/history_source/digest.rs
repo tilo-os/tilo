@@ -235,7 +235,7 @@ mod tests {
     use std::time::Duration;
 
     use collab_types::{ArtifactKind, OpClass};
-    use qos_actions::ActionContext;
+    use tilo_actions::ActionContext;
 
     use crate::widget::{HistoryEntryId, history::HistoryAuthor};
 
@@ -261,7 +261,7 @@ mod tests {
                     "notes.note",
                     "Launch brief",
                 )
-                .with_app("org.qos.Notes", "Notes")
+                .with_app("org.tilo.Notes", "Notes")
                 .with_group("issue:42", "Prepare launch brief", "issue"),
             ),
         }

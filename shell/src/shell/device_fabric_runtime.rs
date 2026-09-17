@@ -220,7 +220,7 @@ fn nearby_drop_state() -> &'static Mutex<NearbyDropState> {
 }
 
 fn nearby_transfer_root() -> Option<PathBuf> {
-    dirs::state_dir().map(|root| root.join("qos").join("nearby-transfers"))
+    dirs::state_dir().map(|root| root.join("tilo").join("nearby-transfers"))
 }
 
 fn nearby_store_cell() -> &'static Mutex<Option<crate::shell::nearby_transfer::NearbyTransferStore>>
@@ -371,7 +371,7 @@ pub(crate) fn handle_nearby_transfer_frame(
             })
             .ok()
             .flatten();
-            let root = dirs::download_dir().map(|path| path.join("qOS Nearby"));
+            let root = dirs::download_dir().map(|path| path.join("Tilo Nearby"));
             let installed = expected
                 .filter(|expected| expected == &content_hash)
                 .zip(root)
@@ -1986,7 +1986,7 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
     }
 }
 
-/// Move one Bluetooth accessory to another certified qOS device without ever
+/// Move one Bluetooth accessory to another certified Tilo device without ever
 /// copying its bond keys. An existing target bond is reused; a newly discovered
 /// accessory requires an explicit, transaction-bound approval on the target.
 ///
@@ -2234,7 +2234,7 @@ pub fn request_nearby_drop(
             OsRng.fill_bytes(&mut transfer_id);
         }
         std::thread::Builder::new()
-            .name("qos-nearby-stage".into())
+            .name("tilo-nearby-stage".into())
             .spawn(move || {
                 let result = with_nearby_transfer_store(|store| {
                     store
@@ -2346,7 +2346,7 @@ fn install_nearby_drop(
     }
     let root = dirs::download_dir()
         .ok_or_else(|| "Downloads is unavailable".to_string())?
-        .join("qOS Nearby");
+        .join("Tilo Nearby");
     install_nearby_drop_at(&root, file_name, bytes)
 }
 
@@ -2918,7 +2918,7 @@ pub fn take_personal_display_events() -> Vec<PersonalDisplayEvent> {
 /// The strictest profile accepted by all active receivers. A single encoded
 /// whole-desktop packet can therefore be fanned out without exceeding any
 /// negotiated target ceiling.
-pub fn personal_display_capture_profile() -> Option<qos_projector::CaptureProfile> {
+pub fn personal_display_capture_profile() -> Option<tilo_projector::CaptureProfile> {
     let profile = {
         let state = personal_display_state().lock().ok()?;
         let mut sessions = state.outbound.values().filter(|session| session.accepted);
@@ -2935,7 +2935,7 @@ pub fn personal_display_capture_profile() -> Option<qos_projector::CaptureProfil
         drop(state);
         profile
     };
-    Some(qos_projector::CaptureProfile::new(
+    Some(tilo_projector::CaptureProfile::new(
         profile.max_width,
         profile.max_height,
         u32::from(profile.max_fps),
@@ -2947,7 +2947,7 @@ pub fn personal_display_capture_profile() -> Option<qos_projector::CaptureProfil
 /// are backpressure, not an invitation to buffer; the next frame supersedes it.
 pub fn publish_personal_display_packet(
     network: &ShellNetwork,
-    packet: &qos_projector::VideoPacket,
+    packet: &tilo_projector::VideoPacket,
 ) -> bool {
     let Some((source, _)) = network.local_device_fabric_identity() else {
         return false;
@@ -3407,7 +3407,7 @@ fn roaming_setting_values_from(document: &Map<String, Value>) -> BTreeMap<String
             continue;
         };
         for (key, value) in values {
-            let fabric_key = format!("qos.{section}.{key}");
+            let fabric_key = format!("tilo.{section}.{key}");
             if super::device_fabric::valid_setting_key(&fabric_key) {
                 out.insert(fabric_key, value.clone());
             }
@@ -3461,7 +3461,7 @@ fn apply_roaming_settings(settings: &BTreeMap<String, Value>) {
             tracing::warn!(key, "ignored non-roaming setting from personal fabric");
             continue;
         }
-        let Some(rest) = key.strip_prefix("qos.") else {
+        let Some(rest) = key.strip_prefix("tilo.") else {
             continue;
         };
         let Some((section, item)) = rest.split_once('.') else {
@@ -3599,27 +3599,27 @@ mod tests {
         let projected = roaming_setting_values_from(document.as_object().unwrap());
 
         for key in [
-            "qos.locale.currency",
-            "qos.locale.time_format",
-            "qos.appearance.theme",
-            "qos.appearance.studio",
-            "qos.input.keyboard_layouts",
-            "qos.audio.mono_output",
-            "qos.display.night_light_temperature",
-            "qos.shortcuts.bindings",
-            "qos.quick_settings.controls",
-            "qos.text_assistance.auto_correct",
+            "tilo.locale.currency",
+            "tilo.locale.time_format",
+            "tilo.appearance.theme",
+            "tilo.appearance.studio",
+            "tilo.input.keyboard_layouts",
+            "tilo.audio.mono_output",
+            "tilo.display.night_light_temperature",
+            "tilo.shortcuts.bindings",
+            "tilo.quick_settings.controls",
+            "tilo.text_assistance.auto_correct",
         ] {
             assert!(projected.contains_key(key), "missing roaming key {key}");
         }
         for key in [
-            "qos.appearance.wallpaper_path",
-            "qos.input.pen_output",
-            "qos.audio.output_device",
-            "qos.display.scale",
-            "qos.display.auto_brightness",
-            "qos.power.auto_suspend",
-            "qos.agent_providers.api_key",
+            "tilo.appearance.wallpaper_path",
+            "tilo.input.pen_output",
+            "tilo.audio.output_device",
+            "tilo.display.scale",
+            "tilo.display.auto_brightness",
+            "tilo.power.auto_suspend",
+            "tilo.agent_providers.api_key",
         ] {
             assert!(!projected.contains_key(key), "leaked local key {key}");
         }
@@ -3677,7 +3677,7 @@ mod tests {
             media: Vec::new(),
             clipboard: Vec::new(),
             settings: vec![RoamingSetting {
-                key: "qos.appearance.theme".into(),
+                key: "tilo.appearance.theme".into(),
                 value: Value::Bool(false),
                 stamp: old_stamp,
             }],
@@ -3685,10 +3685,10 @@ mod tests {
             display: None,
         };
         let next_stamp = FabricStamp { counter: 9, device };
-        let applied_remote = BTreeMap::from([("qos.appearance.theme".into(), Value::Bool(true))]);
+        let applied_remote = BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(true))]);
 
         let received = reconcile_roaming_settings(
-            BTreeMap::from([("qos.appearance.theme".into(), Value::Bool(true))]),
+            BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(true))]),
             Some(&previous),
             &applied_remote,
             &next_stamp,
@@ -3696,7 +3696,7 @@ mod tests {
         assert_eq!(received, previous.settings);
 
         let edited = reconcile_roaming_settings(
-            BTreeMap::from([("qos.appearance.theme".into(), Value::Bool(false))]),
+            BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(false))]),
             Some(&previous),
             &applied_remote,
             &next_stamp,
@@ -3706,7 +3706,7 @@ mod tests {
 
         previous.settings.clear();
         let bootstrap = reconcile_roaming_settings(
-            BTreeMap::from([("qos.appearance.theme".into(), Value::Bool(true))]),
+            BTreeMap::from([("tilo.appearance.theme".into(), Value::Bool(true))]),
             Some(&previous),
             &applied_remote,
             &next_stamp,

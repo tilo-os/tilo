@@ -1,4 +1,4 @@
-//! Route-aware state machine for qOS workspace control.
+//! Route-aware state machine for Tilo workspace control.
 //!
 //! This deliberately reuses the shell's existing surface stream and remote
 //! input messages.  A session starts in `WaitingForConsent`; only an

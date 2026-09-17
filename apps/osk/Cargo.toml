@@ -6,11 +6,11 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "qOS on-screen keyboard — data-driven layouts, responsive sizing, customizable toolbar."
+description = "Tilo on-screen keyboard — data-driven layouts, responsive sizing, customizable toolbar."
 
 # The app uses the protocol types through ui's canonical re-export.
 [package.metadata.cargo-machete]
-ignored = ["qos-actions"]
+ignored = ["tilo-actions"]
 
 [lib]
 name = "osk"
@@ -25,8 +25,8 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-qos-actions = { path = "../../crates/collab/actions" }
+ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
+tilo-actions = { path = "../../crates/collab/actions" }
 # FUTO swipe decoder (ExecuTorch over FFI); builds an unavailable stub when
 # the FUTO libraries are not linked.
 swipe = { path = "../../crates/system/swipe" }

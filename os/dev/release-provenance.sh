@@ -5,7 +5,7 @@ set -euo pipefail
 
 out="${1:-provenance.json}"
 : "${RELEASE_DIGEST:?RELEASE_DIGEST is required}"
-: "${QOS_GENERATION:?QOS_GENERATION is required}"
+: "${TILO_GENERATION:?TILO_GENERATION is required}"
 : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH is required}"
 : "${BASE_REF:?BASE_REF is required}"
 : "${RPMS_REF:?RPMS_REF is required}"
@@ -31,19 +31,19 @@ release_hash="${RELEASE_DIGEST#sha256:}"
 [ "$release_hash" != "$RELEASE_DIGEST" ] && [ "${#release_hash}" -eq 64 ] \
   && case "$release_hash" in *[!0-9a-f]*) false ;; *) true ;; esac \
   || { printf 'release provenance: invalid RELEASE_DIGEST\n' >&2; exit 1; }
-app_collection="${QOS_APP_COLLECTION_SHA256:-}"
+app_collection="${TILO_APP_COLLECTION_SHA256:-}"
 if [ -n "$app_collection" ]; then
   [ "${#app_collection}" -eq 64 ] \
     && case "$app_collection" in *[!0-9a-f]*) false ;; *) true ;; esac \
-    || { printf 'release provenance: invalid QOS_APP_COLLECTION_SHA256\n' >&2; exit 1; }
+    || { printf 'release provenance: invalid TILO_APP_COLLECTION_SHA256\n' >&2; exit 1; }
 fi
-desktop_payload="${QOS_DESKTOP_PAYLOAD_SHA256:-}"
+desktop_payload="${TILO_DESKTOP_PAYLOAD_SHA256:-}"
 if [ -n "$desktop_payload" ]; then
   [ "${#desktop_payload}" -eq 64 ] \
     && case "$desktop_payload" in *[!0-9a-f]*) false ;; *) true ;; esac \
-    || { printf 'release provenance: invalid QOS_DESKTOP_PAYLOAD_SHA256\n' >&2; exit 1; }
+    || { printf 'release provenance: invalid TILO_DESKTOP_PAYLOAD_SHA256\n' >&2; exit 1; }
 fi
-release_children="${QOS_RELEASE_CHILDREN_JSON:-[]}"
+release_children="${TILO_RELEASE_CHILDREN_JSON:-[]}"
 printf '%s' "$release_children" | jq -e '
   type == "array"
   and (length == 0 or (map(.architecture) | sort) == ["aarch64", "x86_64"])
@@ -52,12 +52,12 @@ printf '%s' "$release_children" | jq -e '
     (.architecture == "x86_64" or .architecture == "aarch64")
     and (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$")))
 ' >/dev/null || {
-  printf 'release provenance: invalid QOS_RELEASE_CHILDREN_JSON\n' >&2
+  printf 'release provenance: invalid TILO_RELEASE_CHILDREN_JSON\n' >&2
   exit 1
 }
 
 jq -n \
-  --arg source "git+ssh://code.podesta.ai/qos/qos@$GITHUB_SHA" \
+  --arg source "git+ssh://code.podesta.ai/tilo/tilo@$GITHUB_SHA" \
   --arg digest "$RELEASE_DIGEST" \
   --arg base "$BASE_REF" \
   --arg rpms "$RPMS_REF" \
@@ -65,11 +65,11 @@ jq -n \
   --arg app_collection "$app_collection" \
   --arg desktop_payload "$desktop_payload" \
   --argjson release_children "$release_children" \
-  --arg generation "$QOS_GENERATION" \
+  --arg generation "$TILO_GENERATION" \
   --arg epoch "$SOURCE_DATE_EPOCH" \
   '{
     buildDefinition: {
-      buildType: "https://qos.dev/buildtypes/bootc-os/v1",
+      buildType: "https://tilo.dev/buildtypes/bootc-os/v1",
       externalParameters: ({generation: ($generation|tonumber)}
         + if ($release_children | length) == 0 then {}
           else {children: $release_children}
@@ -81,19 +81,19 @@ jq -n \
       resolvedDependencies: (
         [{uri: $source}, {uri: $base}, {uri: $rpms}, {uri: $kernel}]
         + if $app_collection == "" then []
-          else [{uri: ("qos-app-collection:sha256:" + $app_collection)}]
+          else [{uri: ("tilo-app-collection:sha256:" + $app_collection)}]
           end
         + if $desktop_payload == "" then []
-          else [{uri: ("qos-desktop-payload:sha256:" + $desktop_payload)}]
+          else [{uri: ("tilo-desktop-payload:sha256:" + $desktop_payload)}]
           end
       )
     },
     runDetails: {
-      builder: {id: "https://code.podesta.ai/qos/forgejo/actions/bootc-release-v1"},
+      builder: {id: "https://code.podesta.ai/tilo/forgejo/actions/bootc-release-v1"},
       metadata: {invocationId: (env.GITHUB_RUN_ID // "local")},
       byproducts: [{
         name: "independent-rebuild",
-        uri: "urn:qos:verification:manifest-digest-equal"
+        uri: "urn:tilo:verification:manifest-digest-equal"
       }]
     }
   }' > "$out"

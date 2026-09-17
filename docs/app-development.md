@@ -1,10 +1,10 @@
-# Build a qOS app
+# Build a Tilo app
 
 The shortest path from an idea to an app running in the live development loop
 is one command:
 
 ```bash
-cargo run -p qos-dev -- new reading-list --dev
+cargo run -p tilo-dev -- new reading-list --dev
 ```
 
 Creation is atomic. Once the app exists, `--dev` runs its structural preflight,
@@ -15,18 +15,18 @@ waits for the next save. Press Ctrl-C to stop.
 The same stages remain available separately for automation and focused work:
 
 ```bash
-cargo run -p qos-dev -- new reading-list
-cargo run -p qos-dev -- check apps/reading-list
-cargo run -p qos-dev -- certify apps/reading-list
-cargo run -p qos-dev -- test apps/reading-list
-cargo run -p qos-dev -- dev apps/reading-list
-cargo run -p qos-dev -- run apps/reading-list
-cargo run -p qos-dev -- shot apps/reading-list
-cargo run -p qos-dev -- inspect apps/reading-list
-cargo run -p qos-dev -- package apps/reading-list
+cargo run -p tilo-dev -- new reading-list
+cargo run -p tilo-dev -- check apps/reading-list
+cargo run -p tilo-dev -- certify apps/reading-list
+cargo run -p tilo-dev -- test apps/reading-list
+cargo run -p tilo-dev -- dev apps/reading-list
+cargo run -p tilo-dev -- run apps/reading-list
+cargo run -p tilo-dev -- shot apps/reading-list
+cargo run -p tilo-dev -- inspect apps/reading-list
+cargo run -p tilo-dev -- package apps/reading-list
 ```
 
-If `qos-dev` is installed, omit `cargo run -p qos-dev --` from these commands.
+If `tilo-dev` is installed, omit `cargo run -p tilo-dev --` from these commands.
 The app-aware commands find the app root from any file or directory inside it,
 run the same structural checks as `doctor`, and invoke Cargo with the app's
 manifest explicitly. They therefore behave the same for an app in this
@@ -34,17 +34,17 @@ workspace and for a standalone app. Arguments after `--` are sent to the app
 or test harness:
 
 ```bash
-qos-dev test -- --nocapture
+tilo-dev test -- --nocapture
 ```
 
-## The qOS-native contract
+## The Tilo-native contract
 
-Generated applications depend on `qos-app` (normally under the concise Rust
-name `ui`), never directly on the internal `ui-core` package. `qos-app` is not
+Generated applications depend on `tilo-app` (normally under the concise Rust
+name `ui`), never directly on the internal `ui-core` package. `tilo-app` is not
 a reduced or declarative-only widget set: it re-exports the complete layout,
 retained-widget, canvas, custom-painting, native-view and GPU surface API.
 Applications keep full control of presentation and composition. The boundary
-exists so tooling can prove that an application participates in qOS actions,
+exists so tooling can prove that an application participates in Tilo actions,
 collaboration, history, accessibility and lifecycle contracts. `ui-core` is
 reserved for the shell and framework implementation.
 
@@ -75,7 +75,7 @@ agents see:
 
 ```rust
 let resource = document_resource(&model);
-let save = ui::qos_actions::ActionBinding::unit_for(&resource, "save")?;
+let save = ui::tilo_actions::ActionBinding::unit_for(&resource, "save")?;
 let button = ui::Button::new("save", "Save", None).on_action(save);
 ```
 
@@ -95,7 +95,7 @@ the operation in `on_click`, a private command enum, or a second mutation path.
 
 ### Command palettes come from resources
 
-`Widget::resources` is the source of truth for commands. qOS recursively
+`Widget::resources` is the source of truth for commands. Tilo recursively
 flattens the live resource tree into native Ctrl+K rows, semantic actions and
 the broker catalogue. An app supplies stable resource/action IDs, typed
 parameters and contracts; it does not maintain a separate command-palette
@@ -131,16 +131,16 @@ history and collaboration.
 Run the same gates explicitly from an app directory:
 
 ```bash
-qos-dev check
-qos-dev certify
-qos-dev certify . --workspace --responsive-artifacts target/responsive-acceptance
+tilo-dev check
+tilo-dev certify
+tilo-dev certify . --workspace --responsive-artifacts target/responsive-acceptance
 ```
 
-`qos-dev check` runs structural checks, app-only formatting verification,
+`tilo-dev check` runs structural checks, app-only formatting verification,
 Clippy, Rust/generated accessibility tests, production-root native
-certification, and audited saved scenarios. `qos-dev certify` is the focused
+certification, and audited saved scenarios. `tilo-dev certify` is the focused
 runtime proof against the production app root; from a checkout,
-`qos-dev certify --workspace` certifies every graphical app. Certification is
+`tilo-dev certify --workspace` certifies every graphical app. Certification is
 an app boundary, not a warning budget: one legacy callback, stale binding,
 missing semantic route, or invalid operation contract fails it.
 
@@ -172,7 +172,7 @@ so reviewers see clipped labels and fixed-width assumptions before catalogs are
 complete. The text-scale pass exercises the supported 200% accessibility size.
 Pseudo-localization is a layout audit mode, not a language presented to users.
 
-`qos-dev check` is the copyable local/CI quality gate. It reports the complete
+`tilo-dev check` is the copyable local/CI quality gate. It reports the complete
 structural `doctor` result, verifies formatting for only the app package, runs
 Clippy over every app target with warnings denied and dependencies excluded,
 runs the app's Rust and generated accessibility tests, then executes every
@@ -192,7 +192,7 @@ display/form factory's typed props with the screen path and node id in the
 diagnostic. A customized router context is reported as app-owned and therefore
 not statically verifiable; generated contexts fail early on missing factories.
 
-With no name, `qos-dev new` runs as a small terminal wizard for the package
+With no name, `tilo-dev new` runs as a small terminal wizard for the package
 name, window title, application ID, and starter shape. It presents nine
 numbered templates with their intended use; numbers, full names, and shortcuts
 are accepted. Invalid package names, IDs, and template choices are explained
@@ -205,16 +205,16 @@ With a name and flags the command is deterministic and suitable for scripts;
 omitted `--template` defaults to `starter` outside an interactive terminal:
 
 ```bash
-cargo run -p qos-dev -- new log-browser \
+cargo run -p tilo-dev -- new log-browser \
   --id org.example.log-browser \
   --title "Log Browser" \
   --template data
 
-cargo run -p qos-dev -- new activity-feed --template list
-cargo run -p qos-dev -- new qr-code --template qr
-cargo run -p qos-dev -- new repo-scan --template async
-cargo run -p qos-dev -- new notes --template document
-cargo run -p qos-dev -- new project-workspace --template workspace
+cargo run -p tilo-dev -- new activity-feed --template list
+cargo run -p tilo-dev -- new qr-code --template qr
+cargo run -p tilo-dev -- new repo-scan --template async
+cargo run -p tilo-dev -- new notes --template document
+cargo run -p tilo-dev -- new project-workspace --template workspace
 ```
 
 Use `--template workspace` for a composed professional starting point rather
@@ -232,42 +232,42 @@ After creation, the printed commands use shell-safe paths and include the
 first test, development, run, saved-scenario, screenshot, inspection, and
 package workflows.
 
-Inside a qOS checkout the tool finds the workspace `ui` crate and registers
+Inside a Tilo checkout the tool finds the workspace `ui` crate and registers
 the new package automatically. It writes the complete app into a private
 sibling staging directory, then publishes that directory and the workspace
 registration as one rollback-safe operation. A validation, write, or
 registration failure therefore leaves neither a partial app nor a stray
 workspace member; an explicitly supplied empty destination is restored with
 its original permissions if publication fails. Outside a checkout, the tool
-discovers `ui` from `QOS_UI_PATH`, the running `qos-dev` binary's source tree,
+discovers `ui` from `TILO_UI_PATH`, the running `tilo-dev` binary's source tree,
 or the checkout it was built from. The interactive wizard shows that path as
 an editable default, validates it before the review screen, and re-prompts on
-a bad path. For a pinned or relocated toolkit, set `QOS_UI_PATH` or pass
-`--ui-path /path/to/quickdesktop/ui`; an explicit flag always wins.
+a bad path. For a pinned or relocated toolkit, set `TILO_UI_PATH` or pass
+`--ui-path /path/to/tilo/ui`; an explicit flag always wins.
 
 Grow an existing app from any directory inside it with `add`:
 
 ```bash
-qos-dev add
-qos-dev add component profile-card --template form
-qos-dev add component activity-card --mount main \
+tilo-dev add
+tilo-dev add component profile-card --template form
+tilo-dev add component activity-card --mount main \
   --props '{"title":"Recent activity","detail":"Nothing pending"}'
-qos-dev add component profile-form --template form --mount main \
+tilo-dev add component profile-form --template form --mount main \
   --props '{"value_path":"profile-name","enabled_path":"profile-enabled"}'
-qos-dev add component project-tree --template tree
-qos-dev add component activity-list --template list
-qos-dev add component results-table --template table
-qos-dev add component article-body --template text
-qos-dev add screen account-settings --template settings --link-from main
-qos-dev add screen new-project --template form --link-from account-settings
-qos-dev add screen first-run --template empty-state
-qos-dev add scenario settings-smoke --screen account-settings
-qos-dev scenario run
-qos-dev add locale de-DE
-qos-dev locale sync
+tilo-dev add component project-tree --template tree
+tilo-dev add component activity-list --template list
+tilo-dev add component results-table --template table
+tilo-dev add component article-body --template text
+tilo-dev add screen account-settings --template settings --link-from main
+tilo-dev add screen new-project --template form --link-from account-settings
+tilo-dev add screen first-run --template empty-state
+tilo-dev add scenario settings-smoke --screen account-settings
+tilo-dev scenario run
+tilo-dev add locale de-DE
+tilo-dev locale sync
 ```
 
-With no subcommand, `qos-dev add` opens a terminal wizard that discovers the
+With no subcommand, `tilo-dev add` opens a terminal wizard that discovers the
 containing app and offers a screen, reusable Rust component, semantic scenario,
 or locale. Screen setup includes its title, starter shape, and an optional
 source route (defaulting to `main` when present). Component setup offers a
@@ -427,7 +427,7 @@ under [Text layout and typography](#text-layout-and-typography).
 
 `screen` writes a validated object graph to
 `ui/account-settings.json`, registers it in the generated `src/screens.rs`,
-and prints the `qos-dev ui edit` command that opens it. The registry exposes a
+and prints the `tilo-dev ui edit` command that opens it. The registry exposes a
 typed Rust-name function for direct construction, a name-based lookup, and a
 history-aware router over every registered screen:
 
@@ -467,7 +467,7 @@ created with `--template graph`. The named screen must be directly
 reachable from `main`, which keeps the generated setup deterministic. Omit
 `--screen` when you want an empty action file to author by hand. In both cases
 the artifact is written under `tests/scenarios/` and the printed next command
-runs it with `qos-dev scenario run`.
+runs it with `tilo-dev scenario run`.
 
 `locale` writes a valid Fluent catalog under `locales/` whose complete set of
 source messages, terms, attributes, variables, and starter values mirrors
@@ -485,8 +485,8 @@ After adding or changing messages in `en-US`, synchronize every translation—or
 one named translation—without overwriting translated values:
 
 ```bash
-qos-dev locale sync
-qos-dev locale sync de-DE --dry-run
+tilo-dev locale sync
+tilo-dev locale sync de-DE --dry-run
 ```
 
 The command copies missing messages, terms, values, and attributes from the
@@ -502,11 +502,11 @@ Run a fast structural diagnosis without compiling the workspace when you want
 the checks without starting Cargo:
 
 ```bash
-cargo run -p qos-dev -- doctor apps/reading-list
+cargo run -p tilo-dev -- doctor apps/reading-list
 ```
 
 `doctor` finds the app from any descendant path, parses the Cargo manifest,
-resolves its `ui` dependency, validates `qos-app.toml` through the same package
+resolves its `ui` dependency, validates `tilo-app.toml` through the same package
 schema used by installation, and checks the standard app-root and launch
 lifecycle seams. It also runs `capnp --version`, because the shared UI runtime
 generates its collaboration protocol while compiling; a missing compiler is
@@ -525,8 +525,8 @@ it does not prevent an otherwise healthy app from running.
 Use `dev` for the edit-build-run loop:
 
 ```bash
-qos-dev dev
-qos-dev dev apps/reading-list --app-only
+tilo-dev dev
+tilo-dev dev apps/reading-list --app-only
 ```
 
 It watches the app recursively and, when `ui` is a local path dependency, the
@@ -549,10 +549,10 @@ The generated app is not a toy lifecycle that must later be replaced. It uses
 CRDT state, argument validation, and headless driving. It also starts with the
 minimum sandbox declaration, a package manifest, and a runnable semantic app
 test in `tests/app.rs`. Every generated template also includes an initial
-accessibility-contract test, so ordinary `qos-dev test` fails on unlabeled
+accessibility-contract test, so ordinary `tilo-dev test` fails on unlabeled
 controls, invalid virtual-collection metadata, or unstable synthetic identity
 without requiring a separate audit command. Interaction-specific states remain
-covered by `qos-dev scenario run --audit`.
+covered by `tilo-dev scenario run --audit`.
 `starter` demonstrates a
 complete local input-to-state-to-output loop; `data` begins with a selectable
 `DataTable` with a 100-million-row sparse model, a real background page
@@ -588,8 +588,8 @@ second screenshot-only tree is required. `shot` writes `preview.png` in the
 app root by default:
 
 ```bash
-qos-dev shot --viewport 1280x800
-qos-dev shot --output artifacts/empty.png --scenario empty
+tilo-dev shot --viewport 1280x800
+tilo-dev shot --output artifacts/empty.png --scenario empty
 ```
 
 Arguments after `--` are forwarded as app-defined screenshot options. Use
@@ -600,25 +600,25 @@ production widget tree at the requested viewport and active shot theme.
 Build an installable package from the same app root with:
 
 ```bash
-qos-dev package
-qos-dev package --identity publisher.json
-qos-dev package --output dist/reading-list.qpkg --force
+tilo-dev package
+tilo-dev package --identity publisher.json
+tilo-dev package --output dist/reading-list.qpkg --force
 ```
 
 `package` runs the structural checks, builds every entrypoint declared in
-`qos-app.toml` with Cargo's `release` profile, places the resulting binaries at
-their declared payload paths, and asks `qos-pkg` to sign and verify the bundle.
+`tilo-app.toml` with Cargo's `release` profile, places the resulting binaries at
+their declared payload paths, and asks `tilo-pkg` to sign and verify the bundle.
 The verified result is published as `dist/<cargo-package>.qpkg` by default.
 An existing output is never replaced unless `--force` is present, and even
 then replacement happens only after the new package verifies successfully.
 
 Files under an app-local `payload/` directory are included before the built
 entrypoints are overlaid. Symbolic links are rejected so package contents do
-not depend on files outside the app. Without `--identity`, `qos-pkg` creates an
+not depend on files outside the app. Without `--identity`, `tilo-pkg` creates an
 ephemeral self-signing key, which is useful for local testing; use one
 persistent identity for updates and publication. `--profile`, `--target`,
 `--features`, and `--no-default-features` expose the corresponding Cargo build
-choices. Set `QOS_PKG` to the executable path when `qos-pkg` is not on `PATH`.
+choices. Set `TILO_PKG` to the executable path when `tilo-pkg` is not on `PATH`.
 
 ## The app shape
 
@@ -702,7 +702,7 @@ Declare a semantic control once. Pointer, direct-touch tap, keyboard,
 accessibility, Ctrl+K and headless activation all reach the same action intent:
 
 ```rust
-let save = qos_actions::ActionBinding::unit_for(&document, "save")?;
+let save = tilo_actions::ActionBinding::unit_for(&document, "save")?;
 Button::new("save", "app-save", None)
     .on_action(save)
     .primary()
@@ -851,11 +851,11 @@ intentionally unlabeled control; validation rejects specifying both.
 Start an app on this format directly, or add a graph to an existing app:
 
 ```bash
-qos-dev new project-maker --template graph
-qos-dev ui init ui/settings.json --title "Settings"
-qos-dev ui edit ui/settings.json
-qos-dev ui tree ui/settings.json
-qos-dev ui validate ui/settings.json
+tilo-dev new project-maker --template graph
+tilo-dev ui init ui/settings.json --title "Settings"
+tilo-dev ui edit ui/settings.json
+tilo-dev ui tree ui/settings.json
+tilo-dev ui validate ui/settings.json
 ```
 
 `ui edit` opens the native builder. Select a node in the hierarchy and the
@@ -889,9 +889,9 @@ For typed display and form components, generate both the Rust component and its
 validated graph adapter, then insert an instance without writing JSON by hand:
 
 ```bash
-qos-dev add component profile-card --mount main \
+tilo-dev add component profile-card --mount main \
   --props '{"title":"Ada","detail":"Workspace owner"}'
-qos-dev add component profile-form --template form --mount main \
+tilo-dev add component profile-form --template form --mount main \
   --props '{"value_path":"profile-name","enabled_path":"profile-enabled"}'
 ```
 
@@ -906,7 +906,7 @@ Rust-native style/engine values, so generate those templates without `--mount`.
 For an existing component, or an app-owned router context, insert only the node:
 
 ```bash
-qos-dev ui component ui/main.json profile-card \
+tilo-dev ui component ui/main.json profile-card \
   --props '{"title":"Ada","detail":"Workspace owner"}'
 ```
 
@@ -931,7 +931,7 @@ The generated display `from_ui_graph` function converts `title` and `detail`
 into the same typed `ProfileCardProps` used by ordinary Rust callers. The form
 adapter validates non-empty `value_path` and `enabled_path` strings, then builds
 the controls with the same document bindings used by built-in graph inputs and
-checkboxes. Both return precise field errors, and `qos-dev doctor` checks those
+checkboxes. Both return precise field errors, and `tilo-dev doctor` checks those
 generated prop contracts before compilation. Already-generated v1 form adapters
 and their snapshot props remain recognized by `doctor`; regenerating a form uses
 document bindings. Older generated graph roots are migrated when their original
@@ -952,13 +952,13 @@ The standalone builder cannot load application code, so it displays a named,
 accessible placeholder while still allowing the component name and JSON props
 to be edited, moved, saved, undone, and inspected. The app replaces that
 placeholder through its `UiBuildContext` at runtime. Component names use the
-same lowercase kebab-case convention as `qos-dev add component`.
+same lowercase kebab-case convention as `tilo-dev add component`.
 
 The center preview is the real `LiveUi` widget tree, so focus, keyboard input,
 accessibility, bindings, layout, and theme behavior do not diverge from the
-app. In a source checkout, `qos-dev` builds the workspace builder on first use.
-Installed tools look for `qos-ui-builder` beside `qos-dev` and then on `PATH`;
-set `QOS_UI_BUILDER` to override that executable.
+app. In a source checkout, `tilo-dev` builds the workspace builder on first use.
+Installed tools look for `tilo-ui-builder` beside `tilo-dev` and then on `PATH`;
+set `TILO_UI_BUILDER` to override that executable.
 
 The builder's Undo and Redo controls operate on history owned by the shared
 `UiGraphHandle`, not on a private copy of the editor. Every successful property
@@ -981,16 +981,16 @@ loading or saving when that document should become a new history boundary.
 Structural commands accept either an inline node object or `--node-file`:
 
 ```bash
-qos-dev ui insert ui/settings.json --parent root --index 1 \
+tilo-dev ui insert ui/settings.json --parent root --index 1 \
   --node '{"type":"button","id":"save","label":"Save","style":"primary"}'
-qos-dev ui move ui/settings.json --id save --parent actions --index 0
-qos-dev ui replace ui/settings.json --id save --node-file nodes/publish.json
-qos-dev ui remove ui/settings.json --id obsolete-help
-qos-dev ui set ui/settings.json --id title --property text.value --value "Account settings"
-qos-dev ui set ui/settings.json --id panel --property fill_height --value true
-qos-dev ui set ui/settings.json --id title --property size --unset
-qos-dev ui apply ui/settings.json ui/settings.edits.json
-qos-dev ui format ui/settings.json
+tilo-dev ui move ui/settings.json --id save --parent actions --index 0
+tilo-dev ui replace ui/settings.json --id save --node-file nodes/publish.json
+tilo-dev ui remove ui/settings.json --id obsolete-help
+tilo-dev ui set ui/settings.json --id title --property text.value --value "Account settings"
+tilo-dev ui set ui/settings.json --id panel --property fill_height --value true
+tilo-dev ui set ui/settings.json --id title --property size --unset
+tilo-dev ui apply ui/settings.json ui/settings.edits.json
+tilo-dev ui format ui/settings.json
 ```
 
 `ui set` changes one serialized property without copying and replacing the
@@ -1041,7 +1041,7 @@ candidate and the source file is published once, after the last edit succeeds.
 If edit 8 of 10 fails, none of the first seven edits reach disk and the error
 identifies edit 8.
 
-Every command parses through the same lightweight `qos-ui-graph` schema used
+Every command parses through the same lightweight `tilo-ui-graph` schema used
 by the renderer. Property, batch, insert, remove, replace, move, and formatting
 edits write through a same-directory temporary file only after the complete
 candidate validates; an invalid id, duplicate subtree, inaccessible control,
@@ -1175,7 +1175,7 @@ catalogue to Ctrl+K search, the `actions_enumerate` / `actions_invoke`
 automation socket, and agents; none of those consumers has an app-specific
 command path.
 
-This is the qOS application API, not an optional automation adapter. A toolbar
+This is the Tilo application API, not an optional automation adapter. A toolbar
 button, menu item, shortcut, context-menu item, search result, script, and agent
 must converge on the same `ActionBinding` and action address. Do not wire a
 direct callback beside `invoke_resource_operation`; bind the control and let
@@ -1259,8 +1259,8 @@ For a small app with one launchable resource, wrap its ordinary retained root
 with `ui::widget::resource_actions::immediate` or `background`. The toolkit
 owns the forwarding widget, operation dispatch, pending-job bookkeeping, and
 failure conversion; the app supplies only its resource contract and operation
-closure. `qos-dev new` uses this path and imports action types through
-`ui::qos_actions`, so a generated project contains no copied host
+closure. `tilo-dev new` uses this path and imports action types through
+`ui::tilo_actions`, so a generated project contains no copied host
 implementation and needs no direct internal actions dependency.
 
 Register document action decoders in `App::action_registry_mut`. Handle every
@@ -1289,8 +1289,8 @@ inferred from a stale snapshot: the shell re-resolves the address and checks
 its capability immediately before dispatch.
 
 ```bash
-qos-control actions list --json
-qos-control actions invoke app-actions "$ACTION_ID" \
+tilo-control actions list --json
+tilo-control actions invoke app-actions "$ACTION_ID" \
   --args-json '{"destination":"archive","notify":false}'
 ```
 
@@ -1465,15 +1465,15 @@ undo behavior.
 
 ### Localization
 
-`qos-dev new` creates `locales/en-US.ftl` and an embedded locale registry used
+`tilo-dev new` creates `locales/en-US.ftl` and an embedded locale registry used
 from `app_root`. Add a catalog and wire it into that registry in one command:
 
 ```bash
-qos-dev add locale de-DE
+tilo-dev add locale de-DE
 ```
 
 The generated `src/locales.rs` uses `include_str!`, so packaging cannot omit a
-registered catalog. `qos-dev` only rewrites a registry carrying its generated
+registered catalog. `tilo-dev` only rewrites a registry carrying its generated
 header. It recognizes and migrates the previous generated inline
 `install_catalog` block, but an app-owned localization module is left untouched
 and must register additional catalogs in its own setup.
@@ -1586,7 +1586,7 @@ action the host may accept, and send the envelope returned by
 `ActionHost::dispatch_optimistic`:
 
 ```rust
-use ui::qos_actions::{ActionRegistry, OptimisticQueue};
+use ui::tilo_actions::{ActionRegistry, OptimisticQueue};
 use ui::ActionHost;
 
 let mut registry = ActionRegistry::new();
@@ -1646,7 +1646,7 @@ being silently discarded by a later rebase. Direct CRDT-bound typing and the
 collaboration delta path remain appropriate for peer-authored fields that do
 not require host acceptance.
 
-`qos-actions` is independent of the renderer, window system, and OS services,
+`tilo-actions` is independent of the renderer, window system, and OS services,
 and enables UUID generation through JavaScript on browser WASM targets. A
 native client and a WASM client can therefore share the action enum, registry,
 queue, and wire format while supplying different transport implementations.
@@ -1879,7 +1879,7 @@ layout heights feed back into scrolling and hit testing. The built-in
 scrollbar, keyboard navigation, and key-based selection all use the same
 viewport.
 
-Use `qos-dev new activity-feed --template list` to start from the sparse-model
+Use `tilo-dev new activity-feed --template list` to start from the sparse-model
 form instead. The generated `ActivityModel` reports 100 million stable keys
 without allocating their rows, mixes measured 44px and 72px delegates, embeds
 an independently actionable button in each mounted row, and ships with a
@@ -2134,7 +2134,7 @@ accessibility tree directly. `inspect` writes `inspect.json` in the app root by
 default; `--targets` additionally writes the addressable-widget index:
 
 ```bash
-qos-dev inspect --viewport 1280x800 --targets targets.json
+tilo-dev inspect --viewport 1280x800 --targets targets.json
 ```
 
 The JSON combines the retained widget hierarchy, stable test ids, logical
@@ -2157,8 +2157,8 @@ app root:
 ```
 
 ```bash
-qos-dev inspect --actions tests/headless-actions.json --output after.json
-qos-dev inspect --audit --audit-report target/audit/report.json \
+tilo-dev inspect --actions tests/headless-actions.json --output after.json
+tilo-dev inspect --audit --audit-report target/audit/report.json \
   --actions tests/headless-actions.json --output after.json
 ```
 
@@ -2181,10 +2181,10 @@ Run saved interaction scenarios directly, or retain the exact post-action
 state of each case for debugging and CI review:
 
 ```bash
-qos-dev scenario run
-qos-dev scenario run settings-smoke --viewport 1024x768
-qos-dev scenario run --artifacts target/scenario-artifacts
-qos-dev scenario run --audit --artifacts target/scenario-artifacts
+tilo-dev scenario run
+tilo-dev scenario run settings-smoke --viewport 1024x768
+tilo-dev scenario run --artifacts target/scenario-artifacts
+tilo-dev scenario run --audit --artifacts target/scenario-artifacts
 ```
 
 With no name, the conventional `tests/headless-actions.json` case runs first,

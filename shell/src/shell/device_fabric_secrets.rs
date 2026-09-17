@@ -21,7 +21,7 @@ use crate::shell::device_fabric::{
 use crate::shell::personal_continuity::DeviceId;
 
 const WIFI_ENVELOPE_VERSION: u8 = 1;
-const WIFI_KEY_DOMAIN: &[u8] = b"qos-personal-fabric-wifi-envelope-v1\0";
+const WIFI_KEY_DOMAIN: &[u8] = b"tilo-personal-fabric-wifi-envelope-v1\0";
 const MAX_WIFI_PASSWORD_BYTES: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,19 +1,19 @@
-//! `qos-collab-probe` — a packaged app that collaborates, and says out
+//! `tilo-collab-probe` — a packaged app that collaborates, and says out
 //! loud whether it could.
 //!
 //! Exists because the interesting question is not "does the broker fan
 //! out" (unit tests cover that) but "does an edit from a **sandboxed**
 //! process reach another machine" — which needs a real launcher, a
 //! real bwrap sandbox, and the descriptor the launcher hands a
-//! sandboxed app as `QOS_SVC_COLLAB_FD`; nothing here dials a path or
+//! sandboxed app as `TILO_SVC_COLLAB_FD`; nothing here dials a path or
 //! reads an env socket, so a broken handoff means the probe can't work.
 //!
 //! ```text
-//! qos-collab-probe write:<text>      # author an edit, publish it
-//! qos-collab-probe read:<seconds>    # wait for one, print it
+//! tilo-collab-probe write:<text>      # author an edit, publish it
+//! tilo-collab-probe read:<seconds>    # wait for one, print it
 //! ```
 //!
-//! The room comes from `QOS_WORKSPACE_ID` (as for every qOS app); the
+//! The room comes from `TILO_WORKSPACE_ID` (as for every Tilo app); the
 //! payload is a genuine Automerge document — `write` publishes a typed,
 //! route-bound, signed incremental change via the same broker path as the UI
 //! toolkit, and `read` loads the signed change into its own document. A line
@@ -45,15 +45,15 @@ use collab_types::{DocumentMutation, Ed25519PublicKey, OpClass, Signature, Signe
 /// Root key the probe reads and writes. One flat string is enough because the
 /// probe proves delivery, not a document model.
 const FIELD: &str = "text";
-const APP_ID: &str = "dev.qos.collab-probe";
+const APP_ID: &str = "dev.tilo.collab-probe";
 const RECORD_ID: &str = "";
 
 fn usage() -> ExitCode {
     eprintln!(
         "usage:\n  \
-         qos-collab-probe write:<text>\n  \
-         qos-collab-probe read:<timeout-seconds>\n\
-         The room comes from QOS_WORKSPACE_ID."
+         tilo-collab-probe write:<text>\n  \
+         tilo-collab-probe read:<timeout-seconds>\n\
+         The room comes from TILO_WORKSPACE_ID."
     );
     ExitCode::from(2)
 }
@@ -70,11 +70,11 @@ fn main() -> ExitCode {
 
     // The room is the collaboration address; an app that can't name one
     // isn't in a room — refuse rather than inventing a channel id that reaches nobody.
-    let channel = match std::env::var("QOS_WORKSPACE_ID") {
+    let channel = match std::env::var("TILO_WORKSPACE_ID") {
         Ok(v) if !v.trim().is_empty() => v,
         _ => {
             eprintln!(
-                "probe: FAIL QOS_WORKSPACE_ID is unset, so this app has no \
+                "probe: FAIL TILO_WORKSPACE_ID is unset, so this app has no \
                  room to collaborate in."
             );
             return ExitCode::from(2);
@@ -89,10 +89,10 @@ fn main() -> ExitCode {
         println!("probe: collab service fd = {fd}");
     } else {
         eprintln!(
-            "probe: FAIL no usable collab service fd. QOS_SVC_COLLAB_FD={:?}. \
+            "probe: FAIL no usable collab service fd. TILO_SVC_COLLAB_FD={:?}. \
              The launcher did not put a live descriptor on that number, so \
              this app cannot collaborate at all.",
-            std::env::var("QOS_SVC_COLLAB_FD").ok(),
+            std::env::var("TILO_SVC_COLLAB_FD").ok(),
         );
         return ExitCode::from(3);
     }

@@ -65,7 +65,7 @@ fn empty_terminal_context_menu_shot_writes_png_at_narrow_high_text_scale() {
         .arg("empty-menu")
         .arg("--size")
         .arg("390x844")
-        .env("QOS_SHOTS_TEXT_SCALE", "1.5")
+        .env("TILO_SHOTS_TEXT_SCALE", "1.5")
         .status()
         .expect("spawn terminal empty-menu shot");
     assert!(status.success(), "terminal --shots exited with {status:?}");

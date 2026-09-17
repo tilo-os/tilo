@@ -1,4 +1,4 @@
-//! Whole-desktop capture and H.264 handoff to `qos-projector`.
+//! Whole-desktop capture and H.264 handoff to `tilo-projector`.
 //!
 //! Capture is dormant until the Win+P controller starts a connection. Scenes
 //! are rendered at a receiver-friendly size on the compositor thread, while
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
-use qos_projector::{CaptureProfile, DisplayStreamPolicy, VideoPacket};
+use tilo_projector::{CaptureProfile, DisplayStreamPolicy, VideoPacket};
 use ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -20,7 +20,7 @@ use vello::peniko::Color;
 use crate::collab::encoder::openh264::OpenH264Backend;
 use crate::collab::encoder::{Encoder, EncoderInit, FrameInput};
 
-const VIDEO_SOCKET_ENV: &str = "QOS_PROJECTOR_VIDEO_SOCKET";
+const VIDEO_SOCKET_ENV: &str = "TILO_PROJECTOR_VIDEO_SOCKET";
 
 struct RawFrame {
     width: u32,
@@ -44,7 +44,7 @@ impl EncoderWorker {
         let (tx, rx) = mpsc::sync_channel::<RawFrame>(1);
         let (packet_tx, packets) = mpsc::sync_channel::<VideoPacket>(1);
         let spawned = std::thread::Builder::new()
-            .name("qos-projection-encoder".to_owned())
+            .name("tilo-projection-encoder".to_owned())
             .spawn(move || {
                 let mut stream: Option<UnixStream> = None;
                 let mut encoder: Option<OpenH264Backend> = None;
@@ -280,11 +280,11 @@ fn raise_profile(value: CaptureProfile, ceiling: CaptureProfile) -> CaptureProfi
 }
 
 fn default_profile_path() -> Option<PathBuf> {
-    std::env::var_os("QOS_PROJECTOR_PROFILE")
+    std::env::var_os("TILO_PROJECTOR_PROFILE")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("XDG_RUNTIME_DIR")
-                .map(|dir| Path::new(&dir).join("qos-projector/capture-profile.json"))
+                .map(|dir| Path::new(&dir).join("tilo-projector/capture-profile.json"))
         })
 }
 
@@ -293,7 +293,7 @@ fn default_socket_path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("XDG_RUNTIME_DIR")
-                .map(|dir| Path::new(&dir).join("qos-projector/video.sock"))
+                .map(|dir| Path::new(&dir).join("tilo-projector/video.sock"))
         })
 }
 

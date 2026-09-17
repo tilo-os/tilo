@@ -1,18 +1,18 @@
-//! `qos-collab-link` — a configurable-latency / throughput proxy in front
-//! of the qOS collab broker socket, for testing collaboration under
+//! `tilo-collab-link` — a configurable-latency / throughput proxy in front
+//! of the Tilo collab broker socket, for testing collaboration under
 //! realistic network conditions on a single machine.
 //!
 //! ```text
 //!     notes (alice) ─────►┐
-//!                          │   /tmp/qos-link-alice.sock
-//!     qos-collab-link ─────┤  (latency=80ms, throughput=2_000_000 bps)
+//!                          │   /tmp/tilo-link-alice.sock
+//!     tilo-collab-link ─────┤  (latency=80ms, throughput=2_000_000 bps)
 //!                          │   ↕ delayed/rate-limited
 //!                          ▼
-//!     shell (broker)       /tmp/qos-collab.sock
+//!     shell (broker)       /tmp/tilo-collab.sock
 //!                          ▲
 //!                          │   ↕ delayed/rate-limited
-//!     qos-collab-link ─────┤  (latency=80ms, throughput=2_000_000 bps)
-//!                          │   /tmp/qos-link-bob.sock
+//!     tilo-collab-link ─────┤  (latency=80ms, throughput=2_000_000 bps)
+//!                          │   /tmp/tilo-link-bob.sock
 //!     notes (bob)   ──────►┘
 //! ```
 //!
@@ -20,9 +20,9 @@
 //! broker; the proxy is bidirectional and symmetric.
 //!
 //! ```bash
-//! qos-collab-link \
-//!     --listen /tmp/qos-link-alice.sock \
-//!     --upstream /tmp/qos-collab.sock \
+//! tilo-collab-link \
+//!     --listen /tmp/tilo-link-alice.sock \
+//!     --upstream /tmp/tilo-collab.sock \
 //!     --latency-ms 80 \
 //!     --throughput-bps 2000000
 //! ```
@@ -69,7 +69,7 @@ struct Config {
 
 fn print_usage() {
     eprintln!(
-        "usage: qos-collab-link --listen <sock> --upstream <sock> \
+        "usage: tilo-collab-link --listen <sock> --upstream <sock> \
          [--latency-ms <N>] [--throughput-bps <N>]"
     );
 }
@@ -99,7 +99,7 @@ fn parse_args() -> ParseOutcome {
             }
             "-h" | "--help" => return ParseOutcome::Help,
             other => {
-                eprintln!("qos-collab-link: unknown arg {other:?}");
+                eprintln!("tilo-collab-link: unknown arg {other:?}");
                 return ParseOutcome::Error;
             }
         }
@@ -132,7 +132,10 @@ fn main() {
     let listener = match UnixListener::bind(&cfg.listen) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("qos-collab-link: bind {} failed: {e}", cfg.listen.display());
+            eprintln!(
+                "tilo-collab-link: bind {} failed: {e}",
+                cfg.listen.display()
+            );
             std::process::exit(1);
         }
     };
@@ -144,7 +147,7 @@ fn main() {
         format!("{bps}")
     };
     eprintln!(
-        "qos-collab-link: listening on {} → forwarding to {} \
+        "tilo-collab-link: listening on {} → forwarding to {} \
          (latency={lat_ms} ms one-way, throughput={bps_display} bps each direction)",
         cfg.listen.display(),
         cfg.upstream.display(),
@@ -158,12 +161,12 @@ fn main() {
                 let cfg = Arc::clone(&cfg);
                 let id = conn_id;
                 thread::Builder::new()
-                    .name(format!("qos-collab-link-conn-{id}"))
+                    .name(format!("tilo-collab-link-conn-{id}"))
                     .spawn(move || handle_connection(id, &client, &cfg))
                     .ok();
             }
             Err(e) => {
-                eprintln!("qos-collab-link: accept failed: {e}");
+                eprintln!("tilo-collab-link: accept failed: {e}");
                 // brief backoff so a flapping listener doesn't peg CPU
                 thread::sleep(Duration::from_millis(50));
             }
@@ -179,7 +182,7 @@ fn handle_connection(id: u64, client: &UnixStream, cfg: &Config) {
         Ok(s) => s,
         Err(e) => {
             eprintln!(
-                "qos-collab-link[{id}]: connect upstream {} failed: {e}",
+                "tilo-collab-link[{id}]: connect upstream {} failed: {e}",
                 cfg.upstream.display()
             );
             return;
@@ -194,7 +197,7 @@ fn handle_connection(id: u64, client: &UnixStream, cfg: &Config) {
         .try_clone()
         .and_then(|u2| client.try_clone().map(|c2| (u2, c2)));
     let (Ok(a), Ok(b)) = (client_to_upstream, upstream_to_client) else {
-        eprintln!("qos-collab-link[{id}]: try_clone failed; tearing down");
+        eprintln!("tilo-collab-link[{id}]: try_clone failed; tearing down");
         return;
     };
     let h1 = spawn_forwarder(
@@ -221,7 +224,7 @@ fn handle_connection(id: u64, client: &UnixStream, cfg: &Config) {
     if let Some(h2) = h2 {
         let _ = h2.join();
     }
-    eprintln!("qos-collab-link[{id}]: closed");
+    eprintln!("tilo-collab-link[{id}]: closed");
 }
 
 /// Forwarder: reads from `src`, queues to a channel with arrival
@@ -238,7 +241,7 @@ fn spawn_forwarder(
     alive: Arc<AtomicBool>,
 ) -> Option<thread::JoinHandle<()>> {
     let spawned = thread::Builder::new()
-        .name(format!("qos-collab-link-{label}-{id}"))
+        .name(format!("tilo-collab-link-{label}-{id}"))
         .spawn(move || {
             // Reader: pulls bytes off `src` ASAP, queuing them with the
             // moment they were observed.
@@ -258,7 +261,7 @@ fn spawn_forwarder(
     match spawned {
         Ok(h) => Some(h),
         Err(e) => {
-            eprintln!("qos-collab-link[{id}]/{label}: spawn forwarder failed: {e}");
+            eprintln!("tilo-collab-link[{id}]/{label}: spawn forwarder failed: {e}");
             None
         }
     }
@@ -274,7 +277,7 @@ fn spawn_reader(
     alive: Arc<AtomicBool>,
 ) -> Option<thread::JoinHandle<()>> {
     let spawned = thread::Builder::new()
-        .name(format!("qos-collab-link-{label}-rd-{id}"))
+        .name(format!("tilo-collab-link-{label}-rd-{id}"))
         .spawn(move || {
             let mut buf = [0u8; 8192];
             loop {
@@ -300,7 +303,7 @@ fn spawn_reader(
                         }
                     }
                     Err(e) => {
-                        eprintln!("qos-collab-link[{id}]/{label}: read: {e}");
+                        eprintln!("tilo-collab-link[{id}]/{label}: read: {e}");
                         alive.store(false, Ordering::Relaxed);
                         break;
                     }
@@ -310,7 +313,7 @@ fn spawn_reader(
     match spawned {
         Ok(h) => Some(h),
         Err(e) => {
-            eprintln!("qos-collab-link[{id}]/{label}: spawn reader failed: {e}");
+            eprintln!("tilo-collab-link[{id}]/{label}: spawn reader failed: {e}");
             None
         }
     }
@@ -386,12 +389,12 @@ fn run_writer(
                 .min(usize::try_from(tokens).unwrap_or(usize::MAX));
             let end = written.saturating_add(to_write);
             let Some(slice) = chunk.get(written..end) else {
-                eprintln!("qos-collab-link[{id}]/{label}: internal write-range error");
+                eprintln!("tilo-collab-link[{id}]/{label}: internal write-range error");
                 alive.store(false, Ordering::Relaxed);
                 return;
             };
             if let Err(e) = dst.write_all(slice) {
-                eprintln!("qos-collab-link[{id}]/{label}: write: {e}");
+                eprintln!("tilo-collab-link[{id}]/{label}: write: {e}");
                 alive.store(false, Ordering::Relaxed);
                 return;
             }

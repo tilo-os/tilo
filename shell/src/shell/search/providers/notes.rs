@@ -194,7 +194,7 @@ mod tests {
         seed_note_body(
             &chrome_st,
             7,
-            "Welcome to nirios.\n\nThese notes sync live with anyone \
+            "Welcome to tilo.\n\nThese notes sync live with anyone \
              invited to this workspace.",
         );
         let provider = NotesProvider::new();
@@ -214,7 +214,7 @@ mod tests {
         assert_eq!(out[0].score, 40, "a body hit scores 40");
         let snippet = out[0].subtitle.as_deref().unwrap_or_default();
         assert!(
-            snippet.contains("nirios"),
+            snippet.contains("tilo"),
             "the row must show the matching line: {snippet:?}"
         );
         assert!(

@@ -2,12 +2,12 @@
 use crate::{Alarm, ClockState, DueEvent, ShellSnapshot, Timer, WeekdayKey, WorldClock};
 use automerge::{AutoCommit, ObjId};
 use chrono::{NaiveTime, Utc};
-use qos_actions::ResourceProvider;
 use std::{
     collections::{BTreeSet, HashMap},
     time::Duration,
 };
 use taffy::{NodeId, TaffyTree};
+use tilo_actions::ResourceProvider;
 use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
@@ -805,7 +805,7 @@ impl Widget for ClocksApp {
     }
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         ty: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -858,7 +858,7 @@ impl Widget for ClocksApp {
         };
         Ok(true)
     }
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         crate::actions::ClockResources.resources(doc)
     }
     fn sync(&mut self, d: &mut AutoCommit, p: &ObjId) {

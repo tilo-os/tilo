@@ -211,7 +211,7 @@ def main() -> int:
     n_noshot = len(cells) - len(shots)
     n_unverified = len(unverified)
 
-    draw.text((PAD + 4, 14), "qOS applications - launched through the compositor",
+    draw.text((PAD + 4, 14), "Tilo applications - launched through the compositor",
               font=f_title, fill=FG)
     draw.text((PAD + 4, 44),
               f"{len(cells)} installed · {n_real} rendered real content · "

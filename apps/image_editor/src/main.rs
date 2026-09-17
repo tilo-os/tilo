@@ -22,7 +22,7 @@ use ui::{
 extern crate runtime_dylib;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new("dev.qos.image-editor", image_editor::app_root)
+        &LaunchSpec::new("dev.tilo.image-editor", image_editor::app_root)
             .open_state_with_args(open_state)
             .shot_handler(render_shot)
             .allowed_options(&["--size"])
@@ -134,12 +134,12 @@ fn render(
 }
 
 fn shot_theme(args: &LaunchArgs) -> Theme {
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
-    let reduce_motion = ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+    let reduce_motion = ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
         .into_iter()
         .filter_map(|key| std::env::var(key).ok())
         .any(|value| {

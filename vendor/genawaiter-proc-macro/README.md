@@ -1,4 +1,4 @@
-# qOS genawaiter diagnostic compatibility fork
+# Tilo genawaiter diagnostic compatibility fork
 
 This is the `genawaiter-proc-macro` 0.99.1 implementation used by
 `genawaiter` 0.99.1. It removes the unmaintained `proc-macro-error` dependency

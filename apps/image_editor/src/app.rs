@@ -65,8 +65,8 @@ pub struct ImageEditorApp {
     serial: u64,
     notice: String,
     picker: Option<ui::portal::PortalChannel>,
-    resource_invocation: Option<qos_actions::InvocationId>,
-    resource_result: Option<qos_actions::InvocationUpdate>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
+    resource_result: Option<tilo_actions::InvocationUpdate>,
     preview: Option<Image>,
     crop_editor: Option<ImageCropEditor>,
     crop_selection: ui::LocalState<CropSelection>,
@@ -554,14 +554,14 @@ impl ImageEditorApp {
                 let opened = self.open_path(state, &path);
                 if let Some(invocation) = self.resource_invocation.take() {
                     self.resource_result = Some(if opened {
-                        qos_actions::InvocationUpdate::Succeeded {
+                        tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
-                            output: qos_actions::ActionOutput::default(),
+                            output: tilo_actions::ActionOutput::default(),
                         }
                     } else {
-                        qos_actions::InvocationUpdate::Failed {
+                        tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "image-editor.unsupported-image".into(),
                                 message: "That file is not a supported image".into(),
                                 details: None,
@@ -575,7 +575,7 @@ impl ImageEditorApp {
                 self.picker = None;
                 self.notice = "Open cancelled".into();
                 if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
                         invocation,
                         message: Some("image selection was cancelled".into()),
                     });
@@ -585,9 +585,9 @@ impl ImageEditorApp {
                 self.picker = None;
                 self.notice = format!("Could not open file picker: {message}");
                 if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "image-editor.portal-failed".into(),
                             message,
                             details: None,
@@ -2541,7 +2541,7 @@ impl Widget for ImageEditorApp {
     fn is_focusable(&self) -> bool {
         true
     }
-    fn resources(&self, _: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
         vec![crate::actions::resource(&self.project)]
     }
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
@@ -2552,13 +2552,13 @@ impl Widget for ImageEditorApp {
     }
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _: &AutoCommit,
         _: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -2593,30 +2593,30 @@ impl Widget for ImageEditorApp {
     }
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != qos_actions::OperationKind::Document
+        if kind != tilo_actions::OperationKind::Document
             && let Some(crate::actions::EditorOperation::Export) =
                 crate::actions::decode_operation(type_id, payload)?
         {
             self.resource_result = Some(match self.export_beside_source() {
                 Ok(notice) => {
                     self.notice = notice;
-                    qos_actions::InvocationUpdate::Succeeded {
+                    tilo_actions::InvocationUpdate::Succeeded {
                         invocation,
-                        output: qos_actions::ActionOutput::default(),
+                        output: tilo_actions::ActionOutput::default(),
                     }
                 }
                 Err(message) => {
                     self.notice = message.clone();
-                    qos_actions::InvocationUpdate::Failed {
+                    tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "image-editor.export-failed".into(),
                             message,
                             details: None,
@@ -2635,11 +2635,11 @@ impl Widget for ImageEditorApp {
     }
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _: bool,
         _: &AutoCommit,
         _: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if self
             .resource_result
             .as_ref()

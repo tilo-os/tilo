@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Opt-in dynamic-library build of the qOS runtime SDK and UI toolkit. Produces libruntime_dylib.so so thin apps can link the toolkit (and libstd) dynamically via -C prefer-dynamic instead of baking it into every binary."
+description = "Opt-in dynamic-library build of the Tilo runtime SDK and UI toolkit. Produces libruntime_dylib.so so thin apps can link the toolkit (and libstd) dynamically via -C prefer-dynamic instead of baking it into every binary."
 
 # A Rust `dylib` requires `panic = "unwind"` and is incompatible with fat LTO,
 # unlike the workspace's normal release profile. This standalone wrapper pulls
@@ -30,7 +30,7 @@ tiny-skia = "0.11"
 comemo = "0.5"
 # Versioned live-service engines shared by shipped apps and loaded only for
 # their feature-gated paths.
-qos-callstream = { path = "../../collab/qos-callstream" }
+tilo-callstream = { path = "../../collab/tilo-callstream" }
 rustypipe.workspace = true
 iroh.workspace = true
 

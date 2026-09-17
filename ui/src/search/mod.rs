@@ -1,4 +1,4 @@
-//! Shared global-search framework for qOS.
+//! Shared global-search framework for Tilo.
 //!
 //! Rather than each app rolling its own search bar, result list, and
 //! ranking, an app declares what it can find by implementing

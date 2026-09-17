@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep qOS applications on the resource/action application model.
+"""Keep Tilo applications on the resource/action application model.
 
 Every graphical app must publish its current resources from the widget tree and
 describe its operations with ``ActionSpec``. The headless agent is the one
@@ -471,7 +471,7 @@ def audit_search_provider_limits(
 
 def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
     violations: list[Violation] = []
-    # This is a qOS framework invariant, not a requirement on the isolated
+    # This is a Tilo framework invariant, not a requirement on the isolated
     # miniature app repositories used below and by third-party SDK consumers.
     # Only the authoritative workspace owns ui/src/app.rs.
     if root.resolve() == ROOT.resolve():
@@ -519,14 +519,14 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
             specification for alias, specification in runtime_dependencies if alias == "ui"
         ]
         if not facades or any(
-            not (isinstance(facade, dict) and facade.get("package") == "qos-app")
+            not (isinstance(facade, dict) and facade.get("package") == "tilo-app")
             for facade in facades
         ):
             violations.append(
                 Violation(
                     manifest_path,
                     1,
-                    "app must depend on the `qos-app` SDK facade under the `ui` crate name",
+                    "app must depend on the `tilo-app` SDK facade under the `ui` crate name",
                 )
             )
         for alias, specification in dependencies:
@@ -535,7 +535,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                     Violation(
                         manifest_path,
                         1,
-                        f"direct ui-core dependency `{alias}` bypasses the `qos-app` SDK facade",
+                        f"direct ui-core dependency `{alias}` bypasses the `tilo-app` SDK facade",
                     )
                 )
 

@@ -1,4 +1,4 @@
-//! Calendar events, tasks, and projects as a retained qOS global-search source.
+//! Calendar events, tasks, and projects as a retained Tilo global-search source.
 //!
 //! The catalogue is keyed by each record's canonical resource id. It retains
 //! the complete loaded Calendar corpus and delegates query paging to
@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
-use qos_actions::{ActionAddress, Resource};
+use tilo_actions::{ActionAddress, Resource};
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
@@ -456,7 +456,7 @@ mod tests {
             .expect("the retained provider materializes the exact late resource");
         assert_eq!(resource.id.as_str(), address.resource);
         assert!(
-            qos_actions::door::resolve(&[resource], &address).is_some(),
+            tilo_actions::door::resolve(&[resource], &address).is_some(),
             "the exact open action exists without constructing the resource tree"
         );
         assert_eq!(
@@ -551,7 +551,7 @@ mod tests {
                 .resolve_action_resource(address)
                 .expect("each exact collision-safe address resolves");
             assert_eq!(resource.id.as_str(), address.resource);
-            assert!(qos_actions::door::resolve(&[resource], address).is_some());
+            assert!(tilo_actions::door::resolve(&[resource], address).is_some());
         }
 
         let first_page = provider.search_page("same visible", None, 4, 1);

@@ -408,7 +408,7 @@ fn smart_unavailable_reason(json: &Value, kind: DriveKind) -> String {
         .to_ascii_lowercase();
 
     if msgs.contains("permission denied") || msgs.contains("requires") || msgs.contains("root") {
-        "SMART needs administrator access — on qOS it is read by the system service.".into()
+        "SMART needs administrator access — on Tilo it is read by the system service.".into()
     } else if msgs.contains("unable to detect device type")
         || msgs.contains("unknown usb bridge")
         || msgs.contains("please specify device type")

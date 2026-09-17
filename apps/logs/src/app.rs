@@ -49,9 +49,9 @@ use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionAddress, ControlInvocation, OperationKind, Resource};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tilo_actions::{ActionAddress, ControlInvocation, OperationKind, Resource};
 use ui::widget::{TextInput, Widget};
 
 use crate::actions::{self, LogsOperation};
@@ -2461,7 +2461,7 @@ impl Widget for LogsApp {
         &[actions::LOGS_OPERATION_TYPE]
     }
 
-    fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.pending_control_invocation
             .take()
             .or_else(|| self.search_input.take_control_invocation())
@@ -3471,7 +3471,7 @@ mod tests {
     #[test]
     fn agent_filter_view_operation_never_changes_the_shared_document() {
         let (mut app, doc) = synced_app();
-        let encoded = qos_actions::EncodedAction::encode_operation(
+        let encoded = tilo_actions::EncodedAction::encode_operation(
             actions::LOGS_OPERATION_TYPE,
             &LogsOperation::SetUnit {
                 value: "kernel".to_string(),
@@ -3592,7 +3592,7 @@ mod tests {
     fn portal_export_writes_the_snapshot_selected_before_the_picker() {
         let mut app = LogsApp::new(sample_entries(), true);
         let path = std::env::temp_dir().join(format!(
-            "qos-logs-portal-export-{}-{}.jsonl",
+            "tilo-logs-portal-export-{}-{}.jsonl",
             std::process::id(),
             app.entries[0].realtime_us
         ));

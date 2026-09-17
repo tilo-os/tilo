@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::sync::Ticket;
 use crate::{AclHandle, IdentityKey, WorkspaceAcl};
 
-pub const QOS_FS_AUTHORITY_ALPN: &[u8] = b"qos-fs-workspace-authority/1";
+pub const TILO_FS_AUTHORITY_ALPN: &[u8] = b"tilo-fs-workspace-authority/1";
 const MAX_AUTHORITY_FRAME: usize = 256 * 1024;
 const CONTENT_PEERS_FILE: &str = "content-peers.json";
 const MAX_PERSISTED_CONTENT_PEERS: usize = 32;
@@ -23,20 +23,20 @@ const MAX_PERSISTED_CONTENT_PEERS: usize = 32;
 /// daemon owns that node's UDP socket.
 pub const LOCAL_AUTHORITY_SOCKET: &str = "workspace-authority.sock";
 
-/// The stable local control path for a workspace. `/run/qos` is created
-/// root:qos-identity by the service unit, so no root-owned cache directory is
+/// The stable local control path for a workspace. `/run/tilo` is created
+/// root:tilo-identity by the service unit, so no root-owned cache directory is
 /// exposed to the desktop publisher.
 pub fn local_authority_socket_path(workspace: uuid::Uuid) -> PathBuf {
-    std::env::var_os("QOS_AUTHORITY_SOCKET_DIR")
-        .map_or_else(|| PathBuf::from("/run/qos"), PathBuf::from)
+    std::env::var_os("TILO_AUTHORITY_SOCKET_DIR")
+        .map_or_else(|| PathBuf::from("/run/tilo"), PathBuf::from)
         .join(format!("workspace-authority-{workspace}.sock"))
 }
 
 /// Stable, workspace-scoped handoff for a direct endpoint returned by the
 /// authenticated relay discovery ALPN.
 pub fn local_content_socket_path(workspace: uuid::Uuid) -> PathBuf {
-    std::env::var_os("QOS_AUTHORITY_SOCKET_DIR")
-        .map_or_else(|| PathBuf::from("/run/qos"), PathBuf::from)
+    std::env::var_os("TILO_AUTHORITY_SOCKET_DIR")
+        .map_or_else(|| PathBuf::from("/run/tilo"), PathBuf::from)
         .join(format!("workspace-content-{workspace}.sock"))
 }
 
@@ -602,7 +602,7 @@ pub async fn remove_local_content_peers(
 }
 
 /// Start the local authority publisher service. The caller is responsible for
-/// placing the socket in a `root:qos-identity` directory; the socket itself is
+/// placing the socket in a `root:tilo-identity` directory; the socket itself is
 /// group writable so an enrolled desktop can submit a governor-signed update
 /// without being able to alter the root-owned durable cache directly.
 #[cfg(unix)]

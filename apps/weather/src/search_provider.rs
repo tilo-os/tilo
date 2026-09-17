@@ -1,4 +1,4 @@
-//! Saved cities as a qOS global-search source.
+//! Saved cities as a Tilo global-search source.
 //!
 //! Mirrors the reference wiring in [`apps/contacts`]: Weather declares its
 //! searchable type by implementing [`SearchProvider`] over a snapshot of the
@@ -252,13 +252,13 @@ mod tests {
         assert_ne!(app.selected_city(), Some(id), "not already selected");
 
         let resources = Widget::resources(&app, &doc);
-        let spec = qos_actions::door::resolve(&resources, &address)
+        let spec = tilo_actions::door::resolve(&resources, &address)
             .expect("search address resolves against the live resource tree");
         let encoded = match &spec.input {
-            qos_actions::ActionInput::Immediate(encoded) => encoded,
-            qos_actions::ActionInput::Prompted { .. } => panic!("open takes no argument"),
+            tilo_actions::ActionInput::Immediate(encoded) => encoded,
+            tilo_actions::ActionInput::Prompted { .. } => panic!("open takes no argument"),
         };
-        assert_eq!(spec.kind, qos_actions::OperationKind::View);
+        assert_eq!(spec.kind, tilo_actions::OperationKind::View);
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn stale_search_target_is_refused_by_the_current_canonical_resource_tree() {
         use automerge::{AutoCommit, ROOT};
-        use qos_actions::Action;
+        use tilo_actions::Action;
         use ui::widget::Widget;
 
         let mut app = crate::app::WeatherApp::new();
@@ -306,12 +306,12 @@ mod tests {
         doc.commit();
         app.sync(&mut doc, &ROOT);
         let resources = Widget::resources(&app, &doc);
-        assert!(qos_actions::door::resolve(&resources, &address).is_none());
+        assert!(tilo_actions::door::resolve(&resources, &address).is_none());
         let payload = serde_json::to_vec(&city.id.to_string()).unwrap();
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::OPEN_LOCATION_OPERATION,
                 &payload,
                 &doc,

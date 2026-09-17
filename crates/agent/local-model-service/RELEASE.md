@@ -1,7 +1,7 @@
 # Local model catalog releases
 
-`qos-model-catalog` is the only supported compiler for the catalog consumed by
-`qos-model-manager`. It turns a declarative JSON source plus local release
+`tilo-model-catalog` is the only supported compiler for the catalog consumed by
+`tilo-model-manager`. It turns a declarative JSON source plus local release
 artifacts into two image inputs:
 
 - `catalog.json`: model releases, signed runtime-extension manifests, artifact
@@ -13,11 +13,11 @@ The signing seed is an input only. The compiler requires its file to be mode
 and never writes that seed into either output.
 
 ```sh
-cargo run -p local-model-service --bin qos-model-catalog -- \
+cargo run -p local-model-service --bin tilo-model-catalog -- \
   --source release/local-models.json \
-  --signing-key /run/secrets/qos-model-release-key \
-  --catalog-out dist/usr/share/qos/system-extensions/local-model-catalog.json \
-  --trust-out dist/usr/share/qos/system-extensions/local-model-keys.json
+  --signing-key /run/secrets/tilo-model-release-key \
+  --catalog-out dist/usr/share/tilo/system-extensions/local-model-catalog.json \
+  --trust-out dist/usr/share/tilo/system-extensions/local-model-keys.json
 ```
 
 The source must point at regular files already fetched by the release job.
@@ -38,7 +38,7 @@ single-file option; no model is treated as a single file by inference.
 The catalog signature covers:
 
 ```text
-"qos.local-model.catalog.v1" || 0x00 || compact JSON(payload)
+"tilo.local-model.catalog.v1" || 0x00 || compact JSON(payload)
 ```
 
 The checked-in `tests/fixtures/catalog-source.example.json` is explicitly

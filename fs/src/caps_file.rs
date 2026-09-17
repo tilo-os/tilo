@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn a_missing_file_refuses_to_load_rather_than_binding_nothing() {
-        let err = CapabilityFile::load("/nonexistent/qos-caps.json", ALICE, Vec::new())
+        let err = CapabilityFile::load("/nonexistent/tilo-caps.json", ALICE, Vec::new())
             .expect_err("a missing list must not load as an unenforced mount");
         assert!(matches!(err, CapsError::Read { .. }), "got {err:?}");
     }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record a qOS boot as video, from firmware to the desktop.
+"""Record a Tilo boot as video, from firmware to the desktop.
 
 vm.sh takes stills. This takes a film: it starts the VM and then dumps the
 framebuffer in a loop, timestamping every frame, and encodes the result at the
@@ -389,7 +389,7 @@ def encode(frames: list[tuple[float, Path]], out: Path, tail: float) -> float:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--out", default=".claude/demo-artifacts/qos-boot.mp4")
+    ap.add_argument("--out", default=".claude/demo-artifacts/tilo-boot.mp4")
     ap.add_argument("--mode", choices=["2d", "gl"], default="2d",
                     help="2d captures console+greeter; gl captures what the compositor paints")
     ap.add_argument("--fps", type=float, default=10.0)
@@ -398,8 +398,8 @@ def main() -> int:
                     help="seconds into the boot to type the greeter login")
     ap.add_argument("--login", action="store_true",
                     help="type the login as soon as greetd reports itself up")
-    ap.add_argument("--user", default=os.environ.get("QOS_USER", "quickuser"))
-    ap.add_argument("--password", default=os.environ.get("QOS_PASS", "quickdesktop"))
+    ap.add_argument("--user", default=os.environ.get("TILO_USER", "quickuser"))
+    ap.add_argument("--password", default=os.environ.get("TILO_PASS", "tilo"))
     ap.add_argument("--login-settle", type=float, default=6.0,
                     help="seconds to let the greeter paint before typing")
     ap.add_argument("--after-login", type=float, default=None,
@@ -412,7 +412,7 @@ def main() -> int:
                     help="attach to a VM that is already running")
     args = ap.parse_args()
 
-    run_dir = Path(os.environ.get("QOS_RUN", "/tmp/qos-vm"))
+    run_dir = Path(os.environ.get("TILO_RUN", "/tmp/tilo-vm"))
     mon_path = run_dir / "mon.sock"
 
     out = Path(args.out)

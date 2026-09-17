@@ -226,7 +226,7 @@ fn calendar_strip_parts(now: chrono::DateTime<Local>) -> (String, String, &'stat
 fn publish_clock_command(command: &str, activity_id: Option<&str>) {
     let Some(path) = std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
-        .map(|p| p.join("qos/clocks-command.json"))
+        .map(|p| p.join("tilo/clocks-command.json"))
     else {
         return;
     };
@@ -406,7 +406,7 @@ struct StatusKey {
     muted: bool,
 }
 
-/// `WorkspaceTree`, not `TopBar`, lets `build_nirios_root` stay a pure
+/// `WorkspaceTree`, not `TopBar`, lets `build_tilo_root` stay a pure
 /// function of the tree and avoids a circular borrow against the
 /// shell's owned logical `TopBar`.
 pub struct TopBarChrome {
@@ -826,13 +826,13 @@ impl TopBarChrome {
         self.collaborator_overflow = peer_count.saturating_sub(3);
     }
 
-    /// `QOS_CLOCK` pins it, for the same reason `QOS_SHOTS_THEME` pins
+    /// `TILO_CLOCK` pins it, for the same reason `TILO_SHOTS_THEME` pins
     /// the palette: a screenshot harness that compares whole frames
     /// needs to hold every part still, and a running clock would fail
     /// that comparison once a minute. Unset (every real session) reads
     /// the wall clock.
     fn current_clock_string() -> String {
-        match std::env::var("QOS_CLOCK") {
+        match std::env::var("TILO_CLOCK") {
             Ok(pinned) if !pinned.is_empty() => pinned,
             _ => Local::now().format("%H:%M").to_string(),
         }
@@ -2413,7 +2413,7 @@ impl TopBarChrome {
         if let Some(chrome) = self.chrome.as_ref()
             && let Some(path) = std::env::var_os("XDG_RUNTIME_DIR")
                 .map(std::path::PathBuf::from)
-                .map(|p| p.join("qos/clocks.json"))
+                .map(|p| p.join("tilo/clocks.json"))
             && let Ok(meta) = std::fs::metadata(&path)
             && meta.uid() == unsafe { libc::geteuid() }
             && meta.mode().trailing_zeros() >= 6

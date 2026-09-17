@@ -96,7 +96,7 @@ pub fn main() {
         qdoc::blobstore::FsBlobStore::default_root(),
     )));
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.chat", chat::app_root)
+        &LaunchSpec::new("dev.tilo.chat", chat::app_root)
             .shot_handler(shot_handler)
             .scenarios(&[
                 "narrow",
@@ -138,15 +138,15 @@ fn render_shot_to_png(
     scenario: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
     // theme-driven chrome can be proven across palettes; defaults to dark.
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     }
     .with_reduce_motion(matches!(
-        std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
+        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
         Some("1" | "true" | "yes")
     ));
     let theme = if let Some(scale) = text_scale {

@@ -2,7 +2,7 @@
 //!
 //! Captures are ordinary files in a directory — the file system is the
 //! source of truth for captured media, not a bundled sample list.
-//! On a qOS install this directory lives under the user's Pictures (or the
+//! On a Tilo install this directory lives under the user's Pictures (or the
 //! P2P workspace mount), so recent captures reflect real content the moment
 //! the app opens and stays in sync with anything else writing there.
 //!

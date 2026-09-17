@@ -1,0 +1,63 @@
+# tilo-agent — Tilo application manifest.
+#
+# A participant, not a window: the agent joins a room's word-processor
+# document through the compositor's collaboration broker and edits it
+# with the app's own exported actions. Nothing is ever drawn, so
+# `kind = "service"` keeps it out of the command palette and the
+# entrypoint is `cli` — the pair that decides whether the launcher hands
+# it a surface at all.
+#
+
+
+[package]
+id       = "dev.tilo.agent"
+name     = "Agent"
+category = "Utility"
+version  = "0.1.0"
+kind     = "service"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# Hosted provider egress and credentials live only in model-gateway. The
+# agent itself has no outbound network namespace.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+# The agent has no direct egress; model-gateway owns the provider allowlist.
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+# Required, not optional: with no broker there is no document to join
+# and the agent has nothing to do.
+collab = "required@1"
+model-gateway = "required@1"
+
+[entrypoint]
+bin  = "bin/tilo-agent"
+type = "cli"
+
+[providers]
+mime = []
+ext  = []

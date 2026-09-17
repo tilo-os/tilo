@@ -422,7 +422,7 @@ fn draw_resume_card(
 mod resume_card_tests {
     use super::*;
     use collab_types::{ArtifactKind, OpClass};
-    use ui::qos_actions::ActionContext;
+    use ui::tilo_actions::ActionContext;
     use ui::widget::history::{HistoryAuthor, HistoryEntryId};
 
     fn resume_entry(id: u8, author: &str, timestamp: SystemTime) -> HistoryEntry {
@@ -438,7 +438,7 @@ mod resume_card_tests {
             redaction: None,
             context: Some(
                 ActionContext::for_resource("Edit", "finance:q2", "sheet", "Q2 finance report")
-                    .with_app("org.qos.Sheets", "Sheets"),
+                    .with_app("org.tilo.Sheets", "Sheets"),
             ),
         }
     }
@@ -460,7 +460,7 @@ mod resume_card_tests {
         let mut tree = WorkspaceTree::bootstrap_default();
         pane.resume_rect = Rect::new(10.0, 10.0, 200.0, 70.0);
         pane.resume_target = Some(ui::HistoryResourceTarget {
-            app_id: Some("org.qos.Sheets".into()),
+            app_id: Some("org.tilo.Sheets".into()),
             app_label: Some("Sheets".into()),
             id: "finance:q2".into(),
             kind: "sheet".into(),
@@ -1594,7 +1594,7 @@ impl RoomActivityPane {
             LensSelection::WorkGroup(group) => filter.work_groups.push(group.clone()),
             LensSelection::Facet(key, value) => filter
                 .facets
-                .push(ui::qos_actions::ActionFacet::new(key, value)),
+                .push(ui::tilo_actions::ActionFacet::new(key, value)),
             LensSelection::Unclassified => {
                 filter.classification = HistoryClassification::Unclassified;
             }
@@ -1660,7 +1660,7 @@ impl RoomActivityPane {
         }
         self.last_heads = heads;
 
-        // Bind the local automerge actor to the qOS identity, or local user
+        // Bind the local automerge actor to the Tilo identity, or local user
         // id; a peer's actor stays unresolved until collaboration says who.
         let actor = tree.doc.get_actor().to_hex_string();
         if !self.source.authors().is_registered(&actor) {
@@ -1701,7 +1701,7 @@ impl RoomActivityPane {
                     context
                         .facets
                         .iter()
-                        .find(|facet| facet.key == "qos.invocation")
+                        .find(|facet| facet.key == "tilo.invocation")
                 })
                 .and_then(|facet| receipt_actors.get(facet.value.as_str()))
             else {
@@ -1717,7 +1717,7 @@ impl RoomActivityPane {
             .iter()
             .filter_map(|entry| entry.context.as_ref())
             .flat_map(|context| context.facets.iter())
-            .filter(|facet| facet.key == "qos.invocation")
+            .filter(|facet| facet.key == "tilo.invocation")
             .map(|facet| facet.value.clone())
             .collect::<HashSet<_>>();
         for workspace in &tree.workspaces {
@@ -1874,13 +1874,13 @@ impl RoomActivityPane {
                         let mut context =
                             e.context
                                 .take()
-                                .unwrap_or_else(|| ui::qos_actions::ActionContext {
+                                .unwrap_or_else(|| ui::tilo_actions::ActionContext {
                                     action_label: e.summary.clone(),
-                                    ..ui::qos_actions::ActionContext::default()
+                                    ..ui::tilo_actions::ActionContext::default()
                                 });
                         context
                             .facets
-                            .push(ui::qos_actions::ActionFacet::new("workspace", label));
+                            .push(ui::tilo_actions::ActionFacet::new("workspace", label));
                         e.context = Some(context);
                     }
                     rows.push(e);
@@ -2059,14 +2059,14 @@ impl RoomActivityPane {
                         let label = labels.join(" + ");
                         projected.summary = format!("{label} \u{00b7} {}", projected.summary);
                         let mut context = projected.context.take().unwrap_or_else(|| {
-                            ui::qos_actions::ActionContext {
+                            ui::tilo_actions::ActionContext {
                                 action_label: projected.summary.clone(),
-                                ..ui::qos_actions::ActionContext::default()
+                                ..ui::tilo_actions::ActionContext::default()
                             }
                         });
                         context
                             .facets
-                            .push(ui::qos_actions::ActionFacet::new("workspace", label));
+                            .push(ui::tilo_actions::ActionFacet::new("workspace", label));
                         projected.context = Some(context);
                     }
                     self.projected_origins.insert(projected.id, row.id.clone());
@@ -3177,7 +3177,7 @@ impl RoomActivityPane {
             return;
         }
         if let Some(narrative) = self.narrative.as_ref() {
-            let generated = narrative.generator != "qos-deterministic";
+            let generated = narrative.generator != "tilo-deterministic";
             let card = Rect::new(x0, y, x1, y + 62.0);
             scene.fill(
                 Fill::NonZero,
@@ -7370,20 +7370,20 @@ mod tests {
     #[test]
     fn persisted_effect_receipt_reappears_in_workspace_activity_without_revert() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         assert!(
             tree.append_workspace_effect_receipt(
                 tree.active,
                 invocation,
                 "ada",
-                qos_actions::ActionContext::for_resource(
+                tilo_actions::ActionContext::for_resource(
                     "Export",
                     "document:brief",
                     "document",
                     "Release brief",
                 )
-                .with_app("org.qos.Writer", "Writer"),
-                qos_actions::EffectReceiptStatus::Succeeded,
+                .with_app("org.tilo.Writer", "Writer"),
+                tilo_actions::EffectReceiptStatus::Succeeded,
             )
         );
         let persisted = serde_json::to_vec(&tree).expect("persist workspace tree");
@@ -7432,13 +7432,13 @@ mod tests {
                 (22, "outro", "Keep the pricing table", "Preserve pricing"),
             ] {
                 doc.put(automerge::ROOT, field, value).unwrap();
-                let context = ui::qos_actions::ActionContext::for_resource(
+                let context = ui::tilo_actions::ActionContext::for_resource(
                     action,
                     record.as_str(),
                     "document",
                     "Campaign brief",
                 )
-                .with_app("org.qos.Writer", "Writer")
+                .with_app("org.tilo.Writer", "Writer")
                 .with_purpose("Make the opening concrete")
                 .with_group(
                     "agent-run:test",
@@ -7460,7 +7460,7 @@ mod tests {
                 Some("Rewrite the opening and preserve the pricing table"),
                 Some("The opening was vague; the pricing table was already correct."),
                 &[ui::RunStep {
-                    app: "org.qos.Writer".to_string(),
+                    app: "org.tilo.Writer".to_string(),
                     record: record.to_string(),
                     run: change,
                     summary: "Rewrote the launch story".to_string(),
@@ -7656,13 +7656,13 @@ mod tests {
             diff_payload: None,
             redaction: None,
             context: Some(
-                ui::qos_actions::ActionContext::for_resource(
+                ui::tilo_actions::ActionContext::for_resource(
                     "Edit",
                     "document:launch-brief",
                     "document",
                     "Launch brief",
                 )
-                .with_app("org.qos.Writer", "Writer"),
+                .with_app("org.tilo.Writer", "Writer"),
             ),
         };
         pane.timeline_mut().set_entries(vec![resource_entry]);
@@ -7964,13 +7964,13 @@ mod tests {
         let unread_before = pane.passive_unread;
         let id = HistoryEntryId::from_bytes([9; 16]);
         let resource = "signed-file-record".to_string();
-        let context = ui::qos_actions::ActionContext::for_resource(
+        let context = ui::tilo_actions::ActionContext::for_resource(
             "Edited",
             resource.clone(),
             "files.entry",
             "Launch brief.md",
         )
-        .with_app("org.qos.Files", "Files");
+        .with_app("org.tilo.Files", "Files");
         pane.open_external_entry(HistoryEntry {
             id,
             author: ui::widget::HistoryAuthor::new("Ada", 280.0, "01010101"),
@@ -9659,17 +9659,17 @@ mod tests {
             assert!(
                 tree.append_workspace_effect_receipt(
                     tree.active,
-                    qos_actions::InvocationId::new(),
+                    tilo_actions::InvocationId::new(),
                     "ada",
-                    qos_actions::ActionContext::for_resource(
+                    tilo_actions::ActionContext::for_resource(
                         action,
                         format!("test:{group_id}"),
                         "document",
                         group_label,
                     )
-                    .with_app("org.qos.Writer", "Writer")
+                    .with_app("org.tilo.Writer", "Writer")
                     .with_group(group_id, group_label, "work-session"),
-                    qos_actions::EffectReceiptStatus::Succeeded,
+                    tilo_actions::EffectReceiptStatus::Succeeded,
                 )
             );
         }

@@ -2,7 +2,7 @@
 os/output/
 os/external-assets/cache/
 os/external-assets/cosign-cache/
-os/quick-desktop
+os/tilo-desktop
 **/target/
 # rpmbuild's _topdir for the host session package (dist/rpm/build-rpm.sh):
 # staged payload, tarball and the built RPMs.
@@ -24,7 +24,7 @@ scripts/__pycache__/
 tools/__pycache__/
 tools/**/__pycache__/
 
-# qOS signing keys — PRIVATE material is NEVER committed (see keys/README.md).
+# Tilo signing keys — PRIVATE material is NEVER committed (see keys/README.md).
 # Public keys (keys/*.pub, keys/*.public.pem) ARE tracked — verifiers need them.
 keys/*.key
 keys/*.password
@@ -37,15 +37,15 @@ rustypipe_cache.json
 .claude/test-scratch/
 # Local build infrastructure and feature worktrees. These live under
 # .claude so they travel with the checkout, but none of them belong in
-# history: the sccache alone is ~11 GB, and .claude/qos is a nested
+# history: the sccache alone is ~11 GB, and .claude/tilo is a nested
 # clone that a fresh clone of this repo could never populate.
-.claude/qos/
-.claude/qos-sccache/
-.claude/qos-build-sem/
-.claude/qos-target/
-.claude/qos-tools/
-.claude/qos-logs/
-.claude/qos-tmp/
+.claude/tilo/
+.claude/tilo-sccache/
+.claude/tilo-build-sem/
+.claude/tilo-target/
+.claude/tilo-tools/
+.claude/tilo-logs/
+.claude/tilo-tmp/
 .claude/build/
 .claude/clippy-campaign/
 .claude/worktrees/
@@ -54,7 +54,7 @@ rustypipe_cache.json
 .claude/table-shots/
 
 # build.sh copies the real hardening kargs, the rollback machinery and the
-# freshly built qos-rollback binary into the composefs build context
+# freshly built tilo-rollback binary into the composefs build context
 os/dev/composefs/01-hardening.toml
 os/dev/composefs/stage/
 

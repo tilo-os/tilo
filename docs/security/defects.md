@@ -20,7 +20,7 @@ was wrong.
 `ui/src/widget/identity_flow/mod.rs:180-191`
 
 `SerializableIdentity::from_identity` cannot reach into `frost_ed25519`'s `SigningKey`, so it
-persists `SHA-512("qos-identity-flow-v1-placeholder-key" ‖ group_public_key)` as `secret_bytes`.
+persists `SHA-512("tilo-identity-flow-v1-placeholder-key" ‖ group_public_key)` as `secret_bytes`.
 The in-source comment says it outright: *"clearly NOT useful for signing."*
 
 Any identity minted through the UI ceremony produces signatures that do not verify against its own
@@ -52,7 +52,7 @@ and
 
 `fs/src/sync.rs:159-195`
 
-`SyncProtocol::accept` takes any connection on `QOS_FS_SYNC_ALPN` and:
+`SyncProtocol::accept` takes any connection on `TILO_FS_SYNC_ALPN` and:
 
 - `MODE_FULL` → serialises the entire namespace document to the caller (`sync.rs:169-171`)
 - `MODE_SYNC` → feeds inbound bytes directly into `sync_receive` (`sync.rs:179-183`)
@@ -98,8 +98,8 @@ and `::identity_survives_a_restart`.
 
 ## P0-4 — The image cannot be installed, so no boot-chain claim in this file was ever testable
 
-`os/usr/lib/bootc/install/40-qos.toml` sets `bootloader = "systemd"`. Every `bootc install` against
-a qOS image therefore ends at the bootloader step:
+`os/usr/lib/bootc/install/40-tilo.toml` sets `bootloader = "systemd"`. Every `bootc install` against
+a Tilo image therefore ends at the bootloader step:
 
 ```
 Bootloader: systemd
@@ -107,13 +107,13 @@ error: Installing to filesystem: bootupd is required for ostree-based installs
 ```
 
 bootc has two install backends and only the **composefs** one can plant systemd-boot. The
-**ostree** backend — what bootc-image-builder, Anaconda's `ostreecontainer`, and `qos-install` all
+**ostree** backend — what bootc-image-builder, Anaconda's `ostreecontainer`, and `tilo-install` all
 drive — matches on the resolved bootloader in `install_with_sysroot()` and, for `Systemd`, does
 nothing but `anyhow::bail!("bootupd is required for ostree-based installs")`. The single caller of
 bootc's `install_systemd_boot()` is `crates/lib/src/bootc_composefs/boot.rs`. This is unchanged on
 bootc `main`, so it is not a version to wait out. bootc-image-builder exposes no
 `--composefs-backend` flag, and that backend is otherwise only auto-selected for a unified kernel
-image, which the qOS kernel is not.
+image, which the Tilo kernel is not.
 
 So `bootloader = "systemd"` is not a slower path or a fallback — it is an image that cannot be
 installed, on a VM or on hardware.
@@ -148,7 +148,7 @@ swap, and a decision to take deliberately.
 bootc-image-builder runs to `Build complete!` and writes a qcow2: bootc reports `Bootloader: grub`,
 `Installing bootloader via bootupd`, `Installation complete!`, and the ESP carries
 `EFI/fedora/{shimx64,grubx64,mmx64}.efi` + `grub.cfg` + `EFI/BOOT/BOOTX64.EFI`. That disk boots
-under OVMF through GRUB 2.12 into the qOS kernel (`Linux version 7.0.14 (qos@qos-build)`, with the
+under OVMF through GRUB 2.12 into the Tilo kernel (`Linux version 7.0.14 (tilo@tilo-build)`, with the
 `kargs.d` hardening set applied) and reaches `multi-user.target` and `graphical.target`, with
 `greetd` and `fs.service` up. An encrypted install driven from that booted image
 (`os/dev/test-encrypted-install.sh`) also completes — LUKS2 root, `rd.luks.uuid=…tpm2-device=auto`
@@ -189,7 +189,7 @@ Falling back to the recovery key is the correct behaviour for a volume with no T
 
 ## P1-2a — `enrol` exits after the recovery key, so every later factor is silently skipped
 
-**FIXED.** `os/usr/libexec/qos-disk-encrypt`, `cmd_enrol`. The recovery key was read back out of
+**FIXED.** `os/usr/libexec/tilo-disk-encrypt`, `cmd_enrol`. The recovery key was read back out of
 `systemd-cryptenroll` by matching eight groups of six lowercase letters:
 
 ```bash
@@ -332,7 +332,7 @@ rebuilds indexes from headers that are themselves missing.
 The near-miss worth recording: this is the failure mode `os/dev/build-image.sh` already documents
 as *"a disk that fills mid-build can leave a cached layer holding a corrupt RPM database, which then
 surfaces as dnf insisting that packages the base image plainly has are missing"*, with
-`QOS_BUILD_ARGS=--no-cache` offered as the way out. `--no-cache` does **not** help: it prevents
+`TILO_BUILD_ARGS=--no-cache` offered as the way out. `--no-cache` does **not** help: it prevents
 inheriting a corrupt layer but not producing one.
 
 **Fix direction:** stop the sqlite sidecars from entering a layer — checkpoint or remove
@@ -356,7 +356,7 @@ Knock-on effects:
   enters lockdown from firmware only under Secure Boot.
 - TPM PCR 7 measures Secure Boot state, so binding LUKS to it carries no meaning as configured.
   No `--tpm2-pcrs` is set anywhere; the `bootc` default policy is inherited unexamined.
-- `keys/tpm2-pcr-signing.public.pem` is baked to `/usr/share/qos/` (`os/Containerfile:427`) and
+- `keys/tpm2-pcr-signing.public.pem` is baked to `/usr/share/tilo/` (`os/Containerfile:427`) and
   read by nothing.
 - `docs/security/boot-chain.md` describes a chain — *"firmware → shim (MS-signed) → GRUB (Fedora-signed) →
   kernel (Fedora-signed)"* — that the image explicitly deletes. The document is stale and
@@ -366,8 +366,8 @@ Knock-on effects:
 
 ## P1-2 — Disk encryption is opt-in, TPM-mandatory, and conflicts with the initrd-less kernel
 
-`os/usr/libexec/qos-install:276-289` — `BLOCK_SETUP` defaults to `direct`; encryption requires
-`--encrypt`. `qos-install:176-178` aborts if neither `/dev/tpmrm0` nor `/dev/tpm0` exists, so there
+`os/usr/libexec/tilo-install:276-289` — `BLOCK_SETUP` defaults to `direct`; encryption requires
+`--encrypt`. `tilo-install:176-178` aborts if neither `/dev/tpmrm0` nor `/dev/tpm0` exists, so there
 is **no passphrase-only encryption path** — a machine without a TPM gets no encryption at all.
 
 Separately, `os/etc/kernel/install.conf` sets `initrd_generator=none` and `os/Containerfile:654`
@@ -463,12 +463,12 @@ session. `crates/system/power/src/logind.rs:19-20` documents this as working —
 can lock before the machine sleeps"* — which is not implemented.
 
 `shell/src/compositor/idle.rs:107-113` defaults `lock_timeout` to `None`; idle auto-lock is
-reachable only via `QOS_IDLE_LOCK_SECS`.
+reachable only via `TILO_IDLE_LOCK_SECS`.
 
 **Resolved.** `PrepareForSleep(true)` is now mapped to the mandatory
 `PowerSignal::Lock` before sleep, while the resume edge resets idle state.
 The compositor defaults both blanking and locking to five minutes; an explicit
-`QOS_IDLE_LOCK_SECS=0` remains the documented opt-out. Unit coverage pins the
+`TILO_IDLE_LOCK_SECS=0` remains the documented opt-out. Unit coverage pins the
 sleep-edge mapping and secure default, and `shell/tests/session_lock_e2e.rs`
 drives idle lock plus failed and successful unlock through the live loop.
 
@@ -524,7 +524,7 @@ integrity rests on the pin being real rather than aspirational: a pin that relia
 "just point it at whatever resolves today" away from becoming an unpinned build under deadline
 pressure, and the frozen RPM set would then be resolved against an unrecorded base.
 
-**Fix direction:** mirror the base into `code.podesta.ai/qos/fedora-bootc` and pin against the
+**Fix direction:** mirror the base into `code.podesta.ai/tilo/fedora-bootc` and pin against the
 mirror — the same shape `os/Containerfile.rpms` + `snapshot-rpms` already use for packages, since
 our registry collects nothing. Copy with the multi-arch index intact. Fixed on this branch: the
 `mirror-base` workflow plus `os/base-snapshot.env` (`BASE_REF`), consumed by every Containerfile
@@ -532,16 +532,16 @@ as a `--build-arg`.
 
 Two adjacent holes in the same guarantee were found alongside it:
 
-- `os/containers/qos-relay/Containerfile:74` builds its runtime stage `FROM
+- `os/containers/tilo-relay/Containerfile:74` builds its runtime stage `FROM
   quay.io/fedora/fedora-minimal:44`, a floating tag — it never breaks, it just silently changes,
   so the relay image is not reproducible across time. **Still open**, and not a one-line pin:
   `BASE_REF` is the bootc base, ~1 GB with a kernel in it, so reusing it for a runtime stage whose
   whole point is to be small is not the fix. A digest against quay.io expires the same way the
   bootc pin did, so this needs its own mirrored image — and `mirror-base` cannot mirror it as
-  written (it hardcodes the `qos/fedora-bootc` destination and asserts an `ostree.linux` label
+  written (it hardcodes the `tilo/fedora-bootc` destination and asserts an `ostree.linux` label
   fedora-minimal does not carry). Parameterise that workflow over source/destination, mirror
   fedora-minimal, and add a second ref to `os/base-snapshot.env` that
-  `.forgejo/workflows/qos-relay.yaml` passes alongside `BASE_REF`.
+  `.forgejo/workflows/tilo-relay.yaml` passes alongside `BASE_REF`.
 - `os/Containerfile`'s `wpe-builder` stage installs its build deps with `dnf builddep
   webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. That much is
   still open. The stage was also **entirely broken**, and unpinned turned out to mean unwatched in
@@ -598,7 +598,7 @@ catching, ever begins. All three guards were inert in exactly the configuration 
 `OffscreenRenderer::new`'s own doc comment told callers to use the mechanism that does not work.
 
 The load-bearing one is `ui::warmup::spawn_warmup`, called on the compositor's real startup path
-(`shell/src/main.rs:129`) from a `qos-startup-warmup` thread. Its comment claimed *"A missing
+(`shell/src/main.rs:129`) from a `tilo-startup-warmup` thread. Its comment claimed *"A missing
 adapter isn't fatal to the shell — the compositor's real backend surfaces its own adapter error
 later — so we swallow it here."* In a release build nothing is swallowed: on a machine where
 adapter enumeration fails the shell aborts before it ever reaches the backend that was supposed to
@@ -644,7 +644,7 @@ other's publishes. Held by
 
 ## P2-2 — Corrupt peer-key file silently rotates identity
 
-`shell/src/network/behaviour.rs:122-127` — if `/var/lib/qos-fs/peer-key` exists but does not parse,
+`shell/src/network/behaviour.rs:122-127` — if `/var/lib/tilo-fs/peer-key` exists but does not parse,
 it is overwritten with a fresh keypair rather than raising. Identity loss becomes indistinguishable
 from first run. The same function documents a known TOCTOU window between write and `chmod 0600`
 (`:142-146`).
@@ -659,7 +659,7 @@ and `::key_reachable_outside_the_trust_group_raises_instead_of_rotating`.
 
 ## P2-3 — Revocation is modelled but undeliverable
 
-`crates/identity/qos-user-identity/src/revocation.rs` implements signed revocation entries with
+`crates/identity/tilo-user-identity/src/revocation.rs` implements signed revocation entries with
 correct before/after-cutoff semantics (tested at `shell/src/network/identity.rs:364-406`), but
 `PeerIdentityStore::set_revocations` has no non-test caller and there is no distribution mechanism.
 
@@ -684,9 +684,9 @@ The code has no DNS proxy — `dns-only` resolves to `EgressDecision::Blocked`
 The code is correct; the document is stale. Recorded because a stale doc describing a weaker
 mechanism is how a strong one gets "simplified" later.
 
-## P2-5 — `qos-security-audit` cannot fail
+## P2-5 — `tilo-security-audit` cannot fail
 
-`os/usr/libexec/qos-security-audit` exits 0 unconditionally (`:5`, `:86`) and the unit sets
+`os/usr/libexec/tilo-security-audit` exits 0 unconditionally (`:5`, `:86`) and the unit sets
 `SuccessExitStatus=0 1`. It reports; it never gates a boot. Its image-signing check greps
 `policy.json` for the string `sigstoreSigned` (`:63-67`) rather than verifying anything.
 
@@ -694,13 +694,13 @@ mechanism is how a strong one gets "simplified" later.
 health result. The unit is wanted rather than required, so this remains
 diagnostic and cannot strand the user during boot, but system health, logs and
 agents can no longer mistake a failed audit for success. The image-policy check
-binds the qOS registry scope, `sigstoreSigned` rule, pinned key path and the
+binds the Tilo registry scope, `sigstoreSigned` rule, pinned key path and the
 installed non-empty verification key instead of accepting an unrelated string.
 Held by `os/tests/kernel_hardening_invariants.sh`.
 
 ## P2-6 — `insecureAcceptAnything` is the container policy default
 
-`os/etc/containers/policy.json:2-4`. Signature enforcement is scoped to `code.podesta.ai/qos/qos`
+`os/etc/containers/policy.json:2-4`. Signature enforcement is scoped to `code.podesta.ai/tilo/tilo`
 only; every other image reference is unverified.
 
 ---

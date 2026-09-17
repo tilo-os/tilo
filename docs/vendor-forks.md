@@ -7,11 +7,11 @@ to prove that the checked-in source still corresponds to them. Run
 `tools/vendor-history.sh export OUTPUT_DIRECTORY` to produce Git bundles and
 one patch file per reviewable commit.
 
-## Winit's qOS-only depackaging overlay
+## Winit's Tilo-only depackaging overlay
 
 The winit history deliberately remains six upstream-facing patches. Its root
 is the normalized crates.io source for winit 0.30.13, whose archive contains
-four pieces of Cargo publication bookkeeping that qOS does not commit:
+four pieces of Cargo publication bookkeeping that Tilo does not commit:
 
 - `.cargo-ok`
 - `.cargo_vcs_info.json`

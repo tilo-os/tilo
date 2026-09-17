@@ -341,7 +341,7 @@ mod tests {
             priority: Priority::Info,
             message: "hello".into(),
             pid: Some(1234),
-            hostname: "qos".into(),
+            hostname: "tilo".into(),
             boot_id: "boot-a".into(),
             transport: "stdout".into(),
             extra: vec![],

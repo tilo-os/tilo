@@ -547,8 +547,8 @@ pub struct PdfApp {
     status_note: Option<String>,
     /// An in-flight XDG-portal *save* request (mirrors `portal_rx`).
     portal_save_rx: Option<PortalChannel>,
-    portal_action: Option<(qos_actions::InvocationId, PortalActionKind)>,
-    completed_portal_action: Option<qos_actions::InvocationUpdate>,
+    portal_action: Option<(tilo_actions::InvocationId, PortalActionKind)>,
+    completed_portal_action: Option<tilo_actions::InvocationUpdate>,
 
     // Interaction transients.
     last_mouse: Point,
@@ -693,7 +693,7 @@ impl PdfApp {
     pub fn sample() -> Self {
         let mut app = Self::build(model::sample_document(), true);
         app.has_document = true;
-        app.doc_name = "qOS Technical Overview.pdf".to_string();
+        app.doc_name = "Tilo Technical Overview.pdf".to_string();
         app.signer_name = "Alice Daskju".to_string();
         app
     }
@@ -830,7 +830,7 @@ impl PdfApp {
                 image::Rgba([246, 132, 64, 255])
             };
         }
-        let png = std::env::temp_dir().join("qos_pdf_demo_import.png");
+        let png = std::env::temp_dir().join("tilo_pdf_demo_import.png");
         if image::DynamicImage::ImageRgba8(img).save(&png).is_ok() {
             // Screenshot-only helper; production imports receive the checked
             // out shared record from `sync`/the portal path.
@@ -975,7 +975,7 @@ impl PdfApp {
 
     /// Dispatch one reader [`PdfViewerAction`](crate::actions::PdfViewerAction) —
     /// the single mutation path shared with the Ctrl+K palette. The action is
-    /// applied through the qOS action executor (a pinned actor + committed
+    /// applied through the Tilo action executor (a pinned actor + committed
     /// change, so it replays byte-identically on peers), exactly as the palette
     /// does. The doc heads captured just before the first action of the event
     /// are stashed so the host records **one** undo boundary bracketing it
@@ -989,7 +989,7 @@ impl PdfApp {
             state,
             crate::actions::PDF_VIEWER_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.PdfViewer", "PDF Viewer", action),
+            tilo_actions::ActionContext::for_action("org.tilo.PdfViewer", "PDF Viewer", action),
         );
     }
 
@@ -2388,14 +2388,14 @@ impl PdfApp {
             return;
         };
         self.completed_portal_action = Some(if success {
-            qos_actions::InvocationUpdate::Succeeded {
+            tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             }
         } else if let Some(message) = error {
-            qos_actions::InvocationUpdate::Failed {
+            tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "pdf.portal_failed".into(),
                     message,
                     details: None,
@@ -2403,7 +2403,7 @@ impl PdfApp {
                 },
             }
         } else {
-            qos_actions::InvocationUpdate::Cancelled {
+            tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("file selection cancelled".into()),
             }
@@ -3711,14 +3711,14 @@ impl Widget for PdfApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         use crate::actions::PdfOperation;
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -3751,8 +3751,8 @@ impl Widget for PdfApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -3780,7 +3780,7 @@ impl Widget for PdfApp {
                 }
                 self.portal_action = None;
                 Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    qos_actions::ActionOutput::default(),
+                    tilo_actions::ActionOutput::default(),
                 )))
             }
             PdfOperation::SaveAs { path: Some(file) } => {
@@ -3798,7 +3798,7 @@ impl Widget for PdfApp {
                 }
                 self.portal_action = None;
                 Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    qos_actions::ActionOutput::default(),
+                    tilo_actions::ActionOutput::default(),
                 )))
             }
             PdfOperation::Open { path: None } => {
@@ -3830,7 +3830,7 @@ impl Widget for PdfApp {
                 .map(|handled| {
                     handled.then(|| {
                         ui::widget::ResourceOperationStart::Completed(
-                            qos_actions::ActionOutput::default(),
+                            tilo_actions::ActionOutput::default(),
                         )
                     })
                 }),
@@ -3839,11 +3839,11 @@ impl Widget for PdfApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested
             && self
                 .portal_action
@@ -3859,7 +3859,7 @@ impl Widget for PdfApp {
                     .as_ref()
                     .and_then(|handle| handle.cancel_save(request).ok());
             }
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("file operation cancelled".into()),
             });
@@ -3891,10 +3891,10 @@ impl Widget for PdfApp {
 
     /// Publish the open document + its markup so the host's Ctrl+K action palette
     /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn action_directory_resource_page(
@@ -3918,8 +3918,8 @@ impl Widget for PdfApp {
         })
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before an on-page affordance dispatched
@@ -4630,7 +4630,7 @@ impl Widget for PdfApp {
             return false;
         };
         self.invoke_resource_operation(
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             crate::actions::PDF_VIEWER_OPERATION_TYPE,
             &payload,
             state,
@@ -4851,7 +4851,7 @@ mod tests {
     fn owner_worker_failure_settles_the_matching_open_without_blocking() {
         let mut app = PdfApp::empty();
         let mut state = AutoCommit::new();
-        app.queue_worker_open(std::path::Path::new("/definitely/not/a/qos-pdf.pdf"));
+        app.queue_worker_open(std::path::Path::new("/definitely/not/a/tilo-pdf.pdf"));
         assert!(
             app.pending_open.is_some(),
             "the accepted request is loading"
@@ -4879,8 +4879,8 @@ mod tests {
     fn owner_worker_stale_open_result_cannot_replace_the_latest_request() {
         let mut app = PdfApp::empty();
         let mut state = AutoCommit::new();
-        let first = std::path::Path::new("/definitely/not/a/qos-pdf-a.pdf");
-        let latest = std::path::Path::new("/definitely/not/a/qos-pdf-b.pdf");
+        let first = std::path::Path::new("/definitely/not/a/tilo-pdf-a.pdf");
+        let latest = std::path::Path::new("/definitely/not/a/tilo-pdf-b.pdf");
         app.queue_worker_open(first);
         app.queue_worker_open(latest);
         for _ in 0..100 {
@@ -4894,7 +4894,7 @@ mod tests {
         assert!(
             app.load_error
                 .as_deref()
-                .is_some_and(|error| error.contains("qos-pdf-b.pdf"))
+                .is_some_and(|error| error.contains("tilo-pdf-b.pdf"))
         );
     }
 
@@ -5083,7 +5083,9 @@ mod tests {
             .into_iter()
             .find_map(|result| result.action_address())
             .expect("page text is globally searchable by a canonical action");
-        assert!(qos_actions::ResourceProvider::resource(&app, &state.doc, &hit.resource).is_some());
+        assert!(
+            tilo_actions::ResourceProvider::resource(&app, &state.doc, &hit.resource).is_some()
+        );
 
         for needle in ["highlight", "Iroh relay"] {
             let address = provider
@@ -5092,7 +5094,7 @@ mod tests {
                 .find_map(|result| result.action_address())
                 .unwrap_or_else(|| panic!("{needle:?} should produce a canonical search hit"));
             let resource =
-                qos_actions::ResourceProvider::resource(&app, &state.doc, &address.resource)
+                tilo_actions::ResourceProvider::resource(&app, &state.doc, &address.resource)
                     .expect("search door resolves the addressed annotation/comment resource");
             assert!(
                 resource
@@ -5108,7 +5110,7 @@ mod tests {
             .find(|address| address.resource.starts_with("pdf.outline:"))
             .expect("PDF bookmarks are globally searchable by their canonical action");
         let bookmark_resource =
-            qos_actions::ResourceProvider::resource(&app, &state.doc, &bookmark_address.resource)
+            tilo_actions::ResourceProvider::resource(&app, &state.doc, &bookmark_address.resource)
                 .expect("bookmark search result resolves to the current outline resource");
         assert!(
             bookmark_resource
@@ -5123,7 +5125,7 @@ mod tests {
             .expect("reply text is globally searchable by its canonical action");
         assert!(reply_address.resource.starts_with("pdf.reply:"));
         assert!(
-            qos_actions::ResourceProvider::resource(&app, &state.doc, &reply_address.resource)
+            tilo_actions::ResourceProvider::resource(&app, &state.doc, &reply_address.resource)
                 .is_some(),
             "a reply search hit resolves to the durable reply resource"
         );
@@ -5143,7 +5145,7 @@ mod tests {
             .find(|address| address.resource.starts_with("pdf.search-result:"))
             .expect("bounded find result has a canonical global-search action");
         let find_resource =
-            qos_actions::ResourceProvider::resource(&app, &state.doc, &find_address.resource)
+            tilo_actions::ResourceProvider::resource(&app, &state.doc, &find_address.resource)
                 .expect("current find-result address resolves");
         assert!(
             find_resource
@@ -5154,7 +5156,7 @@ mod tests {
         app.search_input.set_text("filesystem");
         app.recompute_matches();
         assert!(
-            qos_actions::ResourceProvider::resource(&app, &state.doc, &find_address.resource)
+            tilo_actions::ResourceProvider::resource(&app, &state.doc, &find_address.resource)
                 .is_none(),
             "a stale find ordinal cannot be rebound to the next query"
         );
@@ -5179,7 +5181,7 @@ mod tests {
             "a stale cursor restarts against the new generation"
         );
         assert!(
-            qos_actions::ResourceProvider::resource(&app, &state.doc, &stale_resource).is_none()
+            tilo_actions::ResourceProvider::resource(&app, &state.doc, &stale_resource).is_none()
         );
     }
 
@@ -5199,7 +5201,7 @@ mod tests {
         let mut state_b = ui::State::new();
         state_b.doc = AutoCommit::load(&base).expect("clone shared base");
         let (mut b, _) = app_with_state();
-        let mut registry = qos_actions::ActionRegistry::new();
+        let mut registry = tilo_actions::ActionRegistry::new();
         crate::actions::register(&mut registry);
 
         // One peer authors an ordered duplicate/reorder sequence. The envelope
@@ -5211,13 +5213,13 @@ mod tests {
             source_page: 2,
             imported: None,
         };
-        let env = qos_actions::apply_local(&mut state_a.doc, &duplicate, encode(&duplicate))
+        let env = tilo_actions::apply_local(&mut state_a.doc, &duplicate, encode(&duplicate))
             .expect("author duplicate");
-        qos_actions::replay(&mut state_b.doc, &env, &registry).expect("replay duplicate");
+        tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay duplicate");
         let moved = move_page_plan_action("source-1", Some("copy-of-source-2"));
-        let env = qos_actions::apply_local(&mut state_a.doc, &moved, encode(&moved))
+        let env = tilo_actions::apply_local(&mut state_a.doc, &moved, encode(&moved))
             .expect("author reorder");
-        qos_actions::replay(&mut state_b.doc, &env, &registry).expect("replay reorder");
+        tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay reorder");
         assert_eq!(
             crate::doc::PdfDoc::list_page_plan(&state_a.doc),
             crate::doc::PdfDoc::list_page_plan(&state_b.doc),
@@ -5229,7 +5231,7 @@ mod tests {
         a.sync(&mut state_a.doc, &state_a.root);
         b.sync(&mut state_b.doc, &state_b.root);
         assert_eq!(a.resource_page_ids, b.resource_page_ids);
-        let source_two_hits: Vec<qos_actions::ActionAddress> = Widget::search_providers(&a)[0]
+        let source_two_hits: Vec<tilo_actions::ActionAddress> = Widget::search_providers(&a)[0]
             .search("Per-cluster sandboxing")
             .into_iter()
             .filter_map(|result| result.action_address())
@@ -5246,7 +5248,7 @@ mod tests {
         let page_id = "source-1";
         let resource_id = format!("pdf.page:sample:{page_id}");
         assert!(
-            qos_actions::ResourceProvider::resource(&a, &state_a.doc, &resource_id).is_some(),
+            tilo_actions::ResourceProvider::resource(&a, &state_a.doc, &resource_id).is_some(),
             "the durable page id resolves through the provider"
         );
         assert_eq!(
@@ -5262,13 +5264,13 @@ mod tests {
         // after it wins, lazy resolution fails closed instead of falling back to
         // an ordinal page address.
         let delete = delete_page_plan_action(page_id);
-        let env = qos_actions::apply_local(&mut state_a.doc, &delete, encode(&delete))
+        let env = tilo_actions::apply_local(&mut state_a.doc, &delete, encode(&delete))
             .expect("author delete");
-        qos_actions::replay(&mut state_b.doc, &env, &registry).expect("replay delete");
+        tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay delete");
         a.sync(&mut state_a.doc, &state_a.root);
         b.sync(&mut state_b.doc, &state_b.root);
-        assert!(qos_actions::ResourceProvider::resource(&a, &state_a.doc, &resource_id).is_none());
-        assert!(qos_actions::ResourceProvider::resource(&b, &state_b.doc, &resource_id).is_none());
+        assert!(tilo_actions::ResourceProvider::resource(&a, &state_a.doc, &resource_id).is_none());
+        assert!(tilo_actions::ResourceProvider::resource(&b, &state_b.doc, &resource_id).is_none());
 
         // Concurrent page-plan actions merge like the other markup actions.
         let mut left = AutoCommit::load(&base).expect("left replica");
@@ -5285,8 +5287,8 @@ mod tests {
             source_page: 3,
             imported: None,
         };
-        qos_actions::apply_local(&mut left, &left_action, encode(&left_action)).unwrap();
-        qos_actions::apply_local(&mut right, &right_action, encode(&right_action)).unwrap();
+        tilo_actions::apply_local(&mut left, &left_action, encode(&left_action)).unwrap();
+        tilo_actions::apply_local(&mut right, &right_action, encode(&right_action)).unwrap();
         left.merge(&mut right).expect("merge concurrent page edits");
         let merged_ids: Vec<String> = crate::doc::PdfDoc::list_page_plan(&left)
             .into_iter()
@@ -5776,7 +5778,7 @@ mod tests {
     #[test]
     fn drive_product_state_matrix_shots() {
         let shot_dir = std::env::var("PDF_SHOT_DIR")
-            .unwrap_or_else(|_| "/tmp/qos_pdf_product_states".to_string());
+            .unwrap_or_else(|_| "/tmp/tilo_pdf_product_states".to_string());
         let shot = |name: &str| format!("{shot_dir}/{name}");
 
         let mut narrow = PdfApp::sample();
@@ -6879,7 +6881,7 @@ mod tests {
     //
     // These exercise the pdfium backend directly, so they require a usable
     // `libpdfium.so`. `crate::source::find_pdfium` already probes the well-known
-    // paths, `~/.local/lib/pdfium`, and `QOS_PDFIUM_LIB`.
+    // paths, `~/.local/lib/pdfium`, and `TILO_PDFIUM_LIB`.
     //
     // pdfium is not packaged for the distribution the CI image is built from
     // — Fedora ships `deepin-pdfium`, which is a different library behind a
@@ -6889,7 +6891,7 @@ mod tests {
     // developer's workstation", every run, for as long as that stays true.
     //
     // So they say what they could not look at and stop, rather than either
-    // failing on it or passing as though they had checked. `QOS_REQUIRE_PDFIUM`
+    // failing on it or passing as though they had checked. `TILO_REQUIRE_PDFIUM`
     // turns the absence back into a failure, for anywhere the backend is
     // supposed to be present and its absence is the bug — the image build is
     // the case that wants it.
@@ -6899,19 +6901,19 @@ mod tests {
 
     /// Why these tests cannot run, in the words the operator needs.
     const NO_PDFIUM: &str = "no usable libpdfium.so — install one (e.g. \
-         ~/.local/lib/pdfium/libpdfium.so) or set QOS_PDFIUM_LIB";
+         ~/.local/lib/pdfium/libpdfium.so) or set TILO_PDFIUM_LIB";
 
     /// Open the bundled sample on the raster backend, or say plainly that
     /// the backend is not here and let the caller stand down.
     ///
     /// `None` is never "it worked": every caller returns on it, so the test
     /// reports as passed having announced on stderr exactly which property
-    /// went unchecked. Set `QOS_REQUIRE_PDFIUM` to make that a failure.
+    /// went unchecked. Set `TILO_REQUIRE_PDFIUM` to make that a failure.
     fn open_raster_sample() -> Option<PdfApp> {
         let app = PdfApp::open(SAMPLE_PDF);
         match pdfium_gate(app.raster.is_some(), require_pdfium()) {
             PdfiumGate::Run => Some(app),
-            PdfiumGate::Fail => panic!("QOS_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
+            PdfiumGate::Fail => panic!("TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
             PdfiumGate::Skip => {
                 eprintln!(
                     "SKIPPING a pdfium-backend test: {NO_PDFIUM}. The raster \
@@ -6943,7 +6945,7 @@ mod tests {
     }
 
     fn require_pdfium() -> bool {
-        std::env::var_os("QOS_REQUIRE_PDFIUM").is_some()
+        std::env::var_os("TILO_REQUIRE_PDFIUM").is_some()
     }
 
     /// The escape hatch is the whole reason skipping is defensible, so it
@@ -6967,7 +6969,7 @@ mod tests {
         assert_eq!(
             pdfium_gate(false, true),
             PdfiumGate::Fail,
-            "QOS_REQUIRE_PDFIUM has to turn the absence back into a failure, \
+            "TILO_REQUIRE_PDFIUM has to turn the absence back into a failure, \
              or the skip has no floor under it"
         );
     }
@@ -6987,7 +6989,7 @@ mod tests {
         let open_ms = t.elapsed().as_secs_f64() * 1000.0;
         match pdfium_gate(app.raster.is_some(), require_pdfium()) {
             PdfiumGate::Run => {}
-            PdfiumGate::Fail => panic!("QOS_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
+            PdfiumGate::Fail => panic!("TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
             PdfiumGate::Skip => {
                 eprintln!("SKIPPING the pdfium open/render measurement: {NO_PDFIUM}.");
                 return;
@@ -7408,7 +7410,7 @@ mod tests {
 
         // Flatten + write a real .pdf to disk.
         let out = std::env::temp_dir()
-            .join("qos_pdf_saveback")
+            .join("tilo_pdf_saveback")
             .join("annotated.pdf");
         std::fs::create_dir_all(out.parent().unwrap()).unwrap();
         let _ = std::fs::remove_file(&out);
@@ -7459,7 +7461,7 @@ mod tests {
     }
 
     fn saved_reopen(app: &mut PdfApp, name: &str) -> crate::source::Rasterizer {
-        let out = std::env::temp_dir().join("qos_pdf_edit").join(name);
+        let out = std::env::temp_dir().join("tilo_pdf_edit").join(name);
         std::fs::create_dir_all(out.parent().unwrap()).unwrap();
         let _ = std::fs::remove_file(&out);
         assert!(app.save_annotated_to(&out), "save: {:?}", app.status_note);
@@ -7589,7 +7591,9 @@ mod tests {
 
         // A genuine PNG on disk, imported through the real code path.
         let img = image::RgbaImage::from_pixel(96, 64, image::Rgba([210, 60, 60, 255]));
-        let png = std::env::temp_dir().join("qos_pdf_edit").join("swatch.png");
+        let png = std::env::temp_dir()
+            .join("tilo_pdf_edit")
+            .join("swatch.png");
         std::fs::create_dir_all(png.parent().unwrap()).unwrap();
         image::DynamicImage::ImageRgba8(img)
             .save(&png)
@@ -7789,7 +7793,7 @@ mod tests {
     fn drive_real_pdf_search_highlight_save_shots() {
         let shot_dir = std::env::var("PDF_SHOT_DIR").unwrap_or_else(|_| {
             std::env::temp_dir()
-                .join("qos_pdf_review")
+                .join("tilo_pdf_review")
                 .to_string_lossy()
                 .into_owned()
         });
@@ -7836,7 +7840,7 @@ mod tests {
         // --- save, reopen the saved file, and shoot pdfium's own render of the
         //     flattened markup — proof the annotations are in the .pdf. ---
         let out = std::env::temp_dir()
-            .join("qos_pdf_review")
+            .join("tilo_pdf_review")
             .join("annotated.pdf");
         std::fs::create_dir_all(out.parent().unwrap()).unwrap();
         assert!(

@@ -1,4 +1,4 @@
-//! Library root for the nirios-shell file explorer.
+//! Library root for the tilo-shell file explorer.
 //! Hosts the `FileExplorerWidget` (built over Tasks 8–13) and helper modules.
 
 // An app runs as its own sandboxed process, so an integer that wraps here

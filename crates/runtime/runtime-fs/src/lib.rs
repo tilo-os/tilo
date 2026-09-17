@@ -1,4 +1,4 @@
-//! `runtime-fs` — Cap'n Proto client for the qOS workspace filesystem proxy.
+//! `runtime-fs` — Cap'n Proto client for the Tilo workspace filesystem proxy.
 //!
 //! ```ignore
 //! let local = tokio::task::LocalSet::new();
@@ -69,7 +69,7 @@ pub use fs_capnp::workspace_fs::Client as WorkspaceFsClient;
 /// requests are truncated. Mirrors the FUSE driver's 1 MiB readahead.
 pub const MAX_READ_CHUNK: u32 = 1 << 20;
 
-/// Try to dial the qOS workspace-fs proxy via the launcher-supplied service
+/// Try to dial the Tilo workspace-fs proxy via the launcher-supplied service
 /// fd. Returns [`NotAvailable`] when the env var is unset (e.g. running as
 /// a Flatpak) or the fd isn't open. Call from a `tokio::task::LocalSet` —
 /// capnp-rpc futures are `!Send`.
@@ -405,9 +405,9 @@ mod tests {
     use super::*;
     use std::env;
 
-    fn clear_qos_env() {
+    fn clear_tilo_env() {
         for (key, _) in env::vars() {
-            if key.starts_with("QOS_") {
+            if key.starts_with("TILO_") {
                 unsafe { env::remove_var(&key) };
             }
         }
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn try_connect_without_env_returns_service_fd_missing() {
-        clear_qos_env();
+        clear_tilo_env();
         match try_connect() {
             Err(NotAvailable::ServiceFdMissing) => {}
             Err(other) => panic!("unexpected error: {other:?}"),

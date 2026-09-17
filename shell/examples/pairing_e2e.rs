@@ -73,7 +73,7 @@ async fn bluez_side(unique: &str) -> Result<String, String> {
     let conn = zbus::Connection::system()
         .await
         .map_err(|e| e.to_string())?;
-    let proxy = zbus::Proxy::new(&conn, unique, qos_bluez::AGENT_PATH, "org.bluez.Agent1")
+    let proxy = zbus::Proxy::new(&conn, unique, tilo_bluez::AGENT_PATH, "org.bluez.Agent1")
         .await
         .map_err(|e| e.to_string())?;
     let dev = zbus::zvariant::ObjectPath::try_from(DEV).map_err(|e| e.to_string())?;
@@ -143,7 +143,7 @@ async fn run() -> Result<(), String> {
         "prompt   \"{}\" asks {:?}",
         request.device_name, request.prompt
     );
-    if request.prompt != (qos_bluez::PairingPrompt::ConfirmPasskey { passkey: PASSKEY }) {
+    if request.prompt != (tilo_bluez::PairingPrompt::ConfirmPasskey { passkey: PASSKEY }) {
         return Err(format!("unexpected prompt: {:?}", request.prompt));
     }
 

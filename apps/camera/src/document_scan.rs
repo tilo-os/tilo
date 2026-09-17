@@ -5,7 +5,7 @@
 //! structured OCR so crop/rotation or language changes can be revisited.
 
 use image::{DynamicImage, GenericImageView, imageops};
-use qos_ocr::Document;
+use tilo_ocr::Document;
 use ui::widget::CropSelection;
 
 /// Translate the unstructured SANE/process boundary into short recovery copy.
@@ -163,14 +163,14 @@ impl Page {
         }
     }
 
-    pub fn recognize(&mut self, language: &str) -> Result<&Document, qos_ocr::Error> {
-        let recognition = qos_ocr::recognize_detailed(&self.rendered(), language)?;
+    pub fn recognize(&mut self, language: &str) -> Result<&Document, tilo_ocr::Error> {
+        let recognition = tilo_ocr::recognize_detailed(&self.rendered(), language)?;
         self.ocr = Some(recognition.document);
         self.ocr_deskew_degrees = recognition.deskew_degrees;
         // Set immediately above and retained by `self`.
         self.ocr
             .as_ref()
-            .ok_or_else(|| qos_ocr::Error::Engine("OCR result was lost".into()))
+            .ok_or_else(|| tilo_ocr::Error::Engine("OCR result was lost".into()))
     }
 }
 
@@ -324,10 +324,10 @@ mod tests {
         scan.add_page(DynamicImage::new_rgb8(2, 1));
         scan.add_page(DynamicImage::new_rgb8(1, 2));
         scan.pages[0].ocr = Some(Document {
-            words: vec![qos_ocr::Word {
+            words: vec![tilo_ocr::Word {
                 text: "First receipt".into(),
                 confidence: 98.0,
-                bounds: qos_ocr::Bounds {
+                bounds: tilo_ocr::Bounds {
                     x: 0,
                     y: 0,
                     width: 2,
@@ -342,10 +342,10 @@ mod tests {
             language: "eng".into(),
         });
         scan.pages[1].ocr = Some(Document {
-            words: vec![qos_ocr::Word {
+            words: vec![tilo_ocr::Word {
                 text: "Second receipt".into(),
                 confidence: 97.0,
-                bounds: qos_ocr::Bounds {
+                bounds: tilo_ocr::Bounds {
                     x: 0,
                     y: 0,
                     width: 1,

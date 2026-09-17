@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use qos_actions::ActionAddress;
+use tilo_actions::ActionAddress;
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCatalogError, SearchCursor, SearchPage,
     SearchProvider, SearchResult,

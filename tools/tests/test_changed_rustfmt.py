@@ -51,7 +51,7 @@ class ChangedRustfmtTests(unittest.TestCase):
         environment.update(
             {
                 "PATH": f"{self.bin}:{environment['PATH']}",
-                "QOS_REPO_ROOT": str(self.root),
+                "TILO_REPO_ROOT": str(self.root),
                 "RUSTFMT_ARGUMENTS": str(self.arguments),
             }
         )

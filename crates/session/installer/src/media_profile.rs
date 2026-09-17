@@ -1,6 +1,6 @@
 //! Validated host-to-live-installer profile handoff.
 //!
-//! The raw media block is extracted by `qos-installer-profile-extract` before
+//! The raw media block is extracted by `tilo-installer-profile-extract` before
 //! greetd starts. This module treats the JSON as untrusted even after its
 //! corruption checksum passed. Each non-secret field is validated separately:
 //! sound values seed the installer, while missing or invalid values remain
@@ -9,8 +9,8 @@
 use serde::Deserialize;
 use std::path::Path;
 
-pub const PROFILE_PATH: &str = "/run/qos-installer/profile.json";
-pub const PROFILE_ERROR_PATH: &str = "/run/qos-installer/profile.error";
+pub const PROFILE_PATH: &str = "/run/tilo-installer/profile.json";
+pub const PROFILE_ERROR_PATH: &str = "/run/tilo-installer/profile.error";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MediaProfileField {
@@ -67,7 +67,7 @@ impl MediaProfile {
             .map(|field| field.label())
             .collect::<Vec<_>>();
         match fields.as_slice() {
-            [] => "Your setup choices are ready. Choose where to install qOS.".to_string(),
+            [] => "Your setup choices are ready. Choose where to install Tilo.".to_string(),
             [only] => format!("Your other setup choices are ready. Please check the {only}."),
             _ => format!(
                 "Your other setup choices are ready. Please check: {}.",

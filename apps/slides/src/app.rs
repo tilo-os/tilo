@@ -672,8 +672,8 @@ pub struct SlidesApp {
     next_document_generation: u64,
     active_document_generation: Option<u64>,
     resource_file: Option<(bool, std::path::PathBuf)>,
-    resource_invocation: Option<qos_actions::InvocationId>,
-    completed_resource_invocation: Option<qos_actions::InvocationUpdate>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
+    completed_resource_invocation: Option<tilo_actions::InvocationUpdate>,
     /// Visible result of a fallible open/save/image operation. Previously those
     /// paths failed silently, leaving users unsure whether a click worked.
     io_toast: Option<(String, ToastKind)>,
@@ -1258,7 +1258,7 @@ impl SlidesApp {
             doc,
             crate::actions::SLIDES_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Slides", "Slides", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Slides", "Slides", action),
         );
     }
 
@@ -2844,14 +2844,14 @@ impl SlidesApp {
             return;
         };
         self.completed_resource_invocation = Some(if success {
-            qos_actions::InvocationUpdate::Succeeded {
+            tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             }
         } else if let Some(message) = error {
-            qos_actions::InvocationUpdate::Failed {
+            tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "slides.file_failed".into(),
                     message,
                     details: None,
@@ -2859,7 +2859,7 @@ impl SlidesApp {
                 },
             }
         } else {
-            qos_actions::InvocationUpdate::Cancelled {
+            tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("file selection cancelled".into()),
             }
@@ -3239,7 +3239,7 @@ impl SlidesApp {
     /// [`Widget::fullscreen_params`] (here: the largest output, a distinct
     /// presentation view), enumerates the live monitors and `set_fullscreen`s
     /// onto the chosen one — the same path the video player uses for immersive
-    /// fullscreen. On the qOS compositor (which spans one combined scene) that
+    /// fullscreen. On the Tilo compositor (which spans one combined scene) that
     /// becomes a full-output `xdg_toplevel.set_fullscreen`; the present view
     /// itself is the mode-`Present` draw (no toolbar/rail/inspector, black
     /// backdrop, letterboxed slide).
@@ -5447,7 +5447,7 @@ impl Widget for SlidesApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
@@ -5455,7 +5455,7 @@ impl Widget for SlidesApp {
     ) -> Result<bool, String> {
         use crate::actions::SlidesOperation;
 
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         // Keep the registered wire type on the canonical dispatch path.  This
@@ -5547,8 +5547,8 @@ impl Widget for SlidesApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -5588,7 +5588,7 @@ impl Widget for SlidesApp {
                 .map(|handled| {
                     handled.then(|| {
                         ui::widget::ResourceOperationStart::Completed(
-                            qos_actions::ActionOutput::default(),
+                            tilo_actions::ActionOutput::default(),
                         )
                     })
                 }),
@@ -5597,11 +5597,11 @@ impl Widget for SlidesApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested && self.resource_invocation == Some(invocation) {
             self.resource_invocation = None;
             self.resource_file = None;
@@ -5609,7 +5609,7 @@ impl Widget for SlidesApp {
             // A worker may still finish after cancellation. Its generation is
             // no longer authoritative, so `drain_document_worker` drops it.
             self.active_document_generation = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("presentation file operation cancelled".into()),
             });
@@ -5822,7 +5822,7 @@ impl Widget for SlidesApp {
     /// Present mode wants the surface promoted to true OS fullscreen so the
     /// slideshow fills the whole output (over the shell's strips + top bar).
     /// The host ([`ui::App`]) polls this each frame and drives
-    /// `window.set_fullscreen`, which on the qOS compositor becomes an
+    /// `window.set_fullscreen`, which on the Tilo compositor becomes an
     /// `xdg_toplevel.set_fullscreen` request. Level-triggered: a steady
     /// `Some(true)` for the whole talk is correct and idempotent.
     fn fullscreen_intent(&self) -> Option<bool> {
@@ -6368,12 +6368,12 @@ impl Widget for SlidesApp {
     /// The deck's resource tree for the shell's one Ctrl+K palette — every
     /// document-mutating affordance exported as the same action it dispatches on
     /// screen. See [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -8273,7 +8273,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::SLIDES_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -9382,7 +9382,7 @@ mod tests {
         crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
         app.doc_portal_rx = Some(inject_doc_for_test(DocOutcome::Open(
             std::env::temp_dir().join(format!(
-                "missing-qos-slides-deck-{}.odp",
+                "missing-tilo-slides-deck-{}.odp",
                 std::process::id()
             )),
         )));
@@ -9424,7 +9424,7 @@ mod tests {
         let (results, rx) = std::sync::mpsc::sync_channel(1);
         drop(results);
         app.document_worker = Some(DocumentWorker { tx, rx });
-        app.resource_invocation = Some(qos_actions::InvocationId::new());
+        app.resource_invocation = Some(tilo_actions::InvocationId::new());
         app.active_document_generation = Some(7);
 
         app.drain_document_worker(&mut doc);
@@ -9434,7 +9434,7 @@ mod tests {
         assert!(app.resource_invocation.is_none());
         assert!(matches!(
             app.completed_resource_invocation,
-            Some(qos_actions::InvocationUpdate::Failed { .. })
+            Some(tilo_actions::InvocationUpdate::Failed { .. })
         ));
         assert!(matches!(app.io_toast.as_ref(), Some((_, ToastKind::Error))));
     }
@@ -10720,7 +10720,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::SLIDES_OPERATION_TYPE,
                 &payload,
                 &doc,

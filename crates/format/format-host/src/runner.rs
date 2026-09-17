@@ -35,7 +35,7 @@ wasmtime::component::bindgen!({
     world: "provider",
 });
 
-use exports::qos::format_provider::format_provider as wit_iface;
+use exports::tilo::format_provider::format_provider as wit_iface;
 
 pub struct WasiHostState {
     table: ResourceTable,
@@ -149,7 +149,7 @@ impl LoadedComponent {
         let mut store = self.new_store();
         let bindings = Provider::instantiate(&mut store, &self.component, &self.linker)
             .map_err(|e| CodecError::trap(format!("instantiate: {e:#}")))?;
-        let iface = bindings.qos_format_provider_format_provider();
+        let iface = bindings.tilo_format_provider_format_provider();
         iface
             .call_detect(&mut store, head)
             .map_err(|e| classify_trap(&e))
@@ -165,7 +165,7 @@ impl LoadedComponent {
         let mut store = self.new_store();
         let bindings = Provider::instantiate(&mut store, &self.component, &self.linker)
             .map_err(|e| CodecError::trap(format!("instantiate: {e:#}")))?;
-        let iface = bindings.qos_format_provider_format_provider();
+        let iface = bindings.tilo_format_provider_format_provider();
         match iface.call_import_doc(&mut store, bytes) {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(e)) => Err(CodecError {
@@ -186,7 +186,7 @@ impl LoadedComponent {
         let mut store = self.new_store();
         let bindings = Provider::instantiate(&mut store, &self.component, &self.linker)
             .map_err(|e| CodecError::trap(format!("instantiate: {e:#}")))?;
-        let iface = bindings.qos_format_provider_format_provider();
+        let iface = bindings.tilo_format_provider_format_provider();
         match iface.call_export_doc(&mut store, canonical) {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(e)) => Err(CodecError {
@@ -215,9 +215,9 @@ fn classify_trap<E: std::fmt::Display + std::fmt::Debug>(e: &E) -> CodecError {
 }
 
 /// Cache dir for wasmtime's on-disk compilation cache. Lives under
-/// `$XDG_CACHE_HOME/qos/wasmtime/` (≈`~/.cache/qos/wasmtime/`).
+/// `$XDG_CACHE_HOME/tilo/wasmtime/` (≈`~/.cache/tilo/wasmtime/`).
 fn cache_dir() -> Option<std::path::PathBuf> {
-    dirs::cache_dir().map(|d| d.join("qos").join("wasmtime"))
+    dirs::cache_dir().map(|d| d.join("tilo").join("wasmtime"))
 }
 
 /// Spawn a Tokio task that bumps the engine's epoch counter once per

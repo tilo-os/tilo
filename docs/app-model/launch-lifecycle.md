@@ -1,6 +1,6 @@
 # Application launch lifecycle audit
 
-`ui::launch::LaunchSpec` owns the ordinary qOS window lifecycle: common CLI
+`ui::launch::LaunchSpec` owns the ordinary Tilo window lifecycle: common CLI
 validation, persistent state, headless driving, deterministic screenshots,
 action registration, and the live event loop. It is intentionally not a
 generic command dispatcher. Live roots may be argument-free or use explicitly

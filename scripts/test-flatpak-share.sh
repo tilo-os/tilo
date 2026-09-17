@@ -47,11 +47,11 @@ restore_browser() {
 trap restore_browser EXIT
 tmp_exclude_browser
 
-# Use the host by default, or set QOS_DISTROBOX when the build dependencies
+# Use the host by default, or set TILO_DISTROBOX when the build dependencies
 # live in a development container. Auto-detect the conventional containers
 # only when neither choice was explicit.
-if [ -n "${QOS_DISTROBOX+x}" ]; then
-    DISTROBOX="$QOS_DISTROBOX"
+if [ -n "${TILO_DISTROBOX+x}" ]; then
+    DISTROBOX="$TILO_DISTROBOX"
 elif podman container exists my-distrobox-44 2>/dev/null; then
     DISTROBOX="my-distrobox-44"
 elif podman container exists my-distrobox 2>/dev/null; then
@@ -62,7 +62,7 @@ fi
 
 # Matching the host's ffmpeg ABI avoids the library staging shim. A custom
 # container is conservatively treated as unmatched unless the caller opts out
-# with an empty QOS_DISTROBOX.
+# with an empty TILO_DISTROBOX.
 HOST_ABI_MATCHES=$([ "$DISTROBOX" = "my-distrobox-44" ] && echo 1 || echo 0)
 cargo_in_distrobox() {
     if [ -n "$DISTROBOX" ]; then
@@ -73,7 +73,7 @@ cargo_in_distrobox() {
 }
 
 # Root the on-host scratch dir here so subsequent runs are cheap.
-SCRATCH="${QOS_TEST_SCRATCH:-$REPO/.claude/test-scratch/flatpak-share}"
+SCRATCH="${TILO_TEST_SCRATCH:-$REPO/.claude/test-scratch/flatpak-share}"
 FF_LIBS="$SCRATCH/ff-libs"
 NV_LIBS="$SCRATCH/nvidia-libs"
 
@@ -114,7 +114,7 @@ stage_host_libs() {
     # ffmpeg libs from distrobox — the host's `ffmpeg-free` (Fedora
     # default) usually lacks NVENC linkage, so we prefer the container's.
     if [ -z "$DISTROBOX" ]; then
-        echo "QOS_DISTROBOX is required to stage codec libraries" >&2
+        echo "TILO_DISTROBOX is required to stage codec libraries" >&2
         return 1
     fi
     distrobox enter "$DISTROBOX" -- bash -c "

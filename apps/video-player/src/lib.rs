@@ -1,4 +1,4 @@
-//! A local video player for qOS, built on the shared [`media`] streaming layer
+//! A local video player for Tilo, built on the shared [`media`] streaming layer
 //! and the reusable [`ui::widget::VideoPlayer`] widget.
 //!
 //! The binary is a thin entry point ([`crate`]'s `main`); all logic lives here.
@@ -64,11 +64,11 @@ pub fn app_root_source(open: Option<media::Source>, title: Option<String>) -> Bo
 }
 
 fn media_handoff_transport_env() -> Option<(u64, bool)> {
-    let position = std::env::var("QOS_MEDIA_HANDOFF_POSITION_MS")
+    let position = std::env::var("TILO_MEDIA_HANDOFF_POSITION_MS")
         .ok()?
         .parse()
         .ok()?;
-    let resume = std::env::var("QOS_MEDIA_HANDOFF_RESUME_PLAYING")
+    let resume = std::env::var("TILO_MEDIA_HANDOFF_RESUME_PLAYING")
         .ok()
         .is_some_and(|value| value == "1");
     Some((position, resume))

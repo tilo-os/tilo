@@ -516,7 +516,7 @@ fn overview_header_font_size_is_at_least_32px() {
     use shell::shell::state::WorkspaceTree;
     use ui::theme::Theme;
     let tree = WorkspaceTree::bootstrap_demo();
-    let (host, _chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
+    let (host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
     let theme = Theme::dark();
     let size = host.overview_header_font_size(&theme);
     assert!(

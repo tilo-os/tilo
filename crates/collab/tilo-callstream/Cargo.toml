@@ -1,0 +1,23 @@
+[package]
+name = "tilo-callstream"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Tilo reusable video-streaming stack: H.264 encode/decode, per-subscriber frame transport substrate, and the throttled screen/camera share composition shared by the compositor's collab surface streaming and the chat call app."
+
+[lib]
+name = "tilo_callstream"
+path = "src/lib.rs"
+
+[dependencies]
+# Same software H.264 codec (bundled source, no system lib) the compositor's
+# collab surface encoder and the chat call app already resolve — pinning the
+# identical version keeps a single copy in the workspace lock.
+openh264 = { version = "0.9", features = ["source"] }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0.18"
+tracing = "0.1"
+
+[lints]
+workspace = true

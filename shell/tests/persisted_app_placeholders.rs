@@ -17,7 +17,7 @@
 use shell::shell::state::{
     AppKind, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceTree,
 };
-use shell::shell::{build_nirios_root, resolve_tile_shape_for_test};
+use shell::shell::{build_tilo_root, resolve_tile_shape_for_test};
 use std::collections::HashMap;
 
 /// A single-workspace tree whose sole window-group holds one
@@ -95,10 +95,10 @@ fn file_explorer_placeholder_resolves_to_live_app_tile() {
 }
 
 #[test]
-fn build_nirios_root_accepts_terminal_and_files_placeholders() {
+fn build_tilo_root_accepts_terminal_and_files_placeholders() {
     // The full root-build path must not panic on persisted placeholders.
     let term_tree = tree_with_single_placeholder(AppKind::Terminal, "Terminal");
-    let _ = build_nirios_root(&term_tree);
+    let _ = build_tilo_root(&term_tree);
     let files_tree = tree_with_single_placeholder(AppKind::FileExplorer, "Files");
-    let _ = build_nirios_root(&files_tree);
+    let _ = build_tilo_root(&files_tree);
 }

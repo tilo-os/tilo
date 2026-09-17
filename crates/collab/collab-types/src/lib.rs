@@ -1,4 +1,4 @@
-//! `collab-types` — the cryptographic foundation for qOS Spaces,
+//! `collab-types` — the cryptographic foundation for Tilo Spaces,
 //! Channels, and role-based access control.
 //!
 //! Self-contained: pure types, pure functions, no I/O, no async runtime,

@@ -18,9 +18,9 @@
 //! (roles/names/values/state, collapsing presentational widgets like the
 //! AccessKit bridge does) contributes generic verbs (focus, activate, …);
 //! the app's [`resources()`](crate::widget::Widget::resources) forest from
-//! the qOS [action model](qos_actions) contributes
+//! the Tilo [action model](tilo_actions) contributes
 //! [`SemanticActionKind::App`] affordances carrying the exact
-//! [`EncodedAction`](qos_actions::EncodedAction) a real click would send —
+//! [`EncodedAction`](tilo_actions::EncodedAction) a real click would send —
 //! so invoking one by name drives the same replayable action through the
 //! one audited dispatch path, letting an assistive client operate the tree,
 //! not just read it.
@@ -39,14 +39,14 @@ use crate::widget::Widget;
 
 type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
 type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
-use qos_actions::{ActionInput, ActionSpec, Collects, EncodedAction, OperationKind, Resource};
 use serde::{Deserialize, Serialize};
+use tilo_actions::{ActionInput, ActionSpec, Collects, EncodedAction, OperationKind, Resource};
 
 /// Operation type used when the retained semantic tree projects an ordinary
 /// UI affordance into the resource/action catalogue. This makes the same
 /// control addressable from Ctrl+K, the automation socket, and agents without
 /// inventing an app-specific command bus.
-pub(crate) const SEMANTIC_OPERATION_TYPE: &str = "qos.ui.semantic-action";
+pub(crate) const SEMANTIC_OPERATION_TYPE: &str = "tilo.ui.semantic-action";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct SemanticOperation {
@@ -66,7 +66,7 @@ pub(crate) struct SemanticOperation {
 /// * `"<parent>~<index>"` — a synthetic a11y child (a table row/cell) with no
 ///   widget of its own, keyed by its position under its parent.
 /// * `"r:<resource_id>"` — a resource from the app's action model, keyed by its
-///   already-stable [`ResourceId`](qos_actions::ResourceId).
+///   already-stable [`ResourceId`](tilo_actions::ResourceId).
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct SemanticId(pub String);
 
@@ -101,7 +101,7 @@ pub enum SemanticActionKind {
     /// `App`'s generic focus/click fallback, exactly like an AccessKit
     /// `ActionRequest`.
     Verb(Action),
-    /// An app action from the qOS [action model](qos_actions), ready to fire.
+    /// An app action from the Tilo [action model](tilo_actions), ready to fire.
     /// `encoded` is the byte-identical [`EncodedAction`] the on-screen affordance
     /// and the Ctrl+K palette dispatch — invoking it replays the *same* action.
     App(EncodedAction),
@@ -228,7 +228,7 @@ impl SemanticTree {
                 id: root.clone(),
                 durable_identity: true,
                 role: Role::Window,
-                name: Some("qOS application window".into()),
+                name: Some("Tilo application window".into()),
                 value: None,
                 state: AccessState::default(),
                 bounds: None,
@@ -255,7 +255,7 @@ impl SemanticTree {
     /// into each node's [`AccessState::focused`]. `resources` is the focused
     /// app's open-resource forest
     /// ([`Widget::resources`](crate::widget::Widget::resources)); each
-    /// exported [`ActionSpec`](qos_actions::ActionSpec) becomes an invokable
+    /// exported [`ActionSpec`](tilo_actions::ActionSpec) becomes an invokable
     /// affordance.
     pub fn refresh(
         &mut self,
@@ -303,7 +303,7 @@ impl SemanticTree {
                 id: root_id.clone(),
                 durable_identity: true,
                 role: Role::Window,
-                name: Some("qOS application window".into()),
+                name: Some("Tilo application window".into()),
                 value: None,
                 state: AccessState::default(),
                 bounds: None,
@@ -426,7 +426,7 @@ impl SemanticTree {
     }
 
     /// Project every currently operable accessibility node into the canonical
-    /// qOS resource/action surface. Bespoke app actions remain preferable for
+    /// Tilo resource/action surface. Bespoke app actions remain preferable for
     /// domain operations; this projection closes the driveability gap for
     /// ordinary controls such as buttons, fields, tabs, toggles, and sliders.
     pub(crate) fn action_resources(&self) -> Vec<Resource> {
@@ -459,7 +459,7 @@ impl SemanticTree {
                     .clone()
                     .unwrap_or_else(|| format!("{:?}", node.role));
                 let mut resource =
-                    Resource::new(format!("ui:{}", node.id.as_str()), "qos.ui.control", label);
+                    Resource::new(format!("ui:{}", node.id.as_str()), "tilo.ui.control", label);
                 for (action, verb) in verbs {
                     let operation = SemanticOperation {
                         node: node.id.0.clone(),

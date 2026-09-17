@@ -22,22 +22,22 @@ use std::path::Path;
 /// before parsing.
 pub const SAMPLE_APP_MANIFEST_TEMPLATE: &str = r#"
 [package]
-id          = "dev.qos.editor"
+id          = "dev.tilo.editor"
 version     = "1.4.2"
 kind        = "app"
-runtime     = "qos-runtime/2025.06"
+runtime     = "tilo-runtime/2025.06"
 
 [publisher]
 identity    = "ed25519:<HEX>"
 signature   = ""
 
 [[trust.attested_by]]
-attestor    = "qos-curated/2025.06"
+attestor    = "tilo-curated/2025.06"
 claim       = "deadbeef"
 
 [sandbox]
 namespaces  = ["user", "pid", "uts", "ipc", "mount", "net"]
-seccomp     = "qos-default"
+seccomp     = "tilo-default"
 landlock    = "strict"
 
 [sandbox.net]
@@ -48,7 +48,7 @@ file-chooser = "via-host"
 
 [sandbox.services]
 collab      = "required@1"
-qos-fs      = "required@1"
+tilo-fs      = "required@1"
 spellcheck  = "optional@1"
 
 [entrypoint]
@@ -66,7 +66,7 @@ ext  = ["odt"]
 /// command on PATH.
 pub const CLI_APP_MANIFEST_TEMPLATE: &str = r#"
 [package]
-id          = "dev.qos.notes-cli"
+id          = "dev.tilo.notes-cli"
 version     = "0.1.0"
 kind        = "app"
 
@@ -76,7 +76,7 @@ signature   = ""
 
 [sandbox]
 namespaces  = ["user", "pid", "uts", "ipc", "mount", "net"]
-seccomp     = "qos-default"
+seccomp     = "tilo-default"
 landlock    = "strict"
 
 [sandbox.net]
@@ -94,7 +94,7 @@ commands = ["notes"]
 /// `cli-bin` under the payload.
 pub const BOTH_APP_MANIFEST_TEMPLATE: &str = r#"
 [package]
-id          = "dev.qos.notes"
+id          = "dev.tilo.notes"
 version     = "0.2.0"
 kind        = "app"
 
@@ -104,7 +104,7 @@ signature   = ""
 
 [sandbox]
 namespaces  = ["user", "pid", "uts", "ipc", "mount", "net"]
-seccomp     = "qos-default"
+seccomp     = "tilo-default"
 landlock    = "strict"
 
 [sandbox.net]

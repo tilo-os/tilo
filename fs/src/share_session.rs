@@ -11,8 +11,8 @@ use collab_types::{
     BearerFileInvite, Ed25519PublicKey, FileActor, FileInviteSubject, FileInviteV1, FilePermission,
     FileRecordId,
 };
-use qos_user_identity::verify_device_cert_at;
 use thiserror::Error;
+use tilo_user_identity::verify_device_cert_at;
 use uuid::Uuid;
 
 use crate::peer_auth::AuthenticatedFsPeer;
@@ -313,8 +313,8 @@ mod tests {
 
     use collab_types::{FileInviteSpec, mint_bearer_file_invite, mint_file_invite};
     use ed25519_dalek::SigningKey;
-    use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     use rand::rngs::OsRng;
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
     use super::*;
 

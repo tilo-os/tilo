@@ -7,7 +7,7 @@
 //! and "first painted page".
 //!
 //! Run: `cargo run -p pdf_viewer --example open_profile -- <FILE.pdf> [WxH]`
-//! Set `QOS_PDF_PROFILE=1` for the intra-`source::open` breakdown.
+//! Set `TILO_PDF_PROFILE=1` for the intra-`source::open` breakdown.
 
 use std::collections::HashMap;
 use std::time::Instant;

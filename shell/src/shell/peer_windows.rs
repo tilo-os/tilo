@@ -268,7 +268,7 @@ mod tests {
         WindowWidth, Workspace, WorkspaceId, WorkspaceTree, next_id,
     };
 
-    const APP: &str = "dev.qos.word-processor";
+    const APP: &str = "dev.tilo.word-processor";
 
     fn room_owned_by(owner: &str) -> Workspace {
         let mut ws = Workspace::test_default(WorkspaceId::from(next_id()), "shared");
@@ -276,7 +276,7 @@ mod tests {
         ws
     }
 
-    const FILES: &str = "dev.qos.file-explorer";
+    const FILES: &str = "dev.tilo.file-explorer";
 
     fn tree_with_peer_window(ws: Workspace) -> (WorkspaceTree, u64) {
         tree_with_peer_window_for(ws, APP)
@@ -411,7 +411,7 @@ mod tests {
              found, or the launch opens a second one beside it"
         );
         assert!(
-            opened_for_the_room(&ws, "dev.qos.terminal", 0).is_none(),
+            opened_for_the_room(&ws, "dev.tilo.terminal", 0).is_none(),
             "a different app is not this one"
         );
     }
@@ -423,7 +423,7 @@ mod tests {
             id: next_id(),
             title: "Terminal".into(),
             tile: TileContent::Foreign {
-                app_id: "dev.qos.terminal".into(),
+                app_id: "dev.tilo.terminal".into(),
                 surface_id: 99,
             },
         };
@@ -441,7 +441,7 @@ mod tests {
 
         let salt = crate::shell::state::peer_salt_of(tab_id);
         assert!(
-            opened_for_the_room(&ws, "dev.qos.terminal", salt).is_none(),
+            opened_for_the_room(&ws, "dev.tilo.terminal", salt).is_none(),
             "a second terminal is an ordinary thing to want; a window this person \
              opened must not swallow the next launch of the same app"
         );
@@ -494,7 +494,7 @@ mod tests {
         );
         // The restriction is about this app, not about the room: another
         // app in the same room is still admitted.
-        assert_eq!(admits(&ws, "dev.qos.terminal"), Ok(()));
+        assert_eq!(admits(&ws, "dev.tilo.terminal"), Ok(()));
     }
 
     #[test]

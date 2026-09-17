@@ -1,4 +1,4 @@
-//! Shared chrome state for the nirios shell root.
+//! Shared chrome state for the tilo shell root.
 //!
 //! Chrome widgets sit at sibling positions in the widget tree and mutate
 //! the same fields, so this packages that state into one
@@ -310,7 +310,7 @@ impl Default for QuickSettingsState {
             bluetooth_available: false,
             wired: None,
             battery: os_actions::BatteryInfo::from_root(std::path::Path::new(
-                "/nonexistent/qos-power-supply",
+                "/nonexistent/tilo-power-supply",
             )),
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
@@ -1978,7 +1978,7 @@ mod active_tab_tests {
         let grants = ws.app_grants_snapshot();
         drop(guard);
         assert!(
-            grants.contains_key("org.nirios.Editor"),
+            grants.contains_key("org.tilo.Editor"),
             "built-in Editor must be keyed by its canonical app-id; \
              grants = {grants:?}"
         );

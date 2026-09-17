@@ -1030,7 +1030,7 @@ mod tests {
     use super::*;
     use crate::actions::PhotosAction;
     use crate::model::Rect01;
-    use qos_actions::Action;
+    use tilo_actions::Action;
 
     #[test]
     fn a_seeded_document_has_no_image_open() {
@@ -1500,7 +1500,7 @@ mod tests {
         {
             // Somebody with a picture open, and part-way through editing it.
             let mut has_picture = replica(open_actor);
-            let img = OpenImage::from_path("/var/tmp/qos/workspace/harbour.png", 800, 600);
+            let img = OpenImage::from_path("/var/tmp/tilo/workspace/harbour.png", 800, 600);
             PhotosDoc::set_image(&mut has_picture, Some(&img));
             PhotosDoc::set_edits(&mut has_picture, &Edits::default().rotated_right());
 
@@ -1571,7 +1571,7 @@ mod tests {
     #[test]
     fn a_participant_who_closes_the_photograph_closes_it_everywhere() {
         let mut here = replica(1);
-        let img = OpenImage::from_path("/var/tmp/qos/workspace/harbour.png", 800, 600);
+        let img = OpenImage::from_path("/var/tmp/tilo/workspace/harbour.png", 800, 600);
         PhotosDoc::set_image(&mut here, Some(&img));
         PhotosDoc::set_edits(&mut here, &Edits::default().rotated_right());
 
@@ -1601,7 +1601,7 @@ mod tests {
     fn the_document_never_carries_the_pixels() {
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
-        let img = OpenImage::from_path("/var/tmp/qos/home/quinten/harbour.png", 4000, 3000);
+        let img = OpenImage::from_path("/var/tmp/tilo/home/quinten/harbour.png", 4000, 3000);
         PhotosDoc::set_image(&mut doc, Some(&img));
         PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
         let saved = doc.save().len();

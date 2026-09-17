@@ -962,12 +962,12 @@ async fn signed_fuse_replacement_is_transactional_and_preserves_open_handles() {
     .expect("signed real-FUSE replacement test timed out");
 }
 
-/// Read the `user.qos.sync` extended attribute of `path` through the
+/// Read the `user.tilo.sync` extended attribute of `path` through the
 /// kernel (the exact `getxattr` a file manager issues), or `None`.
 fn read_sync_xattr(path: &std::path::Path) -> Option<String> {
     use std::os::unix::ffi::OsStrExt;
     let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
-    let name = std::ffi::CString::new("user.qos.sync").unwrap();
+    let name = std::ffi::CString::new("user.tilo.sync").unwrap();
     let mut buf = [0u8; 64];
     let n = unsafe {
         libc::getxattr(

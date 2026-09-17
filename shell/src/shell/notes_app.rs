@@ -1256,8 +1256,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn ctrl_c_then_ctrl_v_round_trips_through_arboard() {
         // Skip without a usable arboard backend (CI, no display).
-        clipboard_copy("__qos_clip_probe__");
-        if clipboard_paste().as_deref() != Some("__qos_clip_probe__") {
+        clipboard_copy("__tilo_clip_probe__");
+        if clipboard_paste().as_deref() != Some("__tilo_clip_probe__") {
             eprintln!("clipboard backend unavailable; skipping round-trip test");
             return;
         }

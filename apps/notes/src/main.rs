@@ -1,7 +1,7 @@
 //! Thin binary entry point. All logic lives in the library.
 //!
 //! Collaboration: launched from the shell, the compositor's broker is
-//! reached through the `QOS_SVC_COLLAB_FD` descriptor the launcher injects —
+//! reached through the `TILO_SVC_COLLAB_FD` descriptor the launcher injects —
 //! nothing to configure. A raw process outside a session has no collaboration
 //! service; the descriptor is inherited rather than discovered by path.
 
@@ -69,7 +69,7 @@ const SHOT_SCENARIOS: &[&str] = &[
 /// to spawn against its workspace.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.qos.notes", live_root)
+        &LaunchSpec::new_with_args("dev.tilo.notes", live_root)
             .open_state_with_args(open_state)
             .shot_handler(render_shot)
             .scenarios(SHOT_SCENARIOS)

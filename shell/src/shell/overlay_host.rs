@@ -1,7 +1,7 @@
 //! Shell overlay host — wraps the root content widget and draws modal
 //! overlays (command palette, overview, quick settings) on top.
 //!
-//! `build_nirios_root` returns this widget so the shell has exactly one
+//! `build_tilo_root` returns this widget so the shell has exactly one
 //! place to route global keyboard events and one place to render the
 //! overlay stack. Overlays own their own state; the host gates their
 //! visibility and paints the scrim.
@@ -245,7 +245,7 @@ mod device_fabric_ui_tests {
                     local_can_control: false,
                 }],
                 local_media: vec![FabricMediaView {
-                    session_id: "dev.qos.video:7".into(),
+                    session_id: "dev.tilo.video:7".into(),
                     title: "Shared film".into(),
                     playing: true,
                     has_video: true,
@@ -294,7 +294,7 @@ mod device_fabric_ui_tests {
         let actions = actions.borrow();
         assert!(actions.contains(&DeviceFabricUiAction::RouteLocalAudio { node_id: 41 }));
         assert!(actions.contains(&DeviceFabricUiAction::HandoffMedia {
-            session_id: "dev.qos.video:7".into(),
+            session_id: "dev.tilo.video:7".into(),
             target: remote,
         }));
         assert!(actions.contains(&DeviceFabricUiAction::Place {
@@ -1375,7 +1375,7 @@ pub struct ShellOverlayHost {
     /// Portal session-operation inhibitors shared with the backend serving
     /// `org.freedesktop.portal.Inhibit`. A logout/user switch must consult
     /// this exact registry before any irreversible OS action is spawned.
-    session_inhibitors: qos_power_mgmt::InhibitRegistry,
+    session_inhibitors: tilo_power_mgmt::InhibitRegistry,
     /// Ribbon segment under the pointer, if any. Paint-only.
     strip_ribbon_hover: Option<usize>,
     /// Same as [`Self::strip_ribbon_hover`] for the strip rail.
@@ -1643,7 +1643,7 @@ fn icon_for_kind(kind: &crate::shell::search::ResourceKind) -> ui::icons::Icon {
         K::Action => Icon::Settings2,
         K::Application => Icon::LayoutGrid,
         // Deliberately *not* the applications glyph. A host app is not
-        // one of qOS's — it runs unconfined, outside everything the
+        // one of Tilo's — it runs unconfined, outside everything the
         // grid stands for — and the row has to look different at a
         // glance, not only read differently.
         K::HostApplication => Icon::ExternalLink,
@@ -2472,7 +2472,7 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ApplicationsProvider::new(),
         ));
-        // Applications qOS did not package: unconfined, separate chip
+        // Applications Tilo did not package: unconfined, separate chip
         // from the one above.
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::HostApplicationsProvider::new(),
@@ -2564,7 +2564,7 @@ impl ShellOverlayHost {
             qs_device_fabric_wheel_remainder: 0.0,
             qs_selected_media: None,
             power_menu: PowerMenu::default(),
-            session_inhibitors: qos_power_mgmt::InhibitRegistry::new(),
+            session_inhibitors: tilo_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
             strip_rail_hover: None,
             qs_refresh: crate::shell::qs_refresh::QsRefresh::new(),
@@ -2664,7 +2664,7 @@ impl ShellOverlayHost {
         self.onboarding_focus_reset = false;
     }
 
-    /// Activate the identity-only OOBE for a qOS session installed on an
+    /// Activate the identity-only OOBE for a Tilo session installed on an
     /// existing Linux host. It retains the trusted chrome boundary and the
     /// identity/backup gates of full-system onboarding.
     pub fn enable_host_desktop_onboarding(&mut self, identity_dir: std::path::PathBuf) {
@@ -3298,7 +3298,7 @@ impl ShellOverlayHost {
                 Ok(owner) => Some(owner),
                 Err(error) => {
                     tracing::warn!(
-                        target: "qos::audio_policy",
+                        target: "tilo::audio_policy",
                         %error,
                         "failed to spawn the session audio policy worker"
                     );
@@ -3453,7 +3453,7 @@ impl ShellOverlayHost {
 
     /// Attach the registry exported by this compositor's portal backend.
     /// Headless and screenshot hosts keep an empty private registry.
-    pub fn set_session_inhibitors(&mut self, registry: qos_power_mgmt::InhibitRegistry) {
+    pub fn set_session_inhibitors(&mut self, registry: tilo_power_mgmt::InhibitRegistry) {
         self.session_inhibitors = registry;
     }
 
@@ -3794,7 +3794,7 @@ impl ShellOverlayHost {
     ///
     /// SAFETY: every pointer in `ptrs` must address a `GroupRow` owned by
     /// the content subtree this host wraps. The caller (currently
-    /// [`build_nirios_overlay_host_with_chrome`]) is responsible for
+    /// [`build_tilo_overlay_host_with_chrome`]) is responsible for
     /// upholding that invariant by capturing the pointer immediately after
     /// `Box::new(strip_row)` and passing the same `Box` into the content
     /// tree — the `Box<T>` -> `Box<dyn Widget>` unsizing coercion keeps
@@ -6386,7 +6386,7 @@ impl ShellOverlayHost {
         error: &crate::shell::search::action_api::ActionError,
     ) {
         tracing::error!(
-            target: "qos::app_launch",
+            target: "tilo::app_launch",
             display_name,
             detail = %error,
             "launchpad application action was refused"
@@ -6589,7 +6589,7 @@ impl ShellOverlayHost {
     }
 
     /// Live app surfaces offered by the capture studio. The full virtual rect
-    /// is retained even when qOS's continuous strip has moved most of the app
+    /// is retained even when Tilo's continuous strip has moved most of the app
     /// past this monitor; only `visible_rect` is clipped to the output.
     fn capture_targets(&self) -> Vec<ui::widget::CaptureTarget> {
         let viewport = self.get_rect();
@@ -8235,7 +8235,7 @@ impl ShellOverlayHost {
             self.status_narrative_request = Some(request.clone());
             self.install_inferred_status(
                 request.deterministic_text.clone(),
-                "qos-deterministic".into(),
+                "tilo-deterministic".into(),
             );
             self.status_narrator.request_status(&request);
         }
@@ -8970,7 +8970,7 @@ impl ShellOverlayHost {
             // fixed-height top-right card gets the same short recovery copy
             // used by palette launches.
             tracing::error!(
-                target: "qos::app_launch",
+                target: "tilo::app_launch",
                 app_id,
                 label = %target.label,
                 detail = %error,
@@ -9699,7 +9699,7 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // Alt+F4 is the stable Linux close gesture. qOS owns the frame and
+        // Alt+F4 is the stable Linux close gesture. Tilo owns the frame and
         // its durable tab/group state, so forwarding this to the client would
         // let toolkits disagree about whether the window actually closed.
         if mstate.alt_key()
@@ -10722,14 +10722,14 @@ impl ShellOverlayHost {
             PowerMenuClick::Consumed => true,
             PowerMenuClick::Lock => {
                 // Do not delegate this to logind: its lock-session request
-                // cannot establish qOS's lock scene or revoke our clients'
+                // cannot establish Tilo's lock scene or revoke our clients'
                 // focus/input.  The native loop drains this edge through its
                 // compositor-owned SessionManager instead.
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().request_session_lock();
                 } else {
                     tracing::error!(
-                        target: "qos::power",
+                        target: "tilo::power",
                         "power-menu Lock requested without compositor chrome state"
                     );
                 }
@@ -10738,10 +10738,10 @@ impl ShellOverlayHost {
             PowerMenuClick::Execute(action) => {
                 let inhibit_scope = match action {
                     os_actions::SessionAction::Logout => {
-                        Some(qos_power_mgmt::inhibit::INHIBIT_LOGOUT)
+                        Some(tilo_power_mgmt::inhibit::INHIBIT_LOGOUT)
                     }
                     os_actions::SessionAction::SwitchUser => {
-                        Some(qos_power_mgmt::inhibit::INHIBIT_USER_SWITCH)
+                        Some(tilo_power_mgmt::inhibit::INHIBIT_USER_SWITCH)
                     }
                     _ => None,
                 };
@@ -11474,7 +11474,7 @@ impl ShellOverlayHost {
         }
 
         // Edit mode shares the same keyboard contract as every reorderable
-        // qOS list: Ctrl+Up/Down moves the focused control, while ordinary
+        // Tilo list: Ctrl+Up/Down moves the focused control, while ordinary
         // arrows retain their range-adjustment meaning outside edit mode.
         if control_down
             && matches!(
@@ -11639,7 +11639,7 @@ impl ShellOverlayHost {
                 }
                 let _ = crate::shell::search::providers::applications::launch_installed_app(
                     chrome,
-                    "dev.qos.settings",
+                    "dev.tilo.settings",
                     "Settings",
                 );
                 // A missing Settings package is already reported by the
@@ -13452,7 +13452,7 @@ impl Widget for ShellOverlayHost {
         {
             return;
         }
-        // qOS-reserved shell chords above always win.  All remaining pressed
+        // Tilo-reserved shell chords above always win.  All remaining pressed
         // physical keys are offered to the portal registry, which can only
         // match an accelerator installed after a reviewed, authenticated
         // GlobalShortcuts grant. A match consumes the key before app content.
@@ -13526,7 +13526,7 @@ impl Widget for ShellOverlayHost {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
-        let mut root = AccessNode::new(Role::Group).with_name("qOS workspace");
+        let mut root = AccessNode::new(Role::Group).with_name("Tilo workspace");
         for overlay in self.accessible_overlay_order() {
             match overlay {
                 AccessibleOverlay::CommandPalette => {
@@ -13874,7 +13874,7 @@ impl Widget for ShellOverlayHost {
                                 AccessNode::new(Role::Dialog)
                                     .with_name("Devices and media")
                                     .with_description(
-                                        "Local audio outputs and identity-certified qOS devices. Remote handoffs are direct and encrypted when reachable. Use Up and Down, Page Up and Page Down, Home, or End to move through every destination.",
+                                        "Local audio outputs and identity-certified Tilo devices. Remote handoffs are direct and encrypted when reachable. Use Up and Down, Page Up and Page Down, Home, or End to move through every destination.",
                                     )
                                     .with_state(AccessState::new().modal(true))
                                     .with_children(vec![
@@ -17414,7 +17414,7 @@ impl ShellOverlayHost {
         };
         // Scope by the workspace's room, not local `WorkspaceId` — the room
         // is the durable identity apps address collaboration to (stamped in
-        // as `QOS_WORKSPACE_ID`); the local id differs per machine.
+        // as `TILO_WORKSPACE_ID`); the local id differs per machine.
         let room = {
             let chrome = chrome_rc.borrow();
             let tree = chrome.tree();
@@ -18952,7 +18952,7 @@ impl ShellOverlayHost {
                 );
             }
             Err(e) => {
-                tracing::warn!(target: "qos::os_actions", op = "connect_wifi", error = %e, "wifi join failed");
+                tracing::warn!(target: "tilo::os_actions", op = "connect_wifi", error = %e, "wifi join failed");
                 if let Some(p) = st.quick_settings.wifi_password.as_mut() {
                     p.connecting = false;
                     // Kept (not cleared) and selected, so a typo is a
@@ -19005,7 +19005,7 @@ impl ShellOverlayHost {
                 );
             }
             Err(error) => {
-                tracing::warn!(target: "qos::os_actions", op = "connect_wifi", error = %error, "shared wifi credential was rejected");
+                tracing::warn!(target: "tilo::os_actions", op = "connect_wifi", error = %error, "shared wifi credential was rejected");
                 if let Some(prompt) = state.quick_settings.wifi_password.as_mut() {
                     prompt.connecting = false;
                     prompt.error = Some(
@@ -19346,7 +19346,7 @@ fn quick_settings_settled_bounds(rect: Rect, theme: &Theme, transform: Affine) -
 #[cfg(test)]
 mod empty_workspace_tests {
     use super::*;
-    use crate::shell::build_nirios_overlay_host_with_chrome;
+    use crate::shell::build_tilo_overlay_host_with_chrome;
     use crate::shell::state::WorkspaceTree;
     use taffy::AvailableSpace;
 
@@ -19395,7 +19395,7 @@ mod empty_workspace_tests {
     #[test]
     fn bootstrap_default_exposes_accessible_collaboration_choices() {
         let tree = WorkspaceTree::bootstrap_default();
-        let (mut host, _) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, _) = build_tilo_overlay_host_with_chrome(&tree);
         lay_out(&mut host, 1600.0, 900.0);
         assert_eq!(
             launchpad_labels(host.content.as_ref()).expect("launchpad is mounted"),
@@ -19419,7 +19419,7 @@ mod empty_workspace_tests {
     #[test]
     fn catch_up_card_opens_room_activity_and_consumes_its_signal() {
         let tree = WorkspaceTree::bootstrap_default();
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let _ = doc.put(&root, crate::shell::EMPTY_WORKSPACE_ACTIVITY, true);
@@ -19437,7 +19437,7 @@ mod empty_workspace_tests {
     #[test]
     fn invite_card_opens_the_existing_signed_invite_composer() {
         let tree = WorkspaceTree::bootstrap_default();
-        let (mut host, _) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, _) = build_tilo_overlay_host_with_chrome(&tree);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let _ = doc.put(&root, crate::shell::EMPTY_WORKSPACE_INVITE, true);
@@ -20412,12 +20412,12 @@ mod palette_dispatch_tests {
     #[test]
     fn logout_and_switch_user_respect_their_portal_inhibitors() {
         let (mut host, chrome) = host_with_chrome();
-        let registry = qos_power_mgmt::InhibitRegistry::new();
+        let registry = tilo_power_mgmt::InhibitRegistry::new();
         host.set_session_inhibitors(registry.clone());
 
         let _logout_hold = registry.acquire_for(
             "Editor has an unsaved document",
-            qos_power_mgmt::inhibit::INHIBIT_LOGOUT,
+            tilo_power_mgmt::inhibit::INHIBIT_LOGOUT,
         );
         assert!(
             host.apply_power_menu_outcome(PowerMenuClick::Execute(
@@ -20433,7 +20433,7 @@ mod palette_dispatch_tests {
 
         let _switch_hold = registry.acquire_for(
             "Call is sharing the screen",
-            qos_power_mgmt::inhibit::INHIBIT_USER_SWITCH,
+            tilo_power_mgmt::inhibit::INHIBIT_USER_SWITCH,
         );
         assert!(host.apply_power_menu_outcome(PowerMenuClick::Execute(
             os_actions::SessionAction::SwitchUser
@@ -20449,12 +20449,12 @@ mod palette_dispatch_tests {
     #[test]
     fn logout_inhibitor_does_not_cross_block_switch_user() {
         let (mut host, chrome) = host_with_chrome();
-        let registry = qos_power_mgmt::InhibitRegistry::new();
+        let registry = tilo_power_mgmt::InhibitRegistry::new();
         host.set_session_inhibitors(registry.clone());
         let _logout_hold =
-            registry.acquire_for("Unsaved work", qos_power_mgmt::inhibit::INHIBIT_LOGOUT);
+            registry.acquire_for("Unsaved work", tilo_power_mgmt::inhibit::INHIBIT_LOGOUT);
 
-        assert!(!registry.is_inhibited_for(qos_power_mgmt::inhibit::INHIBIT_USER_SWITCH));
+        assert!(!registry.is_inhibited_for(tilo_power_mgmt::inhibit::INHIBIT_USER_SWITCH));
         // Do not apply SwitchUser here: an uninhibited action deliberately
         // reaches the real narrow OS wrapper. The registry assertion proves
         // the scope separation without invoking a host session action.
@@ -20478,7 +20478,7 @@ mod palette_dispatch_tests {
     #[serial_test::serial(launch_events)]
     fn clean_launch_exit_retires_its_pending_open_notice() {
         let (mut host, chrome) = host_with_chrome();
-        let package_id = "dev.qos.exit-before-window-fixture";
+        let package_id = "dev.tilo.exit-before-window-fixture";
         crate::shell::launcher::set_pending_placement(
             package_id,
             crate::compositor::tab_binding::Placement::NewGroup,
@@ -20529,7 +20529,7 @@ mod palette_dispatch_tests {
             "The app launcher is unavailable. Open Applications and try again.",
         );
         let raw_error = crate::shell::search::action_api::ActionError::Refused(
-            "spawn failed: /run/user/1000/qos\nbackend detail".to_string(),
+            "spawn failed: /run/user/1000/tilo\nbackend detail".to_string(),
         );
 
         ShellOverlayHost::report_launchpad_action_failure("Notes", &raw_error);
@@ -20986,7 +20986,7 @@ mod palette_dispatch_tests {
     #[serial_test::serial(process_env)]
     fn quick_settings_settings_opens_personal_settings_app_not_workspace_settings() {
         let tmp = tempfile::tempdir().unwrap();
-        install_gui_fixture(tmp.path(), "dev.qos.settings", "Settings");
+        install_gui_fixture(tmp.path(), "dev.tilo.settings", "Settings");
         let launcher = tmp.path().join("record-launch.sh");
         let launch_log = tmp.path().join("launch.log");
         std::fs::write(
@@ -21004,8 +21004,8 @@ mod palette_dispatch_tests {
 
         // SAFETY: process-wide launcher overrides are serialized by `process_env`.
         unsafe {
-            std::env::set_var("QOS_APPS_DATA_DIR", tmp.path());
-            std::env::set_var("QOS_LAUNCHER_BIN", &launcher);
+            std::env::set_var("TILO_APPS_DATA_DIR", tmp.path());
+            std::env::set_var("TILO_LAUNCHER_BIN", &launcher);
         }
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
@@ -21028,14 +21028,14 @@ mod palette_dispatch_tests {
         drop(state);
         let log = std::fs::read_to_string(&launch_log).expect("Settings launch was recorded");
         assert!(
-            log.contains("dev.qos.settings"),
+            log.contains("dev.tilo.settings"),
             "the ordinary app launcher must receive Personal Settings: {log:?}"
         );
 
         // SAFETY: restore process-wide overrides before releasing the serial test lock.
         unsafe {
-            std::env::remove_var("QOS_APPS_DATA_DIR");
-            std::env::remove_var("QOS_LAUNCHER_BIN");
+            std::env::remove_var("TILO_APPS_DATA_DIR");
+            std::env::remove_var("TILO_LAUNCHER_BIN");
         }
         crate::shell::launcher::set_wayland_socket_path(None);
         crate::shell::launcher::invalidate_app_cache();
@@ -21051,7 +21051,7 @@ mod palette_dispatch_tests {
         // lifetime for that error.
         // SAFETY: process-wide launcher overrides are serialized by `process_env`.
         unsafe {
-            std::env::set_var("QOS_APPS_DATA_DIR", tmp.path());
+            std::env::set_var("TILO_APPS_DATA_DIR", tmp.path());
         }
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
@@ -21077,7 +21077,7 @@ mod palette_dispatch_tests {
 
         // SAFETY: restore the process-wide override before releasing the serial lock.
         unsafe {
-            std::env::remove_var("QOS_APPS_DATA_DIR");
+            std::env::remove_var("TILO_APPS_DATA_DIR");
         }
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
@@ -21253,7 +21253,7 @@ mod palette_dispatch_tests {
                 Ok(PeerSyncResponse::Message("token-for-nobody".to_string()))
             }
             PeerSyncRequest::ExportIdentity => Ok(PeerSyncResponse::Message(format!(
-                "qos-identity:{}",
+                "tilo-identity:{}",
                 "42".repeat(32)
             ))),
             PeerSyncRequest::AcceptInvite(_) => Err("not here".to_string()),
@@ -21524,7 +21524,7 @@ mod palette_dispatch_tests {
                 "Loading…",
             ))
         };
-        crate::shell::catalogue::note_pending_notice("dev.qos.retirefixture", notice);
+        crate::shell::catalogue::note_pending_notice("dev.tilo.retirefixture", notice);
 
         assert!(
             !h.retire_notices_for_opened_windows(),
@@ -21550,7 +21550,7 @@ mod palette_dispatch_tests {
             crate::compositor::tab_binding::adopt_toplevel(
                 &mut tree,
                 SURFACE,
-                Some("dev.qos.retirefixture".to_string()),
+                Some("dev.tilo.retirefixture".to_string()),
             );
         }
         store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
@@ -21606,7 +21606,7 @@ mod palette_dispatch_tests {
                 "Loading…",
             ))
         };
-        crate::shell::catalogue::note_pending_notice("dev.qos.retirefixture", notice);
+        crate::shell::catalogue::note_pending_notice("dev.tilo.retirefixture", notice);
 
         let store = crate::compositor::foreign::store();
         store.forget(SURFACE);
@@ -21616,7 +21616,7 @@ mod palette_dispatch_tests {
             crate::compositor::tab_binding::adopt_toplevel(
                 &mut tree,
                 SURFACE,
-                Some("dev.qos.retirefixture".to_string()),
+                Some("dev.tilo.retirefixture".to_string()),
             );
         }
         store.backdate_first_seen(SURFACE, std::time::Duration::ZERO);
@@ -22158,7 +22158,7 @@ mod overlay_event_absorb_tests {
                 subtitle: Some("Example project · Code Editor".into()),
                 score: 100,
                 params: Vec::new(),
-                contract: Some(qos_actions::ActionContract::view()),
+                contract: Some(tilo_actions::ActionContract::view()),
                 on_open: Rc::new(|_, _, _, _| Ok(())),
                 on_invoke: None,
                 on_begin_invoke: None,
@@ -23171,8 +23171,8 @@ mod overlay_event_absorb_tests {
         use ui::offscreen::OffscreenRenderer;
         use vello::peniko::Color;
 
-        let root = std::env::var_os("QOS_NOTIFICATION_HISTORY_SHOT_DIR").map_or_else(
-            || std::env::temp_dir().join("qos-notification-history-shots"),
+        let root = std::env::var_os("TILO_NOTIFICATION_HISTORY_SHOT_DIR").map_or_else(
+            || std::env::temp_dir().join("tilo-notification-history-shots"),
             PathBuf::from,
         );
         std::fs::create_dir_all(&root).expect("create notification-history screenshot directory");
@@ -23497,7 +23497,7 @@ mod tests {
             diff_payload: None,
             redaction: None,
             context: Some(
-                ui::qos_actions::ActionContext::for_resource(
+                ui::tilo_actions::ActionContext::for_resource(
                     "Edit",
                     "finance:q2",
                     "sheet",
@@ -23525,7 +23525,7 @@ mod tests {
             diff_payload: None,
             redaction: None,
             context: Some(
-                ui::qos_actions::ActionContext::for_resource(
+                ui::tilo_actions::ActionContext::for_resource(
                     "Edit",
                     format!("resource:{id}"),
                     "document",
@@ -23545,7 +23545,7 @@ mod tests {
 
     fn history_target(id: &str) -> ui::HistoryResourceTarget {
         ui::HistoryResourceTarget {
-            app_id: Some("org.qos.Notes".to_string()),
+            app_id: Some("org.tilo.Notes".to_string()),
             app_label: Some("Notes".to_string()),
             id: id.to_string(),
             kind: "page".to_string(),
@@ -24275,7 +24275,7 @@ mod tests {
     #[test]
     fn print_screen_preserves_transactional_workflows_below_capture() {
         let mut h = build_harness();
-        h.host.begin_wifi_password("qOS test network");
+        h.host.begin_wifi_password("Tilo test network");
         assert!(pump(
             &mut h,
             &key_press(Key::Character("a".into())),
@@ -24391,7 +24391,7 @@ mod tests {
             .id;
         let (reply, _parked) = tokio::sync::oneshot::channel();
         pickers.spawn(crate::portal::FilePickerRequest {
-            caller: crate::portal::PortalCaller::new(workspace, "org.qos.audit"),
+            caller: crate::portal::PortalCaller::new(workspace, "org.tilo.audit"),
             title: "Save document".to_string(),
             save: true,
             multiple: false,
@@ -24523,7 +24523,7 @@ mod tests {
     #[test]
     fn alt_tab_walks_the_window_strip_and_shift_reverses() {
         let tree = WorkspaceTree::bootstrap_demo();
-        let (host, chrome) = crate::shell::build_nirios_overlay_host_with_chrome(&tree);
+        let (host, chrome) = crate::shell::build_tilo_overlay_host_with_chrome(&tree);
         let mut h = build_harness_with_host(host, chrome);
         let first = {
             let state = h.chrome.borrow();
@@ -25117,9 +25117,9 @@ mod tests {
         use crate::shell::chrome_state::SearchScope;
 
         let tmp = tempfile::tempdir().unwrap();
-        install_gui_fixture(tmp.path(), "dev.qos.zzyzx", "Zzyzx");
+        install_gui_fixture(tmp.path(), "dev.tilo.zzyzx", "Zzyzx");
         // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
         crate::shell::launcher::invalidate_app_cache();
 
         let mut h = build_harness();
@@ -25170,11 +25170,11 @@ mod tests {
                     .collect::<Vec<_>>()
             )
         });
-        assert_eq!(hit.id, "dev.qos.zzyzx");
+        assert_eq!(hit.id, "dev.tilo.zzyzx");
         assert_eq!(hit.title, "Open Zzyzx");
 
         // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
         crate::shell::launcher::invalidate_app_cache();
     }
 
@@ -25201,7 +25201,7 @@ mod tests {
         store.open_record(&record);
         store.with(&record.id, |d| {
             let mut notes = NotesApp::with_seed(
-                "Welcome to nirios.\n\nThese notes sync live with anyone \
+                "Welcome to tilo.\n\nThese notes sync live with anyone \
                  invited to this workspace.",
             );
             notes.sync(d, &automerge::ROOT);
@@ -25231,10 +25231,7 @@ mod tests {
                 )
             });
         assert!(
-            hit.subtitle
-                .as_deref()
-                .unwrap_or_default()
-                .contains("nirios"),
+            hit.subtitle.as_deref().unwrap_or_default().contains("tilo"),
             "the row must show the matching line, not a bare title: {:?}",
             hit.subtitle
         );
@@ -25645,7 +25642,7 @@ mod tests {
     #[serial_test::serial(launch_events)]
     fn room_activity_preflight_failure_clears_placement_and_emits_one_notice() {
         let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
-        let app_id = "org.qos.missing-history-fixture-9f1e";
+        let app_id = "org.tilo.missing-history-fixture-9f1e";
         crate::shell::launcher::clear_pending_placements();
         crate::shell::launcher::set_pending_placement(
             app_id,
@@ -25695,7 +25692,7 @@ mod maximize_harvest_tests {
     //! `tests/maximize_persist_wireup_test.rs`. Two pins: a no-op tick must
     //! leave persisted state alone, and a pending change must write through.
     use super::*;
-    use crate::shell::build_nirios_overlay_host_with_chrome;
+    use crate::shell::build_tilo_overlay_host_with_chrome;
     use crate::shell::state::{
         AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent,
         WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
@@ -25768,7 +25765,7 @@ mod maximize_harvest_tests {
         use winit::dpi::PhysicalPosition;
         use winit::event::{Modifiers, WindowEvent};
         let (tree, strip_id, group_id) = one_group_tree(false);
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
         // Flip `maximized` and arm the pending-change slot the way the
         // production drain block does — the integration test covers the click.
@@ -25865,7 +25862,7 @@ mod maximize_harvest_tests {
     #[test]
     fn harvest_no_op_tick_leaves_persisted_state_alone() {
         let (tree, _strip_id, _group_id) = one_group_tree(true);
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
         host.tick_pending_maximize_harvest_for_tests();
 
@@ -25882,7 +25879,7 @@ mod maximize_harvest_tests {
         let state_dir = tempfile::tempdir().expect("temporary state directory");
         let state_path = state_dir.path().join("state.json");
         tree.persist_path = Some(state_path.clone());
-        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
         assert_eq!(host.set_group_widths(600), vec![group_id]);
 
@@ -25912,7 +25909,7 @@ mod maximize_harvest_tests {
         let state_dir = tempfile::tempdir().expect("temporary state directory");
         let state_path = state_dir.path().join("state.json");
         tree.persist_path = Some(state_path.clone());
-        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
         assert!(host.resize_focused_group(50));
 
@@ -25944,7 +25941,7 @@ mod resync_strips_tests {
     //! tick, even without `update()` — the `shots` driver's relayout path
     //! skips it.
     use super::*;
-    use crate::shell::build_nirios_overlay_host_with_chrome;
+    use crate::shell::build_tilo_overlay_host_with_chrome;
     use crate::shell::state::{
         AppKind, GroupId, PeerOrigin, SharedSurfaces, Strip, StripId, Tab, TileContent,
         WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
@@ -26028,7 +26025,7 @@ mod resync_strips_tests {
     #[test]
     fn resync_picks_up_new_groups_added_after_bump() {
         let (tree, strip_id, _) = one_group_seed();
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         assert!(host.group_at_for_tests(strip_id, 0).is_some());
         assert!(host.group_at_for_tests(strip_id, 1).is_none());
         // Mirror what the `shots` multi-group scene does: push two
@@ -26085,7 +26082,7 @@ mod resync_strips_tests {
             .unwrap()
             .window_groups
             .push(make_stub_group(302, "Drop-B"));
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         assert!(host.group_at_for_tests(strip_id, 2).is_some());
         // Remove one group and bump.
         {
@@ -26157,7 +26154,7 @@ mod resync_strips_tests {
         strip.window_groups.push(make_stub_group(202, "Other-B"));
         tree.seed_doc_from_cache();
 
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         assert_eq!(
             host.group_row_mut_for_tests(strip_id)
                 .expect("live row")
@@ -26272,7 +26269,7 @@ mod resync_strips_tests {
     #[test]
     fn stale_focus_target_cannot_write_a_removed_tab_into_the_tree() {
         let (tree, strip_id, group_id) = one_group_seed();
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
         assert!(
             !host.focus_window_on_strip(strip_id, group_id, 99),
@@ -26330,7 +26327,7 @@ mod resync_strips_tests {
             .push(make_stub_group(second_group, "Second"));
         tree.persist_path = Some(state_path.clone());
         tree.flush_to_disk();
-        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
 
         assert!(host.focus_window_on_strip(strip_id, second_group, second_tab));
         let restarted = crate::shell::persist::load_tree_from(&state_path)
@@ -26356,7 +26353,7 @@ mod resync_strips_tests {
             .push(make_stub_group(second_group, "Second"));
         tree.persist_path = Some(state_path.clone());
         tree.flush_to_disk();
-        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let mut taffy = TaffyTree::new();
         let mut nodes = StdHashMap::new();
         let child = host.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
@@ -26416,7 +26413,7 @@ mod resync_strips_tests {
                     label: "second".into(),
                 },
             });
-        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         assert!(host.focus_window_widget(strip_id, group_id, 2));
 
         host.flush_active_tab_writeback();
@@ -26500,7 +26497,7 @@ mod resync_strips_tests {
                 .expect("legitimate remote layout merges"),
             "initial remote layout is accepted"
         );
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&local);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&local);
         let peer_base = peer.room_heads(room);
         assert!(peer.reorder_group_within_strip(remote_strip, remote_id(4), 0));
         assert!(peer.reorder_tab_within_group(remote_group, 2, 0));
@@ -26556,7 +26553,7 @@ mod resync_strips_tests {
         let state_path = state_dir.path().join("state.json");
         tree.persist_path = Some(state_path.clone());
         tree.seed_doc_from_cache();
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         assert!(host.close_tab_in_group(group_id, Some(1)));
 
         assert!(
@@ -26589,7 +26586,7 @@ mod resync_strips_tests {
         // disk round trip and later resync are independent resurrection
         // hazards, and both must preserve the absence.
         let (mut restarted_host, restarted_chrome) =
-            build_nirios_overlay_host_with_chrome(&restarted);
+            build_tilo_overlay_host_with_chrome(&restarted);
         restarted_chrome.borrow_mut().bump();
         let _ = restarted_host.take_structure_dirty();
         assert!(
@@ -26623,7 +26620,7 @@ mod resync_strips_tests {
         group.active_tab = 1;
         tree.seed_doc_from_cache();
 
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         assert!(host.close_tab_in_group(group_id, Some(1)));
         assert_eq!(
             chrome.borrow_mut().take_surface_close_requests(),
@@ -26654,7 +26651,7 @@ mod resync_strips_tests {
         use crate::shell::search::ResourceKind;
 
         let (tree, _strip_id, group_id) = one_group_seed();
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         host.open_new_tab_palette_for_group(group_id);
 
         let st = chrome.borrow();
@@ -26675,7 +26672,7 @@ mod resync_strips_tests {
     #[test]
     fn resync_no_op_when_revision_unchanged() {
         let (tree, strip_id, group_id) = one_group_seed();
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let id_before = host.group_at_for_tests(strip_id, 0).map_or(0, |g| g.id);
         assert_eq!(id_before, group_id);
         // First tick observes initial revision and caches it.
@@ -26705,7 +26702,7 @@ mod peer_cursor_tests {
     //! production paint path: nothing is drawn for an empty roster, and
     //! a real peer is still drawn.
     use super::*;
-    use crate::shell::build_nirios_overlay_host_with_chrome;
+    use crate::shell::build_tilo_overlay_host_with_chrome;
     use crate::shell::state::{
         AppKind, Collaborator, GroupId, Strip, StripId, Tab, TileContent,
         WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
@@ -26760,7 +26757,7 @@ mod peer_cursor_tests {
     /// spelled out here.
     fn active_key(tree: &WorkspaceTree) -> PresenceKey {
         // The room is what the launcher stamps into an app as
-        // `QOS_WORKSPACE_ID`, not the local `WorkspaceId` — naming the
+        // `TILO_WORKSPACE_ID`, not the local `WorkspaceId` — naming the
         // local handle here would write a key nobody reads.
         let room = tree
             .workspaces
@@ -26776,7 +26773,7 @@ mod peer_cursor_tests {
     /// caller built `presence` keys against — `one_group_seed` mints a
     /// fresh `WorkspaceId` per call.
     fn peer_draw_ops(tree: &WorkspaceTree, presence: &PresenceCtx) -> usize {
-        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(tree);
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(tree);
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let theme = Theme::dark();
         let mut tr = ui::text_render::TextRenderer::new();
@@ -26836,7 +26833,7 @@ mod peer_cursor_tests {
             .collaborators
             .push(Collaborator::new("ada", "Ada"));
         let key = active_key(&tree);
-        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut presence = PresenceCtx::default();
         presence
@@ -26878,7 +26875,7 @@ mod peer_cursor_tests {
         tree.collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab));
 
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         host.followed_peer = Some("ada".to_string());
 
         assert!(host.reconcile_followed_peer());
@@ -26897,7 +26894,7 @@ mod peer_cursor_tests {
             .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
         let expected_room = tree.workspaces[0].room;
-        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&calls);
         host.set_follow_bridge(std::rc::Rc::new(move |room, target| {
@@ -26925,7 +26922,7 @@ mod peer_cursor_tests {
             .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
         let expected_room = tree.workspaces[0].room;
-        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&calls);
@@ -26955,7 +26952,7 @@ mod peer_cursor_tests {
             .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
         let room = tree.workspaces[0].room;
-        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&calls);
         host.set_follow_bridge(std::rc::Rc::new(move |room, target| {
@@ -26993,7 +26990,7 @@ mod peer_cursor_tests {
         let next_workspace = WorkspaceId::new();
         tree.workspaces
             .push(Workspace::test_default(next_workspace, "Elsewhere"));
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&calls);
         host.set_follow_bridge(std::rc::Rc::new(move |room, target| {

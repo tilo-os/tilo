@@ -57,7 +57,7 @@ use super::scanout::{
 };
 use super::session::{SeatTick, SessionAction, SessionState};
 use crate::compositor::backend::{
-    BackendEvent, GestureEvent, Output, OutputId, TouchEvent as QosTouchEvent,
+    BackendEvent, GestureEvent, Output, OutputId, TouchEvent as TiloTouchEvent,
 };
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
@@ -227,7 +227,7 @@ pub struct DrmDispatchState {
     pub physical_modifiers: ModifiersState,
     /// Winit synthesises repeat presses for the hosted backend. Bare libinput
     /// only supplies key edges, so the DRM adapter mirrors that established
-    /// event contract for qOS-native widgets. Wayland clients use the seat's
+    /// event contract for Tilo-native widgets. Wayland clients use the seat's
     /// `repeat_info` and never receive these synthetic edges.
     key_repeat: KeyRepeat,
     /// Every libinput device currently attached — libinput has no "list
@@ -2090,7 +2090,7 @@ impl DrmDispatchState {
                     y,
                     TouchPhase::Started,
                 )));
-                self.push(BackendEvent::Touch(QosTouchEvent::Down { slot: id, x, y }));
+                self.push(BackendEvent::Touch(TiloTouchEvent::Down { slot: id, x, y }));
             }
             DirectTouchDown::CancelClientForShell(id) => {
                 self.push(BackendEvent::Input(touch_input_event(
@@ -2102,7 +2102,7 @@ impl DrmDispatchState {
                 // The client received the earlier contacts, but no longer owns
                 // their sequence. `cancel` is the Wayland protocol's explicit
                 // handoff; importantly, the third down itself never leaks.
-                self.push(BackendEvent::Touch(QosTouchEvent::Cancel));
+                self.push(BackendEvent::Touch(TiloTouchEvent::Cancel));
                 // Do not rely on a later libinput frame here: an ownership
                 // boundary must close the client sequence even when the
                 // source disappears immediately afterwards.
@@ -2130,7 +2130,7 @@ impl DrmDispatchState {
                 TouchPhase::Moved,
             )));
             if forward_to_client {
-                self.push(BackendEvent::Touch(QosTouchEvent::Motion {
+                self.push(BackendEvent::Touch(TiloTouchEvent::Motion {
                     slot: id,
                     x,
                     y,
@@ -2156,7 +2156,7 @@ impl DrmDispatchState {
         // already own this stream, in which case `client_stream_active` was
         // cleared at the cancellation boundary and nothing reaches it here.
         if forward_to_client {
-            self.push(BackendEvent::Touch(QosTouchEvent::Up { slot: id }));
+            self.push(BackendEvent::Touch(TiloTouchEvent::Up { slot: id }));
         }
         if emulate_pointer {
             self.push(BackendEvent::Input(cursor_moved_event(x, y)));
@@ -2182,7 +2182,7 @@ impl DrmDispatchState {
             )));
         }
         if forward_cancel {
-            self.push(BackendEvent::Touch(QosTouchEvent::Cancel));
+            self.push(BackendEvent::Touch(TiloTouchEvent::Cancel));
         }
         // This also flushes a pending final `Up` when the source vanishes
         // between that up and libinput's normal frame event.
@@ -2195,7 +2195,7 @@ impl DrmDispatchState {
 
     fn flush_direct_touch_frame(&mut self) {
         if self.direct_touch.take_client_frame() {
-            self.push(BackendEvent::Touch(QosTouchEvent::Frame));
+            self.push(BackendEvent::Touch(TiloTouchEvent::Frame));
         }
     }
 }
@@ -2214,7 +2214,7 @@ impl IccProfileWorker {
         let (requests, request_rx) = sync_channel(1);
         let (result_tx, results) = channel();
         std::thread::Builder::new()
-            .name("qos-icc-profile-probe".into())
+            .name("tilo-icc-profile-probe".into())
             .spawn(move || {
                 while request_rx.recv().is_ok() {
                     if result_tx.send(discover_icc_profiles()).is_err() {
@@ -2339,7 +2339,7 @@ fn bring_up_all_devices(
     let mut primary_gpu = None;
     for path in kms_gpus {
         eprintln!(
-            "nirios compositor: trying KMS scanout device {}",
+            "tilo compositor: trying KMS scanout device {}",
             path.display()
         );
         let mut scanout_session = session.clone();
@@ -2355,7 +2355,7 @@ fn bring_up_all_devices(
             }
             Err(error) => {
                 eprintln!(
-                    "nirios compositor: cannot use DRM output on {}: {error}",
+                    "tilo compositor: cannot use DRM output on {}: {error}",
                     path.display()
                 );
                 tracing::warn!(
@@ -2389,7 +2389,7 @@ fn bring_up_all_devices(
             }
         }
         eprintln!(
-            "nirios compositor: {} live DRM output(s) on {}",
+            "tilo compositor: {} live DRM output(s) on {}",
             builds.len(),
             path.display()
         );
@@ -4139,11 +4139,11 @@ mod tests {
         assert_eq!((x, y), (100.0, 1969.0));
 
         // The runtime feeds these exact values to both delivery paths.
-        let touch = QosTouchEvent::Motion { slot: 4, x, y };
+        let touch = TiloTouchEvent::Motion { slot: 4, x, y };
         let pointer = cursor_moved_event(x, y);
         assert_eq!(
             touch,
-            QosTouchEvent::Motion {
+            TiloTouchEvent::Motion {
                 slot: 4,
                 x: 100.0,
                 y: 1969.0
@@ -4896,17 +4896,17 @@ mod tests {
         assert_eq!(
             client_touch,
             [
-                QosTouchEvent::Down {
+                TiloTouchEvent::Down {
                     slot: 0,
                     x: 100.0,
                     y: 80.0,
                 },
-                QosTouchEvent::Down {
+                TiloTouchEvent::Down {
                     slot: 1,
                     x: 140.0,
                     y: 80.0,
                 },
-                QosTouchEvent::Cancel,
+                TiloTouchEvent::Cancel,
             ],
             "the early contacts are explicitly cancelled; no third contact, motion, or release reaches the client"
         );
@@ -4963,17 +4963,17 @@ mod tests {
         assert_eq!(
             client_touch,
             [
-                QosTouchEvent::Down {
+                TiloTouchEvent::Down {
                     slot: 0,
                     x: 320.0,
                     y: 240.0,
                 },
-                QosTouchEvent::Motion {
+                TiloTouchEvent::Motion {
                     slot: 0,
                     x: 324.0,
                     y: 242.0,
                 },
-                QosTouchEvent::Up { slot: 0 },
+                TiloTouchEvent::Up { slot: 0 },
             ]
         );
         let pointer_events: Vec<_> = state
@@ -5020,7 +5020,7 @@ mod tests {
             .events
             .iter()
             .filter_map(|event| match event {
-                BackendEvent::Touch(QosTouchEvent::Down { slot, .. }) => Some(*slot),
+                BackendEvent::Touch(TiloTouchEvent::Down { slot, .. }) => Some(*slot),
                 _ => None,
             })
             .collect();
@@ -5052,10 +5052,10 @@ mod tests {
         assert!(matches!(
             client_events.as_slice(),
             [
-                BackendEvent::Touch(QosTouchEvent::Down { .. }),
-                BackendEvent::Touch(QosTouchEvent::Frame),
-                BackendEvent::Touch(QosTouchEvent::Up { .. }),
-                BackendEvent::Touch(QosTouchEvent::Frame),
+                BackendEvent::Touch(TiloTouchEvent::Down { .. }),
+                BackendEvent::Touch(TiloTouchEvent::Frame),
+                BackendEvent::Touch(TiloTouchEvent::Up { .. }),
+                BackendEvent::Touch(TiloTouchEvent::Frame),
             ]
         ));
 
@@ -5068,10 +5068,10 @@ mod tests {
             state.events.as_slice(),
             [
                 BackendEvent::Input(WindowEvent::Touch(_)),
-                BackendEvent::Touch(QosTouchEvent::Down { .. }),
-                BackendEvent::Touch(QosTouchEvent::Frame),
+                BackendEvent::Touch(TiloTouchEvent::Down { .. }),
+                BackendEvent::Touch(TiloTouchEvent::Frame),
                 BackendEvent::Input(WindowEvent::Touch(touch)),
-                BackendEvent::Touch(QosTouchEvent::Cancel),
+                BackendEvent::Touch(TiloTouchEvent::Cancel),
             ] if touch.phase == TouchPhase::Cancelled
         ));
     }
@@ -5090,13 +5090,13 @@ mod tests {
             state
                 .events
                 .iter()
-                .any(|event| matches!(event, BackendEvent::Touch(QosTouchEvent::Cancel)))
+                .any(|event| matches!(event, BackendEvent::Touch(TiloTouchEvent::Cancel)))
         );
         assert!(
             !state
                 .events
                 .iter()
-                .any(|event| matches!(event, BackendEvent::Touch(QosTouchEvent::Frame)))
+                .any(|event| matches!(event, BackendEvent::Touch(TiloTouchEvent::Frame)))
         );
 
         state.events.clear();
@@ -5110,13 +5110,13 @@ mod tests {
             state
                 .events
                 .iter()
-                .any(|event| matches!(event, BackendEvent::Touch(QosTouchEvent::Cancel)))
+                .any(|event| matches!(event, BackendEvent::Touch(TiloTouchEvent::Cancel)))
         );
         assert!(
             !state
                 .events
                 .iter()
-                .any(|event| matches!(event, BackendEvent::Touch(QosTouchEvent::Frame)))
+                .any(|event| matches!(event, BackendEvent::Touch(TiloTouchEvent::Frame)))
         );
     }
 
@@ -5138,9 +5138,9 @@ mod tests {
         assert!(matches!(
             touches.as_slice(),
             [
-                QosTouchEvent::Down { slot: 0, .. },
-                QosTouchEvent::Cancel,
-                QosTouchEvent::Down { slot: 1, .. },
+                TiloTouchEvent::Down { slot: 0, .. },
+                TiloTouchEvent::Cancel,
+                TiloTouchEvent::Down { slot: 1, .. },
             ]
         ));
     }

@@ -18,9 +18,9 @@ use collab_types::{
 use iroh::endpoint::{Connection, Endpoint};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh_base::EndpointAddr;
-use qos_user_identity::RevocationList;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tilo_user_identity::RevocationList;
 use uuid::Uuid;
 
 use crate::authenticated_transport::{AuthenticatedTransportConfig, authenticate_fs_peer_parts_at};
@@ -32,8 +32,8 @@ pub const MAX_NAMED_SHARE_ENVELOPE_BYTES: usize = 32 * 1024;
 pub const MAX_NAMED_SHARE_INBOX_ENTRIES: usize = 4_096;
 pub const MAX_NAMED_SHARE_INBOX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 pub const MAX_NAMED_SHARE_RECIPIENT_DEVICES: usize = 32;
-const NAMED_SHARE_ENDPOINT_DOMAIN: &str = "qos-named-share-endpoint-v1";
-pub const QOS_FS_NAMED_SHARE_INBOX_ALPN: &[u8] = b"qos-fs-named-inbox/1";
+const NAMED_SHARE_ENDPOINT_DOMAIN: &str = "tilo-named-share-endpoint-v1";
+pub const TILO_FS_NAMED_SHARE_INBOX_ALPN: &[u8] = b"tilo-fs-named-inbox/1";
 pub const NAMED_SHARE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -579,7 +579,7 @@ impl NamedShareDeliveryClient {
         let exchange = async {
             let connection = self
                 .endpoint
-                .connect(recipient.clone(), QOS_FS_NAMED_SHARE_INBOX_ALPN)
+                .connect(recipient.clone(), TILO_FS_NAMED_SHARE_INBOX_ALPN)
                 .await
                 .map_err(|error| NamedShareDeliveryError::Transport(error.to_string()))?;
             if connection.remote_id() != recipient.id {
@@ -887,7 +887,7 @@ mod tests {
     use iroh::address_lookup::memory::MemoryLookup;
     use iroh::endpoint::presets;
     use iroh::protocol::Router;
-    use qos_user_identity::{
+    use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, IdentityPaths, adopt_device_key,
         persist::write_device_cert, sign_device_cert,
     };
@@ -1047,7 +1047,7 @@ mod tests {
         )
         .unwrap();
         let router = Router::builder(recipient.endpoint.clone())
-            .accept(QOS_FS_NAMED_SHARE_INBOX_ALPN, protocol)
+            .accept(TILO_FS_NAMED_SHARE_INBOX_ALPN, protocol)
             .spawn();
         let invite = mint_file_invite(
             FileInviteSpec {

@@ -1,6 +1,6 @@
 # Trust: publisher identities, attestors, revocation
 
-qOS packages are content-addressed and signed. This document covers what
+Tilo packages are content-addressed and signed. This document covers what
 that means for publishers (how identities work, when to get an attestor
 to co-sign) and for users (how to configure trust).
 
@@ -12,15 +12,15 @@ the manifest's `[publisher]` block and into the signed root:
 ```toml
 [publisher]
 identity  = "ed25519:c4c627b57a518bc318c2854662b44f741345f6d55a45eb059d3b384048789e39"
-signature = ""                    # empty at author time; filled by qos-pkg pack / sign
+signature = ""                    # empty at author time; filled by tilo-pkg pack / sign
 ```
 
-The 32-byte hex is the raw public key. `qos-pkg pack` without
+The 32-byte hex is the raw public key. `tilo-pkg pack` without
 `--identity` **generates a fresh keypair each pack** and overwrites the
 manifest's `identity` field with the fresh public key — that is the
 "self-signed" flow every walkthrough here demonstrates.
 
-For repeatable publishing, use `qos-pkg pack --identity <file.json>`.
+For repeatable publishing, use `tilo-pkg pack --identity <file.json>`.
 The identity file is:
 
 ```json
@@ -51,7 +51,7 @@ manifest_hash[32] || payload_root_hash[32] || publisher_identity[32]
 
 96 bytes → Ed25519 signature → 64-byte signature. The result plus the
 three inputs is the 173-byte `signed-root` blob. Its BLAKE3 hash IS the
-`PackageId` — the `qpkg:<hex>` URL you see in `qos-pkg inspect`.
+`PackageId` — the `qpkg:<hex>` URL you see in `tilo-pkg inspect`.
 
 Consequences:
 
@@ -66,11 +66,11 @@ Consequences:
 
 ## The attestor registry
 
-Users have a per-machine `~/.config/qos/trusted-attestors.toml`:
+Users have a per-machine `~/.config/tilo/trusted-attestors.toml`:
 
 ```toml
 [[attestor]]
-id         = "qos-curated/2026.07"
+id         = "tilo-curated/2026.07"
 pubkey_hex = "…"
 scope      = "all"                        # or "mime:<a>,<b>" / "prefix:<a>,<b>"
 ```
@@ -90,21 +90,21 @@ Fields:
 Manage from the CLI. Verified end-to-end:
 
 ```
-$ qos-install trust list
+$ tilo-install trust list
 (no trusted attestors)
 
-$ qos-install trust add \
+$ tilo-install trust add \
     --id "test-attestor/2026" \
     --pubkey "0000000000000000000000000000000000000000000000000000000000000001" \
     --scope "all"
 trust: added test-attestor/2026 (scope: all)
-  file: /tmp/qos-install-demo-config/qos/trusted-attestors.toml
+  file: /tmp/tilo-install-demo-config/tilo/trusted-attestors.toml
 
-$ qos-install trust list
+$ tilo-install trust list
 id                        scope         pubkey
 test-attestor/2026        all           0000000000000000000000000000000000000000000000000000000000000001
 
-$ qos-install trust remove test-attestor/2026
+$ tilo-install trust remove test-attestor/2026
 trust: removed test-attestor/2026
 ```
 
@@ -114,7 +114,7 @@ Every attestation is a row in `[[trust.attested_by]]`:
 
 ```toml
 [[trust.attested_by]]
-attestor  = "qos-curated/2026.07"     # matches the trusted-attestor id
+attestor  = "tilo-curated/2026.07"     # matches the trusted-attestor id
 claim     = "deadbeef"                # opaque hex; attestor-specific
 signature = ""                        # 64-byte Ed25519 signature over the preimage below
 ```
@@ -122,11 +122,11 @@ signature = ""                        # 64-byte Ed25519 signature over the preim
 The attestor's signature covers a domain-separated preimage:
 
 ```text
-b"qos-pkg-attest-v1\0" || payload_root_hash[32] || publisher_pubkey[32]
+b"tilo-pkg-attest-v1\0" || payload_root_hash[32] || publisher_pubkey[32]
 ```
 
 (82 bytes total.) `payload_root_hash` is the BLAKE3 of the payload
-Collection blob — the same one you can pull out of `qos-pkg inspect`.
+Collection blob — the same one you can pull out of `tilo-pkg inspect`.
 `publisher_pubkey` is the raw 32 bytes from `[publisher].identity`.
 
 Note: the signature is NOT over the `PackageId`. The `PackageId`
@@ -143,13 +143,13 @@ independently.
 
 ## The install-time policy: `--require-attestor`
 
-By default `qos-install install` warns on self-signed packages and
+By default `tilo-install install` warns on self-signed packages and
 proceeds:
 
 ```
-$ qos-install install /tmp/qos-hello-demo/qos-hello.qpkg
-qos-install: WARN — package self-signed by ed25519:c4c627b57… (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
-installed: dev.qos.hello 0.1.0
+$ tilo-install install /tmp/tilo-hello-demo/tilo-hello.qpkg
+tilo-install: WARN — package self-signed by ed25519:c4c627b57… (no trusted-attestor signature); use --require-attestor <id> to demand an attestation
+installed: dev.tilo.hello 0.1.0
 ```
 
 Two flags tighten this:
@@ -163,19 +163,19 @@ Two flags tighten this:
 Combined behaviour, verified end-to-end:
 
 ```
-$ qos-install install --require-attestor "test-attestor/2026" /tmp/qos-hello-demo/qos-hello.qpkg --force
-qos-install: policy refused: --require-attestor "test-attestor/2026" and package is self-signed (use --allow-self-signed to override)
+$ tilo-install install --require-attestor "test-attestor/2026" /tmp/tilo-hello-demo/tilo-hello.qpkg --force
+tilo-install: policy refused: --require-attestor "test-attestor/2026" and package is self-signed (use --allow-self-signed to override)
 
-$ qos-install install --require-attestor "test-attestor/2026" --allow-self-signed /tmp/qos-hello-demo/qos-hello.qpkg --force
-qos-install: --require-attestor "test-attestor/2026" unmatched; --allow-self-signed permits self-signed publisher ed25519:c4c627b57…
-installed: dev.qos.hello 0.1.0
+$ tilo-install install --require-attestor "test-attestor/2026" --allow-self-signed /tmp/tilo-hello-demo/tilo-hello.qpkg --force
+tilo-install: --require-attestor "test-attestor/2026" unmatched; --allow-self-signed permits self-signed publisher ed25519:c4c627b57…
+installed: dev.tilo.hello 0.1.0
 ```
 
 Use in a system-management context:
 
 ```bash
 # strict policy for a fleet: every install must be signed by our attestor
-qos-install install --require-attestor "acme-corp/prod" acme-app.qpkg
+tilo-install install --require-attestor "acme-corp/prod" acme-app.qpkg
 ```
 
 Or, in a locked-down environment, drop the `--allow-self-signed`
@@ -183,7 +183,7 @@ fallback entirely.
 
 ## Revocation
 
-`~/.config/qos/revoked-keys.toml`:
+`~/.config/tilo/revoked-keys.toml`:
 
 ```toml
 [[revoked]]
@@ -194,23 +194,23 @@ reason     = "compromised 2026-07-05"
 Add via CLI:
 
 ```
-$ qos-install revoke deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef \
+$ tilo-install revoke deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef \
     --reason "test revocation"
 revoked: ed25519:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
   reason: test revocation
-  file: /tmp/qos-install-demo-config/qos/revoked-keys.toml
+  file: /tmp/tilo-install-demo-config/tilo/revoked-keys.toml
 
-$ qos-install revoked list
+$ tilo-install revoked list
 pubkey                                                              reason
 deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef    test revocation
 ```
 
 Revocation is enforced at BOTH install and run time. If a publisher is
-revoked AFTER a package is installed, the next `qos-install run` still
+revoked AFTER a package is installed, the next `tilo-install run` still
 refuses:
 
 ```
-qos-install: REFUSED — installed package's publisher is revoked: <reason>
+tilo-install: REFUSED — installed package's publisher is revoked: <reason>
 ```
 
 This is why the launcher re-reads the revocation list at every launch —
@@ -225,12 +225,12 @@ first-run script, Ansible, systemd-tmpfiles, etc. There is no
 mutable-network component in the model today; every machine reads its
 own on-disk trust config.
 
-## `qos-pkg verify` and trust
+## `tilo-pkg verify` and trust
 
 Standalone verification (without touching the install-time registry):
 
 ```
-$ qos-pkg verify /tmp/qos-hello-demo/qos-hello.qpkg
+$ tilo-pkg verify /tmp/tilo-hello-demo/tilo-hello.qpkg
 ok: qpkg:b8bde92e2352dd7a3b3e094968272c42d51196697a5cec17f36e3595a55a71d3 verifies and publisher is trusted
 ```
 
@@ -239,7 +239,7 @@ convenience). Pass `--trusted-key <hex>` (repeatable) to demand a
 specific publisher:
 
 ```
-$ qos-pkg verify --trusted-key <some-key> /tmp/qos-hello-demo/qos-hello.qpkg
+$ tilo-pkg verify --trusted-key <some-key> /tmp/tilo-hello-demo/tilo-hello.qpkg
 signature-ok-but-untrusted: qpkg:… (publisher ed25519:c4c627b5…)
 ```
 
@@ -250,7 +250,7 @@ Exit code:
 - `2` — cryptographically valid but the publisher isn't trusted.
 - `1` — cryptographic failure (broken signature, wrong hash).
 
-Use `verify --trusted-key` in CI pipelines that gate `qos-install`
+Use `verify --trusted-key` in CI pipelines that gate `tilo-install`
 without maintaining a persistent trust registry.
 
 Next: [`cross-target.md`](./cross-target.md) — shipping the same source

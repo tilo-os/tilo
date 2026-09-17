@@ -24,7 +24,7 @@ use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
-use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::chrome_state::{Chrome, WsTab};
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
@@ -98,7 +98,7 @@ fn tree_with_grants(entries: Vec<(&str, Vec<Capability>)>) -> WorkspaceTree {
 /// Returns the host too, so the caller can read back hit rects and
 /// dispatch synthesized events.
 fn render_at_tab(tree: &WorkspaceTree, tab: WsTab) -> (ShellOverlayHost, Chrome, Scene) {
-    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
     {
         let mut st = chrome.borrow_mut();
         st.overlays.ws_settings = true;

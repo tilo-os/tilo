@@ -37,7 +37,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
     ResourceProvider, ResultSpec, RetryPolicy,
@@ -114,7 +114,7 @@ pub fn operation_kind(operation: &CodeEditorOperation) -> Result<OperationKind, 
 /// keeps failures visible to the shared action host rather than panicking.
 fn invalid_arguments(message: &str) -> EncodedAction {
     EncodedAction {
-        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
         payload: message.as_bytes().to_vec(),
     }
 }
@@ -319,8 +319,8 @@ pub fn history_context(
     action: &CodeEditorAction,
     file_name: &str,
     project_id: &str,
-) -> qos_actions::ActionContext {
-    let mut context = qos_actions::ActionContext::for_action("org.qos.Code", "Code", action);
+) -> tilo_actions::ActionContext {
+    let mut context = tilo_actions::ActionContext::for_action("org.tilo.Code", "Code", action);
     let (id, kind, label) = match action {
         CodeEditorAction::EditText { file_id, .. } => (file_id.as_str(), "file", "Edit text"),
         CodeEditorAction::CreateFile { id, .. } => (id.as_str(), "file", "Create file"),
@@ -331,7 +331,7 @@ pub fn history_context(
         CodeEditorAction::DeleteFile { id, kind, .. } => (id.as_str(), kind.as_str(), "Delete"),
     };
     context.action_label = label.to_string();
-    context.resource = Some(qos_actions::ActionResource {
+    context.resource = Some(tilo_actions::ActionResource {
         id: if kind == "folder" {
             folder_resource_id(id)
         } else {
@@ -343,9 +343,9 @@ pub fn history_context(
     if let Some(extension) = file_name.rsplit_once('.').map(|(_, extension)| extension) {
         context
             .facets
-            .push(qos_actions::ActionFacet::new("file-type", extension));
+            .push(tilo_actions::ActionFacet::new("file-type", extension));
     }
-    context.facets.push(qos_actions::ActionFacet::new(
+    context.facets.push(tilo_actions::ActionFacet::new(
         "project-resource",
         project_resource_id(project_id),
     ));
@@ -1732,7 +1732,7 @@ impl ResourceProvider for crate::app::CodeApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -1783,7 +1783,7 @@ mod tests {
             if spec.id == "save" {
                 assert!(!matches!(
                     spec.contract.confirmation,
-                    qos_actions::ConfirmationPolicy::None
+                    tilo_actions::ConfirmationPolicy::None
                 ));
             }
         }
@@ -1795,7 +1795,7 @@ mod tests {
         let encoded = encode(action).unwrap();
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
@@ -1923,11 +1923,12 @@ mod tests {
         let mut second = AutoCommit::load(&bytes).unwrap();
         let left = text_edit_action(id.clone(), "abcdefgh", "aXbcdefgh");
         let right = text_edit_action(id.clone(), "abcdefgh", "abcdefgYh");
-        let left_env = qos_actions::apply_local(&mut first, &left, encode(&left).unwrap()).unwrap();
+        let left_env =
+            tilo_actions::apply_local(&mut first, &left, encode(&left).unwrap()).unwrap();
         let right_env =
-            qos_actions::apply_local(&mut second, &right, encode(&right).unwrap()).unwrap();
-        qos_actions::replay(&mut first, &right_env, &registry()).unwrap();
-        qos_actions::replay(&mut second, &left_env, &registry()).unwrap();
+            tilo_actions::apply_local(&mut second, &right, encode(&right).unwrap()).unwrap();
+        tilo_actions::replay(&mut first, &right_env, &registry()).unwrap();
+        tilo_actions::replay(&mut second, &left_env, &registry()).unwrap();
         assert_eq!(
             EditorDoc::read_buffer_key(&first, &id),
             EditorDoc::read_buffer_key(&second, &id)
@@ -1937,10 +1938,10 @@ mod tests {
         let mut two = AutoCommit::load(&bytes).unwrap();
         let a = text_edit_action(id.clone(), "abcdefgh", "abcdXefgh");
         let b = text_edit_action(id.clone(), "abcdefgh", "abcdYefgh");
-        let a_env = qos_actions::apply_local(&mut one, &a, encode(&a).unwrap()).unwrap();
-        let b_env = qos_actions::apply_local(&mut two, &b, encode(&b).unwrap()).unwrap();
-        qos_actions::replay(&mut one, &b_env, &registry()).unwrap();
-        qos_actions::replay(&mut two, &a_env, &registry()).unwrap();
+        let a_env = tilo_actions::apply_local(&mut one, &a, encode(&a).unwrap()).unwrap();
+        let b_env = tilo_actions::apply_local(&mut two, &b, encode(&b).unwrap()).unwrap();
+        tilo_actions::replay(&mut one, &b_env, &registry()).unwrap();
+        tilo_actions::replay(&mut two, &a_env, &registry()).unwrap();
         assert_eq!(
             EditorDoc::read_buffer_key(&one, &id),
             EditorDoc::read_buffer_key(&two, &id)
@@ -2060,7 +2061,7 @@ mod tests {
         let encoded = encode(&test_file_action(9, "hello")).unwrap();
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -2100,8 +2101,8 @@ mod tests {
 
         let action = test_file_action(2, "fn main() {}\n");
         let encoded = encode(&action).unwrap();
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -2175,11 +2176,11 @@ mod tests {
             expected_revision: 0,
         };
         let rename_envelope =
-            qos_actions::apply_local(&mut first, &rename, encode(&rename).unwrap()).unwrap();
+            tilo_actions::apply_local(&mut first, &rename, encode(&rename).unwrap()).unwrap();
         let language_envelope =
-            qos_actions::apply_local(&mut second, &language, encode(&language).unwrap()).unwrap();
-        qos_actions::replay(&mut first, &language_envelope, &registry()).unwrap();
-        qos_actions::replay(&mut second, &rename_envelope, &registry()).unwrap();
+            tilo_actions::apply_local(&mut second, &language, encode(&language).unwrap()).unwrap();
+        tilo_actions::replay(&mut first, &language_envelope, &registry()).unwrap();
+        tilo_actions::replay(&mut second, &rename_envelope, &registry()).unwrap();
         let first_record = EditorDoc::file(&first, &test_file_id(88)).unwrap();
         let second_record = EditorDoc::file(&second, &test_file_id(88)).unwrap();
         assert_eq!(first_record.name, "renamed.rs");
@@ -2242,11 +2243,12 @@ mod tests {
             expected_revision: 0,
         };
         let rename_envelope =
-            qos_actions::apply_local(&mut first, &rename, encode(&rename).unwrap()).unwrap();
+            tilo_actions::apply_local(&mut first, &rename, encode(&rename).unwrap()).unwrap();
         let move_envelope =
-            qos_actions::apply_local(&mut second, &move_file, encode(&move_file).unwrap()).unwrap();
-        qos_actions::replay(&mut first, &move_envelope, &registry()).unwrap();
-        qos_actions::replay(&mut second, &rename_envelope, &registry()).unwrap();
+            tilo_actions::apply_local(&mut second, &move_file, encode(&move_file).unwrap())
+                .unwrap();
+        tilo_actions::replay(&mut first, &move_envelope, &registry()).unwrap();
+        tilo_actions::replay(&mut second, &rename_envelope, &registry()).unwrap();
         let first_record = EditorDoc::file(&first, &file).unwrap();
         let second_record = EditorDoc::file(&second, &file).unwrap();
         assert_eq!(first_record.path, "dest/renamed.rs");
@@ -2345,7 +2347,7 @@ mod tests {
                 .iter()
                 .any(|action| action.id == "move")
         );
-        for flat in qos_actions::flatten(&[project]) {
+        for flat in tilo_actions::flatten(&[project]) {
             assert!(!flat.resource_id.as_str().contains("/tmp/"));
             assert!(!flat.resource_id.as_str().contains("disk:"));
         }

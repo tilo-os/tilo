@@ -14,18 +14,18 @@
 //!
 //! Vello regresses because it holds the process-wide `SHARED_RENDER_CONTEXT`
 //! mutex through its scratch render, blocking main's `OffscreenRenderer::new`
-//! on the same lock — left opt-in behind `QOS_STARTUP_WARM_VELLO`. Fonts
+//! on the same lock — left opt-in behind `TILO_STARTUP_WARM_VELLO`. Fonts
 //! wins because it never touches the GPU: it shapes strings on a background
 //! thread, warming the OS page cache so the compositor's own
 //! `FontSystem::new` hits already-resident pages.
 //!
-//! `QOS_STARTUP_WARM=off` (also `0`/`false`/`no`) disables warmup for A/B
-//! measurement. Stages mark through [`qos_startup_metrics::span`]:
+//! `TILO_STARTUP_WARM=off` (also `0`/`false`/`no`) disables warmup for A/B
+//! measurement. Stages mark through [`tilo_startup_metrics::span`]:
 //! `warmup-spawn`, `warmup-fonts`(-end), `warmup-vello`(-end).
 //!
 //! Not persistence — a persistent `wgpu::PipelineCache` would extend the
 //! win across restarts, but needs driver support not ubiquitous on the
-//! Mesa releases qOS ships against, and wouldn't help first boot at all.
+//! Mesa releases Tilo ships against, and wouldn't help first boot at all.
 
 use std::thread;
 
@@ -58,14 +58,14 @@ pub const CANONICAL_STRINGS: &[&str] = &[
 
 /// Whether warmup should run in the current process.
 ///
-/// Reads `QOS_STARTUP_WARM` once per process (cached in a `OnceLock`).
+/// Reads `TILO_STARTUP_WARM` once per process (cached in a `OnceLock`).
 /// Disabled if the value is `off`/`0`/`false`/`no` (case-insensitive);
 /// every other value, and an unset var, enables warmup.
 pub fn is_enabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| {
-        let Ok(raw) = std::env::var("QOS_STARTUP_WARM") else {
+        let Ok(raw) = std::env::var("TILO_STARTUP_WARM") else {
             return true;
         };
         let normalized = raw.trim().to_ascii_lowercase();
@@ -108,16 +108,16 @@ pub fn shape_canonical_strings(fs: &mut FontSystem) -> usize {
 ///
 /// Dropping the returned `JoinHandle` before the worker finishes doesn't
 /// cancel anything — the process keeps whatever warmup already completed.
-/// Returns `None` when warmup is disabled via `QOS_STARTUP_WARM=off`.
+/// Returns `None` when warmup is disabled via `TILO_STARTUP_WARM=off`.
 pub fn spawn_warmup(no_vello: bool) -> Option<thread::JoinHandle<()>> {
     if !is_enabled() {
         return None;
     }
-    qos_startup_metrics::mark("warmup-spawn");
+    tilo_startup_metrics::mark("warmup-spawn");
     let handle = thread::Builder::new()
-        .name("qos-startup-warmup".into())
+        .name("tilo-startup-warmup".into())
         .spawn(move || {
-            qos_startup_metrics::span("warmup-fonts", || {
+            tilo_startup_metrics::span("warmup-fonts", || {
                 let mut fs = FontSystem::new();
                 let _ = shape_canonical_strings(&mut fs);
             });
@@ -131,7 +131,7 @@ pub fn spawn_warmup(no_vello: bool) -> Option<thread::JoinHandle<()>> {
             // `try_new`, not `new`: under `panic = "abort"` a `new()` panic
             // on a missing adapter would take the whole compositor down at
             // startup, and `catch_unwind` doesn't help under abort.
-            qos_startup_metrics::span("warmup-vello", || {
+            tilo_startup_metrics::span("warmup-vello", || {
                 use vello::Scene;
                 use vello::kurbo::{Affine, Rect};
                 use vello::peniko::{Color, Fill};
@@ -166,7 +166,7 @@ mod tests {
 
     /// The default is on — an unset env var must not silently skip the
     /// win. Relies on the `OnceLock`-cached value, so this must be the
-    /// first test to read `QOS_STARTUP_WARM` in the process.
+    /// first test to read `TILO_STARTUP_WARM` in the process.
     #[test]
     fn enabled_by_default_when_env_unset() {
         // SAFETY: single-threaded test binary invocation; the harness
@@ -179,7 +179,7 @@ mod tests {
         // OnceLock caches on first read, and this is the only test
         // reading it.)
         unsafe {
-            std::env::remove_var("QOS_STARTUP_WARM");
+            std::env::remove_var("TILO_STARTUP_WARM");
         }
         assert!(is_enabled());
     }

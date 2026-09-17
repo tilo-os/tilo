@@ -504,7 +504,7 @@ pub fn path_to_uri(path: &Path) -> String {
 }
 
 impl LspClient {
-    /// The server program + args for a language, or `None` when qOS has no
+    /// The server program + args for a language, or `None` when Tilo has no
     /// mapping. The binaries are the conventional ones; a missing binary is
     /// handled at spawn time, not here.
     pub fn server_command(lang: Language) -> Option<(String, Vec<String>)> {
@@ -1069,7 +1069,7 @@ mod tests {
         let begin = Progress {
             token: "t1".into(),
             title: "Indexing".into(),
-            message: Some("qos-shell".into()),
+            message: Some("tilo-shell".into()),
             percentage: Some(10),
             done: false,
         };
@@ -1078,14 +1078,14 @@ mod tests {
         let report = Progress {
             token: "t1".into(),
             title: String::new(), // no title, as a real `report` sends
-            message: Some("qos-ui".into()),
+            message: Some("tilo-ui".into()),
             percentage: Some(55),
             done: false,
         };
         let shown = client.note_progress(&report).expect("still busy");
         assert_eq!(shown.title, "Indexing", "the title survives the report");
         assert_eq!(shown.percentage, Some(55));
-        assert_eq!(shown.message.as_deref(), Some("qos-ui"));
+        assert_eq!(shown.message.as_deref(), Some("tilo-ui"));
         assert!(client.is_busy());
 
         // `end` clears it, and the editor stops showing an indexing state.

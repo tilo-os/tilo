@@ -25,12 +25,12 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 /// Key, in a record's own document, of the map holding its identity.
-const META: &str = "qos:record";
+const META: &str = "tilo:record";
 /// Key in a record document for the room that owns this local replica.
 /// `RecordId` is a user/application name; it is not an authority boundary.
 const ROOM: &str = "room";
 /// Key, in a room's index document, of the map of record references.
-const INDEX: &str = "qos:records";
+const INDEX: &str = "tilo:records";
 
 /// Upper bound for the records an app learns from one room index at once.
 /// This is deliberately small: the index is replicated input, not a request
@@ -667,15 +667,15 @@ pub struct RecordSet {
 
 impl RecordSet {
     /// The production set: per-record documents under this package's state
-    /// directory. `QOS_PACKAGE_ID` always wins over `manifest_id` (as in
+    /// directory. `TILO_PACKAGE_ID` always wins over `manifest_id` (as in
     /// [`crate::persist::open`]) — resolving it differently here would
     /// split a package's records from its room index.
     pub fn open(manifest_id: impl Into<String>) -> Self {
-        let package_id = std::env::var("QOS_PACKAGE_ID")
+        let package_id = std::env::var("TILO_PACKAGE_ID")
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| manifest_id.into());
-        let home = std::env::var("QOS_WORKSPACE_ID")
+        let home = std::env::var("TILO_WORKSPACE_ID")
             .ok()
             .filter(|s| !s.is_empty())
             .or_else(|| {
@@ -1402,7 +1402,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temporary state directory");
         // SAFETY: serialised by this module's persistent-record tests.
         unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
-        let package = "dev.qos.room-discovery";
+        let package = "dev.tilo.room-discovery";
         let a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         let b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
         let entry = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
@@ -1515,7 +1515,7 @@ mod tests {
         // thread reads the variable between the set and the reads below.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
         let room_id = "11111111-1111-4111-8111-111111111111";
 
@@ -1529,7 +1529,7 @@ mod tests {
         );
 
         {
-            let mut set = RecordSet::open("dev.qos.test-records").with_home(room_id);
+            let mut set = RecordSet::open("dev.tilo.test-records").with_home(room_id);
             let mut state = State::new();
             let mut room = AutoCommit::new();
             // `a` is adopted: content exists before the record is named,
@@ -1542,7 +1542,7 @@ mod tests {
         }
 
         // A fresh process: same package, same record ids, nothing else shared.
-        let mut set = RecordSet::open("dev.qos.test-records").with_home(room_id);
+        let mut set = RecordSet::open("dev.tilo.test-records").with_home(room_id);
         let mut state = State::new();
         let mut room = AutoCommit::new();
         set.checkout(&mut state, Some(&mut room), &a);
@@ -1560,7 +1560,7 @@ mod tests {
 
         let dir = tmp
             .path()
-            .join("dev.qos.test-records")
+            .join("dev.tilo.test-records")
             .join(app_state::ROOMS_DIR)
             .join(room_id)
             .join(app_state::RECORDS_DIR);
@@ -1584,14 +1584,14 @@ mod tests {
         let tmp = tempfile::tempdir().expect("temp dir");
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
         let a = "22222222-2222-4222-8222-222222222222";
         let b = "33333333-3333-4333-8333-333333333333";
         let record = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
 
         for (room, body) in [(a, "private to a"), (b, "private to b")] {
-            let mut set = RecordSet::open("dev.qos.scoped-records").with_home(room);
+            let mut set = RecordSet::open("dev.tilo.scoped-records").with_home(room);
             let mut state = State::new();
             assert!(set.checkout(&mut state, None, &record));
             put_text(&mut state.doc, "body", body);
@@ -1599,7 +1599,7 @@ mod tests {
         }
 
         for (room, expected) in [(a, "private to a"), (b, "private to b")] {
-            let mut set = RecordSet::open("dev.qos.scoped-records").with_home(room);
+            let mut set = RecordSet::open("dev.tilo.scoped-records").with_home(room);
             let mut state = State::new();
             assert!(set.checkout(&mut state, None, &record));
             assert_eq!(text(&state.doc, "body").as_deref(), Some(expected));

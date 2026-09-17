@@ -81,7 +81,7 @@ timestamped video, so a bad take costs nothing but running it again.
   present thread goes down, taking the session with it. Two runs died
   exactly there. So nothing here resizes anything: the window is
   *created* at the size the window manager will grant
-  (`NIRIOS_WINIT_SIZE`), and is iconified and re-raised rather than
+  (`TILO_WINIT_SIZE`), and is iconified and re-raised rather than
   resized while the rest is staged.
 """
 from __future__ import annotations
@@ -113,7 +113,7 @@ _spec.loader.exec_module(yc)
 
 # The window winit gives itself (`backend/winit.rs:371`), which is how it
 # is found on the X server.
-WINDOW_TITLE = "nirios"
+WINDOW_TITLE = "tilo"
 
 # Why the log rather than the widget registry: a file row belongs to
 # Files, and a client's widgets are not in the compositor's registry, so
@@ -147,7 +147,7 @@ def private_session_bus(run_dir: str,
     desktop's bus, where it would otherwise be competing with GNOME for
     your notifications — and it keeps the compositor's portal backend
     from fighting whatever else on the machine has already claimed
-    `org.freedesktop.impl.portal.desktop.qos`, since a bus name has
+    `org.freedesktop.impl.portal.desktop.tilo`, since a bus name has
     exactly one owner and every later claimant just logs and gives up.
 
     Nothing in this take asks the portal for anything any more, so
@@ -202,7 +202,7 @@ class WindowedSession(yc.Session):
 
     The environment a session needs is forty lines of things that are
     easy to get subtly wrong (a relative XDG_CONFIG_HOME persists into
-    the real `~/.config/qos`; a shared runtime dir is two sessions
+    the real `~/.config/tilo`; a shared runtime dir is two sessions
     fighting over one broker socket), and it is already written. So the
     parent's `start` is used verbatim and only the two things that must
     differ are intercepted at the spawn: the backend flag, and putting
@@ -219,7 +219,7 @@ class WindowedSession(yc.Session):
     #: Set by `main` before `start`, when a private bus could be raised.
     bus_address: str | None = None
     #: `WxH` the host window is *created* at, never resized to. See
-    #: `NIRIOS_WINIT_SIZE` in `backend/winit.rs`: a resize with a frame in
+    #: `TILO_WINIT_SIZE` in `backend/winit.rs`: a resize with a frame in
     #: flight panics the present thread, so the only safe way to record
     #: at the video's own resolution is to open the window at it.
     window_size: str | None = None
@@ -240,7 +240,7 @@ class WindowedSession(yc.Session):
             if self.bus_address:
                 env["DBUS_SESSION_BUS_ADDRESS"] = self.bus_address
             if self.window_size:
-                env["NIRIOS_WINIT_SIZE"] = self.window_size
+                env["TILO_WINIT_SIZE"] = self.window_size
             kw["env"] = env
             return real_popen(argv, **kw)
 
@@ -361,8 +361,8 @@ def notify(body: str, replace_id: int = 0, urgency: str = "normal") -> None:
     """
     if shutil.which("notify-send") is None:
         return
-    argv = ["notify-send", "-a", "qOS demo", "-u", urgency,
-            "-t", "6000", "qOS demo", body]
+    argv = ["notify-send", "-a", "Tilo demo", "-u", urgency,
+            "-t", "6000", "Tilo demo", body]
     if replace_id:
         argv[1:1] = ["-r", str(replace_id)]
     subprocess.run(argv, capture_output=True)
@@ -738,7 +738,7 @@ def main() -> int:
     ap.add_argument("--shell", default=None,
                     help="compositor binary. Defaults to target/demo/shell, "
                          "then target/debug/shell. Must be a build with "
-                         "debug-assertions on: QOS_TEST_CONTROL is compiled "
+                         "debug-assertions on: TILO_TEST_CONTROL is compiled "
                          "out of --release, and this script has nothing to "
                          "talk to without it")
     ap.add_argument("--out", default=os.path.join(REPO, "target",
@@ -833,12 +833,12 @@ def main() -> int:
     # left on screen.
     shutil.rmtree(args.out, ignore_errors=True)
     run_dir = os.path.join(args.out, "quinten")
-    apps_dir = os.path.join(run_dir, "qos-apps")
+    apps_dir = os.path.join(run_dir, "tilo-apps")
     yc.compose_registry(apps_dir, entries)
     # Under HOMES_ROOT, not under the run directory. Files draws the
     # directory it is showing component by component, and a home inside
     # the checkout renders on camera as
-    # `… › quickdesktop › .claude › worktrees › yc-demo › target › …` —
+    # `… › tilo › .claude › worktrees › yc-demo › target › …` —
     # which tells a viewer they are looking at a harness, and which
     # tooling built it. `HOMES_ROOT` reads as a machine's own.
     home = yc.stage_home(os.path.join(yc.HOMES_ROOT, "quinten"))
@@ -855,7 +855,7 @@ def main() -> int:
     png = open(photo, "rb").read()
 
     # The packaging chain, by path rather than off PATH, so the run uses
-    # the binaries built for it. Without `qos-launcher` in particular an
+    # the binaries built for it. Without `tilo-launcher` in particular an
     # app launch is refused outright — there is no sandbox to spawn the
     # payload into — and the take has nothing to click on.
     def tool(name: str) -> str | None:
@@ -866,14 +866,14 @@ def main() -> int:
         return None
 
     tools = {var: path for var, name in (
-        ("QOS_CATALOGUE_BIN", "qos-catalogue"),
-        ("QOS_INSTALL_BIN", "qos-install"),
-        ("QOS_LAUNCHER_BIN", "qos-launcher"),
+        ("TILO_CATALOGUE_BIN", "tilo-catalogue"),
+        ("TILO_INSTALL_BIN", "tilo-install"),
+        ("TILO_LAUNCHER_BIN", "tilo-launcher"),
     ) if (path := tool(name))}
-    if "QOS_LAUNCHER_BIN" not in tools:
-        print("no qos-launcher in target/{demo,debug}: an app launch will be "
+    if "TILO_LAUNCHER_BIN" not in tools:
+        print("no tilo-launcher in target/{demo,debug}: an app launch will be "
               "refused, so there would be no word processor to click in. "
-              "Build it:\n  cargo build -p qos-launcher --bin qos-launcher",
+              "Build it:\n  cargo build -p tilo-launcher --bin tilo-launcher",
               file=sys.stderr)
         return 2
 
@@ -889,7 +889,7 @@ def main() -> int:
         "quinten", "quinten", run_dir,
         # Short: AF_UNIX caps sun_path near 108 bytes and a run directory
         # deep in a worktree blows straight past it.
-        os.path.join(runtime, f"qos-ins-{pid}.sock"),
+        os.path.join(runtime, f"tilo-ins-{pid}.sock"),
         shell_bin, "1600x900",
         os.path.join(runtime, f"qins{pid}"),
         home, apps_dir, tools)
@@ -1185,7 +1185,7 @@ def main() -> int:
         if args.keep:
             print(f"\n--keep: session left running (pid "
                   f"{session.proc.pid if session.proc else '?'}), "
-                  f"QOS_TEST_CONTROL={session.sock}")
+                  f"TILO_TEST_CONTROL={session.sock}")
             if not args.windowed:
                 print("  its window is fullscreen; close it with the pid "
                       "above when you are done. It is deliberately not "

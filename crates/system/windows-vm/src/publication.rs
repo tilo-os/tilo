@@ -167,7 +167,7 @@ mod tests {
         PublishedApplication {
             id: id.to_string(),
             display_name: "Example".to_string(),
-            remote_app_alias: format!("qos-{id}"),
+            remote_app_alias: format!("tilo-{id}"),
             icon_sha256: None,
             associations: vec![Association {
                 kind: AssociationKind::Extension,
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn older_catalogues_default_to_no_safe_uninstaller() {
         let application: PublishedApplication = serde_json::from_str(
-            r#"{"id":"example","displayName":"Example","remoteAppAlias":"qos-example","iconSha256":null,"associations":[]}"#,
+            r#"{"id":"example","displayName":"Example","remoteAppAlias":"tilo-example","iconSha256":null,"associations":[]}"#,
         )
         .unwrap();
         assert!(!application.uninstall_available);

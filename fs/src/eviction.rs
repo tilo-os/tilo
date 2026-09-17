@@ -947,7 +947,7 @@ fn request_id(
     hashes: &[Hash],
 ) -> EvictionRequestId {
     let mut digest_builder = blake3::Hasher::new();
-    digest_builder.update(b"qos.collaborative-fs.eviction-request.v1\0");
+    digest_builder.update(b"tilo.collaborative-fs.eviction-request.v1\0");
     digest_builder.update(record_id.0.as_bytes());
     digest_builder.update(version_id.0.as_bytes());
     digest_builder.update(&[match mode {

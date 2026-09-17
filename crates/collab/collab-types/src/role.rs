@@ -90,7 +90,7 @@ pub enum OpClass {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum ArtifactKind {
-    /// Free-form rich-text document. The qOS Notes app's primitive.
+    /// Free-form rich-text document. The Tilo Notes app's primitive.
     Note,
     /// Binary file backed by the P2P FUSE layer. "Mutate" op classes are
     /// interpreted as filesystem operations.

@@ -57,7 +57,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.video-editor", video_editor::app_root)
+        &LaunchSpec::new("dev.tilo.video-editor", video_editor::app_root)
             .shot_handler(shot_handler)
             .allowed_flags(&["--empty", "--narrow"])
             .allowed_options(&["--import"])
@@ -76,12 +76,12 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
     // capture resolves the demo project's media to local (hydrated)
     // sources — exercising the hydration branch without a live mount.
     // Honour an existing override if the caller already set one.
-    if std::env::var_os("QOS_VE_MEDIA_DIR").is_none() {
+    if std::env::var_os("TILO_VE_MEDIA_DIR").is_none() {
         let bundled = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sample-media");
         if bundled.exists() {
             // Safety: set before any threads spawn for the one-shot render.
             unsafe {
-                std::env::set_var("QOS_VE_MEDIA_DIR", bundled);
+                std::env::set_var("TILO_VE_MEDIA_DIR", bundled);
             }
         }
     }
@@ -182,7 +182,7 @@ fn render_shot_to_png(
     // Keep visual-review captures faithful to the live accessibility setting:
     // an animation that settles in the host must also settle in a one-frame
     // reduced-motion screenshot instead of preserving an arbitrary midpoint.
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
@@ -190,7 +190,7 @@ fn render_shot_to_png(
     let theme = theme
         .with_text_scale(text_scale.unwrap_or(1.0))
         .with_reduce_motion(matches!(
-            std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
+            std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
             Some("1" | "true" | "yes")
         ));
     let presence = PresenceCtx::empty();

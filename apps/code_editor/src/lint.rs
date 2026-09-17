@@ -219,7 +219,7 @@ fn scan_line_brackets(
             // partner. Treating one as an unterminated char literal makes
             // the scanner swallow the rest of the line — including the
             // bracket that closes the signature — and report "Unclosed '('"
-            // on code that is perfectly valid. Opening real qOS sources
+            // on code that is perfectly valid. Opening real Tilo sources
             // produced eight such warnings on the first file.
             '\'' if has_lifetimes(language) && is_lifetime_tick(line, bi) => {}
             '"' | '\'' => {
@@ -390,7 +390,7 @@ mod tests {
 
     /// The linter is what the editor shows while a language server is still
     /// indexing, so it must stay useful on a real source file: this is a
-    /// verbatim slice of qOS code, and it must lint clean.
+    /// verbatim slice of Tilo code, and it must lint clean.
     #[test]
     fn real_rust_source_lints_clean() {
         let src = "\

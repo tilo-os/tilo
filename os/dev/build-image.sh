@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the qOS bootc image and a bootable qcow2, end to end.
+# Build the Tilo bootc image and a bootable qcow2, end to end.
 #
 #   ./os/dev/build-image.sh
 #
@@ -13,20 +13,20 @@
 #   2. os/dev/disk-image.sh -> os/output/qcow2/disk.qcow2: systemd-repart for the
 #      partitions, `bootc install to-filesystem` into them. That replaced
 #      bootc-image-builder, which has no composefs/UKI surface — and which cannot
-#      build this image at all, because qOS asks for systemd-boot and bib's
+#      build this image at all, because Tilo asks for systemd-boot and bib's
 #      ostree-backend install refuses it ("bootupd is required for ostree-based
 #      installs").
 #
 # Notes / gotchas baked in from bringup:
 #   * First build is a long COLD Rust compile inside the container; the
 #     Containerfile uses cargo + sccache cache mounts so rebuilds are fast.
-#   * QOS_WITH_BROWSER=0 ./os/dev/build-image.sh omits the browser and the WPE
+#   * TILO_WITH_BROWSER=0 ./os/dev/build-image.sh omits the browser and the WPE
 #     WebKit engine stage that builds its engine from source — ~45 of the ~60
 #     minutes a cold build costs. The boot chain (kernel, initramfs, LUKS/TPM,
 #     greeter, installer, rollback) is all still there, so this is the image to
 #     build when the question is "does it boot?". Default is the full image.
 #   * The image is SEALED: it carries a Unified Kernel Image whose signed command
-#     line includes the hardening kargs and `qos.generation=<N>`, which
+#     line includes the hardening kargs and `tilo.generation=<N>`, which
 #     systemd-stub measures into PCR 11. Two consequences for this script:
 #       - the generation has to come from somewhere real, so it is resolved from
 #         the published series (os/dev/next-generation.sh) rather than defaulted;
@@ -55,60 +55,60 @@ done
 # Rust resolve pinned (the tracked Cargo.lock), two builds of the same commit
 # yield the same image (modulo dnf package drift over time — see
 # docs/supply-chain.md). Override via $SOURCE_DATE_EPOCH.
-SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$QOS_REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$TILO_REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"
 export SOURCE_DATE_EPOCH
-"$QOS_OS_DIR/dev/cache-github-assets.sh"
+"$TILO_OS_DIR/dev/cache-github-assets.sh"
 # The digest-pinned base the build starts FROM — our own mirror of the Fedora
 # bootc image, because upstream deletes the manifest a digest points at within
 # about a day (see os/base-snapshot.env). Written by the mirror-base CI job.
 # shellcheck disable=SC1091
-[ -f "$QOS_OS_DIR/base-snapshot.env" ] && . "$QOS_OS_DIR/base-snapshot.env"
+[ -f "$TILO_OS_DIR/base-snapshot.env" ] && . "$TILO_OS_DIR/base-snapshot.env"
 [ -n "${BASE_REF:-}" ] || die "no BASE_REF — run the mirror-base CI job first"
 # The digest-pinned frozen RPM repo the build installs from (written by
 # os/dev/snapshot-rpms.sh / the snapshot-rpms CI job). Cross-time reproducible.
 # shellcheck disable=SC1091
 # An explicit RPMS_REF is useful for validating a just-built snapshot before it
 # is published and pinned. Do not let the tracked default silently overwrite it.
-_qos_rpms_ref_override="${RPMS_REF:-}"
-[ -f "$QOS_OS_DIR/rpms-snapshot.env" ] && . "$QOS_OS_DIR/rpms-snapshot.env"
-RPMS_REF="${_qos_rpms_ref_override:-${RPMS_REF:-}}"
+_tilo_rpms_ref_override="${RPMS_REF:-}"
+[ -f "$TILO_OS_DIR/rpms-snapshot.env" ] && . "$TILO_OS_DIR/rpms-snapshot.env"
+RPMS_REF="${_tilo_rpms_ref_override:-${RPMS_REF:-}}"
 [ -n "${RPMS_REF:-}" ] || die "no RPMS_REF — run ./os/dev/snapshot-rpms.sh (or the snapshot-rpms CI job) first"
-# The digest-pinned qos-kernel image (built by .forgejo/workflows/build-kernel.yml
+# The digest-pinned tilo-kernel image (built by .forgejo/workflows/build-kernel.yml
 # — see os/kernel/Containerfile).  os/Containerfile swaps kernel-core →
-# qos-kernel-core out of it.  Cross-time reproducible.
+# tilo-kernel-core out of it.  Cross-time reproducible.
 # shellcheck disable=SC1091
-[ -f "$QOS_OS_DIR/kernel-snapshot.env" ] && . "$QOS_OS_DIR/kernel-snapshot.env"
+[ -f "$TILO_OS_DIR/kernel-snapshot.env" ] && . "$TILO_OS_DIR/kernel-snapshot.env"
 [ -n "${KERNEL_RPMS_REF:-}" ] || die "no KERNEL_RPMS_REF — run the build-kernel CI job (or podman build -f os/kernel/Containerfile) first"
 # Pre-flight: every host-side COPY source exists. Decidable in a second, and the
 # alternative is finding out ~20 minutes in from a message naming a path with a
 # leading slash that exists nowhere — which is how a stale `COPY docs/secure-boot.md`
 # blocked every image build on main until someone tried to build one.
-# QOS_SKIP_BUILD=1 images an image that is already in local storage instead of
+# TILO_SKIP_BUILD=1 images an image that is already in local storage instead of
 # building one. The image builds in CI on this project, so the local half of
 # this pipeline is usually the disk step alone:
 #
-#   podman pull code.podesta.ai/qos/qos:<tag>
-#   podman tag  code.podesta.ai/qos/qos:<tag> localhost/qos:latest
-#   QOS_SKIP_BUILD=1 ./os/dev/build-image.sh
+#   podman pull code.podesta.ai/tilo/tilo:<tag>
+#   podman tag  code.podesta.ai/tilo/tilo:<tag> localhost/tilo:latest
+#   TILO_SKIP_BUILD=1 ./os/dev/build-image.sh
 #
 # The seal loop further down still runs, and still has to: it rewrites the UKI
 # *inside* the image, which is a layer on top of whatever was pulled rather than
 # a rebuild of it, so it works the same on an image this machine never compiled.
-: "${QOS_SKIP_BUILD:=0}"
+: "${TILO_SKIP_BUILD:=0}"
 
 # Both of these check what a build would produce, so they have nothing to say
 # about an image that already exists.
-if [ "$QOS_SKIP_BUILD" != "1" ]; then
-bash "$QOS_OS_DIR/dev/verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF" \
+if [ "$TILO_SKIP_BUILD" != "1" ]; then
+bash "$TILO_OS_DIR/dev/verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF" \
   || die "the frozen RPM snapshot does not match the current Containerfiles"
-bash "$QOS_OS_DIR/tests/containerfile_sources.sh" >/dev/null \
-  || { bash "$QOS_OS_DIR/tests/containerfile_sources.sh"; die "a Containerfile COPY source is missing (see above)"; }
+bash "$TILO_OS_DIR/tests/containerfile_sources.sh" >/dev/null \
+  || { bash "$TILO_OS_DIR/tests/containerfile_sources.sh"; die "a Containerfile COPY source is missing (see above)"; }
 # Pre-flight: the preinstalled app store can be built and will resolve at run
 # time. Same reasoning — a runtime version the apps don't declare, or an app
 # directory cargo can't name, costs a full build to discover and then shows up
 # as an empty launcher rather than as a build error.
-bash "$QOS_OS_DIR/tests/app_store.sh" >/dev/null \
-  || { bash "$QOS_OS_DIR/tests/app_store.sh"; die "the app store would not work (see above)"; }
+bash "$TILO_OS_DIR/tests/app_store.sh" >/dev/null \
+  || { bash "$TILO_OS_DIR/tests/app_store.sh"; die "the app store would not work (see above)"; }
 fi
 
 # Where the build unpacks layers. Two failure modes converge here, and neither
@@ -122,7 +122,7 @@ fi
 #     one — gigabytes of it, differing per run.
 #
 # os/output is on the big disk and already excluded from the context, so it is both.
-: "${TMPDIR:=$QOS_OUTPUT/.tmp}"
+: "${TMPDIR:=$TILO_OUTPUT/.tmp}"
 mkdir -p "$TMPDIR"
 export TMPDIR
 
@@ -130,71 +130,71 @@ export TMPDIR
 # series unless given, and never defaulted: a constant here is what made every
 # image claim to be generation 0, and a rollback floor that cannot move is a
 # machine that will not unseal after a few updates. Reproducibility is
-# "same commit + same QOS_GENERATION -> same image" — a published image is genuinely
+# "same commit + same TILO_GENERATION -> same image" — a published image is genuinely
 # new content, so it must be a new generation.
-if [ -z "${QOS_GENERATION:-}" ] && [ "$QOS_SKIP_BUILD" = "1" ]; then
+if [ -z "${TILO_GENERATION:-}" ] && [ "$TILO_SKIP_BUILD" = "1" ]; then
   # Read back, not allocated: the number is already sealed into this image's
   # UKI, and allocating a second would consume a generation that no published
   # image carries -- which is the series the rollback floor counts along.
-  QOS_GENERATION="$(podman run --rm --entrypoint cat "$QOS_IMAGE" /usr/lib/qos/generation 2>/dev/null | tr -d '[:space:]')"
-  [ -n "$QOS_GENERATION" ] || QOS_GENERATION="unknown"
-  msg "generation $QOS_GENERATION (read from $QOS_IMAGE, not allocated)"
+  TILO_GENERATION="$(podman run --rm --entrypoint cat "$TILO_IMAGE" /usr/lib/tilo/generation 2>/dev/null | tr -d '[:space:]')"
+  [ -n "$TILO_GENERATION" ] || TILO_GENERATION="unknown"
+  msg "generation $TILO_GENERATION (read from $TILO_IMAGE, not allocated)"
 fi
-if [ -z "${QOS_GENERATION:-}" ]; then
-  QOS_GENERATION="$("$QOS_OS_DIR/dev/next-generation.sh")" \
+if [ -z "${TILO_GENERATION:-}" ]; then
+  TILO_GENERATION="$("$TILO_OS_DIR/dev/next-generation.sh")" \
     || die "could not resolve the generation for this image (see above).
-  Pass one explicitly if you know the series: QOS_GENERATION=<N> $0"
+  Pass one explicitly if you know the series: TILO_GENERATION=<N> $0"
 fi
-export QOS_GENERATION
-# The negative control, off by default: QOS_SEAL_GENERATION=0 builds a UKI that
+export TILO_GENERATION
+# The negative control, off by default: TILO_SEAL_GENERATION=0 builds a UKI that
 # measures normally and carries no generation, which is how the boot-side check is
 # shown to fail on the generation assertions rather than on "nothing measured".
-: "${QOS_SEAL_GENERATION:=1}"
+: "${TILO_SEAL_GENERATION:=1}"
 
 # Browser opt-out (see the header). Exported as a build-arg either way so the
 # value is explicit in the build log.
-: "${QOS_WITH_BROWSER:=1}"
+: "${TILO_WITH_BROWSER:=1}"
 # Select the promoted buildroot for this native architecture. Before the first
 # promotion a developer may opt into the clearly named live-repository
 # bootstrap; it is never enabled implicitly and release CI never passes it.
-: "${QOS_WPE_BOOTSTRAP:=0}"
-_qos_wpe_ref_override="${WPE_BUILDROOT_REF:-}"
+: "${TILO_WPE_BOOTSTRAP:=0}"
+_tilo_wpe_ref_override="${WPE_BUILDROOT_REF:-}"
 # shellcheck disable=SC1091
-[ -f "$QOS_OS_DIR/wpe-buildroot-snapshot.env" ] && . "$QOS_OS_DIR/wpe-buildroot-snapshot.env"
+[ -f "$TILO_OS_DIR/wpe-buildroot-snapshot.env" ] && . "$TILO_OS_DIR/wpe-buildroot-snapshot.env"
 case "$(uname -m)" in
-  x86_64) WPE_BUILDROOT_REF="${_qos_wpe_ref_override:-${WPE_BUILDROOT_X86_64_REF:-}}" ;;
-  aarch64) WPE_BUILDROOT_REF="${_qos_wpe_ref_override:-${WPE_BUILDROOT_AARCH64_REF:-}}" ;;
+  x86_64) WPE_BUILDROOT_REF="${_tilo_wpe_ref_override:-${WPE_BUILDROOT_X86_64_REF:-}}" ;;
+  aarch64) WPE_BUILDROOT_REF="${_tilo_wpe_ref_override:-${WPE_BUILDROOT_AARCH64_REF:-}}" ;;
   *) die "unsupported WPE buildroot architecture: $(uname -m)" ;;
 esac
-if [ "$QOS_SKIP_BUILD" != 1 ] && [ "$QOS_WITH_BROWSER" = 1 ] && [ -z "$WPE_BUILDROOT_REF" ]; then
-  if [ "$QOS_WPE_BOOTSTRAP" = 1 ]; then
-    WPE_BUILDROOT_REF="$("$QOS_OS_DIR/dev/build-wpe-buildroot.sh")"
+if [ "$TILO_SKIP_BUILD" != 1 ] && [ "$TILO_WITH_BROWSER" = 1 ] && [ -z "$WPE_BUILDROOT_REF" ]; then
+  if [ "$TILO_WPE_BOOTSTRAP" = 1 ]; then
+    WPE_BUILDROOT_REF="$("$TILO_OS_DIR/dev/build-wpe-buildroot.sh")"
   else
     die "no promoted WPE buildroot for $(uname -m).
 Run the snapshot-wpe-buildroot workflow, or explicitly bootstrap a local-only
-build with QOS_WPE_BOOTSTRAP=1. Release CI never permits bootstrap mode."
+build with TILO_WPE_BOOTSTRAP=1. Release CI never permits bootstrap mode."
   fi
 fi
 # Dockerfile FROM references are resolved even for a pruned browser stage.
 [ -n "$WPE_BUILDROOT_REF" ] || WPE_BUILDROOT_REF="$BASE_REF"
-if [ "${QOS_REQUIRE_WPE_SIGNATURE:-0}" = 1 ] && [ "$QOS_WITH_BROWSER" = 1 ]; then
-  [[ "$WPE_BUILDROOT_REF" =~ ^code\.podesta\.ai/qos/qos-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] \
+if [ "${TILO_REQUIRE_WPE_SIGNATURE:-0}" = 1 ] && [ "$TILO_WITH_BROWSER" = 1 ]; then
+  [[ "$WPE_BUILDROOT_REF" =~ ^code\.podesta\.ai/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] \
     || die "release builds require a digest-pinned WPE buildroot"
   command -v cosign >/dev/null || die "release builds require cosign to verify the WPE buildroot"
-  cosign verify --key "$QOS_REPO/keys/cosign.pub" "$WPE_BUILDROOT_REF" >/dev/null \
+  cosign verify --key "$TILO_REPO/keys/cosign.pub" "$WPE_BUILDROOT_REF" >/dev/null \
     || die "WPE buildroot signature verification failed"
 fi
 # Extra podman-build flags, for the times the layer cache is the problem rather
 # than the source. A disk that fills mid-build can leave a cached layer holding a
 # corrupt RPM database, which then surfaces as dnf insisting that packages the
-# base image plainly has are missing — QOS_BUILD_ARGS=--no-cache is the way out.
-read -r -a _qos_build_args <<< "${QOS_BUILD_ARGS:-}"
+# base image plainly has are missing — TILO_BUILD_ARGS=--no-cache is the way out.
+read -r -a _tilo_build_args <<< "${TILO_BUILD_ARGS:-}"
 
-QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY="${QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}"
-if [ "$QOS_SKIP_BUILD" != 1 ]; then
-  [[ "$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" =~ ^[0-9a-fA-F]{64}$ ]] \
-    && [ "$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" != 0000000000000000000000000000000000000000000000000000000000000000 ] \
-    || die "set QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY to the published qOS-main Ed25519 owner key"
+TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY="${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}"
+if [ "$TILO_SKIP_BUILD" != 1 ]; then
+  [[ "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" =~ ^[0-9a-fA-F]{64}$ ]] \
+    && [ "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" != 0000000000000000000000000000000000000000000000000000000000000000 ] \
+    || die "set TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY to the published Tilo-main Ed25519 owner key"
 fi
 
 # $1 = the composefs digest to seal into the UKI. The first image deliberately
@@ -202,51 +202,51 @@ fi
 # digest, and the existing /boot-only second pass replaces it without changing
 # the rootfs whose digest is being sealed. Computing a provisional composefs
 # repository here duplicates the rootfs and can exhaust an ephemeral builder.
-QOS_PROVISIONAL_CFS_DIGEST="$(printf '0%.0s' {1..128})"
+TILO_PROVISIONAL_CFS_DIGEST="$(printf '0%.0s' {1..128})"
 build_image() {
-  podman build -f "$QOS_OS_DIR/Containerfile" -t "$QOS_IMAGE" \
-    --build-context "github-assets=$QOS_REPO/os/external-assets/cache" \
-    "${_qos_build_args[@]}" \
+  podman build -f "$TILO_OS_DIR/Containerfile" -t "$TILO_IMAGE" \
+    --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
+    "${_tilo_build_args[@]}" \
     --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
     --build-arg "BASE_REF=$BASE_REF" \
     --build-arg "RPMS_REF=$RPMS_REF" \
     --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
     --build-arg "WPE_BUILDROOT_REF=$WPE_BUILDROOT_REF" \
-    --build-arg "QOS_WITH_BROWSER=$QOS_WITH_BROWSER" \
-    --build-arg "QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" \
-    --build-arg "QOS_GENERATION=$QOS_GENERATION" \
-    --build-arg "QOS_SEAL_GENERATION=$QOS_SEAL_GENERATION" \
-    --build-arg "QOS_CFS_DIGEST=${1:-$QOS_PROVISIONAL_CFS_DIGEST}" \
+    --build-arg "TILO_WITH_BROWSER=$TILO_WITH_BROWSER" \
+    --build-arg "TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" \
+    --build-arg "TILO_GENERATION=$TILO_GENERATION" \
+    --build-arg "TILO_SEAL_GENERATION=$TILO_SEAL_GENERATION" \
+    --build-arg "TILO_CFS_DIGEST=${1:-$TILO_PROVISIONAL_CFS_DIGEST}" \
     --source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp \
-    "$QOS_REPO"
+    "$TILO_REPO"
 }
 
 # Rewrite the composefs digest inside the UKI the image already carries, as a layer
 # that touches nothing but /boot. $1 = the digest (no "sha512:" prefix).
 reseal_uki() {
-  "$QOS_OS_DIR/dev/reseal-image.sh" "$QOS_IMAGE" "$1"
+  "$TILO_OS_DIR/dev/reseal-image.sh" "$TILO_IMAGE" "$1"
 }
 
-if [ "$QOS_SKIP_BUILD" = "1" ]; then
-  podman image exists "$QOS_IMAGE" || die "QOS_SKIP_BUILD=1, but $QOS_IMAGE is not in local
+if [ "$TILO_SKIP_BUILD" = "1" ]; then
+  podman image exists "$TILO_IMAGE" || die "TILO_SKIP_BUILD=1, but $TILO_IMAGE is not in local
   storage, so there is nothing to image. Pull the published image and tag it:
-    podman pull code.podesta.ai/qos/qos:<tag>
-    podman tag  code.podesta.ai/qos/qos:<tag> $QOS_IMAGE"
-  msg "1/2 skipped (QOS_SKIP_BUILD=1): imaging the existing $QOS_IMAGE"
+    podman pull code.podesta.ai/tilo/tilo:<tag>
+    podman tag  code.podesta.ai/tilo/tilo:<tag> $TILO_IMAGE"
+  msg "1/2 skipped (TILO_SKIP_BUILD=1): imaging the existing $TILO_IMAGE"
 else
-  msg "1/2 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$QOS_WITH_BROWSER; generation=$QOS_GENERATION)"
-  build_image "$QOS_PROVISIONAL_CFS_DIGEST"
+  msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; generation=$TILO_GENERATION)"
+  build_image "$TILO_PROVISIONAL_CFS_DIGEST"
 fi
 
 msg "2/2 disk image -> qcow2"
 # shellcheck disable=SC1091
-. "$QOS_OS_DIR/account.env"
-rm -rf "$QOS_OUTPUT/qcow2" "$QOS_OUTPUT"/manifest* 2>/dev/null || true
-OUTDIR="$(dirname "$QOS_DISK")"
+. "$TILO_OS_DIR/account.env"
+rm -rf "$TILO_OUTPUT/qcow2" "$TILO_OUTPUT"/manifest* 2>/dev/null || true
+OUTDIR="$(dirname "$TILO_DISK")"
 INSTALL_LOG="$OUTDIR/.install.log"
-disk_args=(--user "$QOS_ACCOUNT")
-if [ -n "${QOS_TARGET_IMGREF:-}" ]; then
-  disk_args+=(--target-imgref "$QOS_TARGET_IMGREF")
+disk_args=(--user "$TILO_ACCOUNT")
+if [ -n "${TILO_TARGET_IMGREF:-}" ]; then
+  disk_args+=(--target-imgref "$TILO_TARGET_IMGREF")
 fi
 
 # Pass 1. A sealed image is expected to be refused here: `bootc container ukify`
@@ -254,7 +254,7 @@ fi
 # (bootc#2334), and install will not accept a UKI sealing anything but its own
 # value. disk-image.sh recognises that failure and prints the digest to seal, so
 # the recovery is to rebuild the UKI with it and install again.
-if ! "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" "${disk_args[@]}"; then
+if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}"; then
   want="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
   [ -n "$want" ] || die "the disk-image step failed for a reason other than the composefs digest
   seal; see the message above and $INSTALL_LOG"
@@ -272,10 +272,10 @@ if ! "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" "${disk_args[@]}"; t
   # Both digests are 128 hex characters, so the edit is length-preserving and the PE
   # layout is untouched; uki-cmdline.py refuses anything else.
   reseal_uki "$want" || die "could not rewrite the sealed composefs digest"
-  if [ -n "${QOS_RESEALED_DIGEST_FILE:-}" ]; then
-    printf '%s\n' "$want" > "$QOS_RESEALED_DIGEST_FILE"
+  if [ -n "${TILO_RESEALED_DIGEST_FILE:-}" ]; then
+    printf '%s\n' "$want" > "$TILO_RESEALED_DIGEST_FILE"
   fi
-  if ! "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" "${disk_args[@]}"; then
+  if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}"; then
     want2="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
     if [ -n "$want2" ] && [ "$want2" != "$want" ]; then
       die "the digest install expects MOVED between passes (${want:0:16}… -> ${want2:0:16}…),
@@ -292,20 +292,20 @@ fi
 # media. This runs only after the composefs seal converges; adding files under
 # /boot cannot move that digest. A final image pass proves that invariant and
 # ensures future bootc upgrades receive a prediction for their exact UKI.
-require_prediction="${QOS_REQUIRE_PCR_PREDICTION:-0}"
-allow_local_prediction="${QOS_ALLOW_LOCAL_PCR_SIGNING:-0}"
+require_prediction="${TILO_REQUIRE_PCR_PREDICTION:-0}"
+allow_local_prediction="${TILO_ALLOW_LOCAL_PCR_SIGNING:-0}"
 case "$require_prediction:$allow_local_prediction" in
   0:0|0:1|1:0|1:1) ;;
-  *) die "QOS_REQUIRE_PCR_PREDICTION and QOS_ALLOW_LOCAL_PCR_SIGNING must be 0 or 1" ;;
+  *) die "TILO_REQUIRE_PCR_PREDICTION and TILO_ALLOW_LOCAL_PCR_SIGNING must be 0 or 1" ;;
 esac
 if [ "$require_prediction" = 1 ] || [ "$allow_local_prediction" = 1 ]; then
-  [ -n "${QOS_PCR_PREDICTION_SIGNER:-}" ] \
-    || die "PCR prediction signing was requested but no QOS_PCR_PREDICTION_SIGNER is configured"
-  "$QOS_OS_DIR/dev/sign-target-prediction.sh" "$QOS_IMAGE" "$QOS_PCR_PREDICTION_SIGNER"
-  rm -rf "$QOS_OUTPUT/qcow2" "$QOS_OUTPUT"/manifest* 2>/dev/null || true
-  "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" "${disk_args[@]}" \
-    || die "adding /boot-only signed PCR prediction sidecars changed or invalidated the converged qOS image"
+  [ -n "${TILO_PCR_PREDICTION_SIGNER:-}" ] \
+    || die "PCR prediction signing was requested but no TILO_PCR_PREDICTION_SIGNER is configured"
+  "$TILO_OS_DIR/dev/sign-target-prediction.sh" "$TILO_IMAGE" "$TILO_PCR_PREDICTION_SIGNER"
+  rm -rf "$TILO_OUTPUT/qcow2" "$TILO_OUTPUT"/manifest* 2>/dev/null || true
+  "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}" \
+    || die "adding /boot-only signed PCR prediction sidecars changed or invalidated the converged Tilo image"
 fi
 
-msg "DONE: $QOS_DISK (generation $QOS_GENERATION)"
-ls -lh "$QOS_DISK"
+msg "DONE: $TILO_DISK (generation $TILO_GENERATION)"
+ls -lh "$TILO_DISK"

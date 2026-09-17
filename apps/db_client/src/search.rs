@@ -8,12 +8,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use automerge::AutoCommit;
-use qos_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
-use ui::qos_actions::ActionAddress;
+use tilo_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
+use ui::tilo_actions::ActionAddress;
 
 use crate::app::catalog_resource_id;
 use crate::app::{DB_OPERATION_TYPE, DbClientOperation};
@@ -558,7 +558,7 @@ fn append_connection_mutations(
             "Rename",
             "Connection name",
             &connection.name,
-            qos_actions::ExecutionLocus::ClientLocal,
+            tilo_actions::ExecutionLocus::ClientLocal,
             move |name| crate::actions::encode(&crate::actions::rename_connection_action(id, name)),
         )
         .reversible()
@@ -716,8 +716,8 @@ fn push_revision_part(parts: &mut String, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::Action;
     use std::sync::Mutex;
+    use tilo_actions::Action;
 
     // Two adversarial 100k fixtures are intentionally large enough to prove
     // bounded query work. Serialising only those fixtures keeps the normal
@@ -939,10 +939,10 @@ mod tests {
             .iter()
             .find(|action| action.id == "run")
             .unwrap();
-        assert_eq!(run.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert_eq!(run.contract.risk, tilo_actions::RiskLevel::Destructive);
         assert_eq!(
             run.contract.confirmation,
-            qos_actions::ConfirmationPolicy::Confirm
+            tilo_actions::ConfirmationPolicy::Confirm
         );
     }
 

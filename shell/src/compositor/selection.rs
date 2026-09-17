@@ -71,7 +71,7 @@ pub const MAX_CLIPBOARD_HISTORY_ITEMS: usize = 50;
 pub const MAX_CLIPBOARD_HISTORY_ITEM_BYTES: usize = 256 * 1024;
 /// Secret-capable widgets use this MIME marker to make retention impossible at
 /// the compositor boundary, even if an application accidentally offers it.
-pub const SECRET_MIME: &str = "application/x-qos-secret";
+pub const SECRET_MIME: &str = "application/x-tilo-secret";
 
 /// Bytes a fresh pipe accepts before write blocks (Linux default 64 KiB);
 /// kept conservative so the "cannot block" assumption holds even under a
@@ -106,7 +106,7 @@ impl From<Target> for SelectionTarget {
     }
 }
 
-/// One side of the mirror.  It retains the actual bytes for the formats qOS
+/// One side of the mirror.  It retains the actual bytes for the formats Tilo
 /// has asynchronously pulled from a client, not just a lossy text rendering.
 /// That makes this a suitable bridge for the Clipboard portal as well as the
 /// in-process UI.
@@ -115,7 +115,7 @@ struct Slot {
     /// Payloads keyed by advertised MIME type.  The aggregate is bounded by
     /// `MAX_SELECTION_BYTES`; aliases are resolved on read rather than copied.
     values: BTreeMap<String, Vec<u8>>,
-    /// MIME types exposed to Wayland clients when qOS owns the selection.
+    /// MIME types exposed to Wayland clients when Tilo owns the selection.
     mime_types: Vec<String>,
     /// Bumped whenever the selection changes hands, so an old asynchronous
     /// client transfer cannot overwrite a newer selection.
@@ -304,7 +304,7 @@ fn total_bytes(values: &BTreeMap<String, Vec<u8>>) -> usize {
 
 fn history_id(values: &BTreeMap<String, Vec<u8>>) -> [u8; 32] {
     let mut hash = blake3::Hasher::new();
-    hash.update(b"qos-clipboard-history-v1\0");
+    hash.update(b"tilo-clipboard-history-v1\0");
     for (mime, bytes) in values {
         hash.update(mime.as_bytes());
         hash.update(&[0]);
@@ -558,7 +558,7 @@ pub fn set_mirror_text(store: &SharedSelection, target: Target, text: &str) -> b
     set_mirror_bytes(store, target, TEXT_MIME, text.as_bytes().to_vec()).is_ok()
 }
 
-/// Replace qOS's pending portal offer.  There is deliberately no publication
+/// Replace Tilo's pending portal offer.  There is deliberately no publication
 /// until payload arrives: offering stale bytes under a newly remote-owned MIME
 /// would leak the prior selection.
 ///
@@ -1179,7 +1179,7 @@ impl State {
                         read_fd,
                     ),
                     Err(e) => {
-                        // `ServerSideSelection` is normal when qOS owns the
+                        // `ServerSideSelection` is normal when Tilo owns the
                         // source; it already has the bytes in the mirror.
                         tracing::debug!(target: "shell::selection", error = %e, "no client selection to mirror");
                     }
@@ -1352,7 +1352,7 @@ fn request_dragged_name(source: &WlDataSource, label: DragLabel) {
     // EOF — the client's copy closing alone isn't enough.
     drop(writer);
     let _ = std::thread::Builder::new()
-        .name("qos-drag-name".into())
+        .name("tilo-drag-name".into())
         .spawn(move || {
             use std::io::Read;
             let mut reader = reader;
@@ -1403,7 +1403,7 @@ impl ClientDndGrabHandler for State {
         {
             request_dragged_name(source, self.selection.dnd_label.clone());
         }
-        // The drag icon is a client surface with the `dnd_icon` role, but qOS
+        // The drag icon is a client surface with the `dnd_icon` role, but Tilo
         // doesn't composite it — the compositor draws its own drag feedback, and a
         // client icon would sit outside the strip layout. Recording it just keeps
         // the role assignment honest per protocol.

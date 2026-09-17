@@ -293,7 +293,7 @@ impl HistoryGroup {
 struct Placed {
     id: String,
     label: String,
-    /// True only for a shared `qos:group:*` record. Action-context groups
+    /// True only for a shared `tilo:group:*` record. Action-context groups
     /// have a stable projection id but nothing in the CRDT to update yet.
     persisted: bool,
     named_by: Option<HistoryAuthor>,
@@ -1022,7 +1022,7 @@ mod tests {
         ];
         for entry in &mut entries {
             entry.context = Some(
-                qos_actions::ActionContext::for_resource(
+                tilo_actions::ActionContext::for_resource(
                     "Edit",
                     "notes.note:launch",
                     "notes.note",
@@ -1052,7 +1052,7 @@ mod tests {
             entry(4, "Dara", 1003, OpClass::Splice),
         ];
         for entry in &mut entries {
-            entry.context = Some(qos_actions::ActionContext::default().with_group(
+            entry.context = Some(tilo_actions::ActionContext::default().with_group(
                 "launch",
                 "Launch report",
                 "work-session",

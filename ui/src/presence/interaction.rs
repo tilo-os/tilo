@@ -13,8 +13,8 @@ use super::{ParticipantKind, PresenceCtx};
 use crate::permissions::UserId;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
-use qos_actions::{InteractionActorKind, InteractionPhase, InvocationId, SemanticInteraction};
 use std::time::{Duration, Instant};
+use tilo_actions::{InteractionActorKind, InteractionPhase, InvocationId, SemanticInteraction};
 use vello::{
     Scene,
     kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke},
@@ -69,7 +69,7 @@ impl PresenceCtx {
     pub fn apply_interaction(
         &mut self,
         interaction: SemanticInteraction,
-    ) -> Result<bool, qos_actions::InteractionViolation> {
+    ) -> Result<bool, tilo_actions::InteractionViolation> {
         self.apply_interaction_at(interaction, Instant::now())
     }
 
@@ -81,7 +81,7 @@ impl PresenceCtx {
     pub fn observe_interaction(
         &mut self,
         interaction: SemanticInteraction,
-    ) -> Result<bool, qos_actions::InteractionViolation> {
+    ) -> Result<bool, tilo_actions::InteractionViolation> {
         self.apply_interaction_at(interaction, Instant::now())
     }
 
@@ -89,7 +89,7 @@ impl PresenceCtx {
         &mut self,
         interaction: SemanticInteraction,
         now: Instant,
-    ) -> Result<bool, qos_actions::InteractionViolation> {
+    ) -> Result<bool, tilo_actions::InteractionViolation> {
         interaction.validate()?;
         if let Some(current) = self.interactions.get(&interaction.invocation) {
             let same_identity = current.interaction.actor == interaction.actor
@@ -544,7 +544,7 @@ fn entry_belongs_to_app(entry: &InteractionPresenceEntry, app_id: &str) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::{ActionResource, INTERACTION_VERSION, InteractionAction, InteractionActor};
+    use tilo_actions::{ActionResource, INTERACTION_VERSION, InteractionAction, InteractionActor};
     use uuid::Uuid;
 
     fn interaction(
@@ -571,7 +571,7 @@ mod tests {
                 kind: "files.entry".into(),
                 label: "Draft.md".into(),
             },
-            anchor: qos_actions::InteractionAnchor::Resource,
+            anchor: tilo_actions::InteractionAnchor::Resource,
             group: None,
         }
     }
@@ -626,13 +626,13 @@ mod tests {
         let at = Instant::now();
         let mut presence = PresenceCtx::empty();
         let mut writer = interaction(20, 1, InteractionPhase::Applying);
-        writer.action.app = Some(qos_actions::ActionApp {
-            id: "org.qos.Writer".into(),
+        writer.action.app = Some(tilo_actions::ActionApp {
+            id: "org.tilo.Writer".into(),
             label: "Writer".into(),
         });
         let mut files = interaction(21, 1, InteractionPhase::Applying);
-        files.action.app = Some(qos_actions::ActionApp {
-            id: "org.qos.Files".into(),
+        files.action.app = Some(tilo_actions::ActionApp {
+            id: "org.tilo.Files".into(),
             label: "Files".into(),
         });
         let unowned = interaction(22, 1, InteractionPhase::Applying);
@@ -640,12 +640,12 @@ mod tests {
         assert!(presence.apply_interaction_at(files, at).unwrap());
         assert!(presence.apply_interaction_at(unowned, at).unwrap());
 
-        let writer = presence.visible_interactions_for_app("org.qos.Writer", at);
+        let writer = presence.visible_interactions_for_app("org.tilo.Writer", at);
         assert_eq!(writer.len(), 1);
         assert_eq!(writer[0].action.label, "Rename");
         assert!(
             presence
-                .visible_interactions_for_app("org.qos.Calendar", at)
+                .visible_interactions_for_app("org.tilo.Calendar", at)
                 .is_empty()
         );
     }
@@ -715,19 +715,19 @@ mod tests {
         let at = Instant::now();
         let update = interaction(10, 1, InteractionPhase::Applying);
         let key = crate::presence::PresenceKey::resource(
-            "org.qos.Writer",
+            "org.tilo.Writer",
             &update.resource.id,
             &update.resource.kind,
         );
         let payload = crate::collaboration::PresencePayload::Interaction(Box::new(update));
 
         let mut files = PresenceCtx::empty();
-        files.set_surface_id("org.qos.Files");
+        files.set_surface_id("org.tilo.Files");
         files.apply_remote_presence("broker-agent".into(), key.clone(), payload.clone());
         assert!(!files.has_visible_interactions(at));
 
         let mut writer = PresenceCtx::empty();
-        writer.set_surface_id("org.qos.Writer");
+        writer.set_surface_id("org.tilo.Writer");
         writer.apply_remote_presence("broker-agent".into(), key, payload);
         assert!(writer.has_visible_interactions(Instant::now()));
     }

@@ -48,10 +48,10 @@ pub mod continuity;
 pub mod hardware;
 pub mod notification_policy;
 
-/// The file name under the qOS config root.
+/// The file name under the Tilo config root.
 const FILE: &str = "settings.json";
 
-/// The per-user qOS config root: `$XDG_CONFIG_HOME/qos`, else `$HOME/.config/qos`. `None`
+/// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo`, else `$HOME/.config/tilo`. `None`
 /// only when neither variable yields a usable path. Per the XDG spec, `XDG_CONFIG_HOME` is
 /// honoured only when set, non-empty **and absolute** — a relative value falls back to
 /// `$HOME`, and getting that rule wrong in one reader and right in another is what made this
@@ -61,7 +61,7 @@ pub fn config_root() -> Option<PathBuf> {
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty() && p.is_absolute())
         .or_else(|| dirs::home_dir().map(|h| h.join(".config")))?;
-    Some(base.join("qos"))
+    Some(base.join("tilo"))
 }
 
 /// The shared settings file: `<config root>/settings.json`.
@@ -207,7 +207,7 @@ mod tests {
 
     fn tmpdir() -> PathBuf {
         let p = std::env::temp_dir().join(format!(
-            "qos-settings-store-{}-{:?}-{}",
+            "tilo-settings-store-{}-{:?}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -227,8 +227,11 @@ mod tests {
         let dir = tmpdir();
         let prev = std::env::var_os("XDG_CONFIG_HOME");
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
-        assert_eq!(config_root(), Some(dir.join("qos")));
-        assert_eq!(settings_path(), Some(dir.join("qos").join("settings.json")));
+        assert_eq!(config_root(), Some(dir.join("tilo")));
+        assert_eq!(
+            settings_path(),
+            Some(dir.join("tilo").join("settings.json"))
+        );
         match prev {
             Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
             None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
@@ -255,7 +258,7 @@ mod tests {
             "a relative XDG_CONFIG_HOME must be ignored, got {root:?}"
         );
         let home = dirs::home_dir().expect("test needs a home dir");
-        assert_eq!(root, home.join(".config").join("qos"));
+        assert_eq!(root, home.join(".config").join("tilo"));
 
         match prev {
             Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
@@ -269,7 +272,7 @@ mod tests {
         let prev = std::env::var_os("XDG_CONFIG_HOME");
         unsafe { std::env::set_var("XDG_CONFIG_HOME", "") };
         let root = config_root().expect("falls back to $HOME/.config");
-        assert_eq!(root, dirs::home_dir().unwrap().join(".config").join("qos"));
+        assert_eq!(root, dirs::home_dir().unwrap().join(".config").join("tilo"));
         match prev {
             Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
             None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },

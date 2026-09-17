@@ -1,6 +1,6 @@
 //! # Visual smoke checklist
 //!
-//! Run `cargo run -p quick-desktop` and verify:
+//! Run `cargo run -p tilo-desktop` and verify:
 //!
 //! - `TopBar` renders with a live clock; wheel over the center area cycles to
 //!   the CPU/RAM sparkline and the calendar (200 ms cooldown).
@@ -141,7 +141,7 @@ pub use collaboration_launchpad::{
 use file_explorer::FileExplorerWidget;
 use terminal::TerminalWidget;
 
-/// Root nirios shell handle. Owns the runtime workspace tree — the live
+/// Root tilo shell handle. Owns the runtime workspace tree — the live
 /// counterpart to the persisted [`state::WorkspaceTree`], holding real
 /// `Box<dyn AppWidget>`s in [`tile::TileContent::App`] instead of
 /// `AppPlaceholder` symbols — and the single Automerge document shared
@@ -711,7 +711,7 @@ fn default_demo_tabs() -> DemoTabs {
 
     // Seeds a welcome paragraph on first boot; later boots load the shared doc.
     let notes = NotesApp::with_seed(
-        "Welcome to nirios.\n\n\
+        "Welcome to tilo.\n\n\
          These notes sync live with anyone invited to this workspace — edits \
          replicate through the same CRDT path every widget uses.\n\n\
          Ctrl+Z / Ctrl+Y undo and redo across the whole shell.",
@@ -870,45 +870,45 @@ pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
 /// v1 renders the active workspace's active strip as a `StripView` overlay
 /// above the active `WorkspaceView`, with placeholder groups laid out
 /// horizontally.
-pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
-    let (root, _chrome) = build_nirios_root_with_chrome(tree);
+pub fn build_tilo_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
+    let (root, _chrome) = build_tilo_root_with_chrome(tree);
     root
 }
 
 /// Lets the caller expose the peer-sync palette commands (`/invite`,
-/// `/connect`) for a network-enabled session. [`build_nirios_root`] keeps
+/// `/connect`) for a network-enabled session. [`build_tilo_root`] keeps
 /// the zero-arg shape so call-sites that don't care don't have to thread it.
-pub fn build_nirios_root_with_options(
+pub fn build_tilo_root_with_options(
     tree: &WorkspaceTree,
     enable_peer_sync: bool,
 ) -> Box<dyn Widget> {
-    let (host, _chrome) = build_nirios_overlay_host_with_options(tree, enable_peer_sync);
+    let (host, _chrome) = build_tilo_overlay_host_with_options(tree, enable_peer_sync);
     Box::new(host) as Box<dyn Widget>
 }
 
 /// Also returns the shared chrome handle, so integration tests can observe
 /// overlay toggles without drilling through the widget tree.
-pub fn build_nirios_root_with_chrome(
+pub fn build_tilo_root_with_chrome(
     tree: &WorkspaceTree,
 ) -> (Box<dyn Widget>, chrome_state::Chrome) {
-    let (host, chrome) = build_nirios_overlay_host_with_chrome(tree);
+    let (host, chrome) = build_tilo_overlay_host_with_chrome(tree);
     (Box::new(host) as Box<dyn Widget>, chrome)
 }
 
 /// Returns the concrete [`overlay_host::ShellOverlayHost`] instead of a
 /// boxed trait object, so tests can assert on host-local state like
-/// `palette_visible()`. Production wiring goes through `build_nirios_root`.
-pub fn build_nirios_overlay_host_with_chrome(
+/// `palette_visible()`. Production wiring goes through `build_tilo_root`.
+pub fn build_tilo_overlay_host_with_chrome(
     tree: &WorkspaceTree,
 ) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
-    build_nirios_overlay_host_with_options(tree, false)
+    build_tilo_overlay_host_with_options(tree, false)
 }
 
-pub fn build_nirios_overlay_host_with_options(
+pub fn build_tilo_overlay_host_with_options(
     tree: &WorkspaceTree,
     enable_peer_sync: bool,
 ) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
-    build_nirios_overlay_host_with_handle(tree.clone().shared(), enable_peer_sync)
+    build_tilo_overlay_host_with_handle(tree.clone().shared(), enable_peer_sync)
 }
 
 /// Extracted so [`ShellOverlayHost::resync_strips_from_tree`] can reach for
@@ -955,15 +955,15 @@ pub fn install_document_opener(chrome: &chrome_state::Chrome) {
 /// peer-sync's `WorkspaceTreeReplica` hold) so chrome mutations land on the
 /// tree other subsystems read from. Reads it once for the initial widget
 /// tree; later rebuilds run `sync_from_tree` on each chrome widget.
-pub fn build_nirios_overlay_host_with_handle(
+pub fn build_tilo_overlay_host_with_handle(
     tree_handle: state::WorkspaceTreeHandle,
     enable_peer_sync: bool,
 ) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
     // In-memory records: a host built without being told where to keep them
     // is a test, a probe or a `--shots` run, none of which may leave a
     // user's tabs on disk. A session passes its own store through
-    // [`build_nirios_overlay_host_with_records`].
-    build_nirios_overlay_host_with_records(
+    // [`build_tilo_overlay_host_with_records`].
+    build_tilo_overlay_host_with_records(
         tree_handle,
         enable_peer_sync,
         ui::record::RecordStore::in_memory(),
@@ -972,7 +972,7 @@ pub fn build_nirios_overlay_host_with_handle(
 
 /// A scratch tab belongs to the compositor, not to any installed app, so
 /// its records live under this package in the compositor's own state dir.
-pub const SHELL_RECORDS_PACKAGE: &str = "org.nirios.Shell";
+pub const SHELL_RECORDS_PACKAGE: &str = "org.tilo.Shell";
 
 pub fn session_record_store() -> ui::record::RecordStore {
     ui::record::RecordStore::open(SHELL_RECORDS_PACKAGE)
@@ -1115,7 +1115,7 @@ pub(crate) fn build_workspace_root_with_scene_parts(
     )
 }
 
-/// As [`build_nirios_overlay_host_with_handle`], but with the store the
+/// As [`build_tilo_overlay_host_with_handle`], but with the store the
 /// open tabs' documents live in named by the caller.
 // `tree_handle` is only ever read here (`.clone()`/`.read()`), never
 // moved, so `&WorkspaceTreeHandle` would be the tighter signature — but
@@ -1127,7 +1127,7 @@ pub(crate) fn build_workspace_root_with_scene_parts(
     reason = "tree_handle is only ever borrowed here, but narrowing the signature would touch \
               call sites in shell::compositor, outside this pass's scope"
 )]
-pub fn build_nirios_overlay_host_with_records(
+pub fn build_tilo_overlay_host_with_records(
     tree_handle: state::WorkspaceTreeHandle,
     enable_peer_sync: bool,
     records: ui::record::RecordStore,

@@ -118,8 +118,8 @@ class Session:
         os.makedirs(self.home, exist_ok=True)
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.socket,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_TEST_CONTROL": self.socket,
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             "HOME": self.home,
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
@@ -129,9 +129,9 @@ class Session:
             # Without its own device key a session's peer-sync turns
             # itself off, and the only visible symptom is that
             # `peer.invite` is never exported.
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
-            "QOS_USER_ID": name,
-            "NIRIOS_HEADLESS_SIZE": "1600x1000",
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_USER_ID": name,
+            "TILO_HEADLESS_SIZE": "1600x1000",
             # The host is de_DE and bwrap does not clear the
             # environment, so without this the chrome renders in German.
             "LC_ALL": "en_US.UTF-8",

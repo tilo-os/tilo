@@ -64,7 +64,7 @@ extern crate runtime_dylib;
 /// Returns an error if launching the app or running a `--shots` capture fails.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.qos.video-player", live_root)
+        &LaunchSpec::new_with_args("dev.tilo.video-player", live_root)
             .configure_app(|app| video_player::actions::register(app.action_registry_mut()))
             .shot_handler(render_shot)
             .allowed_live_options(&["--open"])
@@ -113,7 +113,7 @@ fn requested_source(args: &LaunchArgs) -> Option<media::Source> {
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     Ok(video_player::app_root_source(
         requested_source(args),
-        std::env::var("QOS_MEDIA_HANDOFF_TITLE").ok(),
+        std::env::var("TILO_MEDIA_HANDOFF_TITLE").ok(),
     ))
 }
 
@@ -159,14 +159,14 @@ fn render_shot_to_png(
     text_scale: Option<f32>,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let reduce_motion = ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+    let reduce_motion = ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
         .into_iter()
         .filter_map(|key| std::env::var(key).ok())
         .any(|value| {
             let value = value.trim();
             !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
         });
-    let shot_theme_name = std::env::var("QOS_SHOTS_THEME").ok();
+    let shot_theme_name = std::env::var("TILO_SHOTS_THEME").ok();
     let theme = shot_theme(shot_theme_name.as_deref(), text_scale, reduce_motion);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();

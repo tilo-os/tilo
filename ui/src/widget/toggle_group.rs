@@ -56,7 +56,7 @@ pub struct ToggleGroup {
     selected: usize,
     on_change: Option<Box<dyn FnMut(usize)>>,
     action: Option<ActionEmitter<usize>>,
-    native_resource: Option<crate::qos_actions::Resource>,
+    native_resource: Option<crate::tilo_actions::Resource>,
     /// Indices aligned 1:1 with `segments`; drawing also consults this for
     /// the fill.
     segment_rects: Vec<Rect>,
@@ -147,7 +147,7 @@ impl ToggleGroup {
     /// optimistically only after the document/model reflects that action, so
     /// collaborative filters do not acquire a second callback-only path.
     #[must_use]
-    pub fn on_action(mut self, binding: crate::qos_actions::ActionBinding<usize>) -> Self {
+    pub fn on_action(mut self, binding: crate::tilo_actions::ActionBinding<usize>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
         self.native_resource = None;
         self.on_change = None;
@@ -176,12 +176,12 @@ impl ToggleGroup {
         reason = "the generated integer schema and action are internally consistent"
     )]
     pub fn on_view<F: FnMut(usize) + 'static>(mut self, id: &str, f: F) -> Self {
-        use crate::qos_actions::{
+        use crate::tilo_actions::{
             ActionBinding, ActionParam, ActionSpec, DiscoveryScope, EncodedAction, OperationKind,
             ParamType, Resource,
         };
 
-        const TYPE_ID: &str = "qos.ui.segmented.select";
+        const TYPE_ID: &str = "tilo.ui.segmented.select";
         self.id = Some(id.to_owned());
         let control_id = id.to_owned();
         let mut spec = ActionSpec::typed_operation(
@@ -207,7 +207,7 @@ impl ToggleGroup {
             },
         );
         spec.contract.discovery = DiscoveryScope::Launchable;
-        let resource = Resource::new(format!("qos.control:{id}"), "qos.control.segmented", id)
+        let resource = Resource::new(format!("tilo.control:{id}"), "tilo.control.segmented", id)
             .with_action(spec.clone());
         let binding = ActionBinding::new(&resource, &spec, |index: usize| {
             serde_json::Map::from_iter([("index".into(), serde_json::json!(index))])
@@ -882,27 +882,27 @@ impl Widget for ToggleGroup {
         self.id.as_deref()
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<crate::qos_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<crate::tilo_actions::Resource> {
         self.native_resource.iter().cloned().collect()
     }
 
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         self.native_resource
             .as_ref()
-            .map(|_| std::iter::once("qos.ui.segmented.select".to_owned()).collect())
+            .map(|_| std::iter::once("tilo.ui.segmented.select".to_owned()).collect())
             .unwrap_or_default()
     }
 
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &std::collections::HashSet<crate::qos_actions::ActionAddress>,
+        allowed: &std::collections::HashSet<crate::tilo_actions::ActionAddress>,
     ) {
         if let Some(action) = &mut self.action {
             action.refresh_availability(allowed);
         }
     }
 
-    fn take_control_invocation(&mut self) -> Option<crate::qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<crate::tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
 
@@ -917,14 +917,14 @@ impl Widget for ToggleGroup {
 
     fn invoke_resource_operation_v2(
         &mut self,
-        kind: crate::qos_actions::OperationKind,
+        kind: crate::tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Result<Option<crate::qos_actions::ActionOutput>, String> {
-        if kind != crate::qos_actions::OperationKind::View
-            || type_id != "qos.ui.segmented.select"
+    ) -> Result<Option<crate::tilo_actions::ActionOutput>, String> {
+        if kind != crate::tilo_actions::OperationKind::View
+            || type_id != "tilo.ui.segmented.select"
             || self.action.is_none()
         {
             return Ok(None);
@@ -941,7 +941,7 @@ impl Widget for ToggleGroup {
             .filter(|index| *index < self.segments.len())
             .ok_or_else(|| "segmented action index is out of range".to_owned())?;
         self.apply_selection(index);
-        Ok(Some(crate::qos_actions::ActionOutput::default()))
+        Ok(Some(crate::tilo_actions::ActionOutput::default()))
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -1493,13 +1493,13 @@ mod tests {
         let resources = Widget::resources(&group, &AutoCommit::new());
         assert_eq!(resources.len(), 1);
         let resource = &resources[0];
-        assert_eq!(resource.id.as_str(), "qos.control:appearance");
+        assert_eq!(resource.id.as_str(), "tilo.control:appearance");
         assert_eq!(resource.actions.len(), 1);
         let spec = &resource.actions[0];
-        assert_eq!(spec.kind, crate::qos_actions::OperationKind::View);
+        assert_eq!(spec.kind, crate::tilo_actions::OperationKind::View);
         assert_eq!(
             spec.contract.discovery,
-            crate::qos_actions::DiscoveryScope::Launchable
+            crate::tilo_actions::DiscoveryScope::Launchable
         );
         assert_eq!(spec.params()[0].name, "index");
 
@@ -1520,14 +1520,14 @@ mod tests {
         let invocation = Widget::take_control_invocation(&mut group).unwrap();
         assert_eq!(
             invocation.address,
-            crate::qos_actions::ActionAddress::new("qos.control:appearance", "select")
+            crate::tilo_actions::ActionAddress::new("tilo.control:appearance", "select")
         );
         assert_eq!(invocation.arguments["index"], 1);
         let encoded = spec.build_json(&invocation.arguments).unwrap();
-        assert_eq!(encoded.type_id, "qos.ui.segmented.select");
+        assert_eq!(encoded.type_id, "tilo.ui.segmented.select");
         let output = Widget::invoke_resource_operation_v2(
             &mut group,
-            crate::qos_actions::OperationKind::View,
+            crate::tilo_actions::OperationKind::View,
             &encoded.type_id,
             &encoded.payload,
             &AutoCommit::new(),

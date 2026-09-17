@@ -174,7 +174,7 @@ fn sink_caps(acceptance: FrameAcceptance) -> gst::Caps {
 /// [`FrameAcceptance::Native`] the sink is bare and negotiation decides.
 fn build_video_sink(acceptance: FrameAcceptance) -> Option<(gst::Element, gst_app::AppSink)> {
     let appsink = gst_app::AppSink::builder()
-        .name("qos_vsink")
+        .name("tilo_vsink")
         .caps(&sink_caps(acceptance))
         // `sync=true` paces frames to their PTS during playback. Scrubbing
         // reads the preroll instead, which is not paced at all.
@@ -205,7 +205,7 @@ fn build_video_sink(acceptance: FrameAcceptance) -> Option<(gst::Element, gst_ap
             Some((element, appsink))
         }
         FrameAcceptance::Rgba => {
-            let bin = gst::Bin::builder().name("qos_vbin").build();
+            let bin = gst::Bin::builder().name("tilo_vbin").build();
             let convert = gst::ElementFactory::make("videoconvert").build().ok()?;
             let sink_el = appsink.clone().upcast::<gst::Element>();
             bin.add_many([&convert, &sink_el]).ok()?;
@@ -328,7 +328,7 @@ impl GstState {
         // stream, while the element is a plain gain stage that can be moved
         // per-source without disturbing the pipeline.
         if let Ok(audio_bin) = gst::parse::bin_from_description(
-            "audioconvert ! audioresample ! volume name=qos_gain ! autoaudiosink name=qos_asink",
+            "audioconvert ! audioresample ! volume name=tilo_gain ! autoaudiosink name=tilo_asink",
             true,
         ) {
             playbin.set_property("audio-sink", &audio_bin);
@@ -702,7 +702,7 @@ impl GstState {
         let sink = self
             .playbin
             .property::<Option<gst::Element>>("audio-sink")?;
-        sink.downcast::<gst::Bin>().ok()?.by_name("qos_gain")
+        sink.downcast::<gst::Bin>().ok()?.by_name("tilo_gain")
     }
 
     /// The audio sink element, the entry point for routing or monitoring the
@@ -712,7 +712,7 @@ impl GstState {
         let sink = self
             .playbin
             .property::<Option<gst::Element>>("audio-sink")?;
-        sink.downcast::<gst::Bin>().ok()?.by_name("qos_asink")
+        sink.downcast::<gst::Bin>().ok()?.by_name("tilo_asink")
     }
 
     pub fn position_ms(&self) -> u64 {

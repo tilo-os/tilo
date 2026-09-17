@@ -217,7 +217,7 @@ pub const PROMPTED_PARAM: &str = "value";
 /// Inert envelope produced when the legacy one-field palette cannot satisfy a
 /// typed contract. Hosts recognize it as a refusal; it is never registered or
 /// dispatched as an application operation.
-pub const INVALID_ARGUMENTS_TYPE: &str = "qos.invalid_arguments";
+pub const INVALID_ARGUMENTS_TYPE: &str = "tilo.invalid_arguments";
 
 /// Stable identity of a resource within the publishing app instance
 /// (e.g. `tube.video:dQw4w9WgXcQ`, `ebook.annotation:<uuid>`).
