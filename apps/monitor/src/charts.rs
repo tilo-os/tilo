@@ -6,7 +6,7 @@
 use std::f64::consts::FRAC_PI_2;
 
 use ui::ColorCompat;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -17,6 +17,31 @@ use vello::peniko::{Color, Fill};
 /// trait.
 pub fn with_alpha(c: Color, a: u8) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), a)
+}
+
+/// Theme type sizes (`theme.tokens.typography.scale.*`) already carry the
+/// accessibility text scale, and the legacy size-based renderer APIs
+/// (`measure`, `draw_text*`, `ButtonFace::text_size`) apply that scale once
+/// more. Route every token through here so the multiplier lands exactly once:
+/// 2× glyphs at 200 %, not 4×. Identity at 1×.
+pub fn ts(tr: &TextRenderer, resolved: f32) -> f32 {
+    tr.renderer_input_style(&TextStyle::new(resolved)).size
+}
+
+/// Measured line height of a token size as the renderer will paint it —
+/// the single number the app's text-bearing rows derive their pitch from.
+pub fn line_h(tr: &mut TextRenderer, resolved: f32) -> f64 {
+    line_box(tr, ts(tr, resolved))
+}
+
+/// Measured line box of an already renderer-relative `size` (the value the
+/// app passes to `draw_text*`). Vertical steps between stacked lines and
+/// centring inside a band use this, never the bare font size: cosmic-text
+/// lays a legacy line out at `1.25 × size`, and the gap grows with the
+/// accessibility scale.
+pub fn line_box(tr: &mut TextRenderer, size: f32) -> f64 {
+    let (_, h) = tr.measure("0", size, None);
+    f64::from(h)
 }
 
 pub fn fill_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
@@ -99,7 +124,7 @@ pub fn area_chart(
     tr.draw_text_weighted(
         scene,
         title,
-        theme.tokens.typography.scale.sm,
+        ts(tr, theme.tokens.typography.scale.sm),
         colors.text_primary,
         t * Affine::translate((inner.x0, inner.y0)),
         None,
@@ -107,12 +132,12 @@ pub fn area_chart(
     );
     let mut lx = inner.x1;
     for s in series.iter().rev() {
-        let (lw, _) = tr.measure(&s.legend, theme.tokens.typography.scale.xs, None);
+        let (lw, _) = tr.measure(&s.legend, ts(tr, theme.tokens.typography.scale.xs), None);
         lx -= f64::from(lw);
         tr.draw_text(
             scene,
             &s.legend,
-            theme.tokens.typography.scale.xs,
+            ts(tr, theme.tokens.typography.scale.xs),
             colors.text_dim,
             t * Affine::translate((lx, inner.y0 + 1.0)),
             None,
@@ -141,7 +166,7 @@ pub fn area_chart(
     tr.draw_text(
         scene,
         axis_hi,
-        theme.tokens.typography.scale.xs,
+        ts(tr, theme.tokens.typography.scale.xs),
         colors.text_dim,
         t * Affine::translate((plot.x1 - 46.0, plot.y0 - 1.0)),
         None,
@@ -149,7 +174,7 @@ pub fn area_chart(
     tr.draw_text(
         scene,
         axis_lo,
-        theme.tokens.typography.scale.xs,
+        ts(tr, theme.tokens.typography.scale.xs),
         colors.text_dim,
         t * Affine::translate((plot.x1 - 46.0, plot.y1 - 12.0)),
         None,
@@ -233,7 +258,7 @@ pub fn ring_gauge(
     }
 
     // Centre labels.
-    let big_size = theme.tokens.typography.scale.xl;
+    let big_size = ts(tr, theme.tokens.typography.scale.xl);
     let (bw, bh) = tr.measure_weighted(big, big_size, None, TextWeight::Bold);
     tr.draw_text_weighted(
         scene,
@@ -247,7 +272,7 @@ pub fn ring_gauge(
         None,
         TextWeight::Bold,
     );
-    let small_size = theme.tokens.typography.scale.xs;
+    let small_size = ts(tr, theme.tokens.typography.scale.xs);
     let (sw, _) = tr.measure(small, small_size, None);
     tr.draw_text(
         scene,
@@ -278,7 +303,7 @@ pub fn bar_gauge(
     value: &str,
 ) {
     let colors = &theme.tokens.colors;
-    let fs = theme.tokens.typography.scale.xs;
+    let fs = ts(tr, theme.tokens.typography.scale.xs);
     tr.draw_text_weighted(
         scene,
         label,
