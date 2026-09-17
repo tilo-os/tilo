@@ -55,7 +55,9 @@ use crate::agenda::{AgendaAction, AgendaView};
 use crate::caldav::{self, SyncOutcome};
 use crate::date;
 use crate::doc::CalDoc;
-use crate::draw_util::{elide_to_width, fill_rect, fill_round, stroke_line, stroke_round};
+use crate::draw_util::{
+    PaintContext, elide_to_width, fill_rect, fill_round, stroke_line, stroke_round,
+};
 use crate::event_popovers::{
     EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover,
 };
@@ -287,13 +289,6 @@ impl FormRects {
         self.chips_y += offset;
         self.notes_top += offset;
     }
-}
-
-struct PaintContext<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text: &'a mut TextRenderer,
-    theme: &'a Theme,
 }
 
 /// The shared widget-system inputs needed by Calendar's internal event
