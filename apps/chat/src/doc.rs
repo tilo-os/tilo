@@ -121,6 +121,10 @@ pub struct NewMessage {
 
 /// Mutable call-participant fields persisted together in the voice map.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "typed snapshot of the four independent call-state fields persisted atomically for one participant"
+)]
 pub struct VoiceState {
     pub talking: bool,
     pub muted: bool,

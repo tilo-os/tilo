@@ -54,6 +54,14 @@ struct ChannelRowCtx<'a> {
 }
 
 #[derive(Clone, Copy)]
+struct ChannelRowInput<'a> {
+    side: Rect,
+    channel: &'a crate::model::Channel,
+    y: f64,
+    swipe_dx: f64,
+}
+
+#[derive(Clone, Copy)]
 struct AttachmentLayout {
     origin: Point,
     max_width: f32,
@@ -70,6 +78,12 @@ struct MessageColumn {
 struct MessageBodyLayout {
     column: MessageColumn,
     content_top: f64,
+}
+
+#[derive(Clone, Copy)]
+struct MessageRowRef<'a> {
+    measurement: &'a RowM,
+    message: &'a Message,
 }
 
 impl AttachmentLayout {
@@ -980,10 +994,12 @@ impl ChatApp {
             y = self.draw_channel_row(
                 PaintContext::new(scene, tf, tr, theme),
                 presence,
-                side,
-                ch,
-                y,
-                swipe_dx,
+                ChannelRowInput {
+                    side,
+                    channel: ch,
+                    y,
+                    swipe_dx,
+                },
                 hits,
             );
 
@@ -1007,10 +1023,7 @@ impl ChatApp {
         &mut self,
         paint: PaintContext<'_>,
         presence: &PresenceCtx,
-        side: Rect,
-        ch: &crate::model::Channel,
-        y: f64,
-        swipe_dx: f64,
+        input: ChannelRowInput<'_>,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
         let PaintContext {
@@ -1019,6 +1032,12 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
+        let ChannelRowInput {
+            side,
+            channel: ch,
+            y,
+            swipe_dx,
+        } = input;
         let row = Rect::new(
             side.x0 + 8.0 - swipe_dx,
             y,
@@ -1970,8 +1989,10 @@ impl ChatApp {
         self.draw_row_body(
             PaintContext::new(scene, tf, tr, theme),
             presence,
-            rm,
-            &m,
+            MessageRowRef {
+                measurement: rm,
+                message: &m,
+            },
             MessageBodyLayout {
                 column,
                 content_top,
@@ -2052,8 +2073,7 @@ impl ChatApp {
         &mut self,
         paint: PaintContext<'_>,
         presence: &PresenceCtx,
-        rm: &RowM,
-        m: &Message,
+        row: MessageRowRef<'_>,
         layout: MessageBodyLayout,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
@@ -2064,6 +2084,10 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
+        let MessageRowRef {
+            measurement: rm,
+            message: m,
+        } = row;
         let MessageBodyLayout {
             column:
                 MessageColumn {
@@ -2955,7 +2979,33 @@ impl ChatApp {
             tx = plus.x1 + 8.0;
         }
 
-        // right cluster: emoji + send
+        let emoji = Self::draw_input_actions(
+            PaintContext::new(scene, tf, tr, theme),
+            rect,
+            send_enabled,
+            hits,
+        );
+
+        // Inner rect for the composer widget: from just after the attach glyph
+        // to just before the emoji button, filling the box vertically.
+        Rect::new(tx - 4.0, rect.y0 + 4.0, emoji.x0 - 8.0, rect.y1 - 4.0)
+    }
+
+    /// Paint the composer's trailing emoji and send actions, returning the
+    /// emoji hit target that bounds the editable text region.
+    fn draw_input_actions(
+        paint: PaintContext<'_>,
+        rect: Rect,
+        send_enabled: bool,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) -> Rect {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let c = &theme.tokens.colors;
         let send = Rect::new(
             rect.x1 - 56.0,
             rect.center().y - 22.0,
@@ -3016,10 +3066,7 @@ impl ChatApp {
             emoji,
             Hit::ComposerEmoji(Point::new(emoji.x0 - 140.0, rect.y0 - 8.0)),
         );
-
-        // Inner rect for the composer widget: from just after the attach glyph
-        // to just before the emoji button, filling the box vertically.
-        Rect::new(tx - 4.0, rect.y0 + 4.0, emoji.x0 - 8.0, rect.y1 - 4.0)
+        emoji
     }
 
     // ---------------------------------------------------------------- thread
@@ -3057,7 +3104,6 @@ impl ChatApp {
             panel,
             head,
             &parent_id,
-            hits,
         );
 
         // thread composer
@@ -3180,14 +3226,7 @@ impl ChatApp {
     /// The thread body: the parent message, a "N replies" divider, then
     /// every reply in order — clipped to the scrollable region between the
     /// header and the thread composer.
-    fn draw_thread_body(
-        &self,
-        paint: PaintContext<'_>,
-        panel: Rect,
-        head: Rect,
-        parent_id: &str,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) {
+    fn draw_thread_body(&self, paint: PaintContext<'_>, panel: Rect, head: Rect, parent_id: &str) {
         let PaintContext {
             scene,
             transform: tf,
@@ -3211,7 +3250,6 @@ impl ChatApp {
                 tx,
                 tw,
                 y,
-                hits,
             );
             // replies divider
             let n = model::reply_count(&self.messages, parent_id);
@@ -3260,7 +3298,6 @@ impl ChatApp {
                 tx,
                 tw,
                 y,
-                hits,
             );
         }
         scene.pop_layer();
@@ -3274,7 +3311,6 @@ impl ChatApp {
         tx: f64,
         tw: f32,
         y: f64,
-        _hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
         let PaintContext {
             scene,
