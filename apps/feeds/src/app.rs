@@ -76,6 +76,11 @@ const LIST_W: f64 = 400.0;
 const FLUSH_BUDGET: usize = 3;
 const HEADER_H: f64 = 56.0;
 const SIDE_ROW_H: f64 = 34.0;
+/// Authored 1× height of a sidebar section header ("LIBRARY", "FEEDS").
+const SIDE_SECTION_H: f64 = 24.0;
+/// How much shorter a feed row nested under a folder is than the base
+/// sidebar row, so the nesting reads as a tighter group.
+const SIDE_FEED_ROW_INSET: f64 = 2.0;
 const LIST_ROW_H: f64 = 88.0;
 /// Height of the refresh-progress strip shown below the list header while a
 /// "Refresh all" is in flight (and briefly after, as a summary).
@@ -1936,7 +1941,7 @@ impl FeedsApp {
                     push(
                         &mut rows,
                         &mut y,
-                        self.sidebar_row_h - 2.0,
+                        self.sidebar_row_h - SIDE_FEED_ROW_INSET,
                         34.0,
                         title,
                         self.store.unread_for_feed(id),
@@ -1960,7 +1965,7 @@ impl FeedsApp {
                 push(
                     &mut rows,
                     &mut y,
-                    self.sidebar_row_h - 2.0,
+                    self.sidebar_row_h - SIDE_FEED_ROW_INSET,
                     18.0,
                     title,
                     self.store.unread_for_feed(id),
@@ -2093,25 +2098,44 @@ impl FeedsApp {
         // without the user having to move the mouse — and nothing on this path
         // ever calls the blocking network fetch.
         self.drain_fetches_live();
-        // Use the renderer's actual scaled line boxes for surrounding geometry.
+        // Use the renderer's actual scaled line boxes for surrounding geometry:
+        // every row is its measured line plus a token pad above and below,
+        // never shorter than the authored 1× row, so 200% text grows the
+        // lists instead of stacking rows over each other.
+        let sp = &theme.tokens.spacing;
+        // Feed rows nested under a folder are `SIDE_FEED_ROW_INSET` shorter
+        // than the base row, so the base row reserves that inset on top of
+        // the `s1` pad each side — every row, nested or not, then holds its
+        // measured line plus at least `s2` of air.
+        let row_pad = 2.0 * f64::from(sp.s1) + SIDE_FEED_ROW_INSET;
         self.sidebar_row_h = SIDE_ROW_H.max(
             f64::from(
                 tr.measure_weighted("Ag", 14.0, None, TextWeight::Semibold)
                     .1,
-            ) + 10.0,
+            ) + row_pad,
         );
-        self.sidebar_section_h = 24.0_f64.max(
+        self.sidebar_section_h = SIDE_SECTION_H.max(
             f64::from(
                 tr.measure_weighted("Ag", 10.5, None, TextWeight::Semibold)
                     .1,
-            ) + 8.0,
+            ) + 2.0 * f64::from(sp.s1),
         );
         let title_line = f64::from(
             tr.measure_weighted("Ag", 15.0, None, TextWeight::Semibold)
                 .1,
         );
         let meta_line = f64::from(tr.measure("Ag", 12.5, None).1);
-        self.list_row_h = LIST_ROW_H.max(12.0 + 2.0 * title_line + 8.0 + meta_line + 10.0);
+        // The row reserves `s3` above and below and an `s2` gap between the
+        // two title lines and the meta line; `draw_list` then groups the
+        // block with the tighter `s1` gap inside that room (HIG §7a), so the
+        // block never touches the row's edges at any text scale.
+        self.list_row_h = crate::list_layout::row_height(
+            title_line,
+            meta_line,
+            f64::from(sp.s2),
+            f64::from(sp.s3),
+            LIST_ROW_H,
+        );
 
         // Advance the sidebar flap transition with real elapsed time, then
         // recompute the eased geometry so the slide is reflected this frame.

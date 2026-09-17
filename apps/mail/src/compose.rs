@@ -40,19 +40,135 @@ use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::TextInput;
+use ui::widget::{Button, ButtonFace, TextInput};
 
 use crate::model::{ComposeFormat, Draft, attachment_display_name};
 use crate::wysiwyg::{BlockKind, InlineMark, Wysiwyg};
 
+/// Authored 1× bands; the measured rules ([`ComposeMetrics`]) never go below
+/// them, so 1× geometry is unchanged and a larger text scale grows the window's
+/// rows instead of stacking them.
 const TITLE_H: f64 = 38.0;
 const TOOLBAR_H: f64 = 36.0;
 const FIELD_H: f64 = 32.0;
+const BUTTON_H: f64 = 36.0;
 const PAD: f64 = 14.0;
 const LABEL_W: f64 = 54.0;
 const MIN_W: f64 = 380.0;
 const MIN_H: f64 = 340.0;
 const RESIZE_GRIP: f64 = 8.0;
+/// Gap between header field rows (authored, off the spacing scale: `s1`
+/// crowds the underlines, `s2` reads as separate groups).
+const HEADER_ROW_GAP: f64 = 6.0;
+/// Default window size at 1×; scaled with the text so the header rows,
+/// toolbar and button bar still leave a usable body at 200%.
+const DEFAULT_W: f64 = 560.0;
+const DEFAULT_H: f64 = 460.0;
+/// Renderer-relative text sizes shared by measurement and paint.
+const TITLE_SIZE: f32 = 14.0;
+const LABEL_SIZE: f32 = 12.0;
+const CHIP_SIZE: f32 = 11.5;
+const TOOLBAR_GLYPH_SIZE: f32 = 13.0;
+const BUTTON_SIZE: f32 = 13.0;
+
+/// Sizes the compose window is laid out with, measured on paint with the
+/// styles it paints with. `Default` is the authored 1× rule set, used before
+/// the first paint and by the geometry tests (which never paint).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ComposeMetrics {
+    scale: f64,
+    /// Title bar: its label's line box plus `s2` each side.
+    title_h: f64,
+    /// Header label line box.
+    label_h: f64,
+    /// Header field: the shared input's line box plus `s2` each side.
+    field_h: f64,
+    /// Toolbar row: a glyph line plus `s2` each side plus the row's `6 px`
+    /// gap to the body.
+    toolbar_h: f64,
+    /// Action button height: its label line box plus `s2` each side.
+    button_h: f64,
+    /// Measured widths (label + pads) of the chip and action buttons.
+    cc_bcc_w: f64,
+    attach_w: f64,
+    toggle_w: f64,
+    send_w: f64,
+    draft_w: f64,
+    discard_w: f64,
+    /// Measured widths of the inline prompt bar's Add / Cancel buttons.
+    prompt_add_w: f64,
+    prompt_cancel_w: f64,
+}
+
+impl Default for ComposeMetrics {
+    fn default() -> Self {
+        Self {
+            scale: 1.0,
+            title_h: TITLE_H,
+            label_h: 15.0,
+            field_h: FIELD_H,
+            toolbar_h: TOOLBAR_H,
+            button_h: BUTTON_H,
+            cc_bcc_w: 64.0,
+            attach_w: 84.0,
+            toggle_w: 96.0,
+            send_w: 96.0,
+            draft_w: 110.0,
+            discard_w: 96.0,
+            prompt_add_w: 66.0,
+            prompt_cancel_w: 72.0,
+        }
+    }
+}
+
+impl ComposeMetrics {
+    fn measure(tr: &mut TextRenderer, theme: &Theme) -> Self {
+        let sp = &theme.tokens.spacing;
+        let (s2, s3, s4) = (f64::from(sp.s2), f64::from(sp.s3), f64::from(sp.s4));
+        let line = |tr: &mut TextRenderer, size: f32, weight: TextWeight| {
+            f64::from(tr.measure_weighted("Ag", size, None, weight).1)
+        };
+        let width = |tr: &mut TextRenderer, key: &str, size: f32, weight: TextWeight| {
+            f64::from(
+                tr.measure_weighted(&crate::i18n::t(key), size, None, weight)
+                    .0,
+            )
+        };
+        let d = Self::default();
+        Self {
+            scale: f64::from(theme.text_scale).max(1.0),
+            title_h: (line(tr, TITLE_SIZE, TextWeight::Semibold) + 2.0 * s2).max(TITLE_H),
+            label_h: line(tr, LABEL_SIZE, TextWeight::Regular),
+            field_h: (line(tr, 14.0, TextWeight::Regular) + 2.0 * s2).max(FIELD_H),
+            toolbar_h: (line(tr, TOOLBAR_GLYPH_SIZE, TextWeight::Bold) + 2.0 * s2 + 6.0)
+                .max(TOOLBAR_H),
+            button_h: (line(tr, BUTTON_SIZE, TextWeight::Semibold) + 2.0 * s2).max(BUTTON_H),
+            cc_bcc_w: (width(tr, "mail-compose-cc-bcc", CHIP_SIZE, TextWeight::Regular)
+                + 2.0 * s3)
+                .max(d.cc_bcc_w),
+            attach_w: (width(tr, "mail-compose-attach", CHIP_SIZE, TextWeight::Regular)
+                + 2.0 * s3)
+                .max(d.attach_w),
+            toggle_w: (f64::from(tr.measure("\u{25CF} HTML", CHIP_SIZE, None).0) + 2.0 * s4)
+                .max(d.toggle_w),
+            send_w: (width(tr, "mail-compose-send", BUTTON_SIZE, TextWeight::Semibold)
+                + 2.0 * s4)
+                .max(d.send_w),
+            draft_w: (width(tr, "mail-compose-save-draft", BUTTON_SIZE, TextWeight::Regular)
+                + 2.0 * s4)
+                .max(d.draft_w),
+            discard_w: (width(tr, "mail-compose-discard", BUTTON_SIZE, TextWeight::Regular)
+                + 2.0 * s4)
+                .max(d.discard_w),
+            prompt_add_w: (width(tr, "mail-compose-prompt-add", 12.5, TextWeight::Semibold)
+                + 2.0 * s3)
+                .max(d.prompt_add_w),
+            prompt_cancel_w: (width(tr, "mail-compose-prompt-cancel", 12.0, TextWeight::Regular)
+                + 2.0 * s3)
+                .max(d.prompt_cancel_w),
+        }
+    }
+}
 
 /// Where the compose window is parked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -200,6 +316,16 @@ pub struct ComposeWindow {
     dirty: bool,
     /// The reply target subject line, shown in the title when replying.
     title_hint: String,
+    /// Sizes the window is laid out with, measured on paint (the authored
+    /// 1× rules until then).
+    metrics: ComposeMetrics,
+    /// The band above the button row that `relayout_regions` reserved for
+    /// the staged-attachment chips (empty when there are none); the chip
+    /// painter reads this instead of re-deriving the offset.
+    chips_band: Rect,
+    /// The band `relayout_regions` reserved for the inline prompt bar (empty
+    /// when no prompt is open).
+    prompt_band: Rect,
 }
 
 impl ComposeWindow {
@@ -209,13 +335,18 @@ impl ComposeWindow {
             t.set_plain_chrome(true);
             t
         };
+        // The recipients hint belongs to the shared field so it shares the
+        // typed text's font, gutter and centre line (the header used to paint
+        // its own placeholder over the box at a fixed offset).
+        let mut to = TextInput::local().with_placeholder("mail-compose-placeholder-to");
+        to.set_plain_chrome(true);
         Self {
             open: false,
             dock: DockState::Docked,
             rect: Rect::ZERO,
             bounds: Rect::ZERO,
             placed: false,
-            to: mk(),
+            to,
             cc: mk(),
             bcc: mk(),
             subject: mk(),
@@ -237,6 +368,9 @@ impl ComposeWindow {
             hits: Vec::new(),
             dirty: true,
             title_hint: String::new(),
+            metrics: ComposeMetrics::default(),
+            chips_band: Rect::ZERO,
+            prompt_band: Rect::ZERO,
         }
     }
 
@@ -747,9 +881,12 @@ impl ComposeWindow {
     pub fn layout(&mut self, bounds: Rect) {
         self.bounds = bounds;
         if !self.placed {
+            // The default window follows the text scale so its header rows,
+            // toolbar and button bar still leave a usable body at 200%.
+            let scale = self.metrics.scale;
             let (w, h) = (
-                560.0_f64.min(bounds.width() - 32.0).max(MIN_W),
-                460.0_f64.min(bounds.height() - 32.0).max(MIN_H),
+                (DEFAULT_W * scale).min(bounds.width() - 32.0).max(MIN_W),
+                (DEFAULT_H * scale).min(bounds.height() - 32.0).max(MIN_H),
             );
             self.rect = match self.dock {
                 DockState::Docked => {
@@ -790,74 +927,60 @@ impl ComposeWindow {
     /// Returns the y past the header, where the toolbar starts. Part of
     /// [`Self::relayout_regions`].
     fn layout_header_hits(&mut self, r: Rect, lx: f64, rx: f64) -> f64 {
-        // Title bar (drag handle) + window buttons.
+        // Every band is its measured text plus token pads (the authored 1×
+        // band before the first paint), so 200% text grows the header rows
+        // instead of stacking labels, fields and chips over each other.
+        let m = self.metrics;
+        let field_h = m.field_h;
+        // Header labels grow with the text; the field column starts past
+        // the widest label at 1× (`LABEL_W`), scaled.
+        let label_w = LABEL_W * m.scale;
+
+        // Title bar (drag handle) + window buttons, squares centred on the
+        // measured title bar.
         self.hits.push((
-            Rect::new(r.x0, r.y0, r.x1, r.y0 + TITLE_H),
+            Rect::new(r.x0, r.y0, r.x1, r.y0 + m.title_h),
             ComposeHit::TitleBar,
         ));
-        let btn = 28.0;
-        let close = Rect::new(r.x1 - btn - 8.0, r.y0 + 6.0, r.x1 - 8.0, r.y0 + 6.0 + btn);
+        let btn = (m.title_h - 10.0).max(28.0);
+        let btn_y = r.y0 + (m.title_h - btn) / 2.0;
+        let close = Rect::new(r.x1 - btn - 8.0, btn_y, r.x1 - 8.0, btn_y + btn);
         self.hits.push((close, ComposeHit::Close));
-        let popout = Rect::new(
-            close.x0 - btn - 4.0,
-            r.y0 + 6.0,
-            close.x0 - 4.0,
-            r.y0 + 6.0 + btn,
-        );
+        let popout = Rect::new(close.x0 - btn - 4.0, btn_y, close.x0 - 4.0, btn_y + btn);
         self.hits.push((popout, ComposeHit::PopOut));
 
-        let mut y = r.y0 + TITLE_H + 10.0;
+        let mut y = r.y0 + m.title_h + 10.0;
 
         // To row + Cc/Bcc toggle on the right.
-        let cc_toggle_w = 64.0;
-        self.to.apply_layout_external(Rect::new(
-            lx + LABEL_W,
-            y,
-            rx - cc_toggle_w - 8.0,
-            y + FIELD_H,
-        ));
+        let cc_toggle_w = m.cc_bcc_w;
+        let to_rect = Rect::new(lx + label_w, y, rx - cc_toggle_w - 8.0, y + field_h);
+        self.to.apply_layout_external(to_rect);
+        self.hits.push((to_rect, ComposeHit::FieldTo));
         self.hits.push((
-            Rect::new(lx + LABEL_W, y, rx - cc_toggle_w - 8.0, y + FIELD_H),
-            ComposeHit::FieldTo,
-        ));
-        self.hits.push((
-            Rect::new(rx - cc_toggle_w, y, rx, y + FIELD_H),
+            Rect::new(rx - cc_toggle_w, y, rx, y + field_h),
             ComposeHit::ToggleCcBcc,
         ));
-        y += FIELD_H + 6.0;
+        y += field_h + HEADER_ROW_GAP;
         if self.show_cc_bcc {
-            self.cc
-                .apply_layout_external(Rect::new(lx + LABEL_W, y, rx, y + FIELD_H));
-            self.hits.push((
-                Rect::new(lx + LABEL_W, y, rx, y + FIELD_H),
-                ComposeHit::FieldCc,
-            ));
-            y += FIELD_H + 6.0;
-            self.bcc
-                .apply_layout_external(Rect::new(lx + LABEL_W, y, rx, y + FIELD_H));
-            self.hits.push((
-                Rect::new(lx + LABEL_W, y, rx, y + FIELD_H),
-                ComposeHit::FieldBcc,
-            ));
-            y += FIELD_H + 6.0;
+            let cc_rect = Rect::new(lx + label_w, y, rx, y + field_h);
+            self.cc.apply_layout_external(cc_rect);
+            self.hits.push((cc_rect, ComposeHit::FieldCc));
+            y += field_h + HEADER_ROW_GAP;
+            let bcc_rect = Rect::new(lx + label_w, y, rx, y + field_h);
+            self.bcc.apply_layout_external(bcc_rect);
+            self.hits.push((bcc_rect, ComposeHit::FieldBcc));
+            y += field_h + HEADER_ROW_GAP;
         }
         // Subject + Attach button.
-        let attach_w = 84.0;
-        self.subject.apply_layout_external(Rect::new(
-            lx + LABEL_W,
-            y,
-            rx - attach_w - 8.0,
-            y + FIELD_H,
-        ));
+        let attach_w = m.attach_w;
+        let subject_rect = Rect::new(lx + label_w, y, rx - attach_w - 8.0, y + field_h);
+        self.subject.apply_layout_external(subject_rect);
+        self.hits.push((subject_rect, ComposeHit::FieldSubject));
         self.hits.push((
-            Rect::new(lx + LABEL_W, y, rx - attach_w - 8.0, y + FIELD_H),
-            ComposeHit::FieldSubject,
-        ));
-        self.hits.push((
-            Rect::new(rx - attach_w, y, rx, y + FIELD_H),
+            Rect::new(rx - attach_w, y, rx, y + field_h),
             ComposeHit::Attach,
         ));
-        y + FIELD_H + 10.0
+        y + field_h + 10.0
     }
 
     fn relayout_regions(&mut self) {
@@ -865,12 +988,15 @@ impl ComposeWindow {
         let r = self.rect;
         let lx = r.x0 + PAD;
         let rx = r.x1 - PAD;
+        let m = self.metrics;
         let mut y = self.layout_header_hits(r, lx, rx);
 
-        // Formatting toolbar (HTML mode) + format toggle (always).
+        // Formatting toolbar (HTML mode) + format toggle (always). Each
+        // glyph button is a square the toolbar row's height (less its gap to
+        // the body), so the glyphs fit their squares at every text scale.
         let toolbar_y = y;
         let mut tx = lx;
-        let tw = 30.0;
+        let tw = m.toolbar_h - 6.0;
         if matches!(self.format, ComposeFormat::Html) {
             for hit in [
                 ComposeHit::Bold,
@@ -884,7 +1010,7 @@ impl ComposeWindow {
                 ComposeHit::Link,
             ] {
                 self.hits.push((
-                    Rect::new(tx, toolbar_y, tx + tw, toolbar_y + TOOLBAR_H - 6.0),
+                    Rect::new(tx, toolbar_y, tx + tw, toolbar_y + tw),
                     hit,
                 ));
                 tx += tw + 2.0;
@@ -895,53 +1021,79 @@ impl ComposeWindow {
             }
         }
         // Format toggle on the right of the toolbar row.
-        let ftw = 96.0;
+        let ftw = m.toggle_w;
         self.hits.push((
-            Rect::new(rx - ftw, toolbar_y, rx, toolbar_y + TOOLBAR_H - 6.0),
+            Rect::new(rx - ftw, toolbar_y, rx, toolbar_y + tw),
             ComposeHit::FormatToggle,
         ));
-        y += TOOLBAR_H;
+        y += m.toolbar_h;
 
-        // Body region — fills down to the button bar.
-        let buttons_h = 52.0;
+        // Below the body, bottom-up: the button bar (the measured button plus
+        // `s2` above and below), then — when present — the inline prompt bar
+        // (a field-high row plus `s2` above and below) and the attachment
+        // chips band. Each band is stored so the painters read the same rects
+        // the hit list was built from.
+        let buttons_h = m.button_h + 16.0;
+        let by = r.y1 - buttons_h + 8.0;
+        let prompt_h = if self.prompt.is_some() {
+            m.field_h + 16.0
+        } else {
+            0.0
+        };
+        self.prompt_band = Rect::new(lx, by - 8.0 - prompt_h, rx, by - 8.0);
         let chips_h = if self.attachments.is_empty() {
             0.0
         } else {
-            30.0
+            30.0 * m.scale
         };
-        let body = Rect::new(lx, y, rx, r.y1 - buttons_h - chips_h - PAD);
+        self.chips_band = Rect::new(
+            lx,
+            self.prompt_band.y0 - chips_h,
+            rx,
+            self.prompt_band.y0,
+        );
+        let body = Rect::new(lx, y, rx, self.chips_band.y0 - PAD);
         self.hits.push((body, ComposeHit::Body));
         match self.format {
             ComposeFormat::Html => self.editor.apply_layout(body),
             ComposeFormat::Text => self.plain_body.apply_layout_external(body),
         }
 
-        // Buttons.
-        let by = r.y1 - buttons_h + 8.0;
+        // Buttons: Send and Save draft from the left, Discard at the right,
+        // each sized from its measured label.
+        let bh = m.button_h;
         self.hits
-            .push((Rect::new(lx, by, lx + 96.0, by + 36.0), ComposeHit::Send));
+            .push((Rect::new(lx, by, lx + m.send_w, by + bh), ComposeHit::Send));
+        let draft_x = lx + m.send_w + 8.0;
         self.hits.push((
-            Rect::new(lx + 104.0, by, lx + 104.0 + 110.0, by + 36.0),
+            Rect::new(draft_x, by, draft_x + m.draft_w, by + bh),
             ComposeHit::SaveDraft,
         ));
-        self.hits
-            .push((Rect::new(rx - 96.0, by, rx, by + 36.0), ComposeHit::Discard));
+        self.hits.push((
+            Rect::new(rx - m.discard_w, by, rx, by + bh),
+            ComposeHit::Discard,
+        ));
 
-        // Inline prompt bar (Attach path / Link URL), sitting just above the
-        // button row when open.
+        // Inline prompt bar (Attach path / Link URL): a field-high row in its
+        // band, the field between the kind label's column and the two
+        // measured buttons.
         if let Some(p) = self.prompt.as_mut() {
-            let py = by - 46.0;
-            let field = Rect::new(lx + 92.0, py, rx - 150.0, py + 30.0);
+            let band = self.prompt_band;
+            let py = band.y0 + 8.0;
+            let field_h = m.field_h;
+            let cancel = Rect::new(rx - m.prompt_cancel_w, py, rx, py + field_h);
+            let confirm = Rect::new(
+                cancel.x0 - 8.0 - m.prompt_add_w,
+                py,
+                cancel.x0 - 8.0,
+                py + field_h,
+            );
+            let label_col = 92.0 * m.scale;
+            let field = Rect::new(lx + label_col, py, confirm.x0 - 12.0, py + field_h);
             p.input.apply_layout_external(field);
             self.hits.push((field, ComposeHit::PromptField));
-            self.hits.push((
-                Rect::new(rx - 146.0, py, rx - 80.0, py + 30.0),
-                ComposeHit::PromptConfirm,
-            ));
-            self.hits.push((
-                Rect::new(rx - 72.0, py, rx, py + 30.0),
-                ComposeHit::PromptCancel,
-            ));
+            self.hits.push((confirm, ComposeHit::PromptConfirm));
+            self.hits.push((cancel, ComposeHit::PromptCancel));
         }
     }
 
@@ -1649,6 +1801,29 @@ impl ComposeWindow {
         if !self.open {
             return;
         }
+        // Measure with this frame's text scale and lay the regions out again
+        // from those sizes before painting, so what is painted (and
+        // hit-tested until the next layout) is the measured geometry even on
+        // a single headless frame.
+        let measured = ComposeMetrics::measure(tr, theme);
+        if self.metrics != measured {
+            // A text-scale change rescales the window's *size* from where it
+            // stands — its rows, toolbar and button bar need the room — and
+            // never its placement: a window the user moved or detached stays
+            // put (clamped into the content area).
+            if self.metrics.scale != measured.scale && self.placed {
+                let k = measured.scale / self.metrics.scale.max(f64::EPSILON);
+                let r = self.rect;
+                self.rect = Rect::new(
+                    r.x0,
+                    r.y0,
+                    r.x0 + (r.width() * k).max(MIN_W),
+                    r.y0 + (r.height() * k).max(MIN_H),
+                );
+            }
+            self.metrics = measured;
+            self.layout(self.bounds);
+        }
         let c = &theme.tokens.colors;
         // Scrim only when docked (a detached window doesn't dim the app).
         if matches!(self.dock, DockState::Docked) {
@@ -1660,23 +1835,31 @@ impl ComposeWindow {
         self.draw_body(scene, t, tr, theme, presence);
 
         // Attachment chips (staged real files — shown by their basename).
-        self.draw_staged_attachment_chips(scene, t, tr, theme, r);
+        self.draw_staged_attachment_chips(scene, t, tr, theme);
 
         // Inline prompt bar.
         self.draw_prompt(scene, t, tr, theme, presence);
 
         // Buttons.
-        self.draw_action_button(scene, t, tr, theme, ComposeHit::Send, "Send", true);
+        self.draw_action_button(scene, t, tr, theme, ComposeHit::Send, "mail-compose-send", true);
         self.draw_action_button(
             scene,
             t,
             tr,
             theme,
             ComposeHit::SaveDraft,
-            "Save draft",
+            "mail-compose-save-draft",
             false,
         );
-        self.draw_action_button(scene, t, tr, theme, ComposeHit::Discard, "Discard", false);
+        self.draw_action_button(
+            scene,
+            t,
+            tr,
+            theme,
+            ComposeHit::Discard,
+            "mail-compose-discard",
+            false,
+        );
 
         // Resize affordance (bottom-right grip dots).
         let g = Rect::new(r.x1 - 14.0, r.y1 - 14.0, r.x1 - 4.0, r.y1 - 4.0);
@@ -1707,11 +1890,9 @@ impl ComposeWindow {
             t,
             tr,
             theme,
-            "To",
+            "mail-compose-label-to",
             &self.to_rect_for(ComposeHit::FieldTo),
             matches!(self.focus, Field::To),
-            self.to.value().is_empty(),
-            "recipients",
         );
         if self.show_cc_bcc {
             self.draw_field(
@@ -1719,22 +1900,18 @@ impl ComposeWindow {
                 t,
                 tr,
                 theme,
-                "Cc",
+                "mail-compose-label-cc",
                 &self.to_rect_for(ComposeHit::FieldCc),
                 matches!(self.focus, Field::Cc),
-                self.cc.value().is_empty(),
-                "",
             );
             self.draw_field(
                 scene,
                 t,
                 tr,
                 theme,
-                "Bcc",
+                "mail-compose-label-bcc",
                 &self.to_rect_for(ComposeHit::FieldBcc),
                 matches!(self.focus, Field::Bcc),
-                self.bcc.value().is_empty(),
-                "",
             );
         }
         self.draw_field(
@@ -1742,11 +1919,9 @@ impl ComposeWindow {
             t,
             tr,
             theme,
-            "Subject",
+            "mail-compose-label-subject",
             &self.to_rect_for(ComposeHit::FieldSubject),
             matches!(self.focus, Field::Subject),
-            self.subject.value().is_empty(),
-            "",
         );
 
         // Cc/Bcc toggle + Attach buttons. The active highlight reflects on/off.
@@ -1756,7 +1931,7 @@ impl ComposeWindow {
             tr,
             theme,
             ComposeHit::ToggleCcBcc,
-            "Cc/Bcc",
+            "mail-compose-cc-bcc",
             self.show_cc_bcc,
         );
         self.draw_chip_button(
@@ -1765,7 +1940,7 @@ impl ComposeWindow {
             tr,
             theme,
             ComposeHit::Attach,
-            "\u{1F4CE} Attach",
+            "mail-compose-attach",
             false,
         );
 
@@ -1853,8 +2028,9 @@ impl ComposeWindow {
             ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
         );
 
-        // Title bar.
-        let title = Rect::new(r.x0, r.y0, r.x1, r.y0 + TITLE_H);
+        // Title bar: the measured bar height (`ComposeMetrics::title_h`), the
+        // heading centred on it from its own line box.
+        let title = Rect::new(r.x0, r.y0, r.x1, r.y0 + self.metrics.title_h);
         fill_round(
             scene,
             t,
@@ -1879,17 +2055,18 @@ impl ComposeWindow {
         } else {
             self.title_hint.clone()
         };
-        let heading = tr.elide_to_width(&heading, 14.0, (r.width() - 100.0) as f32);
+        let heading = tr.elide_to_width(&heading, TITLE_SIZE, (r.width() - 100.0) as f32);
+        let (_, hh) = tr.measure_weighted(&heading, TITLE_SIZE, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
             &heading,
-            14.0,
+            TITLE_SIZE,
             c.text_primary,
-            t * Affine::translate((r.x0 + PAD, r.y0 + 11.0)),
+            t * Affine::translate((r.x0 + PAD, title.center().y - f64::from(hh) / 2.0)),
             None,
             TextWeight::Semibold,
         );
-        // Window buttons.
+        // Window buttons, glyphs centred in their squares.
         for (rect, hit) in &self.hits {
             let glyph = match hit {
                 ComposeHit::Close => "\u{2715}",
@@ -1906,12 +2083,16 @@ impl ComposeWindow {
             if hov {
                 fill_round(scene, t, *rect, 7.0, c.lift(0.72));
             }
+            let (gw, gh) = tr.measure(glyph, TOOLBAR_GLYPH_SIZE, None);
             tr.draw_text(
                 scene,
                 glyph,
-                13.0,
+                TOOLBAR_GLYPH_SIZE,
                 c.neutral[8],
-                t * Affine::translate((rect.x0 + 8.0, rect.y0 + 6.0)),
+                t * Affine::translate((
+                    rect.center().x - f64::from(gw) / 2.0,
+                    rect.center().y - f64::from(gh) / 2.0,
+                )),
                 None,
             );
         }
@@ -1925,33 +2106,43 @@ impl ComposeWindow {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        r: Rect,
     ) {
         if self.attachments.is_empty() {
             return;
         }
         let c = &theme.tokens.colors;
-        let mut ax = r.x0 + PAD;
-        let ay = r.y1 - 52.0 - 30.0;
+        // The chips sit in the band `relayout_regions` reserved for them
+        // (the same rect the body was shortened by), each chip centred on the
+        // band and its glyph + name centred on the chip from measured boxes.
+        let band = self.chips_band;
+        let chip_h = (band.height() - 6.0 * self.metrics.scale).max(0.0);
+        let cy = band.center().y;
+        let mut ax = band.x0;
+        let (gw, gh) = tr.measure("\u{1F4CE}", 12.0, None);
         for path in &self.attachments {
             let name = attachment_display_name(path);
-            let (lw, _) = tr.measure(name, 11.5, None);
-            let chip = Rect::new(ax, ay, ax + f64::from(lw) + 34.0, ay + 24.0);
+            let (lw, lh) = tr.measure(name, CHIP_SIZE, None);
+            let chip = Rect::new(
+                ax,
+                cy - chip_h / 2.0,
+                ax + 7.0 + f64::from(gw) + 7.0 + f64::from(lw) + 8.0,
+                cy + chip_h / 2.0,
+            );
             fill_round(scene, t, chip, 7.0, c.lift(0.72));
             tr.draw_text(
                 scene,
                 "\u{1F4CE}",
                 12.0,
                 c.text_dim,
-                t * Affine::translate((chip.x0 + 7.0, chip.y0 + 4.0)),
+                t * Affine::translate((chip.x0 + 7.0, cy - f64::from(gh) / 2.0)),
                 None,
             );
             tr.draw_text(
                 scene,
                 name,
-                11.5,
+                CHIP_SIZE,
                 c.text_primary,
-                t * Affine::translate((chip.x0 + 26.0, chip.y0 + 4.0)),
+                t * Affine::translate((chip.x0 + 7.0 + f64::from(gw) + 7.0, cy - f64::from(lh) / 2.0)),
                 None,
             );
             ax = chip.x1 + 8.0;
@@ -1972,19 +2163,21 @@ impl ComposeWindow {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        label: &str,
+        label_key: &str,
         fr: &Rect,
         focused: bool,
-        empty: bool,
-        placeholder: &str,
     ) {
         let c = &theme.tokens.colors;
+        // The label centres on the field's measured line box (the field's
+        // own placeholder, where it has one, is painted by the shared input).
+        let label = crate::i18n::t(label_key);
+        let (_, lh) = tr.measure(&label, LABEL_SIZE, None);
         tr.draw_text(
             scene,
-            label,
-            12.0,
+            &label,
+            LABEL_SIZE,
             c.text_dim,
-            t * Affine::translate((self.rect.x0 + PAD, fr.y0 + 8.0)),
+            t * Affine::translate((self.rect.x0 + PAD, fr.center().y - f64::from(lh) / 2.0)),
             None,
         );
         fill(
@@ -1997,16 +2190,6 @@ impl ComposeWindow {
                 c.border_standard
             },
         );
-        if empty && !focused && !placeholder.is_empty() {
-            tr.draw_text(
-                scene,
-                placeholder,
-                12.5,
-                c.neutral[4],
-                t * Affine::translate((fr.x0 + 2.0, fr.y0 + 7.0)),
-                None,
-            );
-        }
     }
 
     #[allow(
@@ -2020,7 +2203,7 @@ impl ComposeWindow {
         tr: &mut TextRenderer,
         theme: &Theme,
         hit: ComposeHit,
-        label: &str,
+        label_key: &str,
         active: bool,
     ) {
         let c = &theme.tokens.colors;
@@ -2036,15 +2219,17 @@ impl ComposeWindow {
             c.lift(0.35)
         };
         fill_round(scene, t, rect, 7.0, bg);
-        let (lw, _) = tr.measure(label, 11.5, None);
+        // Label centred on the chip from its measured box, both axes.
+        let label = crate::i18n::t(label_key);
+        let (lw, lh) = tr.measure(&label, CHIP_SIZE, None);
         tr.draw_text(
             scene,
-            label,
-            11.5,
+            &label,
+            CHIP_SIZE,
             c.neutral[8],
             t * Affine::translate((
-                f64::midpoint(rect.x0, rect.x1) - f64::from(lw) / 2.0,
-                rect.y0 + 8.0,
+                rect.center().x - f64::from(lw) / 2.0,
+                rect.center().y - f64::from(lh) / 2.0,
             )),
             None,
         );
@@ -2102,32 +2287,28 @@ impl ComposeWindow {
             };
             fill_round(scene, t, *rect, 6.0, bg);
             let col = if active { c.text_primary } else { c.neutral[8] };
-            let (gw, _) = tr.measure_weighted(glyph, 13.0, None, weight);
+            // Glyph centred on its square from the measured box; the U's
+            // underline sits at the glyph's baseline (the box's lower fifth).
+            let (gw, gh) = tr.measure_weighted(glyph, TOOLBAR_GLYPH_SIZE, None, weight);
+            let gx = rect.center().x - f64::from(gw) / 2.0;
+            let gy = rect.center().y - f64::from(gh) / 2.0;
             tr.draw_text_styled(
                 scene,
                 glyph,
-                13.0,
+                TOOLBAR_GLYPH_SIZE,
                 col,
-                t * Affine::translate((
-                    f64::midpoint(rect.x0, rect.x1) - f64::from(gw) / 2.0,
-                    rect.y0 + 7.0,
-                )),
+                t * Affine::translate((gx, gy)),
                 None,
                 weight,
                 italic,
                 false,
             );
             if matches!(hit, ComposeHit::Underline) {
-                let uy = rect.y0 + 7.0 + 13.0;
+                let uy = gy + f64::from(gh) * 0.8;
                 fill(
                     scene,
                     t,
-                    Rect::new(
-                        f64::midpoint(rect.x0, rect.x1) - f64::from(gw) / 2.0,
-                        uy,
-                        f64::midpoint(rect.x0, rect.x1) + f64::from(gw) / 2.0,
-                        uy + 1.0,
-                    ),
+                    Rect::new(gx, uy, gx + f64::from(gw), uy + 1.0),
                     col,
                 );
             }
@@ -2170,15 +2351,16 @@ impl ComposeWindow {
             ComposeFormat::Html => "\u{25CF} HTML",
             ComposeFormat::Text => "\u{25CB} Text",
         };
-        let (lw, _) = tr.measure(label, 11.5, None);
+        // Centred on the toggle from the measured box, both axes.
+        let (lw, lh) = tr.measure(label, CHIP_SIZE, None);
         tr.draw_text(
             scene,
             label,
-            11.5,
+            CHIP_SIZE,
             c.neutral[8],
             t * Affine::translate((
-                f64::midpoint(rect.x0, rect.x1) - f64::from(lw) / 2.0,
-                rect.y0 + 8.0,
+                rect.center().x - f64::from(lw) / 2.0,
+                rect.center().y - f64::from(lh) / 2.0,
             )),
             None,
         );
@@ -2202,12 +2384,10 @@ impl ComposeWindow {
             return;
         }
         let c = &theme.tokens.colors;
-        let panel = Rect::new(
-            self.rect.x0 + PAD - 6.0,
-            field.y0 - 8.0,
-            self.rect.x1 - PAD + 6.0,
-            field.y1 + 8.0,
-        );
+        // The bar is the band `relayout_regions` reserved (widened by the
+        // 6 px the window's padding allows), so it never paints over the body.
+        let band = self.prompt_band;
+        let panel = Rect::new(band.x0 - 6.0, band.y0, band.x1 + 6.0, band.y1);
         fill_round(scene, t, panel, 9.0, c.surfaces.raised);
         stroke_round(
             scene,
@@ -2221,16 +2401,17 @@ impl ComposeWindow {
                 ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26)
             },
         );
-        let label = match kind {
-            PromptKind::Attach => "Attach",
-            PromptKind::Link => "Link",
-        };
+        let label = crate::i18n::t(match kind {
+            PromptKind::Attach => "mail-compose-prompt-attach",
+            PromptKind::Link => "mail-compose-prompt-link",
+        });
+        let (_, lh) = tr.measure(&label, LABEL_SIZE, None);
         tr.draw_text(
             scene,
-            label,
-            12.0,
+            &label,
+            LABEL_SIZE,
             c.text_dim,
-            t * Affine::translate((panel.x0 + 10.0, field.y0 + 8.0)),
+            t * Affine::translate((panel.x0 + 10.0, field.center().y - f64::from(lh) / 2.0)),
             None,
         );
         // Input chrome.
@@ -2291,47 +2472,30 @@ impl ComposeWindow {
         confirm: Rect,
         cancel: Rect,
     ) {
-        let c = &theme.tokens.colors;
-        let hov_c = confirm.contains(self.last_mouse);
-        fill_round(
+        // The shared button faces (primary / neutral) over the rects the hit
+        // list owns; the face resolves the catalogue keys itself.
+        Button::paint(
             scene,
             t,
-            confirm,
-            7.0,
-            if hov_c { c.accent[4] } else { c.accent[5] },
+            tr,
+            theme,
+            &ButtonFace::new(confirm, "mail-compose-prompt-add")
+                .primary()
+                .radius(7.0)
+                .text_size(12.5)
+                .weight(TextWeight::Semibold)
+                .hovered(confirm.contains(self.last_mouse)),
         );
-        let (aw, _) = tr.measure_weighted("Add", 12.5, None, TextWeight::Semibold);
-        tr.draw_text_weighted(
-            scene,
-            "Add",
-            12.5,
-            Color::WHITE,
-            t * Affine::translate((
-                f64::midpoint(confirm.x0, confirm.x1) - f64::from(aw) / 2.0,
-                confirm.y0 + 7.0,
-            )),
-            None,
-            TextWeight::Semibold,
-        );
-        let hov_x = cancel.contains(self.last_mouse);
-        fill_round(
+        Button::paint(
             scene,
             t,
-            cancel,
-            7.0,
-            if hov_x { c.lift(0.72) } else { c.lift(0.35) },
-        );
-        let (cw, _) = tr.measure("Cancel", 12.0, None);
-        tr.draw_text(
-            scene,
-            "Cancel",
-            12.0,
-            c.neutral[8],
-            t * Affine::translate((
-                f64::midpoint(cancel.x0, cancel.x1) - f64::from(cw) / 2.0,
-                cancel.y0 + 7.0,
-            )),
-            None,
+            tr,
+            theme,
+            &ButtonFace::new(cancel, "mail-compose-prompt-cancel")
+                .radius(7.0)
+                .text_size(12.0)
+                .weight(TextWeight::Regular)
+                .hovered(cancel.contains(self.last_mouse)),
         );
     }
 
@@ -2346,64 +2510,26 @@ impl ComposeWindow {
         tr: &mut TextRenderer,
         theme: &Theme,
         hit: ComposeHit,
-        label: &str,
+        label_key: &str,
         primary: bool,
     ) {
-        let c = &theme.tokens.colors;
         let Some(rect) = self.hits.iter().find(|(_, h)| *h == hit).map(|(r, _)| *r) else {
             return;
         };
-        let hov = rect.contains(self.last_mouse);
-        if primary {
-            fill_round(
-                scene,
-                t,
-                rect,
-                9.0,
-                if hov { c.accent[4] } else { c.accent[5] },
-            );
-            let (w, _) = tr.measure_weighted(label, 13.5, None, TextWeight::Semibold);
-            tr.draw_text_weighted(
-                scene,
-                label,
-                13.5,
-                Color::WHITE,
-                t * Affine::translate((
-                    f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0,
-                    rect.y0 + 10.0,
-                )),
-                None,
-                TextWeight::Semibold,
-            );
-        } else {
-            fill_round(
-                scene,
-                t,
-                rect,
-                9.0,
-                if hov { c.lift(0.72) } else { c.lift(0.35) },
-            );
-            stroke_round(
-                scene,
-                t,
-                rect,
-                9.0,
-                1.0,
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            );
-            let (w, _) = tr.measure(label, 13.0, None);
-            tr.draw_text(
-                scene,
-                label,
-                13.0,
-                c.neutral[8],
-                t * Affine::translate((
-                    f64::midpoint(rect.x0, rect.x1) - f64::from(w) / 2.0,
-                    rect.y0 + 10.0,
-                )),
-                None,
-            );
-        }
+        // The shared button face (primary / neutral) over the rect the hit
+        // list owns: one look, one measured label centring, at every scale.
+        // The face resolves the catalogue key itself.
+        let face = ButtonFace::new(rect, label_key)
+            .radius(9.0)
+            .text_size(BUTTON_SIZE)
+            .weight(if primary {
+                TextWeight::Semibold
+            } else {
+                TextWeight::Regular
+            })
+            .hovered(rect.contains(self.last_mouse));
+        let face = if primary { face.primary() } else { face };
+        Button::paint(scene, t, tr, theme, &face);
     }
 
     /// Draw the embedded header inputs (their text + caret). Called by the host
@@ -2461,6 +2587,56 @@ mod tests {
         w.open_blank();
         w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
         w
+    }
+
+    #[test]
+    fn one_x_metrics_reproduce_the_authored_bands() {
+        // The pre-paint rule set keeps every 1× band at its authored size.
+        let m = ComposeMetrics::default();
+        assert_eq!(m.title_h, TITLE_H);
+        assert_eq!(m.field_h, FIELD_H);
+        assert_eq!(m.toolbar_h, TOOLBAR_H);
+        assert_eq!(m.button_h, BUTTON_H);
+        assert_eq!(m.scale, 1.0);
+    }
+
+    #[test]
+    fn scaled_metrics_grow_the_header_rows_and_the_buttons_hold_their_labels() {
+        // 200% text: rows follow their measured lines instead of the fields
+        // and labels stacking over each other (the defect at 200% before).
+        let big = ComposeMetrics {
+            scale: 2.0,
+            title_h: 51.0,
+            label_h: 30.0,
+            field_h: 51.0,
+            toolbar_h: 62.0,
+            button_h: 50.0,
+            cc_bcc_w: 96.0,
+            attach_w: 130.0,
+            toggle_w: 140.0,
+            send_w: 128.0,
+            draft_w: 176.0,
+            discard_w: 150.0,
+            ..ComposeMetrics::default()
+        };
+        let mut w = ComposeWindow::new(ComposeFormat::Html);
+        w.open_blank();
+        w.metrics = big;
+        w.layout(Rect::new(0.0, 0.0, 1280.0, 900.0));
+        let to = hit_rect(&w, ComposeHit::FieldTo);
+        let subject = hit_rect(&w, ComposeHit::FieldSubject);
+        let send = hit_rect(&w, ComposeHit::Send);
+        let draft = hit_rect(&w, ComposeHit::SaveDraft);
+        let discard = hit_rect(&w, ComposeHit::Discard);
+        assert_eq!(to.height(), big.field_h);
+        assert!(subject.y0 >= to.y1, "the subject row starts under the To row");
+        assert_eq!(send.width(), big.send_w);
+        assert!(draft.x0 >= send.x1, "Save draft sits after Send");
+        assert!(discard.x0 >= draft.x1, "Discard sits after Save draft");
+        assert_eq!(send.height(), big.button_h);
+        // The default window followed the scale so a body remains.
+        let body = hit_rect(&w, ComposeHit::Body);
+        assert!(body.height() > 100.0, "body {body:?}");
     }
 
     #[test]

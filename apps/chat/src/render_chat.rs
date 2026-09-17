@@ -59,6 +59,32 @@ const CHANNEL_ROW_MIN_H: f64 = 32.0;
 /// Space between consecutive channel rows.
 const CHANNEL_ROW_GAP: f64 = 2.0;
 /// Member name in a voice-presence row under a voice channel.
+/// Category header ("CHANNELS", "VOICE") label size and 1× row height.
+const CATEGORY_NAME_SIZE: f32 = 10.5;
+const CATEGORY_ROW_MIN_H: f64 = 24.0;
+/// Space under a category's last channel before the next header.
+const CATEGORY_GAP: f64 = 6.0;
+/// "+ Category" chip under the workspace title: catalogue key, label size
+/// and the 1× chip it never shrinks below.
+const ADD_CATEGORY_KEY: &str = "chat-sidebar-add-category";
+const ADD_CATEGORY_SIZE: f32 = 11.0;
+const ADD_CATEGORY_CHIP_MIN_W: f64 = 106.0;
+const ADD_CATEGORY_CHIP_MIN_H: f64 = 22.0;
+/// Identity bar at the sidebar's bottom: name / status sizes, 1× height and
+/// 1× avatar radius (the disc scales with the text like the initials do).
+const IDENTITY_NAME_SIZE: f32 = 13.0;
+const IDENTITY_SUB_SIZE: f32 = 11.0;
+const IDENTITY_BAR_MIN_H: f64 = 56.0;
+const IDENTITY_AVATAR_R: f64 = 16.0;
+/// Call toggle buttons in the identity bar: glyph size and 1× square.
+const IDENTITY_CTL_GLYPH: f32 = 14.0;
+const IDENTITY_CTL_MIN: f64 = 32.0;
+/// Cross-workspace inbox sidebar: channel-name / workspace-label sizes and
+/// their 1× rows.
+const INBOX_NAME_SIZE: f32 = 13.5;
+const INBOX_ROW_MIN_H: f64 = 36.0;
+const INBOX_LABEL_SIZE: f32 = 10.0;
+const INBOX_LABEL_MIN_H: f64 = 22.0;
 const VOICE_NAME_SIZE: f32 = 12.0;
 /// 1× voice-presence row height.
 const VOICE_ROW_MIN_H: f64 = 24.0;
@@ -509,26 +535,39 @@ impl ChatApp {
                     .cmp(&left.unread)
                     .then_with(|| left.order.cmp(&right.order))
             });
+            // Every row is its measured line plus pads (never shorter than
+            // the 1× row) and every part of it is centred on the row's
+            // measured centre line, so 200% text grows the list instead of
+            // stacking rows and labels over each other.
+            let sp = &theme.tokens.spacing;
+            let label_row_h = inbox_label_h(tr, theme);
+            let ws_label = workspace.name.to_uppercase();
+            let (_, lh) = tr.measure(&ws_label, INBOX_LABEL_SIZE, None);
             label(
                 scene,
                 tr,
                 tf,
-                &workspace.name.to_uppercase(),
-                10.0,
+                &ws_label,
+                INBOX_LABEL_SIZE,
                 c.text_dim.with_alpha_factor(0.78),
-                side.x0 + 16.0,
-                y,
+                side.x0 + f64::from(sp.s4),
+                line_top(y + label_row_h / 2.0, f64::from(lh)),
             );
-            y += 22.0;
+            y += label_row_h;
+            let row_h = inbox_row_h(tr, theme);
+            // The same "#" glyph leads every row; measure it once per pass.
+            let (_, hash_h) = tr.measure("#", CHANNEL_NAME_SIZE, None);
             for channel in channels {
-                let row = Rect::new(side.x0 + 8.0, y, side.x1 - 8.0, y + 36.0);
+                let row = Rect::new(side.x0 + 8.0, y, side.x1 - 8.0, y + row_h);
+                let cy = row.center().y;
                 let selected = channel.id == self.active_channel;
                 if selected {
                     fill_round(scene, tf, row, 8.0, c.accent[5].with_alpha_factor(0.16));
+                    let bar_h = (row_h - 2.0 * 7.0).max(8.0);
                     fill_round(
                         scene,
                         tf,
-                        Rect::new(side.x0, row.y0 + 7.0, side.x0 + 4.0, row.y1 - 7.0),
+                        Rect::new(side.x0, cy - bar_h / 2.0, side.x0 + 4.0, cy + bar_h / 2.0),
                         2.0,
                         c.accent[5],
                     );
@@ -538,57 +577,69 @@ impl ChatApp {
                     tr,
                     tf,
                     "#",
-                    14.0,
+                    CHANNEL_NAME_SIZE,
                     if selected { c.accent[7] } else { c.text_dim },
                     row.x0 + 10.0,
-                    row.y0 + 9.0,
+                    line_top(cy, f64::from(hash_h)),
                 );
-                let name = truncate_to(tr, &channel.name, 13.5, row.width() - 62.0);
+                // The badge is measured first and reserved, then the name is
+                // truncated into what remains before it.
+                let badge = (channel.unread > 0).then(|| {
+                    let count = channel.unread.to_string();
+                    let (w, h) = tr.measure(&count, UNREAD_BADGE_TEXT, None);
+                    let badge_h = (f64::from(h) + 2.0 * f64::from(sp.s1)).max(UNREAD_BADGE_MIN_H);
+                    let badge_w = f64::from(w) + 2.0 * (f64::from(sp.s1) + 3.0);
+                    let x1 = row.x1 - 6.0;
+                    (
+                        count,
+                        Rect::new(x1 - badge_w, cy - badge_h / 2.0, x1, cy + badge_h / 2.0),
+                    )
+                });
+                let name_x = row.x0 + 32.0;
+                let name_right = badge
+                    .as_ref()
+                    .map_or(row.x1 - f64::from(sp.s2), |(_, b)| b.x0 - f64::from(sp.s2));
+                let weight = if channel.unread > 0 {
+                    TextWeight::Semibold
+                } else {
+                    TextWeight::Regular
+                };
+                let name = truncate_to(tr, &channel.name, INBOX_NAME_SIZE, name_right - name_x);
+                let (_, nh) = tr.measure_weighted(&name, INBOX_NAME_SIZE, None, weight);
                 text(
                     scene,
                     tr,
                     tf,
                     &name,
-                    13.5,
+                    INBOX_NAME_SIZE,
                     if selected || channel.unread > 0 {
                         c.text_primary
                     } else {
                         c.text_dim
                     },
-                    row.x0 + 32.0,
-                    row.y0 + 9.0,
-                    if channel.unread > 0 {
-                        TextWeight::Semibold
-                    } else {
-                        TextWeight::Regular
-                    },
+                    name_x,
+                    line_top(cy, f64::from(nh)),
+                    weight,
                     None,
                 );
-                if channel.unread > 0 {
-                    let count = channel.unread.to_string();
-                    let (w, _) = tr.measure(&count, 10.0, None);
-                    let badge = Rect::new(
-                        row.x1 - f64::from(w) - 20.0,
-                        row.y0 + 9.0,
-                        row.x1 - 6.0,
-                        row.y1 - 9.0,
-                    );
-                    fill_round(scene, tf, badge, 9.0, c.accent[5]);
+                if let Some((count, badge)) = badge {
+                    fill_round(scene, tf, badge, badge.height() / 2.0, c.accent[5]);
+                    let (cw, ch) = tr.measure(&count, UNREAD_BADGE_TEXT, None);
                     label(
                         scene,
                         tr,
                         tf,
                         &count,
-                        10.0,
+                        UNREAD_BADGE_TEXT,
                         Color::WHITE,
-                        badge.x0 + 7.0,
-                        badge.y0 + 2.0,
+                        badge.center().x - f64::from(cw) / 2.0,
+                        line_top(cy, f64::from(ch)),
                     );
                 }
                 ChatApp::push_hit(hits, row, Hit::Channel(channel.id.clone()));
-                y += 38.0;
+                y += row_h + CHANNEL_ROW_GAP;
             }
-            y += 8.0;
+            y += f64::from(sp.s2);
         }
     }
 
@@ -699,23 +750,28 @@ impl ChatApp {
             c.border_standard,
         );
 
-        // "+ category" affordance below the workspace title.
+        // "+ category" affordance below the workspace title: a chip sized
+        // from its measured label (never smaller than the 1× chip), with the
+        // label centred on the chip's measured line box.
+        let (chip_w, chip_h) = add_category_chip_size(tr, theme);
         let add_cat = Rect::new(
-            side.x0 + 12.0,
-            header.y1 + 6.0,
-            side.x0 + 118.0,
-            header.y1 + 28.0,
+            side.x0 + f64::from(sp.s3),
+            header.y1 + CATEGORY_GAP,
+            side.x0 + f64::from(sp.s3) + chip_w,
+            header.y1 + CATEGORY_GAP + chip_h,
         );
         fill_round(scene, tf, add_cat, 7.0, c.lift(0.35));
+        let add_label = crate::i18n::t(ADD_CATEGORY_KEY);
+        let (lw, lh) = tr.measure(&add_label, ADD_CATEGORY_SIZE, None);
         label(
             scene,
             tr,
             tf,
-            "＋ Category",
-            11.0,
+            &add_label,
+            ADD_CATEGORY_SIZE,
             c.text_dim,
-            add_cat.x0 + 9.0,
-            add_cat.center().y - 7.0,
+            add_cat.center().x - f64::from(lw) / 2.0,
+            line_top(add_cat.center().y, f64::from(lh)),
         );
         ChatApp::push_hit(hits, add_cat, Hit::AddCategory(self.active_ws.clone()));
         header
@@ -739,8 +795,18 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
-        let mut y = header.y1 + 38.0;
-        let body_bottom = side.y1 - 60.0;
+        let sp = &theme.tokens.spacing;
+        // Start under the measured "+ Category" chip and stop above the
+        // measured identity bar, so at a larger text scale the tree neither
+        // paints over the chip nor runs under the bar.
+        let (_, chip_h) = add_category_chip_size(tr, theme);
+        let mut y = header.y1 + CATEGORY_GAP + chip_h + f64::from(sp.s2);
+        let body_bottom = side.y1 - identity_bar_h(tr, theme) - f64::from(sp.s1);
+        let hrow_h = category_row_h(tr, theme);
+        // The caret and "+" glyphs are the same for every category; measure
+        // them once per pass rather than once per row.
+        let (_, caret_h) = tr.measure("▾", 10.0, None);
+        let (pw, ph) = tr.measure("+", 16.0, None);
 
         // Uncategorised channels (category id "").
         y = self.draw_channel_group(scene, tf, tr, theme, presence, side, None, y, hits);
@@ -750,8 +816,10 @@ impl ChatApp {
             if y > body_bottom {
                 break;
             }
-            // Category header row: caret + name + "+".
-            let hrow = Rect::new(side.x0 + 8.0, y, side.x1 - 8.0, y + 24.0);
+            // Category header row: caret + name + "+", every part centred on
+            // the row's measured centre line.
+            let hrow = Rect::new(side.x0 + 8.0, y, side.x1 - 8.0, y + hrow_h);
+            let cy = hrow.center().y;
             let caret = if cat.collapsed { "▸" } else { "▾" };
             label(
                 scene,
@@ -760,10 +828,34 @@ impl ChatApp {
                 caret,
                 10.0,
                 c.text_dim,
-                hrow.x0 + 4.0,
-                y + 5.0,
+                hrow.x0 + f64::from(sp.s1),
+                line_top(cy, f64::from(caret_h)),
             );
-            // Inline rename for a category, else its name.
+            // "+" add-channel button: a square the row's height at the right
+            // edge, its glyph centred by measurement.
+            let plus = Rect::new(hrow.x1 - hrow_h, y, hrow.x1, y + hrow_h);
+            label(
+                scene,
+                tr,
+                tf,
+                "+",
+                16.0,
+                c.text_dim,
+                plus.center().x - f64::from(pw) / 2.0,
+                line_top(cy, f64::from(ph)),
+            );
+            ChatApp::push_hit(
+                hits,
+                plus,
+                Hit::AddChannel {
+                    workspace: self.active_ws.clone(),
+                    category: cat.id.clone(),
+                },
+            );
+            // Inline rename for a category, else its name, budgeted to stop a
+            // gap before the "+" so the two never paint over each other.
+            let name_x = hrow.x0 + 18.0;
+            let name_w = (plus.x0 - f64::from(sp.s2) - name_x).max(20.0);
             let renaming_cat =
                 matches!(&self.rename, Some(MenuTarget::Category(id)) if id == &cat.id);
             if renaming_cat {
@@ -773,44 +865,35 @@ impl ChatApp {
                     tr,
                     theme,
                     presence,
-                    hrow.x0 + 18.0,
-                    y + 4.0,
-                    hrow.width() - 60.0,
+                    name_x,
+                    y + (hrow_h - 16.0).max(0.0) / 2.0,
+                    name_w,
                     hits,
                 );
             } else {
-                let name = truncate_to(tr, &cat.name.to_uppercase(), 10.5, hrow.width() - 60.0);
+                let name = truncate_to(tr, &cat.name.to_uppercase(), CATEGORY_NAME_SIZE, name_w);
+                let (_, nh) =
+                    tr.measure_weighted(&name, CATEGORY_NAME_SIZE, None, TextWeight::Semibold);
                 text(
                     scene,
                     tr,
                     tf,
                     &name,
-                    10.5,
+                    CATEGORY_NAME_SIZE,
                     c.text_dim,
-                    hrow.x0 + 18.0,
-                    y + 5.0,
+                    name_x,
+                    line_top(cy, f64::from(nh)),
                     TextWeight::Semibold,
                     None,
                 );
             }
-            // "+" add-channel button.
-            let plus = Rect::new(hrow.x1 - 22.0, y + 2.0, hrow.x1 - 4.0, y + 20.0);
-            label(scene, tr, tf, "+", 16.0, c.text_dim, plus.x0 + 4.0, y + 1.0);
-            ChatApp::push_hit(
-                hits,
-                plus,
-                Hit::AddChannel {
-                    workspace: self.active_ws.clone(),
-                    category: cat.id.clone(),
-                },
-            );
             // Caret + name toggles collapse; right-click (resolved against the
             // toggle / "+" hit in `on_right_click`) opens the category menu.
-            let toggle = Rect::new(hrow.x0, y, plus.x0, y + 24.0);
+            let toggle = Rect::new(hrow.x0, y, plus.x0, y + hrow_h);
             if !renaming_cat {
                 ChatApp::push_hit(hits, toggle, Hit::CategoryToggle(cat.id.clone()));
             }
-            y += 26.0;
+            y += hrow_h + CHANNEL_ROW_GAP;
 
             if !cat.collapsed {
                 y = self.draw_channel_group(
@@ -825,7 +908,7 @@ impl ChatApp {
                     hits,
                 );
             }
-            y += 6.0;
+            y += CATEGORY_GAP;
         }
     }
 
@@ -841,7 +924,9 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
-        let bar = Rect::new(side.x0, side.y1 - 56.0, side.x1, side.y1);
+        // The bar is as tall as its measured name + status lines need (never
+        // shorter than the 1× bar); the tree above stops at the same edge.
+        let bar = Rect::new(side.x0, side.y1 - identity_bar_h(tr, theme), side.x1, side.y1);
         fill_rect(scene, tf, bar, c.neutral[0]);
         self.draw_identity_row(scene, tf, tr, theme, bar);
         // Deafen + mute toggles — only while in a call, where they write
@@ -863,44 +948,56 @@ impl ChatApp {
         bar: Rect,
     ) {
         let c = &theme.tokens.colors;
+        let sp = &theme.tokens.spacing;
         let Some(me) = self.user(&self.me.id) else {
             return;
         };
+        // The disc follows the text scale (the shared avatar sizes its
+        // monogram through the renderer, which applies that scale), and the
+        // name + status stack as one block centred on the bar, so at 200%
+        // the two lines sit under each other instead of on top of each other.
+        let r = IDENTITY_AVATAR_R * f64::from(theme.text_scale).max(1.0);
+        let avatar_cx = bar.x0 + f64::from(sp.s3) + r;
+        let cy = bar.center().y;
         draw_avatar(
             scene,
             tf,
             tr,
             theme,
-            Point::new(bar.x0 + 28.0, bar.center().y),
-            16.0,
+            Point::new(avatar_cx, cy),
+            r,
             &me.initials,
             me.color_idx,
             Some(me.status),
         );
+        let sub = if self.call.active {
+            crate::i18n::t("chat-identity-in-voice")
+        } else {
+            crate::i18n::t("chat-identity-available")
+        };
+        let (_, name_h) = tr.measure(&me.name, IDENTITY_NAME_SIZE, None);
+        let (_, sub_h) = tr.measure(&sub, IDENTITY_SUB_SIZE, None);
+        let text_x = avatar_cx + r + f64::from(sp.s2);
+        let name_y = line_top(cy, f64::from(name_h) + f64::from(sub_h));
         label(
             scene,
             tr,
             tf,
             &me.name,
-            13.0,
+            IDENTITY_NAME_SIZE,
             c.text_primary,
-            bar.x0 + 50.0,
-            bar.center().y - 14.0,
+            text_x,
+            name_y,
         );
-        let sub = if self.call.active {
-            "In voice"
-        } else {
-            "Available"
-        };
         label(
             scene,
             tr,
             tf,
-            sub,
-            11.0,
+            &sub,
+            IDENTITY_SUB_SIZE,
             c.text_dim,
-            bar.x0 + 50.0,
-            bar.center().y + 2.0,
+            text_x,
+            name_y + f64::from(name_h),
         );
     }
 
@@ -916,12 +1013,17 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
-        let deaf = Rect::new(
-            bar.x1 - 80.0,
-            bar.center().y - 16.0,
-            bar.x1 - 48.0,
-            bar.center().y + 16.0,
-        );
+        let sp = &theme.tokens.spacing;
+        // Each toggle is a square sized from its measured glyph (never
+        // smaller than the 1× square), centred on the bar: mute at the right
+        // inset, deafen one `s1` left of it.
+        let (_, gh) = tr.measure("🎧", IDENTITY_CTL_GLYPH, None);
+        let ctl = (f64::from(gh) + 2.0 * f64::from(sp.s2)).max(IDENTITY_CTL_MIN);
+        let cy = bar.center().y;
+        let mute_x1 = bar.x1 - f64::from(sp.s3);
+        let mute = Rect::new(mute_x1 - ctl, cy - ctl / 2.0, mute_x1, cy + ctl / 2.0);
+        let deaf_x1 = mute.x0 - f64::from(sp.s1);
+        let deaf = Rect::new(deaf_x1 - ctl, cy - ctl / 2.0, deaf_x1, cy + ctl / 2.0);
         fill_round(
             scene,
             tf,
@@ -934,13 +1036,13 @@ impl ChatApp {
             },
         );
         let dglyph = if self.call.deafened { "🔕" } else { "🎧" };
-        let (dw, dh) = tr.measure(dglyph, 14.0, None);
+        let (dw, dh) = tr.measure(dglyph, IDENTITY_CTL_GLYPH, None);
         text(
             scene,
             tr,
             tf,
             dglyph,
-            14.0,
+            IDENTITY_CTL_GLYPH,
             c.text_primary,
             deaf.center().x - f64::from(dw) / 2.0,
             deaf.center().y - f64::from(dh) / 2.0,
@@ -949,12 +1051,6 @@ impl ChatApp {
         );
         ChatApp::push_hit(hits, deaf, Hit::CallDeafen);
 
-        let mute = Rect::new(
-            bar.x1 - 44.0,
-            bar.center().y - 16.0,
-            bar.x1 - 12.0,
-            bar.center().y + 16.0,
-        );
         fill_round(
             scene,
             tf,
@@ -967,13 +1063,13 @@ impl ChatApp {
             },
         );
         let mglyph = if self.call.muted { "🔇" } else { "🎤" };
-        let (mw, mh) = tr.measure(mglyph, 14.0, None);
+        let (mw, mh) = tr.measure(mglyph, IDENTITY_CTL_GLYPH, None);
         text(
             scene,
             tr,
             tf,
             mglyph,
-            14.0,
+            IDENTITY_CTL_GLYPH,
             c.text_primary,
             mute.center().x - f64::from(mw) / 2.0,
             mute.center().y - f64::from(mh) / 2.0,
@@ -3072,16 +3168,12 @@ impl ChatApp {
             ),
         );
 
+        // The thread composer is the same control as the main composer and
+        // follows its height rule (`thread_composer_rect`); the body stops
+        // one gap above it.
+        let comp = self.thread_composer_rect(tr, panel);
         let head = self.draw_thread_header(scene, tf, tr, theme, panel, hits);
-        self.draw_thread_body(scene, tf, tr, theme, panel, head, &parent_id, hits);
-
-        // thread composer
-        let comp = Rect::new(
-            panel.x0 + 12.0,
-            panel.y1 - 60.0,
-            panel.x1 - 12.0,
-            panel.y1 - 12.0,
-        );
+        self.draw_thread_body(scene, tf, tr, theme, panel, head, comp.y0, &parent_id, hits);
         if !self.can_participate() {
             self.composer_thread.set_focus(false);
             Self::draw_read_only_composer(scene, tf, tr, theme, comp);
@@ -3209,11 +3301,19 @@ impl ChatApp {
         theme: &Theme,
         panel: Rect,
         head: Rect,
+        composer_top: f64,
         parent_id: &str,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
-        let body = Rect::new(panel.x0, head.y1, panel.x1, panel.y1 - 70.0);
+        // The body ends one `s2` above the composer, whatever height the
+        // composer measured to this frame.
+        let body = Rect::new(
+            panel.x0,
+            head.y1,
+            panel.x1,
+            composer_top - f64::from(theme.tokens.spacing.s2),
+        );
         push_clip(scene, tf, body);
         let tx = panel.x0 + 16.0 + 32.0 + 10.0;
         let tw = (panel.x1 - tx - 14.0).max(60.0) as f32;
@@ -3889,6 +3989,50 @@ fn channel_row_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
 fn voice_row_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
     let (_, nh) = tr.measure("Ag", VOICE_NAME_SIZE, None);
     (f64::from(nh) + 2.0 * f64::from(theme.tokens.spacing.s1)).max(VOICE_ROW_MIN_H)
+}
+
+/// Height of a category header row ("CHANNELS", "VOICE"): the measured name
+/// plus a pad top and bottom, never shorter than the 1× row. Shared by the
+/// row rect, the caret / name / "+" centring, the toggle hit rect and the
+/// y-advance so the header never paints over the first channel row.
+fn category_row_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+    let (_, nh) = tr.measure_weighted("Ag", CATEGORY_NAME_SIZE, None, TextWeight::Semibold);
+    (f64::from(nh) + 2.0 * f64::from(theme.tokens.spacing.s1)).max(CATEGORY_ROW_MIN_H)
+}
+
+/// Size `(w, h)` of the "+ Category" chip under the workspace title: its
+/// measured label plus `s2` each side and `s1` above and below, never
+/// smaller than the 1× chip. Measured in both the header (which paints it)
+/// and the tree (which starts beneath it) so the two agree.
+fn add_category_chip_size(tr: &mut TextRenderer, theme: &Theme) -> (f64, f64) {
+    let sp = &theme.tokens.spacing;
+    let (lw, lh) = tr.measure(&crate::i18n::t(ADD_CATEGORY_KEY), ADD_CATEGORY_SIZE, None);
+    (
+        (f64::from(lw) + 2.0 * f64::from(sp.s2)).max(ADD_CATEGORY_CHIP_MIN_W),
+        (f64::from(lh) + 2.0 * f64::from(sp.s1)).max(ADD_CATEGORY_CHIP_MIN_H),
+    )
+}
+
+/// Height of the identity bar pinned to the sidebar's bottom: the name and
+/// status line boxes plus `s3` above and below, never shorter than the 1×
+/// bar. The tree stops above it and the bar's avatar / toggles centre on it.
+fn identity_bar_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+    let (_, name_h) = tr.measure("Ag", IDENTITY_NAME_SIZE, None);
+    let (_, sub_h) = tr.measure("Ag", IDENTITY_SUB_SIZE, None);
+    (f64::from(name_h) + f64::from(sub_h) + 2.0 * f64::from(theme.tokens.spacing.s3))
+        .max(IDENTITY_BAR_MIN_H)
+}
+
+/// Height of one channel row in the cross-workspace inbox sidebar.
+fn inbox_row_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+    let (_, nh) = tr.measure_weighted("Ag", INBOX_NAME_SIZE, None, TextWeight::Semibold);
+    (f64::from(nh) + 2.0 * f64::from(theme.tokens.spacing.s2)).max(INBOX_ROW_MIN_H)
+}
+
+/// Height of a workspace label row in the inbox sidebar.
+fn inbox_label_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
+    let (_, lh) = tr.measure("Ag", INBOX_LABEL_SIZE, None);
+    (f64::from(lh) + 2.0 * f64::from(theme.tokens.spacing.s1)).max(INBOX_LABEL_MIN_H)
 }
 
 /// Line box of a message-group header (author name + timestamp) plus the gap
