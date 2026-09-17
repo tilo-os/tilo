@@ -292,13 +292,22 @@ impl Theme {
                 window_card: None,
             },
         );
-        theme.tokens.radii.sm = spec.radius_px * 0.5;
+        // `radius_px` is the `md` step and `spacing_px` the `s3` step; the
+        // rest of each scale follows in the stock proportions (radii
+        // 1:2:3:6, spacing 1:2:3:4:6:8:12:16) so a custom theme at the
+        // stock value reproduces the stock scale exactly and a denser one
+        // stays proportional on every step — `Column`'s `s6` inset is still
+        // twice `padding_standard`, a card's `s2`/`s4` pair keeps its 1:2.
+        // `Metrics` stay at their defaults: a gutter preference must not
+        // shrink a pointer target.
+        let radii = crate::tokens::Radii::default();
+        let radius_ratio = spec.radius_px / radii.md;
+        theme.tokens.radii.sm = radii.sm * radius_ratio;
         theme.tokens.radii.md = spec.radius_px;
-        theme.tokens.radii.lg = spec.radius_px * 1.5;
-        theme.tokens.radii.xl = spec.radius_px * 2.4;
-        theme.tokens.spacing.s2 = (spec.spacing_px * 0.66).max(2.0);
-        theme.tokens.spacing.s3 = spec.spacing_px;
-        theme.tokens.spacing.s4 = spec.spacing_px * 1.33;
+        theme.tokens.radii.lg = radii.lg * radius_ratio;
+        theme.tokens.radii.xl = radii.xl * radius_ratio;
+        theme.tokens.spacing =
+            crate::tokens::Spacing::BASE.scaled(spec.spacing_px / crate::tokens::Spacing::BASE.s3);
         theme.tokens.typography.sans_family.clone_from(&spec.font);
         // Rebuild through the central funnel after shape/type edits so every
         // legacy shortcut and the terminal palette matches the token tree.
@@ -762,16 +771,8 @@ impl Theme {
     }
 
     fn multiply_dimensions(&mut self, factor: f32) {
-        let sp = &mut self.tokens.spacing;
-        sp.s0 *= factor;
-        sp.s1 *= factor;
-        sp.s2 *= factor;
-        sp.s3 *= factor;
-        sp.s4 *= factor;
-        sp.s6 *= factor;
-        sp.s8 *= factor;
-        sp.s12 *= factor;
-        sp.s16 *= factor;
+        self.tokens.spacing = self.tokens.spacing.scaled(factor);
+        self.tokens.metrics = self.tokens.metrics.scaled(factor);
 
         let r = &mut self.tokens.radii;
         r.sm *= factor;
@@ -833,6 +834,7 @@ mod tests {
     //! visible failure.
     use super::*;
     use crate::color_compat::ColorCompat;
+    use crate::tokens::Radii;
 
     use crate::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
 
@@ -1359,6 +1361,99 @@ mod tests {
         assert_eq!(theme.tokens.radii.md, 13.0);
         assert_eq!(theme.tokens.spacing.s3, 17.0);
         assert_eq!(theme.tokens.typography.sans_family, "Inter");
+    }
+
+    fn quiet_ocean(radius_px: f32, spacing_px: f32) -> CustomThemeSpec {
+        CustomThemeSpec {
+            schema_version: CUSTOM_THEME_SCHEMA_VERSION,
+            id: "quiet-ocean".into(),
+            name: "Quiet Ocean".into(),
+            dark_base: true,
+            accent: [12, 120, 220],
+            accent_hover: [8, 96, 190],
+            surface_base: [9, 18, 30],
+            surface_raised: [18, 32, 48],
+            text_primary: [238, 244, 250],
+            text_dim: [170, 184, 199],
+            border: [48, 68, 88],
+            success: [50, 190, 110],
+            warning: [230, 170, 50],
+            danger: [225, 75, 80],
+            info: [70, 165, 230],
+            radius_px,
+            spacing_px,
+            font: "Inter".into(),
+        }
+    }
+
+    /// A custom theme's `spacing_px` is the `s3` step; every other step
+    /// follows in the stock 1:2:3:4:6:8:12:16 proportion, so the scale is a
+    /// scale and not three rewritten fields with the rest left at 12 px
+    /// defaults.
+    #[test]
+    fn custom_theme_spacing_rescales_the_whole_scale_proportionally() {
+        let theme = Theme::from_custom_spec(&quiet_ocean(8.0, 17.0)).unwrap();
+        let s = theme.tokens.spacing;
+        let unit = 17.0 / 3.0;
+        for (name, value, steps) in [
+            ("s0", s.s0, 0.0),
+            ("s1", s.s1, 1.0),
+            ("s2", s.s2, 2.0),
+            ("s3", s.s3, 3.0),
+            ("s4", s.s4, 4.0),
+            ("s6", s.s6, 6.0),
+            ("s8", s.s8, 8.0),
+            ("s12", s.s12, 12.0),
+            ("s16", s.s16, 16.0),
+        ] {
+            assert!(
+                (value - unit * steps).abs() < 1e-3,
+                "{name} = {value}, expected {} (17 px is the s3 step)",
+                unit * steps
+            );
+        }
+        assert_eq!(theme.padding_standard, 17.0);
+        assert_eq!(theme.gap_standard, 17.0);
+        assert_eq!(
+            theme.tokens.metrics,
+            crate::tokens::Metrics::BASE,
+            "a spacing preference never shrinks a pointer target or panel width"
+        );
+    }
+
+    /// The stock values reproduce the stock scales exactly — a custom theme
+    /// that only recolours must not quietly round every corner differently.
+    #[test]
+    fn custom_theme_at_stock_values_reproduces_the_stock_scales() {
+        let stock = Theme::dark();
+        let theme =
+            Theme::from_custom_spec(&quiet_ocean(stock.tokens.radii.md, stock.tokens.spacing.s3))
+                .unwrap();
+        assert_eq!(theme.tokens.spacing, stock.tokens.spacing);
+        assert_eq!(theme.tokens.radii.sm, stock.tokens.radii.sm);
+        assert_eq!(theme.tokens.radii.md, stock.tokens.radii.md);
+        assert_eq!(theme.tokens.radii.lg, stock.tokens.radii.lg);
+        assert_eq!(
+            theme.tokens.radii.xl, stock.tokens.radii.xl,
+            "the window card's xl corner is the stock 24, not 8 × 2.4 = 19.2"
+        );
+        assert_eq!(theme.tokens.radii.full, stock.tokens.radii.full);
+    }
+
+    /// `radius_px` is the `md` step; the others follow 1:2:3:6.
+    #[test]
+    fn custom_theme_radius_rescales_the_whole_scale_proportionally() {
+        let theme = Theme::from_custom_spec(&quiet_ocean(13.0, 12.0)).unwrap();
+        let r = theme.tokens.radii;
+        assert!((r.sm - 6.5).abs() < 1e-4);
+        assert_eq!(r.md, 13.0);
+        assert!((r.lg - 19.5).abs() < 1e-4);
+        assert!((r.xl - 39.0).abs() < 1e-4);
+        assert_eq!(
+            r.full,
+            Radii::default().full,
+            "full stays the pill sentinel"
+        );
     }
 
     #[test]
