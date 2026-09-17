@@ -2740,8 +2740,12 @@ fn osc_52_writes_clipboard_from_base64() {
     // decoded nothing fails here rather than passing quietly.
     let (mut w, _) = build_test_widget();
     let mut doc = AutoCommit::new();
-    // base64("tilo-osc52") = cW9zLW9zYzUy
-    w.feed(&mut doc, &automerge::ROOT, b"\x1b]52;c;cW9zLW9zYzUy\x07");
+    // base64("tilo-osc52") = dGlsby1vc2M1Mg==
+    w.feed(
+        &mut doc,
+        &automerge::ROOT,
+        b"\x1b]52;c;dGlsby1vc2M1Mg==\x07",
+    );
     assert_eq!(
         ui::text_selection::clipboard_paste().as_deref(),
         Some("tilo-osc52"),
