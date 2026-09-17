@@ -116,7 +116,7 @@ fi
 
 packages_line="$(grep -F 'dnf install -y --downloadonly' "$snapshot" || true)"
 if [ -n "$packages_line" ] \
-  && [[ "$packages_line" == *'${PACKAGES}'* ]] \
+  && [[ "$packages_line" == *'${resolved_packages}'* ]] \
   && [[ "$packages_line" != *'--skip-unavailable'* ]]; then
   ok 'snapshot transaction resolves the complete package set without skipping unavailable RPMs'
 else
@@ -129,7 +129,11 @@ first_instruction="$(grep -m1 -E '^(ARG|FROM) ' "$snapshot")"
   || bad 'BASE_REF must be declared before the first FROM'
 has "$snapshot" '/repo/tilo-direct-package-specs.txt' \
   'snapshot publishes its direct package manifest'
-has "$snapshot" 'dnf install -y --downloadonly --setopt=reposdir=/repo ${PACKAGES}' \
+has "$snapshot" 'ARG TARGETARCH' \
+  'snapshot does not distinguish architecture-specific package availability'
+has "$snapshot" 'arm64:wine|arm64:wine-dxvk' \
+  'snapshot does not narrowly exclude x86-only gaming packages on arm64'
+has "$snapshot" 'dnf install -y --downloadonly --setopt=reposdir=/repo ${resolved_packages}' \
   'snapshot proves the frozen repo resolves the complete transaction offline'
 has "$image_workflow" './os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"' \
   'production CI rejects a stale frozen package manifest before building'

@@ -46,6 +46,7 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
 # The exact package set the OS image installs (passed by the workflow, derived
 # from os/Containerfile's dnf-install blocks — single source of truth).
 ARG PACKAGES
+ARG TARGETARCH
 
 # Resolve the REAL install transaction against the base (captures rich/
 # conditional deps like greetd-selinux and the exact non-conflicting versions),
@@ -59,7 +60,15 @@ ARG PACKAGES
 # dnf5) and fall back to dnf4 semantics if the flag isn't recognised.
 # After creating the repo, prove it resolves the complete requested transaction
 # (including dependencies) with every network repository hidden.
-RUN dnf install -y --downloadonly --exclude='qemu-user-static*' ${PACKAGES} \
+RUN resolved_packages='' \
+ && for package in ${PACKAGES}; do \
+      case "${TARGETARCH}:${package}" in \
+        arm64:wine|arm64:wine-dxvk) ;; \
+        *) resolved_packages="${resolved_packages} ${package}" ;; \
+      esac; \
+    done \
+ && test -n "${resolved_packages}" \
+ && dnf install -y --downloadonly --exclude='qemu-user-static*' ${resolved_packages} \
  && mkdir -p /repo \
  && { find /var/cache/libdnf5 /var/cache/dnf -name '*.rpm' -exec cp -n {} /repo/ \; ; true; } 2>/dev/null \
  && test -n "$(ls /repo/*.rpm 2>/dev/null)" \
@@ -68,9 +77,9 @@ RUN dnf install -y --downloadonly --exclude='qemu-user-static*' ${PACKAGES} \
  && ls -1 /repo/kernel-*.src.rpm >/dev/null \
  && createrepo_c --quiet /repo \
  && printf '[frozen]\nname=Tilo frozen package snapshot\nbaseurl=file:///repo\ngpgcheck=0\nenabled=1\n' > /repo/frozen.repo \
- && printf '%s\n' ${PACKAGES} | sort -u > /repo/tilo-direct-package-specs.txt \
+ && printf '%s\n' ${resolved_packages} | sort -u > /repo/tilo-direct-package-specs.txt \
  && dnf clean all \
- && dnf install -y --downloadonly --setopt=reposdir=/repo ${PACKAGES}
+ && dnf install -y --downloadonly --setopt=reposdir=/repo ${resolved_packages}
 
 # The published artifact: just the repo, nothing else.
 FROM scratch
