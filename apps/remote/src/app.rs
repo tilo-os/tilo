@@ -776,7 +776,7 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            ButtonSpec {
+            &ButtonSpec {
                 rect: cancel,
                 label: "Cancel",
                 primary: false,
@@ -800,7 +800,7 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                ButtonSpec {
+                &ButtonSpec {
                     rect: confirm,
                     label: primary,
                     primary: true,
@@ -2121,6 +2121,12 @@ struct ToolSpec<'a> {
     right_x: f64,
     bar: Rect,
     label: &'a str,
+}
+
+struct SegmentSpec<'a> {
+    rect: Rect,
+    label: &'a str,
+    active: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -4108,7 +4114,7 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            RailButtonSpec {
+            &RailButtonSpec {
                 rail,
                 index: 0,
                 glyph: "≡",
@@ -4122,7 +4128,7 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            RailButtonSpec {
+            &RailButtonSpec {
                 rail,
                 index: 1,
                 glyph: "+",
@@ -4207,7 +4213,7 @@ impl RemoteApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        spec: RailButtonSpec<'_>,
+        spec: &RailButtonSpec<'_>,
     ) -> Rect {
         let tokens = &theme.tokens;
         let top = spec.rail.y0 + 72.0 + spec.index as f64 * 56.0;
@@ -4314,7 +4320,7 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            ButtonSpec {
+            &ButtonSpec {
                 rect: add,
                 label: if compact_header {
                     "+ New"
@@ -4495,7 +4501,7 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            ButtonSpec {
+            &ButtonSpec {
                 rect: btn,
                 label: "+ New connection",
                 primary: true,
@@ -4680,7 +4686,7 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                ButtonSpec {
+                &ButtonSpec {
                     rect: connect,
                     label: "Connect",
                     primary: true,
@@ -4697,7 +4703,7 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            ButtonSpec {
+            &ButtonSpec {
                 rect: edit,
                 label: "Edit",
                 primary: false,
@@ -4808,7 +4814,7 @@ impl RemoteApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        spec: ButtonSpec<'_>,
+        spec: &ButtonSpec<'_>,
     ) {
         let hovered = spec.rect.contains(self.pointer);
         let face = ButtonFace::new(spec.rect, spec.label)
@@ -4967,7 +4973,17 @@ impl RemoteApp {
                 y + 40.0,
             );
             let active = self.draft.kind == k;
-            self.draw_segment(scene, transform, text_renderer, theme, seg, k.tag(), active);
+            self.draw_segment(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &SegmentSpec {
+                    rect: seg,
+                    label: k.tag(),
+                    active,
+                },
+            );
             self.push_hit(seg, Action::SetKind(k));
         }
         y += 56.0;
@@ -5308,9 +5324,11 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    seg,
-                    a.label(),
-                    active,
+                    &SegmentSpec {
+                        rect: seg,
+                        label: a.label(),
+                        active,
+                    },
                 );
                 self.push_hit(seg, Action::SetAuth(a));
             }
@@ -5369,7 +5387,7 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            ButtonSpec {
+            &ButtonSpec {
                 rect: save,
                 label: "Save",
                 primary: true,
@@ -5382,7 +5400,7 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            ButtonSpec {
+            &ButtonSpec {
                 rect: cancel,
                 label: "Cancel",
                 primary: false,
@@ -5459,10 +5477,11 @@ impl RemoteApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        rect: Rect,
-        label: &str,
-        active: bool,
+        spec: &SegmentSpec<'_>,
     ) {
+        let rect = spec.rect;
+        let label = spec.label;
+        let active = spec.active;
         let tokens = &theme.tokens;
         let hovered = rect.contains(self.pointer);
         let rr = RoundedRect::from_rect(rect.inset(-0.0), 8.0);
@@ -5540,7 +5559,7 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                StatusSessionSpec {
+                &StatusSessionSpec {
                     content,
                     connection: &c,
                     title: "Not connected",
@@ -5574,7 +5593,7 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    StatusSessionSpec {
+                    &StatusSessionSpec {
                         content,
                         connection: &c,
                         title,
@@ -5590,7 +5609,7 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    StatusSessionSpec {
+                    &StatusSessionSpec {
                         content,
                         connection: &c,
                         title: "Connection failed",
@@ -5618,7 +5637,7 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    StatusSessionSpec {
+                    &StatusSessionSpec {
                         content,
                         connection: &c,
                         title: "Connection not available",
@@ -5634,7 +5653,7 @@ impl RemoteApp {
                     transform,
                     text_renderer,
                     theme,
-                    StatusSessionSpec {
+                    &StatusSessionSpec {
                         content,
                         connection: &c,
                         title: "Session ended",
@@ -5681,7 +5700,7 @@ impl RemoteApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        spec: StatusSessionSpec<'_>,
+        spec: &StatusSessionSpec<'_>,
     ) {
         let tokens = &theme.tokens;
         let accent = match spec.tone {
@@ -5695,7 +5714,7 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            StatusIdentitySpec {
+            &StatusIdentitySpec {
                 card,
                 accent,
                 connection: spec.connection,
@@ -5706,7 +5725,7 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            StatusBodySpec {
+            &StatusBodySpec {
                 card,
                 accent,
                 title: spec.title,
@@ -5719,7 +5738,7 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            StatusActionsSpec {
+            &StatusActionsSpec {
                 card,
                 tone: spec.tone,
                 connection: spec.connection,
@@ -5780,7 +5799,7 @@ impl RemoteApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        spec: StatusIdentitySpec<'_>,
+        spec: &StatusIdentitySpec<'_>,
     ) -> f64 {
         let card = spec.card;
         let accent = spec.accent;
@@ -5855,7 +5874,7 @@ impl RemoteApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        spec: StatusBodySpec<'_>,
+        spec: &StatusBodySpec<'_>,
     ) -> f64 {
         let card = spec.card;
         let accent = spec.accent;
@@ -5919,7 +5938,7 @@ impl RemoteApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        spec: StatusActionsSpec<'_>,
+        spec: &StatusActionsSpec<'_>,
     ) {
         let card = spec.card;
         let tone = spec.tone;
@@ -5962,7 +5981,7 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                ButtonSpec {
+                &ButtonSpec {
                     rect: retry,
                     label: "Retry",
                     primary: false,
@@ -5978,7 +5997,7 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                ButtonSpec {
+                &ButtonSpec {
                     rect: recover,
                     label,
                     primary: false,
@@ -5994,7 +6013,7 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                ButtonSpec {
+                &ButtonSpec {
                     rect: edit,
                     label: "Edit profile",
                     primary: false,
@@ -6009,7 +6028,7 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            ButtonSpec {
+            &ButtonSpec {
                 rect: back,
                 label: "Back to list",
                 primary: true,
@@ -6150,7 +6169,21 @@ impl RemoteApp {
             None,
         );
 
-        // Right-aligned tool buttons. Only the relevant ones per kind.
+        self.draw_session_toolbar_controls(scene, transform, text_renderer, theme, bar, c);
+    }
+
+    /// Right-aligned session actions; framebuffer-only controls stay absent
+    /// from terminal sessions rather than presenting inert affordances.
+    fn draw_session_toolbar_controls(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        bar: Rect,
+        c: &Connection,
+    ) {
+        let tokens = &theme.tokens;
         let mut x = bar.x1 - 12.0;
         let disconnect = Rect::new(x - 110.0, bar.center().y - 16.0, x, bar.center().y + 16.0);
         self.draw_button(
@@ -6158,7 +6191,7 @@ impl RemoteApp {
             transform,
             text_renderer,
             theme,
-            ButtonSpec {
+            &ButtonSpec {
                 rect: disconnect,
                 label: "Disconnect",
                 primary: false,
@@ -6185,7 +6218,7 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                ToolSpec {
+                &ToolSpec {
                     right_x: x,
                     bar,
                     label: "Fullscreen",
@@ -6204,7 +6237,7 @@ impl RemoteApp {
                 transform,
                 text_renderer,
                 theme,
-                ToolSpec {
+                &ToolSpec {
                     right_x: x,
                     bar,
                     label: scale_label,
@@ -6221,7 +6254,7 @@ impl RemoteApp {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        spec: ToolSpec<'_>,
+        spec: &ToolSpec<'_>,
     ) -> Rect {
         let tokens = &theme.tokens;
         let (tw, _) = text_renderer.measure(spec.label, 12.5, None);
