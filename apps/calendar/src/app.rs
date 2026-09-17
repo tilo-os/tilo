@@ -67,7 +67,7 @@ use crate::mini_month::{MiniMonth, Outcome as MiniMonthOutcome};
 use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
 use crate::sidebar::{Action as SidebarAction, ChromeModel, Mode as SidebarMode, Sidebar};
 use crate::timeline_interaction::{
-    TIMELINE_SNAP_MIN, TimelineEffect, TimelineEventCtx, TimelineInteraction, TimelineRenderEvent,
+    TIMELINE_SNAP_MIN, TimelineEffect, TimelineInteraction, TimelineRenderEvent,
     TimelineRenderModel, TimelineSpan,
 };
 #[cfg(test)]
@@ -2480,21 +2480,7 @@ impl CalendarApp {
         let area = self.view_rect();
         let days = self.timeline_days();
         let spans = self.timeline_spans(&days);
-        let outcome = self.timeline.handle_event(
-            TimelineEventCtx {
-                event: input.event,
-                scale_factor: input.scale_factor,
-                modifiers: input.modifiers,
-                state: &mut *input.state,
-                path: input.path,
-                focus_target: &mut *input.focus_target,
-                node_id: input.node_id,
-                taffy: input.taffy,
-            },
-            area,
-            &days,
-            &spans,
-        );
+        let outcome = self.timeline.handle_event(input, area, &days, &spans);
         if let Some(effect) = outcome.effect {
             self.apply_timeline_effect(effect, input.state);
         }
