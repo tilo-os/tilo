@@ -5069,18 +5069,30 @@ impl CalendarApp {
         let f = self.form.clone();
         let mouse = self.last_mouse;
         let label_x = f.title.x0;
+        let mut paint = PaintContext {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        };
 
         // --- Title (real text input, prominent) -------------------------
-        self.title_input.draw(scene, t, tr, theme, presence);
+        self.title_input.draw(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
+            presence,
+        );
         hits.push((f.title, Action::FocusField(FormField::Title)));
 
         // --- All-day row: label + pill switch ---------------------------
-        tr.draw_text(
-            scene,
+        paint.text.draw_text(
+            paint.scene,
             "All day",
             14.0,
             c.text_primary,
-            t * Affine::translate((label_x, f.allday.center().y - 8.0)),
+            paint.transform * Affine::translate((label_x, f.allday.center().y - 8.0)),
             None,
         );
         let sw = Rect::new(
@@ -5090,33 +5102,41 @@ impl CalendarApp {
             f.allday.center().y + 12.0,
         );
         Toggle::paint(
-            scene,
-            t,
-            theme,
+            paint.scene,
+            paint.transform,
+            paint.theme,
             &ToggleFace::new(sw, e.all_day).hovered(sw.contains(mouse)),
         );
         hits.push((f.allday, Action::ToggleAllDay));
 
-        self.draw_event_form_dates(scene, t, tr, theme, &f, &e, mouse, label_x, &mut hits);
+        self.draw_event_form_dates(&mut paint, &f, &e, mouse, label_x, &mut hits);
 
         // --- Location (real text input) ---------------------------------
-        self.location_input.draw(scene, t, tr, theme, presence);
+        self.location_input.draw(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
+            presence,
+        );
         hits.push((f.location, Action::FocusField(FormField::Location)));
 
-        self.draw_event_form_calendar(scene, t, tr, theme, &f, &e, mouse, &mut hits);
-        self.invite_input.draw(scene, t, tr, theme, presence);
+        self.draw_event_form_calendar(&mut paint, &f, &e, mouse, &mut hits);
+        self.invite_input.draw(
+            paint.scene,
+            paint.transform,
+            paint.text,
+            paint.theme,
+            presence,
+        );
         hits.push((f.invite, Action::FocusField(FormField::Invite)));
-        Self::draw_event_form_chips(scene, t, tr, theme, &f, &e, label_x, &mut hits);
+        Self::draw_event_form_chips(&mut paint, &f, &e, label_x, &mut hits);
 
         hits
     }
 
     /// The Starts / Ends date + time field-button rows (part of
     /// [`Self::draw_event_form`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     #[allow(
         clippy::many_single_char_names,
         reason = "t is the paint transform, f is the form layout, e is the event being \
@@ -5125,16 +5145,17 @@ impl CalendarApp {
     )]
     fn draw_event_form_dates(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         f: &FormRects,
         e: &Event,
         mouse: Point,
         label_x: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         let row = |scene: &mut Scene,
                    tr: &mut TextRenderer,
@@ -5195,10 +5216,6 @@ impl CalendarApp {
     /// The calendar selector: colour dot + value + disclosure caret (part
     /// of [`Self::draw_event_form`]).
     #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "t is the paint transform, f is the form layout, e is the event being \
                   edited, and c is the theme's colour set — conventional short names for \
@@ -5206,15 +5223,16 @@ impl CalendarApp {
     )]
     fn draw_event_form_calendar(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         f: &FormRects,
         e: &Event,
         mouse: Point,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         let cal_active =
             f.calendar.contains(mouse) || self.event_popovers.active() == FormPopover::Calendar;
@@ -5263,23 +5281,20 @@ impl CalendarApp {
     /// The repeat / reminder / colour chips, cycled on click (part of
     /// [`Self::draw_event_form`]).
     #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "t/f/e and x/y are conventional paint, form, event, and flow geometry names"
     )]
     fn draw_event_form_chips(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         f: &FormRects,
         e: &Event,
         label_x: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) {
+        let t = paint.transform;
+        let theme = paint.theme;
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
         let mut recurrence_label = if e.recurrence == Recurrence::None {
             "No repeat".to_string()
         } else {
