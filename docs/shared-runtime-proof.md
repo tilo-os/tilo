@@ -68,6 +68,25 @@ The host still links the shell library because its broker depends on the
 workspace policy model. Extracting those modules into a smaller crate is future
 dependency cleanup; their implementations are shared now.
 
+The same service composition is now available through the native
+`qos-runtime-mcp` stdio entry point. Its user-supplied manifest launches apps
+through `Session::launch`; ordinary `ui::App` startup publishes each live,
+peer-qualified lazy action directory automatically. The host validates the
+complete manifest and acquires the profile lock before launching any child,
+bounds both request lines and queued input, keeps application output away from
+protocol stdout, detects child exits while stdin is idle, and reaps its owned
+children on shutdown. See [runtime-mcp.md](runtime-mcp.md) for configuration and
+the protocol/authority contract.
+
+The separate 2026-09-17 source audit inventories 47 GUI entry points: all 47
+reach the production `ui::App` publication path, with 41 default launch paths
+and six custom live handlers that still construct the shared app host. This
+establishes generic source integration, not native behavioral qualification.
+The Task 2 lifecycle test proves two synthetic, normally connected instances
+with the same app id publish as distinct broker peers. Real Photos, Writer and
+Calculator MCP execution remains a separate native acceptance proof; no
+all-47-app native qualification is claimed here.
+
 ## Scope
 
 This is a trusted, same-user native-app proof. Bytes use the existing filesystem

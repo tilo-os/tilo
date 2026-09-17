@@ -20,6 +20,7 @@ use std::{
 };
 
 pub mod mcp;
+pub mod mcp_process;
 mod unix;
 
 /// A single-user service session. Drop applications before dropping the session.
