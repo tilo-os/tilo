@@ -19,7 +19,7 @@ run(src/'ntfsprogs/mkntfs', '-F', '-Q', '-T', '-L', 'QOS_FIXTURE', clean)
 content = out/'content'; content.write_bytes(b'Connected NTFS fixture\n')
 run(src/'ntfsprogs/ntfscp', clean, content, '/hello.txt')
 run(exe, clean, 'serial')
-for name, mode in [('times','times'), ('times-v1','times-v1'), ('dos-alias','dos-alias'), ('large-metadata','large-metadata'), ('restart-clean','restart-clean'), ('restart-bad-first','restart-bad-first'), ('restart-bad-second','restart-bad-second'), ('restart-v2','restart-v2'), ('dirty','dirty'), ('badlog','badlog'), ('generation','generation'), ('metadata','metadata'), ('upcase','upcase'), ('oversize','oversize'), ('attrlist-cycle','attrlist-cycle'), ('acl','acl'), ('hardlink','hardlink')]:
+for name, mode in [('times','times'), ('times-v1','times-v1'), ('times-missing','times-missing'), ('times-duplicate','times-duplicate'), ('times-invalid-flags','times-invalid-flags'), ('dos-alias','dos-alias'), ('large-metadata','large-metadata'), ('restart-clean','restart-clean'), ('restart-bad-first','restart-bad-first'), ('restart-bad-second','restart-bad-second'), ('restart-v2','restart-v2'), ('dirty','dirty'), ('badlog','badlog'), ('generation','generation'), ('metadata','metadata'), ('upcase','upcase'), ('oversize','oversize'), ('attrlist-cycle','attrlist-cycle'), ('acl','acl'), ('hardlink','hardlink')]:
     dest=out/(name+'.img'); shutil.copyfile(clean,dest); run(exe,dest,mode)
 large = out/'large.img'; shutil.copyfile(clean, large)
 content.write_bytes(b''.join(bytes((j+block)%256 for j in range(256)) * 4096 for block in range(12))); run(src/'ntfsprogs/ntfscp', large, content, '/large.bin')
@@ -59,7 +59,10 @@ manifest['expected_by_image']={
  'acl.img':{'status':0,'hello_record':64,'native_security_id':258,'source':'$Secure:$SDS via $SII'},
  'hardlink.img':{'status':0,'hello_links':2,'additional_name':'second'},
  'times.img':{'status':0,'standard_information_bytes':72,'last_data_change_100ns':116444735999999999,'last_access_100ns':116444736012345678},
- 'times-v1.img':{'status':0,'standard_information_bytes':48,'last_data_change_100ns':116444735999999999,'last_access_100ns':116444736012345678}
+ 'times-v1.img':{'status':0,'standard_information_bytes':48,'last_data_change_100ns':116444735999999999,'last_access_100ns':116444736012345678},
+ 'times-missing.img':{'status':'nonzero structural refusal'},
+ 'times-duplicate.img':{'status':0,'copy_times_unavailable_reason':'duplicate-standard-information'},
+ 'times-invalid-flags.img':{'status':0,'copy_times_unavailable_reason':'invalid-standard-information-coverage'}
 }
 (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
 print(out/'manifest.json')
