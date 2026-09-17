@@ -19,7 +19,9 @@ use super::{
     is_live_id, is_live_playlist_id, lyrics, rrect,
 };
 
+use ui::icons::Icon as UiIcon;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::{Button, ButtonFace};
 use vello::peniko::BlendMode;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -2349,9 +2351,15 @@ impl MusicApp {
             }
             let side = self.sidebar_rect();
             if side.width() > 0.5 {
-                self.draw_sidebar(scene, t, tr, &c, side);
+                self.draw_sidebar(scene, t, tr, &c, theme, side);
             }
-            self.draw_hamburger(scene, t, &c, Rect::new(r.x0, r.y0, r.x1, r.y0 + 96.0));
+            self.draw_hamburger(
+                scene,
+                t,
+                tr,
+                theme,
+                Rect::new(r.x0, r.y0, r.x1, r.y0 + 96.0),
+            );
             self.draw_large_text_toast(scene, t, tr, &c);
             // Accessibility-scale presentation keeps the same real modal and
             // context-menu widgets; only the underlying dense canvas changes.
@@ -2409,13 +2417,13 @@ impl MusicApp {
         // draw entirely when fully collapsed so its hits don't shadow content.
         let side = self.sidebar_rect();
         if side.width() > 0.5 {
-            self.draw_sidebar(scene, t, tr, &c, side);
+            self.draw_sidebar(scene, t, tr, &c, theme, side);
         }
 
         // Hamburger / close toggle over the content's top-left corner,
         // whenever the sidebar isn't fully docked-open.
         if self.show_hamburger() {
-            self.draw_hamburger(scene, t, &c, header);
+            self.draw_hamburger(scene, t, tr, theme, header);
         }
 
         // Collapsed-volume popover floats above the now-playing bar.
@@ -2838,7 +2846,7 @@ impl MusicApp {
                 TextWeight::Bold,
                 None,
             );
-            let detail = elide(tr, detail, 11.0, TextWeight::Regular, body.width() - 68.0);
+            let detail = elide(tr, detail, 14.0, TextWeight::Regular, body.width() - 68.0);
             draw_text(
                 tr,
                 scene,
@@ -2846,7 +2854,7 @@ impl MusicApp {
                 &detail,
                 body.x0 + 34.0,
                 body.y0 + 116.0,
-                11.0,
+                14.0,
                 c.dim,
                 TextWeight::Regular,
                 None,
@@ -2878,7 +2886,7 @@ impl MusicApp {
             let label = elide(
                 tr,
                 &current.title,
-                11.0,
+                14.0,
                 TextWeight::Semibold,
                 (player.width() - 310.0).max(120.0),
             );
@@ -2889,7 +2897,7 @@ impl MusicApp {
                 &label,
                 art.x1 + 18.0,
                 player.y0 + 28.0,
-                11.0,
+                14.0,
                 c.text,
                 TextWeight::Semibold,
                 None,
@@ -2897,7 +2905,7 @@ impl MusicApp {
             let byline = elide(
                 tr,
                 self.lib.artist_name(&current.artist_id),
-                9.0,
+                12.0,
                 TextWeight::Regular,
                 (player.width() - 310.0).max(120.0),
             );
@@ -2908,7 +2916,7 @@ impl MusicApp {
                 &byline,
                 art.x1 + 18.0,
                 player.y0 + 60.0,
-                9.0,
+                12.0,
                 c.dim,
                 TextWeight::Regular,
                 None,
@@ -2921,7 +2929,7 @@ impl MusicApp {
                 "Nothing playing",
                 player.x0 + 28.0,
                 player.y0 + 42.0,
-                11.0,
+                13.0,
                 c.dim,
                 TextWeight::Regular,
                 None,
@@ -2957,39 +2965,37 @@ impl MusicApp {
 
     /// The hamburger (or close-chevron) toggle that summons / dismisses the
     /// overlay sidebar. Sits in the header's top-left, left of the title.
-    fn draw_hamburger(&mut self, scene: &mut Scene, t: Affine, c: &Palette, header: Rect) {
-        let size = 34.0;
+    fn draw_hamburger(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        header: Rect,
+    ) {
+        let size = 44.0;
         let x0 = header.x0 + 14.0;
         let y0 = header.y0 + (HEADER_H - size) / 2.0;
         let btn = Rect::new(x0, y0, x0 + size, y0 + size);
         self.hamburger_rect = btn;
         let hover = btn.contains(self.mouse);
-        fill_rrect(
+        let open = self.drawer.reveal() > 0.5;
+        let (icon, name) = if open && self.drawer.is_overlay() {
+            (UiIcon::ChevronLeft, "Close navigation")
+        } else {
+            (UiIcon::Menu, "Open navigation")
+        };
+        Button::paint(
             scene,
             t,
-            btn,
-            10.0,
-            if hover { c.white10 } else { c.white5 },
+            tr,
+            theme,
+            &ButtonFace::new(btn, "")
+                .ghost()
+                .icon(icon)
+                .hovered(hover)
+                .accessible_name(name),
         );
-        let cx = btn.center();
-        let open = self.drawer.reveal() > 0.5;
-        if open && self.drawer.is_overlay() {
-            // Close affordance: a left chevron.
-            icon::draw(scene, t, Icon::ChevronLeft, cx, 18.0, c.text);
-        } else {
-            // Three-line hamburger.
-            let lw = 15.0;
-            for i in 0..3 {
-                let ly = cx.y - 5.0 + f64::from(i) * 5.0;
-                fill_rrect(
-                    scene,
-                    t,
-                    Rect::new(cx.x - lw / 2.0, ly - 1.0, cx.x + lw / 2.0, ly + 1.0),
-                    1.0,
-                    c.text,
-                );
-            }
-        }
     }
 
     // ---- sidebar ----------------------------------------------------------
@@ -3000,6 +3006,7 @@ impl MusicApp {
         t: Affine,
         tr: &mut TextRenderer,
         c: &Palette,
+        theme: &Theme,
         r: Rect,
     ) {
         // Clip ALL sidebar content to the (possibly narrowing) panel rect, so a
@@ -3026,18 +3033,18 @@ impl MusicApp {
         // once collapsed). `SidebarDrawer` owns the collapse *state machine*;
         // this button is the app's collapse *affordance*.
         if self.drawer.is_docked() && self.drawer.reveal() > 0.5 {
-            let cb = Rect::new(r.x1 - 44.0, r.y0 + 18.0, r.x1 - 16.0, r.y0 + 46.0);
+            let cb = Rect::new(r.x1 - 60.0, r.y0 + 10.0, r.x1 - 16.0, r.y0 + 54.0);
             let hover = self.push_hit(cb, Action::ToggleSidebar);
-            if hover {
-                fill_rrect(scene, t, cb, 8.0, c.white10);
-            }
-            icon::draw(
+            Button::paint(
                 scene,
                 t,
-                Icon::ChevronLeft,
-                cb.center(),
-                16.0,
-                if hover { c.text } else { c.dim },
+                tr,
+                theme,
+                &ButtonFace::new(cb, "")
+                    .ghost()
+                    .icon(UiIcon::ChevronLeft)
+                    .hovered(hover)
+                    .accessible_name("Collapse navigation"),
             );
         }
 
@@ -3057,7 +3064,7 @@ impl MusicApp {
             y = self.nav_row(scene, t, tr, c, r, y, ic, label, view, active);
         }
 
-        self.draw_sidebar_playlists(scene, t, tr, c, r, y);
+        self.draw_sidebar_playlists(scene, t, tr, c, theme, r, y);
 
         // Close the panel clip opened at the top of this method.
         scene.pop_layer();
@@ -3070,6 +3077,7 @@ impl MusicApp {
         t: Affine,
         tr: &mut TextRenderer,
         c: &Palette,
+        theme: &Theme,
         r: Rect,
         mut y: f64,
     ) {
@@ -3087,22 +3095,25 @@ impl MusicApp {
             None,
         );
         // New-playlist plus — opens the inline create prompt.
-        let plus_rect = Rect::new(r.x1 - 40.0, y - 4.0, r.x1 - 16.0, y + 20.0);
+        let plus_rect = Rect::new(r.x1 - 60.0, y - 12.0, r.x1 - 16.0, y + 32.0);
         let plus_hover = self.push_hit(plus_rect, Action::BeginNewPlaylist);
-        icon::draw(
+        Button::paint(
             scene,
             t,
-            Icon::Plus,
-            plus_rect.center(),
-            16.0,
-            if plus_hover { c.text } else { c.dim },
+            tr,
+            theme,
+            &ButtonFace::new(plus_rect, "")
+                .ghost()
+                .icon(UiIcon::Plus)
+                .hovered(plus_hover)
+                .accessible_name("New playlist"),
         );
         y += 26.0;
 
         let playlists = self.gather_playlists();
         for p in playlists {
             let active = self.view == View::Playlist(p.id.clone());
-            let row = Rect::new(r.x0 + 12.0, y, r.x1 - 12.0, y + 34.0);
+            let row = Rect::new(r.x0 + 12.0, y, r.x1 - 12.0, y + 44.0);
             let hover = self.push_hit(row, Action::Nav(View::Playlist(p.id.clone())));
             if active || hover {
                 fill_rrect(scene, t, row, 8.0, c.white5);
@@ -3115,13 +3126,13 @@ impl MusicApp {
                 t,
                 &name,
                 r.x0 + 24.0,
-                vy(y, 34.0, 13.0),
+                vy(y, 44.0, 13.0),
                 13.0,
                 col,
                 TextWeight::Medium,
                 None,
             );
-            y += 34.0;
+            y += 44.0;
         }
     }
 
@@ -3138,7 +3149,7 @@ impl MusicApp {
         view: View,
         active: bool,
     ) -> f64 {
-        let h = 42.0;
+        let h = 44.0;
         let row = Rect::new(side.x0 + 12.0, y, side.x1 - 12.0, y + h);
         let hover = self.push_hit(row, Action::Nav(view));
         if active {
@@ -3585,7 +3596,7 @@ impl MusicApp {
         cx: f64,
         mut yy: f64,
     ) -> f64 {
-        let sub = "Search for a song, album or artist. Everything you play collects here — in sync across your devices.";
+        let sub = "Search for a song, album, or artist. Save favorites to find them here.";
         let maxw = (body.width() - 56.0).clamp(180.0, 440.0);
         let mut cur = String::new();
         let mut lines: Vec<String> = Vec::new();

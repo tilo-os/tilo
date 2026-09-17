@@ -72,6 +72,10 @@ const WIDE_MIN: f64 = 900.0;
 /// resolved content area instead of maintaining a second bespoke rail/flap.
 const NAV_WIDTH: f64 = 232.0;
 const NAV_BREAKPOINT: f64 = 760.0;
+/// Minimum visible height for hand-positioned action buttons. Pointer and
+/// accessibility bounds already expand compact glyphs, but the painted control
+/// itself must still look comfortably actionable.
+const ACTION_BUTTON_HEIGHT: f64 = 44.0;
 /// Renderer/upload admission limit for external camera data. This mirrors the
 /// capture callback limit and remains here for the feature-off/test path: no
 /// caller can smuggle malformed pixels into an `Image`.
@@ -3973,7 +3977,7 @@ impl CameraApp {
         // content background. Colours come from the theme in both cases.
         let (fill, title_col, sub_col, icon_col) = if glass {
             (
-                p::alpha(c.neutral[1], 0.55),
+                p::alpha(c.surfaces.scrim, 0.92),
                 p::alpha(white(), 0.92),
                 p::alpha(white(), 0.55),
                 p::alpha(white(), 0.5),
@@ -4028,7 +4032,12 @@ impl CameraApp {
     ) {
         let (title, subtitle) = copy;
         let c = &theme.tokens.colors;
-        p::fill_rect(scene, t, rect, c.neutral[0]);
+        // A missing feed is physical camera-off space, not an app surface.
+        // `neutral[0]` follows theme polarity and became nearly white in the
+        // light theme while this overlay intentionally uses white glass ink.
+        // The semantic scrim is deliberately dark in both theme polarities,
+        // preserving the viewfinder metaphor and readable recovery.
+        p::fill_rect(scene, t, rect, c.surfaces.scrim);
         // Centre the message in the whole window — the viewfinder is full-bleed.
         let layout = Self::draw_empty_state(
             scene,
@@ -4082,35 +4091,24 @@ impl CameraApp {
         let y = panel.y1 - 52.0;
         for (index, (label, action)) in actions.into_iter().enumerate() {
             let x = panel.x0 + 14.0 + index as f64 * (width + gap);
-            let button = Rect::new(x, y, x + width, y + 38.0);
+            let button = Rect::new(x, y, x + width, y + ACTION_BUTTON_HEIGHT);
             // Keep the visual label inside a narrow two-action recovery row;
             // the a11y action retains the complete “Open camera privacy
             // settings” name from the shared Action mapping.
             let label = recovery_button_label(&action, label, width);
-            let primary = matches!(
-                action,
-                Action::OpenCameraPrivacySettings | Action::RetryCamera
-            );
-            p::fill_round(
-                scene,
-                t,
-                button,
-                12.0,
-                if primary {
-                    theme.accent_primary
-                } else {
-                    p::alpha(theme.tokens.colors.neutral[2], 0.92)
-                },
-            );
-            p::stroke_round(
-                scene,
-                t,
-                button,
-                12.0,
-                p::alpha(theme.tokens.colors.border_standard, 0.55),
-                1.0,
-            );
-            p::text_in(scene, tr, button, label, 11.5, white());
+            // Permission recovery is the primary next step; refresh is primary
+            // only when there is no permission action competing with it.
+            let primary = matches!(action, Action::OpenCameraPrivacySettings)
+                || (matches!(action, Action::RetryCamera)
+                    && self.camera_issue != Some(CameraIssue::PermissionDenied));
+            let mut face = ButtonFace::new(button, label)
+                .radius(12.0)
+                .text_size(12.5)
+                .hovered(button.contains(self.last_mouse));
+            if primary {
+                face = face.primary();
+            }
+            Button::paint(scene, t, tr, theme, &face);
             self.push_tap_region(button, action);
         }
 
@@ -5076,7 +5074,7 @@ impl CameraApp {
         let right = left + setting_w + gap;
         let settings = [
             (
-                "RESOLUTION",
+                "Resolution",
                 format!("{} DPI", self.document_settings.scan.resolution_dpi),
                 Rect::new(
                     left,
@@ -5087,7 +5085,7 @@ impl CameraApp {
                 Action::OpenDocumentChoice(DocumentChoice::Resolution),
             ),
             (
-                "COLOR",
+                "Color",
                 scan_color_label(self.document_settings.scan.color).to_owned(),
                 Rect::new(
                     right,
@@ -5098,7 +5096,7 @@ impl CameraApp {
                 Action::OpenDocumentChoice(DocumentChoice::Color),
             ),
             (
-                "PAPER SOURCE",
+                "Paper source",
                 scan_source_label(self.document_settings.scan.source).to_owned(),
                 Rect::new(
                     left,
@@ -5109,7 +5107,7 @@ impl CameraApp {
                 Action::OpenDocumentChoice(DocumentChoice::Source),
             ),
             (
-                "TEXT LANGUAGE",
+                "Text language",
                 self.document_settings.ocr_language.label().to_owned(),
                 Rect::new(
                     right,
@@ -5126,7 +5124,7 @@ impl CameraApp {
             {
                 *anchor = rect;
             }
-            p::text(scene, tr, rect.x0, rect.y0 - 17.0, label, 10.0, c.text_dim);
+            p::text(scene, tr, rect.x0, rect.y0 - 18.0, label, 12.0, c.text_dim);
             Button::paint(
                 scene,
                 t,
@@ -5872,7 +5870,11 @@ impl CameraApp {
         // letting the painted glyphs escape the normal-size pill.
         let button_font = if large_type { 11.0 } else { 13.0 };
         let button_padding = if large_type { 42.0 } else { 30.0 };
-        let button_height = if large_type { 48.0 } else { 30.0 };
+        let button_height = if large_type {
+            48.0
+        } else {
+            ACTION_BUTTON_HEIGHT
+        };
         let button_gap = if large_type { 10.0 } else { 10.0 };
         let widths: Vec<f64> = actions
             .iter()
@@ -5966,13 +5968,14 @@ impl CameraApp {
                 by += button_height + button_gap;
             }
             let br = Rect::new(bx, by, bx + bw, by + button_height);
+            let mut face = ButtonFace::new(br, label)
+                .radius(button_height / 2.0)
+                .text_size(button_font)
+                .hovered(br.contains(self.last_mouse));
             if i == 0 {
-                p::fill_round(scene, t, br, button_height / 2.0, theme.accent_primary);
-                p::text_in(scene, tr, br, label, button_font, white());
-            } else {
-                p::fill_round(scene, t, br, button_height / 2.0, c.lift(0.72));
-                p::text_in(scene, tr, br, label, button_font, p::alpha(white(), 0.92));
+                face = face.primary();
             }
+            Button::paint(scene, t, tr, theme, &face);
             self.push_tap_region(br, Action::Scan(i));
             bx += bw + 10.0;
         }
@@ -6906,6 +6909,14 @@ mod tests {
             "Refreshing camera"
         };
         assert_eq!(app.toast.as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn painted_action_buttons_remain_visibly_touch_sized() {
+        assert!(
+            ACTION_BUTTON_HEIGHT >= 44.0,
+            "painted recovery and scan-result actions must not look smaller than their hit bounds"
+        );
     }
 
     #[test]

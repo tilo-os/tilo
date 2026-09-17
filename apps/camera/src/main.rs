@@ -48,6 +48,42 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     // These variables are consumed while the widget is constructed. Startup
     // is still single-threaded here, before any camera worker exists.
     unsafe {
+        // A visual matrix renders multiple scenarios in one process. Reset
+        // scenario-owned presentation hooks so one capture cannot leak its
+        // screen, error, drawer, or timer state into the next.
+        if args.scenario.is_some() {
+            for variable in [
+                "CAMERA_SCREEN",
+                "CAMERA_SHOT_MODE",
+                "CAMERA_SHOT_DRAWER",
+                "CAMERA_SHOT_TIMER_RUNNING",
+                "CAMERA_SHOT_CAMERA_STATE",
+                "CAMERA_SCAN_FIRST",
+            ] {
+                std::env::remove_var(variable);
+            }
+            match args.scenario.as_deref() {
+                Some("camera") => {}
+                Some("video") => std::env::set_var("CAMERA_SHOT_MODE", "video"),
+                Some("timer") => std::env::set_var("CAMERA_SHOT_TIMER_RUNNING", "1"),
+                Some("settings" | "scanner" | "document") => {
+                    std::env::set_var(
+                        "CAMERA_SCREEN",
+                        args.scenario.as_deref().unwrap_or_default(),
+                    );
+                }
+                Some("scan-result") => {
+                    std::env::set_var("CAMERA_SCREEN", "scanner");
+                    std::env::set_var("CAMERA_SCAN_FIRST", "1");
+                }
+                Some("permission" | "no-device" | "error") => std::env::set_var(
+                    "CAMERA_SHOT_CAMERA_STATE",
+                    args.scenario.as_deref().unwrap_or_default(),
+                ),
+                Some("drawer") => std::env::set_var("CAMERA_SHOT_DRAWER", "1"),
+                Some(_) | None => {}
+            }
+        }
         for (option, variable) in [
             ("--screen", "CAMERA_SCREEN"),
             ("--dir", "CAMERA_DIR"),
@@ -136,6 +172,19 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.tilo.camera", camera::app_root)
             .shot_handler(render_shot)
+            .scenarios(&[
+                "camera",
+                "video",
+                "timer",
+                "settings",
+                "scanner",
+                "document",
+                "scan-result",
+                "permission",
+                "no-device",
+                "error",
+                "drawer",
+            ])
             .allowed_flags(&[
                 "--select",
                 "--scan-first",

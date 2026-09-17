@@ -9,12 +9,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 
-use ui::icons::{Icon, draw_icon};
+use ui::icons::Icon;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::{Button, ButtonFace, SegmentedFace, ToggleGroup};
 
-use crate::app::{center_text, draw_chevron, draw_hamburger, draw_icon_button, draw_plus};
-use crate::draw_util::{fill_rect, fill_round, stroke_line, stroke_round};
+use crate::draw_util::{fill_rect, stroke_line};
 use crate::{date, model::View};
 
 pub(crate) const HEIGHT: f64 = 60.0;
@@ -161,75 +161,81 @@ impl Topbar {
         pointer: Point,
         center_y: f64,
     ) -> f64 {
-        let colors = &theme.tokens.colors;
         let mut left = self.rect.x0 + 16.0;
         match self.leading {
             LeadingControl::None => {}
             LeadingControl::OpenSidebar => {
-                let button = Rect::new(left, center_y - 15.0, left + 30.0, center_y + 15.0);
-                draw_icon_button(scene, transform, theme, button, button.contains(pointer));
-                draw_hamburger(scene, transform, colors.neutral[8], button.center());
+                let button = Rect::new(left, center_y - 18.0, left + 36.0, center_y + 18.0);
+                paint_icon_button(
+                    scene,
+                    transform,
+                    text,
+                    theme,
+                    button,
+                    Icon::Menu,
+                    "Open sidebar",
+                    pointer,
+                );
                 self.hits.push((button, Action::OpenSidebar));
-                left += 38.0;
+                left += 44.0;
             }
             LeadingControl::ExpandSidebar => {
-                let button = Rect::new(left, center_y - 15.0, left + 30.0, center_y + 15.0);
-                draw_icon_button(scene, transform, theme, button, button.contains(pointer));
-                draw_chevron(scene, transform, colors.neutral[8], button.center(), false);
+                let button = Rect::new(left, center_y - 18.0, left + 36.0, center_y + 18.0);
+                paint_icon_button(
+                    scene,
+                    transform,
+                    text,
+                    theme,
+                    button,
+                    Icon::ChevronRight,
+                    "Expand sidebar",
+                    pointer,
+                );
                 self.hits.push((button, Action::ExpandSidebar));
-                left += 38.0;
+                left += 44.0;
             }
         }
 
-        let previous = Rect::new(left, center_y - 15.0, left + 30.0, center_y + 15.0);
-        let next = Rect::new(left + 34.0, center_y - 15.0, left + 64.0, center_y + 15.0);
-        draw_icon_button(
+        let previous = Rect::new(left, center_y - 18.0, left + 36.0, center_y + 18.0);
+        let next = Rect::new(left + 42.0, center_y - 18.0, left + 78.0, center_y + 18.0);
+        paint_icon_button(
             scene,
             transform,
+            text,
             theme,
             previous,
-            previous.contains(pointer),
+            Icon::ChevronLeft,
+            "Previous period",
+            pointer,
         );
-        draw_icon_button(scene, transform, theme, next, next.contains(pointer));
-        draw_chevron(scene, transform, colors.neutral[8], previous.center(), true);
-        draw_chevron(scene, transform, colors.neutral[8], next.center(), false);
+        paint_icon_button(
+            scene,
+            transform,
+            text,
+            theme,
+            next,
+            Icon::ChevronRight,
+            "Next period",
+            pointer,
+        );
         self.hits.push((previous, Action::Previous));
         self.hits.push((next, Action::Next));
-        left += 74.0;
+        left += 88.0;
 
-        let today_width = if self.compact() { 38.0 } else { 60.0 };
-        let button_half_height = if self.compact() { 21.0 } else { 15.0 };
+        let compact_today = self.compact() || self.rect.width() < 500.0;
+        let today_width = if compact_today { 38.0 } else { 60.0 };
+        let button_half_height = if self.compact() { 21.0 } else { 18.0 };
         let today = Rect::new(
             left,
             center_y - button_half_height,
             left + today_width,
             center_y + button_half_height,
         );
-        draw_icon_button(scene, transform, theme, today, today.contains(pointer));
-        if self.compact() {
-            // A real calendar glyph keeps the high-text-scale variant
-            // recognisable without spending the horizontal space required by
-            // the word "Today". The semantic tree names the same target "Go
-            // to today", so the visual and assistive affordances agree.
-            draw_icon(
-                scene,
-                transform,
-                today.inflate(-10.0, -10.0),
-                Icon::Calendar,
-                colors.neutral[8],
-                1.5,
-            );
-        } else {
-            center_text(
-                scene,
-                text,
-                "Today",
-                13.0,
-                colors.neutral[8],
-                today,
-                transform,
-            );
-        }
+        let today_face = ButtonFace::new(today, if compact_today { "" } else { "Today" })
+            .icon(Icon::Calendar)
+            .accessible_name("Go to today")
+            .hovered(today.contains(pointer));
+        Button::paint(scene, transform, text, theme, &today_face);
         self.hits.push((today, Action::Today));
         today.x1 + 14.0
     }
@@ -245,20 +251,11 @@ impl Topbar {
         pointer: Point,
         center_y: f64,
     ) -> f64 {
-        let colors = &theme.tokens.colors;
         let segmented_x0 = if self.switcher_visible {
             let x1 = self.rect.x1 - 14.0;
             let x0 = x1 - SEGMENTED_WIDTH;
-            let segmented = Rect::new(x0, center_y - 16.0, x1, center_y + 16.0);
-            fill_round(scene, transform, colors.surfaces.raised, segmented, 9.0);
-            stroke_round(
-                scene,
-                transform,
-                colors.border_standard,
-                segmented,
-                9.0,
-                1.0,
-            );
+            let segmented = Rect::new(x0, center_y - 18.0, x1, center_y + 18.0);
+            let mut cells = Vec::with_capacity(View::ALL.len());
             for (index, candidate) in View::ALL.iter().enumerate() {
                 let cell = Rect::new(
                     x0 + SEGMENT_WIDTH * index as f64,
@@ -266,38 +263,22 @@ impl Topbar {
                     x0 + SEGMENT_WIDTH * (index as f64 + 1.0),
                     segmented.y1,
                 );
-                if view == *candidate {
-                    fill_round(
-                        scene,
-                        transform,
-                        colors.accent[5],
-                        cell.inflate(-3.0, -3.0),
-                        7.0,
-                    );
-                } else if cell.contains(pointer) {
-                    fill_round(
-                        scene,
-                        transform,
-                        colors.lift(0.35),
-                        cell.inflate(-3.0, -3.0),
-                        7.0,
-                    );
-                }
-                center_text(
-                    scene,
-                    text,
-                    candidate.label(),
-                    13.0,
-                    if view == *candidate {
-                        colors.on_accent(4.5)
-                    } else {
-                        colors.neutral[7]
-                    },
-                    cell,
-                    transform,
-                );
+                cells.push(cell);
                 self.hits.push((cell, Action::View(*candidate)));
             }
+            let labels = ["Month", "Week", "Day", "Agenda"];
+            let selected = View::ALL
+                .iter()
+                .position(|candidate| *candidate == view)
+                .unwrap_or(0);
+            let hovered = cells.iter().position(|cell| cell.contains(pointer));
+            ToggleGroup::paint(
+                scene,
+                transform,
+                text,
+                theme,
+                &SegmentedFace::new(&cells, &labels, selected).hovered(hovered),
+            );
             x0
         } else {
             self.rect.x1 - 14.0
@@ -308,32 +289,19 @@ impl Topbar {
         } else {
             NEW_BUTTON_WIDTH * f64::from(self.text_scale)
         };
-        let new_half_height = if self.compact() { 22.0 } else { 16.0 };
+        let new_half_height = if self.compact() { 22.0 } else { 18.0 };
         let new_event = Rect::new(
             segmented_x0 - new_width - 10.0,
             center_y - new_half_height,
             segmented_x0 - 10.0,
             center_y + new_half_height,
         );
-        fill_round(scene, transform, colors.accent[5], new_event, 9.0);
-        if self.compact() {
-            draw_plus(scene, transform, colors.on_accent(4.5), new_event.center());
-        } else {
-            draw_plus(
-                scene,
-                transform,
-                colors.on_accent(4.5),
-                Point::new(new_event.x0 + 16.0, center_y),
-            );
-            text.draw_text(
-                scene,
-                "New",
-                13.0,
-                colors.on_accent(4.5),
-                transform * Affine::translate((new_event.x0 + 28.0, center_y - 8.0)),
-                None,
-            );
-        }
+        let new_face = ButtonFace::new(new_event, if self.compact() { "" } else { "New" })
+            .icon(Icon::Plus)
+            .primary()
+            .accessible_name("New event")
+            .hovered(new_event.contains(pointer));
+        Button::paint(scene, transform, text, theme, &new_face);
         self.hits.push((new_event, Action::NewEvent));
         new_event.x0 - 12.0
     }
@@ -382,6 +350,29 @@ impl Topbar {
         );
         scene.pop_layer();
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_icon_button(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    icon: Icon,
+    name: &str,
+    pointer: Point,
+) {
+    Button::paint(
+        scene,
+        transform,
+        text,
+        theme,
+        &ButtonFace::new(rect, "")
+            .icon(icon)
+            .accessible_name(name)
+            .hovered(rect.contains(pointer)),
+    );
 }
 
 fn switcher_fits(content_width: f64, leading: LeadingControl, text_scale: f32) -> bool {
@@ -497,7 +488,7 @@ mod tests {
             .map(|(rect, _)| *rect)
             .expect("new event hit target");
         let title_right = new.x0 - 12.0;
-        let title_x = 16.0 + 74.0 + 60.0 + 14.0;
+        let title_x = 16.0 + 88.0 + 38.0 + 14.0;
         let chosen = variants
             .iter()
             .find(|title| f64::from(text.measure(title, 19.0, None).0) <= title_right - title_x)
@@ -540,6 +531,12 @@ mod tests {
                 .count(),
             View::ALL.len()
         );
+        for (rect, action) in bar.hits.iter() {
+            assert!(
+                rect.width() >= 36.0 && rect.height() >= 36.0,
+                "top-bar control {action:?} has a cramped target: {rect:?}"
+            );
+        }
     }
 
     #[test]

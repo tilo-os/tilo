@@ -7212,38 +7212,6 @@ fn draw_caret(scene: &mut Scene, t: Affine, color: Color, center: Point, expande
     scene.stroke(&Stroke::new(1.6), t, color, None, &p);
 }
 
-pub(crate) fn draw_plus(scene: &mut Scene, t: Affine, color: Color, center: Point) {
-    stroke_line(
-        scene,
-        t,
-        color,
-        Point::new(center.x - 5.0, center.y),
-        Point::new(center.x + 5.0, center.y),
-        1.8,
-    );
-    stroke_line(
-        scene,
-        t,
-        color,
-        Point::new(center.x, center.y - 5.0),
-        Point::new(center.x, center.y + 5.0),
-        1.8,
-    );
-}
-
-pub(crate) fn draw_hamburger(scene: &mut Scene, t: Affine, color: Color, center: Point) {
-    for dy in [-5.0, 0.0, 5.0] {
-        stroke_line(
-            scene,
-            t,
-            color,
-            Point::new(center.x - 7.0, center.y + dy),
-            Point::new(center.x + 7.0, center.y + dy),
-            1.6,
-        );
-    }
-}
-
 fn draw_back_arrow(scene: &mut Scene, t: Affine, color: Color, center: Point) {
     // A "←": horizontal shaft plus an arrowhead opening left.
     stroke_line(

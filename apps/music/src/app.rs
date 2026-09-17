@@ -5935,6 +5935,42 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_controls_meet_touch_target_floor() {
+        let (mut app, mut doc) = app_with_doc();
+        app.seed_sample_library();
+        app.drawer.snap(true);
+        draw_at(&mut app, &mut doc, 480.0, 800.0);
+        assert!(app.hamburger_rect.width() >= 44.0);
+        assert!(app.hamburger_rect.height() >= 44.0);
+
+        let mut found_new_playlist = false;
+        let mut playlist_rows = 0;
+        for hit in &app.hits {
+            match &hit.action {
+                Action::BeginNewPlaylist => {
+                    found_new_playlist = true;
+                    assert!(hit.rect.width() >= 44.0 && hit.rect.height() >= 44.0);
+                }
+                Action::Nav(View::Playlist(_)) => {
+                    playlist_rows += 1;
+                    assert!(hit.rect.height() >= 44.0);
+                }
+                _ => {}
+            }
+        }
+        assert!(found_new_playlist);
+        assert!(playlist_rows > 0);
+
+        draw_at(&mut app, &mut doc, 1280.0, 800.0);
+        let collapse = app
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.action, Action::ToggleSidebar))
+            .expect("docked sidebar has a collapse control");
+        assert!(collapse.rect.width() >= 44.0 && collapse.rect.height() >= 44.0);
+    }
+
+    #[test]
     fn navigating_dismisses_overlay_sidebar() {
         let (mut app, mut doc) = app_with_doc();
         sized(&mut app, 480.0); // overlay
