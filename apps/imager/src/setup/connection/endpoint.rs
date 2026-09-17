@@ -1451,3 +1451,8 @@ pub(super) fn native_same_mount(a: &File, b: &File) -> Result<(), EndpointError>
 pub(super) fn native_object_generation(file: &File) -> Result<Vec<u8>, EndpointError> {
     native::object_generation(file)
 }
+
+#[cfg(windows)]
+pub(super) use native::{
+    connected_metadata, connected_root_binding, connected_volume_binding, connected_volume_path,
+};

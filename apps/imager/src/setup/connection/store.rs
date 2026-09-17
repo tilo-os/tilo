@@ -175,9 +175,9 @@ use std::{
 pub(super) struct ConnectionStore {
     storage: storage::Storage,
     current: storage::Current,
-    current_identity: cap_primitives::fs::Metadata,
+    current_identity: storage::Metadata,
     log: File,
-    log_identity: cap_primitives::fs::Metadata,
+    log_identity: storage::Metadata,
     overlay: BTreeMap<Vec<u8>, Row>,
     overlay_bytes: usize,
     sequence: u64,
@@ -216,6 +216,12 @@ impl ConnectionStore {
     }
     pub(super) fn open_at(path: &Path) -> Result<Self, StoreError> {
         let (storage, current) = storage::Storage::open(path)?;
+        Self::from_storage(storage, current)
+    }
+    fn from_storage(
+        storage: storage::Storage,
+        current: storage::Current,
+    ) -> Result<Self, StoreError> {
         let log_name = format!("log-{}", current.log);
         let mut log = storage::open_file(&storage.root, &log_name, false)?;
         let log_identity = storage::regular(&log)?;
@@ -238,8 +244,7 @@ impl ConnectionStore {
         {
             return Err(StoreError::Corrupt);
         }
-        let current_identity =
-            storage::regular(&storage::open_file(&storage.root, "CURRENT", false)?)?;
+        let current_identity = storage::regular(&storage::read_file(&storage.root, "CURRENT")?)?;
         let sequence = current.sequence;
         let digest = current.digest;
         let mut store = Self {
@@ -320,10 +325,7 @@ impl ConnectionStore {
             &self.log,
             &self.log_identity,
         )?;
-        if !super::super::migration::same_snapshot(
-            &self.log_identity,
-            &storage::regular(&self.log)?,
-        ) {
+        if !storage::same_snapshot(&self.log_identity, &storage::regular(&self.log)?) {
             return Err(StoreError::IdentityChanged);
         }
         Ok(())
@@ -905,7 +907,7 @@ impl ConnectionStore {
             framing::write_record(&mut log, &mut 0, &header)?;
             let log_identity = storage::regular(&log)?;
             storage::sync_file(&log)?;
-            storage::sync_directory(&self.storage.root.file)?;
+            storage::sync_directory(&self.storage.root)?;
             let current_identity = self.publish_current(&next, &log, &log_identity)?;
             // Adopt only the identities validated through publication, never a
             // fresh snapshot that could hide a change during persistence.
@@ -935,6 +937,8 @@ pub(super) struct RecoveryReservation {
 pub(super) struct PreservedObject {
     id: RecoveryId,
     file: File,
+    #[cfg(windows)]
+    _writer_guard: File,
 }
 impl ConnectionStore {
     fn gc_step(&mut self) -> Result<usize, StoreError> {
@@ -952,3 +956,9 @@ impl<T> DurableAck<T> {
         &self.value
     }
 }
+
+#[cfg(windows)]
+pub(super) use format::WindowsFileId;
+
+#[cfg(windows)]
+pub(super) use storage::{CurrentReplacement, GcDeletion};

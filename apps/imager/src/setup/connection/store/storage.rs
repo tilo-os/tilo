@@ -1,15 +1,27 @@
 //! Private, retained namespace. Every destructive store operation revalidates it.
 use super::super::super::{
-    destination_security,
+    destination_security, migration_durability as durability, nofollow::metadata_nofollow,
+};
+#[cfg(not(windows))]
+use super::super::super::{
     migration::{OwnedTemporary, PinnedDirectory},
-    migration_durability as durability,
     migration_store::ensure_private_root,
-    nofollow::{metadata_nofollow, same_directory_identity},
+    nofollow::same_directory_identity,
 };
 use super::super::model::EndpointIdentity;
 use super::{StoreError, format};
+#[cfg(not(windows))]
 use cap_fs_ext::{MetadataExt, OpenOptionsFollowExt};
-use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
+#[cfg(not(windows))]
+pub(super) use cap_primitives::fs::Metadata;
+#[cfg(not(windows))]
+use cap_primitives::fs::{FollowSymlinks, OpenOptions};
+#[cfg(not(windows))]
+pub(super) type Directory = PinnedDirectory;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub(super) use super::super::windows_native::WindowsDirectory as Directory;
 use serde::{Deserialize, Serialize};
 #[cfg(all(test, target_os = "macos"))]
 use sha2::{Digest, Sha256};
@@ -19,6 +31,10 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
+};
+#[cfg(windows)]
+pub(super) use windows::{
+    Metadata, file_identity, open_file, read_file, regular, same_snapshot, validate_file,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,10 +69,10 @@ pub(super) struct Current {
     pub log: u64,
 }
 pub(super) struct Storage {
-    pub root: Arc<PinnedDirectory>,
-    pub pages: Arc<PinnedDirectory>,
-    pub recovery: Arc<PinnedDirectory>,
-    pub quarantine: Arc<PinnedDirectory>,
+    pub root: Arc<Directory>,
+    pub pages: Arc<Directory>,
+    pub recovery: Arc<Directory>,
+    pub quarantine: Arc<Directory>,
     pub path: PathBuf,
     pub identity: Identity,
     lock: File,
@@ -94,6 +110,7 @@ fn admitted() -> Result<(), StoreError> {
     Ok(())
 }
 
+#[cfg(not(windows))]
 pub(super) fn regular(file: &File) -> Result<Metadata, StoreError> {
     destination_security::check_private_file(file)?;
     let metadata = Metadata::from_file(file)?;
@@ -103,8 +120,9 @@ pub(super) fn regular(file: &File) -> Result<Metadata, StoreError> {
     }
     Ok(metadata)
 }
+#[cfg(not(windows))]
 pub(super) fn open_file(
-    parent: &Arc<PinnedDirectory>,
+    parent: &Arc<Directory>,
     name: &str,
     create: bool,
 ) -> Result<File, StoreError> {
@@ -143,8 +161,9 @@ pub(super) fn open_file(
     validate_file(parent, name, &file, &after)?;
     Ok(file)
 }
+#[cfg(not(windows))]
 pub(super) fn validate_file(
-    parent: &Arc<PinnedDirectory>,
+    parent: &Arc<Directory>,
     name: &str,
     file: &File,
     expected: &Metadata,
@@ -162,11 +181,7 @@ pub(super) fn validate_file(
     }
     Ok(())
 }
-fn child(
-    parent: &Arc<PinnedDirectory>,
-    name: &str,
-    create: bool,
-) -> Result<Arc<PinnedDirectory>, StoreError> {
+fn child(parent: &Arc<Directory>, name: &str, create: bool) -> Result<Arc<Directory>, StoreError> {
     let directory = if create {
         parent.create_child(OsStr::new(name))?
     } else {
@@ -176,12 +191,13 @@ fn child(
     directory.validate_destination()?;
     destination_security::check_private_file(&directory.file)?;
     if create {
-        sync_directory(&directory.file)?;
-        sync_directory(&parent.file)?;
+        sync_directory(&directory)?;
+        sync_directory(parent)?;
     }
     Ok(directory)
 }
 impl Storage {
+    #[cfg(not(windows))]
     pub fn open(path: &Path) -> Result<(Self, Current), StoreError> {
         admitted()?;
         let mut ancestor = path.to_path_buf();
@@ -212,7 +228,7 @@ impl Storage {
             loop {
                 let pin = PinnedDirectory::open_absolute(&directory)?;
                 pin.validate_destination()?;
-                sync_directory(&pin.file)?;
+                sync_directory(&pin)?;
                 if directory == ancestor {
                     break;
                 }
@@ -225,7 +241,7 @@ impl Storage {
         validate_file(&root, "ownership.lock", &lock, &lock_identity)?;
         if fresh {
             sync_file(&lock)?;
-            sync_directory(&root.file)?;
+            sync_directory(&root)?;
         }
         let pages = child(&root, "pages", fresh)?;
         let recovery = child(&root, "recovery", fresh)?;
@@ -287,11 +303,16 @@ impl Storage {
         format::encode(&header)?;
         super::super::super::migration_journal_log::write_record(&mut log, &mut 0, &header)?;
         sync_file(&log)?;
-        sync_directory(&self.root.file)?;
+        sync_directory(&self.root)?;
         self.create_bytes(&self.root, "CURRENT", &format::encode(&current)?)?;
         Ok(current)
     }
     pub fn validate(&self) -> Result<(), StoreError> {
+        #[cfg(windows)]
+        {
+            destination_security::require_private_protected(&self.root.file)?;
+            self.root.validate_authority()?;
+        }
         self.root
             .validate_destination()
             .map_err(|_| StoreError::IdentityChanged)?;
@@ -308,12 +329,12 @@ impl Storage {
     }
     pub fn read_bytes(
         &self,
-        parent: &Arc<PinnedDirectory>,
+        parent: &Arc<Directory>,
         name: &str,
         max: u64,
     ) -> Result<Vec<u8>, StoreError> {
         self.validate()?;
-        let mut file = open_file(parent, name, false)?;
+        let mut file = read_file(parent, name)?;
         let before = regular(&file)?;
         if before.len() > max {
             return Err(StoreError::LimitExceeded);
@@ -326,14 +347,14 @@ impl Storage {
             return Err(StoreError::LimitExceeded);
         }
         validate_file(parent, name, &file, &before)?;
-        if !super::super::super::migration::same_snapshot(&before, &regular(&file)?) {
+        if !same_snapshot(&before, &regular(&file)?) {
             return Err(StoreError::IdentityChanged);
         }
         Ok(bytes)
     }
     pub fn create_bytes(
         &self,
-        parent: &Arc<PinnedDirectory>,
+        parent: &Arc<Directory>,
         name: &str,
         bytes: &[u8],
     ) -> Result<(), StoreError> {
@@ -344,7 +365,7 @@ impl Storage {
         sync_file(&file)?;
         self.validate()?;
         validate_file(parent, name, &file, &identity)?;
-        sync_directory(&parent.file)?;
+        sync_directory(parent)?;
         Ok(())
     }
     pub(super) fn validate_current(
@@ -352,7 +373,7 @@ impl Storage {
         expected: &Current,
         identity: &Metadata,
     ) -> Result<(), StoreError> {
-        let pointer = open_file(&self.root, "CURRENT", false)?;
+        let pointer = read_file(&self.root, "CURRENT")?;
         validate_file(&self.root, "CURRENT", &pointer, identity)?;
         if self.read_bytes(&self.root, "CURRENT", 4096)? != format::encode(expected)? {
             return Err(StoreError::IdentityChanged);
@@ -364,6 +385,7 @@ impl Storage {
 impl super::ConnectionStore {
     // Kept on the locked store so callers cannot supply substitute evidence for
     // its retained CURRENT and committed active-log snapshot.
+    #[cfg(not(windows))]
     pub(super) fn publish_current(
         &self,
         next: &Current,
@@ -381,7 +403,7 @@ impl super::ConnectionStore {
             super::tests::checkpoint_boundary(super::tests::CheckpointBoundary::Prepared)?;
         }
         temporary.validate()?;
-        if !super::super::super::migration::same_snapshot(&identity, &regular(&temporary.file)?) {
+        if !same_snapshot(&identity, &regular(&temporary.file)?) {
             return Err(StoreError::IdentityChanged);
         }
         self.validate_next_log(next, next_log, next_log_identity)?;
@@ -396,7 +418,7 @@ impl super::ConnectionStore {
         )?;
         #[cfg(test)]
         super::tests::fault()?;
-        sync_directory(&self.storage.root.file)?;
+        sync_directory(&self.storage.root)?;
         #[cfg(test)]
         super::tests::checkpoint_boundary(super::tests::CheckpointBoundary::Published)?;
         // Keep old dependencies and poison on uncertainty after replacement too.
@@ -418,7 +440,7 @@ impl super::ConnectionStore {
             log,
             identity,
         )?;
-        if !super::super::super::migration::same_snapshot(identity, &regular(log)?) {
+        if !same_snapshot(identity, &regular(log)?) {
             return Err(StoreError::IdentityChanged);
         }
         Ok(())
@@ -449,9 +471,12 @@ impl Storage {
                 if self.read_bytes(&self.pages, &name, format::MAX_BYTES as u64)? != bytes {
                     return Err(StoreError::Corrupt);
                 }
-                let file = open_file(&self.pages, &name, false)?;
-                sync_file(&file)?;
-                sync_directory(&self.pages.file)?;
+                #[cfg(not(windows))]
+                {
+                    let file = open_file(&self.pages, &name, false)?;
+                    sync_file(&file)?;
+                }
+                sync_directory(&self.pages)?;
             }
             Err(error) => return Err(error),
         }
@@ -630,20 +655,26 @@ pub(super) fn build_pages(
 
 // Fault hooks run only in source tests, after a real host durability operation.
 pub(super) fn sync_file(file: &File) -> Result<(), StoreError> {
+    #[cfg(not(windows))]
     durability::sync_file(file)?;
+    #[cfg(windows)]
+    super::super::windows_native::flush_file(file)?;
     #[cfg(test)]
     super::tests::fault()?;
     Ok(())
 }
-pub(super) fn sync_directory(file: &File) -> Result<(), StoreError> {
-    durability::sync_directory(file)?;
+pub(super) fn sync_directory(directory: &Arc<Directory>) -> Result<(), StoreError> {
+    #[cfg(not(windows))]
+    durability::sync_directory(&directory.file)?;
+    #[cfg(windows)]
+    directory.sync()?;
     #[cfg(test)]
     super::tests::fault()?;
     Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "GcWire", into = "GcWire")]
 struct GcIntent {
     schema: u32,
     identity: Identity,
@@ -651,9 +682,77 @@ struct GcIntent {
     sequence: u64,
     page: bool,
     name: String,
-    inode: u64,
+    file_id: format::FileIdentity,
     length: u64,
     digest: [u8; 32],
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GcWire {
+    schema: u32,
+    identity: Identity,
+    generation: u64,
+    sequence: u64,
+    page: bool,
+    name: String,
+    #[serde(
+        default,
+        deserialize_with = "format::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    inode: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "format::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    windows_file_id_v1: Option<format::WindowsFileId>,
+    length: u64,
+    digest: [u8; 32],
+}
+impl TryFrom<GcWire> for GcIntent {
+    type Error = &'static str;
+    fn try_from(w: GcWire) -> Result<Self, Self::Error> {
+        let file_id = match (w.inode, w.windows_file_id_v1) {
+            (Some(inode), None) => format::FileIdentity::Unix(inode),
+            (None, Some(id)) => format::FileIdentity::Windows(id),
+            _ => return Err("exactly one native identity required"),
+        };
+        file_id
+            .require_platform()
+            .map_err(|_| "wrong native platform")?;
+        Ok(Self {
+            schema: w.schema,
+            identity: w.identity,
+            generation: w.generation,
+            sequence: w.sequence,
+            page: w.page,
+            name: w.name,
+            file_id,
+            length: w.length,
+            digest: w.digest,
+        })
+    }
+}
+impl From<GcIntent> for GcWire {
+    fn from(w: GcIntent) -> Self {
+        let (inode, windows_file_id_v1) = match w.file_id {
+            format::FileIdentity::Unix(n) => (Some(n), None),
+            format::FileIdentity::Windows(id) => (None, Some(id)),
+        };
+        Self {
+            schema: w.schema,
+            identity: w.identity,
+            generation: w.generation,
+            sequence: w.sequence,
+            page: w.page,
+            name: w.name,
+            inode,
+            windows_file_id_v1,
+            length: w.length,
+            digest: w.digest,
+        }
+    }
 }
 pub(super) struct GcScan {
     pages: cap_std::fs::ReadDir,
@@ -673,10 +772,11 @@ fn component(name: &str) -> Result<std::ffi::CString, StoreError> {
 }
 /// Atomically capture whatever occupies the source name without clobbering a
 /// quarantine occupant. Identity is checked on the captured object afterwards.
+#[cfg(not(windows))]
 pub(super) fn capture_no_replace(
-    parent: &Arc<PinnedDirectory>,
+    parent: &Arc<Directory>,
     name: &str,
-    quarantine: &Arc<PinnedDirectory>,
+    quarantine: &Arc<Directory>,
 ) -> Result<(), StoreError> {
     parent.validate_destination()?;
     quarantine.validate_destination()?;
@@ -815,11 +915,7 @@ impl super::ConnectionStore {
         }
         // Earlier candidate roots in this active log remain replay dependencies,
         // even if a later baseline event superseded the connection's pointer.
-        let mut log = open_file(
-            &self.storage.root,
-            &format!("log-{}", self.current.log),
-            false,
-        )?;
+        let mut log = reread_file(&self.storage.root, &format!("log-{}", self.current.log))?;
         log.seek(SeekFrom::Start(8))?;
         let _: format::LogHeader = super::framing::read_record(&mut log, 0)
             .map_err(|_| StoreError::Corrupt)?
@@ -889,9 +985,9 @@ impl super::ConnectionStore {
         let mut scan = match self.gc_scan.take() {
             Some(scan) => scan,
             None => GcScan {
-                pages: cap_std::fs::Dir::from_std_file(self.storage.pages.file.try_clone()?)
+                pages: cap_std::fs::Dir::from_std_file(enumeration_file(&self.storage.pages)?)
                     .entries()?,
-                logs: cap_std::fs::Dir::from_std_file(self.storage.root.file.try_clone()?)
+                logs: cap_std::fs::Dir::from_std_file(enumeration_file(&self.storage.root)?)
                     .entries()?,
                 phase: 0,
             },
@@ -961,7 +1057,7 @@ impl super::ConnectionStore {
                 sequence: self.current.sequence,
                 page,
                 name: name.to_string(),
-                inode: metadata.ino(),
+                file_id: file_identity(&metadata),
                 length,
                 digest,
             };
@@ -970,6 +1066,8 @@ impl super::ConnectionStore {
                 "intent",
                 &format::encode(&intent)?,
             )?;
+            #[cfg(windows)]
+            drop(file);
             self.finish_gc(&intent)?;
             removed += 1;
         }
@@ -1026,7 +1124,7 @@ impl super::ConnectionStore {
             }
         }
         let quarantine = Arc::clone(&self.storage.quarantine);
-        let intent_file = open_file(&quarantine, "intent", false)?;
+        let intent_file = mutation_file(&quarantine, "intent")?;
         let intent_identity = regular(&intent_file)?;
         let captured = metadata_nofollow(&quarantine.file, Path::new("captured"));
         if captured
@@ -1035,15 +1133,28 @@ impl super::ConnectionStore {
         {
             match metadata_nofollow(&parent.file, Path::new(&intent.name)) {
                 Ok(_) => {
-                    let source = open_file(&parent, &intent.name, false)?;
+                    let source = mutation_file(&parent, &intent.name)?;
+                    #[cfg(windows)]
+                    let mut source = source;
                     let metadata = regular(&source)?;
-                    if metadata.ino() != intent.inode || metadata.len() != intent.length {
+                    if file_identity(&metadata) != intent.file_id || metadata.len() != intent.length
+                    {
                         return Err(StoreError::RecoveryRequired);
                     }
                     validate_file(&parent, &intent.name, &source, &metadata)?;
+                    #[cfg(windows)]
+                    {
+                        let (digest, length) = file_digest(&mut source, intent.length)?;
+                        if digest != intent.digest || length != intent.length {
+                            return Err(StoreError::RecoveryRequired);
+                        }
+                    }
+                    #[cfg(not(windows))]
                     capture_no_replace(&parent, &intent.name, &quarantine)?;
-                    sync_directory(&parent.file)?;
-                    sync_directory(&quarantine.file)?;
+                    #[cfg(windows)]
+                    windows::capture(&source, &parent, &intent.name, &quarantine)?;
+                    sync_directory(&parent)?;
+                    sync_directory(&quarantine)?;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {} // Interrupted after an already-safe unlink.
                 Err(error) => return Err(error.into()),
@@ -1051,11 +1162,13 @@ impl super::ConnectionStore {
         } else if let Err(error) = captured {
             return Err(error.into());
         }
+        #[cfg(windows)]
+        windows::require_absent(&parent, &intent.name)?;
         match metadata_nofollow(&quarantine.file, Path::new("captured")) {
             Ok(_) => {
-                let mut captured = open_file(&quarantine, "captured", false)?;
+                let mut captured = mutation_file(&quarantine, "captured")?;
                 let metadata = regular(&captured)?;
-                if metadata.ino() != intent.inode || metadata.len() != intent.length {
+                if file_identity(&metadata) != intent.file_id || metadata.len() != intent.length {
                     return Err(StoreError::RecoveryRequired);
                 }
                 let (digest, length) = file_digest(&mut captured, intent.length)?;
@@ -1064,16 +1177,114 @@ impl super::ConnectionStore {
                 }
                 self.validate()?;
                 validate_file(&quarantine, "captured", &captured, &metadata)?;
+                #[cfg(not(windows))]
                 cap_primitives::fs::remove_file(&quarantine.file, Path::new("captured"))?;
-                sync_directory(&quarantine.file)?;
+                #[cfg(windows)]
+                windows::delete(captured, self, "captured", &metadata, intent)?;
+                sync_directory(&quarantine)?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
         self.validate()?;
         validate_file(&quarantine, "intent", &intent_file, &intent_identity)?;
+        #[cfg(not(windows))]
         cap_primitives::fs::remove_file(&quarantine.file, Path::new("intent"))?;
-        sync_directory(&quarantine.file)?;
+        #[cfg(windows)]
+        windows::delete(intent_file, self, "intent", &intent_identity, intent)?;
+        sync_directory(&quarantine)?;
         Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+pub(super) fn file_identity(metadata: &Metadata) -> format::FileIdentity {
+    format::FileIdentity::Unix(metadata.ino())
+}
+
+#[cfg(not(windows))]
+pub(super) use super::super::super::migration::same_snapshot;
+#[cfg(not(windows))]
+pub(super) fn read_file(parent: &Arc<Directory>, name: &str) -> Result<File, StoreError> {
+    open_file(parent, name, false)
+}
+pub(super) fn reread_file(parent: &Arc<Directory>, name: &str) -> Result<File, StoreError> {
+    #[cfg(not(windows))]
+    {
+        read_file(parent, name)
+    }
+    #[cfg(windows)]
+    {
+        windows::reread_file(parent, name)
+    }
+}
+fn enumeration_file(parent: &Arc<Directory>) -> Result<File, StoreError> {
+    #[cfg(not(windows))]
+    {
+        Ok(parent.file.try_clone()?)
+    }
+    #[cfg(windows)]
+    {
+        Ok(parent.entries_file()?)
+    }
+}
+
+fn mutation_file(parent: &Arc<Directory>, name: &str) -> Result<File, StoreError> {
+    #[cfg(not(windows))]
+    {
+        open_file(parent, name, false)
+    }
+    #[cfg(windows)]
+    {
+        windows::mutation_file(parent, name)
+    }
+}
+#[cfg(all(windows, test))]
+pub(super) fn capture_no_replace(
+    parent: &Arc<Directory>,
+    name: &str,
+    quarantine: &Arc<Directory>,
+) -> Result<(), StoreError> {
+    let file = mutation_file(parent, name)?;
+    windows::capture(&file, parent, name, quarantine)
+}
+
+#[cfg(windows)]
+pub(in crate::setup::connection) use windows::{CurrentReplacement, GcDeletion};
+
+#[cfg(test)]
+mod identity_wire_tests {
+    use super::*;
+    #[test]
+    fn gc_identity_preserves_unix_shape_and_rejects_mixed_duplicate_and_platform() {
+        let identity = Identity {
+            volume: [1; 32],
+            root: [2; 32],
+        };
+        let legacy = format!(
+            r#"{{"schema":1,"identity":{},"generation":3,"sequence":4,"page":true,"name":"old","inode":42,"length":2,"digest":{}}}"#,
+            serde_json::to_string(&identity).unwrap(),
+            serde_json::to_string(&[5_u8; 32]).unwrap()
+        );
+        if cfg!(windows) {
+            assert!(serde_json::from_str::<GcIntent>(&legacy).is_err());
+        } else {
+            let decoded: GcIntent = serde_json::from_str(&legacy).unwrap();
+            assert_eq!(format::encode(&decoded).unwrap(), legacy.as_bytes());
+        }
+        for bad in [
+            legacy.replace("\"inode\":42", "\"inode\":42,\"inode\":42"),
+            legacy.replace("\"inode\":42", "\"inode\":42,\"windows_file_id_v1\":null"),
+            legacy.replace("\"inode\":42", "\"inode\":null"),
+        ] {
+            assert!(serde_json::from_str::<GcIntent>(&bad).is_err());
+        }
+        let native = legacy.replace("\"inode\":42", r#""windows_file_id_v1":{"volume_serial":7,"file_id":[0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0]}"#);
+        let wire: GcWire = serde_json::from_str(&native).unwrap();
+        assert_eq!(serde_json::to_string(&wire).unwrap(), native);
+        assert_eq!(
+            serde_json::from_str::<GcIntent>(&native).is_ok(),
+            cfg!(windows)
+        );
     }
 }

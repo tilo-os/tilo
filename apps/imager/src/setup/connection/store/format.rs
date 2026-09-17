@@ -620,11 +620,74 @@ pub(super) fn hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(in super::super) struct WindowsFileId {
+    pub volume_serial: u64,
+    pub file_id: [u8; 16],
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FileIdentity {
+    Unix(u64),
+    Windows(WindowsFileId),
+}
+impl FileIdentity {
+    pub fn require_platform(self) -> Result<Self, StoreError> {
+        if matches!(self, Self::Windows(_)) != cfg!(windows) {
+            return Err(StoreError::IdentityChanged);
+        }
+        Ok(self)
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ObjectIdentity {
     pub root: storage::Identity,
-    pub inode: u64,
+    pub file_id: FileIdentity,
+}
+impl Serialize for ObjectIdentity {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("ObjectIdentity", 2)?;
+        state.serialize_field("root", &self.root)?;
+        match self.file_id {
+            FileIdentity::Unix(inode) => state.serialize_field("inode", &inode)?,
+            FileIdentity::Windows(id) => state.serialize_field("windows_file_id_v1", &id)?,
+        }
+        state.end()
+    }
+}
+// Missing fields default to None; an explicitly present null is invalid.
+pub(super) fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
+impl<'de> Deserialize<'de> for ObjectIdentity {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            root: storage::Identity,
+            #[serde(default, deserialize_with = "present")]
+            inode: Option<u64>,
+            #[serde(default, deserialize_with = "present")]
+            windows_file_id_v1: Option<WindowsFileId>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let file_id = match (wire.inode, wire.windows_file_id_v1) {
+            (Some(inode), None) => FileIdentity::Unix(inode),
+            (None, Some(id)) => FileIdentity::Windows(id),
+            _ => {
+                return Err(serde::de::Error::custom(
+                    "exactly one native identity required",
+                ));
+            }
+        };
+        Ok(Self {
+            root: wire.root,
+            file_id,
+        })
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -656,6 +719,9 @@ impl Recovery {
         value
     }
     pub fn decode(&self) -> Result<RecoveryEntry, StoreError> {
+        if let Some(object) = &self.object {
+            object.file_id.require_platform()?;
+        }
         let original_side = match self.side {
             0 => Side::Source,
             1 => Side::Destination,
@@ -756,5 +822,69 @@ impl ConflictData {
 impl From<RelativePath> for NativePath {
     fn from(path: RelativePath) -> Self {
         Self::relative(&path)
+    }
+}
+
+#[cfg(test)]
+mod native_identity_tests {
+    use super::*;
+    fn root() -> storage::Identity {
+        storage::Identity {
+            volume: [1; 32],
+            root: [2; 32],
+        }
+    }
+    #[test]
+    fn windows_identity_wire_retains_upper_half_and_serial() {
+        let prefix = serde_json::to_string(&root()).unwrap();
+        let a = format!(
+            r#"{{"root":{prefix},"windows_file_id_v1":{{"volume_serial":7,"file_id":[0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0]}}}}"#
+        );
+        let b = a.replace("0,0,1,0", "0,0,2,0");
+        let decoded: ObjectIdentity =
+            serde_json::from_str(&a).expect("full Windows identity shape");
+        assert_eq!(serde_json::to_string(&decoded).unwrap(), a);
+        assert_ne!(decoded, serde_json::from_str::<ObjectIdentity>(&b).unwrap());
+        assert_ne!(
+            decoded,
+            serde_json::from_str::<ObjectIdentity>(&a.replace("serial\":7", "serial\":8")).unwrap()
+        );
+    }
+    #[test]
+    fn unix_identity_encoding_stays_exact_and_ambiguous_shapes_refuse() {
+        let prefix = serde_json::to_string(&root()).unwrap();
+        let legacy = format!(r#"{{"root":{prefix},"inode":42}}"#);
+        let decoded: ObjectIdentity = serde_json::from_str(&legacy).unwrap();
+        assert_eq!(serde_json::to_string(&decoded).unwrap(), legacy);
+        for bad in [legacy.replace("42}", "42,\"inode\":43}"), legacy.replace("42}", "42,\"unknown\":0}"), legacy.replace("42}", "42,\"windows_file_id_v1\":null}"), legacy.replace("42}", "42,\"windows_file_id_v1\":{\"volume_serial\":7,\"file_id\":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}}") ] {
+            assert!(serde_json::from_str::<ObjectIdentity>(&bad).is_err(), "{bad}");
+        }
+    }
+    #[test]
+    fn native_identity_requires_matching_platform_and_bounded_payload() {
+        let root = serde_json::to_string(&root()).unwrap();
+        let unix = format!(r#"{{"root":{root},"inode":9}}"#);
+        let windows = format!(
+            r#"{{"root":{root},"windows_file_id_v1":{{"volume_serial":7,"file_id":[0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0]}}}}"#
+        );
+        let unix: ObjectIdentity = serde_json::from_str(&unix).unwrap();
+        let win: ObjectIdentity = serde_json::from_str(&windows).unwrap();
+        assert_eq!(unix.file_id.require_platform().is_ok(), !cfg!(windows));
+        assert_eq!(win.file_id.require_platform().is_ok(), cfg!(windows));
+        assert!(encode(&win).unwrap().len() < 4096);
+        for bad in [
+            windows.replace("7,", "7,\"volume_serial\":8,"),
+            windows.replace("7,", "7,\"unknown\":8,"),
+            windows.replace(
+                "\"windows_file_id_v1\":",
+                "\"inode\":null,\"windows_file_id_v1\":",
+            ),
+            windows.replace("[0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0]", "[0,0]"),
+        ] {
+            assert!(
+                serde_json::from_str::<ObjectIdentity>(&bad).is_err(),
+                "{bad}"
+            );
+        }
     }
 }

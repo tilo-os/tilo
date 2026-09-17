@@ -115,11 +115,13 @@ fn word(bytes: &[u8], offset: usize) -> Result<u32, EndpointError> {
     ))
 }
 fn device_identity(volume: &[u16]) -> Result<Vec<u8>, EndpointError> {
+    device_identity_handle(&volume_device(volume)?)
+}
+fn device_identity_handle(volume: &File) -> Result<Vec<u8>, EndpointError> {
     use windows_sys::Win32::System::Ioctl::{
         IOCTL_STORAGE_QUERY_PROPERTY, PropertyStandardQuery, STORAGE_PROPERTY_QUERY,
         StorageDeviceIdProperty, VOLUME_DISK_EXTENTS,
     };
-    let volume = volume_device(volume)?;
     let mut extents = VOLUME_DISK_EXTENTS::default();
     let mut returned = 0;
     // SAFETY: exact SDK fixed one-extent structure and read-only volume ioctl.
@@ -219,17 +221,9 @@ fn device_identity(volume: &[u16]) -> Result<Vec<u8>, EndpointError> {
     Ok(identity)
 }
 fn clean_volume(volume: &[u16]) -> Result<(), EndpointError> {
-    let mut device = volume.to_vec();
-    if device.pop() != Some(u16::from(b'\\')) {
-        return Err(EndpointError::Unsupported);
-    }
-    let path = std::ffi::OsString::from_wide(&device);
-    // Never ask for write, unlock or change the volume state. Sharing permits
-    // the current mount; inability to query dirty state is an explicit refusal.
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .share_mode(1 | 2)
-        .open(path)?;
+    clean_volume_handle(&volume_device(volume)?).map(|_| ())
+}
+fn clean_volume_handle(file: &File) -> Result<u64, EndpointError> {
     let mut dirty = 0_u32;
     let mut returned = 0_u32;
     // SAFETY: FSCTL_IS_VOLUME_DIRTY has no input and one DWORD output.
@@ -273,7 +267,7 @@ fn clean_volume(volume: &[u16]) -> Result<(), EndpointError> {
     if returned < 96 {
         return Err(EndpointError::Unsupported);
     }
-    Ok(())
+    Ok(ntfs[0])
 }
 struct VolumeEnumeration(windows_sys::Win32::Foundation::HANDLE);
 impl Drop for VolumeEnumeration {
@@ -579,6 +573,55 @@ pub(super) fn check_metadata(file: &File, directory: bool) -> Result<bool, Endpo
 pub(super) fn change_token(file: &File) -> Result<Vec<u8>, EndpointError> {
     let basic: FILE_BASIC_INFO = info(file, FileBasicInfo)?;
     Ok(basic.ChangeTime.to_le_bytes().to_vec())
+}
+
+// Connected-private bridge: all writable-volume authentication queries use the
+// retained volume handle. The endpoint wrappers above remain read-only.
+pub(in super::super) fn connected_volume_path(root: &File) -> Result<Vec<u16>, EndpointError> {
+    volume_path(root)
+}
+pub(in super::super) fn connected_volume_binding(
+    root: &File,
+    volume: &File,
+) -> Result<Vec<u8>, EndpointError> {
+    let identity = id(root)?;
+    if clean_volume_handle(volume)? != identity.VolumeSerialNumber {
+        return Err(EndpointError::IdentityChanged);
+    }
+    let path = volume_path(root)?;
+    let (serial, flags) = flags(root)?;
+    if flags & 0x0008_0000 != 0 {
+        return Err(EndpointError::ReadOnly);
+    }
+    check_duplicates(&path, serial)?;
+    let mut binding = device_identity_handle(volume)?;
+    for unit in path {
+        binding.extend_from_slice(&unit.to_le_bytes());
+    }
+    binding.extend_from_slice(&identity.VolumeSerialNumber.to_le_bytes());
+    Ok(binding)
+}
+pub(in super::super) fn connected_metadata(
+    file: &File,
+    directory: bool,
+) -> Result<(), EndpointError> {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_STANDARD_INFO, FileStandardInfo};
+    let basic: FILE_BASIC_INFO = info(file, FileBasicInfo)?;
+    let standard: FILE_STANDARD_INFO = info(file, FileStandardInfo)?;
+    if basic.FileAttributes & (0x400 | 0x1000 | 0x4000 | 0x40000 | 0x0040_0000) != 0
+        || standard.Directory != directory
+        || standard.DeletePending
+        || (!directory && standard.NumberOfLinks != 1)
+        || named_stream(file, directory)?
+    {
+        return Err(EndpointError::Unsupported);
+    }
+    Ok(())
+}
+
+pub(in super::super) fn connected_root_binding(root: &File) -> Result<Vec<u8>, EndpointError> {
+    let path = volume_path(root)?;
+    connected_volume_binding(root, &volume_device(&path)?)
 }
 
 #[cfg(test)]
