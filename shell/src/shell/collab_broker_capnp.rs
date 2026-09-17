@@ -1502,10 +1502,9 @@ fn revoke_realtime_capture_authorizations(
 }
 
 #[cfg(test)]
-#[derive(Clone)]
 struct RealtimeConsentMintHook {
-    minted: Arc<std::sync::Barrier>,
-    resume: Arc<std::sync::Barrier>,
+    minted: std::sync::mpsc::SyncSender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
 }
 
 #[cfg(test)]
@@ -1522,8 +1521,8 @@ fn pause_realtime_consent_after_mint() {
         .ok()
         .and_then(|mut hook| hook.take());
     if let Some(hook) = hook {
-        hook.minted.wait();
-        hook.resume.wait();
+        let _ = hook.minted.send(());
+        let _ = hook.resume.recv_timeout(std::time::Duration::from_secs(5));
     }
 }
 
@@ -9621,18 +9620,20 @@ mod tests {
         // Pause after minting but before the exact binding is revalidated. A
         // duplicate must fail immediately, and removing the imported binding
         // while paused must revoke the whole just-minted batch.
-        let minted = Arc::new(std::sync::Barrier::new(2));
-        let resume = Arc::new(std::sync::Barrier::new(2));
+        let (minted_tx, minted_rx) = std::sync::mpsc::sync_channel(1);
+        let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
         *realtime_consent_mint_hook().lock().expect("consent hook") =
             Some(RealtimeConsentMintHook {
-                minted: Arc::clone(&minted),
-                resume: Arc::clone(&resume),
+                minted: minted_tx,
+                resume: resume_rx,
             });
         let worker_bridge = RealtimeFabricAppBridge::from_state(Arc::clone(&state));
         let worker_session = session.clone();
         let worker =
             std::thread::spawn(move || worker_bridge.resolve_consent(&worker_session, true));
-        minted.wait();
+        minted_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("consent worker reached post-mint checkpoint");
         assert!(
             state
                 .realtime
@@ -9654,7 +9655,7 @@ mod tests {
             .expect("target bridge")
             .sessions
             .remove(&session);
-        resume.wait();
+        resume_tx.send(()).expect("resume consent worker");
         assert!(
             worker.join().expect("consent worker").is_err(),
             "disconnect must invalidate consent before delivery"
