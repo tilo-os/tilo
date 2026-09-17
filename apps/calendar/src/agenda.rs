@@ -6,12 +6,9 @@
 
 use std::collections::HashSet;
 
-use automerge::{AutoCommit, ObjId};
 use chrono::{Duration, NaiveDate};
-use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
-use winit::event::WindowEvent;
 
 use ui::Widget;
 use ui::widget::Scrollable;
@@ -19,6 +16,7 @@ use ui::widget::Scrollable;
 use crate::app::{center_text, draw_checkbox};
 use crate::date;
 use crate::draw_util::{PaintContext, fill_rect, fill_round, stroke_line};
+use crate::input_context::InputContext;
 use crate::model::{Id, Model, Priority};
 
 const DAYS_SHOWN: i64 = 21;
@@ -75,35 +73,19 @@ impl AgendaView {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
-        let mut handled = false;
-        let mut next_focus = *focus_target;
+    pub(crate) fn handle_event(&mut self, input: &mut InputContext<'_>) -> bool {
         self.scroll.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut handled,
-            &mut next_focus,
-            node_id,
-            taffy,
+            input.event,
+            input.scale_factor,
+            &input.modifiers,
+            input.state,
+            input.path,
+            input.handled,
+            input.focus_target,
+            input.node_id,
+            input.taffy,
         );
-        if handled {
-            *focus_target = next_focus;
-        }
-        handled
+        *input.handled
     }
 
     pub(crate) fn wants_pointer_capture(&self) -> bool {
