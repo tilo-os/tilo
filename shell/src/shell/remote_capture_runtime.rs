@@ -5,8 +5,8 @@
 //! verified local registration captured when the request was made remains the
 //! authority used by the target-local adapter bridge.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, mpsc};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 use std::time::Instant;
 
 use rand_core::{OsRng, RngCore};
@@ -16,15 +16,17 @@ use crate::shell::device_fabric::{PersonalFabricAction, PersonalFabricActionEnve
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::realtime_session::VerifiedAppRegistration;
 use crate::shell::remote_capture_adapter::{
-    RemoteCaptureAdapter, RemoteCaptureAdapterError, RemoteCaptureEndpoint,
-    RemoteCaptureTargetBridge,
+    ProductionRemoteCaptureAdapter, RemoteCaptureAdapter, RemoteCaptureAdapterError,
+    RemoteCaptureAvailability, RemoteCaptureEndpoint, RemoteCaptureTargetBridge,
 };
 use crate::shell::remote_capture_device::{
     MAX_REMOTE_CAPTURE_SESSIONS, REMOTE_CAPTURE_PROTOCOL_VERSION, RemoteCaptureChunk,
-    RemoteCaptureGrant, RemoteCaptureProfile, RemoteCaptureRegistry, RemoteCaptureRequest,
-    RemoteCaptureSignal,
+    RemoteCaptureGrant, RemoteCaptureKind, RemoteCapturePhase, RemoteCaptureProfile,
+    RemoteCaptureRegistry, RemoteCaptureRequest, RemoteCaptureSignal,
 };
-use crate::shell::remote_capture_source::{CapturedRemoteChunk, RemoteCaptureSource};
+use crate::shell::remote_capture_source::{
+    CapturedRemoteChunk, ProductionRemoteCaptureSource, RemoteCaptureSource,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RemoteCaptureConsentView {
@@ -32,6 +34,175 @@ pub(crate) struct RemoteCaptureConsentView {
     pub peer: DeviceId,
     pub app_label: String,
     pub profile: RemoteCaptureProfile,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RemoteCaptureSessionPhase {
+    Requesting,
+    Provisioning,
+    AppApprovalRequired,
+    WaitingForReceiver,
+    Streaming,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RemoteCaptureDegradedReason {
+    SourceUnavailable,
+    ReceiverUnavailable,
+    TransferInterrupted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RemoteCaptureDegradedView {
+    pub peer: DeviceId,
+    pub kind: RemoteCaptureKind,
+    pub reason: RemoteCaptureDegradedReason,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RemoteCaptureSessionView {
+    pub session_id: Option<[u8; 16]>,
+    pub peer: DeviceId,
+    pub kind: RemoteCaptureKind,
+    pub phase: RemoteCaptureSessionPhase,
+    pub receiving: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RemoteCaptureView {
+    pub local_sources: RemoteCaptureAvailability,
+    pub local_receivers: RemoteCaptureAvailability,
+    pub consents: Vec<RemoteCaptureConsentView>,
+    pub sessions: Vec<RemoteCaptureSessionView>,
+    pub degraded: Vec<RemoteCaptureDegradedView>,
+}
+
+pub(crate) type SharedRemoteCaptureRuntime = Arc<Mutex<RemoteCaptureFabricRuntime>>;
+
+static ACTIVE_RUNTIME: OnceLock<Mutex<Option<Weak<Mutex<RemoteCaptureFabricRuntime>>>>> =
+    OnceLock::new();
+
+pub(crate) fn install_active_runtime(runtime: &SharedRemoteCaptureRuntime) {
+    if let Ok(mut active) = ACTIVE_RUNTIME.get_or_init(|| Mutex::new(None)).lock() {
+        *active = Some(Arc::downgrade(runtime));
+    }
+}
+
+fn active_runtime() -> Result<SharedRemoteCaptureRuntime, String> {
+    ACTIVE_RUNTIME
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map_err(|_| "remote capture service is unavailable".to_string())?
+        .as_ref()
+        .and_then(Weak::upgrade)
+        .ok_or_else(|| "remote capture service is unavailable".to_string())
+}
+
+pub(crate) fn active_view() -> RemoteCaptureView {
+    active_runtime()
+        .and_then(|runtime| {
+            runtime
+                .try_lock()
+                .map(|runtime| runtime.view())
+                .map_err(|_| "remote capture service is busy".to_string())
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) fn request_remote_capture(
+    network: &crate::shell::network::ShellNetwork,
+    app: VerifiedAppRegistration,
+    peer: DeviceId,
+    kind: RemoteCaptureKind,
+) -> Result<(), String> {
+    let local = network
+        .local_device_fabric_identity()
+        .map(|(device, _)| device)
+        .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+    let label = app.app_id().to_string();
+    let runtime = active_runtime()?;
+    let action = runtime
+        .try_lock()
+        .map_err(|_| "remote capture service is busy".to_string())?
+        .request_standard(app, peer.clone(), local, label, kind)?;
+    let request_id = match &action {
+        PersonalFabricAction::RemoteCaptureSignal {
+            signal: RemoteCaptureSignal::Request(request),
+        } => request.request_id,
+        _ => return Err("remote capture request produced an invalid action".into()),
+    };
+    if let Err(error) = network.send_personal_fabric_action(&peer, action) {
+        if let Ok(mut runtime) = runtime.try_lock() {
+            if let Some(pending) = runtime.outbound.remove(&request_id) {
+                runtime.note_degraded(
+                    peer,
+                    pending.request.profile.kind(),
+                    RemoteCaptureDegradedReason::TransferInterrupted,
+                );
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+pub(crate) fn decide_remote_capture(
+    network: &crate::shell::network::ShellNetwork,
+    request_id: [u8; 16],
+    approved: bool,
+) -> Result<(), String> {
+    let runtime = active_runtime()?;
+    let (peer, action) = runtime
+        .try_lock()
+        .map_err(|_| "remote capture service is busy".to_string())?
+        .decide(request_id, approved, Instant::now())?;
+    let session_id = match &action {
+        PersonalFabricAction::RemoteCaptureSignal {
+            signal:
+                RemoteCaptureSignal::Decision {
+                    accepted: true,
+                    session_id,
+                    ..
+                },
+        } => *session_id,
+        _ => None,
+    };
+    if let Err(error) = network.send_personal_fabric_action(&peer, action) {
+        if let Some(session_id) = session_id
+            && let Ok(mut runtime) = runtime.try_lock()
+        {
+            let kind = runtime
+                .source_sessions
+                .get(&session_id)
+                .map(|session| session.request.profile.kind());
+            let _ = runtime.stop_session(session_id);
+            if let Some(kind) = kind {
+                runtime.note_degraded(peer, kind, RemoteCaptureDegradedReason::TransferInterrupted);
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+pub(crate) fn approve_remote_capture_target(session_id: [u8; 16]) -> Result<(), String> {
+    active_runtime()?
+        .try_lock()
+        .map_err(|_| "remote capture service is busy".to_string())?
+        .approve_target(session_id, Instant::now())
+}
+
+pub(crate) fn stop_remote_capture(
+    network: &crate::shell::network::ShellNetwork,
+    session_id: [u8; 16],
+) -> Result<(), String> {
+    let runtime = active_runtime()?;
+    let (peer, action) = runtime
+        .try_lock()
+        .map_err(|_| "remote capture service is busy".to_string())?
+        .stop_session(session_id)?;
+    network.send_personal_fabric_action(&peer, action)?;
+    Ok(())
 }
 
 struct OutboundRequest {
@@ -81,14 +252,24 @@ pub(crate) struct RemoteCaptureFabricRuntime {
     pending_revoke: BTreeSet<[u8; 16]>,
     pending_bridge_peers: BTreeSet<DeviceId>,
     pending_bridge_revoke_all: bool,
+    pending_target_revoke: BTreeMap<[u8; 16], TargetSession>,
     outgoing: Vec<(DeviceId, PersonalFabricAction)>,
     outbound: BTreeMap<[u8; 16], OutboundRequest>,
     inbound: BTreeMap<[u8; 16], InboundRequest>,
     target_sessions: BTreeMap<[u8; 16], TargetSession>,
     source_sessions: BTreeMap<[u8; 16], SourceSession>,
+    degraded: VecDeque<RemoteCaptureDegradedView>,
 }
 
 impl RemoteCaptureFabricRuntime {
+    pub(crate) fn production(broker: Arc<Mutex<CaptureBroker>>) -> Self {
+        Self::new(
+            broker,
+            Box::new(ProductionRemoteCaptureAdapter::detect()),
+            Box::new(ProductionRemoteCaptureSource::detect()),
+        )
+    }
+
     pub(crate) fn new(
         broker: Arc<Mutex<CaptureBroker>>,
         adapter: Box<dyn RemoteCaptureAdapter>,
@@ -107,11 +288,13 @@ impl RemoteCaptureFabricRuntime {
             pending_revoke: BTreeSet::new(),
             pending_bridge_peers: BTreeSet::new(),
             pending_bridge_revoke_all: false,
+            pending_target_revoke: BTreeMap::new(),
             outgoing: Vec::new(),
             outbound: BTreeMap::new(),
             inbound: BTreeMap::new(),
             target_sessions: BTreeMap::new(),
             source_sessions: BTreeMap::new(),
+            degraded: VecDeque::new(),
         }
     }
 
@@ -150,6 +333,92 @@ impl RemoteCaptureFabricRuntime {
         Ok(PersonalFabricAction::RemoteCaptureSignal {
             signal: RemoteCaptureSignal::Request(request),
         })
+    }
+
+    pub(crate) fn request_standard(
+        &mut self,
+        app: VerifiedAppRegistration,
+        remote_source: DeviceId,
+        local_target: DeviceId,
+        app_label: String,
+        kind: RemoteCaptureKind,
+    ) -> Result<PersonalFabricAction, String> {
+        let available = self
+            .adapter
+            .try_lock()
+            .map_err(|_| "remote capture receiver is busy".to_string())?
+            .availability();
+        if !availability_supports(available, kind) {
+            return Err("this device cannot receive the requested remote input".into());
+        }
+        self.request(
+            app,
+            remote_source,
+            local_target,
+            app_label,
+            standard_profile(kind),
+        )
+    }
+
+    pub(crate) fn view(&self) -> RemoteCaptureView {
+        let local_receivers = self.adapter.try_lock().map_or_else(
+            |_| RemoteCaptureAvailability::default(),
+            |adapter| adapter.availability(),
+        );
+        let mut sessions = self
+            .outbound
+            .values()
+            .map(|pending| RemoteCaptureSessionView {
+                session_id: None,
+                peer: pending.source.clone(),
+                kind: pending.request.profile.kind(),
+                phase: RemoteCaptureSessionPhase::Requesting,
+                receiving: true,
+            })
+            .chain(
+                self.provisioning
+                    .iter()
+                    .map(|(session_id, session)| RemoteCaptureSessionView {
+                        session_id: Some(*session_id),
+                        peer: session.source.clone(),
+                        kind: session.request.profile.kind(),
+                        phase: RemoteCaptureSessionPhase::Provisioning,
+                        receiving: true,
+                    }),
+            )
+            .chain(self.target_sessions.iter().map(|(session_id, session)| {
+                RemoteCaptureSessionView {
+                    session_id: Some(*session_id),
+                    peer: session.source.clone(),
+                    kind: session.request.profile.kind(),
+                    phase: match self.registry.phase(*session_id) {
+                        Some(RemoteCapturePhase::Streaming) => RemoteCaptureSessionPhase::Streaming,
+                        _ => RemoteCaptureSessionPhase::AppApprovalRequired,
+                    },
+                    receiving: true,
+                }
+            }))
+            .chain(self.source_sessions.iter().map(|(session_id, session)| {
+                RemoteCaptureSessionView {
+                    session_id: Some(*session_id),
+                    peer: session.target.clone(),
+                    kind: session.request.profile.kind(),
+                    phase: match self.registry.phase(*session_id) {
+                        Some(RemoteCapturePhase::Streaming) => RemoteCaptureSessionPhase::Streaming,
+                        _ => RemoteCaptureSessionPhase::WaitingForReceiver,
+                    },
+                    receiving: false,
+                }
+            }))
+            .collect::<Vec<_>>();
+        sessions.truncate(MAX_REMOTE_CAPTURE_SESSIONS * 2);
+        RemoteCaptureView {
+            local_sources: self.source.availability(),
+            local_receivers,
+            consents: self.consents(),
+            sessions,
+            degraded: self.degraded.iter().cloned().collect(),
+        }
     }
 
     pub(crate) fn handle_action(
@@ -215,12 +484,22 @@ impl RemoteCaptureFabricRuntime {
                         self.target_sessions.insert(session_id, session);
                     } else {
                         self.registry.revoke(session_id, session.grant);
+                        self.note_degraded(
+                            session.source.clone(),
+                            session.request.profile.kind(),
+                            RemoteCaptureDegradedReason::ReceiverUnavailable,
+                        );
                         self.outgoing
                             .push((session.source, stop_action(session_id, session.grant)));
                     }
                 }
                 Err(_) => {
                     self.registry.revoke(session_id, session.grant);
+                    self.note_degraded(
+                        session.source.clone(),
+                        session.request.profile.kind(),
+                        RemoteCaptureDegradedReason::ReceiverUnavailable,
+                    );
                     self.outgoing
                         .push((session.source, stop_action(session_id, session.grant)));
                 }
@@ -228,6 +507,17 @@ impl RemoteCaptureFabricRuntime {
         }
 
         if let Ok(mut adapter) = self.adapter.try_lock() {
+            for (session_id, session) in std::mem::take(&mut self.pending_target_revoke) {
+                let _ = self.bridge.revoke(
+                    &session.app,
+                    &session.source,
+                    &session.target,
+                    session_id,
+                    session.grant,
+                    adapter.as_mut(),
+                );
+                self.pending_revoke.remove(&session_id);
+            }
             for session_id in std::mem::take(&mut self.pending_revoke) {
                 adapter.revoke(session_id);
             }
@@ -249,6 +539,11 @@ impl RemoteCaptureFabricRuntime {
             if let Some(session) = self.source_sessions.remove(&session_id) {
                 self.source.stop(session_id);
                 self.registry.revoke(session_id, session.grant);
+                self.note_degraded(
+                    session.target.clone(),
+                    session.request.profile.kind(),
+                    RemoteCaptureDegradedReason::TransferInterrupted,
+                );
                 self.outgoing
                     .push((session.target, stop_action(session_id, session.grant)));
             }
@@ -290,9 +585,15 @@ impl RemoteCaptureFabricRuntime {
         ) {
             let grant = session.grant;
             let target = session.target.clone();
+            let kind = session.request.profile.kind();
             self.source.stop(captured.session_id);
             self.source_sessions.remove(&captured.session_id);
             self.registry.revoke(captured.session_id, grant);
+            self.note_degraded(
+                target.clone(),
+                kind,
+                RemoteCaptureDegradedReason::TransferInterrupted,
+            );
             self.outgoing
                 .push((target, stop_action(captured.session_id, grant)));
             return;
@@ -423,6 +724,7 @@ impl RemoteCaptureFabricRuntime {
                         );
                     } else {
                         self.pending_revoke.insert(*session_id);
+                        self.pending_target_revoke.insert(*session_id, session);
                     }
                 } else if let Some(session) = self.source_sessions.get(session_id)
                     && session.target == envelope.source
@@ -538,6 +840,11 @@ impl RemoteCaptureFabricRuntime {
             .is_err()
         {
             self.registry.revoke(session_id, grant);
+            self.note_degraded(
+                pending.target.clone(),
+                pending.request.profile.kind(),
+                RemoteCaptureDegradedReason::SourceUnavailable,
+            );
             return Ok((
                 pending.target,
                 PersonalFabricAction::RemoteCaptureSignal {
@@ -608,6 +915,43 @@ impl RemoteCaptureFabricRuntime {
             .map_err(|error| error.to_string())
     }
 
+    pub(crate) fn stop_session(
+        &mut self,
+        session_id: [u8; 16],
+    ) -> Result<(DeviceId, PersonalFabricAction), String> {
+        if let Some(session) = self.target_sessions.remove(&session_id) {
+            self.registry.revoke(session_id, session.grant);
+            if let Ok(mut adapter) = self.adapter.try_lock() {
+                let _ = self.bridge.revoke(
+                    &session.app,
+                    &session.source,
+                    &session.target,
+                    session_id,
+                    session.grant,
+                    adapter.as_mut(),
+                );
+            } else {
+                self.pending_revoke.insert(session_id);
+                self.pending_target_revoke.insert(session_id, session);
+                let session = self
+                    .pending_target_revoke
+                    .get(&session_id)
+                    .expect("inserted");
+                return Ok((
+                    session.source.clone(),
+                    stop_action(session_id, session.grant),
+                ));
+            }
+            return Ok((session.source, stop_action(session_id, session.grant)));
+        }
+        if let Some(session) = self.source_sessions.remove(&session_id) {
+            self.source.stop(session_id);
+            self.registry.revoke(session_id, session.grant);
+            return Ok((session.target, stop_action(session_id, session.grant)));
+        }
+        Err("unknown remote capture session".into())
+    }
+
     pub(crate) fn send_chunk(
         &mut self,
         chunk: RemoteCaptureChunk,
@@ -651,6 +995,8 @@ impl RemoteCaptureFabricRuntime {
         }
         self.target_sessions
             .retain(|_, session| &session.source != peer && &session.target != peer);
+        self.pending_target_revoke
+            .retain(|_, session| &session.source != peer && &session.target != peer);
         let source_ids = self
             .source_sessions
             .iter()
@@ -674,6 +1020,7 @@ impl RemoteCaptureFabricRuntime {
         self.outbound.clear();
         self.inbound.clear();
         self.target_sessions.clear();
+        self.pending_target_revoke.clear();
         self.pending_revoke
             .extend(self.provisioning.keys().copied());
         self.pending_revoke
@@ -691,11 +1038,54 @@ impl RemoteCaptureFabricRuntime {
             self.pending_bridge_revoke_all = true;
         }
     }
+
+    fn note_degraded(
+        &mut self,
+        peer: DeviceId,
+        kind: RemoteCaptureKind,
+        reason: RemoteCaptureDegradedReason,
+    ) {
+        while self.degraded.len() >= MAX_REMOTE_CAPTURE_SESSIONS {
+            self.degraded.pop_front();
+        }
+        self.degraded
+            .push_back(RemoteCaptureDegradedView { peer, kind, reason });
+    }
 }
 
 fn stop_action(session_id: [u8; 16], grant: RemoteCaptureGrant) -> PersonalFabricAction {
     PersonalFabricAction::RemoteCaptureSignal {
         signal: RemoteCaptureSignal::Stop { session_id, grant },
+    }
+}
+
+fn standard_profile(kind: RemoteCaptureKind) -> RemoteCaptureProfile {
+    match kind {
+        RemoteCaptureKind::Camera => RemoteCaptureProfile::Camera {
+            format: crate::shell::remote_capture_device::RemoteVideoFormat::Nv12,
+            width: 160,
+            height: 120,
+            frames_per_second: 15,
+        },
+        RemoteCaptureKind::Microphone => RemoteCaptureProfile::Microphone {
+            format: crate::shell::remote_capture_device::RemoteAudioFormat::PcmS16Le,
+            sample_rate: 48_000,
+            channels: 2,
+            frame_millis: 20,
+        },
+        RemoteCaptureKind::DocumentScanner => RemoteCaptureProfile::DocumentScanner {
+            format: crate::shell::remote_capture_device::RemoteDocumentFormat::Png,
+            max_pages: 1,
+            max_document_bytes: 16_777_216,
+        },
+    }
+}
+
+fn availability_supports(availability: RemoteCaptureAvailability, kind: RemoteCaptureKind) -> bool {
+    match kind {
+        RemoteCaptureKind::Camera => availability.camera,
+        RemoteCaptureKind::Microphone => availability.microphone,
+        RemoteCaptureKind::DocumentScanner => availability.scanner,
     }
 }
 
@@ -963,6 +1353,10 @@ mod tests {
             }
         ));
         assert!(source.source_sessions.is_empty());
+        assert_eq!(
+            source.view().degraded[0].reason,
+            RemoteCaptureDegradedReason::SourceUnavailable
+        );
     }
 
     #[test]
@@ -1014,5 +1408,42 @@ mod tests {
                 }
             )] if peer == &phone
         ));
+        assert_eq!(
+            target.view().degraded[0].reason,
+            RemoteCaptureDegradedReason::ReceiverUnavailable
+        );
+    }
+
+    #[test]
+    fn standard_profiles_fit_the_bounded_transport_and_views_hide_backend_ids() {
+        for kind in [
+            RemoteCaptureKind::Camera,
+            RemoteCaptureKind::Microphone,
+            RemoteCaptureKind::DocumentScanner,
+        ] {
+            assert!(standard_profile(kind).valid());
+        }
+        let phone = DeviceId::new("phone").unwrap();
+        let laptop = DeviceId::new("laptop").unwrap();
+        let mut runtime = runtime();
+        runtime
+            .request_standard(
+                app(),
+                phone.clone(),
+                laptop,
+                "Camera".into(),
+                RemoteCaptureKind::Camera,
+            )
+            .unwrap();
+        let view = runtime.view();
+        assert_eq!(view.sessions.len(), 1);
+        assert_eq!(view.sessions[0].peer, phone);
+        assert_eq!(view.sessions[0].session_id, None);
+        assert_eq!(
+            view.sessions[0].phase,
+            RemoteCaptureSessionPhase::Requesting
+        );
+        assert!(view.local_sources.camera);
+        assert!(view.local_receivers.camera);
     }
 }
