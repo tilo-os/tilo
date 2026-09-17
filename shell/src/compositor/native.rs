@@ -5168,12 +5168,9 @@ pub fn run() -> ! {
             .as_mut()
             .is_some_and(|continuation| continuation.pump(frame_builder.host().onboarding_active()))
             && let Err(error) =
-                crate::shell::host_apps::queue_launch(crate::shell::host_apps::QueuedLaunch {
-                    desktop_id: "qos-import-folders.desktop".into(),
-                    display_name: "Add folders to qOS".into(),
-                    placement: crate::shell::tab_binding::Placement::NewGroup,
-                    portal_workspace_id: None,
-                })
+                crate::shell::host_apps::queue_launch(
+                    crate::shell::desktop_continuation::launch_request(),
+                )
         {
             tracing::warn!(%error, "Could not queue Desktop folder continuation; reopen Add folders to qOS");
         }
