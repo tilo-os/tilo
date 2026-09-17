@@ -24,6 +24,7 @@ build() {
   cd "qos-$pkgver"
   export CARGO_HOME="$srcdir/cargo-home"
   cargo build --release --locked -p launcher -p qos-unlock-helper
+  cargo build --release --locked -p imager --bin imager
   export QOS_UNLOCK_HELPER_PATH=/usr/lib/qos/qos-unlock-helper
   cargo build --release --locked -p shell --bin shell --no-default-features
   ./dist/stage-payload.sh target/release "$srcdir/payload"
@@ -38,7 +39,8 @@ package_qos-session() {
   )
   optdepends=('vulkan-driver: hardware-appropriate Vulkan ICD' 'greetd: display manager')
   cd "$srcdir/payload"
-  install -Dm755 bin/qos-shell bin/qos-launcher -t "$pkgdir/usr/bin"
+  install -Dm755 bin/qos-shell bin/qos-launcher bin/qos-import-folders -t "$pkgdir/usr/bin"
+  install -Dm644 applications/qos-import-folders.desktop "$pkgdir/usr/share/applications/qos-import-folders.desktop"
   install -Dm755 libexec/qos-unlock-helper libexec/qos-session -t "$pkgdir/usr/lib/qos"
   install -Dm644 pam/qos-unlock "$pkgdir/etc/pam.d/qos-unlock"
   install -Dm644 wayland-sessions/qos.desktop -t "$pkgdir/usr/share/wayland-sessions"

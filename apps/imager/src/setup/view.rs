@@ -272,6 +272,18 @@ impl SetupApp {
         }
     }
 
+    fn start_desktop_install(&mut self) {
+        match super::desktop_continuation::persist_review(self.controller.borrow().folders())
+            .and_then(|()| self.desktop_flow.start_install())
+        {
+            Ok(()) => self.status = "Rechecking this host before download…".into(),
+            Err(error) => {
+                self.status = error;
+                self.status_is_error = true;
+            }
+        }
+    }
+
     fn apply_command(&mut self, command: SetupCommand) {
         self.status_is_error = false;
         match command {
@@ -352,13 +364,7 @@ impl SetupApp {
                 self.controller.borrow_mut().back();
                 self.status = "Your choices are retained while you make changes.".into();
             }
-            SetupCommand::InstallDesktop => match self.desktop_flow.start_install() {
-                Ok(()) => self.status = "Rechecking this host before download…".into(),
-                Err(error) => {
-                    self.status = error;
-                    self.status_is_error = true;
-                }
-            },
+            SetupCommand::InstallDesktop => self.start_desktop_install(),
             SetupCommand::CancelDesktopDownload => {
                 if self.desktop_flow.cancel_download() {
                     self.status = "Cancelling the package download…".into();

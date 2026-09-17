@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the three native executables shipped by every host-session package.
+# Build the native executables shipped by every host-session package.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -12,6 +12,7 @@ fi
 
 cd "$repo_root"
 cargo build "${cargo_args[@]}" -p launcher -p qos-unlock-helper
+cargo build "${cargo_args[@]}" -p imager --bin imager
 # The host package deliberately excludes the test-control socket and ffmpeg.
 # This avoids a distro-specific libavcodec ABI in a login-session binary.
 # Package only the production compositor. Building the package without an

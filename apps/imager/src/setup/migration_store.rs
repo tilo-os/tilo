@@ -39,13 +39,13 @@ fn report_identity() -> String {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "platform", content = "units", deny_unknown_fields)]
-enum NativePath {
+pub(super) enum NativePath {
     Unix(Vec<u8>),
     Windows(Vec<u16>),
 }
 
 impl NativePath {
-    fn encode(path: &Path) -> Self {
+    pub(super) fn encode(path: &Path) -> Self {
         #[cfg(unix)]
         {
             use std::os::unix::ffi::OsStrExt;
@@ -58,7 +58,7 @@ impl NativePath {
         }
     }
 
-    fn decode(&self) -> Result<PathBuf, String> {
+    pub(super) fn decode(&self) -> Result<PathBuf, String> {
         let units = match self {
             Self::Unix(units) => units.len(),
             Self::Windows(units) => units.len(),
@@ -234,6 +234,10 @@ impl OperationRecord {
         self.failure = Some(format!(
             "The result could not be saved locally: {error}. Reopen and revalidate before continuing."
         ));
+    }
+
+    pub(super) fn id(&self) -> &str {
+        &self.id
     }
 
     pub(super) fn source(&self) -> Result<PathBuf, String> {
@@ -495,6 +499,70 @@ impl MigrationStore {
             return Err("migration ownership lock changed; stop and reopen folder imports".into());
         }
         Ok(())
+    }
+
+    /// Continuation shares the index's pinned root and exclusive ownership.
+    pub(super) fn load_continuation_bytes(&self) -> Result<Option<Vec<u8>>, String> {
+        self.validate_ownership()?;
+        self.root
+            .validate_destination()
+            .map_err(|e| e.to_string())?;
+        let name = Path::new("desktop-continuation.json");
+        let expected = match metadata_nofollow(&self.root.file, name) {
+            Ok(m) => m,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        };
+        if !expected.is_file() || expected.is_symlink() || expected.len() > 256 * 1024 {
+            return Err("continuation is not a bounded regular file".into());
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No).nonblock(true);
+        let mut file =
+            cap_primitives::fs::open(&self.root.file, name, &options).map_err(|e| e.to_string())?;
+        destination_security::check_private_file(&file).map_err(|e| e.to_string())?;
+        if !same_directory_identity(
+            &expected,
+            &Metadata::from_file(&file).map_err(|e| e.to_string())?,
+        ) {
+            return Err("continuation changed while opening".into());
+        }
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(256 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > 256 * 1024 {
+            return Err("continuation exceeds bounds".into());
+        }
+        Ok(Some(bytes))
+    }
+
+    pub(super) fn save_continuation_bytes(&self, bytes: &[u8]) -> Result<(), String> {
+        if bytes.len() > 256 * 1024 {
+            return Err("continuation exceeds bounds".into());
+        }
+        self.validate_ownership()?;
+        self.root
+            .validate_destination()
+            .map_err(|e| e.to_string())?;
+        let name = OsStr::new("desktop-continuation.json");
+        let mut temporary = OwnedTemporary::create(&self.root, name).map_err(|e| e.to_string())?;
+        temporary.file.write_all(bytes).map_err(|e| e.to_string())?;
+        migration_durability::sync_file(&temporary.file).map_err(|e| e.to_string())?;
+        temporary.validate().map_err(|e| e.to_string())?;
+        self.validate_ownership()?;
+        self.root
+            .validate_destination()
+            .map_err(|e| e.to_string())?;
+        cap_primitives::fs::rename(
+            &self.root.file,
+            Path::new(&temporary.name),
+            &self.root.file,
+            Path::new(name),
+        )
+        .map_err(|e| e.to_string())?;
+        migration_durability::sync_directory(&self.root.file).map_err(|e| e.to_string())
     }
 
     pub(super) fn load(&self) -> Result<Vec<OperationRecord>, String> {
@@ -802,7 +870,7 @@ impl StoreWriter {
     }
 }
 
-fn ensure_private_root(path: &Path) -> io::Result<Arc<PinnedDirectory>> {
+pub(super) fn ensure_private_root(path: &Path) -> io::Result<Arc<PinnedDirectory>> {
     if !path.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

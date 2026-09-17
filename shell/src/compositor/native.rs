@@ -3756,6 +3756,36 @@ pub fn run() -> ! {
     // Publish to the app launcher: every app is pointed at this socket
     // explicitly (`qos-launcher --wayland-socket`), never at the compositor's own env.
     crate::shell::launcher::set_wayland_socket(&socket_name);
+    let mut desktop_continuation = if crate::compositor::parse_install_mode_from_args()
+        == crate::compositor::InstallMode::HostDesktop
+    {
+        // Readiness has no identity/key authority. The live trusted onboarding
+        // state below gates both its response and the ordinary host-app launch.
+        let runtime = crate::shell::launcher::runtime_dir();
+        // SAFETY: getuid has no arguments or memory contract.
+        let uid = unsafe { libc::getuid() };
+        let pending = dirs::data_local_dir().is_some_and(|data| {
+            crate::shell::desktop_continuation::pending_review(
+                &data.join("qos-imager/migrations/desktop-continuation.json"),
+                uid,
+            )
+        });
+        match crate::shell::desktop_continuation::SessionContinuation::bind(
+            &runtime,
+            &socket_name,
+            uid,
+            pending,
+        ) {
+            Ok(service) => Some(service),
+            Err(error) => {
+                tracing::warn!(%error, "Desktop folder continuation readiness unavailable");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let _windows_compat = match crate::shell::windows_compat::spawn(
         frame_builder.chrome_handle().borrow().tree_handle(),
     ) {
@@ -5134,6 +5164,19 @@ pub fn run() -> ! {
         };
         let mut apps_changed =
             frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
+        if desktop_continuation
+            .as_mut()
+            .is_some_and(|continuation| continuation.pump(frame_builder.host().onboarding_active()))
+            && let Err(error) =
+                crate::shell::host_apps::queue_launch(crate::shell::host_apps::QueuedLaunch {
+                    desktop_id: "qos-import-folders.desktop".into(),
+                    display_name: "Add folders to qOS".into(),
+                    placement: crate::shell::tab_binding::Placement::NewGroup,
+                    portal_workspace_id: None,
+                })
+        {
+            tracing::warn!(%error, "Could not queue Desktop folder continuation; reopen Add folders to qOS");
+        }
         if take_deferred_peer_sync_activation(
             &mut deferred_peer_sync,
             frame_builder.host().onboarding_active(),

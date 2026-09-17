@@ -33,6 +33,7 @@ say() { printf '\n== %s\n' "$*"; }
 if (( run_cargo )); then
     say "cargo build --release (launcher, unlock helper)"
     ( cd "$repo_root" && cargo build --release --locked -p launcher -p qos-unlock-helper )
+    ( cd "$repo_root" && cargo build --release --locked -p imager --bin imager )
     say "cargo build --release (compositor, no default features)"
     # `shell` also owns developer tools such as `shots` and `qos-control`.
     # Building the package without an explicit target compiles and LTO-links
@@ -41,7 +42,7 @@ if (( run_cargo )); then
 fi
 
 rel=${QOS_BIN_DIR:-$repo_root/target/release}
-for bin in shell qos-launcher qos-unlock-helper; do
+for bin in shell qos-launcher qos-unlock-helper imager; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
 done
 

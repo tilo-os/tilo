@@ -42,9 +42,11 @@ rustPlatform.buildRustPackage rec {
     "-p" "launcher"
     "-p" "qos-unlock-helper"
     "-p" "shell"
+    "-p" "imager"
     "--bin" "qos-launcher"
     "--bin" "qos-unlock-helper"
     "--bin" "shell"
+    "--bin" "imager"
     "--no-default-features"
   ];
   cargoTestFlags = cargoBuildFlags;
@@ -69,6 +71,7 @@ rustPlatform.buildRustPackage rec {
   # The FHS packages use /usr/libexec. Nix must seal the immutable store path
   # into the compositor or locking the session could never invoke PAM.
   preBuild = ''
+    export QOS_DESKTOP_TRUSTED_SHELL_PATH="$out/bin/.qos-shell-wrapped"
     export QOS_UNLOCK_HELPER_PATH="$out/libexec/qos-unlock-helper"
   '';
 
@@ -78,6 +81,9 @@ rustPlatform.buildRustPackage rec {
     test -n "$shell_bin"
     "$src/dist/stage-payload.sh" "$(dirname "$shell_bin")" "$TMPDIR/qos-payload"
     p="$TMPDIR/qos-payload"
+    install -Dm755 "$p/bin/qos-import-folders" "$out/bin/qos-import-folders"
+    install -Dm644 "$p/applications/qos-import-folders.desktop" "$out/share/applications/qos-import-folders.desktop"
+    substituteInPlace "$out/share/applications/qos-import-folders.desktop" --replace-fail "/usr/bin/qos-import-folders" "$out/bin/qos-import-folders"
     install -Dm755 "$p/bin/qos-shell" "$out/bin/qos-shell"
     install -Dm755 "$p/bin/qos-launcher" "$out/bin/qos-launcher"
     install -Dm755 "$p/libexec/qos-unlock-helper" "$out/libexec/qos-unlock-helper"

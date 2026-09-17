@@ -7,6 +7,11 @@ work=$(mktemp -d)
 cleanup() { rm -rf -- "$work"; }
 trap cleanup EXIT
 true_bin=$(type -P true)
+case $(uname -m) in
+    x86_64) fixture_arch=amd64; payload_arch=x86_64 ;;
+    aarch64) fixture_arch=arm64; payload_arch=aarch64 ;;
+    *) echo "unsupported native fixture architecture" >&2; exit 2 ;;
+esac
 
 # Minimal distro images need not install Git merely to make the reusable OS
 # payload reproducible. The outer runner resolves both source values and passes
@@ -23,6 +28,15 @@ fi
 "$repo_root/dist/session/tests/private-dbus-handoff.sh"
 "$repo_root/dist/session/tests/private-user-manager-handoff.sh"
 "$repo_root/dist/rpm/test-signing-contract.sh"
+
+# A production import entry must name an installed native executable. This
+# fails before the import payload is added, and must remain in every builder.
+for builder in dist/build-binaries.sh dist/rpm/build-rpm.sh dist/arch/PKGBUILD; do
+    grep -Eq 'cargo build .*-p imager.*--bin imager' "$repo_root/$builder" || {
+        echo "$builder does not build the delivered folder import UI" >&2
+        exit 1
+    }
+done
 
 # Host packages ship only the compositor from the shell crate. Keep every FHS
 # builder explicit so adding another developer binary to that crate cannot
@@ -47,11 +61,12 @@ if grep -Fq -- "-name 'qos-session*.rpm'" "$overlay_helper"; then
 fi
 
 fhs=$work/fhs
-mkdir -p "$fhs"/{usr/bin,usr/libexec,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/xdg-desktop-portal/portals,usr/share/licenses/qos-session}
-for target in "$fhs/usr/bin/qos-shell" "$fhs/usr/bin/qos-launcher" \
+mkdir -p "$fhs"/{usr/bin,usr/libexec,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/licenses/qos-session}
+for target in "$fhs/usr/bin/qos-shell" "$fhs/usr/bin/qos-launcher" "$fhs/usr/bin/qos-import-folders" \
               "$fhs/usr/libexec/qos-unlock-helper"; do
     install -m755 "$true_bin" "$target"
 done
+install -m644 "$repo_root/dist/session/qos-import-folders.desktop" "$fhs/usr/share/applications/qos-import-folders.desktop"
 install -m755 "$repo_root/dist/session/qos-session" "$fhs/usr/libexec/qos-session"
 install -m755 "$repo_root/dist/session/qos-session-dev" "$fhs/usr/libexec/qos-session-dev"
 install -m644 "$repo_root/dist/session/qos.desktop" "$fhs/usr/share/wayland-sessions/qos.desktop"
@@ -64,8 +79,29 @@ install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/nirios-portals.conf" \
 install -m644 "$repo_root/os/usr/lib/systemd/user/qos-graphical-session.target" \
     "$fhs/usr/lib/systemd/user/qos-graphical-session.target"
 install -m644 "$repo_root/LICENSE" "$fhs/usr/share/licenses/qos-session/LICENSE"
-QOS_EXPECT_ARCH=amd64 "$repo_root/dist/verify-payload.sh" "$fhs"
+QOS_EXPECT_ARCH="$fixture_arch" "$repo_root/dist/verify-payload.sh" "$fhs"
 "$repo_root/dist/verify-devel-payload.sh" "$fhs"
+# A tool failure cannot masquerade as a complete runtime dependency closure.
+mkdir "$work/fake-tools"
+printf '#!/bin/sh\nexit 42\n' > "$work/fake-tools/ldd"
+chmod 755 "$work/fake-tools/ldd"
+if PATH="$work/fake-tools:$PATH" QOS_EXPECT_ARCH="$fixture_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+    echo "payload verifier accepted a failed ldd invocation" >&2; exit 1
+fi
+printf '#!/bin/sh\necho "libmissing.so => not found"\n' > "$work/fake-tools/ldd"
+if PATH="$work/fake-tools:$PATH" QOS_EXPECT_ARCH="$fixture_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+    echo "payload verifier accepted a missing shared library" >&2; exit 1
+fi
+mv "$fhs/usr/bin/qos-import-folders" "$work/import-held"
+if QOS_EXPECT_ARCH="$fixture_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+    echo "payload verifier accepted missing import executable" >&2; exit 1
+fi
+mv "$work/import-held" "$fhs/usr/bin/qos-import-folders"
+sed -i 's#^Exec=.*#Exec=/missing --import-folders#' "$fhs/usr/share/applications/qos-import-folders.desktop"
+if QOS_EXPECT_ARCH="$fixture_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+    echo "payload verifier accepted wrong import entry" >&2; exit 1
+fi
+install -m644 "$repo_root/dist/session/qos-import-folders.desktop" "$fhs/usr/share/applications/qos-import-folders.desktop"
 
 sed -i 's#^TryExec=.*#TryExec=/wrong#' "$fhs/usr/share/wayland-sessions/qos-dev.desktop"
 if "$repo_root/dist/verify-devel-payload.sh" "$fhs" >/dev/null 2>&1; then
@@ -74,11 +110,12 @@ if "$repo_root/dist/verify-devel-payload.sh" "$fhs" >/dev/null 2>&1; then
 fi
 
 nix=$work/nix-result
-mkdir -p "$nix"/{bin,libexec,etc/pam.d,share/systemd/user,share/wayland-sessions,share/xdg-desktop-portal/portals,share/licenses/qos-session}
-for target in "$nix/bin/qos-shell" "$nix/bin/qos-launcher" \
+mkdir -p "$nix"/{bin,libexec,etc/pam.d,share/systemd/user,share/wayland-sessions,share/applications,share/xdg-desktop-portal/portals,share/licenses/qos-session}
+for target in "$nix/bin/qos-shell" "$nix/bin/qos-launcher" "$nix/bin/qos-import-folders" \
               "$nix/libexec/qos-unlock-helper"; do
     install -m755 "$true_bin" "$target"
 done
+sed "s#/usr/bin/qos-import-folders#$nix/bin/qos-import-folders#g" "$repo_root/dist/session/qos-import-folders.desktop" > "$nix/share/applications/qos-import-folders.desktop"
 install -m755 "$repo_root/dist/session/qos-session" "$nix/libexec/qos-session"
 install -m644 "$repo_root/dist/session/qos.desktop" "$nix/share/wayland-sessions/qos.desktop"
 install -m644 "$repo_root/os/etc/pam.d/qos-unlock" "$nix/etc/pam.d/qos-unlock"
@@ -99,7 +136,7 @@ sed -i \
     -e "s#Exec=/usr/libexec/qos-session#Exec=$nix/libexec/qos-session#" \
     -e "s#TryExec=/usr/bin/qos-shell#TryExec=$nix/bin/qos-shell#" \
     "$nix/share/wayland-sessions/qos.desktop"
-"$repo_root/dist/ci/verify-nix-result.sh" "$nix" amd64
+"$repo_root/dist/ci/verify-nix-result.sh" "$nix" "$fixture_arch"
 
 # The OS hand-off is deterministic and contains only the three native binaries
 # already install-tested by the distro package lane.
@@ -110,14 +147,14 @@ for binary in shell qos-launcher qos-unlock-helper; do
 done
 SOURCE_DATE_EPOCH=123 GITHUB_SHA="$(printf 'a%.0s' {1..40})" \
     "$repo_root/dist/desktop/package-os-payload.sh" \
-    "$payload_bin" x86_64 "$work/payload-a"
+    "$payload_bin" "$payload_arch" "$work/payload-a"
 SOURCE_DATE_EPOCH=123 GITHUB_SHA="$(printf 'a%.0s' {1..40})" \
     "$repo_root/dist/desktop/package-os-payload.sh" \
-    "$payload_bin" x86_64 "$work/payload-b"
-cmp "$work/payload-a/qos-desktop-os-x86_64.tar.gz" \
-    "$work/payload-b/qos-desktop-os-x86_64.tar.gz"
+    "$payload_bin" "$payload_arch" "$work/payload-b"
+cmp "$work/payload-a/qos-desktop-os-$payload_arch.tar.gz" \
+    "$work/payload-b/qos-desktop-os-$payload_arch.tar.gz"
 mkdir "$work/payload-unpacked"
-tar -xzf "$work/payload-a/qos-desktop-os-x86_64.tar.gz" \
+tar -xzf "$work/payload-a/qos-desktop-os-$payload_arch.tar.gz" \
     -C "$work/payload-unpacked"
 (cd "$work/payload-unpacked" && sha256sum --check --strict SHA256SUMS)
 

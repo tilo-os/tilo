@@ -7,10 +7,10 @@ result=$(realpath "$1")
 arch=$2
 case "$arch" in amd64|arm64) ;; *) exit 2 ;; esac
 
-for file in bin/qos-shell bin/qos-launcher libexec/qos-unlock-helper libexec/qos-session; do
+for file in bin/qos-shell bin/qos-launcher bin/qos-import-folders libexec/qos-unlock-helper libexec/qos-session; do
     [[ -x $result/$file ]] || { echo "missing executable: $file" >&2; exit 1; }
 done
-for file in etc/pam.d/qos-unlock share/wayland-sessions/qos.desktop \
+for file in share/applications/qos-import-folders.desktop etc/pam.d/qos-unlock share/wayland-sessions/qos.desktop \
             share/xdg-desktop-portal/portals/qos.portal \
             share/xdg-desktop-portal/nirios-portals.conf \
             share/systemd/user/qos-graphical-session.target \
@@ -41,7 +41,10 @@ if ! command -v ldd >/dev/null 2>&1; then
     # invocation must fail verification instead of looking like clean output.
     ldd_command=(nix shell nixpkgs#glibc.bin --command ldd)
 fi
-for installed in bin/qos-shell bin/qos-launcher libexec/qos-unlock-helper; do
+grep -Fxq "Exec=$result/bin/qos-import-folders --import-folders" "$result/share/applications/qos-import-folders.desktop"
+grep -Fxq "TryExec=$result/bin/qos-import-folders" "$result/share/applications/qos-import-folders.desktop"
+"$result/bin/qos-import-folders" --qos-package-smoke
+for installed in bin/qos-shell bin/qos-launcher bin/qos-import-folders libexec/qos-unlock-helper; do
     directory=$(dirname "$installed")
     basename=$(basename "$installed")
     elf=$result/$installed
