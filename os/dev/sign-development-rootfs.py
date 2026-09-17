@@ -34,6 +34,11 @@ signing = module('development_signer', 'development-signer.py')
 trust = source.trust
 ARCHITECTURES = source.ARCHITECTURES
 LOADER_NAMES = {'x86_64': 'systemd-bootx64.efi', 'aarch64': 'systemd-bootaa64.efi'}
+LOCAL_STORAGE_ENVIRONMENT = (
+    'HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_RUNTIME_DIR',
+    'CONTAINERS_STORAGE_CONF', 'CONTAINERS_CONF', 'CONTAINERS_CONF_OVERRIDE',
+    'STORAGE_DRIVER', 'STORAGE_OPTS', 'TMPDIR',
+)
 
 
 def inputs(args):
@@ -63,10 +68,16 @@ def inputs(args):
 
 
 def command(arguments):
+    environment = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'HOME': '/root'}
     if arguments[0] == 'podman':
         arguments = ['/usr/bin/podman', '--remote=false', *arguments[1:]]
+        # The shell's raw/final builds and this helper must address the same
+        # local store, including explicitly configured VFS stores in CI. Never
+        # forward these settings (or unrelated caller secrets) to the signer.
+        environment.update({name: os.environ[name] for name in LOCAL_STORAGE_ENVIRONMENT
+                            if name in os.environ})
     result = subprocess.run(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'HOME': '/root'})
+                            env=environment)
     if result.returncode:
         raise ValueError(f'{Path(arguments[0]).name} failed (exit {result.returncode})')
     return result.stdout.decode()

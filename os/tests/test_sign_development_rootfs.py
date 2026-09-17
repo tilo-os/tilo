@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -19,6 +20,26 @@ REVISION = 'b' * 40
 
 
 class RootfsIdentityTests(unittest.TestCase):
+    def test_podman_preserves_explicit_local_storage_without_caller_secrets(self):
+        settings = {name: '/fixture/' + name.lower() for name in producer.LOCAL_STORAGE_ENVIRONMENT}
+        settings.update({'PATH': '/untrusted/bin', 'UNRELATED_SECRET': 'not-for-child',
+                         'CONTAINER_HOST': 'ssh://remote', 'REGISTRY_AUTH_FILE': '/private/auth'})
+        with patch.dict(os.environ, settings, clear=True), patch.object(
+                producer.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, b'checked', b'')) as run:
+            self.assertEqual(producer.command(['podman', 'image', 'inspect', IMAGE]), 'checked')
+        self.assertEqual(run.call_args.args[0], ['/usr/bin/podman', '--remote=false', 'image', 'inspect', IMAGE])
+        environment = run.call_args.kwargs['env']
+        self.assertEqual(environment, {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
+                                      **{name: settings[name] for name in producer.LOCAL_STORAGE_ENVIRONMENT}})
+
+    def test_signer_receives_clean_environment_without_storage_configuration(self):
+        with patch.dict(os.environ, {'HOME': '/fixture/home', 'CONTAINERS_STORAGE_CONF': '/fixture/storage.conf',
+                                     'UNRELATED_SECRET': 'not-for-signer'}, clear=True), patch.object(
+                producer.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, b'', b'')) as run:
+            producer.command(['/var/lib/identity/signer', 'sign-efi', '/input', '/output'])
+        self.assertEqual(run.call_args.kwargs['env'],
+                         {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'HOME': '/root'})
+
     def image(self):
         return {'Id': IMAGE, 'Os': 'linux', 'Architecture': 'arm64',
                 'Labels': {'org.opencontainers.image.revision': REVISION}}
