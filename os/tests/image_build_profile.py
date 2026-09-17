@@ -30,6 +30,7 @@ class ImageBuildProfileTests(unittest.TestCase):
         # line endings only. All profile/ref decisions remain production code.
         self.write("os/dev/build-image.sh", (REPO / "os/dev/build-image.sh").read_text())
         self.write("os/dev/hardware_profile.py", (REPO / "os/dev/hardware_profile.py").read_text())
+        self.write("os/dev/windows_provider.py", (REPO / "os/dev/windows_provider.py").read_text())
         self.write("os/hardware/profiles/lenovo-83ed.json", (REPO / "os/hardware/profiles/lenovo-83ed.json").read_text())
         self.write("os/dev/_common.sh", """\
 set -euo pipefail
@@ -80,6 +81,8 @@ exit {BUILD_INTERCEPTED}
             "SOURCE_DATE_EPOCH": "1700000000",
             "QOS_GENERATION": "42",
             "QOS_WITH_BROWSER": "0",
+            "FEX_PAYLOAD_REF": "registry.invalid/qos/fex@sha256:" + "3" * 64,
+            "WINDOWS_GUEST_REF": "registry.invalid/qos/guest@sha256:" + "4" * 64,
             # Syntactically valid test-only owner key; nothing is signed or built.
             "QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY": "a" * 64,
         }
@@ -127,6 +130,15 @@ exit {BUILD_INTERCEPTED}
         self.assertEqual(arguments["SOURCE_DATE_EPOCH"], "1700000000")
         self.assertEqual(arguments["QOS_GENERATION"], "42")
         self.assertEqual(arguments["QOS_WITH_BROWSER"], "0")
+        self.assertEqual(arguments["FEX_PAYLOAD_REF"], self.env["FEX_PAYLOAD_REF"])
+        self.assertEqual(arguments["WINDOWS_GUEST_REF"], self.env["WINDOWS_GUEST_REF"])
+
+    def test_arm_provider_requires_both_immutable_inputs_before_build(self):
+        for key in ("FEX_PAYLOAD_REF", "WINDOWS_GUEST_REF"):
+            for value in ("", "registry.invalid/qos/provider:mutable"):
+                with self.subTest(key=key, value=value):
+                    self.assert_rejected_before_build(
+                        self.run_builder(**{key: value}), "Windows provider inputs are incomplete")
 
     def test_explicit_unpublished_refs_survive_loading_the_snapshot_pins(self):
         kernel = "localhost/qos-kernel:lenovo-83ed-fixture"
