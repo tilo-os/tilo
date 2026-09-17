@@ -3451,6 +3451,13 @@ impl FileExplorerWidget {
         self.open_view_menu();
     }
 
+    /// Open the real properties action for the current selection so visual
+    /// audits cover the metadata surface as well as navigation and menus.
+    #[doc(hidden)]
+    pub fn debug_open_properties(&mut self) {
+        self.apply_command(FileCommand::ShowProperties);
+    }
+
     /// Begin an active favourite drag from `from` toward `to`, for a mid-drag
     /// screenshot. Requires the sidebar to have been laid out first (so the
     /// favourites band geometry is published).

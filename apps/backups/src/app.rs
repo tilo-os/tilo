@@ -879,11 +879,12 @@ impl BackupsApp {
         );
         if !self.is_empty() {
             let rect = if narrow {
+                let target = 44.0 * scale;
                 Rect::new(
-                    bar.x1 - PAD - 34.0 * scale,
-                    cy - 17.0 * scale,
+                    bar.x1 - PAD - target,
+                    cy - target / 2.0,
                     bar.x1 - PAD,
-                    cy + 17.0 * scale,
+                    cy + target / 2.0,
                 )
             } else {
                 Rect::new(
@@ -944,7 +945,8 @@ impl BackupsApp {
             && !self.is_empty()
             && !(self.drawer.is_docked() && self.drawer.is_open());
         if show_hamburger {
-            let hb = Rect::new(lx, cy - 17.0, lx + 34.0, cy + 17.0);
+            let target = if narrow { 44.0 } else { 34.0 } * f64::from(theme.text_scale);
+            let hb = Rect::new(lx, cy - target / 2.0, lx + target, cy + target / 2.0);
             let hov = hb.contains(self.last_mouse);
             self.drawer.draw_toggle(scene, t, theme, hb, hov);
             self.hits.push((hb, Hit::ToggleRail));
@@ -997,11 +999,16 @@ impl BackupsApp {
         let tab_w = ((band_x1 - band_x0) / n).clamp(40.0, TAB_W);
         let seg_total = tab_w * n;
         let seg_x0 = (band_x0 + ((band_x1 - band_x0) - seg_total) / 2.0).max(band_x0);
+        let tab_h = if self.rect.width() < NARROW_BREAKPOINT {
+            44.0
+        } else {
+            TAB_H
+        } * f64::from(theme.text_scale);
         let seg = Rect::new(
             seg_x0,
-            cy - TAB_H / 2.0,
+            cy - tab_h / 2.0,
             seg_x0 + seg_total,
-            cy + TAB_H / 2.0,
+            cy + tab_h / 2.0,
         );
         paint::fill_rrect(scene, t, seg, 9.0, c.surfaces.raised);
         paint::stroke_rrect(
@@ -4216,8 +4223,12 @@ impl BackupsApp {
         theme: &Theme,
         m: Rect,
     ) {
-        let by = m.y1 - 56.0;
-        let bh = 38.0;
+        let bh = if self.rect.width() < NARROW_BREAKPOINT {
+            44.0
+        } else {
+            38.0
+        };
+        let by = m.y1 - bh - 18.0;
         let confirm = Rect::new(m.x1 - 24.0 - 192.0, by, m.x1 - 24.0, by + bh);
         Button::paint(
             scene,
@@ -5285,6 +5296,7 @@ mod tests {
         f.draw();
 
         let backup = f.rect_of(|hit| matches!(hit, Hit::BackupNow));
+        assert!(backup.width() >= 44.0 && backup.height() >= 44.0);
         for (tab, _) in f
             .app
             .hits
@@ -5292,10 +5304,16 @@ mod tests {
             .filter(|(_, hit)| matches!(hit, Hit::Tab(_)))
         {
             assert!(
+                tab.width() >= 44.0 && tab.height() >= 44.0,
+                "phone navigation tab must remain touch-sized: {tab:?}"
+            );
+            assert!(
                 tab.x1 <= backup.x0 || tab.x0 >= backup.x1,
                 "tab {tab:?} overlaps the compact backup action {backup:?}"
             );
         }
+        let rail = f.rect_of(|hit| matches!(hit, Hit::ToggleRail));
+        assert!(rail.width() >= 44.0 && rail.height() >= 44.0);
     }
 
     #[test]

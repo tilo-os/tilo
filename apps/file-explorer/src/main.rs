@@ -123,7 +123,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // is built (so the sidebar / workspace roots pick it up), so seed here.
         let demo_dir = match scenario.as_deref() {
             Some("sync") => Some(seed_sync_demo()),
-            Some("thumbnails") => Some(seed_thumbnails_demo()),
+            Some("thumbnails" | "select" | "rename" | "pindrag" | "dropmove" | "properties") => {
+                Some(seed_thumbnails_demo())
+            }
             Some("thumbnails-fs") => Some(seed_thumbnails_fs_demo()),
             Some("history") => Some(seed_history_demo()),
             Some("archive" | "archive-menu") => Some(seed_archive_demo()),
@@ -163,6 +165,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 widget.debug_select(&[3]);
                 widget.begin_rename();
             }
+            // Properties needs a real selected file. The fixture is seeded
+            // above and the panel opens after the first layout has published
+            // its metadata, matching the production context-menu path.
+            Some("properties") => widget.debug_select(&[1]),
             // Summon the places drawer over the file view (the narrow
             // layout's hamburger action). Set BEFORE layout so `apply_layout`
             // places the revealed drawer — snapping post-layout would leave
@@ -812,6 +818,9 @@ fn apply_post_layout_scenario(
         }
         Some("history") => {
             widget.debug_open_history_demo();
+        }
+        Some("properties") => {
+            widget.debug_open_properties();
         }
         Some("archive-menu") => {
             widget.debug_open_view_menu();

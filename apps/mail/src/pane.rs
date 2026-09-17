@@ -296,11 +296,16 @@ impl Pane {
     fn refresh_box_rect(&self) -> Rect {
         let r = self.rect;
         let s = self.scale();
+        let target = if self.shared.borrow().narrow {
+            44.0
+        } else {
+            32.0
+        } * s;
         Rect::new(
-            r.x1 - (16.0 + 32.0) * s,
-            r.y0 + 12.0 * s,
+            r.x1 - 16.0 * s - target,
+            r.y0 + (self.header_h() - target) / 2.0,
             r.x1 - 16.0 * s,
-            r.y0 + (12.0 + 32.0) * s,
+            r.y0 + (self.header_h() + target) / 2.0,
         )
     }
 
@@ -418,14 +423,18 @@ impl Pane {
             let row_h = self.list_row_h();
             let row = Rect::new(r.x0, ly, r.x1, ly + row_h);
             let s = self.scale();
-            let star = Rect::new(
-                row.x1 - 36.0 * s,
-                row.y0 + 8.0 * s,
-                row.x1 - 12.0 * s,
-                row.y0 + 32.0 * s,
-            );
-            hits.push((star, Hit::RowStar(id)));
             hits.push((row, Hit::Row(id)));
+            let star_size = if st.narrow { 44.0 } else { 24.0 } * s;
+            let star = Rect::new(
+                row.x1 - 12.0 * s - star_size,
+                row.y0 + 4.0 * s,
+                row.x1 - 12.0 * s,
+                row.y0 + 4.0 * s + star_size,
+            );
+            // Push the sub-control after its containing row: reverse-order hit
+            // testing then gives the visible star its own action instead of
+            // opening the conversation underneath it.
+            hits.push((star, Hit::RowStar(id)));
             ly += row_h;
         }
     }
@@ -455,11 +464,11 @@ impl Pane {
         let compact = st.narrow || r.width() < READER_COMPACT_W;
         let specs: [(f64, Hit); 5] = if compact {
             [
-                (38.0, Hit::Reply),
-                (38.0, Hit::Archive),
-                (38.0, Hit::Delete),
-                (38.0, Hit::Star),
-                (38.0, Hit::Unread),
+                (44.0, Hit::Reply),
+                (44.0, Hit::Archive),
+                (44.0, Hit::Delete),
+                (44.0, Hit::Star),
+                (44.0, Hit::Unread),
             ]
         } else {
             [
@@ -471,7 +480,8 @@ impl Pane {
             ]
         };
         for (w, hit) in specs {
-            let b = Rect::new(bx, by, bx + w, by + 32.0);
+            let h = if compact { 44.0 } else { 32.0 };
+            let b = Rect::new(bx, by, bx + w, by + h);
             hits.push((b, hit));
             bx += w + 8.0;
         }
@@ -1308,13 +1318,14 @@ impl Pane {
                 }
             };
             if compact {
+                let icon_y = rect.center().y;
                 paint_icon(
                     scene,
                     Rect::new(
                         rect.center().x - 8.0,
-                        rect.y0 + 8.0,
+                        icon_y - 8.0,
                         rect.center().x + 8.0,
-                        rect.y0 + 24.0,
+                        icon_y + 8.0,
                     ),
                 );
             } else {
@@ -3041,6 +3052,44 @@ mod tests {
             !before,
             "Star button toggled the flag"
         );
+    }
+
+    #[test]
+    fn narrow_mail_controls_are_touch_sized_and_row_star_wins_hit_testing() {
+        let sh = shared();
+        sh.borrow_mut().narrow = true;
+        let id = sh.borrow().mailbox.messages_in(Folder::Inbox)[0].id;
+
+        let reader = reader_for(&sh, id, 390.0, 844.0);
+        let actions: Vec<Rect> = reader
+            .hits
+            .iter()
+            .filter_map(|(rect, hit)| {
+                matches!(
+                    hit,
+                    Hit::Reply | Hit::Archive | Hit::Delete | Hit::Star | Hit::Unread
+                )
+                .then_some(*rect)
+            })
+            .collect();
+        assert_eq!(actions.len(), 5);
+        assert!(
+            actions
+                .iter()
+                .all(|rect| rect.width() >= 44.0 && rect.height() >= 44.0)
+        );
+
+        let mut list = Pane::new(Role::List, sh);
+        list.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        list.rebuild_hits();
+        let star = list
+            .hits
+            .iter()
+            .find_map(|(rect, hit)| matches!(hit, Hit::RowStar(_)).then_some(*rect))
+            .expect("sample inbox exposes a row star");
+        assert!(star.width() >= 44.0 && star.height() >= 44.0);
+        assert!(matches!(list.hit_at(star.center()), Some(Hit::RowStar(_))));
+        assert!(list.refresh_box_rect().height() >= 44.0);
     }
 
     #[test]
