@@ -130,9 +130,15 @@ these boundaries:
    initramfs, UKI and composefs seal together; verify that their embedded public
    identity matches the development bundle. Adding a public key after sealing
    does not preserve the existing measurement.
-4. The development origin must explicitly name
-   `HOST[:PORT]/tilo-development/os:TAG` or an immutable SHA-256 digest.
-   Production aliases, credentials, URL schemes and other repository paths are
+4. The development origin must explicitly name the retained HTTPS repository
+   `code.sandbox.example/qos/tilo-development`, or an isolated
+   `HOST[:PORT]/tilo-development/os` repository, with a tag or immutable SHA-256
+   digest. Retained-repository tags identify the native architecture, for example
+   `development-x86_64` or `development-aarch64`; known build/profile/source
+   architectures must match that suffix. Digest references bind architecture
+   through native image verification. Alternate hosts or explicit ports cannot
+   alias the retained repository. The production `code.sandbox.example/qos/tilo`
+   repository, credentials, URL schemes and other repository paths are
    rejected. The image binds this origin to its pinned public manifest. Runtime
    origin resolution requires root-owned, non-writable metadata, matching public
    keys, exact signature policy and matching registry configuration. Environment
@@ -140,11 +146,13 @@ these boundaries:
    repositories and requires a matching-repository Sigstore signature for the
    selected one; the production policy remains unchanged.
 
-   Provision a dedicated registry reachable from the builder and future VM.
+   Keep the selected registry reachable from the builder, future VM and eventual
+   development installation. The retained development repository reuses the
+   existing HTTPS registry without sharing production signing keys or policy.
    HTTPS is required for every endpoint except literal `127.0.0.1`, which permits
    explicitly configured local HTTP staging. `localhost` is rejected to avoid
    ambiguous resolution. A loopback endpoint inside a VM refers to that VM, so
-   forwarding or a guest-local registry must be prepared separately. An isolated
+   it is suitable for disposable fixtures, not a persistent remote update origin. An isolated
    VM-network HTTPS endpoint can use a valid certificate trusted by the guest;
    custom CA provisioning is not implemented here. Signature attachment lookup
    is configured for the exact development repository. No registry is started,
