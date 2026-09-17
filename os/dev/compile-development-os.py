@@ -230,8 +230,15 @@ def main():
         'generation': args.generation, 'wpe_candidate': args.wpe, 'builder': BUILDER,
         'pins': pins, 'browser': True, 'prebuilt_apps': False, 'prebuilt_desktop': False})
     # Full source builds need real guest backing storage, not a small tmpfs.
-    free = shutil.disk_usage('/var/lib/containers').free
-    if not capacity_decision(free, starting=True):
+    backing = {path: dict(zip(('total', 'used', 'free'), shutil.disk_usage(path)))
+               for path in ('/work', '/var/lib/containers')}
+    free = min(value['free'] for value in backing.values())
+    admitted = capacity_decision(free, starting=True)
+    write_receipt('admission-capacity.json', {'sample_unix': time.time(),
+        'backing_filesystems_bytes': backing, 'required_free_bytes': INITIAL_FREE,
+        'minimum_free_bytes': free, 'admitted': admitted,
+        'capacity_sufficiency_proven': False})
+    if not admitted:
         raise ValueError('capacity experiment requires 80 GiB free after tooling setup')
     write_receipt('memory-initial.json', memory_budget())
     info = json.loads(run('podman', '--remote=false', 'info', '--format', 'json'))
