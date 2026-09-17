@@ -14,7 +14,7 @@
 //! fetch instead.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -1077,14 +1077,41 @@ struct RealtimeBinding {
     authorization: Option<crate::shell::realtime_session::CaptureAuthorizationId>,
     target_peer: Option<u64>,
     capture_leases: Vec<crate::portal::capture_broker::CaptureLeaseGrant>,
+    imported: bool,
 }
 
-#[derive(Default)]
+struct RealtimeSubscriber {
+    app: crate::shell::realtime_session::VerifiedAppRegistration,
+    tx: mpsc::UnboundedSender<Vec<u8>>,
+}
+
 struct RealtimeBridge {
-    broker: crate::shell::realtime_session::RealtimeSessionBroker,
+    broker: Arc<Mutex<crate::shell::realtime_session::RealtimeSessionBroker>>,
+    fabric: Arc<crate::shell::realtime_session::BrokerRealtimeFabricAdapter>,
     capture: Arc<Mutex<crate::portal::CaptureBroker>>,
     sessions: HashMap<String, RealtimeBinding>,
-    subscribers: HashMap<u64, mpsc::UnboundedSender<Vec<u8>>>,
+    subscribers: HashMap<u64, RealtimeSubscriber>,
+    pending_imported_offers: VecDeque<crate::shell::realtime_session::ImportedRealtimeFabricOffer>,
+}
+
+impl Default for RealtimeBridge {
+    fn default() -> Self {
+        let broker = Arc::new(Mutex::new(
+            crate::shell::realtime_session::RealtimeSessionBroker::new(),
+        ));
+        Self {
+            fabric: Arc::new(
+                crate::shell::realtime_session::BrokerRealtimeFabricAdapter::new(Arc::clone(
+                    &broker,
+                )),
+            ),
+            broker,
+            capture: Arc::default(),
+            sessions: HashMap::new(),
+            subscribers: HashMap::new(),
+            pending_imported_offers: VecDeque::new(),
+        }
+    }
 }
 
 impl RealtimeBridge {
@@ -1107,7 +1134,7 @@ impl RealtimeBridge {
             || self
                 .subscribers
                 .get(&peer)
-                .is_some_and(|subscriber| subscriber.send(bytes).is_err())
+                .is_some_and(|subscriber| subscriber.tx.send(bytes).is_err())
         {
             self.subscribers.remove(&peer);
         }
@@ -1117,7 +1144,7 @@ impl RealtimeBridge {
         &self,
         id: crate::shell::realtime_session::RealtimeSessionId,
     ) -> Option<Vec<crate::portal::CaptureKind>> {
-        let media = self.broker.session(id)?.intent.media;
+        let media = self.broker.lock().ok()?.session(id)?.intent.media;
         let mut kinds = Vec::with_capacity(4);
         if media.microphone() {
             kinds.push(crate::portal::CaptureKind::Microphone);
@@ -1133,6 +1160,14 @@ impl RealtimeBridge {
         }
         Some(kinds)
     }
+}
+
+fn realtime_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 fn acquire_realtime_capture_leases(
@@ -1250,7 +1285,183 @@ pub struct CapnpBrokerState {
     workspace_control_network: Mutex<Option<std::sync::Weak<crate::shell::network::ShellNetwork>>>,
 }
 
+/// Cloneable production seam between the certified device fabric and the
+/// app-facing realtime broker. The compositor owns one clone for pumping;
+/// broker state owns the concrete adapter and all application routing.
+#[derive(Clone)]
+pub struct RealtimeFabricAppBridge {
+    state: Arc<CapnpBrokerState>,
+}
+
+impl RealtimeFabricAppBridge {
+    pub(crate) fn from_state(state: Arc<CapnpBrokerState>) -> Self {
+        Self { state }
+    }
+
+    #[must_use]
+    pub fn adapter(&self) -> Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter> {
+        self.state.realtime.lock().ok().map(|realtime| {
+            let adapter: crate::shell::realtime_session::SharedRealtimeFabricAdapter =
+                realtime.fabric.clone();
+            adapter
+        })
+    }
+
+    /// Project newly authenticated fabric edges into exact certified local
+    /// application subscriptions. Called from the compositor pump after the
+    /// device-fabric runtime has drained inbound transport actions.
+    pub fn pump_app_events(&self) {
+        self.state.pump_realtime_fabric_app_events();
+    }
+}
+
 impl CapnpBrokerState {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "offer admission, exact app routing, and lifecycle projection share one bounded broker lock so tokens cannot race subscriber delivery"
+    )]
+    fn pump_realtime_fabric_app_events(&self) {
+        let fabric = match self.realtime.lock() {
+            Ok(realtime) => Arc::clone(&realtime.fabric),
+            Err(_) => return,
+        };
+        let offers = fabric.drain_imported_offers();
+        let cutovers = fabric.drain_cutovers();
+        let lifecycle_events = fabric.drain_lifecycle_events();
+        let Ok(mut realtime) = self.realtime.lock() else {
+            return;
+        };
+        for imported in offers {
+            if realtime.pending_imported_offers.len()
+                == crate::shell::realtime_session::MAX_REALTIME_SESSIONS
+            {
+                realtime.pending_imported_offers.pop_front();
+            }
+            realtime.pending_imported_offers.push_back(imported);
+        }
+        let pending = realtime.pending_imported_offers.len();
+        for _ in 0..pending {
+            let Some(imported) = realtime.pending_imported_offers.pop_front() else {
+                break;
+            };
+            let Some(peer) = realtime
+                .subscribers
+                .iter()
+                .filter(|(_, subscriber)| {
+                    subscriber.app.app_id() == imported.offer.app_id
+                        && subscriber.app.workspace_id() == imported.offer.workspace_id
+                })
+                .map(|(peer, _)| *peer)
+                .min()
+            else {
+                realtime.pending_imported_offers.push_back(imported);
+                continue;
+            };
+            let id = imported.offer.session_id.into_broker_id();
+            let live = realtime
+                .broker
+                .lock()
+                .ok()
+                .and_then(|broker| broker.session(id))
+                .is_some_and(|view| {
+                    view.app_id == imported.offer.app_id
+                        && view.workspace_id == imported.offer.workspace_id
+                        && view.source == imported.source
+                        && view.target.as_ref() == Some(&imported.target)
+                });
+            if !live {
+                continue;
+            }
+            let Ok(app) = crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
+                imported.offer.app_id.clone(),
+                imported.offer.workspace_id.clone(),
+            ) else {
+                continue;
+            };
+            let Ok(intent) = imported.offer.intent() else {
+                continue;
+            };
+            let token = realtime.new_token();
+            realtime.sessions.insert(
+                token.clone(),
+                RealtimeBinding {
+                    id,
+                    app,
+                    source: imported.source,
+                    owner_peer: peer,
+                    authorization: None,
+                    target_peer: None,
+                    capture_leases: Vec::new(),
+                    imported: true,
+                },
+            );
+            let event = ui::realtime_continuity::RealtimeEvent::Offer {
+                session: token,
+                intent: ui::realtime_continuity::RealtimeResumeIntent {
+                    provider: intent.room.provider().to_string(),
+                    room_id: intent.room.room_id().to_string(),
+                    semantic_position: intent.semantic_position,
+                    media: ui::realtime_continuity::RealtimeMediaFacets {
+                        microphone: intent.media.microphone(),
+                        camera: intent.media.camera(),
+                        screen_share: intent.media.screen_share(),
+                        share_audio: intent.media.share_audio(),
+                    },
+                    controls: ui::realtime_continuity::RealtimeControlIntent::default(),
+                },
+            };
+            realtime.notify(peer, &event);
+        }
+        for directive in cutovers {
+            if let Some((token, peer)) = realtime.sessions.iter().find_map(|(token, binding)| {
+                (!binding.imported && binding.id == directive.session_id)
+                    .then_some((token.clone(), binding.owner_peer))
+            }) {
+                realtime.notify(
+                    peer,
+                    &ui::realtime_continuity::RealtimeEvent::StopSource { session: token },
+                );
+            }
+        }
+        for event in lifecycle_events {
+            let bindings = realtime
+                .sessions
+                .iter()
+                .filter_map(|(token, binding)| {
+                    (binding.id == event.session_id).then_some((
+                        token.clone(),
+                        binding.owner_peer,
+                        binding.capture_leases.clone(),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            for (token, peer, leases) in bindings {
+                let terminal = !matches!(
+                    &event.kind,
+                    crate::shell::realtime_session::BrokerEventKind::RolledBackToSource { .. }
+                );
+                let app_event = if terminal {
+                    ui::realtime_continuity::RealtimeEvent::Ended {
+                        session: token.clone(),
+                    }
+                } else {
+                    ui::realtime_continuity::RealtimeEvent::RolledBack {
+                        session: token.clone(),
+                    }
+                };
+                realtime.notify(peer, &app_event);
+                release_realtime_capture_leases(&realtime.capture, &leases);
+                if terminal {
+                    realtime.sessions.remove(&token);
+                } else if let Some(binding) = realtime.sessions.get_mut(&token) {
+                    binding.authorization = None;
+                    binding.target_peer = None;
+                    binding.capture_leases.clear();
+                }
+            }
+        }
+    }
+
     /// Direct a late-join snapshot request to one established subscriber on
     /// the exact route. Lowest broker peer id makes selection deterministic;
     /// the requester is excluded so it never snapshots its own empty state.
@@ -1462,6 +1673,8 @@ impl CapnpBrokerState {
             .ok_or_else(|| "unknown realtime session".to_string())?;
         let view = realtime
             .broker
+            .lock()
+            .map_err(|_| "realtime broker is unavailable".to_string())?
             .session(binding.id)
             .ok_or_else(|| "unknown realtime session".to_string())?;
         if &binding.app != app || view.target.as_ref() != Some(target) {
@@ -1476,8 +1689,9 @@ impl CapnpBrokerState {
         let capture_binding =
             crate::portal::CaptureSessionBinding::from_verified(app, session, target.as_str())
                 .map_err(|error| error.to_string())?;
-        realtime
-            .capture
+        let capture = Arc::clone(&realtime.capture);
+        drop(realtime);
+        capture
             .lock()
             .map_err(|_| "target capture broker is unavailable".to_string())?
             .authorize(&capture_binding, source_id, kind, now)
@@ -3067,30 +3281,52 @@ impl CapnpBrokerState {
                 .iter()
                 .filter_map(|(token, binding)| {
                     (binding.target_peer == Some(peer_id)).then(|| {
-                        realtime.broker.session(binding.id).and_then(|view| {
-                            view.target.map(|target| {
-                                (
-                                    token.clone(),
-                                    binding.id,
-                                    binding.app.clone(),
-                                    binding.source.clone(),
-                                    binding.owner_peer,
-                                    target,
-                                    view.source_live,
-                                )
+                        realtime
+                            .broker
+                            .lock()
+                            .ok()?
+                            .session(binding.id)
+                            .and_then(|view| {
+                                view.target.map(|target| {
+                                    (
+                                        token.clone(),
+                                        binding.id,
+                                        binding.app.clone(),
+                                        binding.source.clone(),
+                                        binding.owner_peer,
+                                        target,
+                                        view.source_live,
+                                        binding.imported,
+                                    )
+                                })
                             })
-                        })
                     })?
                 })
                 .collect::<Vec<_>>();
-            for (token, id, app, source, owner_peer, target, source_live) in target_sessions {
+            for (token, id, app, source, owner_peer, target, source_live, imported) in
+                target_sessions
+            {
                 release_realtime_capture_session(&realtime.capture, &app, &token, &target);
                 if source_live {
-                    if realtime
-                        .broker
-                        .target_failed(&app, id, &source, &target, std::time::Instant::now())
-                        .is_ok()
-                    {
+                    let failed = if imported {
+                        realtime.fabric.fail_imported(
+                            id.fabric_id(),
+                            &source,
+                            &target,
+                            std::time::Instant::now(),
+                        )
+                    } else {
+                        realtime
+                            .broker
+                            .lock()
+                            .map_err(|_| crate::shell::realtime_session::RealtimeSessionError::InvalidTransition)
+                            .and_then(|mut broker| {
+                                broker
+                                    .target_failed(&app, id, &source, &target, std::time::Instant::now())
+                                    .map(|_| ())
+                            })
+                    };
+                    if failed.is_ok() {
                         realtime.notify(
                             owner_peer,
                             &ui::realtime_continuity::RealtimeEvent::RolledBack {
@@ -3104,13 +3340,15 @@ impl CapnpBrokerState {
                         binding.capture_leases.clear();
                     }
                 } else {
-                    let _ = realtime.broker.apply_media_action(
-                        &app,
-                        id,
-                        &target,
-                        crate::shell::realtime_session::RealtimeMediaAction::Leave,
-                        std::time::Instant::now(),
-                    );
+                    if let Ok(mut broker) = realtime.broker.lock() {
+                        let _ = broker.apply_media_action(
+                            &app,
+                            id,
+                            &target,
+                            crate::shell::realtime_session::RealtimeMediaAction::Leave,
+                            std::time::Instant::now(),
+                        );
+                    }
                     realtime.notify(
                         owner_peer,
                         &ui::realtime_continuity::RealtimeEvent::Ended {
@@ -3129,20 +3367,38 @@ impl CapnpBrokerState {
                         binding.id,
                         binding.app.clone(),
                         binding.source.clone(),
+                        binding.imported,
                     ))
                 })
                 .collect::<Vec<_>>();
-            for (token, id, app, source) in owned {
-                if let Some(target) = realtime.broker.session(id).and_then(|view| view.target) {
-                    release_realtime_capture_session(&realtime.capture, &app, &token, &target);
+            for (token, id, app, source, imported) in owned {
+                let target = realtime
+                    .broker
+                    .lock()
+                    .ok()
+                    .and_then(|broker| broker.session(id))
+                    .and_then(|view| view.target);
+                if let Some(target) = target.as_ref() {
+                    release_realtime_capture_session(&realtime.capture, &app, &token, target);
                 }
-                let _ = realtime.broker.apply_media_action(
-                    &app,
-                    id,
-                    &source,
-                    crate::shell::realtime_session::RealtimeMediaAction::Leave,
-                    std::time::Instant::now(),
-                );
+                if imported {
+                    if let Some(target) = target.as_ref() {
+                        let _ = realtime.fabric.fail_imported(
+                            id.fabric_id(),
+                            &source,
+                            target,
+                            std::time::Instant::now(),
+                        );
+                    }
+                } else if let Ok(mut broker) = realtime.broker.lock() {
+                    let _ = broker.apply_media_action(
+                        &app,
+                        id,
+                        &source,
+                        crate::shell::realtime_session::RealtimeMediaAction::Leave,
+                        std::time::Instant::now(),
+                    );
+                }
                 realtime.sessions.remove(&token);
             }
         }
@@ -3851,7 +4107,14 @@ impl channel_handle::Server for CapnpChannelHandle {
                         Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
                     },
                 };
-                let id = match bridge.broker.register(&app, local.clone(), registered, now) {
+                let id = match bridge
+                    .broker
+                    .lock()
+                    .map_err(|_| {
+                        crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                    })
+                    .and_then(|mut broker| broker.register(&app, local.clone(), registered, now))
+                {
                     Ok(id) => id,
                     Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
                 };
@@ -3866,6 +4129,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         authorization: None,
                         target_peer: None,
                         capture_leases: Vec::new(),
+                        imported: false,
                     },
                 );
                 ui::realtime_continuity::RealtimeReply::Registered { session: token }
@@ -3887,7 +4151,26 @@ impl channel_handle::Server for CapnpChannelHandle {
                     ));
                 }
                 let (id, source) = (binding.id, binding.source.clone());
-                if let Err(error) = bridge.broker.propose_target(&app, id, &source, target, now) {
+                let proposed = bridge
+                    .broker
+                    .lock()
+                    .map_err(|_| {
+                        crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                    })
+                    .and_then(|mut broker| {
+                        broker.propose_target(&app, id, &source, target.clone(), now)
+                    });
+                if let Err(error) = proposed {
+                    return Promise::err(capnp::Error::failed(error.to_string()));
+                }
+                if let Err(error) =
+                    bridge
+                        .fabric
+                        .offer_to(id, &target, realtime_unix_ms().saturating_add(30_000))
+                {
+                    let _ = bridge.broker.lock().map(|mut broker| {
+                        let _ = broker.target_failed(&app, id, &source, &target, now);
+                    });
                     return Promise::err(capnp::Error::failed(error.to_string()));
                 }
                 ui::realtime_continuity::RealtimeReply::Proposed
@@ -3909,7 +4192,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         "realtime target already accepted".into(),
                     ));
                 }
-                let (id, source) = (binding.id, binding.source.clone());
+                let (id, source, imported) = (binding.id, binding.source.clone(), binding.imported);
                 let Some(required) = bridge.required_capture_kinds(id) else {
                     return Promise::err(capnp::Error::failed("unknown realtime session".into()));
                 };
@@ -3925,26 +4208,41 @@ impl channel_handle::Server for CapnpChannelHandle {
                     Ok(leases) => leases,
                     Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
                 };
-                let authorization = match bridge
-                    .broker
-                    .authorize_target_capture(&app, id, &source, &local, now)
-                {
-                    Ok(authorization) => authorization,
-                    Err(error) => {
+                let authorization =
+                    if imported {
+                        if let Err(error) =
+                            bridge
+                                .fabric
+                                .accept_imported(id.fabric_id(), &source, &local, now)
+                        {
+                            release_realtime_capture_leases(&bridge.capture, &leases);
+                            return Promise::err(capnp::Error::failed(error.to_string()));
+                        }
+                        None
+                    } else {
+                        let authorization = match bridge.broker.lock().map_err(|_| {
+                        crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                    }).and_then(|mut broker| {
+                        broker.authorize_target_capture(&app, id, &source, &local, now)
+                    }) {
+                        Ok(authorization) => authorization,
+                        Err(error) => {
+                            release_realtime_capture_leases(&bridge.capture, &leases);
+                            return Promise::err(capnp::Error::failed(error.to_string()));
+                        }
+                    };
+                        if let Err(error) = bridge.broker.lock().map_err(|_| {
+                        crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                    }).and_then(|mut broker| {
+                        broker.accept_target(&app, id, &source, &local, authorization, now)
+                    }) {
                         release_realtime_capture_leases(&bridge.capture, &leases);
                         return Promise::err(capnp::Error::failed(error.to_string()));
                     }
-                };
-                if let Err(error) =
-                    bridge
-                        .broker
-                        .accept_target(&app, id, &source, &local, authorization, now)
-                {
-                    release_realtime_capture_leases(&bridge.capture, &leases);
-                    return Promise::err(capnp::Error::failed(error.to_string()));
-                }
+                        Some(authorization)
+                    };
                 if let Some(binding) = bridge.sessions.get_mut(&session) {
-                    binding.authorization = Some(authorization);
+                    binding.authorization = authorization;
                     binding.target_peer = Some(self.peer_id);
                     binding.capture_leases = leases;
                 }
@@ -3959,21 +4257,23 @@ impl channel_handle::Server for CapnpChannelHandle {
                         "realtime session binding mismatch".into(),
                     ));
                 }
-                let Some(authorization) = binding.authorization else {
+                if !binding.imported && binding.authorization.is_none() {
                     return Promise::err(capnp::Error::failed(
                         "fresh target capture authorization is required".into(),
                     ));
-                };
+                }
                 if binding.target_peer != Some(self.peer_id) {
                     return Promise::err(capnp::Error::failed(
                         "realtime target binding mismatch".into(),
                     ));
                 }
-                let (id, owner_peer, source, leases) = (
+                let (id, owner_peer, source, leases, imported, authorization) = (
                     binding.id,
                     binding.owner_peer,
                     binding.source.clone(),
                     binding.capture_leases.clone(),
+                    binding.imported,
+                    binding.authorization,
                 );
                 if let Err(error) = realtime_capture_leases_ready(
                     &bridge.capture,
@@ -3983,7 +4283,13 @@ impl channel_handle::Server for CapnpChannelHandle {
                     &leases,
                     now,
                 ) {
-                    let _ = bridge.broker.target_failed(&app, id, &source, &local, now);
+                    if imported {
+                        let _ = bridge
+                            .fabric
+                            .fail_imported(id.fabric_id(), &source, &local, now);
+                    } else if let Ok(mut broker) = bridge.broker.lock() {
+                        let _ = broker.target_failed(&app, id, &source, &local, now);
+                    }
                     if let Some(binding) = bridge.sessions.get_mut(&session) {
                         binding.authorization = None;
                         binding.target_peer = None;
@@ -3998,35 +4304,56 @@ impl channel_handle::Server for CapnpChannelHandle {
                     );
                     return Promise::err(capnp::Error::failed(error.to_string()));
                 }
-                let directive =
-                    match bridge
-                        .broker
-                        .media_ready(&app, id, &source, &local, authorization, now)
-                    {
-                        Ok(directive) => directive,
-                        Err(error) => {
-                            let _ = bridge.broker.target_failed(&app, id, &source, &local, now);
-                            if let Some(binding) = bridge.sessions.get_mut(&session) {
-                                binding.authorization = None;
-                                binding.target_peer = None;
-                                binding.capture_leases.clear();
-                            }
-                            release_realtime_capture_session(
-                                &bridge.capture,
-                                &app,
-                                &session,
-                                &local,
-                            );
-                            bridge.notify(
-                                owner_peer,
-                                &ui::realtime_continuity::RealtimeEvent::RolledBack {
-                                    session: session.clone(),
-                                },
-                            );
-                            return Promise::err(capnp::Error::failed(error.to_string()));
-                        }
+                let directive = if imported {
+                    bridge
+                        .fabric
+                        .imported_media_ready(id.fabric_id(), &source, &local, now)
+                        .map(|()| None)
+                } else {
+                    let Some(authorization) = authorization else {
+                        return Promise::err(capnp::Error::failed(
+                            "fresh target capture authorization is required".into(),
+                        ));
                     };
-                if directive.stop_source {
+                    bridge
+                        .broker
+                        .lock()
+                        .map_err(|_| {
+                            crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                        })
+                        .and_then(|mut broker| {
+                            broker
+                                .media_ready(&app, id, &source, &local, authorization, now)
+                                .map(Some)
+                        })
+                };
+                let directive = match directive {
+                    Ok(directive) => directive,
+                    Err(error) => {
+                        if imported {
+                            let _ =
+                                bridge
+                                    .fabric
+                                    .fail_imported(id.fabric_id(), &source, &local, now);
+                        } else if let Ok(mut broker) = bridge.broker.lock() {
+                            let _ = broker.target_failed(&app, id, &source, &local, now);
+                        }
+                        if let Some(binding) = bridge.sessions.get_mut(&session) {
+                            binding.authorization = None;
+                            binding.target_peer = None;
+                            binding.capture_leases.clear();
+                        }
+                        release_realtime_capture_session(&bridge.capture, &app, &session, &local);
+                        bridge.notify(
+                            owner_peer,
+                            &ui::realtime_continuity::RealtimeEvent::RolledBack {
+                                session: session.clone(),
+                            },
+                        );
+                        return Promise::err(capnp::Error::failed(error.to_string()));
+                    }
+                };
+                if directive.is_some_and(|directive| directive.stop_source) {
                     bridge.notify(
                         owner_peer,
                         &ui::realtime_continuity::RealtimeEvent::StopSource {
@@ -4052,7 +4379,24 @@ impl channel_handle::Server for CapnpChannelHandle {
                 }
                 let (id, owner_peer, source) =
                     (binding.id, binding.owner_peer, binding.source.clone());
-                if let Err(error) = bridge.broker.target_failed(&app, id, &source, &local, now) {
+                let failed = if binding.imported {
+                    bridge
+                        .fabric
+                        .fail_imported(id.fabric_id(), &source, &local, now)
+                } else {
+                    bridge
+                        .broker
+                        .lock()
+                        .map_err(|_| {
+                            crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                        })
+                        .and_then(|mut broker| {
+                            broker
+                                .target_failed(&app, id, &source, &local, now)
+                                .map(|_| ())
+                        })
+                };
+                if let Err(error) = failed {
                     return Promise::err(capnp::Error::failed(error.to_string()));
                 }
                 if let Some(binding) = bridge.sessions.get_mut(&session) {
@@ -4084,18 +4428,19 @@ impl channel_handle::Server for CapnpChannelHandle {
         _params: channel_handle::SubscribeRealtimeParams,
         mut results: channel_handle::SubscribeRealtimeResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
+        let (app, _) = match self.realtime_registration() {
+            Ok(binding) => binding,
+            Err(error) => return Promise::err(error),
+        };
         let (tx, rx) = mpsc::unbounded_channel();
         let Ok(mut bridge) = self.state.realtime.lock() else {
             return Promise::err(capnp::Error::failed("realtime broker unavailable".into()));
         };
-        bridge.subscribers.insert(self.peer_id, tx);
+        bridge
+            .subscribers
+            .insert(self.peer_id, RealtimeSubscriber { app, tx });
         drop(bridge);
+        self.state.pump_realtime_fabric_app_events();
         let client: realtime_stream::Client = capnp_rpc::new_client(RealtimeStreamServer {
             rx: Rc::new(AsyncMutex::new(rx)),
         });
@@ -7733,6 +8078,173 @@ mod tests {
             !state.request_document_snapshot("missing", 12),
             "a route without a holder is retryable, not falsely acknowledged"
         );
+    }
+
+    #[test]
+    fn production_realtime_bridge_delivers_two_peer_offer_and_cutover() {
+        use crate::shell::realtime_session::{
+            BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,
+            RealtimeMediaFacet, RealtimeMediaSet, RealtimeResumeIntent, RealtimeSessionBroker,
+            SemanticRoomLocator, VerifiedAppRegistration,
+        };
+
+        fn state_with_adapter() -> (
+            Arc<CapnpBrokerState>,
+            Arc<Mutex<RealtimeSessionBroker>>,
+            Arc<BrokerRealtimeFabricAdapter>,
+        ) {
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _) = CapnpBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                PeerPublisher::disabled(),
+                None,
+                None,
+            );
+            let broker = Arc::new(Mutex::new(RealtimeSessionBroker::new()));
+            let fabric = Arc::new(BrokerRealtimeFabricAdapter::with_app_verifier(
+                Arc::clone(&broker),
+                |_| true,
+            ));
+            let mut realtime = state.realtime.lock().expect("realtime bridge");
+            realtime.broker = Arc::clone(&broker);
+            realtime.fabric = Arc::clone(&fabric);
+            drop(realtime);
+            (state, broker, fabric)
+        }
+
+        let now = std::time::Instant::now();
+        let source =
+            crate::shell::personal_continuity::DeviceId::new("laptop").expect("source device");
+        let target =
+            crate::shell::personal_continuity::DeviceId::new("tablet").expect("target device");
+        let app =
+            VerifiedAppRegistration::new_verified("dev.qos.calls", "work").expect("verified app");
+        let intent = RealtimeResumeIntent {
+            room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
+            semantic_position: Some("main-stage".into()),
+            media: RealtimeMediaSet::new([RealtimeMediaFacet::Microphone]).expect("media set"),
+        };
+        let (source_state, source_broker, source_fabric) = state_with_adapter();
+        let (target_state, target_broker, target_fabric) = state_with_adapter();
+        let (source_tx, mut source_rx) = mpsc::unbounded_channel();
+        source_state
+            .realtime
+            .lock()
+            .expect("source bridge")
+            .subscribers
+            .insert(
+                7,
+                RealtimeSubscriber {
+                    app: app.clone(),
+                    tx: source_tx,
+                },
+            );
+        let (target_tx, mut target_rx) = mpsc::unbounded_channel();
+        target_state
+            .realtime
+            .lock()
+            .expect("target bridge")
+            .subscribers
+            .insert(
+                9,
+                RealtimeSubscriber {
+                    app: app.clone(),
+                    tx: target_tx,
+                },
+            );
+        let id = source_broker
+            .lock()
+            .expect("source broker")
+            .register(&app, source.clone(), intent, now)
+            .expect("register source");
+        source_broker
+            .lock()
+            .expect("source broker")
+            .propose_target(&app, id, &source, target.clone(), now)
+            .expect("propose target");
+        source_state
+            .realtime
+            .lock()
+            .expect("source bridge")
+            .sessions
+            .insert(
+                "source-session".into(),
+                RealtimeBinding {
+                    id,
+                    app: app.clone(),
+                    source: source.clone(),
+                    owner_peer: 7,
+                    authorization: None,
+                    target_peer: None,
+                    capture_leases: Vec::new(),
+                    imported: false,
+                },
+            );
+        source_fabric
+            .offer_to(id, &target, 20_000)
+            .expect("queue exact-target offer");
+        let offer = source_fabric.drain_egress().pop().expect("offer egress");
+        assert_eq!(offer.target, target);
+        let RealtimeFabricSignal::Offer(projected) = offer.signal else {
+            panic!("expected offer");
+        };
+        let fabric_id = projected.session_id;
+        assert!(target_fabric.receive_authenticated(
+            &source,
+            &target,
+            RealtimeFabricSignal::Offer(projected),
+            now,
+            10_000,
+        ));
+        target_state.pump_realtime_fabric_app_events();
+        let offer_event: ui::realtime_continuity::RealtimeEvent =
+            serde_json::from_slice(&target_rx.try_recv().expect("target app offer"))
+                .expect("offer event");
+        let ui::realtime_continuity::RealtimeEvent::Offer { session, .. } = offer_event else {
+            panic!("expected app offer");
+        };
+        target_fabric
+            .accept_imported(fabric_id, &source, &target, now)
+            .expect("target-local accept");
+        let accepted = target_fabric.drain_egress().pop().expect("accept egress");
+        assert_eq!(accepted.target, source);
+        assert!(source_fabric.receive_authenticated(
+            &target,
+            &source,
+            accepted.signal,
+            now,
+            10_000,
+        ));
+        target_fabric
+            .imported_media_ready(fabric_id, &source, &target, now)
+            .expect("target media ready");
+        let ready = target_fabric.drain_egress().pop().expect("ready egress");
+        assert_eq!(ready.target, source);
+        assert!(source_fabric.receive_authenticated(&target, &source, ready.signal, now, 10_000,));
+        source_state.pump_realtime_fabric_app_events();
+        let stop_event: ui::realtime_continuity::RealtimeEvent =
+            serde_json::from_slice(&source_rx.try_recv().expect("source app stop"))
+                .expect("stop event");
+        assert_eq!(
+            stop_event,
+            ui::realtime_continuity::RealtimeEvent::StopSource {
+                session: "source-session".into(),
+            }
+        );
+        let stop = source_fabric.drain_egress().pop().expect("stop egress");
+        assert_eq!(stop.target, target);
+        assert!(target_fabric.receive_authenticated(&source, &target, stop.signal, now, 10_000,));
+        assert_eq!(
+            target_broker
+                .lock()
+                .expect("target broker")
+                .session(fabric_id.into_broker_id())
+                .expect("imported session")
+                .phase,
+            crate::shell::realtime_session::RealtimeSessionPhase::TargetLive
+        );
+        assert!(session.len() <= ui::realtime_continuity::MAX_REALTIME_TOKEN_BYTES);
     }
 
     #[test]
