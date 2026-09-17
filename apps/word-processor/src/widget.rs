@@ -5980,6 +5980,13 @@ struct PageCursor {
     ol_counts: Vec<u32>,
 }
 
+struct TableLayoutContext<'a> {
+    cell_padding: f64,
+    text_renderer: &'a mut TextRenderer,
+    old_cache: &'a mut HashMap<String, (u64, RichTextLayout)>,
+    new_cache: &'a mut HashMap<String, (u64, RichTextLayout)>,
+}
+
 /// [`WordProcessorWidget::resolve_paragraph_shape`]'s output: everything
 /// [`WordProcessorWidget::paginate_paragraph`] needs to decide where the
 /// block lands and how to lay it out.
@@ -6346,17 +6353,13 @@ impl WordProcessorWidget {
                     .max(f.bottom + f64::from(self.sheet.get("body").space_after));
             }
             if cell_table(b).is_some() {
-                bi = self.paginate_table(
-                    &blocks,
-                    bi,
-                    fg,
-                    cell_pad,
+                let mut table_layout = TableLayoutContext {
+                    cell_padding: cell_pad,
                     text_renderer,
-                    &mut old_cache,
-                    &mut new_cache,
-                    &mut laid,
-                    &mut cur,
-                );
+                    old_cache: &mut old_cache,
+                    new_cache: &mut new_cache,
+                };
+                bi = self.paginate_table(&blocks, bi, fg, &mut table_layout, &mut laid, &mut cur);
             } else if b.kind == "image" {
                 self.paginate_image(b, fg, text_renderer, &mut new_cache, &mut laid, &mut cur);
                 bi += 1;
@@ -6404,16 +6407,12 @@ impl WordProcessorWidget {
     /// first row on a page never breaks, so an over-tall single row overflows
     /// its page (acceptable for v1). Returns the block index just past the
     /// table's last cell.
-    #[allow(clippy::too_many_arguments)]
     fn paginate_table(
         &mut self,
         blocks: &[BlockView],
         bi: usize,
         fg: &FrameGeometry,
-        cell_pad: f64,
-        text_renderer: &mut TextRenderer,
-        old_cache: &mut HashMap<String, (u64, RichTextLayout)>,
-        new_cache: &mut HashMap<String, (u64, RichTextLayout)>,
+        layout: &mut TableLayoutContext<'_>,
         laid: &mut Vec<Laid>,
         cur: &mut PageCursor,
     ) -> usize {
@@ -6435,16 +6434,7 @@ impl WordProcessorWidget {
         let col_w = f64::from(fg.content_w) / num::f64_of_usize(ncols);
         // Measure every row first so the whole table can paginate as one
         // unit (it is never split mid-row across a page boundary).
-        let rows = self.measure_table_rows(
-            cells,
-            ncols,
-            nrows,
-            col_w,
-            cell_pad,
-            text_renderer,
-            old_cache,
-            new_cache,
-        );
+        let rows = self.measure_table_rows(cells, ncols, nrows, col_w, layout);
         let table_h: f64 = rows.iter().map(|(h, _)| *h).sum();
         // Break to the next page if a manual page break is set on the
         // first cell, or the whole table would not fit.
@@ -6480,11 +6470,11 @@ impl WordProcessorWidget {
                     text: cell.text.clone(),
                     kind: "cell".into(),
                     size: 16.0,
-                    y_top: ry + cell_pad,
-                    text_x: cell_x + cell_pad,
-                    width: col_w - 2.0 * cell_pad,
+                    y_top: ry + layout.cell_padding,
+                    text_x: cell_x + layout.cell_padding,
+                    width: col_w - 2.0 * layout.cell_padding,
                     height: cell_h,
-                    layout_y: ry + cell_pad,
+                    layout_y: ry + layout.cell_padding,
                     clip: None,
                     bullet: None,
                     ink: PAPER_INK,
@@ -6504,17 +6494,13 @@ impl WordProcessorWidget {
     /// can paginate as one unit (it is never split mid-row across a page
     /// boundary): the shaped (or cache-reused) layout for each populated
     /// cell, and each row's height (the tallest cell, or a minimum).
-    #[allow(clippy::too_many_arguments)]
     fn measure_table_rows<'a>(
         &mut self,
         cells: &'a [BlockView],
         ncols: usize,
         nrows: usize,
         col_w: f64,
-        cell_pad: f64,
-        text_renderer: &mut TextRenderer,
-        old_cache: &mut HashMap<String, (u64, RichTextLayout)>,
-        new_cache: &mut HashMap<String, (u64, RichTextLayout)>,
+        layout: &mut TableLayoutContext<'_>,
     ) -> Vec<TableRow<'a>> {
         let mut rows: Vec<TableRow<'a>> = Vec::with_capacity(nrows);
         for r in 0..nrows {
@@ -6524,7 +6510,7 @@ impl WordProcessorWidget {
                 if let Some(cell) = cells.iter().find(|cl| cell_rc(cl) == (r, c)) {
                     let (runs, underlines, strikes) =
                         block_runs_markup(cell, self.review.is_visible());
-                    let wrap_w = num::f32_of_f64((col_w - 2.0 * cell_pad).max(24.0));
+                    let wrap_w = num::f32_of_f64((col_w - 2.0 * layout.cell_padding).max(24.0));
                     let align = block_align(cell, TextAlign::Left);
                     let key = shape_key(&ShapeKeyInput {
                         spans: &runs,
@@ -6537,7 +6523,7 @@ impl WordProcessorWidget {
                         family: FontFamily::Sans,
                         line_height_mult: 1.0,
                     });
-                    let layout = match old_cache.remove(&cell.id) {
+                    let cell_layout = match layout.old_cache.remove(&cell.id) {
                         Some((k, lay)) if k == key => {
                             self.dbg_layout_hits += 1;
                             lay
@@ -6545,7 +6531,7 @@ impl WordProcessorWidget {
                         _ => {
                             self.dbg_layout_misses += 1;
                             RichTextLayout::shape(
-                                &mut text_renderer.font_system,
+                                &mut layout.text_renderer.font_system,
                                 &runs,
                                 false,
                                 16.0,
@@ -6558,9 +6544,9 @@ impl WordProcessorWidget {
                             )
                         }
                     };
-                    let cell_h = f64::from(layout.height());
-                    row_h = row_h.max(cell_h + 2.0 * cell_pad);
-                    new_cache.insert(cell.id.clone(), (key, layout));
+                    let cell_h = f64::from(cell_layout.height());
+                    row_h = row_h.max(cell_h + 2.0 * layout.cell_padding);
+                    layout.new_cache.insert(cell.id.clone(), (key, cell_layout));
                     row_items.push((c, cell_h, cell));
                 }
             }
