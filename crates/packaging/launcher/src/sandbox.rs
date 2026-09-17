@@ -2030,6 +2030,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn an_expired_capability_produces_no_bind() {
         let caps = vec![
             fs_grant("dev.tilo.books", "/var/workspace/books", Verb::Write)

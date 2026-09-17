@@ -9,6 +9,7 @@ fail=0
 manifest="$repo/os/external-assets/github-assets.tsv"
 package_workflow="$workflows/package-desktop.yml"
 check_workflow="$workflows/check.yml"
+kernel_workflow="$workflows/build-kernel.yml"
 containerfile="$repo/os/Containerfile"
 nightly_workflow="$workflows/nightly.yml"
 visual_refresh_workflow="$workflows/refresh-visual-baselines.yml"
@@ -24,9 +25,16 @@ cosign_workflows=(
   "$workflows/build-kernel.yml"
   "$workflows/tilo-relay.yaml"
   "$workflows/release-imager.yml"
+  "$workflows/snapshot-rpms.yml"
   "$workflows/snapshot-wpe-buildroot.yml"
 )
 syft_workflow="$workflows/build-image.yml"
+release_signed_workflows=(
+  "$workflows/build-image.yml"
+  "$workflows/build-kernel.yml"
+  "$workflows/tilo-relay.yaml"
+  "$workflows/snapshot-rpms.yml"
+)
 
 if python3 "$repo/tools/check_workflow_actions.py"; then
   printf 'ok    every remote workflow action is pinned to a full commit SHA\n'
@@ -34,20 +42,40 @@ else
   fail=1
 fi
 
-if grep -Fq 'command -v openssl >/dev/null || dnf install -y openssl' \
-    "$check_workflow"; then
-  printf 'ok    affected-package CI installs the crypto tool used by security invariants\n'
+if ! grep -Fq 'dnf install -y openssl' "$check_workflow"; then
+  printf 'ok    affected-package CI does not install OpenSSL for security invariants\n'
 else
-  printf 'affected-package CI does not provide OpenSSL to security invariants\n' >&2
+  printf 'affected-package CI still installs OpenSSL for security invariants\n' >&2
+  fail=1
+fi
+
+if [ "$(grep -Fc '"crates/system/tilo-crypto/**"' "$kernel_workflow")" -eq 2 ]; then
+  printf 'ok    kernel CI retriggers when its Rust signer changes\n'
+else
+  printf 'kernel CI does not retrigger for Rust signer changes\n' >&2
+  fail=1
+fi
+
+if [ "$(grep -Fc '"os/tests/secureboot_vm_*"' "$kernel_workflow")" -eq 2 ] \
+   && grep -Fq -- '--target secureboot-probe-inputs' "$kernel_workflow" \
+   && grep -Fq 'bash os/tests/secureboot_vm_probe.sh' "$kernel_workflow" \
+   && grep -Fq 'TILO_SECUREBOOT_VM_ARCH="${{ matrix.arch }}"' "$kernel_workflow" \
+   && grep -Fq 'TILO_SECUREBOOT_VM_APP="$probe/secureboot_vm_app.efi"' "$kernel_workflow" \
+   && grep -Fq 'ld.lld -flavor link /subsystem:efi_application' "$repo/os/kernel/Containerfile" \
+   && grep -Fq 'FROM scratch AS secureboot-probe-inputs' "$repo/os/kernel/Containerfile" \
+   && [ "$(grep '^FROM ' "$repo/os/kernel/Containerfile" | tail -1)" = 'FROM scratch AS publish' ]; then
+  printf 'ok    kernel CI retriggers and runs OVMF enforcement against its exact build\n'
+else
+  printf 'kernel CI does not execute its OVMF Secure Boot enforcement probe\n' >&2
   fail=1
 fi
 
 nightly_visual_image="$({
-  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/qos-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
+  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/tilo\/tilo-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
     "$nightly_workflow"
 } | head -n 1)"
 refresh_visual_image="$({
-  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/qos\/qos-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
+  sed -n 's/^[[:space:]]*image:[[:space:]]*\(code\.podesta\.ai\/tilo\/tilo-builder@sha256:[0-9a-f]*\)[[:space:]]*$/\1/p' \
     "$visual_refresh_workflow"
 } | head -n 1)"
 if [[ "$nightly_visual_image" =~ @sha256:[0-9a-f]{64}$ ]] \
@@ -129,6 +157,19 @@ done
 if grep -R -q 'sigstore/cosign-installer' "$workflows"; then
   printf 'workflow still downloads Cosign through the installer action\n' >&2
   fail=1
+fi
+for workflow in "${release_signed_workflows[@]}"; do
+  if grep -Eq -- 'COSIGN_PRIVATE_KEY|COSIGN_PASSWORD|--tlog-upload=false|--insecure-ignore-tlog' \
+      "$workflow" \
+     || ! grep -Fq 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' "$workflow" \
+     || ! grep -Eq 'cosign verify --key keys/cosign\.pub "\$(ref|image)"' "$workflow"; then
+    printf 'release artifact bypasses KMS, transparency, or digest verification: %s\n' \
+      "${workflow#$repo/}" >&2
+    fail=1
+  fi
+done
+if [ "$fail" = 0 ]; then
+  printf 'ok    OS, kernel, RPM, and relay releases use KMS signing, transparency, and digest verification\n'
 fi
 if ! grep -Fq 'cache-github-assets.sh" "$asset"' \
     "$repo/os/dev/install-cached-cosign.sh"; then

@@ -41,6 +41,10 @@ pub const BUILTIN_HIGH_RISK: &[&str] = &["dev.tilo.browser", "dev.tilo.tube", "d
 /// point at a fixture; production reads the image's file.
 pub const POLICY_PATH_ENV: &str = "TILO_UNTRUSTED_PARSERS_FILE";
 
+/// Image-owned Scudo copy. Tilo retains this DSO without shipping the complete
+/// compiler-rt sanitizer/toolchain payload it came from.
+pub const TILO_SCUDO_PATH: &str = "/usr/lib/tilo/libclang_rt.scudo_standalone.so";
+
 /// The extra runtime protections to apply to one launch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeHardening {
@@ -91,6 +95,10 @@ pub fn policy_matches(list: &str, package_id: &str) -> bool {
 /// with the system allocator.
 pub fn find_hardened_allocator() -> Option<PathBuf> {
     const NAME: &str = "libclang_rt.scudo_standalone.so";
+    let tilo_copy = PathBuf::from(TILO_SCUDO_PATH);
+    if tilo_copy.is_file() {
+        return Some(tilo_copy);
+    }
     // Flat library dirs first — a distribution that ships the library
     // unversioned puts it here.
     for root in ["/usr/lib64", "/usr/lib"] {

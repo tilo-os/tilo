@@ -62,7 +62,7 @@ private key or cloud credential on the native fleet.
 Installer media never allocate an OS generation. Set the protected
 `TILO_INSTALLER_OS_IMAGE` variable to one already-published, cosign-signed Tilo
 multi-architecture manifest-list reference of the form
-`code.podesta.ai/qos/tilo@sha256:<64 lowercase hex>`. Both native Linux lanes
+`code.podesta.ai/tilo/tilo@sha256:<64 lowercase hex>`. Both native Linux lanes
 verify that same digest and its SLSA provenance, require its immutable `genN`
 tag to bind the exact digest, pull their native manifest,
 and require the generation embedded in the image to equal the single generation
@@ -329,7 +329,7 @@ administrators):
 | the seven `IMAGER_*_CREDENTIAL_BROKER` variables listed above | absolute path on each corresponding golden image |
 | `IMAGER_PUBLIC_RELEASE_REPOSITORY` | optional public binary repository in `OWNER/REPOSITORY` form; omit for `tilo/releases` |
 | `TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY` | independently verified lowercase 64-hex Tilo-main registry-owner Ed25519 public key |
-| `TILO_INSTALLER_OS_IMAGE` | signed, published multi-architecture `code.podesta.ai/qos/tilo@sha256:...` manifest-list reference used by installer media |
+| `TILO_INSTALLER_OS_IMAGE` | signed, published multi-architecture `code.podesta.ai/tilo/tilo@sha256:...` manifest-list reference used by installer media |
 | `TILO_PCR_PREDICTION_SIGNER` | absolute root-owned KMS/HSM wrapper path on both native Linux runner images |
 | `TILO_EFI_SIGNING_CERT_SHA256` | independently verified lowercase 64-hex fingerprint of the firmware-trusted release certificate |
 | `IMAGER_LINUX_SIGNING_FINGERPRINT` | uppercase 40- or 64-hex full primary-key fingerprint, independently verified |
@@ -401,7 +401,7 @@ environment without validating the signed JWT is not conforming.
 `TILO_WPE_SIGNER` must resolve to an executable, non-symlink, root-owned path
 outside the checkout and job temporary directory. It receives one argument:
 the immutable
-`code.podesta.ai/qos/tilo-wpe-buildroot@sha256:...` reference. The wrapper must
+`code.podesta.ai/tilo/tilo-wpe-buildroot@sha256:...` reference. The wrapper must
 hold or acquire a non-exportable KMS/HSM signing lease, reject every other
 repository/reference shape, sign at most once for its build lease, upload the
 transparency-log entry, and return only after signing succeeds. CI immediately
@@ -428,15 +428,10 @@ mint a repository PAT.
 Its `contents: write` permission exists only on that promotion job; native build
 jobs have `contents: read`.
 
-For initial bring-up only, set `WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP=1` and
-set `WPE_STATIC_BOOTSTRAP_EXPIRES_AT` to an absolute Unix timestamp no more than
-24 hours away. Only while both conditions hold does CI expose protected
-`REGISTRY_TOKEN`, `COSIGN_PRIVATE_KEY`, and `COSIGN_PASSWORD` to the isolated
-bootstrap steps. An absent, expired, or overlong window fails closed. After the
-first broker-backed snapshot, delete the flag, expiry, `COSIGN_PRIVATE_KEY`, and
-`COSIGN_PASSWORD`; remove WPE snapshot write scope from the shared
-`REGISTRY_TOKEN` (which other live-medium jobs may still require). Do not
-refresh the expiry as a steady-state operating procedure.
+There is no static-credential bootstrap path. If the broker is absent or fails
+validation, the snapshot stops before resolving or publishing an image. In
+particular, do not configure `COSIGN_PRIVATE_KEY` or `COSIGN_PASSWORD`: WPE
+buildroots accept only the broker-returned non-exportable signer.
 
 ## Package indexes
 
@@ -465,7 +460,7 @@ after Microsoft's public index serves the exact identifier and version.
 After first publication users install with:
 
 ```text
-brew tap tilo/tilo https://code.podesta.ai/qos/homebrew-tilo.git
+brew tap tilo/tilo https://code.podesta.ai/tilo/homebrew-tilo.git
 brew install tilo-imager
 winget install Tilo.Imager
 ```

@@ -66,8 +66,86 @@
 //! reusable seam both the real backend and test stubs run through.
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
 use zeroize::Zeroizing;
+
+const MAX_INSTALL_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_INSTALL_OUTPUT_LINE_BYTES: usize = 64 * 1024;
+const MAX_INSTALL_OUTPUT_LINES: usize = 8192;
+
+fn read_bounded_lines(
+    reader: &mut impl BufRead,
+    mut on_line: impl FnMut(String),
+) -> std::io::Result<()> {
+    let mut pending = Vec::new();
+    let mut total = 0usize;
+    let mut lines = 0usize;
+    loop {
+        let (consumed, complete) = {
+            let available = reader.fill_buf()?;
+            if available.is_empty() {
+                break;
+            }
+            let consumed = available
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .and_then(|index| index.checked_add(1))
+                .unwrap_or(available.len());
+            total = total.checked_add(consumed).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "installer output overflow")
+            })?;
+            if total > MAX_INSTALL_OUTPUT_BYTES
+                || pending.len().saturating_add(consumed) > MAX_INSTALL_OUTPUT_LINE_BYTES
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "installer output exceeded its allocation bound",
+                ));
+            }
+            let chunk = available.get(..consumed).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid output buffer")
+            })?;
+            pending.extend_from_slice(chunk);
+            (consumed, chunk.last() == Some(&b'\n'))
+        };
+        reader.consume(consumed);
+        if complete {
+            lines = lines.checked_add(1).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "installer line overflow")
+            })?;
+            if lines > MAX_INSTALL_OUTPUT_LINES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "installer output exceeded its line-count bound",
+                ));
+            }
+            while pending
+                .last()
+                .is_some_and(|byte| matches!(byte, b'\n' | b'\r'))
+            {
+                pending.pop();
+            }
+            on_line(String::from_utf8_lossy(&pending).into_owned());
+            pending.clear();
+        }
+    }
+    if !pending.is_empty() {
+        on_line(String::from_utf8_lossy(&pending).into_owned());
+    }
+    Ok(())
+}
+
+fn kill_process_group(child: &mut std::process::Child) {
+    if let Ok(pid) = i32::try_from(child.id())
+        && let Some(group) = pid.checked_neg()
+    {
+        // SAFETY: stream_command places the child in a fresh pid-named process
+        // group, so the negative pid cannot target the installer itself.
+        unsafe { libc::kill(group, libc::SIGKILL) };
+    }
+    let _ = child.kill();
+}
 
 use crate::disks::PartitionExtent;
 
@@ -391,7 +469,8 @@ pub fn stream_command<F: FnMut(String)>(
 ) -> std::io::Result<bool> {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .process_group(0);
     let mut child = cmd.spawn()?;
 
     // Feed the password, then any extra secret lines (the disk passphrase),
@@ -412,6 +491,8 @@ pub fn stream_command<F: FnMut(String)>(
             if let Err(e) = feed()
                 && e.kind() != std::io::ErrorKind::BrokenPipe
             {
+                kill_process_group(&mut child);
+                let _ = child.wait();
                 return Err(e);
             }
         }
@@ -425,22 +506,28 @@ pub fn stream_command<F: FnMut(String)>(
     // stderr only when the command ultimately fails.
     let stderr_reader = child.stderr.take().map(|stderr| {
         std::thread::spawn(move || {
-            BufReader::new(stderr)
-                .lines()
-                .map_while(Result::ok)
-                .filter(|line| !line.trim().is_empty())
-                .collect::<Vec<_>>()
+            let mut lines = Vec::new();
+            read_bounded_lines(&mut BufReader::new(stderr), |line| {
+                if !line.trim().is_empty() {
+                    lines.push(line);
+                }
+            })?;
+            Ok::<_, std::io::Error>(lines)
         })
     });
 
-    if let Some(stdout) = child.stdout.take() {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            on_line(line?);
-        }
+    let stdout_result = if let Some(stdout) = child.stdout.take() {
+        read_bounded_lines(&mut BufReader::new(stdout), &mut on_line)
+    } else {
+        Ok(())
+    };
+    if stdout_result.is_err() {
+        kill_process_group(&mut child);
     }
-
-    let status = child.wait()?;
+    let status = child.wait();
+    // A backend must not daemonize children which retain the install pipes.
+    // Close that escape before joining the concurrent stderr reader.
+    kill_process_group(&mut child);
     let stderr_lines = stderr_reader
         .map(|reader| {
             reader
@@ -448,7 +535,9 @@ pub fn stream_command<F: FnMut(String)>(
                 .map_err(|_| std::io::Error::other("stderr reader thread panicked"))
         })
         .transpose()?
-        .unwrap_or_default();
+        .unwrap_or(Ok(Vec::new()))?;
+    stdout_result?;
+    let status = status?;
 
     if !status.success() {
         for line in stderr_lines {
@@ -1060,5 +1149,18 @@ mod tests {
                 .any(|line| line == "error: installer diagnostic 4095 fills the error pipe"),
             "the tail of stderr was drained and relayed"
         );
+    }
+
+    #[test]
+    fn stream_command_rejects_oversized_output_on_either_stream() {
+        for redirect in ["", " >&2"] {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c")
+                .arg(format!("head -c 70000 /dev/zero{redirect}"));
+            let started = std::time::Instant::now();
+            let error = stream_command(cmd, "x", &[], |_| {}).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        }
     }
 }

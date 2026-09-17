@@ -19,7 +19,7 @@ The scenarios we defend against:
 
 ## Identity
 
-- One ed25519 device key per machine at `/var/lib/tilo/device/keypair.bin`, auto-created on first boot. Every network and document identity derives from it — no subsystem mints its own. The file is 0640 in a setgid `tilo-identity` directory because both the root-run filesystem daemon and the session-run compositor must present that one identity; a key that exists but cannot be read is an error, never a reason to re-key.
+- One Ed25519 device key per machine at `/var/lib/tilo/device-private/keypair.bin`, provisioned by root before login. Every network and document identity derives from it — no subsystem mints its own. The file is 0640 in a root-owned, non-writable `tilo-identity` directory: the root filesystem daemon and session compositor can read it, but session processes cannot delete or replace it. A key that exists but cannot be read is an error, never a reason to re-key.
 - The certified device public key is the Iroh `EndpointId` used by the shell, filesystem, and workspace-host client. It is the stable peer identity everywhere.
 - Identity decisions carry the whole peer id (`PeerOrigin`), never a fold of it: an equality check a digest can be ground against is not an identity check.
 - The personal signing identity is the user root. It certifies each device key; workspace hosts accept only device certificates chaining to the configured user root and permitted by the workspace membership/revocation state.
@@ -203,9 +203,20 @@ Steps 3-6 live in `shell/src/network/input_firewall.rs`. Every one of them is **
 
 - **Session lock.** While the lock surface is up, every remote event is refused. A locked machine has no driver.
 - **Physical priority.** Physical input from the host's seat causes a 500 ms block on all remote input — the user can always grab control. Stamped at the backend event funnel in `compositor/native.rs`, so branches that never reach the client router (the lock screen, the VT chord, the power key) still count as the host taking over.
-- **Kill switch (`Super+Esc`).** Stops every peer's input at once: the firewall latches (nothing but the host clears it) and every share is flipped read-only, so the stop survives anything that rebuilds the input path. Recognised at the same funnel, ahead of the client router and ahead of the shell's own `Escape` handling — a panic key an overlay or a focused client can swallow is not a panic key — and confirmed to the user with a notification naming how many windows went view-only.
+- **Kill switch (`Super+Esc`).** Stops every peer's input at once: the firewall
+  latches, held remote keys are released, peer-seat attribution is dropped, every
+  active share session is unregistered (terminating its capture stream), and the
+  share registry is cleared. Recognised at the same funnel, ahead of the client
+  router and ahead of the shell's own `Escape` handling — a panic key an overlay
+  or focused client can swallow is not a panic key — and confirmed with a
+  persistent notification that bypasses Do-Not-Disturb.
 
-  **Not yet implemented:** the wider teardown this document used to describe. Dropping the P2P connections, revoking the session's capability grants, unmounting peer-owned FUSE bind-mounts and locking the screen are all still open. `Super+Esc` today stops remote *input* and says so; it does not end the session. There is also no affordance for undoing it — `RemoteInputFirewall::clear_kill_switch` exists and nothing in the UI calls it, so restoring a guest's write access means restarting the share. That is the safe direction to be incomplete in, but it is incomplete.
+  The broader machine-wide emergency teardown is still incomplete: the
+  underlying P2P transport is not disconnected, durable session capability
+  grants are not revoked, peer-owned FUSE bind-mounts are not unmounted, and the
+  screen is not locked. There is deliberately no UI affordance for clearing the
+  latch; restoring a guest's write access requires starting a new share rather
+  than silently reviving the stopped session.
 
 ## Encryption
 

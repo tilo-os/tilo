@@ -1,0 +1,10 @@
+[Unit]
+Description=Project Tilo BootPack status after the login-critical boot path
+
+[Timer]
+OnBootSec=5s
+AccuracySec=1s
+Unit=tilo-system-extension-boot-pack-status.service
+
+[Install]
+WantedBy=timers.target

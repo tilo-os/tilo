@@ -1,0 +1,14 @@
+[Unit]
+Description=Tilo app-host activation socket
+PartOf=tilo-graphical-session.target
+
+[Socket]
+ListenStream=%t/tilo/services/app-host.sock
+SocketMode=0600
+DirectoryMode=0700
+Backlog=16
+RemoveOnStop=yes
+Service=tilo-app-host.service
+
+[Install]
+WantedBy=tilo-graphical-session.target

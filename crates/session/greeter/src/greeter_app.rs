@@ -548,11 +548,14 @@ fn fingerprint_list_has_enrollment(output: &str) -> bool {
 /// enrollment fails closed to `false` so the login screen never offers a
 /// button which can only fail.
 fn enrolled_fingerprint(username: &str) -> bool {
-    let Ok(output) = std::process::Command::new("fprintd-list")
-        .env("LC_ALL", "C")
-        .arg(username)
-        .output()
-    else {
+    let Ok(output) = bounded_command::run_with_env(
+        "fprintd-list",
+        &[username],
+        &[("LC_ALL", "C")],
+        None,
+        64 * 1024,
+        std::time::Duration::from_secs(3),
+    ) else {
         return false;
     };
     output.status.success()

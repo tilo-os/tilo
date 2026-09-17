@@ -12,7 +12,7 @@
 #  1. Writes the `[user]` block's `public_key_hex` into
 #     `/var/lib/tilo/user-identity/pubkey.bin`.
 #  2. Generates a fresh device Ed25519 keypair and stores it at
-#     `/var/lib/tilo/device/keypair.bin` (secret half is 0600, mode
+#     `/var/lib/tilo/device-private/keypair.bin` (secret half is 0640, mode
 #     is enforced).
 #  3. If `[enrollment].token` is present, decodes the base32-Crockford
 #     enrollment token, verifies it under the pre-baked

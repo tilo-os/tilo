@@ -39,6 +39,7 @@ use fs::{
 };
 use fuser::{Config, MountOption, SessionACL};
 use std::io::Read;
+use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -2235,6 +2236,9 @@ async fn recipient_service(
     fs_binary: Option<PathBuf>,
 ) -> Result<()> {
     prepare_owner_service_parent(&socket)?;
+    // Consume and close-on-exec the activation descriptor before starting any
+    // router tasks or supervised mount children that could otherwise inherit it.
+    let listener = recipient_service_listener(&socket)?;
     std::fs::create_dir_all(&cache_root)?;
     let paths = identity_paths();
     let certified = load_certified_mount_identity(&paths, now_ns())?;
@@ -2297,7 +2301,6 @@ async fn recipient_service(
         }
     });
 
-    let listener = bind_recipient_service_socket(&socket)?;
     let server = Arc::new(RecipientControlServer::with_mounts(subscriptions, mounts));
     println!("Recipient share service listening at {}", socket.display());
     let result = server.serve(listener).await;
@@ -2305,6 +2308,45 @@ async fn recipient_service(
     inbox_router.shutdown().await?;
     result?;
     Ok(())
+}
+
+fn recipient_service_listener(socket: &Path) -> Result<tokio::net::UnixListener> {
+    const SYSTEMD_LISTEN_FD: libc::c_int = 3;
+    let pid_matches = std::env::var("LISTEN_PID")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        == Some(std::process::id());
+    if !pid_matches {
+        return bind_recipient_service_socket(socket);
+    }
+    anyhow::ensure!(
+        std::env::var("LISTEN_FDS").as_deref() == Ok("1"),
+        "systemd must pass exactly one recipient-service listener"
+    );
+    // SAFETY: fcntl only validates the scalar descriptor.
+    anyhow::ensure!(
+        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } != -1,
+        "systemd recipient-service listener fd is closed"
+    );
+    // SAFETY: validated activation metadata transfers ownership of fd 3 once.
+    let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
+    anyhow::ensure!(
+        listener.local_addr()?.as_pathname() == Some(socket),
+        "systemd recipient-service listener has an unexpected path"
+    );
+    listener.set_nonblocking(true)?;
+    // Do not leak the service control endpoint into supervised FUSE children.
+    anyhow::ensure!(
+        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } != -1,
+        "cannot mark recipient-service listener close-on-exec"
+    );
+    // SAFETY: recipient_service runs before spawning its worker tasks.
+    unsafe {
+        std::env::remove_var("LISTEN_PID");
+        std::env::remove_var("LISTEN_FDS");
+        std::env::remove_var("LISTEN_FDNAMES");
+    }
+    tokio::net::UnixListener::from_std(listener).map_err(Into::into)
 }
 
 fn prepare_owner_service_parent(socket: &Path) -> Result<()> {

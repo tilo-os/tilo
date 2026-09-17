@@ -299,9 +299,10 @@ volume; `P1-2b` and `P1-2c` are proved structurally, not through a boot.
 
 ## P1-2d — the image build corrupts its own rpmdb, reproducibly, and blocks every boot proof
 
-**OPEN**, and unrelated to disk encryption other than by blocking its verification. Four
-consecutive `podman build` runs of `os/Containerfile` on the development host failed in the OS
-assembly stage, three of them at the same step:
+**MITIGATION IMPLEMENTED; full pinned-image proof pending.** This is unrelated to disk encryption
+other than by blocking its verification. Four consecutive historical `podman build` runs of
+`os/Containerfile` on the development host failed in the OS assembly stage, three of them at the
+same step:
 
 ```
 Transaction failed: Rpm transaction failed.
@@ -335,11 +336,19 @@ surfaces as dnf insisting that packages the base image plainly has are missing"*
 `TILO_BUILD_ARGS=--no-cache` offered as the way out. `--no-cache` does **not** help: it prevents
 inheriting a corrupt layer but not producing one.
 
-**Fix direction:** stop the sqlite sidecars from entering a layer — checkpoint or remove
-`rpmdb.sqlite-{wal,shm}` at the end of each `dnf` step, or collapse the twelve consecutive
-`dnf install` layers into fewer transactions. A build-time assertion that
-`rpm -q --whatprovides` still resolves a package installed in the previous step would catch it
-where it happens rather than three steps later.
+**Implemented mitigation:** every rootfs RPM transaction now ends in
+`os/scripts/finalize-rpmdb.sh`. It rebuilds the SQLite database onto a fresh inode, verifies it,
+proves the file index still maps `/usr/bin/basename` to `coreutils`, and removes WAL/SHM only after
+the last RPM reader exits. The finished image repeats the database/file-index checks and rejects
+either sidecar. A clean Fedora 44 container probe on 2026-09-17 exercised the helper against the
+real RPM backend and passed the rebuild, ownership lookup, sidecar-absence, and `rpm --verifydb`
+checks.
+
+What remains unproved is the original failure boundary: a complete Tilo image assembly followed by
+the encrypted three-mode boot proof. Local assembly currently stops earlier because the pinned
+Tilo RPM/kernel registry requires credentials unavailable to the development container; CI remains
+the authoritative end-to-end exercise. Do not call this defect closed until that build crosses
+multiple layer boundaries and boots the resulting image.
 
 ---
 
@@ -524,7 +533,7 @@ integrity rests on the pin being real rather than aspirational: a pin that relia
 "just point it at whatever resolves today" away from becoming an unpinned build under deadline
 pressure, and the frozen RPM set would then be resolved against an unrecorded base.
 
-**Fix direction:** mirror the base into `code.podesta.ai/qos/fedora-bootc` and pin against the
+**Fix direction:** mirror the base into `code.podesta.ai/tilo/fedora-bootc` and pin against the
 mirror — the same shape `os/Containerfile.rpms` + `snapshot-rpms` already use for packages, since
 our registry collects nothing. Copy with the multi-arch index intact. Fixed on this branch: the
 `mirror-base` workflow plus `os/base-snapshot.env` (`BASE_REF`), consumed by every Containerfile
@@ -700,7 +709,7 @@ Held by `os/tests/kernel_hardening_invariants.sh`.
 
 ## P2-6 — `insecureAcceptAnything` is the container policy default
 
-`os/etc/containers/policy.json:2-4`. Signature enforcement is scoped to `code.podesta.ai/qos/tilo`
+`os/etc/containers/policy.json:2-4`. Signature enforcement is scoped to `code.podesta.ai/tilo/tilo`
 only; every other image reference is unverified.
 
 ---

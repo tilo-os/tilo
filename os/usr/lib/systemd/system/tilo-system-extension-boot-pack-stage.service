@@ -9,6 +9,15 @@ ConditionPathExists=/var/lib/tilo/system-extensions/boot-pack-request
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/tilo-system-extension-manager stage-pending
+# A request can survive a reboot and activate as the greeter starts. Pulling,
+# unpacking, and composing a deployment must yield to login and game workloads;
+# correctness is enforced by signatures/state transitions, not completion
+# latency.
+Nice=10
+CPUWeight=20
+IOWeight=20
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 
 # This is the sole networked BootPack boundary. Its input is the root-owned,
 # fixed queue file written by the socket dispatcher; the manager independently
