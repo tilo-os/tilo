@@ -3677,6 +3677,12 @@ struct PageContentInput<'a> {
     note_numbers: &'a HashMap<String, usize>,
 }
 
+struct NotesSpellcheckInput<'a> {
+    spell_by_block: &'a HashMap<String, Vec<(usize, usize)>>,
+    note_numbers: &'a HashMap<String, usize>,
+    page_notes: &'a mut HashMap<usize, Vec<usize>>,
+}
+
 impl WordProcessorWidget {
     /// Toggle a layout-edit mode from a chip click.
     fn toggle_layout_mode(&mut self, mode: LayoutMode) {
@@ -7453,9 +7459,11 @@ impl WordProcessorWidget {
                 fg,
                 text_renderer,
                 &item,
-                spell_by_block,
-                note_nums,
-                &mut page_notes,
+                NotesSpellcheckInput {
+                    spell_by_block,
+                    note_numbers: note_nums,
+                    page_notes: &mut page_notes,
+                },
             );
 
             if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
@@ -7802,17 +7810,19 @@ impl WordProcessorWidget {
 
     /// Spell-check squiggles + note-reference superscripts over one pass-2
     /// item's text, recording `page_notes` for the footnote-area pass.
-    #[allow(clippy::too_many_arguments)]
     fn draw_laid_notes_and_spellcheck(
         &self,
         scene: &mut Scene,
         fg: &FrameGeometry,
         text_renderer: &mut TextRenderer,
         item: &LaidItemCtx,
-        spell_by_block: &HashMap<String, Vec<(usize, usize)>>,
-        note_nums: &HashMap<String, usize>,
-        page_notes: &mut HashMap<usize, Vec<usize>>,
+        input: NotesSpellcheckInput<'_>,
     ) {
+        let NotesSpellcheckInput {
+            spell_by_block,
+            note_numbers: note_nums,
+            page_notes,
+        } = input;
         let (l, layout, ly) = (item.l, item.layout, item.ly);
         // Spell-check squiggles: a wavy red underline under each misspelled
         // span. The byte span maps to one-or-more on-screen rects via the same
