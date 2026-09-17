@@ -4786,6 +4786,63 @@ mod tests {
         (app, doc)
     }
 
+    struct InterleavedEngineFixture {
+        app: MailApp,
+        doc: AutoCommit,
+        incoming: std::sync::mpsc::Sender<EngineEvent>,
+        refresh_id: EngineRequestId,
+        send_id: EngineRequestId,
+        unrelated_id: EngineRequestId,
+        invocation: tilo_actions::InvocationId,
+    }
+
+    impl InterleavedEngineFixture {
+        fn new() -> Self {
+            let (mut app, doc) = app();
+            let (outgoing, _outgoing_rx) = std::sync::mpsc::channel();
+            let (incoming, incoming_rx) = std::sync::mpsc::channel();
+            app.engine = Some(EngineHandle {
+                tx: outgoing,
+                rx: incoming_rx,
+            });
+            let refresh_id = uuid::Uuid::new_v4();
+            let send_id = uuid::Uuid::new_v4();
+            let unrelated_id = uuid::Uuid::new_v4();
+            let invocation = tilo_actions::InvocationId::new();
+            app.resource_refresh_invocation = Some((refresh_id, invocation));
+            let message = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].clone();
+            app.pending_send = Some(PendingSend {
+                request_id: send_id,
+                message,
+                edited_draft: None,
+            });
+            app.pending_engine_requests
+                .insert(refresh_id, EngineRequestKind::Fetch);
+            app.pending_engine_requests
+                .insert(send_id, EngineRequestKind::Send);
+            app.pending_engine_requests
+                .insert(unrelated_id, EngineRequestKind::StoreFlag);
+            app.awaiting_engine = true;
+            Self {
+                app,
+                doc,
+                incoming,
+                refresh_id,
+                send_id,
+                unrelated_id,
+                invocation,
+            }
+        }
+
+        fn send(&self, event: EngineEvent) {
+            self.incoming.send(event).unwrap();
+        }
+
+        fn drain(&mut self) {
+            self.app.drain_engine(&mut self.doc);
+        }
+    }
+
     #[test]
     fn calendar_invitation_handoff_creates_a_durable_reviewable_draft() {
         let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:event@example\r\nDTSTART:20260915T120000Z\r\nDTEND:20260915T130000Z\r\nSUMMARY:Review\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
@@ -5457,67 +5514,49 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the regression deliberately drives the full three-request interleaving in one readable sequence"
-    )]
     fn interleaved_engine_events_only_settle_their_own_request() {
-        let (mut app, mut doc) = app();
-        let (outgoing, _outgoing_rx) = std::sync::mpsc::channel();
-        let (incoming_tx, incoming) = std::sync::mpsc::channel();
-        app.engine = Some(EngineHandle {
-            tx: outgoing,
-            rx: incoming,
-        });
+        let mut fixture = InterleavedEngineFixture::new();
 
-        let refresh_id = uuid::Uuid::new_v4();
-        let send_id = uuid::Uuid::new_v4();
-        let unrelated_id = uuid::Uuid::new_v4();
-        let invocation = tilo_actions::InvocationId::new();
-        app.resource_refresh_invocation = Some((refresh_id, invocation));
-        let message = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].clone();
-        app.pending_send = Some(PendingSend {
-            request_id: send_id,
-            message,
-            edited_draft: None,
+        fixture.send(EngineEvent::Error {
+            request_id: fixture.unrelated_id,
+            kind: EngineRequestKind::StoreFlag,
+            context: "flag".into(),
+            message: "rejected".into(),
         });
-        app.pending_engine_requests
-            .insert(refresh_id, EngineRequestKind::Fetch);
-        app.pending_engine_requests
-            .insert(send_id, EngineRequestKind::Send);
-        app.pending_engine_requests
-            .insert(unrelated_id, EngineRequestKind::StoreFlag);
-        app.awaiting_engine = true;
-
-        incoming_tx
-            .send(EngineEvent::Error {
-                request_id: unrelated_id,
-                kind: EngineRequestKind::StoreFlag,
-                context: "flag".into(),
-                message: "rejected".into(),
-            })
-            .unwrap();
-        incoming_tx
-            .send(EngineEvent::Sent {
-                request_id: unrelated_id,
-                wire_bytes: 9,
-            })
-            .unwrap();
-        incoming_tx
-            .send(EngineEvent::Completed {
-                request_id: unrelated_id,
-                kind: crate::engine::EngineRequestKind::StoreFlag,
-            })
-            .unwrap();
-        app.drain_engine(&mut doc);
-        assert!(app.resource_refresh_invocation.is_some());
-        assert!(app.resource_refresh_result.is_none());
-        assert!(app.pending_send.is_some());
-        assert!(app.pending_engine_requests.contains_key(&refresh_id));
-        assert!(app.pending_engine_requests.contains_key(&send_id));
-        assert!(!app.pending_engine_requests.contains_key(&unrelated_id));
+        fixture.send(EngineEvent::Sent {
+            request_id: fixture.unrelated_id,
+            wire_bytes: 9,
+        });
+        fixture.send(EngineEvent::Completed {
+            request_id: fixture.unrelated_id,
+            kind: EngineRequestKind::StoreFlag,
+        });
+        fixture.drain();
+        assert!(fixture.app.resource_refresh_invocation.is_some());
+        assert!(fixture.app.resource_refresh_result.is_none());
+        assert!(fixture.app.pending_send.is_some());
         assert!(
-            app.shared
+            fixture
+                .app
+                .pending_engine_requests
+                .contains_key(&fixture.refresh_id)
+        );
+        assert!(
+            fixture
+                .app
+                .pending_engine_requests
+                .contains_key(&fixture.send_id)
+        );
+        assert!(
+            !fixture
+                .app
+                .pending_engine_requests
+                .contains_key(&fixture.unrelated_id)
+        );
+        assert!(
+            fixture
+                .app
+                .shared
                 .borrow()
                 .status
                 .as_deref()
@@ -5525,60 +5564,63 @@ mod tests {
             "an unmatched Sent event must not claim delivery"
         );
 
-        incoming_tx
-            .send(EngineEvent::Fetched {
-                request_id: send_id,
-                account_id: "me@tilo.example".into(),
-                folder: Folder::Inbox,
-                messages: Vec::new(),
-            })
-            .unwrap();
-        app.drain_engine(&mut doc);
-        assert!(app.pending_send.is_some(), "wrong-kind results are inert");
-        assert!(app.pending_engine_requests.contains_key(&send_id));
+        fixture.send(EngineEvent::Fetched {
+            request_id: fixture.send_id,
+            account_id: "me@tilo.example".into(),
+            folder: Folder::Inbox,
+            messages: Vec::new(),
+        });
+        fixture.drain();
+        assert!(
+            fixture.app.pending_send.is_some(),
+            "wrong-kind results are inert"
+        );
+        assert!(
+            fixture
+                .app
+                .pending_engine_requests
+                .contains_key(&fixture.send_id)
+        );
 
-        incoming_tx
-            .send(EngineEvent::Fetched {
-                request_id: refresh_id,
-                account_id: "me@tilo.example".into(),
-                folder: Folder::Inbox,
-                messages: Vec::new(),
-            })
-            .unwrap();
-        incoming_tx
-            .send(EngineEvent::Completed {
-                request_id: refresh_id,
-                kind: crate::engine::EngineRequestKind::Fetch,
-            })
-            .unwrap();
-        app.drain_engine(&mut doc);
-        assert!(app.resource_refresh_invocation.is_some());
+        fixture.send(EngineEvent::Fetched {
+            request_id: fixture.refresh_id,
+            account_id: "me@tilo.example".into(),
+            folder: Folder::Inbox,
+            messages: Vec::new(),
+        });
+        fixture.send(EngineEvent::Completed {
+            request_id: fixture.refresh_id,
+            kind: EngineRequestKind::Fetch,
+        });
+        fixture.drain();
+        assert!(fixture.app.resource_refresh_invocation.is_some());
         assert!(matches!(
-            app.resource_refresh_result.as_ref(),
-            Some(tilo_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if *got == invocation
+            fixture.app.resource_refresh_result.as_ref(),
+            Some(tilo_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if *got == fixture.invocation
         ));
         assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(tilo_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if got == invocation
+            fixture.app.poll_resource_operation(
+                fixture.invocation,
+                false,
+                &fixture.doc,
+                &automerge::ROOT,
+            ),
+            Some(tilo_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if got == fixture.invocation
         ));
-        assert!(app.resource_refresh_invocation.is_none());
-        assert!(app.pending_send.is_some());
+        assert!(fixture.app.resource_refresh_invocation.is_none());
+        assert!(fixture.app.pending_send.is_some());
 
-        incoming_tx
-            .send(EngineEvent::Sent {
-                request_id: send_id,
-                wire_bytes: 42,
-            })
-            .unwrap();
-        incoming_tx
-            .send(EngineEvent::Completed {
-                request_id: send_id,
-                kind: crate::engine::EngineRequestKind::Send,
-            })
-            .unwrap();
-        app.drain_engine(&mut doc);
-        assert!(app.pending_send.is_none());
-        assert!(!app.awaiting_engine);
+        fixture.send(EngineEvent::Sent {
+            request_id: fixture.send_id,
+            wire_bytes: 42,
+        });
+        fixture.send(EngineEvent::Completed {
+            request_id: fixture.send_id,
+            kind: EngineRequestKind::Send,
+        });
+        fixture.drain();
+        assert!(fixture.app.pending_send.is_none());
+        assert!(!fixture.app.awaiting_engine);
     }
 
     #[test]
