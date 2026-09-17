@@ -4,10 +4,16 @@
 //! Notification settings remain under Windows/user control. Successful submission
 //! does not imply that Windows displayed a banner (e.g. Do Not Disturb).
 
-use std::{marker::PhantomData, path::Path, rc::Rc};
+use std::{
+    marker::PhantomData,
+    path::Path,
+    rc::Rc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::UI::Notifications::{
-    NotificationSetting, ToastNotification, ToastNotificationManager, ToastNotifier,
+    NotificationSetting, ScheduledToastNotification, ToastNotification, ToastNotificationManager,
+    ToastNotifier,
 };
 use windows::Win32::Foundation::{PROPERTYKEY, RPC_E_CHANGED_MODE};
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
@@ -17,8 +23,8 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Variant::VT_LPWSTR;
 use windows::Win32::System::WinRT::{RO_INIT_SINGLETHREADED, RoInitialize, RoUninitialize};
 use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
-use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
-use windows::core::{GUID, HSTRING, Interface, PCWSTR, PWSTR};
+use windows::Win32::UI::Shell::{IShellLinkW, SHStrDupW, ShellLink};
+use windows::core::{GUID, HSTRING, Interface, PCWSTR};
 
 struct Apartment {
     acquired: bool,
@@ -56,6 +62,13 @@ pub struct HostNotifications {
     app_id: HSTRING,
     // Drop COM interfaces before releasing the apartment.
     _apartment: Apartment,
+}
+
+/// A pending notification owned by this application, as reported by Windows.
+#[derive(Debug)]
+pub struct ScheduledNotice {
+    pub id: String,
+    pub delivery_time: SystemTime,
 }
 
 impl HostNotifications {
@@ -116,6 +129,131 @@ impl HostNotifications {
             &self.app_id,
         )
     }
+
+    /// Persist a one-time notification in Windows' scheduler. An identical
+    /// request is a no-op; changing its time or contents replaces that ID.
+    /// IDs allow 15 UTF-16 units: this Windows host counts the terminator in
+    /// the documented 16-character limit (unlike ordinary toast tags).
+    pub fn schedule(
+        &self,
+        id: &str,
+        title: &str,
+        body: &str,
+        delivery_time: SystemTime,
+    ) -> windows::core::Result<()> {
+        if id.is_empty() || id.encode_utf16().count() > 15 {
+            return Err(windows::core::Error::from_hresult(
+                windows::Win32::Foundation::E_INVALIDARG,
+            ));
+        }
+        let delivery = to_windows_time(delivery_time)?;
+        let xml = XmlDocument::new()?;
+        xml.LoadXml(&HSTRING::from(format!(
+            "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
+            escape_xml(title), escape_xml(body)
+        )))?;
+        let expected_xml = xml.GetXml()?;
+        for pending in self.pending()? {
+            if pending.Id()?.to_string() == id {
+                if pending.DeliveryTime()? == delivery
+                    && pending.Content()?.GetXml()? == expected_xml
+                {
+                    return Ok(());
+                }
+                self.notifier.RemoveFromSchedule(&pending)?;
+            }
+        }
+        let toast = ScheduledToastNotification::CreateScheduledToastNotification(&xml, delivery)?;
+        toast.SetId(&HSTRING::from(id))?;
+        toast.SetTag(&HSTRING::from(id))?;
+        toast.SetGroup(&HSTRING::from("tilo"))?;
+        self.notifier.AddToSchedule(&toast)
+    }
+
+    pub fn scheduled(&self) -> windows::core::Result<Vec<ScheduledNotice>> {
+        self.pending()?
+            .into_iter()
+            .map(|notice| {
+                Ok(ScheduledNotice {
+                    id: notice.Id()?.to_string(),
+                    delivery_time: from_windows_time(notice.DeliveryTime()?)?,
+                })
+            })
+            .collect()
+    }
+
+    pub fn cancel_schedule(&self, id: &str) -> windows::core::Result<()> {
+        for notice in self.pending()? {
+            if notice.Id()?.to_string() == id {
+                self.notifier.RemoveFromSchedule(&notice)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn pending(&self) -> windows::core::Result<Vec<ScheduledToastNotification>> {
+        match self.notifier.Setting() {
+            Ok(_) => {}
+            Err(error)
+                if error.code() == windows::Win32::Foundation::ERROR_NOT_FOUND.to_hresult() =>
+            {
+                // Unpackaged apps must submit once before using the scheduler.
+                // Register silently, with an expiry as a backstop if removal fails.
+                let xml = XmlDocument::new()?;
+                xml.LoadXml(&HSTRING::from("<toast><visual><binding template=\"ToastGeneric\"><text>Tilo</text></binding></visual></toast>"))?;
+                let toast = ToastNotification::CreateToastNotification(&xml)?;
+                toast.SetTag(&HSTRING::from("tilo-register"))?;
+                toast.SetGroup(&HSTRING::from("tilo"))?;
+                toast.SetSuppressPopup(true)?;
+                let expiry: windows::Foundation::IReference<windows::Foundation::DateTime> =
+                    windows::Foundation::PropertyValue::CreateDateTime(to_windows_time(
+                        SystemTime::now() + Duration::from_secs(15),
+                    )?)?
+                    .cast()?;
+                toast.SetExpirationTime(&expiry)?;
+                self.notifier.Show(&toast)?;
+                self.remove("tilo-register")?;
+            }
+            Err(error) => return Err(error),
+        }
+        Ok(self
+            .notifier
+            .GetScheduledToastNotifications()?
+            .into_iter()
+            .collect())
+    }
+}
+
+const WINDOWS_UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
+
+fn to_windows_time(time: SystemTime) -> windows::core::Result<windows::Foundation::DateTime> {
+    let ticks = time
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_nanos() / 100).ok())
+        .and_then(|ticks| ticks.checked_add(WINDOWS_UNIX_EPOCH_TICKS))
+        .ok_or_else(|| {
+            windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG)
+        })?;
+    Ok(windows::Foundation::DateTime {
+        UniversalTime: ticks,
+    })
+}
+
+fn from_windows_time(time: windows::Foundation::DateTime) -> windows::core::Result<SystemTime> {
+    let ticks = time
+        .UniversalTime
+        .checked_sub(WINDOWS_UNIX_EPOCH_TICKS)
+        .and_then(|ticks| u64::try_from(ticks).ok())
+        .ok_or_else(|| {
+            windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG)
+        })?;
+    UNIX_EPOCH
+        .checked_add(
+            Duration::from_secs(ticks / 10_000_000)
+                + Duration::from_nanos((ticks % 10_000_000) * 100),
+        )
+        .ok_or_else(|| windows::core::Error::from_hresult(windows::Win32::Foundation::E_INVALIDARG))
 }
 
 fn escape_xml(value: &str) -> String {
@@ -141,8 +279,8 @@ pub fn register_shortcut(
     let shortcut = HSTRING::from(shortcut.as_os_str());
     let app_id = HSTRING::from(app_id);
     // SAFETY: initialized apartment; all referenced UTF-16 buffers outlive calls.
-    // SetValue copies the borrowed PROPVARIANT string. It is not allocated with
-    // CoTaskMemAlloc, so we deliberately do not call PropVariantClear on it.
+    // PROPVARIANT's Drop calls PropVariantClear. SHStrDupW allocates the string
+    // with the matching COM allocator; never borrow an HSTRING's storage here.
     unsafe {
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
         let file: IPersistFile = link.cast()?;
@@ -155,7 +293,7 @@ pub fn register_shortcut(
         let store: IPropertyStore = link.cast()?;
         let mut value = PROPVARIANT::default();
         (*value.Anonymous.Anonymous).vt = VT_LPWSTR;
-        (*value.Anonymous.Anonymous).Anonymous.pwszVal = PWSTR(app_id.as_ptr().cast_mut());
+        (*value.Anonymous.Anonymous).Anonymous.pwszVal = SHStrDupW(&app_id)?;
         let key = PROPERTYKEY {
             fmtid: GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3),
             pid: 5,
@@ -170,6 +308,60 @@ pub fn register_shortcut(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_shortcut_registration_owns_its_property_string() {
+        let directory = tempfile::tempdir().unwrap();
+        let shortcut = directory.path().join("Clocks test.lnk");
+        for id in [
+            "dev.tilo.test.first",
+            "dev.tilo.test.second",
+            "dev.tilo.test.third",
+        ] {
+            register_shortcut(
+                id,
+                "Tilo test",
+                &std::env::current_exe().unwrap(),
+                &shortcut,
+            )
+            .unwrap();
+            let _apartment = Apartment::new().unwrap();
+            // SAFETY: thread apartment initialized, all interfaces owned locally.
+            unsafe {
+                let link: IShellLinkW =
+                    CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
+                let file: IPersistFile = link.cast().unwrap();
+                file.Load(&HSTRING::from(shortcut.as_os_str()), STGM_READWRITE)
+                    .unwrap();
+                let store: IPropertyStore = link.cast().unwrap();
+                let key = PROPERTYKEY {
+                    fmtid: GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3),
+                    pid: 5,
+                };
+                let value = store.GetValue(&key).unwrap();
+                assert_eq!(
+                    windows::core::BSTR::try_from(&value).unwrap().to_string(),
+                    id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scheduler_time_conversion_preserves_windows_precision() {
+        let time = UNIX_EPOCH + Duration::new(1_800_000_000, 123_456_700);
+        assert_eq!(
+            from_windows_time(to_windows_time(time).unwrap()).unwrap(),
+            time
+        );
+        assert!(to_windows_time(UNIX_EPOCH - Duration::from_secs(1)).is_err());
+        assert!(
+            from_windows_time(windows::Foundation::DateTime {
+                UniversalTime: i64::MIN
+            })
+            .is_err()
+        );
+    }
 
     #[test]
     fn notification_text_cannot_add_markup() {
