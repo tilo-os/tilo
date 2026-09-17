@@ -2510,6 +2510,20 @@ impl PlayerApp {
             };
             let row = Rect::new(panel.x0 + 12.0, *row_y, panel.x1 - 12.0, *row_y + row_h);
             fill_rect(scene, transform, row, theme.tokens.colors.surfaces.base);
+            // Keep the grouping visible even on renderers whose hairline
+            // rectangle stroke lands between device pixels at scaled output.
+            fill_rect(
+                scene,
+                transform,
+                Rect::new(row.x0, row.y0, row.x1, row.y0 + 1.0),
+                theme.tokens.colors.border_standard,
+            );
+            fill_rect(
+                scene,
+                transform,
+                Rect::new(row.x0, row.y1 - 1.0, row.x1, row.y1),
+                theme.tokens.colors.border_standard,
+            );
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
