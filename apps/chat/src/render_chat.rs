@@ -383,7 +383,13 @@ impl ChatApp {
         }
 
         let header = self.draw_sidebar_header(scene, tf, tr, theme, side, hits);
-        self.draw_sidebar_tree(scene, tf, tr, theme, presence, side, header, hits);
+        self.draw_sidebar_tree(
+            PaintContext::new(scene, tf, tr, theme),
+            presence,
+            side,
+            header,
+            hits,
+        );
         // Tilo stays calm while a workspace is private. The shell already owns
         // the current person's identity; repeating an "Available" row in a
         // one-person Chat workspace only turns an empty conversation into
@@ -662,27 +668,33 @@ impl ChatApp {
 
     /// The channel tree: an uncategorised group first, then each category
     /// with a collapse caret, a "+" to add a channel, and its channels.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_sidebar_tree(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
         side: Rect,
         header: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let mut y = header.y1 + 38.0;
         let body_bottom = side.y1 - 60.0;
 
         // Uncategorised channels (category id "").
-        y = self.draw_channel_group(scene, tf, tr, theme, presence, side, None, y, hits);
+        y = self.draw_channel_group(
+            PaintContext::new(scene, tf, tr, theme),
+            presence,
+            side,
+            None,
+            y,
+            hits,
+        );
 
         let categories: Vec<_> = self.ws_categories().into_iter().cloned().collect();
         for cat in categories {
@@ -707,10 +719,7 @@ impl ChatApp {
                 matches!(&self.rename, Some(MenuTarget::Category(id)) if id == &cat.id);
             if renaming_cat {
                 self.draw_inline_rename(
-                    scene,
-                    tf,
-                    tr,
-                    theme,
+                    PaintContext::new(scene, tf, tr, theme),
                     presence,
                     hrow.x0 + 18.0,
                     y + 4.0,
@@ -753,10 +762,7 @@ impl ChatApp {
 
             if !cat.collapsed {
                 y = self.draw_channel_group(
-                    scene,
-                    tf,
-                    tr,
-                    theme,
+                    PaintContext::new(scene, tf, tr, theme),
                     presence,
                     side,
                     Some(&cat.id),
@@ -927,19 +933,21 @@ impl ChatApp {
     /// click + right-click context-menu hits, applies the active row swipe
     /// offset, and renders voice-channel presence (members + speaking) under
     /// each voice channel — Discord-style.
-    #[allow(clippy::too_many_arguments)]
     fn draw_channel_group(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
         side: Rect,
         category: Option<&str>,
         mut y: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let cat_key = category.unwrap_or("");
         let channels: Vec<_> = self
             .category_channels(cat_key)
@@ -957,11 +965,24 @@ impl ChatApp {
                     ws_channel_ids.get(s.channel_index).map(String::as_str) == Some(ch.id.as_str())
                 })
                 .map_or(0.0, |s| s.dx());
-            y = self.draw_channel_row(scene, tf, tr, theme, presence, side, ch, y, swipe_dx, hits);
+            y = self.draw_channel_row(
+                PaintContext::new(scene, tf, tr, theme),
+                presence,
+                side,
+                ch,
+                y,
+                swipe_dx,
+                hits,
+            );
 
             // Voice presence: list connected members under a voice channel.
             if ch.kind == ChannelKind::Voice {
-                y = self.draw_voice_presence_rows(scene, tf, tr, theme, side, &ch.id, y);
+                y = self.draw_voice_presence_rows(
+                    PaintContext::new(scene, tf, tr, theme),
+                    side,
+                    &ch.id,
+                    y,
+                );
             }
         }
         y
@@ -970,16 +991,9 @@ impl ChatApp {
     /// One channel row: swipe-to-delete affordance, active/live indicators,
     /// the glyph + name (or its inline rename editor), and the unread badge.
     /// Returns the cursor `y` for the row after this one.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_channel_row(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
         side: Rect,
         ch: &crate::model::Channel,
@@ -987,6 +1001,12 @@ impl ChatApp {
         swipe_dx: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let row = Rect::new(
             side.x0 + 8.0 - swipe_dx,
             y,
@@ -1004,7 +1024,12 @@ impl ChatApp {
 
         Self::draw_channel_row_swipe_delete(scene, tf, tr, theme, &ctx, swipe_dx);
         Self::draw_channel_row_glyph(scene, tf, tr, theme, &ctx);
-        self.draw_channel_row_label(scene, tf, tr, theme, presence, &ctx, hits);
+        self.draw_channel_row_label(
+            PaintContext::new(scene, tf, tr, theme),
+            presence,
+            &ctx,
+            hits,
+        );
         self.draw_channel_row_status(scene, tf, tr, theme, &ctx);
 
         // Click joins/opens; right-click (resolved against this row's
@@ -1089,25 +1114,24 @@ impl ChatApp {
 
     /// The channel's inline rename editor when it is the rename target,
     /// otherwise its (possibly truncated) name.
-    #[allow(clippy::too_many_arguments)]
     fn draw_channel_row_label(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
         ctx: &ChannelRowCtx<'_>,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let renaming = matches!(&self.rename, Some(MenuTarget::Channel(id)) if id == &ctx.ch.id);
         if renaming {
             self.draw_inline_rename(
-                scene,
-                tf,
-                tr,
-                theme,
+                PaintContext::new(scene, tf, tr, theme),
                 presence,
                 ctx.row.x0 + 32.0,
                 ctx.y + 6.0,
@@ -1186,17 +1210,19 @@ impl ChatApp {
     /// Connected members listed under a voice channel, Discord-style: an
     /// avatar with a speaking ring, their name, and a mic/audio-only glyph.
     /// Returns the cursor `y` after the last member row.
-    #[allow(clippy::too_many_arguments)]
     fn draw_voice_presence_rows(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         side: Rect,
         channel_id: &str,
         mut y: f64,
     ) -> f64 {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         for m in self.voice_in(channel_id) {
             if let Some(u) = self.user(&m.user) {
@@ -1265,19 +1291,21 @@ impl ChatApp {
 
     /// Draw the inline rename editor field (a bordered box + the working
     /// text + a caret), recording a confirm hit on it.
-    #[allow(clippy::too_many_arguments)]
     fn draw_inline_rename(
         &mut self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         presence: &PresenceCtx,
         x: f64,
         y: f64,
         w: f64,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
         let c = &theme.tokens.colors;
         let box_r = Rect::new(x - 4.0, y - 3.0, x + w, y + 19.0);
         fill_round(scene, tf, box_r, 5.0, c.neutral[2]);
