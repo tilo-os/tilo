@@ -1106,7 +1106,9 @@ impl Default for RealtimeBridge {
                 )),
             ),
             broker,
-            capture: Arc::default(),
+            capture: Arc::new(Mutex::new(
+                crate::portal::CaptureBroker::with_system_defaults(),
+            )),
             sessions: HashMap::new(),
             subscribers: HashMap::new(),
             pending_imported_offers: VecDeque::new(),
@@ -1293,6 +1295,25 @@ pub struct RealtimeFabricAppBridge {
     state: Arc<CapnpBrokerState>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RealtimeSourceUiView {
+    pub session: String,
+    pub room_label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RealtimeConsentUiView {
+    pub session: String,
+    pub room_label: String,
+    pub source: crate::shell::personal_continuity::DeviceId,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RealtimeContinuityUiView {
+    pub sources: Vec<RealtimeSourceUiView>,
+    pub consents: Vec<RealtimeConsentUiView>,
+}
+
 impl RealtimeFabricAppBridge {
     pub(crate) fn from_state(state: Arc<CapnpBrokerState>) -> Self {
         Self { state }
@@ -1312,6 +1333,211 @@ impl RealtimeFabricAppBridge {
     /// device-fabric runtime has drained inbound transport actions.
     pub fn pump_app_events(&self) {
         self.state.pump_realtime_fabric_app_events();
+    }
+
+    /// Bounded shell-only projection for compositor chrome. Certified device
+    /// identities never enter the application contract.
+    #[must_use]
+    pub fn ui_view(&self) -> RealtimeContinuityUiView {
+        use crate::shell::realtime_session::RealtimeSessionPhase;
+
+        let Ok(realtime) = self.state.realtime.lock() else {
+            return RealtimeContinuityUiView::default();
+        };
+        let Ok(broker) = realtime.broker.lock() else {
+            return RealtimeContinuityUiView::default();
+        };
+        let mut view = RealtimeContinuityUiView::default();
+        for (token, binding) in &realtime.sessions {
+            let Some(session) = broker.session(binding.id) else {
+                continue;
+            };
+            if !binding.imported && session.phase == RealtimeSessionPhase::SourceLive {
+                view.sources.push(RealtimeSourceUiView {
+                    session: token.clone(),
+                    room_label: session.intent.room.room_id().to_string(),
+                });
+            } else if binding.imported
+                && session.phase == RealtimeSessionPhase::AwaitingTargetAccept
+            {
+                view.consents.push(RealtimeConsentUiView {
+                    session: token.clone(),
+                    room_label: session.intent.room.room_id().to_string(),
+                    source: session.source,
+                });
+            }
+        }
+        view.sources.sort_by(|left, right| {
+            left.room_label
+                .cmp(&right.room_label)
+                .then_with(|| left.session.cmp(&right.session))
+        });
+        view.consents.sort_by(|left, right| {
+            left.room_label
+                .cmp(&right.room_label)
+                .then_with(|| left.session.cmp(&right.session))
+        });
+        view
+    }
+
+    /// Start an exact source-to-target handoff selected in trusted shell UI.
+    ///
+    /// # Errors
+    ///
+    /// Rejects disabled continuity, stale/non-source sessions, identity
+    /// mismatches, offline targets, and invalid broker transitions.
+    pub fn propose_to(
+        &self,
+        session: &str,
+        target: &crate::shell::personal_continuity::DeviceId,
+    ) -> Result<(), String> {
+        if !crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+            .permits(crate::shell::continuity_policy::ContinuityCapability::RealtimeSessions)
+        {
+            return Err("realtime session continuity is disabled".into());
+        }
+        let mut realtime = self
+            .state
+            .realtime
+            .lock()
+            .map_err(|_| "realtime broker is unavailable".to_string())?;
+        let binding = realtime
+            .sessions
+            .get(session)
+            .ok_or_else(|| "unknown realtime session".to_string())?;
+        if binding.imported {
+            return Err("only a live source session can choose a destination".into());
+        }
+        let (id, app, source) = (binding.id, binding.app.clone(), binding.source.clone());
+        realtime
+            .broker
+            .lock()
+            .map_err(|_| "realtime broker is unavailable".to_string())?
+            .propose_target(&app, id, &source, target.clone(), std::time::Instant::now())
+            .map_err(|error| error.to_string())?;
+        if let Err(error) =
+            realtime
+                .fabric
+                .offer_to(id, target, realtime_unix_ms().saturating_add(30_000))
+        {
+            let _ = realtime.broker.lock().map(|mut broker| {
+                let _ = broker.target_failed(&app, id, &source, target, std::time::Instant::now());
+            });
+            return Err(error.to_string());
+        }
+        Ok(())
+    }
+
+    /// Resolve one imported offer from compositor-owned consent UI. Approval
+    /// chooses one currently available local source for every requested
+    /// facet and sends only one-shot opaque capabilities to the verified app.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale offers, disabled policy, unavailable capture sources, or
+    /// any mismatch between the imported session and this local target.
+    pub fn resolve_consent(&self, session: &str, approved: bool) -> Result<(), String> {
+        if !crate::shell::continuity_policy::ContinuityPolicySnapshot::load()
+            .permits(crate::shell::continuity_policy::ContinuityCapability::RealtimeSessions)
+        {
+            return Err("realtime session continuity is disabled".into());
+        }
+        let (id, app, source, target, peer, required) = {
+            let realtime = self
+                .state
+                .realtime
+                .lock()
+                .map_err(|_| "realtime broker is unavailable".to_string())?;
+            let binding = realtime
+                .sessions
+                .get(session)
+                .ok_or_else(|| "unknown realtime session".to_string())?;
+            if !binding.imported {
+                return Err("only an imported offer can be authorized here".into());
+            }
+            let target = realtime
+                .broker
+                .lock()
+                .map_err(|_| "realtime broker is unavailable".to_string())?
+                .session(binding.id)
+                .and_then(|view| view.target)
+                .ok_or_else(|| "realtime target binding is unavailable".to_string())?;
+            (
+                binding.id,
+                binding.app.clone(),
+                binding.source.clone(),
+                target,
+                binding.owner_peer,
+                realtime
+                    .required_capture_kinds(binding.id)
+                    .ok_or_else(|| "unknown realtime session".to_string())?,
+            )
+        };
+        if !approved {
+            let realtime = self
+                .state
+                .realtime
+                .lock()
+                .map_err(|_| "realtime broker is unavailable".to_string())?;
+            realtime
+                .fabric
+                .fail_imported(id.fabric_id(), &source, &target, std::time::Instant::now())
+                .map_err(|error| error.to_string())?;
+            drop(realtime);
+            if let Ok(mut realtime) = self.state.realtime.lock() {
+                realtime.notify(
+                    peer,
+                    &ui::realtime_continuity::RealtimeEvent::Ended {
+                        session: session.to_string(),
+                    },
+                );
+                realtime.sessions.remove(session);
+            }
+            return Ok(());
+        }
+        let selections = {
+            let capture = self
+                .state
+                .realtime
+                .lock()
+                .map_err(|_| "realtime broker is unavailable".to_string())?
+                .capture
+                .clone();
+            let capture = capture
+                .lock()
+                .map_err(|_| "target capture broker is unavailable".to_string())?;
+            required
+                .iter()
+                .map(|kind| {
+                    capture
+                        .enumerate(*kind)
+                        .into_iter()
+                        .next()
+                        .map(|source| (*kind, source.id))
+                        .ok_or_else(|| format!("no local {kind:?} source is available"))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let authorizations = self.state.authorize_realtime_capture_batch(
+            &app,
+            session,
+            &target,
+            &selections,
+            std::time::Instant::now(),
+        )?;
+        let mut realtime = self
+            .state
+            .realtime
+            .lock()
+            .map_err(|_| "realtime broker is unavailable".to_string())?;
+        realtime.notify(
+            peer,
+            &ui::realtime_continuity::RealtimeEvent::CaptureAuthorized {
+                session: session.to_string(),
+                capture_authorizations: authorizations,
+            },
+        );
+        Ok(())
     }
 }
 
@@ -1696,6 +1922,60 @@ impl CapnpBrokerState {
             .map_err(|_| "target capture broker is unavailable".to_string())?
             .authorize(&capture_binding, source_id, kind, now)
             .map(crate::portal::CaptureAuthorizationId::to_opaque)
+            .map_err(|error| error.to_string())
+    }
+
+    fn authorize_realtime_capture_batch(
+        &self,
+        app: &crate::shell::realtime_session::VerifiedAppRegistration,
+        session: &str,
+        target: &crate::shell::personal_continuity::DeviceId,
+        selections: &[(crate::portal::CaptureKind, String)],
+        now: std::time::Instant,
+    ) -> Result<Vec<String>, String> {
+        let realtime = self
+            .realtime
+            .lock()
+            .map_err(|_| "realtime broker is unavailable".to_string())?;
+        let binding = realtime
+            .sessions
+            .get(session)
+            .ok_or_else(|| "unknown realtime session".to_string())?;
+        let view = realtime
+            .broker
+            .lock()
+            .map_err(|_| "realtime broker is unavailable".to_string())?
+            .session(binding.id)
+            .ok_or_else(|| "unknown realtime session".to_string())?;
+        let required = realtime
+            .required_capture_kinds(binding.id)
+            .ok_or_else(|| "unknown realtime session".to_string())?;
+        let selected_kinds = selections.iter().map(|(kind, _)| *kind).collect::<Vec<_>>();
+        if &binding.app != app
+            || view.target.as_ref() != Some(target)
+            || selected_kinds.len() != required.len()
+            || required.iter().any(|kind| !selected_kinds.contains(kind))
+        {
+            return Err("realtime capture binding mismatch".into());
+        }
+        let capture_binding =
+            crate::portal::CaptureSessionBinding::from_verified(app, session, target.as_str())
+                .map_err(|error| error.to_string())?;
+        let capture = Arc::clone(&realtime.capture);
+        drop(realtime);
+        let selections = selections
+            .iter()
+            .map(|(kind, source)| (source.clone(), *kind))
+            .collect::<Vec<_>>();
+        capture
+            .lock()
+            .map_err(|_| "target capture broker is unavailable".to_string())?
+            .authorize_batch(&capture_binding, &selections, now)
+            .map(|ids| {
+                ids.into_iter()
+                    .map(crate::portal::CaptureAuthorizationId::to_opaque)
+                    .collect()
+            })
             .map_err(|error| error.to_string())
     }
 
