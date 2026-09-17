@@ -62,12 +62,41 @@ def run(argv, log):
 
 
 def verify_i686_execution(directory):
-    """Prove kernel IA32 execution without depending on target libc installation."""
+    """Prove IA32 execution and glibc's legacy futex ABI without target libc."""
     source = directory / 'i686-execution.S'
     binary = directory / 'i686-execution'
-    source.write_text('.section .text\n.global _start\n_start:\n'
-                      '    mov $1, %eax\n    xor %ebx, %ebx\n    int $0x80\n'
-                      '.section .note.GNU-stack,"",@progbits\n')
+    # i386 syscall 240 uses futex_time32 even for an untimed wake. A kernel
+    # with IA32_EMULATION but no COMPAT_32BIT_TIME can run an exit-only probe
+    # while glibc aborts during the first RPM scriptlet. Neither call blocks:
+    # wake has no waiters; wait compares 1 with a word containing 0.
+    source.write_text(''' .section .text
+.global _start
+_start:
+    push $0
+    mov %esp, %ebx
+    mov $129, %ecx
+    mov $1, %edx
+    xor %esi, %esi
+    xor %edi, %edi
+    xor %ebp, %ebp
+    mov $240, %eax
+    int $0x80
+    test %eax, %eax
+    jne failed
+    mov $128, %ecx
+    mov $240, %eax
+    int $0x80
+    cmp $-11, %eax
+    jne failed
+    mov $1, %eax
+    xor %ebx, %ebx
+    int $0x80
+failed:
+    mov $1, %eax
+    mov $1, %ebx
+    int $0x80
+.section .note.GNU-stack,"",@progbits
+''')
     run(['gcc', '-m32', '-nostdlib', '-static', '-Wl,--build-id=none',
          str(source), '-o', str(binary)], directory / 'i686-compile.log')
     contract.elf_identity(binary.read_bytes()[:20], 'i686')
@@ -77,7 +106,8 @@ def verify_i686_execution(directory):
         with (directory / 'i686-execution.log').open('a') as output:
             output.write(str(error) + '\n')
         raise ValueError('runner cannot execute the static i686 probe; native '
-                         'IA32 execution is required before resolving Wine dependencies') from error
+                         'IA32 execution is required, including the legacy futex ABI '
+                         '(CONFIG_COMPAT_32BIT_TIME), before resolving Wine dependencies') from error
 
 
 def flags(target, pin, jobs):
