@@ -1174,6 +1174,28 @@ fn realtime_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn broker_realtime_controls(
+    controls: ui::realtime_continuity::RealtimeControlIntent,
+) -> crate::shell::realtime_session::RealtimeControlState {
+    crate::shell::realtime_session::RealtimeControlState {
+        microphone_muted: controls.microphone_muted,
+        camera_muted: controls.camera_muted,
+        screen_share_paused: controls.screen_share_paused,
+        share_audio_muted: controls.share_audio_muted,
+    }
+}
+
+fn app_realtime_controls(
+    controls: crate::shell::realtime_session::RealtimeControlState,
+) -> ui::realtime_continuity::RealtimeControlIntent {
+    ui::realtime_continuity::RealtimeControlIntent {
+        microphone_muted: controls.microphone_muted,
+        camera_muted: controls.camera_muted,
+        screen_share_paused: controls.screen_share_paused,
+        share_audio_muted: controls.share_audio_muted,
+    }
+}
+
 fn acquire_realtime_capture_leases(
     capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
     app: &crate::shell::realtime_session::VerifiedAppRegistration,
@@ -1646,7 +1668,7 @@ impl CapnpBrokerState {
                         screen_share: intent.media.screen_share(),
                         share_audio: intent.media.share_audio(),
                     },
-                    controls: ui::realtime_continuity::RealtimeControlIntent::default(),
+                    controls: app_realtime_controls(intent.controls),
                 },
             };
             realtime.notify(peer, &event);
@@ -4636,6 +4658,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         Ok(media) => media,
                         Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
                     },
+                    controls: broker_realtime_controls(intent.controls),
                 };
                 let id = match bridge
                     .broker
@@ -8678,6 +8701,12 @@ mod tests {
             room: SemanticRoomLocator::new("meet", "standup").expect("semantic room"),
             semantic_position: Some("main-stage".into()),
             media: RealtimeMediaSet::new([RealtimeMediaFacet::Microphone]).expect("media set"),
+            controls: broker_realtime_controls(ui::realtime_continuity::RealtimeControlIntent {
+                microphone_muted: true,
+                camera_muted: false,
+                screen_share_paused: true,
+                share_audio_muted: true,
+            }),
         };
         let (source_state, source_broker, source_fabric) = state_with_adapter();
         let (target_state, target_broker, target_fabric) = state_with_adapter();
@@ -8755,9 +8784,18 @@ mod tests {
         let offer_event: ui::realtime_continuity::RealtimeEvent =
             serde_json::from_slice(&target_rx.try_recv().expect("target app offer"))
                 .expect("offer event");
-        let ui::realtime_continuity::RealtimeEvent::Offer { session, .. } = offer_event else {
+        let ui::realtime_continuity::RealtimeEvent::Offer { session, intent } = offer_event else {
             panic!("expected app offer");
         };
+        assert_eq!(
+            intent.controls,
+            ui::realtime_continuity::RealtimeControlIntent {
+                microphone_muted: true,
+                camera_muted: false,
+                screen_share_paused: true,
+                share_audio_muted: true,
+            }
+        );
         target_fabric
             .accept_imported(fabric_id, &source, &target, now)
             .expect("target-local accept");

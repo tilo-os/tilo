@@ -197,7 +197,19 @@ impl ChatApp {
         self.call.join(&offered.channel_id);
         self.call.muted = offered.controls.microphone_muted;
         self.call.audio_only = !offered.media.camera || offered.controls.camera_muted;
-        self.call.sharing = offered.media.screen_share && !offered.controls.screen_share_paused;
+        let resume_screen = offered.media.screen_share && !offered.controls.screen_share_paused;
+        if resume_screen && !self.acquire_screen() {
+            self.call.leave();
+            let request =
+                self.realtime
+                    .request(ui::realtime_continuity::RealtimeCommand::TargetFailed {
+                        session: session.clone(),
+                    });
+            self.realtime.requests.push(request);
+            self.realtime.offer = None;
+            return;
+        }
+        self.call.sharing = resume_screen;
         self.realtime.session = Some(session);
         self.realtime.target_media_ready = true;
     }

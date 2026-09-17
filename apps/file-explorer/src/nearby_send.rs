@@ -11,8 +11,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use ui::collaboration::{
-    CollabEvent, CollabRequest, NearbyTransferCommand, NearbyTransferPhase, NearbyTransferReply,
-    NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget,
+    CollabEvent, CollabRequest, NearbyTargetHandle, NearbyTransferCommand, NearbyTransferPhase,
+    NearbyTransferReply, NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget,
 };
 
 const APP_ID: &str = "dev.tilo.file-explorer";
@@ -80,11 +80,11 @@ impl NearbySendState {
         );
     }
 
-    pub fn send(&mut self, path: &Path, target_device: [u8; 32]) {
+    pub fn send(&mut self, path: &Path, target: NearbyTargetHandle) {
         use std::os::unix::ffi::OsStrExt as _;
         self.queue(
             NearbyTransferCommand::Send {
-                target_device,
+                target,
                 source_path: path.as_os_str().as_bytes().to_vec(),
             },
             Pending::Send,
@@ -255,7 +255,6 @@ mod tests {
         let offer = NearbyTransferStatus {
             transfer_id: [8; 16],
             name: "Photos".into(),
-            device: [3; 32],
             device_label: "Travel laptop".into(),
             direction: NearbyTransferDirection::Receiving,
             phase: NearbyTransferPhase::AwaitingConsent,
@@ -267,7 +266,7 @@ mod tests {
             result: Ok(NearbyTransferReply::Snapshot {
                 snapshot: NearbyTransferSnapshot {
                     targets: vec![NearbyTransferTarget {
-                        device: [4; 32],
+                        handle: NearbyTargetHandle::from_issued_bytes([4; 16]),
                         label: "Desk".into(),
                         online: true,
                     }],
@@ -289,7 +288,7 @@ mod tests {
 
         let path = std::path::PathBuf::from(OsString::from_vec(vec![b'/', b'a', 0xff]));
         let mut state = NearbySendState::default();
-        state.send(&path, [9; 32]);
+        state.send(&path, NearbyTargetHandle::from_issued_bytes([9; 16]));
         let request = state.take_requests().pop().expect("send request");
         let CollabRequest::NearbyTransferCommand { command, .. } = request else {
             panic!("wrong request");

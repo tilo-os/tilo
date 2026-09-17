@@ -31,8 +31,8 @@ pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
 pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
 pub use runtime_collab::{
-    NearbyTransferCommand, NearbyTransferDirection, NearbyTransferPhase, NearbyTransferReply,
-    NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget,
+    NearbyTargetHandle, NearbyTransferCommand, NearbyTransferDirection, NearbyTransferPhase,
+    NearbyTransferReply, NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget,
 };
 
 use crate::presence::PresenceKey;
