@@ -73,7 +73,7 @@ pub fn build_tiers(home: Option<&Path>) -> Vec<SidebarTier> {
         entries: vec![(
             Icon::HardDrive,
             crate::i18n::t("files-place-root"),
-            PathBuf::from("/"),
+            home.map_or_else(|| PathBuf::from("/"), crate::breadcrumbs::filesystem_root),
         )],
     });
     tiers

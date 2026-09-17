@@ -62,7 +62,7 @@ pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
-Scratchpad have been built and run on Windows. Other apps are still being ported; a
+Scratchpad and Files have been built and run on Windows. Other apps are still being ported; a
 workspace-wide build currently includes Linux services and is not a Windows
 application build command.
 
@@ -119,6 +119,21 @@ service protocols and their integration tests.
 ```powershell
 cargo test --locked -p fs --no-default-features --lib
 cargo test --locked -p scratchpad --all-targets
+```
+
+Files supports native local-file browsing and operations, including drive and UNC
+paths. Its Start menu entry is **Files** and its Cargo package is `file-explorer`.
+The Tilo filesystem projection and received-share service transport are not yet
+available on native Windows; their control operations return errors. Delete uses
+the Windows recycle bin, but in-app recycle-bin browsing and per-item restoration
+are not implemented. Projection-dependent screenshot scenarios also fail explicitly.
+
+Run File Explorer tests serially because its fixture guard observes process-wide
+filesystem access:
+
+```powershell
+cargo test --locked -p file-explorer --lib -- --test-threads=1
+cargo test --locked -p file-explorer --test it -- --test-threads=1
 ```
 
 For smaller local development artifacts, set `CARGO_PROFILE_DEV_DEBUG=0` and

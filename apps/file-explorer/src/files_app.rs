@@ -9,6 +9,7 @@
 //! frame. See [`crate::command`].
 
 use crate::command::{CommandSink, FileCommand, new_sink};
+use crate::filesystem_metadata as xattr;
 use crate::i18n::{arg, t, t_args};
 use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, read_dir_sync, sort_entries};
 use crate::places_sidebar::{self, FavStore, PlacesSidebar};
@@ -9442,6 +9443,7 @@ mod command_path_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn trash_view_menu_offers_restore_and_empty_not_move_to_trash() {
         let Some(trash) = crate::fileops::trash_dir() else {
             return;
@@ -10049,7 +10051,13 @@ mod command_path_tests {
         let d = tempfile::tempdir().unwrap();
         // A control separator is a legal Unix filename byte but must not leak
         // into the resource/action wire address.
-        let old = d.path().join("old\u{1f}.txt");
+        // Windows forbids control bytes in physical filenames. Keep the
+        // separator in the presented resource name on both platforms.
+        let old = d.path().join(if cfg!(windows) {
+            "old.txt"
+        } else {
+            "old\u{1f}.txt"
+        });
         std::fs::write(&old, b"x").unwrap();
         let record_id = uuid::Uuid::from_u128(0xfeed);
         let mut w = FileExplorerWidget::new();
@@ -10637,6 +10645,7 @@ mod command_path_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn collaborative_selection_offers_and_applies_keep_offline() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("shared.txt");
@@ -10677,6 +10686,7 @@ mod command_path_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn free_local_space_is_offered_and_sent_only_for_eligible_local_files() {
         let dir = tempfile::tempdir().unwrap();
         let local = dir.path().join("local.txt");
@@ -10747,6 +10757,7 @@ mod command_path_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn scheduled_metadata_refresh_preserves_record_selection_and_scroll() {
         let dir = tempfile::tempdir().unwrap();
         // Production discovers this from the mounted workspace root. Mark the
@@ -10786,6 +10797,7 @@ mod command_path_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn mixed_selection_exposes_both_storage_policies_and_writes_only_eligible_records() {
         let dir = tempfile::tempdir().unwrap();
         let automatic = dir.path().join("automatic.txt");
@@ -10889,6 +10901,7 @@ mod command_path_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn inherited_pin_is_explained_but_not_offered_as_a_local_toggle() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("inherited.txt");
@@ -11180,6 +11193,7 @@ mod command_path_tests {
     // from root-key command identity across the complete share-menu flow.
     #[allow(clippy::too_many_lines)]
     #[test]
+    #[cfg(unix)]
     fn named_recipient_menu_uses_identity_label_but_commands_the_root_key() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("report.txt");
@@ -11385,6 +11399,7 @@ mod command_path_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn collaborative_search_activation_resolves_the_latest_path_by_record_id() {
         use ui::widget::Widget;
 
@@ -11463,6 +11478,7 @@ mod command_path_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn share_composer_authority_round_trip_never_blocks_the_ui_command() {
         use std::io::{Read, Write};
         use std::os::unix::net::UnixListener;
@@ -11776,6 +11792,7 @@ mod command_path_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn owner_context_menu_revokes_each_exact_active_grant() {
         let root = tempfile::tempdir().unwrap();
         let file = root.path().join("shared.txt");
@@ -12835,6 +12852,7 @@ mod accessibility_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn destructive_eviction_requires_a_named_modal_action_before_writing_the_override() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("only-copy.txt");

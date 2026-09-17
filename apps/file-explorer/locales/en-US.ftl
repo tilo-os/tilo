@@ -489,3 +489,7 @@ files-name-slash = Name cannot contain '/'
 files-no-parent = No parent directory
 files-name-exists = “{ $name }” already exists
 files-source-no-name = Source has no file name
+
+files-share-not-available = Share service is not available on this host
+
+files-name-invalid = Enter a valid file or folder name

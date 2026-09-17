@@ -488,3 +488,7 @@ files-name-slash = Name darf kein „/“ enthalten
 files-no-parent = Kein übergeordneter Ordner
 files-name-exists = „{ $name }“ ist bereits vorhanden
 files-source-no-name = Quelle hat keinen Dateinamen
+
+files-share-not-available = Freigabedienst ist auf diesem Gerät nicht verfügbar
+
+files-name-invalid = Gib einen gültigen Datei- oder Ordnernamen ein
