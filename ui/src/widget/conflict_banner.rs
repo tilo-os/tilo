@@ -28,6 +28,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::data_table::renderer_type_size;
 
 /// Fixed banner height. Matches the activity-timeline filter strip
 /// (~36 px) so a banner stacked above a timeline feels rhythmic.
@@ -209,7 +210,7 @@ impl ConflictBanner {
             None,
             &shape,
         );
-        let text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let (lw, lh) = text_renderer.measure(label, text_size, None);
         text_renderer.draw_text(
             scene,
@@ -301,16 +302,17 @@ impl Widget for ConflictBanner {
         );
         scene.stroke(&Stroke::new(1.0), transform, warn, None, &shape);
 
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+        let glyph_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
         let cy = f64::midpoint(self.rect.y0, self.rect.y1);
 
         let glyph = "!";
-        let (gw, gh) = text_renderer.measure(glyph, text_size + 2.0, None);
+        let (gw, gh) = text_renderer.measure(glyph, glyph_size, None);
         let glyph_x = self.rect.x0 + PADDING + (GLYPH_W - f64::from(gw)) / 2.0;
         text_renderer.draw_text(
             scene,
             glyph,
-            text_size + 2.0,
+            glyph_size,
             warn,
             translated(transform, glyph_x, cy - f64::from(gh) / 2.0),
             None,
