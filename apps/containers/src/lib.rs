@@ -68,7 +68,8 @@ pub fn app_root_offline() -> Box<dyn Widget> {
 }
 
 /// Offline root with a modal seeded for a deterministic `--shots` frame
-/// (`--scenario confirm` / `--scenario prompt`).
+/// (`--scenario <name>`). The scenario is stored on this widget instance so
+/// concurrent visual-matrix jobs remain deterministic.
 pub fn app_root_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = ContainersApp::new(false);
     app.seed_shot(scenario);

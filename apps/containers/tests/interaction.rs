@@ -692,10 +692,29 @@ fn create_dialog_hides_background_and_exposes_editable_fields() {
     assert!(nodes.iter().any(|node| {
         node.role == ui::a11y::Role::Dialog && node.name.as_deref() == Some("Create container")
     }));
-    assert!(nodes.iter().any(|node| {
-        node.action_target.as_deref() == Some("containers.create.field:image")
-            && node.role == ui::a11y::Role::TextInput
-    }));
+    let image_field = nodes
+        .iter()
+        .find(|node| {
+            node.action_target.as_deref() == Some("containers.create.field:image")
+                && node.role == ui::a11y::Role::TextInput
+        })
+        .expect("image input is exposed");
+    let bounds = image_field.bounds.expect("image input has bounds");
+    assert!(
+        bounds.to_rect().height() >= 32.0,
+        "shared text input must retain a usable target: {bounds:?}"
+    );
+    for target in ["containers.create.submit", "containers.create.cancel"] {
+        let bounds = nodes
+            .iter()
+            .find(|node| node.action_target.as_deref() == Some(target))
+            .and_then(|node| node.bounds)
+            .unwrap_or_else(|| panic!("{target} has semantic bounds"));
+        assert!(
+            bounds.to_rect().height() >= 32.0,
+            "{target} must retain a usable target: {bounds:?}"
+        );
+    }
     assert!(
         !nodes.iter().any(|node| {
             node.action_target

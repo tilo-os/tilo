@@ -45,6 +45,22 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("dev.tilo.containers", containers::app_root)
             .shot_root(shot_root)
-            .scenarios(&["confirm", "prompt"]),
+            .scenarios(&[
+                "containers",
+                "images",
+                "volumes",
+                "distrobox",
+                "stats",
+                "inspect",
+                "terminal",
+                "create",
+                "combo",
+                "pull",
+                "collapsed",
+                "empty",
+                "palette",
+                "confirm",
+                "prompt",
+            ]),
     );
 }

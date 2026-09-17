@@ -269,6 +269,10 @@ pub struct ContainersApp {
     /// fresh document renders a populated detail view (notably for `--shots`).
     seed_demo: bool,
     seeded: bool,
+    /// Deterministic visual-audit state selected by `--scenario`. Kept on the
+    /// widget rather than smuggled through a process-global environment value
+    /// so parallel screenshot jobs cannot affect one another.
+    shot_scenario: Option<String>,
     /// Whether a structural change happened this frame (forces relayout).
     pub(crate) structure_dirty: bool,
     /// Cached snapshot of the CRDT-backed view state. Refreshed in `sync`
@@ -350,6 +354,7 @@ impl ContainersApp {
             live,
             seed_demo: !live,
             seeded: false,
+            shot_scenario: None,
             structure_dirty: false,
             view: ViewState::default(),
             compact_layout_active: false,
@@ -1003,6 +1008,7 @@ impl ContainersApp {
     /// Seed a modal for a deterministic `--shots` frame (no event loop). The
     /// draw pass builds + lays out the shared dialog from this metadata.
     pub fn seed_shot(&mut self, scenario: &str) {
+        self.shot_scenario = Some(scenario.to_string());
         match scenario {
             "confirm" => {
                 let (name, id) = self.engine.containers.first().map_or_else(
@@ -1694,7 +1700,10 @@ impl Widget for ContainersApp {
             // An optional env hook selects a demo scene for screenshots
             // (`containers` / `images` / `volumes` / `distrobox` / `stats` /
             // `inspect` / `create` / `combo` / `pull` / `collapsed`).
-            let scene = std::env::var("TILO_CONTAINERS_DEMO").unwrap_or_default();
+            let scene = self
+                .shot_scenario
+                .take()
+                .unwrap_or_else(|| std::env::var("TILO_CONTAINERS_DEMO").unwrap_or_default());
             match scene.as_str() {
                 "images" => ViewDoc::set_section(doc, Section::Images),
                 "volumes" => ViewDoc::set_section(doc, Section::Volumes),

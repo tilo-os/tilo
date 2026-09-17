@@ -121,7 +121,7 @@ impl ContainersApp {
         let c = &theme.tokens.colors;
         let title_y = rail.y0 + PAD + 8.0;
         // Collapse / expand toggle — a chevron at the top-right of the rail.
-        let tgl = Rect::new(rail.x1 - 30.0, title_y - 4.0, rail.x1 - 6.0, title_y + 20.0);
+        let tgl = Rect::new(rail.x1 - 38.0, title_y - 8.0, rail.x1 - 6.0, title_y + 24.0);
         if expanded {
             if self.hovered(tgl) {
                 draw::fill_round(scene, tgl, f64::from(theme.tokens.radii.sm), c.lift(0.72));
@@ -139,7 +139,7 @@ impl ContainersApp {
             self.push_hit(tgl, Hit::ToggleSidebar);
         } else {
             // Collapsed: the toggle is a wide hit over the header area.
-            let ctgl = Rect::new(rail.x0 + 4.0, rail.y0 + 28.0, rail.x1 - 4.0, rail.y0 + 46.0);
+            let ctgl = Rect::new(rail.x0 + 4.0, rail.y0 + 20.0, rail.x1 - 4.0, rail.y0 + 52.0);
             if self.hovered(ctgl) {
                 draw::fill_round(scene, ctgl, f64::from(theme.tokens.radii.sm), c.lift(0.72));
             }
@@ -1155,7 +1155,7 @@ impl ContainersApp {
             head.x1 - close_w - 12.0,
             head.y0 + if compact { 10.0 } else { 12.0 },
             head.x1 - 12.0,
-            head.y0 + if compact { 42.0 } else { 36.0 },
+            head.y0 + if compact { 42.0 } else { 44.0 },
         );
         if self.hovered(close) {
             draw::fill_round(scene, close, f64::from(theme.tokens.radii.md), c.lift(0.72));
@@ -1298,9 +1298,9 @@ impl ContainersApp {
             };
             let btn = Rect::new(
                 x,
-                toolbar.center().y - 15.0,
+                toolbar.center().y - 16.0,
                 x + bw,
-                toolbar.center().y + 15.0,
+                toolbar.center().y + 16.0,
             );
             let hov = self.hovered(btn);
             draw::fill_round(
@@ -2617,7 +2617,7 @@ impl ContainersApp {
                 Point::new(modal.x0 + 24.0, y),
                 TextWeight::Medium,
             );
-            let input = Rect::new(modal.x0 + 24.0, y + 14.0, modal.x1 - 24.0, y + 42.0);
+            let input = Rect::new(modal.x0 + 24.0, y + 12.0, modal.x1 - 24.0, y + 44.0);
             draw::fill_round(
                 scene,
                 input,
@@ -2743,7 +2743,7 @@ impl ContainersApp {
         let c = &theme.tokens.colors;
         let options = self.engine.image_references();
         let filtered = combobox::filter_options(&options, typed);
-        let row_h = 30.0;
+        let row_h = 32.0;
         let max_rows = 6usize;
         let shown = filtered.len().min(max_rows);
         let panel_h = if shown == 0 {
@@ -3028,16 +3028,45 @@ impl ContainersApp {
             Point::new(cx - f64::from(tw) / 2.0, cy - 22.0),
             TextWeight::Semibold,
         );
+        let max_width = (area.width() - 32.0).max(80.0);
         let (sw, _) = tr.measure(subtitle, scale.sm, None);
-        draw::text(
-            scene,
-            tr,
-            subtitle,
-            scale.sm,
-            c.text_dim,
-            Point::new(cx - f64::from(sw) / 2.0, cy + 4.0),
-            TextWeight::Regular,
-        );
+        if f64::from(sw) <= max_width {
+            draw::text(
+                scene,
+                tr,
+                subtitle,
+                scale.sm,
+                c.text_dim,
+                Point::new(cx - f64::from(sw) / 2.0, cy + 4.0),
+                TextWeight::Regular,
+            );
+        } else {
+            // Empty-state guidance must remain readable on phone widths. Pick
+            // the whitespace nearest the midpoint and centre the two lines;
+            // unlike clipping this preserves the remediation users need.
+            let midpoint = subtitle.len() / 2;
+            let split = subtitle
+                .char_indices()
+                .filter(|(_, ch)| ch.is_whitespace())
+                .min_by_key(|(index, _)| index.abs_diff(midpoint))
+                .map_or(midpoint, |(index, _)| index);
+            let (first, second) = subtitle.split_at(split);
+            for (line, y) in [(first.trim(), cy + 1.0), (second.trim(), cy + 19.0)] {
+                let (width, _) = tr.measure(line, scale.sm, None);
+                draw::text_clip(
+                    scene,
+                    tr,
+                    line,
+                    &draw::TextStyle {
+                        size: scale.sm,
+                        color: c.text_dim,
+                        weight: TextWeight::Regular,
+                    },
+                    Point::new(cx - f64::from(width).min(max_width) / 2.0, y),
+                    max_width,
+                );
+            }
+        }
     }
 
     fn draw_scrollbar(scene: &mut Scene, theme: &Theme, area: Rect, scroll: f64, content_h: f64) {
