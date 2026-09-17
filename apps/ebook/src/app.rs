@@ -134,6 +134,53 @@ struct ImportWorker {
     results: mpsc::Receiver<ImportResult>,
 }
 
+/// A completed immutable search projection. The worker owns all O(n) index
+/// construction; the UI thread only installs this already-complete value.
+struct SearchBuild {
+    fingerprint: u64,
+    generation: u64,
+    provider: crate::search_provider::BookSearchProvider,
+}
+
+struct SearchWorker {
+    results: mpsc::Receiver<SearchBuild>,
+}
+
+impl SearchWorker {
+    fn spawn(
+        books: Arc<Vec<Arc<Book>>>,
+        annotations: Arc<Vec<Annotation>>,
+        registry: Arc<Vec<crate::model::LibraryEntry>>,
+        fingerprint: u64,
+        generation: u64,
+    ) -> Result<Self, String> {
+        let (send, results) = mpsc::sync_channel(1);
+        thread::Builder::new()
+            .name("ebook-search-builder".into())
+            .spawn(move || {
+                let provider = crate::search_provider::BookSearchProvider::new_shared(
+                    books,
+                    annotations,
+                    registry,
+                    generation,
+                );
+                // The receiver is intentionally allowed to disappear during
+                // shutdown; publication has no side effect outside the app.
+                let _ = send.send(SearchBuild {
+                    fingerprint,
+                    generation,
+                    provider,
+                });
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(Self { results })
+    }
+
+    fn try_recv(&self) -> Option<SearchBuild> {
+        self.results.try_recv().ok()
+    }
+}
+
 impl ImportWorker {
     fn new() -> Result<Self, String> {
         let mailbox = Arc::new((
@@ -632,16 +679,19 @@ impl BooksApp {
     /// The book currently open in the reader, if the library is non-empty.
     /// Used by [`crate::actions`] to publish the open-resource tree.
     pub(crate) fn open_book(&self) -> Option<&Book> {
-        self.library.get(self.book_idx)
-    }
-
-    pub(crate) fn library(&self) -> &[Book] {
-        &self.library
+        self.library.get(self.book_idx).map(Arc::as_ref)
     }
 
     #[cfg(test)]
-    pub(crate) fn search_navigation_target(&self) -> (usize, Option<usize>) {
-        (self.chapter, self.pending_jump_block)
+    pub(crate) fn library(&self) -> &[Arc<Book>] {
+        self.library.as_ref()
+    }
+
+    pub(crate) fn resolve_search_resource(
+        &self,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<tilo_actions::Resource> {
+        ui::search::SearchProvider::resolve_action_resource(&self.search_provider, address)
     }
 }
 
@@ -656,7 +706,9 @@ impl BooksApp {
 )]
 pub struct BooksApp {
     // --- parsed content (render cache, regenerable; not in the CRDT) -------
-    library: Vec<Book>,
+    // Membership snapshots share each immutable parsed book independently.
+    // Adding/removing one shelf entry must never clone another EPUB's chapters.
+    library: Arc<Vec<Arc<Book>>>,
     /// Where each book's `.epub` lives, keyed by content id. The durable
     /// record is the CRDT library ([`BooksDoc`]); this is its cache.
     library_paths: HashMap<String, PathBuf>,
@@ -834,12 +886,19 @@ pub struct BooksApp {
     annotations: Vec<Annotation>,
     /// Library-wide snapshot used by global search. The reader-facing
     /// `annotations` cache above remains scoped to the open book.
-    all_annotations: Vec<Annotation>,
+    all_annotations: Arc<Vec<Annotation>>,
     /// Retained global-search index. Building chapter full text is linear in
     /// the library, so it is refreshed at document/materialisation boundaries
     /// and cloned cheaply into each palette session rather than rebuilt per
     /// keystroke or provider request.
     search_provider: crate::search_provider::BookSearchProvider,
+    /// A single off-UI builder. A newer snapshot supersedes its result before
+    /// publication instead of mutating a live provider in place.
+    search_worker: Option<SearchWorker>,
+    /// Content fingerprint used only to decide whether the immutable search
+    /// projection must be rebuilt. Cursor generation is separate and strictly
+    /// monotonic: two same-sized catalogues can never validate one another.
+    search_fingerprint: u64,
     search_revision: u64,
 
     // --- settings screen (ephemeral) --------------------------------------
@@ -949,11 +1008,18 @@ impl BooksApp {
         } else {
             View::Reader
         };
-        let search_provider = crate::search_provider::BookSearchProvider::new(&library, &[]);
+        let library: Arc<Vec<Arc<Book>>> = Arc::new(library.into_iter().map(Arc::new).collect());
+        let search_provider = crate::search_provider::BookSearchProvider::new_shared(
+            Arc::clone(&library),
+            Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
+            1,
+        );
         Self {
             library,
             view,
             search_provider,
+            search_revision: 1,
             ..Self::blank_view_state()
         }
     }
@@ -977,7 +1043,7 @@ impl BooksApp {
         let local_library = LocalLibrary::load();
         let watched_folders = local_library.watched_folders.clone();
         Self {
-            library: Vec::new(),
+            library: Arc::new(Vec::new()),
             library_paths: HashMap::new(),
             // A caller-supplied library (tests / shots) is authoritative; the live
             // `new()` clears this so the document load runs.
@@ -1057,8 +1123,10 @@ impl BooksApp {
             default_font_id: String::new(),
             schemes: default_schemes(),
             annotations: Vec::new(),
-            all_annotations: Vec::new(),
+            all_annotations: Arc::new(Vec::new()),
             search_provider: crate::search_provider::BookSearchProvider::new(&[], &[]),
+            search_worker: None,
+            search_fingerprint: 0,
             search_revision: 0,
             settings_tab: SettingsTab::Fonts,
             renaming: None,
@@ -1317,7 +1385,12 @@ impl BooksApp {
     /// something to show).
     fn stage_shot_library(&mut self) {
         self.demo = true;
-        self.library = crate::content::load_sample_library();
+        self.library = Arc::new(
+            crate::content::load_sample_library()
+                .into_iter()
+                .map(Arc::new)
+                .collect(),
+        );
         self.book_idx = 0;
         self.chapter = 0;
         self.page = 0;
@@ -1408,9 +1481,9 @@ impl BooksApp {
                     .and_then(|book| book.chapters.first())
                     .cloned();
                 if let Some(template) = template
-                    && let Some(book) = self.library.first_mut()
+                    && let Some(book) = Arc::make_mut(&mut self.library).first_mut()
                 {
-                    book.chapters = (0..32)
+                    Arc::make_mut(book).chapters = (0..32)
                         .map(|index| crate::model::Chapter {
                             title: format!("Chapter {} — a longer voyage", index + 1),
                             href: format!("chapter-{}.xhtml", index + 1),
@@ -1820,7 +1893,7 @@ impl BooksApp {
             .map(|book| book.id.clone())
             .collect();
         if !removed_ids.is_empty() {
-            self.library
+            Arc::make_mut(&mut self.library)
                 .retain(|book| !removed_ids.iter().any(|id| id == &book.id));
             self.library_paths
                 .retain(|id, _| !removed_ids.iter().any(|removed| removed == id));
@@ -1852,7 +1925,6 @@ impl BooksApp {
         self.annotations = BooksDoc::annotations_for(doc, &cur_id);
 
         let all = BooksDoc::list_annotations(doc);
-        self.all_annotations.clone_from(&all);
         self.shelf_fraction.clear();
         self.shelf_annos.clear();
         self.shelf_opened.clear();
@@ -1862,6 +1934,12 @@ impl BooksApp {
             self.shelf_opened.insert(id.clone(), p.opened);
             let c = all.iter().filter(|a| &a.doc_id == id).count();
             self.shelf_annos.insert(id.clone(), c);
+        }
+        // Keep the immutable search snapshot stable across ordinary frames.
+        // Replacing this Arc only for a real CRDT change avoids allocating a
+        // second annotation corpus while an unchanged provider is retained.
+        if self.all_annotations.as_ref() != &all {
+            self.all_annotations = Arc::new(all);
         }
     }
 
@@ -1943,11 +2021,11 @@ impl BooksApp {
         // startup never parses an arbitrary file on the first UI frame.
         let pending_open = self.pending_open_path.take();
 
-        self.library.clear();
+        Arc::make_mut(&mut self.library).clear();
         self.library_paths.clear();
         for lb in content::load_library(doc, &self.watched_folders, &self.local_library.books) {
             self.library_paths.insert(lb.book.id.clone(), lb.path);
-            self.library.push(lb.book);
+            Arc::make_mut(&mut self.library).push(Arc::new(lb.book));
         }
 
         if let Some(path) = pending_open {
@@ -2158,7 +2236,7 @@ impl BooksApp {
                     let index = if let Some(index) = self.library.iter().position(|b| b.id == id) {
                         index
                     } else {
-                        self.library.push(book);
+                        Arc::make_mut(&mut self.library).push(Arc::new(book));
                         self.library.len() - 1
                     };
                     self.load_error = None;
@@ -2248,7 +2326,7 @@ impl BooksApp {
         let index = if let Some(index) = self.library.iter().position(|b| b.id == id) {
             index
         } else {
-            self.library.push(book);
+            Arc::make_mut(&mut self.library).push(Arc::new(book));
             self.library.len() - 1
         };
         self.open_book_at(doc, index);
@@ -2739,7 +2817,7 @@ impl BooksApp {
         let Some(i) = self.library.iter().position(|book| book.id == id) else {
             return;
         };
-        let removed = self.library.remove(i);
+        let removed = Arc::make_mut(&mut self.library).remove(i);
         self.library_paths.remove(&removed.id);
         // A removed watched book is eligible to be discovered again. Keep the
         // watch registry an optimisation, never a hidden permanent exclusion;
@@ -3434,26 +3512,6 @@ impl BooksApp {
     #[cfg(test)]
     fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
-    }
-
-    /// The presentation context Ctrl+K needs to build the book-level actions
-    /// (bookmark toggle at the current page; highlight the live selection).
-    /// `None` when no book is open.
-    pub(crate) fn book_resource_ctx(&self) -> Option<crate::actions::BookResourceCtx> {
-        let book = self.open_book()?;
-        let book_id = book.id.clone();
-        let block = self.page_top_block;
-        Some(crate::actions::BookResourceCtx {
-            book_id,
-            chapter: self.chapter,
-            bookmark_block: block,
-            bookmark_excerpt: self.block_excerpt(block),
-            bookmark: self.bookmark_plan(block),
-            selection_highlight: self
-                .sel
-                .filter(|s| !s.is_empty())
-                .and_then(|s| self.resolve_highlight_plan(s, self.hi_color)),
-        })
     }
 
     /// The plain text covered by the current selection, across blocks (truncated
@@ -4636,10 +4694,10 @@ impl Widget for BooksApp {
         self.persist_progress(doc);
         let registry = BooksDoc::read_library_entries(doc);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        for book in &self.library {
+        for book in self.library.iter() {
             book.id.hash(&mut hasher);
         }
-        for annotation in &self.all_annotations {
+        for annotation in self.all_annotations.iter() {
             annotation.id.hash(&mut hasher);
             annotation.doc_id.hash(&mut hasher);
             annotation.chapter.hash(&mut hasher);
@@ -4658,14 +4716,50 @@ impl Widget for BooksApp {
             entry.subject.hash(&mut hasher);
             entry.shared.hash(&mut hasher);
         }
-        let revision = hasher.finish();
-        if revision != self.search_revision {
-            self.search_provider = crate::search_provider::BookSearchProvider::new_with_registry(
-                &self.library,
-                &self.all_annotations,
-                &registry,
-            );
-            self.search_revision = revision;
+        let fingerprint = hasher.finish();
+        if let Some(build) = self.search_worker.as_ref().and_then(SearchWorker::try_recv) {
+            self.search_worker = None;
+            if build.fingerprint == fingerprint {
+                // Publication is a single UI-thread assignment. Sessions that
+                // already hold the prior Arc remain valid until their own
+                // generation check rejects the continuation.
+                self.search_provider = build.provider;
+                self.search_fingerprint = fingerprint;
+                self.search_revision = build.generation;
+            }
+        }
+        if fingerprint != self.search_fingerprint && self.search_worker.is_none() {
+            let Some(generation) = self.search_revision.checked_add(1) else {
+                // Never wrap a generation: a stale palette cursor must not
+                // become valid again after integer exhaustion.
+                self.search_provider = crate::search_provider::BookSearchProvider::new_shared(
+                    Arc::clone(&self.library),
+                    Arc::clone(&self.all_annotations),
+                    Arc::new(registry),
+                    0,
+                );
+                return;
+            };
+            let registry = Arc::new(registry);
+            match SearchWorker::spawn(
+                Arc::clone(&self.library),
+                Arc::clone(&self.all_annotations),
+                registry,
+                fingerprint,
+                generation,
+            ) {
+                Ok(worker) => self.search_worker = Some(worker),
+                Err(_) => {
+                    // A worker construction failure withdraws the directory;
+                    // publishing stale canonical resources would be worse.
+                    self.search_provider = crate::search_provider::BookSearchProvider::new_shared(
+                        Arc::clone(&self.library),
+                        Arc::clone(&self.all_annotations),
+                        Arc::new(Vec::new()),
+                        0,
+                    );
+                }
+            }
         }
     }
 
@@ -6571,7 +6665,7 @@ impl BooksApp {
     fn draw_library_grid(
         &mut self,
         ctx: &mut EbookPaintCtx<'_>,
-        lib: &[Book],
+        lib: &[Arc<Book>],
         order: &[usize],
         r: Rect,
     ) {
@@ -6778,7 +6872,7 @@ impl BooksApp {
     /// The filtered + sorted display order of the shelf: original library
     /// indices, hiding finished books when requested and ordered by the chosen
     /// key (ties broken by title so the order is stable).
-    fn shelf_display_order(&self, lib: &[Book]) -> Vec<usize> {
+    fn shelf_display_order(&self, lib: &[Arc<Book>]) -> Vec<usize> {
         use crate::model::LibrarySort;
         // `i`/`a`/`b` below are always drawn from `0..lib.len()` (or from
         // `idx`, which is built from that same range), so every lookup is
@@ -7606,7 +7700,7 @@ impl BooksApp {
     fn draw_reader_footer_and_chrome(
         &mut self,
         ctx: &mut EbookPaintCtx<'_>,
-        lib: Vec<Book>,
+        lib: Arc<Vec<Arc<Book>>>,
         annos: Vec<Annotation>,
         layout: ChapterLayout,
         view: &ReaderChromeView<'_>,
@@ -7810,7 +7904,7 @@ impl BooksApp {
     fn resolve_chapter_layout(
         &mut self,
         tr: &mut TextRenderer,
-        lib: &[Book],
+        lib: &[Arc<Book>],
         geom: &ReaderPageGeometry,
         font_sig: u64,
         base_family: &FontChoice,
@@ -7945,7 +8039,7 @@ impl BooksApp {
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
-        lib: &[Book],
+        lib: &[Arc<Book>],
         palette: &ReaderPalette,
         geom: &ReaderPageGeometry,
     ) {
@@ -8792,7 +8886,12 @@ impl BooksApp {
     /// Paint the contents + annotations rails: either docked (flush, page
     /// already inset) or an overlay flap over the page behind a dimming
     /// scrim. The shared [`FlapState`] kernel supplies `reveal`/`slide`.
-    fn draw_rails(&mut self, ctx: &mut EbookPaintCtx<'_>, lib: &[Book], geom: &ReaderPageGeometry) {
+    fn draw_rails(
+        &mut self,
+        ctx: &mut EbookPaintCtx<'_>,
+        lib: &[Arc<Book>],
+        geom: &ReaderPageGeometry,
+    ) {
         use vello::peniko::Fill;
         let t = ctx.transform;
         let body_y0 = geom.body_y0;
@@ -8879,7 +8978,7 @@ impl BooksApp {
         }
     }
 
-    fn draw_reader_topbar(&mut self, ctx: &mut EbookPaintCtx<'_>, lib: &[Book]) {
+    fn draw_reader_topbar(&mut self, ctx: &mut EbookPaintCtx<'_>, lib: &[Arc<Book>]) {
         let scene = &mut *ctx.scene;
         let t = ctx.transform;
         let tr = &mut *ctx.text;
@@ -8960,7 +9059,7 @@ impl BooksApp {
     fn draw_reader_topbar_title(
         &self,
         ctx: &mut EbookPaintCtx<'_>,
-        lib: &[Book],
+        lib: &[Arc<Book>],
         layout: &ReaderTopbarLayout,
     ) {
         let scene = &mut *ctx.scene;
@@ -9115,7 +9214,7 @@ impl BooksApp {
         clippy::too_many_lines,
         reason = "contents combines its fixed header, clipped virtual rows, and position indicator so their hit ordering stays explicit"
     )]
-    fn draw_toc(&mut self, ctx: &mut EbookPaintCtx<'_>, lib: &[Book], view: &ReaderRailView) {
+    fn draw_toc(&mut self, ctx: &mut EbookPaintCtx<'_>, lib: &[Arc<Book>], view: &ReaderRailView) {
         let scene = &mut *ctx.scene;
         let t = ctx.transform;
         let tr = &mut *ctx.text;
@@ -11811,8 +11910,10 @@ mod interaction_tests {
           <p>Limits and arrays use the same recursive boxes rather than a second renderer.</p>
           <math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mrow><munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover><mfenced><mtable><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr><mtr><mtd><mi>c</mi></mtd><mtd><mi>d</mi></mtd></mtr></mtable></mfenced></mrow></math>
         </body>"#;
-        app.library[0].chapters[0].blocks = crate::xhtml::parse_xhtml(chapter);
-        app.library[0].chapters[0].title = "An Economy of Symbols".into();
+        Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0]).chapters[0].blocks =
+            crate::xhtml::parse_xhtml(chapter);
+        Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0]).chapters[0].title =
+            "An Economy of Symbols".into();
         app.layout = None;
         app
     }
@@ -12200,7 +12301,7 @@ mod interaction_tests {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         let template = app.library[0].chapters[0].clone();
-        app.library[0].chapters = (0..32)
+        Arc::make_mut(&mut Arc::make_mut(&mut app.library)[0]).chapters = (0..32)
             .map(|index| crate::model::Chapter {
                 title: format!("Long chapter {}", index + 1),
                 href: format!("chapter-{}.xhtml", index + 1),
@@ -14206,19 +14307,20 @@ mod interaction_tests {
         app.comment_overlay.open(group);
         frame(&mut app, &mut doc, 1280.0, 800.0);
 
-        // The EncodedAction the palette would dispatch for "Delete comment".
-        let resources = <BooksApp as tilo_actions::ResourceProvider>::resources(&app, &doc);
+        // Root discovery stays bounded; the palette resolves this canonical
+        // exact resource through its immutable search provider.
         let spec_encoded = {
-            let hl_res = resources[0].children[0]
-                .children
-                .iter()
-                .find(|r| r.kind == "ebook.highlight")
-                .expect("highlight resource");
-            let comment = hl_res
-                .children
-                .iter()
-                .find(|r| r.id.as_str() == format!("ebook.comment:{cid}"))
-                .expect("comment resource");
+            let provider = crate::search_provider::BookSearchProvider::new_shared(
+                Arc::clone(&app.library),
+                Arc::new(BooksDoc::list_annotations(&doc)),
+                Arc::new(BooksDoc::read_library_entries(&doc)),
+                1,
+            );
+            let comment = ui::search::SearchProvider::resolve_action_resource(
+                &provider,
+                &tilo_actions::ActionAddress::new(format!("ebook.comment:{cid}"), "open"),
+            )
+            .expect("exact comment resource");
             let spec = comment
                 .actions
                 .iter()
@@ -14294,23 +14396,11 @@ mod interaction_tests {
         });
         app.selected_block = Some(hl.block);
 
-        // The palette's book-level "Highlight selection" EncodedAction, resolved
-        // from the same live selection the swatch sees.
-        let resources = <BooksApp as tilo_actions::ResourceProvider>::resources(&app, &doc);
-        let spec_encoded = {
-            let spec = resources[0].children[0]
-                .actions
-                .iter()
-                .find(|a| a.id == "highlight-selection")
-                .expect("a highlight-selection spec while a selection exists");
-            match &spec.input {
-                tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-                tilo_actions::ActionInput::Prompted { .. } => {
-                    panic!("highlight-selection is immediate")
-                }
-            }
-        };
-
+        let expected = crate::actions::encode(
+            &app.resolve_highlight_plan(app.sel.expect("selection"), app.hi_color)
+                .expect("canonical selection plan")
+                .into_action(),
+        );
         // Dispatch the swatch's action through the real handler a click invokes.
         app.dispatch(Action::SetColor(HiColor::Yellow), &mut doc);
         let dispatched = app
@@ -14318,8 +14408,8 @@ mod interaction_tests {
             .cloned()
             .expect("the swatch dispatched an action");
         assert_eq!(
-            dispatched.payload, spec_encoded.payload,
-            "the swatch and the palette build the identical EncodedAction",
+            dispatched.payload, expected.payload,
+            "the swatch uses the canonical selection action"
         );
         // And it really toggled the highlight off through that action.
         assert!(
