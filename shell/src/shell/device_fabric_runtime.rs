@@ -4152,6 +4152,7 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         local_media,
         local_outputs,
         transfers,
+        remote_audio: Default::default(),
     }
 }
 
