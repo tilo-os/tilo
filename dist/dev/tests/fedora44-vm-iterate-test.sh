@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Contract checks for the fast Fedora 44 / disposable-VM loop.  The tests use
+# fake transport/container commands: they prove command construction without
+# creating a container, compiling Rust, or contacting a VM.
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)
+tool=$repo_root/dist/dev/fedora44-vm-iterate.sh
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/bin"
+
+log=$work/log
+cat >"$work/bin/podman" <<'EOF'
+#!/usr/bin/env bash
+test "$1" = container && test "$2" = exists
+EOF
+cat >"$work/bin/distrobox" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'distrobox %s\n' "$*" >>"$FAST_LOOP_LOG"
+test "$1" = enter
+shift 2; test "$1" = --; shift
+exec "$@"
+EOF
+cat >"$work/bin/flock" <<'EOF'
+#!/usr/bin/env bash
+shift
+exec "$@"
+EOF
+cat >"$work/bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+printf 'cargo %s\n' "$*" >>"$FAST_LOOP_LOG"
+test "$1" = build
+case " $* " in
+  *' -p shell '* )
+    [[ " $* " != *' --profile release '* ]] || exit 99
+    [[ " $* " != *' --release '* ]] || exit 99
+    mkdir -p "$CARGO_TARGET_DIR/debug"
+    printf 'tilo-dev-session-build-marker-v1\n' >"$CARGO_TARGET_DIR/debug/shell"
+    chmod 700 "$CARGO_TARGET_DIR/debug/shell"
+    ;;
+esac
+EOF
+cat >"$work/bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+printf 'ssh %s\n' "$*" >>"$FAST_LOOP_LOG"
+exit 0
+EOF
+chmod 755 "$work/bin"/*
+
+target_rel="target/.fedora44-loop-test-$$"
+env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
+    TILO_FEDORA44_CONTAINER=test-container TILO_FEDORA44_TARGET_REL="$target_rel" \
+    "$tool" build shell
+
+test -x "$repo_root/$target_rel/debug/shell"
+grep -Fq -- '--features dev-session' "$log"
+grep -Fq -- '--no-default-features' "$log"
+! grep -Eq -- '--release|--profile release|--default-features' "$log"
+
+: >"$log"
+env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
+    TILO_FEDORA44_CONTAINER=test-container TILO_FEDORA44_TARGET_REL="$target_rel" \
+    "$tool" handoff >"$work/handoff.out" 2>&1
+grep -Fq 'log out normally' "$work/handoff.out"
+! grep -q '^ssh ' "$log"
+! grep -Eq 'loginctl|systemctl|reboot|poweroff|rpm-ostree' "$work/handoff.out"
+
+: >"$work/test_vm_key"
+chmod 600 "$work/test_vm_key"
+: >"$log"
+env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
+    TILO_FEDORA44_CONTAINER=test-container TILO_FEDORA44_TARGET_REL="$target_rel" \
+    TILO_VM_SSH_PORT=29999 TILO_VM_SSH_IDENTITY="$work/test_vm_key" "$tool" deploy shell
+grep -Fq -- "-i $work/test_vm_key" "$log"
+
+: >"$log"
+env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
+    TILO_FEDORA44_CONTAINER=test-container TILO_FEDORA44_TARGET_REL="$target_rel" \
+    TILO_VM_SSH_PORT=29999 "$tool" verify
+grep -Fq '/proc/$pid/exe' "$log"
+! grep -Eq 'loginctl|systemctl|terminate-session|reboot|poweroff' "$log"
+
+rm -rf "$repo_root/$target_rel"
+echo 'fedora44-vm-iterate: PASS'
