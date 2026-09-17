@@ -101,9 +101,28 @@ impl McpServer {
             return None;
         }
         let method = request["method"].as_str().unwrap_or_default();
-        let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+        let mut params = request.get("params").cloned().unwrap_or_else(|| json!({}));
         if !params.is_object() {
             return Some(error(id, -32602, "params must be an object"));
+        }
+        // Standard request metadata is protocol context, never action arguments
+        // or authority. Progress notifications are not advertised or emitted.
+        if let Some(metadata) = params
+            .as_object_mut()
+            .and_then(|params| params.remove("_meta"))
+        {
+            if !metadata.is_object() {
+                return Some(error(id, -32602, "_meta must be an object"));
+            }
+            if let Some(token) = metadata.get("progressToken") {
+                if !token.is_string() && token.as_i64().is_none() && token.as_u64().is_none() {
+                    return Some(error(
+                        id,
+                        -32602,
+                        "progressToken must be a string or integer",
+                    ));
+                }
+            }
         }
         let result = match method {
             "initialize" => {
