@@ -3462,6 +3462,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "disk-usage"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-app",
+]
+
+[[package]]
 name = "disks"
 version = "0.1.0"
 dependencies = [
