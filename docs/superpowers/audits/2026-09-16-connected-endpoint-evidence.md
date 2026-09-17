@@ -2,7 +2,7 @@
 
 This audit records the interim native endpoint work for the approved Windows/Linux migration design. It does not enable Connected folders, certify Windows support, or complete the migration goal.
 
-Source commit: `087d5a62c9b94b97489de331919277d02224b0e6`. Its independent source review found four Important defects; a fix round is in progress. The defects concern Windows capability promotion, unresolved Linux clone queries, serial namespace requirements, and unsupported Windows metadata. Do not treat the implementation report's original Windows capability claim as correct: the source contradicted it.
+Source commit: `087d5a62c9b94b97489de331919277d02224b0e6`. Its independent source review found four Important defects. Fix commit `0b1f83679` addressed all four; independent scoped re-review accepted them with no new Critical/Important breakage. The defects concern Windows capability promotion, unresolved Linux clone queries, serial namespace requirements, and unsupported Windows metadata. Do not treat the implementation report's original Windows capability claim as correct: the source contradicted it.
 
 ## Evidence scope
 
@@ -23,9 +23,11 @@ The proof4 outcomes above were observed as command/coordinator results, not subs
 
 The Windows actual-backend `cargo +1.97.1 check --tests --target x86_64-pc-windows-msvc --offline` check completed in 4.20 seconds. It compiled real Copy/continuation/endpoint modules with a compile-only portal adapter and omitted UI/TLS. Its ten excluded-UI dead-code warnings were existing harness noise; there were no endpoint warnings. This is compile evidence only. The implementer's 38 host tests and strict host/Linux/Windows source lint results likewise do not substitute for native Windows execution.
 
+Fix verification: 42 host tests passed; strict production lint passed for host, Linux and Windows targets; Linux test compilation passed. The final broader Windows test compilation passed in 1.21 seconds with the same ten existing harness warnings. Windows hard-link, directory-stream and ACL fixtures were added but remain unrun. The frozen `native-fix1-harness` snapshot awaits native execution. None of these cfg checks establishes native support.
+
 ## Outstanding delivery gates
 
-- Resolve and independently review all four source findings.
+- Source findings 1–4 are fixed and independently re-reviewed; full Task 2 remains unaccepted because the native implementation/evidence gates below are outstanding.
 - Re-run final source on ext4, XFS and Btrfs, retaining complete outputs.
 - Execute read-only, duplicate-volume, mount replacement, reconnect, concurrent-writer and resource-limit fixtures. Prepared controller scripts have only local syntax checks.
 - Implement Linux-side access to retained Windows NTFS folders, including native persistent identity, health/hibernation refusal and metadata handling. This is missing implementation, not merely missing tests.
