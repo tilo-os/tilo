@@ -143,6 +143,13 @@ fi
 if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
   mapfile -t _tilo_native_assets < <(sed -nE 's/^(LIBWPE|FDO|WPEWK)=([A-Za-z0-9._-]+)$/\2/p' "$TILO_OS_DIR/dev/build-wpe.sh")
   [ "${#_tilo_native_assets[@]}" -eq 3 ] || die "expected exactly three pinned WPE source archives"
+  _tilo_sccache_version=$(sed -nE 's/^ARG SCCACHE_VERSION=([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' "$TILO_OS_DIR/Containerfile")
+  [[ "$_tilo_sccache_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "expected one pinned sccache version"
+  case "$TILO_WINDOWS_ARCH" in
+    aarch64|x86_64) ;;
+    *) die "unsupported native sccache architecture" ;;
+  esac
+  _tilo_native_assets+=("sccache-v${_tilo_sccache_version}-${TILO_WINDOWS_ARCH}-unknown-linux-musl.tar.gz")
   "$TILO_OS_DIR/dev/cache-github-assets.sh" "${_tilo_native_assets[@]}"
 else
   "$TILO_OS_DIR/dev/cache-github-assets.sh"
