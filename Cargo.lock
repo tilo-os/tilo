@@ -6569,6 +6569,7 @@ dependencies = [
  "libc",
  "qos-actions",
  "qos-app",
+ "qos-ntfs-protocol",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
@@ -11335,6 +11336,17 @@ dependencies = [
 
 [[package]]
 name = "qos-ntfs-helper"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "qos-ntfs-protocol",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "qos-ntfs-protocol"
 version = "0.1.0"
 dependencies = [
  "libc",

@@ -155,6 +155,23 @@ int main(int argc, char **argv) {
       ntfs_attr_close(a);
     if (ni)
       ntfs_inode_close(ni);
+  } else if (!strcmp(argv[2], "dos-alias")) {
+    ntfs_inode *ni = ntfs_pathname_to_inode(v, NULL, "/hello.txt");
+    ntfs_inode *root = ntfs_inode_open(v, FILE_root);
+    if (!ni || !root || ntfs_set_ntfs_dos_name(ni, root, "HELLO~1.TXT", 11, 0)) return 17;
+    root = ntfs_inode_open(v, FILE_root);
+    ntfschar name[] = {cpu_to_le16('L'),cpu_to_le16('o'),cpu_to_le16('n'),cpu_to_le16('g'),cpu_to_le16('D'),cpu_to_le16('i'),cpu_to_le16('r'),cpu_to_le16('e'),cpu_to_le16('c'),cpu_to_le16('t'),cpu_to_le16('o'),cpu_to_le16('r'),cpu_to_le16('y')};
+    ni = root ? ntfs_create(root, const_cpu_to_le32(0), name, 13, S_IFDIR) : NULL;
+    if (!ni || ntfs_set_ntfs_dos_name(ni, root, "LONGDI~1", 8, 0)) return 18;
+  } else if (!strcmp(argv[2], "large-metadata")) {
+    ntfs_inode *ni = ntfs_pathname_to_inode(v, NULL, "/hello.txt");
+    ntfschar name[] = {cpu_to_le16('e'),cpu_to_le16('x'),cpu_to_le16('t'),cpu_to_le16('r'),cpu_to_le16('a')};
+    unsigned char b = 42;
+    if (!ni || ntfs_attr_add(ni, AT_DATA, name, 5, &b, 1)) return 16;
+    ntfs_attr *a = ntfs_attr_open(ni, AT_DATA, name, 5);
+    rc = !a || ntfs_attr_truncate(a, 1048577);
+    if (a) ntfs_attr_close(a);
+    if (ntfs_inode_close(ni)) rc = 1;
   } else if (!strcmp(argv[2], "oversize")) {
     ntfs_inode *ni = ntfs_pathname_to_inode(v, NULL, "/hello.txt");
     ntfs_attr *a = ni ? ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0) : NULL;

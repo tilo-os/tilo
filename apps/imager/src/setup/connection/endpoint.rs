@@ -78,6 +78,24 @@ fn windows_metadata_policy(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[path = "endpoint/linux/ntfs.rs"]
+pub mod ntfs;
+
+pub enum ReadEndpoint {
+    Local(PinnedEndpoint),
+    #[cfg(target_os = "linux")]
+    Ntfs(Arc<ntfs::NtfsReadEndpoint>),
+}
+
+pub fn observe_read(endpoint: &ReadEndpoint, cancelled: &AtomicBool) -> ObservedTree {
+    match endpoint {
+        ReadEndpoint::Local(local) => observe(local, cancelled),
+        #[cfg(target_os = "linux")]
+        ReadEndpoint::Ntfs(native) => native.observe(cancelled),
+    }
+}
+
 const MAX_ENDPOINTS: usize = 128;
 static NEXT_PROBE: AtomicU64 = AtomicU64::new(0);
 const MAX_HASH_BYTES: u64 = 1024 * 1024 * 1024;
@@ -175,8 +193,53 @@ pub enum Access {
 #[derive(Default)]
 pub struct EndpointContext {
     locators: BTreeMap<([u8; 32], [u8; 32]), EndpointLocator>,
+    #[cfg(target_os = "linux")]
+    ntfs: BTreeMap<([u8; 32], [u8; 32]), Arc<ntfs::NtfsReadEndpoint>>,
 }
 impl EndpointContext {
+    /// Register one authenticated administrative session without granting public safe-read support.
+    /// # Errors
+    /// Refuses identity mismatch, duplicate live authorities and resource exhaustion.
+    #[cfg(target_os = "linux")]
+    pub fn register_ntfs_session(
+        &mut self,
+        client: Arc<std::sync::Mutex<qos_ntfs_protocol::client::Client>>,
+        expected: EndpointIdentity,
+    ) -> Result<(), EndpointError> {
+        let key = (expected.volume, expected.root);
+        if self.locators.contains_key(&key) {
+            return Err(EndpointError::AmbiguousIdentity);
+        }
+        if let Some(previous) = self.ntfs.get(&key) {
+            return if previous.same_session(&client) {
+                Ok(())
+            } else {
+                Err(EndpointError::AmbiguousIdentity)
+            };
+        }
+        if self.locators.len().saturating_add(self.ntfs.len()) >= MAX_ENDPOINTS {
+            return Err(EndpointError::LimitExceeded);
+        }
+        self.ntfs.insert(
+            key,
+            Arc::new(ntfs::NtfsReadEndpoint::new(client, expected)?),
+        );
+        Ok(())
+    }
+    /// # Errors
+    /// Refuses missing or invalidated local identities; native operations reattest through their retained broker.
+    pub fn open_read_endpoint(
+        &self,
+        expected: &EndpointIdentity,
+    ) -> Result<ReadEndpoint, EndpointError> {
+        #[cfg(target_os = "linux")]
+        if let Some(endpoint) = self.ntfs.get(&(expected.volume, expected.root)) {
+            return Ok(ReadEndpoint::Ntfs(Arc::clone(endpoint)));
+        }
+        self.open_endpoint(expected, Access::Read)
+            .map(ReadEndpoint::Local)
+    }
+
     /// Register a selected or persisted hint, validating its expected identity.
     ///
     /// # Errors
@@ -187,6 +250,16 @@ impl EndpointContext {
         expected: EndpointIdentity,
     ) -> Result<(), EndpointError> {
         let key = (expected.volume, expected.root);
+        #[cfg(target_os = "linux")]
+        if self.ntfs.contains_key(&key) {
+            return Err(EndpointError::AmbiguousIdentity);
+        }
+        #[cfg(target_os = "linux")]
+        if self.locators.len().saturating_add(self.ntfs.len()) >= MAX_ENDPOINTS
+            && !self.locators.contains_key(&key)
+        {
+            return Err(EndpointError::LimitExceeded);
+        }
         if self.locators.len() >= MAX_ENDPOINTS && !self.locators.contains_key(&key) {
             return Err(EndpointError::LimitExceeded);
         }
@@ -213,6 +286,14 @@ impl EndpointContext {
         expected: &EndpointIdentity,
         access: Access,
     ) -> Result<PinnedEndpoint, EndpointError> {
+        #[cfg(target_os = "linux")]
+        if self.ntfs.contains_key(&(expected.volume, expected.root)) {
+            return Err(if access == Access::Write {
+                EndpointError::ReadOnly
+            } else {
+                EndpointError::Unverified
+            });
+        }
         let locator = self
             .locators
             .get(&(expected.volume, expected.root))

@@ -25,6 +25,7 @@ host-media-writer = []
 flatpak-media-writer = ["dep:zbus"]
 
 [dependencies]
+qos-ntfs-protocol = { path = "../../crates/session/qos-ntfs-protocol" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The qOS ACTION model: the imager's guided-customization install profile (the
 # only user-authored config in the shared document) is exported as replayable
