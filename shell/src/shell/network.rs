@@ -5655,10 +5655,24 @@ mod tests {
                     br#"{"track_id":"track-42","position_ms":12345,"paused":true}"#.to_vec(),
                 ),
             ] {
+                let metadata = ui::app::compose_structural_continuation_metadata(
+                    ui::view::View::default(),
+                    Some(ui::collaboration::ContinuationMetadata {
+                        schema_version: 1,
+                        bytes: metadata,
+                    }),
+                )
+                .expect("framework presentation and app semantic checkpoint");
                 reports.bind_tab(AppInstanceId(tab), AppInstanceId(tab));
                 assert!(
                     reports
-                        .report(room, app_id, AppInstanceId(tab), 1, metadata)
+                        .report(
+                            room,
+                            app_id,
+                            AppInstanceId(tab),
+                            metadata.schema_version,
+                            metadata.bytes
+                        )
                         .expect("shipped app metadata contract accepts the report")
                 );
             }
@@ -5758,7 +5772,10 @@ mod tests {
         assert_eq!(
             crate::shell::launcher::take_staged_resume_for_package("dev.tilo.browser", room),
             Some((
-                Some((1, br#"{"url":"https://example.test/reading"}"#.to_vec())),
+                Some((
+                    browser_resume.resume.schema_version(),
+                    browser_resume.resume.bytes().to_vec()
+                )),
                 browser_tab,
             )),
             "the real launcher consumption path receives exact resume metadata and record",
