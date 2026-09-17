@@ -10,6 +10,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     AppKind, AppWidget, ContextMenu, IconDescriptor, MenuItem, TabDescriptor, TaffyTreeExt, Widget,
+    WindowCloseAdmission,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -29,6 +30,14 @@ enum TabMenuAction {
     CloseOthers,
     CloseRight,
     Reopen,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExitState {
+    Normal,
+    Choice,
+    Cancelling,
+    Ready,
 }
 
 /// A bounded collection of retained documents in one shared browser runtime.
@@ -56,6 +65,10 @@ pub struct BrowserTabs {
     recovery: Option<crate::session::Snapshot>,
     recovery_choice: ui::LocalState<Option<bool>>,
     recovery_panel: Option<Box<dyn Widget>>,
+    exit_state: ExitState,
+    exit_choice: ui::LocalState<Option<bool>>,
+    exit_panel: Option<Box<dyn Widget>>,
+    close_intent: bool,
 }
 
 impl BrowserTabs {
@@ -88,7 +101,53 @@ impl BrowserTabs {
             recovery: None,
             recovery_choice: ui::LocalState::new(None),
             recovery_panel: None,
+            exit_state: ExitState::Normal,
+            exit_choice: ui::LocalState::new(None),
+            exit_panel: None,
+            close_intent: false,
         }
+    }
+    fn make_exit_panel(&self, cancelling: bool) -> Box<dyn Widget> {
+        use ui::widget::{Button, Column, Container, Row, Text};
+        let status = self
+            .active()
+            .download_exit_status()
+            .unwrap_or_else(|| "Waiting for native transfer cleanup".into());
+        let mut column = Column::new()
+            .with_intrinsic_height()
+            .push(Box::new(
+                Text::new(if cancelling {
+                    "Cancelling downloads before quitting…"
+                } else {
+                    "Downloads are still running"
+                })
+                .with_size(18.0),
+            ))
+            .push(Box::new(Text::new(&status).with_size(13.0)));
+        if !cancelling {
+            let keep = self.exit_choice.writer();
+            let cancel = self.exit_choice.writer();
+            column = column.push(Box::new(
+                Row::new()
+                    .push(Box::new(
+                        Button::new(
+                            "browser.download-exit.keep",
+                            "Keep downloading",
+                            None,
+                        )
+                        .on_effect(move || keep.set(Some(false))),
+                    ))
+                    .push(Box::new(
+                        Button::new(
+                            "browser.download-exit.cancel",
+                            "Cancel downloads and quit",
+                            None,
+                        )
+                        .on_effect(move || cancel.set(Some(true))),
+                    )),
+            ));
+        }
+        Box::new(Container::new().with_background().with_child(Box::new(column)))
     }
     pub fn with_session(mut self, store: crate::session::SessionStore) -> Result<Self, String> {
         let saved = match store.load() {
@@ -583,6 +642,18 @@ impl Widget for BrowserTabs {
                 return;
             }
         }
+        if let Some(cancel) = self.exit_choice.get() {
+            self.exit_choice.set(None);
+            if cancel {
+                self.exit_state = ExitState::Cancelling;
+                self.active().cancel_downloads_for_exit();
+                self.exit_panel = Some(self.make_exit_panel(true));
+            } else {
+                self.exit_state = ExitState::Normal;
+                self.exit_panel = None;
+            }
+            self.dirty = true;
+        }
         // Accessibility dispatch has no following pointer event to drain the
         // TabBar intents. Apply it at the same synchronization boundary.
         if let Some(id) = self.bar.take_close() {
@@ -634,6 +705,16 @@ impl Widget for BrowserTabs {
                 tracing::warn!(%error, "Cannot open link tab");
             }
         }
+        if self.exit_state == ExitState::Cancelling {
+            if self.active().download_exit_cleanup_complete() {
+                self.exit_state = ExitState::Ready;
+                self.exit_panel = None;
+                self.close_intent = true;
+            } else {
+                self.exit_panel = Some(self.make_exit_panel(true));
+            }
+            self.dirty = true;
+        }
         if let Err(error) = self.persist_session(false) {
             tracing::error!(%error, "Cannot save browser session");
         }
@@ -665,6 +746,10 @@ impl Widget for BrowserTabs {
             return root;
         }
         let bar = self.bar.build_layout(taffy, theme, nodes);
+        let panel = self
+            .exit_panel
+            .as_mut()
+            .map(|panel| panel.build_layout(taffy, theme, nodes));
         let page = self.active_mut().build_layout(taffy, theme, nodes);
         self.layout_active_id = Some(self.active_id);
         let focus_address = self.focus_new_address || self.address_focus_node.is_some();
@@ -693,7 +778,7 @@ impl Widget for BrowserTabs {
                 },
                 ..Style::default()
             },
-            &[bar, page],
+            &panel.map_or_else(|| vec![bar, page], |panel| vec![bar, panel, page]),
         );
         nodes.insert(root, std::ptr::from_mut::<dyn Widget>(self));
         root
@@ -723,7 +808,13 @@ impl Widget for BrowserTabs {
             if let Some(bar) = children.first() {
                 self.bar.apply_layout(taffy, *bar, self.rect.origin());
             }
-            if let Some(page) = children.get(1) {
+            let page_index = if self.exit_panel.is_some() { 2 } else { 1 };
+            if let Some(panel) = self.exit_panel.as_mut()
+                && let Some(node) = children.get(1)
+            {
+                panel.apply_layout(taffy, *node, self.rect.origin());
+            }
+            if let Some(page) = children.get(page_index) {
                 let origin = self.rect.origin();
                 self.active_mut().apply_layout(taffy, *page, origin);
             }
@@ -745,6 +836,9 @@ impl Widget for BrowserTabs {
             return;
         }
         self.bar.draw(scene, transform, tr, theme, presence);
+        if let Some(panel) = self.exit_panel.as_mut() {
+            panel.draw(scene, transform, tr, theme, presence);
+        }
         self.active_mut()
             .draw(scene, transform, tr, theme, presence);
     }
@@ -831,6 +925,16 @@ impl Widget for BrowserTabs {
             self.cursor = Point::new(position.x / scale, position.y / scale);
         }
         if let WindowEvent::KeyboardInput { event: key, .. } = event {
+            if self.exit_state == ExitState::Choice
+                && key.state == ElementState::Pressed
+                && key.logical_key == Key::Named(NamedKey::Escape)
+            {
+                self.exit_state = ExitState::Normal;
+                self.exit_panel = None;
+                self.dirty = true;
+                *handled = true;
+                return;
+            }
             if key.state == ElementState::Pressed
                 && self.shortcut(&key.logical_key, modifiers.state())
             {
@@ -841,6 +945,14 @@ impl Widget for BrowserTabs {
         let Ok(children) = taffy.children(node) else {
             return;
         };
+        if let Some(panel) = self.exit_panel.as_mut() {
+            if let Some(panel_node) = children.get(1) {
+                panel.handle_event(
+                    event, scale, modifiers, state, path, handled, focus, *panel_node, taffy,
+                );
+            }
+            return;
+        }
         if let Some(bar) = children.first() {
             self.bar.handle_event(
                 event, scale, modifiers, state, path, handled, focus, *bar, taffy,
@@ -924,6 +1036,13 @@ impl Widget for BrowserTabs {
             return true;
         }
         if self
+            .exit_panel
+            .as_mut()
+            .is_some_and(|panel| panel.perform_semantic_action(target, action, state, path))
+        {
+            return true;
+        }
+        if self
             .bar
             .perform_semantic_action(target, action, state, path)
         {
@@ -967,7 +1086,12 @@ impl Widget for BrowserTabs {
         if self.recovery.is_some() {
             return vec![self.recovery_panel.as_ref().unwrap().as_ref()];
         }
-        vec![self.bar.as_ref(), self.active()]
+        let mut children: Vec<&dyn Widget> = vec![self.bar.as_ref()];
+        if let Some(panel) = self.exit_panel.as_ref() {
+            children.push(panel.as_ref());
+        }
+        children.push(self.active());
+        children
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.recovery.is_some() {
@@ -975,6 +1099,9 @@ impl Widget for BrowserTabs {
         }
         let active_id = self.active_id;
         let mut children: Vec<&mut dyn Widget> = vec![self.bar.as_mut()];
+        if let Some(panel) = self.exit_panel.as_mut() {
+            children.push(panel.as_mut());
+        }
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) {
             children.push(tab.widget.as_mut());
         }
@@ -1068,6 +1195,13 @@ impl Widget for BrowserTabs {
                 .as_mut()
                 .and_then(|panel| panel.take_control_invocation());
         }
+        if let Some(invocation) = self
+            .exit_panel
+            .as_mut()
+            .and_then(|panel| panel.take_control_invocation())
+        {
+            return Some(invocation);
+        }
         self.active_mut().take_control_invocation()
     }
     fn take_floating_surface_request(
@@ -1101,7 +1235,9 @@ impl Widget for BrowserTabs {
         }
     }
     fn modal_capture(&self) -> Option<Rect> {
-        if self.tab_menu.is_open() {
+        if let Some(panel) = self.exit_panel.as_ref() {
+            Some(panel.get_rect())
+        } else if self.tab_menu.is_open() {
             Some(self.tab_menu.get_rect())
         } else {
             self.active().modal_capture()
@@ -1134,6 +1270,22 @@ impl Widget for BrowserTabs {
     }
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+    fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
+        match self.exit_state {
+            ExitState::Ready => WindowCloseAdmission::Allow,
+            ExitState::Choice | ExitState::Cancelling => WindowCloseAdmission::Defer,
+            ExitState::Normal if self.active().download_exit_requires_choice() => {
+                self.exit_state = ExitState::Choice;
+                self.exit_panel = Some(self.make_exit_panel(false));
+                self.dirty = true;
+                WindowCloseAdmission::Defer
+            }
+            ExitState::Normal => WindowCloseAdmission::Allow,
+        }
+    }
+    fn take_window_close_intent(&mut self) -> bool {
+        std::mem::take(&mut self.close_intent)
     }
 }
 impl Drop for BrowserTabs {
@@ -1489,6 +1641,141 @@ mod tests {
         tabs.sync(&mut doc, &automerge::ROOT);
         assert_eq!(tabs.tabs.len(), 1);
         assert_ne!(tabs.active_id, 1);
+    }
+
+    #[test]
+    fn window_close_requires_an_explicit_choice_and_waits_for_native_owner_cleanup() {
+        fn invoke_exit_choice(tabs: &mut BrowserTabs, id: &str, doc: &mut AutoCommit) {
+            let (_tree, _root, nodes) = recovery_layout(tabs);
+            let &button = nodes
+                .values()
+                .find(|widget| unsafe { (&***widget).test_id() == Some(id) })
+                .expect("exit choice button");
+            assert!(unsafe {
+                (&mut *button).perform_action(
+                    &ui::a11y::Action::Activate,
+                    doc,
+                    &automerge::ROOT,
+                )
+            });
+            let invocation = tabs
+                .take_control_invocation()
+                .expect("exit choice must reach the root action broker");
+            assert_eq!(invocation.address.resource, format!("qos.control:{id}"));
+            assert!(tabs
+                .start_resource_operation(
+                    ui::qos_actions::InvocationId::new(),
+                    ui::qos_actions::OperationKind::Effect,
+                    "qos.ui.control.invoke",
+                    &serde_json::to_vec(id).unwrap(),
+                    doc,
+                    &automerge::ROOT,
+                )
+                .unwrap()
+                .is_some());
+        }
+        struct ExitEngine {
+            commands: std::sync::Mutex<Vec<WebViewCommand>>,
+            events: std::sync::Mutex<Vec<WebViewEvent>>,
+            frames: FrameSlot,
+        }
+        impl WebViewEngine for ExitEngine {
+            fn create_tab(&self) -> Result<SharedEngine, String> {
+                Err("unused".into())
+            }
+            fn send(&self, command: WebViewCommand) {
+                self.commands.lock().unwrap().push(command);
+            }
+            fn frames(&self) -> FrameSlot {
+                self.frames.clone()
+            }
+            fn drain_events(&self) -> Vec<WebViewEvent> {
+                std::mem::take(&mut *self.events.lock().unwrap())
+            }
+        }
+        let engine = Arc::new(ExitEngine {
+            commands: Default::default(),
+            events: std::sync::Mutex::new(vec![WebViewEvent::DownloadUpdated {
+                id: 11,
+                state: "progress".into(),
+                path: "/tmp/file".into(),
+                name: "file".into(),
+                url: "https://downloads.test/file".into(),
+                retryable: true,
+                received: 10,
+                total: 20,
+                error: String::new(),
+            }]),
+            frames: Arc::new(std::sync::Mutex::new(None)),
+        });
+        let mut tabs = BrowserTabs::new(BrowserWidget::with_engine(engine.clone(), true));
+        let mut doc = AutoCommit::new();
+        tabs.sync(&mut doc, &automerge::ROOT);
+
+        assert_eq!(
+            tabs.on_window_close_requested(),
+            ui::widget::WindowCloseAdmission::Defer
+        );
+        assert!(tabs.exit_panel.is_some(), "both exit choices are visible");
+
+        invoke_exit_choice(&mut tabs, "browser.download-exit.keep", &mut doc);
+        tabs.sync(&mut doc, &automerge::ROOT);
+        assert!(!tabs.take_window_close_intent());
+        assert!(!engine
+            .commands
+            .lock()
+            .unwrap()
+            .contains(&WebViewCommand::CancelAllDownloads));
+        assert_eq!(
+            tabs.on_window_close_requested(),
+            ui::widget::WindowCloseAdmission::Defer,
+            "keeping downloads does not arm a delayed automatic quit"
+        );
+
+        invoke_exit_choice(&mut tabs, "browser.download-exit.cancel", &mut doc);
+        tabs.sync(&mut doc, &automerge::ROOT);
+        assert!(engine
+            .commands
+            .lock()
+            .unwrap()
+            .contains(&WebViewCommand::CancelAllDownloads));
+        assert!(!tabs.take_window_close_intent());
+        assert_eq!(
+            tabs.on_window_close_requested(),
+            ui::widget::WindowCloseAdmission::Defer,
+            "repeated close cannot bypass native cancellation"
+        );
+
+        engine.events.lock().unwrap().extend([
+            WebViewEvent::DownloadUpdated {
+                id: 11,
+                state: "cancelled".into(),
+                path: String::new(),
+                name: String::new(),
+                url: String::new(),
+                retryable: false,
+                received: 0,
+                total: 0,
+                error: String::new(),
+            },
+            WebViewEvent::DownloadRuntime {
+                admitted: 0,
+                detached: 1,
+                accepting: false,
+                error: String::new(),
+            },
+        ]);
+        tabs.sync(&mut doc, &automerge::ROOT);
+        assert!(!tabs.take_window_close_intent(), "physical owner is still closing");
+        engine.events.lock().unwrap().push(WebViewEvent::DownloadRuntime {
+            admitted: 0,
+            detached: 0,
+            accepting: false,
+            error: String::new(),
+        });
+        tabs.sync(&mut doc, &automerge::ROOT);
+        assert!(tabs.take_window_close_intent());
+        assert!(!tabs.take_window_close_intent(), "approval is one shot");
     }
 
     #[test]

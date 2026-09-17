@@ -221,6 +221,8 @@ fn queue_download_event(queue: &Mutex<VecDeque<WebViewEvent>>, event: WebViewEve
         events.retain(
             |old| !matches!(old, WebViewEvent::DownloadUpdated { id: old_id, .. } if old_id == id),
         );
+    } else if matches!(event, WebViewEvent::DownloadRuntime { .. }) {
+        events.retain(|old| !matches!(old, WebViewEvent::DownloadRuntime { .. }));
     }
     if events.len() >= 256 {
         events.pop_front();
@@ -516,7 +518,10 @@ impl ChromiumEngine {
                             tracing::info!(cef = ?value["cef_version"], chromium = ?value["chromium_version"], "Chromium engine ready (CPU frame transport)");
                             let _ = ready_tx.try_send(());
                         }
-                        if matches!(value["event"].as_str(), Some("download_prompt" | "download")) {
+                        if matches!(
+                            value["event"].as_str(),
+                            Some("download_prompt" | "download" | "download_runtime")
+                        ) {
                             if let Some(event) = decode_event(&value) {
                                 queue_download_event(&download_events, event);
                                 let endpoints: Vec<_> = reader_routes.lock().unwrap().values().filter_map(Weak::upgrade).collect();
@@ -525,7 +530,20 @@ impl ChromiumEngine {
                             continue;
                         }
                         let tab = value["tab"].as_u64().unwrap_or(1) as u32;
-                        if let Some(shared) = route(&reader_routes, tab) {
+                        let retires_route = matches!(
+                            value["event"].as_str(),
+                            Some("closed" | "tab_detached" | "tab_create_failed")
+                        );
+                        let endpoint = if retires_route {
+                            reader_routes
+                                .lock()
+                                .unwrap()
+                                .remove(&tab)
+                                .and_then(|route| route.upgrade())
+                        } else {
+                            route(&reader_routes, tab)
+                        };
+                        if let Some(shared) = endpoint {
                             if value["event"] == "open_tab" {
                                 if let Some(url) = value["url"].as_str() {
                                     let mut requests = shared.open_tabs.lock().unwrap();
@@ -535,12 +553,17 @@ impl ChromiumEngine {
                             }
                             if let Some(event) = decode_event(&value) { shared.event(event); }
                         }
-                        if value["event"] == "closed" { reader_routes.lock().unwrap().remove(&tab); }
                     }
                     Ok(None) => { reader_shared.fail("Chromium engine disconnected".into()); break; }
                     Err(error) => { reader_shared.fail(format!("Invalid Chromium output: {error}")); break; }
                 }
             }
+            queue_download_event(&download_events, WebViewEvent::DownloadRuntime {
+                admitted: 0,
+                detached: 0,
+                accepting: false,
+                error: "Chromium engine disconnected".into(),
+            });
             fail_routes(&reader_routes, "Chromium engine disconnected".into());
         }) {
             tx.close();
@@ -871,6 +894,8 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
             valid_id(value)
                 && text("path")
                 && text("name")
+                && value["url"].as_str().is_some_and(|url| url.len() <= 8192)
+                && value["retryable"].is_boolean()
                 && text("error")
                 && matches!(
                     value["state"].as_str(),
@@ -882,6 +907,12 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                 && value["total"]
                     .as_f64()
                     .is_some_and(|n| n.is_finite() && n >= 0.0)
+        }
+        "download_runtime" => {
+            ["admitted", "detached"].iter().all(|key| {
+                value[*key].as_u64().is_some_and(|count| count <= 32)
+            }) && value["accepting"].is_boolean()
+                && value["error"].as_str().is_some_and(|error| error.len() <= 1024)
         }
         "ready" => text("cef_version") && text("chromium_version"),
         "open_tab" => {
@@ -960,7 +991,8 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         WebViewCommand::RequestMediaElementById { element_id, .. } => element_id.len() <= 256,
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::DownloadDecision { id, .. }
-        | WebViewCommand::CancelDownload { id } => *id > 0 && *id <= i32::MAX as u32,
+        | WebViewCommand::CancelDownload { id }
+        | WebViewCommand::RetryDownload { id } => *id > 0 && *id <= i32::MAX as u32,
         WebViewCommand::Navigate(url) => url.len() <= 65536,
         WebViewCommand::Key {
             key: KeyInput::Character(text),
@@ -1059,6 +1091,7 @@ impl CommandQueue {
 fn decode_event(value: &Value) -> Option<WebViewEvent> {
     Some(match value["event"].as_str()? {
         "closed" => WebViewEvent::TabClosed,
+        "tab_detached" => WebViewEvent::TabDetached,
         "close_blocked" => WebViewEvent::TabCloseBlocked,
         "site_status" => WebViewEvent::SiteStatus(super::SiteStatus {
             request_id: value["request_id"].as_u64()? as u32,
@@ -1151,8 +1184,16 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             state: value["state"].as_str()?.into(),
             path: value["path"].as_str()?.into(),
             name: value["name"].as_str()?.into(),
+            url: value["url"].as_str()?.into(),
+            retryable: value["retryable"].as_bool()?,
             received: value["received"].as_f64()? as u64,
             total: value["total"].as_f64()? as u64,
+            error: value["error"].as_str()?.into(),
+        },
+        "download_runtime" => WebViewEvent::DownloadRuntime {
+            admitted: value["admitted"].as_u64()? as u32,
+            detached: value["detached"].as_u64()? as u32,
+            accepting: value["accepting"].as_bool()?,
             error: value["error"].as_str()?.into(),
         },
         "navigation_history" => WebViewEvent::NavigationHistory {
@@ -1297,6 +1338,8 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::StopFinding => json!({"op":"stop_find"}),
         WebViewCommand::SetZoomLevel(level) => json!({"op":"zoom","level":level}),
         WebViewCommand::CancelDownload { id } => json!({"op":"download_cancel","id":id}),
+        WebViewCommand::RetryDownload { id } => json!({"op":"download_retry","id":id}),
+        WebViewCommand::CancelAllDownloads => json!({"op":"download_cancel_all"}),
         WebViewCommand::SetNativeFilterRules { rules, enabled } => {
             json!({"op":"filter_rules","rules":&*rules,"enabled":enabled})
         }

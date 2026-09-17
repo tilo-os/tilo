@@ -7881,6 +7881,10 @@ impl AppHandler {
             app.invalidate_widget_resource_cache();
             app.needs_sync = false;
         }
+        if app.root_widget.take_window_close_intent() {
+            event_loop.exit();
+            return;
+        }
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, __prof_frame_start);
         }
@@ -9108,7 +9112,16 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.dispatching_touch_pointer = false;
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                match self.app.root_widget.on_window_close_requested() {
+                    crate::widget::WindowCloseAdmission::Allow => event_loop.exit(),
+                    crate::widget::WindowCloseAdmission::Defer => {
+                        self.app.needs_sync = true;
+                        self.app.layout_dirty = true;
+                        window.request_redraw();
+                    }
+                }
+            }
             WindowEvent::Resized(_size) => {
                 // Handled lazily on the worker via the next `RenderRequest`'s
                 // dimensions; main only needs to drive a redraw.
