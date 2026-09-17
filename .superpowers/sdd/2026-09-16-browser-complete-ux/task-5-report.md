@@ -1,6 +1,6 @@
 # Task 5 implementation report
 
-Status: implementation complete and locally verified; parent acceptance is partially complete and its remaining UI checks are blocked by the capture provider.
+Status: private cleanup and the engine-neutral frame correction remain verified at their recorded checkpoints. Fix round 5 leaves startup rendering explicitly unresolved; the parent carries that requirement into Task 9. Capture-provider limitations are separate from this reproduced rendering failure.
 
 ## Native private context TDD
 
@@ -96,3 +96,39 @@ Status: implementation complete and locally verified; parent acceptance is parti
 - Optimized build pending at source commit: `cargo build -p browser --profile thin-app`, session `55355`, PID `3042`, log `target/browser-complete-ux/task5-fix4-build.log`. Prior session `14806` / SHA `90fe7575...` covers fix3 only and is not this candidate. Final result/hash will be appended after completion; no duplicate build is running for this correction.
 - Boundary: WPE nearest-logical rounding was inspected in `ui/src/webview/wpe/mod.rs`; the fixture verifies shared rendering compatibility, not a native WPE runtime on macOS. Native host stays at SHA `549472862deec879a9f14e9e240dbfc129b148a61b89de5ab2937aa7b54bc9bd`. Parent owns final optimized live acceptance and scoped review. No push/merge or native acceptance launch was performed by this implementer.
 - Optimized build completion: the same session `55355` / PID `3042` exited 0 after `3m 40s`, with no restarted build. `target/thin-app/browser` is 26,710,432 bytes, SHA-256 `e3a9f95ea3dc01c4ad50c32b79e6e6423baf5d3c4ff52ccb45069eabfe13f29c`, covering owned source commit `7c0191dc5aa542d85368f575bef529681e4363a2`. `git diff --exit-code -- ui/src/widget/webview.rs` exited 0 after the build. Native-host SHA was rechecked and remains `549472862deec879a9f14e9e240dbfc129b148a61b89de5ab2937aa7b54bc9bd`. Parent received this exact candidate for two fresh live trials; the fix4 scoped review approved the source correction.
+
+
+## Fix round 5: native startup resize investigation, unresolved at the review cap
+
+**Outcome: diagnostic and regression coverage only; no rendering-fix claim.** The parent explicitly adjudicated the failed architectural experiments at the round-5 cap and carried the unresolved startup rendering requirement into `task-9-brief.md`. The private-cleanup and generic-engine fixes remain intact. Independent Task 6 work may proceed; Task 5's two-launch startup acceptance has not passed.
+
+### Evidence and failure boundary
+
+- Parent live diagnostic `private-trace5a-process.log` (app 34072/helper 34078) proved the final `1600x904@2` requests reached native receipt, UI dispatch, and `geometry_.ResizePhysical`. The native side published the initial `1280x800` frame, then received stale `1280x800` and `800x452` paints and never published the requested frame. Blank screenshots remained at 27.710 and 67.202 seconds without pointer input. This rules out Rust enqueue/engine-identity failure for that reproduction; the exact failure inside the native/CEF resize-and-paint interaction remains unresolved. Parent closed the app and verified both PIDs and root `3442134f-e613-4627-8207-c960f1e1aa2a` absent.
+- Added opt-in `QOS_WEBVIEW_PROFILE=trace` native geometry evidence, bounded to 128 records per process: browser creation/ready ordering, command receipt, UI dispatch, applied geometry, stale paints, and actual frame publication. Records include only tab identifiers and geometry, never URLs or page content. Existing tracing before Rust enqueue is not interpreted as native delivery.
+- New `apps/browser/chromium/tests/startup_geometry.py` waits for the initial allocated surface, navigates a synthetic data document, then stages the live layout sequence (`800x452@1`, `800x444@1`, `1600x888@2`, `1600x904@2`) without waiting for intermediate paint acknowledgements. It asserts a current physical frame before input, across 1/3/5/10/20/40 ms scheduling gaps. Separate native cases cover hidden-to-visible resize and shutdown while a hidden resize cannot paint. These are isolated temporary profiles; no personal profile is read.
+- The original direct native regression settled navigation and awaited one resize's paint before the next resize. An immediate all-at-once startup burst also passed. Neither exercised the overlapping startup ordering exposed by the staged fixture.
+- Baseline RED: `QOS_WEBVIEW_PROFILE=trace python3 apps/browser/chromium/tests/startup_geometry.py 'target/chromium/Browser Engine.app/Contents/MacOS/qos-chromium-host'` exited 1 after ten seconds with no current paint (`task5-fix5-startup-red.log`). The first diagnostic timing sweep reproduced five failures in six schedules (`task5-fix5-delay-probe.log`).
+
+### Tested hypotheses, all rejected as complete fixes
+
+Pinned CEF source was inspected at commit `708dc14`: `CefRenderWidgetHostViewOSR::WasResized`, `ResizeRootLayer`, `OnScreenInfoChanged`, and `OnPaint` in `libcef/browser/osr/render_widget_host_view_osr.cc`, plus `video_consumer_osr.cc`. CEF maintains a resize hold and releases it after the embedding paint callback. This justified the following bounded discriminators; none established a complete fix:
+
+| Experiment | Result and retained log |
+| --- | --- |
+| Remove redundant `NotifyScreenInfoChanged`, retain normal resize/invalidation | Original staged test failed (`task5-fix5-startup-green.log`; the filename is historical, **result is RED**). |
+| Restore screen notification; post stale-paint recovery after the callback | Original staged test failed (`task5-fix5-deferred-startup.log`). |
+| Serialize one applied geometry until a matching paint, coalesce desired geometry, advance on a posted task | Original test, hidden/show, close, scale-only, and pointer checks passed, but the wider timing probe failed 10/20/40 ms schedules (`task5-fix5-delay-green.log`; **not a green result**). Expanded asserting regression exited 1 (`task5-fix5-sequenced-wide-red.log`). |
+| Serialized geometry, remove forced invalidation on changed resize | Six-schedule regression failed at 20 and 40 ms (`task5-fix5-no-refresh-startup.log`). |
+| Serialized geometry, use only `WasResized` for changed geometry | Final coupled discriminator failed all six schedules (`task5-fix5-resize-only-startup.log`), exit 1 after bounded waits. |
+
+- Sequencer policy tests were written first (compile RED on the absent type), then passed, including a newer request between acknowledgement and posted advancement. Those experimental policy tests and the sequencer were removed with the rejected implementation; they are not represented as final protection.
+- No recovery timer, stale-frame stretching, native security change, encryption change, or user-profile access was introduced. The rejected experiment patch is retained only at `target/browser-complete-ux/task5-fix5-rejected-experiment.patch` for the Task 9 handoff.
+
+### Restoration and verification
+
+- Restored the previously accepted native resize/repaint behavior. `view_geometry.h` and `protocol_test.cc` are byte-identical to the accepted HEAD versions. Removing only the bounded trace calls/helper/includes from `host.cc` yields the same whitespace-normalized source as the accepted version. Proof: `target/browser-complete-ux/task5-fix5-restored-source-proof.json`; traced source SHA-256 `5315bde805cb3af46ffe3833e7188557141c1387f4826b784fd2c5638d68bce3`.
+- Restored protocol verification: `c++ -std=c++20 -I apps/browser/chromium/src apps/browser/chromium/tests/protocol_test.cc -o /tmp/qos-protocol-test-task5-fix5 && /tmp/qos-protocol-test-task5-fix5` exited 0, `protocol tests passed`.
+- `cargo check -p browser --no-default-features` exited 0 (`task5-fix5-check.log`). `cargo build -p browser --profile thin-app` session 63176 exited 0 in 2m42s (`task5-fix5-build.log`), preserving unrelated shared edits. Existing UI unused/dead-code warnings remain. No Rust source was changed in this round. The resulting Rust executable SHA-256 is `837abbf38e42e25ef4c28b8c912e6bf5598ccd8d7d4cb0a7702206ae9cd27e19`.
+- Restored native rebuild is pending at this report checkpoint: existing session 14682, log `task5-fix5-restored-native-build.log`; it is waiting for an unrelated Cargo build lock. It has not been duplicated or restarted. Its first launch remains reserved for the sampled wrapper, after which the exact final hash and scoped native results will be appended.
+- Every experimental native rebuild's first launch used `sampled-netlog-host-v2.py`. First-launch evidence UUIDs: diagnostic `ab4bff1e-8c77-4ce0-8fea-736d455966d2`; no-screen-notify `ea3d8623-7ac6-433d-8690-08c5d8557acb`; deferred callback `f8c7f6cc-308c-4295-af26-28bc78b3a08e`; serialized geometry `e856b405-827e-4751-9731-4f766ef11f06`; no forced refresh `1fa0284f-216c-434b-bca1-b6665c706835`. All those helpers exited 0. The serialized-geometry sample recorded eight sampling calls with at least one nonzero result; it is not claimed as fully successful sampling. Metadata and NetLogs are preserved for Task 9; no startup latency conclusion is drawn.

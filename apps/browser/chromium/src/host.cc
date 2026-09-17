@@ -25,6 +25,8 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
+#include <cstdlib>
+#include <cstdio>
 #include <deque>
 #include <fcntl.h>
 #include <filesystem>
@@ -41,6 +43,12 @@
 namespace {
 constexpr int kOffscreenFrameRate = 60;
 constexpr size_t kMaxMediaFrames = 64;
+// Bounded, opt-in startup geometry evidence; never includes page content.
+void TraceGeometry(const char* stage,int tab,int width=0,int height=0,double scale=0) {
+  static const bool enabled=[] {const char* value=std::getenv("QOS_WEBVIEW_PROFILE");return value && std::strcmp(value,"trace")==0;}();
+  static std::atomic<unsigned> count{0};
+  if(enabled && count.fetch_add(1)<128) std::fprintf(stderr,"[chromium-geometry] %s tab=%d %dx%d scale=%g\n",stage,tab,width,height,scale);
+}
 // CEF callbacks only enqueue: a slow UI must never block Chromium's UI thread.
 class Output {
  public:
@@ -202,6 +210,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     document_scripts_->Attach();
     navigation_history_=new qos::NavigationHistory(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});navigation_history_->Attach();
     auto d=CefDictionaryValue::Create();d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
     if(closing) browser_->GetHost()->CloseBrowser(true);
   }
@@ -242,6 +251,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!visible_) return;
     auto size=qos::FrameSize(width,height);if(!size) return;
     if(type==PET_VIEW && !geometry_.PaintMatches(width,height)) {
+      TraceGeometry("paint-stale",id_,width,height,geometry_.scale());
       if(!stale_paint_recovery_pending_) { stale_paint_recovery_pending_=true;browser->GetHost()->Invalidate(PET_VIEW); }
       return;
     }
@@ -251,6 +261,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void EmitFrame() {
     if(!visible_ || pixels_.empty()) return;
+    TraceGeometry("frame-published",id_,pixel_width_,pixel_height_,geometry_.scale());
     std::string body; qos::AppendU32(body,pixel_width_);qos::AppendU32(body,pixel_height_);body+=pixels_;
     if(popup_visible_ && !popup_.empty()) {
       int x=static_cast<int>(std::round(popup_rect_.x*geometry_.scale())),y=static_cast<int>(std::round(popup_rect_.y*geometry_.scale()));
@@ -380,6 +391,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(!std::isfinite(scale)||scale<0.25||scale>8||!qos::FrameSize(w,h)) { CloseHost(); return; }
       // IPC sizes and pointer coordinates are physical pixels; CEF uses DIP.
       const auto effect=geometry_.ResizePhysical(w,h,scale);
+      TraceGeometry("resize-applied",id_,w,h,scale);
       stale_paint_recovery_pending_=false;
       if(effect==qos::ResizeEffect::Repaint) { host->Invalidate(PET_VIEW);return; }
       popup_.clear();pixels_.clear();host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
@@ -467,7 +479,9 @@ void CreateTab(int id) {
   if(closing || id<=0 || clients.count(id) || clients.size()>=32) return;
   auto client=CefRefPtr<Client>(new Client(id));clients.emplace(id,client);
   CefWindowInfo window;window.SetAsWindowless(0);CefBrowserSettings settings;settings.windowless_frame_rate=kOffscreenFrameRate;settings.background_color=CefColorSetARGB(255,255,255,255);
+  TraceGeometry("create-begin",id);
   if(!CefBrowserHost::CreateBrowserSync(window,client,"about:blank",settings,nullptr,shared_context)) {clients.erase(id);CloseHost();}
+  TraceGeometry("create-return",id);
 }
 void Dispatch(CefRefPtr<CefDictionaryValue> d) {
   const auto op=d->GetString("op");int id=d->HasKey("tab")?d->GetInt("tab"):1;
@@ -475,6 +489,7 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
   if(op=="create_tab") {CreateTab(id);return;}
   if(op=="download_decision") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"));return; }
   if(op=="download_cancel") { downloads->CancelDownload(d->GetInt("id"));return; }
+  if(op=="resize") TraceGeometry("resize-dispatch",id,d->GetInt("width"),d->GetInt("height"),Number(d,"scale_factor"));
   auto found=clients.find(id);if(found!=clients.end()) found->second->Command(d);
 }
 class App final : public CefApp,public CefBrowserProcessHandler {
@@ -554,7 +569,9 @@ void ReadCommands(std::atomic<bool>& stop) {
       if(buffer[4]!=1) {bad=true;break;}
       auto parsed=CefParseJSON(buffer.substr(5,size-1),JSON_PARSER_RFC);
       if(!parsed || parsed->GetType()!=VTYPE_DICTIONARY || parsed->GetDictionary()->GetType("op")!=VTYPE_STRING) {bad=true;break;}
-      auto d=parsed->GetDictionary();if(!ValidCommand(d)) {bad=true;break;}CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<CefDictionaryValue> command){Dispatch(command);},d));
+      auto d=parsed->GetDictionary();if(!ValidCommand(d)) {bad=true;break;}
+      if(d->GetString("op")=="resize") TraceGeometry("resize-received",d->HasKey("tab")?d->GetInt("tab"):1,d->GetInt("width"),d->GetInt("height"),Number(d,"scale_factor"));
+      CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<CefDictionaryValue> command){Dispatch(command);},d));
       buffer.erase(0,size+4);
     }
     if(bad) { std::cerr<<"Malformed browser IPC packet\n";break; }
