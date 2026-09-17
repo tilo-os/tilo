@@ -175,3 +175,28 @@ pub use thumbs::ThumbProvider;
 pub use transaction_coordinator::{
     RecordTransactionCoordinatorError, complete_replacement_transaction,
 };
+
+#[cfg(all(test, target_os = "macos"))]
+mod native_mount_selection_tests {
+    #[test]
+    fn unselected_native_mount_fails_without_mounting() {
+        struct EmptyFilesystem;
+        impl fuser::Filesystem for EmptyFilesystem {}
+        let mountpoint = tempfile::tempdir().unwrap();
+        let result = fuser::Session::new(
+            EmptyFilesystem,
+            mountpoint.path(),
+            &fuser::Config::default(),
+        );
+        let error = match result {
+            Ok(_) => panic!("native mounting must remain unavailable"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(
+            error.to_string(),
+            "Mount is not enabled; this is test-only configuration"
+        );
+        assert_eq!(std::fs::read_dir(mountpoint.path()).unwrap().count(), 0);
+    }
+}

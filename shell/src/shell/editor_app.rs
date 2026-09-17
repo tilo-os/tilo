@@ -13,8 +13,10 @@
 //! out of scope.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::transaction::Transactable;
+use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
 use taffy::{NodeId, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -33,6 +35,7 @@ use winit::keyboard::{Key, NamedKey};
 /// Distinct from `NotesApp::BODY_KEY` so Notes and Editor tiles hosted in
 /// the same shell don't stomp on each other's text.
 pub const BODY_KEY: &str = "editor_body";
+const DISK_BASE_KEY: &str = "editor_disk_base";
 
 const PADDING_X: f64 = 20.0;
 const PADDING_Y: f64 = 48.0; // leave room for the "Editor" header
@@ -84,6 +87,15 @@ pub struct EditorApp {
     /// Byte offset into `body.text` for the caret.
     cursor_pos: usize,
     last_mouse: Point,
+    source: Option<SourceDocument>,
+    disk_conflict: Option<String>,
+    disk_observation_pending: bool,
+}
+
+struct SourceDocument {
+    path: PathBuf,
+    provider_id: &'static str,
+    disk_text: String,
 }
 
 impl EditorApp {
@@ -95,6 +107,9 @@ impl EditorApp {
             body: CrdtTextBody::new(BODY_KEY),
             cursor_pos: 0,
             last_mouse: Point::ZERO,
+            source: None,
+            disk_conflict: None,
+            disk_observation_pending: false,
         }
     }
 
@@ -109,8 +124,63 @@ impl EditorApp {
         Self::with_seed(DEFAULT_SEED)
     }
 
+    pub fn for_file(path: PathBuf, provider_id: &'static str, text: String) -> Self {
+        let mut app = Self::with_seed(text.clone());
+        app.source = Some(SourceDocument {
+            path,
+            provider_id,
+            disk_text: text,
+        });
+        app.disk_observation_pending = true;
+        app
+    }
+
     fn clamp_cursor(&mut self) {
         self.cursor_pos = self.body.clamp(self.cursor_pos);
+    }
+
+    fn reconcile_disk(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !self.disk_observation_pending {
+            return;
+        }
+        self.disk_observation_pending = false;
+        let Some(source) = &self.source else {
+            return;
+        };
+        let disk_text = source.disk_text.clone();
+        let base =
+            state
+                .get(root, DISK_BASE_KEY)
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| match value {
+                    Value::Scalar(value) => match value.as_ref() {
+                        ScalarValue::Str(text) => Some(text.to_string()),
+                        _ => None,
+                    },
+                    Value::Object(_) => None,
+                });
+        match base {
+            None => {
+                let _ = state.put(root, DISK_BASE_KEY, disk_text);
+                self.disk_conflict = None;
+            }
+            Some(base) if disk_text == base => {
+                self.disk_conflict = None;
+            }
+            Some(base) if self.body.text == base => {
+                let end = self.body.text.len();
+                self.cursor_pos = self.body.splice(state, root, 0..end, &disk_text);
+                let _ = state.put(root, DISK_BASE_KEY, disk_text);
+                self.disk_conflict = None;
+            }
+            Some(_) => {
+                self.disk_conflict = Some(
+                    "File changed on disk; unsaved edits are preserved for conflict resolution"
+                        .to_string(),
+                );
+            }
+        }
     }
 
     fn insert_text(&mut self, state: &mut AutoCommit, root: &ObjId, s: &str) {
@@ -435,7 +505,9 @@ impl EditorApp {
             at(transform, (self.rect.x0 + PADDING_X, self.rect.y0 + 18.0)),
             None,
         );
-        let hint = if self.focused {
+        let hint = if self.disk_conflict.is_some() {
+            "File changed on disk — unsaved edits preserved"
+        } else if self.focused {
             "Live-shared code  ·  Ctrl+Z to undo"
         } else {
             "Click to edit"
@@ -445,7 +517,11 @@ impl EditorApp {
             scene,
             hint,
             hint_size,
-            palette.gutter,
+            if self.disk_conflict.is_some() {
+                theme.tokens.colors.semantic.warning
+            } else {
+                palette.gutter
+            },
             at(
                 transform,
                 (
@@ -660,7 +736,37 @@ impl EditorApp {
 impl Widget for EditorApp {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.body.sync(state, root);
+        self.reconcile_disk(state, root);
         self.clamp_cursor();
+    }
+
+    fn record_intent(&self) -> Option<ui::record::RecordCheckout> {
+        self.source.as_ref().map(|source| {
+            ui::record::RecordCheckout::new(
+                ui::record::RecordId::for_file(&source.path),
+                ui::record::RecordKind::new("text-document"),
+            )
+        })
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let source = self.source.as_ref()?;
+        let mut node = ui::a11y::AccessNode::new(ui::a11y::Role::Document)
+            .with_name(source.path.file_name().map_or_else(
+                || source.path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            ))
+            .with_value(self.body.text.clone())
+            .with_description(
+                self.disk_conflict
+                    .clone()
+                    .unwrap_or_else(|| source.provider_id.to_string()),
+            )
+            .with_bounds(self.rect);
+        if self.disk_conflict.is_some() {
+            node.state.invalid = true;
+        }
+        Some(node)
     }
 
     fn build_layout(
@@ -990,6 +1096,69 @@ mod tests {
         assert_eq!(app.cursor_pos, 3);
         app.delete_before(&mut doc, &tile);
         assert_eq!(app.body.text, "ab");
+    }
+
+    #[test]
+    fn external_disk_change_replaces_an_unedited_record_body() {
+        let (mut doc, tile) = bind();
+        let path = PathBuf::from("/work/Document-000.txt");
+        let mut first = EditorApp::for_file(path.clone(), "org.tilo.Editor", "base".into());
+        first.sync(&mut doc, &tile);
+
+        let mut reopened = EditorApp::for_file(path, "org.tilo.Editor", "changed on disk".into());
+        reopened.sync(&mut doc, &tile);
+
+        assert_eq!(reopened.body.text, "changed on disk");
+        assert!(reopened.disk_conflict.is_none());
+    }
+
+    #[test]
+    fn an_older_editor_never_replays_its_stale_disk_observation() {
+        let (mut doc, tile) = bind();
+        let path = PathBuf::from("/work/Document-000.txt");
+        let mut older = EditorApp::for_file(path.clone(), "org.tilo.Editor", "old".into());
+        older.sync(&mut doc, &tile);
+        let mut newer = EditorApp::for_file(path, "org.tilo.Editor", "new".into());
+        newer.sync(&mut doc, &tile);
+        assert_eq!(newer.body.text, "new");
+
+        older.sync(&mut doc, &tile);
+
+        assert_eq!(older.body.text, "new");
+        assert_eq!(
+            doc.get(&tile, DISK_BASE_KEY)
+                .unwrap()
+                .and_then(|(value, _)| value.into_scalar().ok())
+                .and_then(|value| match value {
+                    ScalarValue::Str(text) => Some(text.to_string()),
+                    _ => None,
+                })
+                .as_deref(),
+            Some("new")
+        );
+    }
+
+    #[test]
+    fn concurrent_disk_change_preserves_unsaved_record_edits_and_surfaces_conflict() {
+        let (mut doc, tile) = bind();
+        let path = PathBuf::from("/work/Document-000.txt");
+        let mut first = EditorApp::for_file(path.clone(), "org.tilo.Editor", "base".into());
+        first.sync(&mut doc, &tile);
+        first.body.splice(&mut doc, &tile, 0..4, "local edit");
+
+        let mut reopened = EditorApp::for_file(path, "org.tilo.Editor", "changed on disk".into());
+        reopened.sync(&mut doc, &tile);
+
+        assert_eq!(reopened.body.text, "local edit");
+        assert!(reopened.disk_conflict.is_some());
+        let semantics = reopened.accessibility().expect("file semantics");
+        assert!(semantics.state.invalid);
+        assert!(
+            semantics
+                .description
+                .as_deref()
+                .is_some_and(|message| message.contains("unsaved edits"))
+        );
     }
 
     #[test]

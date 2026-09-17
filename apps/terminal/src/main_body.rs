@@ -6025,6 +6025,13 @@ fn ush_service_backend() -> Result<TerminalBackend, Box<dyn std::error::Error>> 
     // documents it in `TILO_SVC_<NAME>_FD`. `from_raw_fd` takes ownership, which
     // is correct — nothing else in this process refers to it.
     let stream = unsafe { UnixStream::from_raw_fd(raw) };
+    ush_backend_on(&stream)
+}
+
+fn ush_backend_on(
+    stream: &std::os::unix::net::UnixStream,
+) -> Result<TerminalBackend, Box<dyn std::error::Error>> {
+    use std::os::fd::AsRawFd;
     let mut request = serde_json::to_vec(&serde_json::json!({
         "op": "open-session",
         "profile": "ush",
@@ -6034,18 +6041,18 @@ fn ush_service_backend() -> Result<TerminalBackend, Box<dyn std::error::Error>> 
     }))?;
     request.push(b'\n');
     {
-        let mut w = &stream;
+        let mut w = stream;
         w.write_all(&request)?;
         w.flush()?;
     }
 
-    let (payload, fd) = ush::supervisor::recv_with_fd(raw)?;
+    let (payload, fd) = runtime_portal::fd_transport::recv_with_owned_fd(stream.as_raw_fd())?;
     let text = String::from_utf8_lossy(&payload);
     let fd = fd.ok_or_else(|| format!("the ush service refused this session: {}", text.trim()))?;
 
     // SAFETY: `fd` arrived over `SCM_RIGHTS` and this process now owns it. The
     // supervisor sends a pty master and nothing else.
-    let master = unsafe { std::fs::File::from_raw_fd(fd) };
+    let master = std::fs::File::from(fd);
     let reader = Box::new(master.try_clone()?) as Box<dyn Read + Send>;
     let writer = Box::new(master.try_clone()?) as Box<dyn Write + Send>;
     Ok(TerminalBackend {
@@ -6194,12 +6201,25 @@ impl TerminalWidget {
         widget
     }
 
-    /// Spawn the user's login shell (`$SHELL`) in a PTY + reader thread and
-    /// return a fully wired `TerminalWidget`.
+    /// Construct a hosted terminal using its required process service.
     ///
     /// # Errors
     ///
     /// Returns an error if PTY creation fails.
+    pub fn spawn_hosted(
+        services: crate::HostedProcessServices,
+    ) -> Result<Self, crate::HostedTerminalError> {
+        let stream = services
+            .ush
+            .ok_or(crate::HostedTerminalError::RequiredServiceMissing("ush"))?;
+        let backend = ush_backend_on(&stream)
+            .map_err(|error| crate::HostedTerminalError::ServiceFailed(error.to_string()))?;
+        Ok(Self::from_backend(backend))
+    }
+
+    /// Spawn the standalone user login shell.
+    /// # Errors
+    /// Returns PTY or process creation errors.
     pub fn spawn_default() -> anyhow::Result<Self> {
         let backend = TerminalBackend::new().map_err(|e| anyhow::anyhow!(e.to_string()))?;
         Ok(Self::from_backend(backend))

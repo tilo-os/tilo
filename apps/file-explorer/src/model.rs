@@ -1248,6 +1248,8 @@ fn parse_workspace_roots(val: &str) -> Vec<PathBuf> {
 /// Whether `path` sits inside a Tilo workspace root (so its entries carry sync
 /// state and should be queried for the [`SYNC_XATTR`]).
 pub fn is_workspace_path(path: &Path) -> bool {
+    #[cfg(test)]
+    fixture_io_guard::ambient_io("model::is_workspace_path");
     path_under_any(path, &workspace_roots())
 }
 
@@ -1424,11 +1426,21 @@ pub fn read_dir_sync(path: &Path) -> Result<Vec<Entry>, String> {
     read_dir_inner(path, is_workspace_path(path))
 }
 
+/// List real entries with classification derived solely from supplied roots.
+pub(crate) fn read_dir_with_workspace_roots(
+    path: &Path,
+    roots: &[PathBuf],
+) -> Result<Vec<Entry>, String> {
+    read_dir_inner(path, path_under_any(path, roots))
+}
+
 /// The listing body, with the workspace-gating decision passed in (so tests can
 /// exercise the sync-state population path without mutating the global
-/// `TILO_WORKSPACE_ROOTS` env). Production always routes through
-/// [`read_dir_sync`], which derives `in_workspace` from the real environment.
+/// `TILO_WORKSPACE_ROOTS` env). Standalone callers use [`read_dir_sync`];
+/// injected views supply workspace roots explicitly.
 fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String> {
+    #[cfg(test)]
+    fixture_io_guard::observe_owned_listing(path, in_workspace);
     let rd = std::fs::read_dir(path).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for entry in rd.flatten() {
@@ -2151,5 +2163,96 @@ mod sync_state_tests {
             parse_record_index_projection(root.path(), &bytes).is_none(),
             "an oversized catalog is rejected wholesale"
         );
+    }
+}
+
+/// Fail before ambient boundaries in the isolated library-test process.
+#[cfg(test)]
+pub(crate) mod fixture_io_guard {
+    use std::path::{Path, PathBuf};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    static DENY: AtomicBool = AtomicBool::new(false);
+    static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+    struct ListingState {
+        root: PathBuf,
+        entries: Vec<(PathBuf, bool)>,
+    }
+    static LISTINGS: Mutex<Option<ListingState>> = Mutex::new(None);
+
+    pub(crate) struct DenyAmbientIo(&'static AtomicUsize);
+    impl DenyAmbientIo {
+        pub(crate) fn new() -> Self {
+            assert!(
+                !DENY.swap(true, Ordering::SeqCst),
+                "ambient guard already armed"
+            );
+            ATTEMPTS.store(0, Ordering::SeqCst);
+            Self(&ATTEMPTS)
+        }
+        pub(crate) fn attempts(&self) -> usize {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+    impl Drop for DenyAmbientIo {
+        fn drop(&mut self) {
+            DENY.store(false, Ordering::SeqCst);
+        }
+    }
+    pub(crate) fn ambient_io(boundary: &'static str) {
+        ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            !DENY.load(Ordering::SeqCst),
+            "ambient I/O denied: {boundary}"
+        );
+    }
+
+    pub(crate) struct OwnedListings(&'static Mutex<Option<ListingState>>);
+    impl OwnedListings {
+        pub(crate) fn new(root: &Path) -> Self {
+            let mut state = LISTINGS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(state.is_none(), "listing observer already armed");
+            *state = Some(ListingState {
+                root: root.to_path_buf(),
+                entries: Vec::new(),
+            });
+            drop(state);
+            Self(&LISTINGS)
+        }
+        pub(crate) fn observations(&self) -> Vec<(PathBuf, bool)> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .unwrap()
+                .entries
+                .clone()
+        }
+    }
+    impl Drop for OwnedListings {
+        fn drop(&mut self) {
+            *self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
+    }
+    pub(crate) fn observe_owned_listing(path: &Path, in_workspace: bool) {
+        let mut state = LISTINGS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(state) = state.as_mut() {
+            assert!(
+                path.starts_with(&state.root),
+                "listing outside owned fixture: {}",
+                path.display()
+            );
+            state.entries.push((path.to_path_buf(), in_workspace));
+        }
     }
 }

@@ -161,6 +161,41 @@ impl RichTextLine {
         self.inner.bind_text(obj);
     }
 
+    pub(super) fn adopt_bound_text(
+        &mut self,
+        state: &AutoCommit,
+    ) -> Result<(), crate::view::ThawError> {
+        self.inner.adopt_bound_text(state)?;
+        self.align_bound_projection(state);
+        Ok(())
+    }
+
+    fn align_bound_projection(&mut self, state: &AutoCommit) {
+        self.prev_text = self.inner.value().to_string();
+        self.prev_cursor = self.inner.cursor_pos();
+
+        // Marks are char-indexed; convert to byte ranges for `pixel_x_for_byte`.
+        self.author_runs.clear();
+        if let Some(obj) = self.inner.bound_obj().cloned() {
+            let text = self.inner.value().to_string();
+            if let Ok(marks) = state.marks(&obj) {
+                for m in marks {
+                    if m.name.as_str() != crate::widget::text_input::AUTHOR_MARK {
+                        continue;
+                    }
+                    let ScalarValue::Str(author) = &m.value else {
+                        continue;
+                    };
+                    let bs = char_to_byte(&text, m.start);
+                    let be = char_to_byte(&text, m.end);
+                    if be > bs {
+                        self.author_runs.push((bs, be, author.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
     pub fn bound_obj(&self) -> Option<ObjId> {
         self.inner.bound_obj().cloned()
     }
@@ -397,29 +432,7 @@ impl Widget for RichTextLine {
         // Realigning the mark-diff snapshot here keeps a remotely-synced edit
         // from being misread as a local splice on the next keystroke.
         self.inner.sync(state, path);
-        self.prev_text = self.inner.value().to_string();
-        self.prev_cursor = self.inner.cursor_pos();
-
-        // Marks are char-indexed; convert to byte ranges for `pixel_x_for_byte`.
-        self.author_runs.clear();
-        if let Some(obj) = self.inner.bound_obj().cloned() {
-            let text = self.inner.value().to_string();
-            if let Ok(marks) = state.marks(&obj) {
-                for m in marks {
-                    if m.name.as_str() != crate::widget::text_input::AUTHOR_MARK {
-                        continue;
-                    }
-                    let ScalarValue::Str(author) = &m.value else {
-                        continue;
-                    };
-                    let bs = char_to_byte(&text, m.start);
-                    let be = char_to_byte(&text, m.end);
-                    if be > bs {
-                        self.author_runs.push((bs, be, author.to_string()));
-                    }
-                }
-            }
-        }
+        self.align_bound_projection(state);
     }
 
     fn build_layout(

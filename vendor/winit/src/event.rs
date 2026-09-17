@@ -277,6 +277,18 @@ pub enum WindowEvent {
     /// An mouse button press has been received.
     MouseInput { device_id: DeviceId, state: ElementState, button: MouseButton },
 
+    /// A completed three-finger trackpad swipe.
+    ///
+    /// Unlike scrolling or panning, this is one discrete event per swipe.
+    /// The direction is a unit vector: positive x is right, positive y is down.
+    /// It is independent of display scaling and the natural scrolling preference.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - Only available on **macOS**, when enabled in the system trackpad settings.
+    #[cfg(target_os = "macos")]
+    SwipeGesture { device_id: DeviceId, delta: PhysicalPosition<f64> },
+
     /// Two-finger pinch gesture, often used for magnification.
     ///
     /// ## Platform-specific
@@ -653,6 +665,55 @@ pub struct KeyEvent {
     ///
     /// On Android, iOS, Redox and Web, this type is a no-op.
     pub(crate) platform_specific: platform_impl::KeyEventExtra,
+}
+
+impl KeyEvent {
+    /// Construct a complete synthetic key event for deterministic input
+    /// drivers. Every public field and available platform supplement is explicit.
+    #[doc(hidden)]
+    pub fn synthetic(
+        raw: RawKeyEvent,
+        logical_key: keyboard::Key,
+        text: Option<SmolStr>,
+        location: keyboard::KeyLocation,
+        repeat: bool,
+        text_with_all_modifiers: Option<SmolStr>,
+        key_without_modifiers: keyboard::Key,
+    ) -> Self {
+        #[cfg(any(
+            macos_platform,
+            x11_platform,
+            wayland_platform,
+            windows_platform,
+            orbital_platform,
+        ))]
+        let platform_specific =
+            platform_impl::KeyEventExtra { text_with_all_modifiers, key_without_modifiers };
+
+        #[cfg(any(android_platform, ios_platform))]
+        let platform_specific = {
+            drop(text_with_all_modifiers);
+            drop(key_without_modifiers);
+            platform_impl::KeyEventExtra {}
+        };
+
+        #[cfg(web_platform)]
+        let platform_specific = {
+            drop(text_with_all_modifiers);
+            drop(key_without_modifiers);
+            platform_impl::KeyEventExtra
+        };
+
+        Self {
+            physical_key: raw.physical_key,
+            logical_key,
+            text,
+            location,
+            state: raw.state,
+            repeat,
+            platform_specific,
+        }
+    }
 }
 
 /// Describes keyboard modifiers event.
@@ -1065,6 +1126,11 @@ mod tests {
                     device_id: did,
                     delta: 0.0,
                     phase: event::TouchPhase::Started,
+                });
+                #[cfg(target_os = "macos")]
+                with_window_event(SwipeGesture {
+                    device_id: did,
+                    delta: PhysicalPosition::new(-1.0, 0.0),
                 });
                 with_window_event(DoubleTapGesture { device_id: did });
                 with_window_event(RotationGesture {

@@ -1,0 +1,770 @@
+#![allow(
+    clippy::float_cmp,
+    reason = "exact retained scroll and unchanged layout geometry are the contract"
+)]
+
+use crate::component_support::*;
+use automerge::transaction::Transactable;
+use notes::{actions, doc::NotesDoc};
+use ui::{
+    application::RestoreInput,
+    headless::{Driver, SemanticExpectation},
+};
+
+// Catches reopening the default page, or projecting old text over the latest record.
+#[test]
+fn owned_close_restores_each_instances_selected_page_from_latest_record() {
+    let f = LegacyFixture::rich();
+    let checkout = imported(&f);
+    let source = f.source_bytes();
+    let mut a = driver(&f, 11, &checkout);
+    let mut b = driver(&f, 12, &checkout);
+    invoke(&mut a, 11, actions::page_resource_id(f.child), "open", None);
+    a.perform_named(
+        "note_title",
+        &ui::a11y::Action::SetSelection {
+            anchor: 0,
+            focus: 0,
+        },
+    )
+    .unwrap();
+    a.expect(&SemanticExpectation::named("note_title").value("Launch"))
+        .unwrap();
+    a.type_text("uncommitted title draft");
+    assert_eq!(revision(&f, &checkout), 0);
+    a.close_components();
+    let reports = a.take_component_close_reports();
+    assert_eq!(reports.len(), 1);
+    assert_closed(&reports[0]);
+    let saved = reports[0].recovery.clone().unwrap();
+    drop(a);
+    invoke(
+        &mut b,
+        12,
+        actions::page_resource_id(f.child),
+        "rename",
+        Some("Latest Launch"),
+    );
+    let before = f
+        .records
+        .read(&checkout.id, |doc| {
+            (
+                doc.base_heads(),
+                doc.pending_ops(),
+                NotesDoc::page_block_snapshots(doc, f.child),
+            )
+        })
+        .unwrap();
+    let revision_before = revision(&f, &checkout);
+    let component = restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved));
+    let mut a = Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+    a.expect(
+        &SemanticExpectation::named("note_title")
+            .value("Latest Launch")
+            .focused(true),
+    )
+    .unwrap();
+    b.expect(&SemanticExpectation::named("note_title").value("Projects"))
+        .unwrap();
+    assert_eq!(
+        before,
+        f.records
+            .read(&checkout.id, |doc| (
+                doc.base_heads(),
+                doc.pending_ops(),
+                NotesDoc::page_block_snapshots(doc, f.child)
+            ))
+            .unwrap()
+    );
+    assert_eq!(revision(&f, &checkout), revision_before);
+    assert_eq!(source, f.source_bytes());
+    close_driver(&mut a);
+    close_driver(&mut b);
+}
+
+fn payload(
+    page: notes::PageId,
+    focus: &str,
+    block: Option<&str>,
+    anchor: Option<usize>,
+    caret: usize,
+    scroll: f64,
+) -> ui::application_view::ApplicationLocalView {
+    ui::application_view::ApplicationLocalView {
+        app_id: notes::definition().app_id.into(), version: 1,
+        payload: serde_json::to_vec(&serde_json::json!({
+            "selected_page": page, "active_tag": null, "drawer_open": false,
+            "expanded_pages": [], "editor_scroll": scroll, "focus": focus,
+            "anchor": anchor.map(|byte| serde_json::json!({"block_id": block.unwrap(), "byte_offset": byte})),
+            "caret": block.map(|id| serde_json::json!({"block_id": id, "byte_offset": caret})),
+        })).unwrap(),
+    }
+}
+fn saved_view(
+    f: &LegacyFixture,
+    checkout: &ui::record::RecordCheckout,
+    local: ui::application_view::ApplicationLocalView,
+) -> ui::application_view::SavedInstanceView {
+    let mut component = component(f, 11, existing(checkout));
+    let report = component.close();
+    assert_closed(&report);
+    let mut saved = report.recovery.unwrap();
+    saved.application = Some(local);
+    // This uncorrelated title ordinal/opaque state must never overwrite stable editor focus.
+    saved.view.focus = Some(ui::view::FocusView {
+        ordinal: 1,
+        ephemeral: "stale title draft".into(),
+    });
+    saved
+}
+fn fingerprint(
+    f: &LegacyFixture,
+    checkout: &ui::record::RecordCheckout,
+) -> (Vec<automerge::ChangeHash>, usize, Vec<u8>, u64) {
+    let (heads, pending, bytes) = f
+        .records
+        .read(&checkout.id, |doc| {
+            (doc.base_heads(), doc.pending_ops(), doc.clone().save())
+        })
+        .unwrap();
+    (heads, pending, bytes, revision(f, checkout))
+}
+fn stamp_current_runs(
+    f: &LegacyFixture,
+    checkout: &ui::record::RecordCheckout,
+    page: notes::PageId,
+    index: usize,
+) {
+    // Explicit canonical fixture content: bound replace-text deliberately does not
+    // synthesize authorship/formatting. Restoration must adopt these existing marks.
+    f.records
+        .with(&checkout.id, |doc| {
+            let list = NotesDoc::page_blocks_list(doc, page).unwrap();
+            let text = NotesDoc::block_text_obj(doc, &list, index).unwrap();
+            let snapshots = NotesDoc::page_block_snapshots(doc, page);
+            let body = &snapshots[index].1;
+            doc.mark(
+                &text,
+                automerge::marks::Mark::new(
+                    "author".into(),
+                    f.author.0.clone(),
+                    0,
+                    body.chars().count(),
+                ),
+                automerge::marks::ExpandMark::After,
+            )
+            .unwrap();
+            NotesDoc::set_block_marks(
+                doc,
+                page,
+                &snapshots[index].0,
+                &[actions::InlineMarkSpan {
+                    start: 0,
+                    end: body.len(),
+                    mark: actions::InlineMark::Bold,
+                }],
+            )
+            .unwrap();
+            doc.commit();
+        })
+        .unwrap();
+}
+fn app_from_payload(
+    f: &LegacyFixture,
+    checkout: &ui::record::RecordCheckout,
+    local: &ui::application_view::ApplicationLocalView,
+) -> notes::NotesApp {
+    use ui::widget::AppWidget;
+    f.records
+        .read(&checkout.id, |doc| {
+            let mut app = notes::NotesApp::from_document(doc, &f.author).unwrap();
+            assert_eq!(
+                app.restore_application_view(local, doc).unwrap(),
+                ui::application_view::ApplicationFocusRestore::Application
+            );
+            app.finish_application_view_restore().unwrap();
+            app
+        })
+        .unwrap()
+}
+// Real layout/measurement without a mutable document sync: restoration must be clean
+// before a host has permission to mount it or deliver events.
+fn layout(app: &mut notes::NotesApp, width: f32, height: f32) {
+    use ui::Widget;
+    let mut renderer = renderer();
+    let theme = ui::Theme::dark();
+    for _ in 0..5 {
+        let mut tree = taffy::TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        let node = app.build_layout(&mut tree, &theme, &mut nodes);
+        let root = tree
+            .new_with_children(
+                taffy::Style {
+                    size: taffy::Size {
+                        width: taffy::Dimension::length(width),
+                        height: taffy::Dimension::length(height),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        tree.compute_layout_with_measure(
+            root,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(width),
+                height: taffy::AvailableSpace::Definite(height),
+            },
+            |known, available, node, _, _| {
+                nodes.get(&node).map_or(taffy::Size::ZERO, |ptr| {
+                    // SAFETY: pointers belong to this exclusively borrowed app and exact tree.
+                    unsafe { (&mut **ptr).measure(known, available, &mut renderer) }
+                })
+            },
+        )
+        .unwrap();
+        app.apply_layout(&tree, node, vello::kurbo::Point::ORIGIN);
+        if !app.take_structure_dirty() {
+            break;
+        }
+    }
+}
+
+#[test]
+fn stable_selection_clamps_all_utf8_offsets_and_survives_focus_and_first_layout() {
+    use ui::widget::AppWidget;
+    let f = LegacyFixture::rich();
+    let checkout = imported(&f);
+    let mut b = driver(&f, 12, &checkout);
+    let block = f
+        .records
+        .read(&checkout.id, |doc| {
+            NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone()
+        })
+        .unwrap();
+    invoke(
+        &mut b,
+        12,
+        actions::block_resource_id(f.child, &block),
+        "replace-text",
+        Some("éλx"),
+    );
+    stamp_current_runs(&f, &checkout, f.child, 0);
+    let before = fingerprint(&f, &checkout);
+    for (offset, expected) in [(0, 0), (1, 0), (2, 2), (3, 2), (4, 4), (5, 5), (900, 5)] {
+        let local = payload(f.child, "Editor", Some(&block), None, offset, 0.0);
+        let mut app = app_from_payload(&f, &checkout, &local);
+        assert_eq!(
+            app.main_panel_mut().editor().blocks()[0].line.cursor_pos(),
+            expected
+        );
+        layout(&mut app, 1000.0, 500.0);
+        let editor = app.main_panel_mut().editor();
+        assert!(editor.is_focused());
+        assert!(editor.blocks()[0].line.is_focused());
+        assert_eq!(editor.blocks()[0].line.cursor_pos(), expected);
+        assert!(
+            editor.blocks()[0]
+                .line
+                .author_runs()
+                .iter()
+                .any(|(_, _, author)| author == &f.author.0)
+        );
+    }
+    for focus in ["None", "Sidebar", "Title", "Editor"] {
+        let mut app = app_from_payload(
+            &f,
+            &checkout,
+            &payload(f.child, focus, Some(&block), Some(0), 4, 0.0),
+        );
+        assert_eq!(
+            app.main_panel_mut().editor().selected_text().as_deref(),
+            Some("éλ")
+        );
+        layout(&mut app, 1000.0, 500.0);
+        assert_eq!(
+            app.main_panel_mut().editor().selected_text().as_deref(),
+            Some("éλ")
+        );
+        let captured = app.capture_application_view().unwrap().unwrap();
+        let local: notes::local_view::NotesLocalViewV1 =
+            serde_json::from_slice(&captured.payload).unwrap();
+        assert_eq!(serde_json::to_value(local.focus).unwrap(), focus);
+        assert_eq!(
+            app.main_panel_mut().editor().is_focused(),
+            focus == "Editor"
+        );
+        assert_eq!(
+            app.main_panel_mut().title_is_editing_for_test(),
+            focus == "Title"
+        );
+    }
+    assert_eq!(fingerprint(&f, &checkout), before);
+    close_driver(&mut b);
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one complete owned close/sibling edit/reopen/first edit scenario"
+)]
+fn stale_local_view_first_real_edit_uses_current_text_marks_and_one_owned_action() {
+    let f = LegacyFixture::rich();
+    let checkout = imported(&f);
+    let block = f
+        .records
+        .read(&checkout.id, |doc| {
+            NotesDoc::page_block_snapshots(doc, f.child)[3].0.clone()
+        })
+        .unwrap();
+    let mut a = driver(&f, 11, &checkout);
+    let mut b = driver(&f, 12, &checkout);
+    invoke(
+        &mut a,
+        11,
+        actions::block_resource_id(f.child, &block),
+        "open",
+        None,
+    );
+    a.perform_named("block_editor", &ui::a11y::Action::Focus)
+        .unwrap();
+    a.key("Home");
+    a.set_modifiers(&["shift".into()]);
+    a.key("ArrowRight");
+    a.set_modifiers(&[]);
+    a.close_components();
+    let reports = a.take_component_close_reports();
+    assert_eq!(reports.len(), 1);
+    assert_closed(&reports[0]);
+    let saved = reports[0].recovery.clone().unwrap();
+    let selected: notes::local_view::NotesLocalViewV1 =
+        serde_json::from_slice(&saved.application.as_ref().unwrap().payload).unwrap();
+    assert_eq!(selected.anchor.as_ref().unwrap().byte_offset, 0);
+    assert_eq!(selected.caret.as_ref().unwrap().byte_offset, 2);
+    assert_eq!(selected.caret.as_ref().unwrap().block_id, block);
+    drop(a);
+    invoke(
+        &mut b,
+        12,
+        actions::block_resource_id(f.child, &block),
+        "replace-text",
+        Some("é current"),
+    );
+    // The current native formatting/author projection must survive immutable adoption.
+    stamp_current_runs(&f, &checkout, f.child, 3);
+    let before = fingerprint(&f, &checkout);
+    let projected = app_from_payload(&f, &checkout, saved.application.as_ref().unwrap());
+    let mut projected = projected;
+    let current_marks = projected.main_panel_mut().inline_marks();
+    assert!(
+        projected.main_panel_mut().editor().blocks()[3]
+            .line
+            .author_runs()
+            .iter()
+            .any(|(_, _, author)| author == &f.author.0)
+    );
+    let component = restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved));
+    let mut a = Driver::from_component(component, (1000, 500), runner_inputs()).unwrap();
+    a.expect(&SemanticExpectation::named("block_editor").focused(true))
+        .unwrap();
+    assert_eq!(fingerprint(&f, &checkout), before);
+    a.type_text("Q");
+    assert_eq!(revision(&f, &checkout), before.3 + 1);
+    f.records
+        .read_history(&checkout.id, |doc, history| {
+            assert_eq!(
+                NotesDoc::page_block_snapshots(doc, f.child)[3].1,
+                "Q current"
+            );
+            let last = history.next_undo_in(&f.author, 11).unwrap();
+            assert_eq!(last.author.as_ref(), Some(&f.author));
+            assert_eq!(last.instance_id, Some(11));
+            notes::notebook::validate(doc).unwrap();
+            let mut snapshot = doc.clone();
+            let changes = snapshot.get_changes(&before.0);
+            assert_eq!(changes.len(), 1, "exactly one durable owned action");
+            let context =
+                tilo_actions::ActionContext::from_change_message(changes[0].message().unwrap())
+                    .unwrap();
+            assert_eq!(context.action_label, "Edit note");
+            assert_eq!(
+                context.resource.unwrap().id,
+                actions::page_resource_id(f.child)
+            );
+        })
+        .unwrap();
+    for _ in 0..3 {
+        a.relayout();
+        b.relayout();
+    }
+    assert_eq!(revision(&f, &checkout), before.3 + 1);
+    // Retained current marks are compared against canonical native spans, not old View bytes.
+    assert_eq!(
+        current_marks.iter().find(|(id, _)| id == &block).unwrap().1,
+        vec![actions::InlineMarkSpan {
+            start: 0,
+            end: 10,
+            mark: actions::InlineMark::Bold
+        }]
+    );
+    f.records
+        .read(&checkout.id, |doc| {
+            assert_eq!(
+                NotesDoc::page_block_marks(doc, f.child)
+                    .iter()
+                    .find(|(id, _)| id == &block)
+                    .unwrap()
+                    .1,
+                vec![actions::InlineMarkSpan {
+                    start: 1,
+                    end: 9,
+                    mark: actions::InlineMark::Bold
+                }]
+            );
+        })
+        .unwrap();
+    close_driver(&mut a);
+    close_driver(&mut b);
+}
+
+#[test]
+fn independent_scroll_close_before_layout_and_narrow_sidebar_resolve_once() {
+    use ui::widget::AppWidget;
+    let f = LegacyFixture::rich();
+    let checkout = imported(&f);
+    let block = f
+        .records
+        .read(&checkout.id, |doc| {
+            NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone()
+        })
+        .unwrap();
+    let requested = payload(f.child, "Sidebar", Some(&block), Some(0), 2, 700.0);
+    let saved = saved_view(&f, &checkout, requested);
+    let before = fingerprint(&f, &checkout);
+    let mut unmounted = restored_component(
+        &f,
+        11,
+        existing(&checkout),
+        RestoreInput::Local(saved.clone()),
+    );
+    let report = unmounted.close();
+    assert_closed(&report);
+    let captured: notes::local_view::NotesLocalViewV1 =
+        serde_json::from_slice(&report.recovery.unwrap().application.unwrap().payload).unwrap();
+    assert_eq!(
+        captured.editor_scroll, 700.0,
+        "close before measure retains requested scroll"
+    );
+    assert_eq!(captured.focus, notes::local_view::NotesFocus::Sidebar);
+    let mut app = app_from_payload(&f, &checkout, saved.application.as_ref().unwrap());
+    layout(&mut app, 390.0, 220.0);
+    assert!(!app.drawer_open_for_test());
+    let local: notes::local_view::NotesLocalViewV1 =
+        serde_json::from_slice(&app.capture_application_view().unwrap().unwrap().payload).unwrap();
+    assert_eq!(local.focus, notes::local_view::NotesFocus::None);
+    assert_eq!(
+        app.main_panel_mut().editor().selected_text().as_deref(),
+        Some("He")
+    );
+    assert!(app.main_panel_mut().scroll_y_for_test() > 0.0);
+    assert!(app.main_panel_mut().scroll_y_for_test() <= 700.0);
+    // Moving to wide mode does not reapply the consumed Sidebar intent.
+    layout(&mut app, 1000.0, 500.0);
+    let local: notes::local_view::NotesLocalViewV1 =
+        serde_json::from_slice(&app.capture_application_view().unwrap().unwrap().payload).unwrap();
+    assert_eq!(local.focus, notes::local_view::NotesFocus::None);
+    let mut a = Driver::from_component(
+        restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved)),
+        (1000, 250),
+        runner_inputs(),
+    )
+    .unwrap();
+    let mut b = driver(&f, 12, &checkout);
+    let a_before = semantic_rect(&a, &format!("notes.block:{block}")).y0;
+    let index_block = f
+        .records
+        .read(&checkout.id, |doc| {
+            NotesDoc::page_block_snapshots(doc, f.root)[0].0.clone()
+        })
+        .unwrap();
+    let b_before = semantic_rect(&b, &format!("notes.block:{index_block}")).y0;
+    move_pointer(&mut a, vello::kurbo::Point::new(700.0, 150.0));
+    a.scroll(0.0, 4.0);
+    a.relayout();
+    assert!(semantic_rect(&a, &format!("notes.block:{block}")).y0 > a_before);
+    assert_eq!(
+        semantic_rect(&b, &format!("notes.block:{index_block}")).y0,
+        b_before
+    );
+    assert_eq!(fingerprint(&f, &checkout), before);
+    close_driver(&mut a);
+    close_driver(&mut b);
+}
+
+#[test]
+fn stale_page_block_and_tag_fall_back_and_empty_page_has_no_stable_caret() {
+    use ui::widget::AppWidget;
+    let f = LegacyFixture::rich();
+    let checkout = imported(&f);
+    let block = f
+        .records
+        .read(&checkout.id, |doc| {
+            NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone()
+        })
+        .unwrap();
+    let mut local = payload(f.child, "Editor", Some(&block), Some(1), 8, 40.0);
+    let mut value: serde_json::Value = serde_json::from_slice(&local.payload).unwrap();
+    value["active_tag"] = serde_json::json!(f.tag);
+    value["expanded_pages"] = serde_json::json!([f.root, f.root, uuid::Uuid::from_u128(999)]);
+    local.payload = serde_json::to_vec(&value).unwrap();
+    let saved = saved_view(&f, &checkout, local);
+    let mut b = driver(&f, 12, &checkout);
+    invoke_confirmed(&mut b, 12, actions::page_resource_id(f.child), "delete");
+    invoke_confirmed(&mut b, 12, actions::tag_resource_id(f.tag), "delete");
+    let before = fingerprint(&f, &checkout);
+    let mut app = app_from_payload(&f, &checkout, saved.application.as_ref().unwrap());
+    assert_eq!(app.selected_for_test(), Some(f.root));
+    assert_eq!(
+        app.main_panel_mut().editor().blocks()[0].line.cursor_pos(),
+        0
+    );
+    assert!(app.main_panel_mut().editor().selected_text().is_none());
+    let local: notes::local_view::NotesLocalViewV1 =
+        serde_json::from_slice(&app.capture_application_view().unwrap().unwrap().payload).unwrap();
+    assert!(local.active_tag.is_none());
+    assert_eq!(local.expanded_pages, vec![f.root]);
+    let component = restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved));
+    let mut a = Driver::from_component(component, (1000, 500), runner_inputs()).unwrap();
+    a.expect(&SemanticExpectation::named("note_title").value("Projects"))
+        .unwrap();
+    assert_eq!(fingerprint(&f, &checkout), before);
+    close_driver(&mut a);
+    // Build the empty canonical fixture directly; a View never seeds its content.
+    let empty_block = f
+        .records
+        .read(&checkout.id, |doc| {
+            NotesDoc::page_block_snapshots(doc, f.empty)[0].0.clone()
+        })
+        .unwrap();
+    f.records
+        .with(&checkout.id, |doc| {
+            NotesDoc::apply_block_ops(
+                doc,
+                f.empty,
+                &[ui::widget::BlockEditOp::Delete {
+                    block_id: empty_block,
+                }],
+            )
+            .unwrap();
+            doc.commit();
+        })
+        .unwrap();
+    let before = fingerprint(&f, &checkout);
+    let mut empty = app_from_payload(
+        &f,
+        &checkout,
+        &payload(f.empty, "Editor", Some(&block), Some(0), 99, 80.0),
+    );
+    layout(&mut empty, 1000.0, 500.0);
+    let local: notes::local_view::NotesLocalViewV1 =
+        serde_json::from_slice(&empty.capture_application_view().unwrap().unwrap().payload)
+            .unwrap();
+    assert!(local.anchor.is_none() && local.caret.is_none());
+    assert_eq!(empty.main_panel_mut().scroll_y_for_test(), 0.0);
+    assert_eq!(fingerprint(&f, &checkout), before);
+    let empty_saved = saved_view(
+        &f,
+        &checkout,
+        payload(f.empty, "Editor", Some(&block), Some(0), 99, 80.0),
+    );
+    let component = restored_component(
+        &f,
+        11,
+        existing(&checkout),
+        RestoreInput::Local(empty_saved),
+    );
+    let mut a = Driver::from_component(component, (1000, 500), runner_inputs()).unwrap();
+    a.type_text("f");
+    assert_eq!(revision(&f, &checkout), before.3 + 1);
+    f.records
+        .read(&checkout.id, |doc| {
+            assert_eq!(
+                NotesDoc::page_block_snapshots(doc, f.empty)
+                    .iter()
+                    .map(|(_, text)| text.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["f"]
+            );
+        })
+        .unwrap();
+    close_driver(&mut a);
+    close_driver(&mut b);
+}
+
+#[test]
+fn strict_payload_errors_retain_setup_owner_and_original_bytes() {
+    use ui::launch::LaunchError;
+    let f = LegacyFixture::rich();
+    let checkout = imported(&f);
+    let block = f
+        .records
+        .read(&checkout.id, |doc| {
+            NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone()
+        })
+        .unwrap();
+    let saved = saved_view(
+        &f,
+        &checkout,
+        payload(f.child, "Editor", Some(&block), None, 1, 0.0),
+    );
+    let views = ui::application_view::InstanceViewStore::new(
+        f.state_root.clone(),
+        "fixture-device",
+        canonical::ROOM,
+    )
+    .unwrap();
+    views.save(&saved).unwrap();
+    let path = f
+        .state_root
+        .join("instance-views/666978747572652d646576696365/666978747572652d726f6f6d/11.postcard");
+    let original = std::fs::read(&path).unwrap();
+    let before = fingerprint(&f, &checkout);
+    let good: serde_json::Value =
+        serde_json::from_slice(&saved.application.as_ref().unwrap().payload).unwrap();
+    let mut cases = Vec::new();
+    for (key, bad) in [
+        ("editor_scroll", serde_json::json!(-1)),
+        ("drawer_open", serde_json::json!("yes")),
+        ("focus", serde_json::json!("Unknown")),
+        (
+            "selected_page",
+            serde_json::json!(f.child.simple().to_string()),
+        ),
+        ("active_tag", serde_json::json!(uuid::Uuid::nil())),
+        ("expanded_pages", serde_json::json!(["invalid"])),
+        ("unknown", serde_json::json!(true)),
+    ] {
+        let mut value = good.clone();
+        value[key] = bad;
+        cases.push(serde_json::to_vec(&value).unwrap());
+    }
+    for value in [
+        serde_json::json!({"block_id": "", "byte_offset": 0}),
+        serde_json::json!({"block_id": block, "byte_offset": -1}),
+        serde_json::json!({"block_id": block, "byte_offset": 0, "text": "forbidden"}),
+    ] {
+        let mut bad = good.clone();
+        bad["caret"] = value;
+        cases.push(serde_json::to_vec(&bad).unwrap());
+    }
+    let mut anchor_only = good.clone();
+    anchor_only["anchor"] = good["caret"].clone();
+    anchor_only["caret"] = serde_json::Value::Null;
+    cases.push(serde_json::to_vec(&anchor_only).unwrap());
+    cases.push(b"{malformed".to_vec());
+    cases.push(
+        String::from_utf8(serde_json::to_vec(&good).unwrap())
+            .unwrap()
+            .replace("\"editor_scroll\":0.0", "\"editor_scroll\":1e999")
+            .into_bytes(),
+    );
+    let mut envelopes = cases
+        .into_iter()
+        .map(|bytes| {
+            let mut bad = saved.clone();
+            bad.application.as_mut().unwrap().payload = bytes;
+            bad
+        })
+        .collect::<Vec<_>>();
+    let mut unknown = saved.clone();
+    unknown.application.as_mut().unwrap().version = 99;
+    envelopes.push(unknown);
+    let mut unknown = saved.clone();
+    unknown.application.as_mut().unwrap().app_id = "other.app".into();
+    envelopes.push(unknown);
+    let mut foreign = saved;
+    foreign.record_id = "foreign-record".into();
+    envelopes.push(foreign);
+    for bad in envelopes {
+        let error = try_restored_component(&f, 11, existing(&checkout), RestoreInput::Local(bad))
+            .err()
+            .expect("malformed payload was accepted");
+        assert!(matches!(error, LaunchError::ComponentSetup { .. }));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(fingerprint(&f, &checkout), before);
+    }
+}
+
+#[test]
+fn parseable_block_spelling_is_preserved_and_shape_errors_install_nothing() {
+    use automerge::{ReadDoc, transaction::Transactable};
+    use ui::widget::AppWidget;
+    let f = LegacyFixture::rich();
+    let checkout = imported(&f);
+    let spelling = "{AABBCCDD-0123-4567-890A-000000000001}";
+    let block_map = f
+        .records
+        .with(&checkout.id, |doc| {
+            let list = NotesDoc::page_blocks_list(doc, f.root).unwrap();
+            let map = doc.get(&list, 0).unwrap().unwrap().1;
+            doc.put(&map, "id", spelling).unwrap();
+            doc.commit();
+            notes::notebook::validate(doc).unwrap();
+            map
+        })
+        .unwrap();
+    let local = payload(f.root, "Editor", Some(spelling), None, 1, 0.0);
+    let mut app = app_from_payload(&f, &checkout, &local);
+    assert_eq!(app.main_panel_mut().editor().blocks()[0].id, spelling);
+    let captured: notes::local_view::NotesLocalViewV1 =
+        serde_json::from_slice(&app.capture_application_view().unwrap().unwrap().payload).unwrap();
+    assert_eq!(captured.caret.unwrap().block_id, spelling);
+    let saved = saved_view(&f, &checkout, local);
+    let component = restored_component(
+        &f,
+        11,
+        existing(&checkout),
+        RestoreInput::Local(saved.clone()),
+    );
+    let mut a = Driver::from_component(component, (1000, 500), runner_inputs()).unwrap();
+    a.type_text("Q");
+    f.records
+        .read(&checkout.id, |doc| {
+            assert_eq!(
+                NotesDoc::page_block_snapshots(doc, f.root)[0],
+                (spelling.into(), "PQroject index".into())
+            );
+        })
+        .unwrap();
+    close_driver(&mut a);
+    f.records
+        .with(&checkout.id, |doc| {
+            doc.put(&block_map, "text", 42).unwrap();
+            doc.commit();
+        })
+        .unwrap();
+    let before = fingerprint(&f, &checkout);
+    let result = f
+        .records
+        .read(&checkout.id, |doc| {
+            app.restore_application_view(saved.application.as_ref().unwrap(), doc)
+        })
+        .unwrap();
+    assert!(result.is_err());
+    assert_eq!(
+        app.main_panel_mut().editor().blocks()[0].text(),
+        "Project index"
+    );
+    assert_eq!(
+        app.main_panel_mut().editor().blocks()[0].line.cursor_pos(),
+        1
+    );
+    let error = try_restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved))
+        .err()
+        .unwrap();
+    assert!(matches!(
+        error,
+        ui::launch::LaunchError::ComponentSetup { .. }
+    ));
+    assert_eq!(fingerprint(&f, &checkout), before);
+}

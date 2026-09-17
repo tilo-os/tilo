@@ -1135,7 +1135,7 @@ mod layout_tests {
     /// same font size AND share the row baseline.
     #[test]
     fn func_name_and_argument_share_size_and_baseline() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let expr = parse("sin(sqrt(x^2+y^2))");
         let lay = layout(&expr.root, &mut tr, 20.0);
 
@@ -1166,7 +1166,7 @@ mod layout_tests {
 
     #[test]
     fn binary_and_relation_operators_receive_math_spacing() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let compact = parse("xy");
         let binary = parse("x+y");
         let relation = parse("x=y");
@@ -1186,7 +1186,7 @@ mod layout_tests {
 
     #[test]
     fn paired_scripts_share_a_column_above_and_below_the_baseline() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let row = vec![
             Node::Char('∑'),
             Node::SubSup {
@@ -1207,7 +1207,7 @@ mod layout_tests {
 
     #[test]
     fn matrix_cells_align_to_shared_rows_and_columns() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let row = vec![Node::Paren {
             body: vec![Node::Table {
                 rows: vec![
@@ -1268,7 +1268,7 @@ mod layout_tests {
 
     #[test]
     fn matrix_rows_share_baselines_and_remain_in_source_order() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let row = vec![Node::Paren {
             body: vec![Node::Table {
                 rows: vec![
@@ -1324,7 +1324,7 @@ mod layout_tests {
 
     #[test]
     fn tex_delimiters_enclose_tall_content_and_accents_fit_their_base() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let parsed = parse_tex(r"\left[\frac{\hat{x}}{y}\right]");
         let laid = layout(&parsed.expr.root, &mut tr, 22.0);
         let delimiters: Vec<_> = laid

@@ -94,6 +94,8 @@ fn live_root(_args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 }
 
 fn run_live(_args: &LaunchArgs) -> Result<(), LaunchError> {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     let widget = TerminalWidget::spawn_default()
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     // Arm the PTY-reader waker so the event loop idles between output instead of
@@ -101,7 +103,8 @@ fn run_live(_args: &LaunchArgs) -> Result<(), LaunchError> {
     // then store the loop's proxy once it exists.
     let waker = widget.waker_handle();
     let (state, autosave) = ui::persist::open("dev.tilo.terminal");
-    let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
+    let app =
+        ui::App::from_scoped_parts(wake_scope, state, Box::new(widget)).with_autosave(autosave);
     app.run_with_setup(move |proxy| {
         if let Ok(mut g) = waker.lock() {
             *g = Some(proxy);

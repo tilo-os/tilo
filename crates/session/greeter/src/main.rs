@@ -55,6 +55,7 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// Returns an error if `--shots` rendering fails (see
 /// [`render_shot_to_png`]); the live event-loop path does not return.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _detached = ui::wake::WakeScope::enter_detached();
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
@@ -77,12 +78,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     // Slot the event loop populates once it starts; the greeter reads it to
     // spawn the background auth worker.
     let proxy_slot: Arc<OnceLock<EventLoopProxy<UserEvent>>> = Arc::new(OnceLock::new());
     let widget = GreeterApp::new().with_proxy_slot(proxy_slot.clone());
     let state = ui::State::new();
-    let mut app = ui::App::new(state, Box::new(widget));
+    let mut app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget));
     // On a personal machine with one unambiguous interactive account, the
     // greeter hides the redundant username field and this lands on Passcode.
     // Zero/multiple candidates retain the two-field fallback and autofocus

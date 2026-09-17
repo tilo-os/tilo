@@ -99,6 +99,9 @@ mod scrollable_test;
 mod scrollbar_render_test;
 #[path = "strip_view_test.rs"]
 mod strip_view_test;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[path = "synthetic_key_event.rs"]
+mod synthetic_key_event;
 #[path = "tabs_test.rs"]
 mod tabs_test;
 #[path = "textinput_local_mode.rs"]
@@ -119,6 +122,8 @@ mod typography_visual_regression;
 mod undo_per_author;
 #[path = "undo_the_agents_work.rs"]
 mod undo_the_agents_work;
+#[path = "wake_scope_host.rs"]
+mod wake_scope_host;
 #[path = "warmup_no_adapter.rs"]
 mod warmup_no_adapter;
 #[path = "widget_trait_test.rs"]
@@ -132,3 +137,12 @@ mod workspace_view_test;
 #[cfg(feature = "webview-wpe")]
 #[path = "wpe_engine.rs"]
 mod wpe_engine;
+
+mod canonical_record_owner;
+
+mod application_contract;
+
+#[path = "bound_component_dispatch.rs"]
+mod bound_component_dispatch;
+
+mod instance_undo;
