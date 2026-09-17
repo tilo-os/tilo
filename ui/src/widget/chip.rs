@@ -18,6 +18,7 @@ use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
@@ -146,7 +147,7 @@ impl Chip {
     }
 
     fn intrinsic_width(&self, text_renderer: &mut TextRenderer, theme: &Theme) -> f64 {
-        let (w, _) = text_renderer.measure(&self.label, theme.tokens.typography.scale.sm, None);
+        let (w, _) = text_renderer.measure(&self.label, renderer_type_size(text_renderer, theme.tokens.typography.scale.sm), None);
         let mut total = PAD_X * 2.0 + f64::from(w);
         if self.dot.is_some() {
             total += DOT_D + GAP;
@@ -284,7 +285,7 @@ impl Chip {
         theme: &Theme,
         text_renderer: &mut TextRenderer,
     ) -> f64 {
-        let size = Self::label_size_for_height(height, theme);
+        let size = renderer_type_size(text_renderer, Self::label_size_for_height(height, theme));
         let (w, _) = text_renderer.measure(label, size, None);
         let lead_w = match lead {
             ChipLead::None => 0.0,
@@ -394,7 +395,7 @@ impl Chip {
         }
 
         // Label, truncated to the space actually left inside the pill.
-        let size = Self::label_size_for_height(rect.height(), theme);
+        let size = renderer_type_size(text_renderer, Self::label_size_for_height(rect.height(), theme));
         let avail = rect.x1 - PAD_X - x;
         if avail <= 1.0 {
             return;
@@ -554,7 +555,7 @@ impl Widget for Chip {
             x += DOT_D + GAP;
         }
 
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let (lw, lh) = text_renderer.measure(&self.label, size, None);
         self.label_w = f64::from(lw);
         let label_col = if selected { accent } else { theme.text_primary };

@@ -1,3 +1,4 @@
+use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::icons;
 use crate::presence::PresenceCtx;
@@ -1251,7 +1252,7 @@ impl WindowGroup {
             .find(|t| t.id == self.bar.active_id())
             .map(|t| t.title.clone())
             .unwrap_or_default();
-        let title_size = theme.tokens.typography.scale.xs;
+        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
         let (tw, th) = tr.measure(&active_title, title_size, None);
         // The label sits `spacing.s3` in from either end of its chip.
         let chip_pad = f64::from(theme.tokens.spacing.s3);
@@ -1305,7 +1306,7 @@ impl WindowGroup {
         layout: ChromePillLayout,
     ) {
         let ChromePillLayout { pad, pill_h, y0 } = layout;
-        let title_size = theme.tokens.typography.scale.xs;
+        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
         // The close chip is a square of the row's height, so its × sits on
         // the same centre the title chip's text does.
         let close_w = pill_h;
