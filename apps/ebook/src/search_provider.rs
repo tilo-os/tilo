@@ -609,7 +609,7 @@ impl BookSearchProvider {
                 ..ActionContract::default()
             });
             return Some(
-                Resource::new(&address.resource, "ebook.remote-book", &entry.result.title)
+                Resource::new(&address.resource, "ebook.book", &entry.result.title)
                     .with_action(hydrate),
             );
         }
