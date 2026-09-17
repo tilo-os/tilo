@@ -203,6 +203,26 @@ pub struct ToggleInteract {
 /// of the contrast it already reached, rather than resolved to a second tone.
 const HOVER_KNOB_GAIN: f64 = 1.4;
 
+/// The switch's visual footprint: a 44×24 pill centred in whatever target
+/// rect layout assigns (32 px tall at a fine pointer, 48 at a coarse one), so
+/// the pill itself never stretches. Off the spacing scale on purpose: 24 is
+/// the 20 px knob plus [`KNOB_EDGE_GAP`] either side, and 44 gives the knob
+/// exactly one diameter of travel.
+const TRACK_WIDTH: f32 = 44.0;
+const TRACK_HEIGHT: f32 = 24.0;
+/// Gap between knob and track edge. The knob radius is derived from the
+/// track height and this gap, so a host painting a taller face keeps the
+/// same proportions.
+const KNOB_EDGE_GAP: f64 = 2.0;
+
+/// The pill's rect inside a layout target: centred, never stretched.
+fn track_rect(target: Rect) -> Rect {
+    Rect::from_center_size(
+        target.center(),
+        (f64::from(TRACK_WIDTH), f64::from(TRACK_HEIGHT)),
+    )
+}
+
 /// Single source of truth for both the retained [`Toggle`]'s draw and
 /// [`Toggle::paint`], so every switch shares one palette per state.
 pub fn toggle_face_colors(
@@ -375,13 +395,13 @@ impl Toggle {
             None,
             &track_shape,
         );
-        // 2-px edge gap; matches the retained widget's 44×24 default (r = 10).
-        let kr = (radius - 2.0).max(1.0);
+        // Knob radius follows the track: 10 px inside the 24 px default.
+        let kr = (radius - KNOB_EDGE_GAP).max(1.0);
         let cy = face.rect.y0 + face.rect.height() / 2.0;
         let cx = if face.on {
-            face.rect.x1 - kr - 2.0
+            face.rect.x1 - kr - KNOB_EDGE_GAP
         } else {
-            face.rect.x0 + kr + 2.0
+            face.rect.x0 + kr + KNOB_EDGE_GAP
         };
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -434,9 +454,14 @@ impl Widget for Toggle {
     ) -> NodeId {
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(44.0_f32.max(self.interaction.minimum_target())),
+                width: Dimension::length(TRACK_WIDTH.max(self.interaction.minimum_target())),
                 height: Dimension::length(self.interaction.minimum_target()),
             },
+            // A switch is a fixed target, like a button: in a row that also
+            // holds a percent-width field it must not be the item that gives.
+            // With the default shrink factor and no measured minimum, taffy
+            // squeezed it to zero width beside a stretching text field.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -461,63 +486,18 @@ impl Widget for Toggle {
         theme: &Theme,
         _presence: &crate::presence::PresenceCtx,
     ) {
-        let visual = Rect::from_center_size(self.rect.center(), (44.0, 24.0));
-        let disabled = !self.effectively_enabled();
-        if disabled {
-            let clip = RoundedRect::from_rect(visual, f64::from(theme.tokens.radii.full));
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &clip,
-            );
-        }
-        let interact = ToggleInteract {
-            hovered: self.is_hovered,
-            focused: self.is_focused,
-            disabled,
-        };
-        let (track_color, knob_color, stroke_color, stroke_w) =
-            toggle_face_colors(theme, self.is_checked, interact);
-
-        let track_shape = RoundedRect::from_rect(visual, f64::from(theme.tokens.radii.full));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // One painter for the retained widget and immediate-mode hosts, so
+        // the two cannot drift: the pill is centred in the layout target and
+        // every state resolves through the same `ToggleFace`.
+        Self::paint(
+            scene,
             transform,
-            track_color,
-            None,
-            &track_shape,
+            theme,
+            &ToggleFace::new(track_rect(self.rect), self.is_checked)
+                .hovered(self.is_hovered)
+                .focused(self.is_focused)
+                .disabled(!self.effectively_enabled()),
         );
-
-        scene.stroke(
-            &Stroke::new(stroke_w),
-            transform,
-            stroke_color,
-            None,
-            &track_shape,
-        );
-
-        let knob_radius = 10.0;
-        let knob_x = if self.is_checked {
-            visual.x1 - knob_radius - 2.0
-        } else {
-            visual.x0 + knob_radius + 2.0
-        };
-        let knob_y = visual.y0 + visual.height() / 2.0;
-
-        let knob_shape = Circle::new(Point::new(knob_x, knob_y), knob_radius);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            knob_color,
-            None,
-            &knob_shape,
-        );
-
-        if disabled {
-            scene.pop_layer();
-        }
     }
 
     fn handle_event(
@@ -717,6 +697,98 @@ mod tests {
     fn toggle_test_id_can_be_overridden() {
         let t = Toggle::new("any", "path").with_id("airplane_mode");
         assert_eq!(Widget::test_id(&t), Some("airplane_mode"));
+    }
+
+    /// The retained widget paints exactly the documented switch — a 44×24
+    /// pill centred in its layout target (never stretched to the 32/48 px
+    /// target), a 10 px knob 2 px inside the pill's edge, the shared palette,
+    /// and the disabled layer over the pill — spelled out here in literals so
+    /// a change to the painter *or* its constants fails against this, not
+    /// against itself.
+    #[test]
+    fn retained_draw_paints_the_documented_pill_geometry() {
+        let theme = Theme::dark();
+        let target = Rect::new(20.0, 30.0, 64.0, 62.0);
+        let pill = Rect::new(20.0, 34.0, 64.0, 58.0);
+        assert_eq!(track_rect(target), pill, "44×24 pill centred in the 44×32 target");
+        let pill_shape = RoundedRect::from_rect(pill, 12.0);
+
+        for (on, hovered, focused, enabled) in [
+            (true, false, false, true),
+            (false, true, false, true),
+            (true, false, true, true),
+            (false, false, false, false),
+        ] {
+            let mut toggle = Toggle::new("wifi", "wifi");
+            toggle.is_checked = on;
+            toggle.is_hovered = hovered;
+            toggle.is_focused = focused;
+            toggle.enabled = enabled;
+            toggle.rect = target;
+            let mut actual = Scene::new();
+            let mut text = TextRenderer::new();
+            toggle.draw(
+                &mut actual,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &crate::presence::PresenceCtx::default(),
+            );
+
+            let interact = ToggleInteract {
+                hovered,
+                focused,
+                disabled: !enabled,
+            };
+            let (track, knob, border, border_w) = toggle_face_colors(&theme, on, interact);
+            let mut expected = Scene::new();
+            if !enabled {
+                expected.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    crate::widget::DISABLED_ALPHA,
+                    Affine::IDENTITY,
+                    &pill_shape,
+                );
+            }
+            expected.fill(
+                vello::peniko::Fill::NonZero,
+                Affine::IDENTITY,
+                track,
+                None,
+                &pill_shape,
+            );
+            expected.stroke(
+                &Stroke::new(border_w),
+                Affine::IDENTITY,
+                border,
+                None,
+                &pill_shape,
+            );
+            let knob_x = if on { pill.x1 - 12.0 } else { pill.x0 + 12.0 };
+            expected.fill(
+                vello::peniko::Fill::NonZero,
+                Affine::IDENTITY,
+                knob,
+                None,
+                &Circle::new(Point::new(knob_x, 46.0), 10.0),
+            );
+            if !enabled {
+                expected.pop_layer();
+            }
+
+            let state = format!("on={on} hovered={hovered} focused={focused} enabled={enabled}");
+            assert_eq!(
+                actual.encoding().path_data,
+                expected.encoding().path_data,
+                "pill/knob geometry differs for {state}"
+            );
+            assert_eq!(
+                actual.encoding().draw_data,
+                expected.encoding().draw_data,
+                "paint order or colours differ for {state}"
+            );
+        }
     }
 
     #[test]
