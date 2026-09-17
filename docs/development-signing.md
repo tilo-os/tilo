@@ -229,8 +229,13 @@ signer's statement, not independent proof of a reproducible build.
 The JSON output is an audit receipt, never an installation authorization token.
 A disk consumer must repeat verification and enforce container signature policy.
 The existing container-only development stop remains in place. Unit tests cover
-identity rejection and failure cleanup; real registry verification, final EFI/PCR
-sealing, disk creation and VM acceptance remain required integration work.
+identity rejection and failure cleanup. Run
+`podman unshare python3 os/tests/development_source_registry.py` with the pinned
+Cosign tool available to exercise a real loopback registry, temporary signing
+keys, accepted native image and rejected unsigned/wrong-identity inputs. The
+`Development / signed native source verification` CI workflow runs this fixture
+on both native architectures. Final EFI/PCR sealing, disk creation and VM
+acceptance remain required integration work.
 
 ## Production provisioning later
 
