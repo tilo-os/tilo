@@ -1,8 +1,8 @@
 //! Standard command-line lifecycle for Tilo applications.
 //!
 //! Ordinary apps provide their live and screenshot roots; this module owns
-//! common argument validation, persistence, headless driving, offscreen
-//! rendering, logging, and live startup. Apps with genuinely different
+//! common argument validation, scenario discovery, persistence, headless
+//! driving, offscreen rendering, logging, and live startup. Apps with genuinely different
 //! lifecycles can continue to use the lower-level APIs directly.
 
 use std::fmt;
@@ -38,6 +38,8 @@ pub struct LaunchArgs {
     pub native_audit: bool,
     pub pseudo_locale: bool,
     pub text_scale: Option<f32>,
+    /// Print the app's declared screenshot scenarios and exit.
+    pub list_scenarios: bool,
     extras: Vec<String>,
     values: Vec<(String, String)>,
     positionals: Vec<String>,
@@ -405,6 +407,13 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         crate::i18n::PseudoLocale::Off
     });
 
+    if args.list_scenarios {
+        for scenario in spec.scenarios {
+            println!("{scenario}");
+        }
+        return Ok(());
+    }
+
     if let Some(handler) = spec.command_handler
         && handler(&args)?
     {
@@ -596,6 +605,7 @@ fn parse_args_extended(
         native_audit: false,
         pseudo_locale: false,
         text_scale: None,
+        list_scenarios: false,
         extras: Vec::new(),
         values: Vec::new(),
         positionals: Vec::new(),
@@ -646,6 +656,12 @@ fn parse_args_extended(
                 }
                 parsed.native_audit = true;
             }
+            "--list-scenarios" if inline.is_none() => {
+                if parsed.list_scenarios {
+                    return Err(LaunchError::Duplicate(flag.to_owned()));
+                }
+                parsed.list_scenarios = true;
+            }
             extra
                 if (allowed_flags.contains(&extra) || allowed_live_flags.contains(&extra))
                     && inline.is_none() =>
@@ -676,6 +692,9 @@ fn parse_args_extended(
         .saturating_add(usize::from(parsed.headless.is_some()))
         .saturating_add(usize::from(parsed.native_audit));
     if mode_count > 1 {
+        return Err(LaunchError::ConflictingModes);
+    }
+    if parsed.list_scenarios && mode_count > 0 {
         return Err(LaunchError::ConflictingModes);
     }
     if parsed.shots.is_none() && parsed.responsive_matrix.is_none() && !parsed.native_audit {
@@ -798,6 +817,30 @@ mod tests {
         assert!(parsed.pseudo_locale);
         assert_eq!(parsed.text_scale, Some(2.0));
         assert_eq!(parsed.scenario.as_deref(), Some("wide"));
+    }
+
+    #[test]
+    fn parses_scenario_discovery_as_a_non_rendering_mode() {
+        let parsed = parse_args(&strings(&["app", "--list-scenarios"]), &[], &[]).unwrap();
+        assert!(parsed.list_scenarios);
+
+        assert_eq!(
+            parse_args(
+                &strings(&["app", "--list-scenarios", "--shots", "/tmp/a.png"]),
+                &[],
+                &[],
+            )
+            .unwrap_err(),
+            LaunchError::ConflictingModes
+        );
+        assert!(matches!(
+            parse_args(
+                &strings(&["app", "--list-scenarios", "--list-scenarios"]),
+                &[],
+                &[]
+            ),
+            Err(LaunchError::Duplicate(_))
+        ));
     }
 
     #[test]

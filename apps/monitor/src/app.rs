@@ -3596,7 +3596,7 @@ impl MonitorApp {
             None,
             &Line::new((bar.x0, bar.y0), (bar.x1, bar.y0)),
         );
-        self.draw_detail_actions(scene, t, tr, theme, bar);
+        self.draw_detail_actions(scene, t, tr, theme, bar, p);
     }
 
     /// Name + identity + command header. Returns the y position for whatever
@@ -3895,7 +3895,7 @@ impl MonitorApp {
             x = chip(scene, tr, x, label, value.as_str(), *color);
         }
 
-        self.draw_detail_actions(scene, t, tr, theme, bar);
+        self.draw_detail_actions(scene, t, tr, theme, bar, p);
     }
 
     /// Draw the detail pane's Stop (SIGTERM) + Kill (SIGKILL) buttons,
@@ -3908,12 +3908,32 @@ impl MonitorApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         bar: Rect,
+        process: &ProcessInfo,
     ) {
         let bh = (bar.height() - 8.0).clamp(26.0, 34.0);
         let by0 = bar.center().y - bh / 2.0;
         let bw = 92.0_f64.min((bar.width() - 8.0) / 2.0);
         let kill_r = Rect::new(bar.x1 - bw, by0, bar.x1, by0 + bh);
         let stop_r = Rect::new(kill_r.x0 - 8.0 - bw, by0, kill_r.x0 - 8.0, by0 + bh);
+        // Keep the destructive controls visibly bound to their target. This
+        // matters most in the narrow pushed pane, where the process heading
+        // can be hundreds of pixels above the pinned action bar.
+        let context_w = (stop_r.x0 - bar.x0 - 12.0).max(0.0);
+        if context_w >= 72.0 {
+            let fs = theme.tokens.typography.scale.xs;
+            let context = format!("Actions for {}", process.name);
+            let context = Self::truncate(tr, &context, fs, context_w);
+            let (_, lh) = tr.measure_weighted(&context, fs, None, TextWeight::Medium);
+            tr.draw_text_weighted(
+                scene,
+                &context,
+                fs,
+                theme.tokens.colors.text_dim,
+                t * Affine::translate((bar.x0, bar.center().y - f64::from(lh) / 2.0)),
+                None,
+                TextWeight::Medium,
+            );
+        }
         let cur = self.last_cursor;
         Self::draw_action_button(
             scene,

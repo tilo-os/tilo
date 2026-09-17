@@ -132,6 +132,8 @@ struct SurfaceCache {
     cells: Vec<SurfaceCell>,
     /// Cached orientation tripod endpoints (origin, +x tip, +y tip).
     axes: Option<(Point, Point, Point)>,
+    /// Finite sampled z range, retained for a concise canvas legend.
+    range: Option<(f64, f64)>,
     /// Counts actual (re)samples; lets a test prove a theme/tab switch reuses
     /// the cached surfaces instead of re-sampling + re-projecting + re-sorting.
     rebuilds: u32,
@@ -438,7 +440,7 @@ impl Graph3dScreen {
 
         // background + surfaces
         draw::fill_rect(scene, t, self.canvas, c.neutral[0]);
-        self.draw_surfaces(scene, t, theme, model);
+        self.draw_surfaces(scene, t, tr, theme, model);
         draw::stroke_rrect(scene, t, self.canvas, 0.0, c.border_standard, 1.0);
 
         // Collapsed overlay: only a floating toggle over the plot.
@@ -781,7 +783,14 @@ impl Graph3dScreen {
         }
     }
 
-    fn draw_surfaces(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, model: &CalcModel) {
+    fn draw_surfaces(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        model: &CalcModel,
+    ) {
         // While the zoom is animating we reuse the cached cells, scaled about
         // the canvas centre (the projection scale is proportional to zoom), so
         // no re-projection blocks the frame. When settled we re-project once.
@@ -827,6 +836,27 @@ impl Graph3dScreen {
             );
         }
         scene.pop_layer();
+
+        if let Some((min, max)) = self.surface_cache.range {
+            let c = &theme.tokens.colors;
+            let label = Rect::new(
+                self.canvas.x0 + 14.0,
+                self.canvas.y1 - 34.0,
+                self.canvas.x1 - 14.0,
+                self.canvas.y1 - 10.0,
+            );
+            draw::text_in(
+                scene,
+                tr,
+                t,
+                label,
+                &format!("z {} … {}", compact_number(min), compact_number(max)),
+                13.0,
+                c.text_dim,
+                Align::Left,
+                TextWeight::Medium,
+            );
+        }
     }
 
     /// Begin a smooth zoom toward the (already-updated) model zoom.
@@ -866,6 +896,7 @@ impl Graph3dScreen {
                 key: Some(key),
                 cells: Vec::new(),
                 axes: None,
+                range: None,
                 rebuilds,
             };
             return;
@@ -882,6 +913,7 @@ impl Graph3dScreen {
             key: Some(key),
             cells,
             axes: Some(axes),
+            range: Some((zmin, zmax)),
             rebuilds,
         };
     }
@@ -933,7 +965,7 @@ impl Graph3dScreen {
         let v = &model.view3d;
         let (sin_yaw, cos_yaw) = v.yaw.sin_cos();
         let (sin_pitch, cos_pitch) = v.pitch.sin_cos();
-        let s = self.canvas.height().min(self.canvas.width()) * 0.40 / (DOM * 1.7) * v.zoom;
+        let s = self.canvas.height().min(self.canvas.width()) * 0.48 / (DOM * 1.7) * v.zoom;
         let cx = self.canvas.center().x;
         let cy = self.canvas.center().y;
 
@@ -1030,6 +1062,21 @@ impl Graph3dScreen {
             return false;
         }
         self.canvas.contains(p)
+    }
+}
+
+/// Human-readable plot labels: ordinary ranges stay concise while very large
+/// or tiny values switch to scientific notation instead of spilling digits.
+fn compact_number(value: f64) -> String {
+    let magnitude = value.abs();
+    if magnitude != 0.0 && !(0.01..1_000_000.0).contains(&magnitude) {
+        format!("{value:.2e}")
+    } else if magnitude >= 100.0 {
+        format!("{value:.0}")
+    } else if magnitude >= 10.0 {
+        format!("{value:.1}")
+    } else {
+        format!("{value:.2}")
     }
 }
 
@@ -1191,6 +1238,14 @@ mod tests {
         for cell in &s.surface_cache.cells {
             assert!(cell.shade >= 0.55 && cell.shade <= 1.0);
         }
+    }
+
+    #[test]
+    fn surface_range_labels_are_humanized() {
+        assert_eq!(compact_number(0.999_984_605_8), "1.00");
+        assert_eq!(compact_number(-0.999_993_445_8), "-1.00");
+        assert_eq!(compact_number(1234.56), "1235");
+        assert_eq!(compact_number(0.000_012_3), "1.23e-5");
     }
 
     /// A stacked surface formula grows its card taller than the base, mirroring

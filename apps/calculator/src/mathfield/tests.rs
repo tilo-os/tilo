@@ -592,7 +592,7 @@ fn long_formula_scrolls_horizontally_to_keep_caret_visible() {
     let gap = super::render::caret_gap(f.layout.as_ref().unwrap(), &steps, off).unwrap();
     let caret_x = f.content_origin().x + gap.x;
     assert!(
-        caret_x >= rect.x0 - 0.5 && caret_x <= rect.x1 + 0.5,
+        caret_x >= rect.x0 + MathField::PAD_X - 0.5 && caret_x <= rect.x1 - MathField::PAD_X + 0.5,
         "caret x={caret_x:.1} is outside the field [{}, {}]",
         rect.x0,
         rect.x1
@@ -607,6 +607,33 @@ fn long_formula_scrolls_horizontally_to_keep_caret_visible() {
     assert!(
         caret_x0 >= rect.x0 - 0.5 && caret_x0 <= rect.x1 + 0.5,
         "start caret x={caret_x0:.1} outside the field",
+    );
+}
+
+#[test]
+fn long_formula_reports_the_hidden_edge_and_keeps_tail_caret_padded() {
+    use super::MathField;
+    use ui::text_render::TextRenderer;
+    use vello::kurbo::Rect;
+
+    let mut tr = TextRenderer::new();
+    let mut field = MathField::new("sin(5*x)+cos(6*x)+sin(7*x)").with_size(20.0);
+    let rect = Rect::new(0.0, 0.0, 180.0, 40.0);
+    field.park_caret_at_end();
+    field.set_rect(rect, &mut tr);
+
+    let max_x = field.scroll_bounds().0;
+    assert!(max_x > 0.0 && field.scroll.x > 0.0);
+    let gap = super::render::caret_gap(
+        field.layout.as_ref().expect("production layout"),
+        &field.editor.caret.steps,
+        field.editor.caret.offset,
+    )
+    .expect("tail caret gap");
+    let x = field.content_origin().x + gap.x;
+    assert!(
+        x <= rect.x1 - MathField::PAD_X + 0.5,
+        "tail caret must remain visibly inset from the clip edge: {x}"
     );
 }
 

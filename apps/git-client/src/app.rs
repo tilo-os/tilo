@@ -93,7 +93,9 @@ const TABS: [(Screen, &str); 3] = [
 ];
 
 const APPBAR_H: f64 = 56.0;
-const CHANGES_COL_W: f64 = 320.0;
+// The rail includes the commit composer, not just a file list. A narrower rail
+// made the primary authoring control feel like a cramped sidebar utility.
+const CHANGES_COL_W: f64 = 360.0;
 
 /// Below this allocated width (logical px) the primary list column stops
 /// fitting comfortably beside a readable detail pane, so it collapses into an
@@ -1450,6 +1452,37 @@ impl GitClientApp {
             );
         } else {
             draw::fill_rect(scene, t, viewport, c.surfaces.base);
+            let title = "Select a changed file";
+            let hint = "Choose a staged, unstaged, or untracked file to review its diff.";
+            let title_w = f64::from(
+                tr.measure_weighted(title, 16.0, None, TextWeight::Semibold)
+                    .0,
+            );
+            let hint_w = f64::from(tr.measure(hint, 13.0, None).0);
+            let center_y = viewport.y0 + viewport.height() * 0.42;
+            draw::text_weighted(
+                scene,
+                tr,
+                t,
+                title,
+                16.0,
+                c.text_primary,
+                viewport.x0 + (viewport.width() - title_w) / 2.0,
+                center_y,
+                None,
+                TextWeight::Semibold,
+            );
+            draw::text(
+                scene,
+                tr,
+                t,
+                hint,
+                13.0,
+                c.text_dim,
+                viewport.x0 + (viewport.width() - hint_w) / 2.0,
+                center_y + 28.0,
+                Some((viewport.width() - 48.0).max(1.0) as f32),
+            );
             self.diff_hunk_buttons.clear();
         }
     }

@@ -19,7 +19,9 @@ use crate::model::{ChangeArea, FileChange, RepoModel};
 
 const ROW_H: f64 = 30.0;
 const SECTION_H: f64 = 30.0;
-const COMMIT_BOX_H: f64 = 150.0;
+// The commit message is the primary authoring control on this screen. Reserve
+// room for a useful multi-line message instead of reducing it to a footer.
+const COMMIT_BOX_H: f64 = 190.0;
 
 /// What the user clicked in the changes column.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,6 +37,36 @@ pub enum ChangesHit {
     Commit,
     /// Focus the message input.
     FocusMessage,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_draw_reserves_a_usable_commit_composer() {
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let mut paint = draw::PaintCtx::new(&mut scene, &mut text, Affine::IDENTITY);
+        let output = ChangesColumn::draw(
+            &mut paint,
+            &Theme::dark(),
+            Rect::new(0.0, 0.0, 360.0, 744.0),
+            &RepoModel::default(),
+            None,
+            0.0,
+            "",
+        );
+
+        assert!(
+            output.commit_input.height() >= 90.0,
+            "the real Changes renderer must keep the commit composer comfortably multi-line"
+        );
+        assert!(
+            output.commit_input.width() >= 320.0,
+            "the real Changes renderer must not squeeze the composer into a utility field"
+        );
+    }
 }
 
 /// One emitted clickable region.
@@ -258,14 +290,14 @@ impl ChangesColumn {
             } else {
                 "Stage all"
             };
-            let lw = f64::from(tr.measure_weighted(label, 11.0, None, TextWeight::Medium).0);
+            let lw = f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0);
             let lx = area.x1 - lw - 14.0;
             draw::text_weighted(
                 scene,
                 tr,
                 t,
                 label,
-                11.0,
+                12.0,
                 theme.accent_primary,
                 lx,
                 y + 9.0,
@@ -475,7 +507,7 @@ impl ChangesColumn {
             tr,
             t,
             &who,
-            11.5,
+            12.5,
             c.text_dim,
             ax + 30.0,
             ay + 4.0,

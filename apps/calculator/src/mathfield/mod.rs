@@ -16,6 +16,7 @@ pub mod layout;
 pub mod model;
 pub mod render;
 
+use crate::draw;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::Scene;
@@ -148,7 +149,9 @@ impl MathField {
         self.ensure_caret_visible();
     }
 
-    /// Left padding between the field edge and the content.
+    /// Breathing room between either field edge and the content. Keeping the
+    /// caret away from the clip edge is especially important after a long
+    /// expression has scrolled to its tail.
     const PAD_X: f64 = 4.0;
 
     /// Origin (top-left) where content is drawn. Horizontally the content is
@@ -166,9 +169,9 @@ impl MathField {
         Point::new(self.rect.x0 + Self::PAD_X - self.scroll.x, y)
     }
 
-    /// Visible content width (field width minus the left pad).
+    /// Visible content width (field width minus both edge pads).
     fn view_w(&self) -> f64 {
-        (self.rect.width() - Self::PAD_X).max(1.0)
+        (self.rect.width() - 2.0 * Self::PAD_X).max(1.0)
     }
 
     /// Maximum scroll offsets for the current content + field size.
@@ -269,6 +272,30 @@ impl MathField {
             focused,
         );
         scene.pop_layer();
+
+        // A clipped first/last glyph looks like corrupt input. Show a quiet,
+        // theme-derived edge marker whenever more formula exists offscreen.
+        // It is deliberately outside the content clip so it remains visible.
+        let (max_x, _) = self.scroll_bounds();
+        let marker = draw::with_alpha(theme.tokens.colors.text_dim, 105);
+        if self.scroll.x > 0.5 {
+            let edge = Rect::new(
+                self.rect.x0 + 4.0,
+                self.rect.y0 + 5.0,
+                self.rect.x0 + 6.0,
+                self.rect.y1 - 5.0,
+            );
+            scene.fill(Fill::NonZero, t, marker, None, &edge);
+        }
+        if self.scroll.x + 0.5 < max_x {
+            let edge = Rect::new(
+                self.rect.x1 - 6.0,
+                self.rect.y0 + 5.0,
+                self.rect.x1 - 4.0,
+                self.rect.y1 - 5.0,
+            );
+            scene.fill(Fill::NonZero, t, marker, None, &edge);
+        }
     }
 
     /// Map remote collaborators' scene-space cursor positions onto this field's

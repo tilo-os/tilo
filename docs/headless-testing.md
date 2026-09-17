@@ -8,6 +8,17 @@ Three layers, each useful on its own:
 2. **`TILO_TEST_CONTROL` socket — JSON RPC over a unix socket** (drive a running binary programmatically: click, drag, type, snapshot)
 3. **`--backend headless` — live compositor without a window** (the same binary that boots on a real display, running through the same code paths, but rendering into an off-screen wgpu texture)
 
+Product apps using the shared launcher expose their visual-state catalogue
+without opening a window:
+
+```bash
+cargo run -q -p contacts -- --list-scenarios
+```
+
+An empty result means the app has only its default screenshot state; it should
+not be taken as evidence that loading, empty, error, narrow, or modal states do
+not need visual coverage.
+
 ## Layer 1: `shots` — pre-written scenarios
 
 Best for: regression captures, golden-image diffs, video walkthroughs of known UX flows.

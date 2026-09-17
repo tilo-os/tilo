@@ -19,7 +19,7 @@ use crate::model::{DiffLine, DiffLineKind, FileDiff};
 use crate::settings::{DiffLayout, Settings};
 
 /// Fixed monospace row height for diff lines, in logical px.
-pub const ROW_H: f64 = 18.0;
+pub const ROW_H: f64 = 24.0;
 const FONT: f32 = 12.5;
 const GUTTER_W: f64 = 96.0;
 
@@ -491,7 +491,7 @@ impl DiffView {
         let t = ctx.transform;
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let size = 11.0f32;
+        let size = 12.5f32;
         let tw = f64::from(
             tr.measure_weighted(spec.label, size, None, TextWeight::Medium)
                 .0,
@@ -508,7 +508,7 @@ impl DiffView {
         let fg = if spec.hovered {
             Color::WHITE
         } else {
-            c.text_dim
+            c.text_primary
         };
         draw::fill_round(scene, t, brect, 5.0, bg);
         draw::text_weighted(
