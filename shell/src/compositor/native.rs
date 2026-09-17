@@ -3226,9 +3226,50 @@ fn spawn_session_collab_broker(
     }
 }
 
+fn active_physical_gamepad_binding(
+    tree: &crate::shell::state::WorkspaceTree,
+) -> Option<crate::shell::physical_gamepad::PhysicalGamepadBinding> {
+    use crate::shell::state::TileContent;
+
+    let workspace = tree.active_workspace()?;
+    let strip_id = tree
+        .active_strip
+        .get(&workspace.id)
+        .copied()
+        .or_else(|| workspace.strips.first().map(|strip| strip.id))?;
+    let strip = workspace.strips.iter().find(|strip| strip.id == strip_id)?;
+    let group_id = tree
+        .active_group_for(strip_id)
+        .filter(|group_id| {
+            strip
+                .window_groups
+                .iter()
+                .any(|group| group.id == *group_id)
+        })
+        .or_else(|| strip.window_groups.first().map(|group| group.id))?;
+    let group = strip
+        .window_groups
+        .iter()
+        .find(|group| group.id == group_id)?;
+    let tab = group.tabs.iter().find(|tab| tab.id == group.active_tab)?;
+    let app_id = match &tab.tile {
+        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => kind.app_id(),
+        TileContent::Foreign { app_id, .. }
+        | TileContent::LocalApp { app_id, .. }
+        | TileContent::PeerWindow { app_id, .. } => app_id.clone(),
+    };
+    let workspace_id = workspace.room.to_string();
+    Some(crate::shell::physical_gamepad::PhysicalGamepadBinding {
+        app_id,
+        session_id: format!("{workspace_id}:{}", tab.id),
+        workspace_id,
+    })
+}
+
 fn install_device_fabric_bridge(
     host: &mut crate::shell::overlay_host::ShellOverlayHost,
     fabric_net: Arc<crate::shell::network::ShellNetwork>,
+    tree_handle: crate::shell::state::WorkspaceTreeHandle,
 ) {
     let fabric_cache = std::rc::Rc::new(std::cell::RefCell::new(
         None::<(Instant, crate::shell::overlay_host::DeviceFabricView)>,
@@ -3286,6 +3327,25 @@ fn install_device_fabric_bridge(
                         approved,
                     )?;
                 }
+                DeviceFabricUiAction::StartPhysicalGamepad {
+                    source_token,
+                    target,
+                } => {
+                    let binding = active_physical_gamepad_binding(&tree_handle.read())
+                        .ok_or_else(|| "focus an app before forwarding a controller".to_string())?;
+                    let _ = crate::shell::physical_gamepad::start_physical_gamepad_forwarding(
+                        &fabric_net,
+                        source_token,
+                        &target,
+                        binding,
+                    )?;
+                }
+                DeviceFabricUiAction::StopPhysicalGamepad { session } => {
+                    crate::shell::physical_gamepad::stop_physical_gamepad_forwarding(
+                        &fabric_net,
+                        session,
+                    )?;
+                }
                 DeviceFabricUiAction::Place { device, edge } => {
                     crate::shell::device_fabric_runtime::place_device(&fabric_net, &device, edge)?;
                 }
@@ -3302,7 +3362,9 @@ fn install_device_fabric_bridge(
                     )?;
                 }
             }
-            let view = crate::shell::device_fabric_runtime::device_fabric_view(&fabric_net);
+            let mut view = crate::shell::device_fabric_runtime::device_fabric_view(&fabric_net);
+            view.local_gamepads =
+                crate::shell::physical_gamepad::local_physical_gamepads().unwrap_or_default();
             *fabric_cache.borrow_mut() = Some((Instant::now(), view.clone()));
             Ok(view)
         })
@@ -3361,7 +3423,11 @@ fn spawn_session_peer_sync(
             tracing::info!("peer-sync: actor spawned, default workspace joined");
             let net = Arc::new(handle);
             install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
-            install_device_fabric_bridge(frame_builder.host_mut(), Arc::clone(&net));
+            install_device_fabric_bridge(
+                frame_builder.host_mut(),
+                Arc::clone(&net),
+                tree_handle.clone(),
+            );
             let stream_net = Arc::clone(&net);
             state.set_legacy_stream_publisher(Arc::new(move |message| {
                 stream_net.publish_legacy_active(message)
@@ -5707,6 +5773,8 @@ pub fn run() -> ! {
                     width,
                     height,
                 });
+            let gamepad_binding = active_physical_gamepad_binding(&tree_handle.read());
+            runtime.set_local_gamepad_focus(gamepad_binding.clone());
             runtime.pump(
                 net,
                 &state.selection_store(),
@@ -5717,6 +5785,7 @@ pub fn run() -> ! {
                     audio_output: system_audio,
                 },
             );
+            crate::shell::physical_gamepad::pump_physical_gamepads(net, gamepad_binding.as_ref());
             if let Some(bridge) = realtime_fabric_bridge.as_ref() {
                 bridge.pump_app_events();
             }
@@ -6674,6 +6743,9 @@ pub fn run() -> ! {
     // half-presented frame can't outlive its device — explicit since `process::exit` skips destructors.
     if let Some(mut pipe) = present_pipe.take() {
         pipe.shutdown();
+    }
+    if let Some(network) = peer_sync.as_ref() {
+        crate::shell::physical_gamepad::stop_all_physical_gamepads(network);
     }
 
     // Flush the frame trace / write the summary before `process::exit` skips destructors; a no-op unless instrumentation was enabled.

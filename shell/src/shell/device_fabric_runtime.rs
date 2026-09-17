@@ -85,6 +85,30 @@ struct PendingGamepadAuthorization {
     received: Instant,
 }
 
+impl PendingGamepadAuthorization {
+    fn matches_local_focus(
+        &self,
+        focus: Option<&crate::shell::physical_gamepad::PhysicalGamepadBinding>,
+    ) -> bool {
+        focus.is_some_and(|focus| {
+            self.app_id == focus.app_id
+                && self.workspace_id == focus.workspace_id
+                && self.session_id == focus.session_id
+        })
+    }
+}
+
+fn identity_matches_local_focus(
+    identity: &os_actions::ForwardedPeripheralIdentity,
+    focus: Option<&crate::shell::physical_gamepad::PhysicalGamepadBinding>,
+) -> bool {
+    focus.is_some_and(|focus| {
+        identity.app_id() == focus.app_id
+            && identity.workspace_id() == focus.workspace_id
+            && identity.session_id() == focus.session_id
+    })
+}
+
 #[derive(Default)]
 struct GamepadAuthorizationState {
     pending: BTreeMap<[u8; 16], PendingGamepadAuthorization>,
@@ -770,6 +794,7 @@ pub struct DeviceFabricRuntime {
     realtime_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
     gamepad_broker: ProductionGamepadBroker,
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
+    local_gamepad_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
     policy: Option<ContinuityPolicySnapshot>,
 }
 
@@ -795,6 +820,7 @@ impl DeviceFabricRuntime {
                 ),
             ),
             inbound_gamepads: BTreeMap::new(),
+            local_gamepad_focus: None,
             policy: None,
         }
     }
@@ -804,6 +830,15 @@ impl DeviceFabricRuntime {
         adapter: crate::shell::realtime_session::SharedRealtimeFabricAdapter,
     ) {
         self.realtime_adapter = Some(adapter);
+    }
+
+    /// Supply the compositor's current locally verified app focus. Remote
+    /// gamepad claims are never allowed to establish this authority.
+    pub fn set_local_gamepad_focus(
+        &mut self,
+        focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
+    ) {
+        self.local_gamepad_focus = focus;
     }
 
     /// Sample local state and project authenticated remote state into the OS.
@@ -818,8 +853,8 @@ impl DeviceFabricRuntime {
         if policy.permits(ContinuityCapability::Media) {
             pump_bluetooth_handoffs(network);
         }
-        self.handle_fabric_actions(network, policy);
         self.maintain_gamepad_forwarding(network, policy);
+        self.handle_fabric_actions(network, policy);
         self.pump_realtime_continuity(network, policy);
         self.pump_notification_continuity(network, policy);
         if policy.permits(ContinuityCapability::FileTransfer) {
@@ -1168,11 +1203,20 @@ impl DeviceFabricRuntime {
                 sequence,
                 event,
             } => {
+                let local_focus = self.local_gamepad_focus.as_ref();
+                let focus_valid = self
+                    .inbound_gamepads
+                    .get(forwarding_id)
+                    .is_none_or(|session| {
+                        identity_matches_local_focus(&session.identity, local_focus)
+                    });
                 let result = self
                     .inbound_gamepads
                     .get(forwarding_id)
                     .filter(|session| {
-                        session.source == envelope.source && session.lease_nonce == *lease_nonce
+                        session.source == envelope.source
+                            && session.lease_nonce == *lease_nonce
+                            && identity_matches_local_focus(&session.identity, local_focus)
                     })
                     .map(|session| {
                         self.gamepad_broker.submit(
@@ -1183,10 +1227,12 @@ impl DeviceFabricRuntime {
                             Instant::now(),
                         )
                     });
-                if matches!(
-                    result,
-                    Some(Err(os_actions::PeripheralBrokerError::InvalidLease))
-                ) {
+                if !focus_valid
+                    || matches!(
+                        result,
+                        Some(Err(os_actions::PeripheralBrokerError::InvalidLease))
+                    )
+                {
                     self.remove_inbound_gamepad(*forwarding_id);
                 }
             }
@@ -1284,6 +1330,17 @@ impl DeviceFabricRuntime {
                 );
                 continue;
             }
+            if !pending.matches_local_focus(self.local_gamepad_focus.as_ref()) {
+                let _ = network.send_personal_fabric_action(
+                    &pending.source,
+                    PersonalFabricAction::GamepadForwardGrant {
+                        forwarding_id,
+                        accepted: false,
+                        lease_nonce: [0; 16],
+                    },
+                );
+                continue;
+            }
             let source_online = network
                 .device_fabric()
                 .snapshots()
@@ -1307,9 +1364,9 @@ impl DeviceFabricRuntime {
             accepted: false,
             lease_nonce: [0; 16],
         };
-        // The exact certified route and claimed app session were displayed to
-        // the local user before this branch. The privileged shell, not the
-        // remote device, is the authority that turns that consent into focus.
+        // The remote claim has already been compared byte-for-byte with the
+        // compositor's current local app/workspace/session focus. Only that
+        // locally verified binding may become broker focus.
         let Ok(identity) = os_actions::ForwardedPeripheralIdentity::new_after_verification(
             pending.source.as_str(),
             pending.target.as_str(),
@@ -1427,6 +1484,10 @@ impl DeviceFabricRuntime {
             .filter_map(|(id, session)| {
                 (!policy.permits(ContinuityCapability::TypedGamepad)
                     || !online.contains(&session.source)
+                    || !identity_matches_local_focus(
+                        &session.identity,
+                        self.local_gamepad_focus.as_ref(),
+                    )
                     || !self.gamepad_broker.has_lease(session.lease))
                 .then_some((*id, session.source.clone(), session.lease_nonce))
             })
@@ -3645,6 +3706,7 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
     DeviceFabricView {
         bluetooth_authorizations,
         gamepad_authorizations,
+        local_gamepads: Vec::new(),
         devices,
         local_media,
         local_outputs,
@@ -4739,6 +4801,16 @@ pub fn typed_gamepad_forwarding_ready(forwarding_id: [u8; 16]) -> bool {
     })
 }
 
+/// Whether an outbound request is still pending or leased. A rejected or
+/// remotely stopped request disappears, allowing the physical source owner to
+/// close its descriptor promptly instead of waiting for the consent timeout.
+#[must_use]
+pub fn typed_gamepad_forwarding_exists(forwarding_id: [u8; 16]) -> bool {
+    outbound_gamepad_state()
+        .lock()
+        .is_ok_and(|state| state.sessions.contains_key(&forwarding_id))
+}
+
 /// Send one sanitized logical controller event. No raw transport report,
 /// descriptor, key code, or caller-selected device capability can cross this
 /// interface.
@@ -5365,5 +5437,59 @@ mod tests {
         let mut state = GamepadAuthorizationState::default();
         assert!(!state.queue([2; 16], pending_gamepad("source"), true, 1));
         assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn gamepad_approval_requires_exact_compositor_local_focus() {
+        let pending = pending_gamepad("source");
+        let exact = crate::shell::physical_gamepad::PhysicalGamepadBinding {
+            app_id: "dev.tilo.game".into(),
+            workspace_id: "workspace".into(),
+            session_id: "session".into(),
+        };
+        assert!(pending.matches_local_focus(Some(&exact)));
+        assert!(!pending.matches_local_focus(None));
+        for mismatch in [
+            crate::shell::physical_gamepad::PhysicalGamepadBinding {
+                app_id: "dev.tilo.other".into(),
+                ..exact.clone()
+            },
+            crate::shell::physical_gamepad::PhysicalGamepadBinding {
+                workspace_id: "other-workspace".into(),
+                ..exact.clone()
+            },
+            crate::shell::physical_gamepad::PhysicalGamepadBinding {
+                session_id: "other-session".into(),
+                ..exact.clone()
+            },
+        ] {
+            assert!(!pending.matches_local_focus(Some(&mismatch)));
+        }
+    }
+
+    #[test]
+    fn active_gamepad_identity_becomes_invalid_on_local_focus_loss() {
+        let identity = os_actions::ForwardedPeripheralIdentity::new_after_verification(
+            "source",
+            "target",
+            "dev.tilo.game",
+            "workspace",
+            "session",
+        )
+        .unwrap();
+        let exact = crate::shell::physical_gamepad::PhysicalGamepadBinding {
+            app_id: "dev.tilo.game".into(),
+            workspace_id: "workspace".into(),
+            session_id: "session".into(),
+        };
+        assert!(identity_matches_local_focus(&identity, Some(&exact)));
+        assert!(!identity_matches_local_focus(&identity, None));
+        assert!(!identity_matches_local_focus(
+            &identity,
+            Some(&crate::shell::physical_gamepad::PhysicalGamepadBinding {
+                session_id: "new-tab".into(),
+                ..exact
+            })
+        ));
     }
 }
