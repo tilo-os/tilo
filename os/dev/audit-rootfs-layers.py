@@ -244,7 +244,7 @@ def audit_stream(stream, image_id, private_values=(), max_bytes=MAX_BYTES):
     rows = [layers[name] for name in ordered]
     return {'schema': 1, 'image_id': image_id, 'scanner': 'docker-layer-private-material-v1',
             'status': 'rejected-private-material' if metadata_findings or any(row['findings'] for row in rows) else 'passed-scoped-scan',
-            'scope': 'all uncompressed layers and archive metadata: provided exact private bytes and private PEM envelopes only',
+            'scope': 'all uncompressed layer bytes and archive metadata file contents: provided exact private bytes and private PEM envelopes only',
             'universal_secret_absence_proven': False, 'installable': False,
             'archive_bytes_read': total.bytes_read, 'metadata_findings': sorted(metadata_findings), 'layers': rows}
 
