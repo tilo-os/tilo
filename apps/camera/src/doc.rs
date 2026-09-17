@@ -12,7 +12,7 @@
 //! ```
 //!
 //! The photo/video *pixels* travel as verified qdoc blobs (see
-//! [`crate::media`]); a local library file is merely an optional projection.
+//! [`crate::media`]); a local capture file is merely an optional projection.
 //! The CRDT stores collaborative metadata and its content-addressed media ID,
 //! plus scan history and capture preferences. Camera deliberately retains one
 //! recent handoff, not a parallel photo/video library.
@@ -378,8 +378,7 @@ pub fn is_seeded(doc: &AutoCommit, root: &ObjId) -> bool {
 
 /// Write capture preferences on first run (empty doc). Navigation is local
 /// presentation state, deliberately excluded from collaboration/history.
-/// No sample content is fabricated — the library starts empty and reflects
-/// whatever is actually on disk. Idempotent: a no-op once initialised.
+/// No sample content is fabricated. Idempotent: a no-op once initialised.
 pub fn init_defaults(doc: &mut AutoCommit, root: &ObjId, _initial: Screen) {
     if is_seeded(doc, root) {
         return;
@@ -411,21 +410,6 @@ mod tests {
     }
 
     #[test]
-    fn favorites_star_and_unstar() {
-        let mut doc = AutoCommit::new();
-        let root = ROOT;
-        assert!(read_favorites(&doc, &root).is_empty());
-        set_favorite(&mut doc, &root, "IMG_a.png", true);
-        set_favorite(&mut doc, &root, "IMG_b.png", true);
-        let favs = read_favorites(&doc, &root);
-        assert!(favs.contains("IMG_a.png") && favs.contains("IMG_b.png"));
-        set_favorite(&mut doc, &root, "IMG_a.png", false);
-        let favs = read_favorites(&doc, &root);
-        assert!(!favs.contains("IMG_a.png"));
-        assert!(favs.contains("IMG_b.png"));
-    }
-
-    #[test]
     fn scans_are_newest_first_deduped_and_capped() {
         let mut doc = AutoCommit::new();
         let root = ROOT;
@@ -446,13 +430,13 @@ mod tests {
     }
 
     #[test]
-    fn hostile_oversized_capture_list_is_inert_for_mutations() {
+    fn legacy_huge_capture_list_cannot_affect_constant_time_recent_handoff() {
         let mut doc = AutoCommit::new();
         let root = ROOT;
         let list = doc
             .put_object(&root, "captures", ObjType::List)
             .expect("capture list");
-        for index in 0..=MAX_SHARED_CAPTURES {
+        for index in 0..=100_000 {
             doc.insert(&list, index, "legacy row")
                 .expect("legacy list row");
         }
@@ -468,12 +452,9 @@ mod tests {
             facing: Facing::Back,
         };
 
-        assert!(register_shared_capture(&mut doc, &root, &capture).is_err());
-        assert!(remove_shared_capture(&mut doc, &root, "IMG_new.jpg").is_err());
-
-        // Both canonical actions fail closed; neither traverses or modifies
-        // an unbounded legacy list from the interaction path.
-        assert_eq!(doc.length(&list), MAX_SHARED_CAPTURES + 1);
+        register_recent_capture(&mut doc, &root, &capture).unwrap();
+        assert_eq!(read_recent_capture(&doc, &root), Some(capture));
+        assert_eq!(doc.length(&list), 100_001);
     }
 
     #[test]
@@ -483,8 +464,8 @@ mod tests {
         assert!(!is_seeded(&doc, &root));
         init_defaults(&mut doc, &root, Screen::Scanner);
         assert!(is_seeded(&doc, &root));
-        // No fabricated library content.
-        assert!(read_favorites(&doc, &root).is_empty());
+        // No fabricated media content.
+        assert!(read_recent_capture(&doc, &root).is_none());
         assert!(read_scans(&doc, &root).is_empty());
         // Second init leaves durable preferences untouched; screens are local.
         init_defaults(&mut doc, &root, Screen::Camera);
