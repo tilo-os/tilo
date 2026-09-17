@@ -6,19 +6,16 @@
 //! its model; it does not need to coordinate picker focus or backing scrims.
 
 use chrono::{NaiveDate, Timelike};
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::widget::{DatePicker, TimePicker};
 
 use crate::app::{CalTarget, draw_check};
-use crate::draw_util::{fill_round, stroke_round};
+use crate::draw_util::{PaintContext, fill_round, stroke_round};
 use crate::input_context::InputContext;
 use crate::model::Event;
 
@@ -44,6 +41,16 @@ pub(crate) struct PopoverAnchors {
     pub start_date: Rect,
     pub end_date: Rect,
     pub calendar: Rect,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PopoverRenderModel<'a> {
+    pub(crate) presence: &'a PresenceCtx,
+    pub(crate) panel: Rect,
+    pub(crate) anchors: PopoverAnchors,
+    pub(crate) pointer: Point,
+    pub(crate) calendar_options: &'a [(CalTarget, String)],
+    pub(crate) current_calendar: Option<&'a str>,
 }
 
 #[derive(Clone, Debug)]
@@ -265,20 +272,19 @@ impl EventPopovers {
         *handled = true;
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        panel: Rect,
-        anchors: PopoverAnchors,
-        pointer: Point,
-        calendar_options: &[(CalTarget, String)],
-        current_calendar: Option<&str>,
-    ) {
+    pub fn draw(&mut self, paint: &mut PaintContext<'_>, model: &PopoverRenderModel<'_>) {
+        let scene = &mut *paint.scene;
+        let transform = paint.transform;
+        let text = &mut *paint.text;
+        let theme = paint.theme;
+        let PopoverRenderModel {
+            presence,
+            panel,
+            anchors,
+            pointer,
+            calendar_options,
+            current_calendar,
+        } = *model;
         self.hits.clear();
         let kind = self.active;
         if kind == PopoverKind::None {

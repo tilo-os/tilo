@@ -59,7 +59,7 @@ use crate::draw_util::{
     PaintContext, elide_to_width, fill_rect, fill_round, stroke_line, stroke_round,
 };
 use crate::event_popovers::{
-    EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover,
+    EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover, PopoverRenderModel,
 };
 use crate::ics;
 use crate::input_context::InputContext;
@@ -5331,20 +5331,24 @@ impl CalendarApp {
             _ => None,
         };
         self.event_popovers.draw(
-            scene,
-            t,
-            tr,
-            theme,
-            presence,
-            self.detail_rect,
-            PopoverAnchors {
-                start_date: self.form.start_date,
-                end_date: self.form.end_date,
-                calendar: self.form.calendar,
+            &mut PaintContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
             },
-            self.last_mouse,
-            &options,
-            current,
+            &PopoverRenderModel {
+                presence,
+                panel: self.detail_rect,
+                anchors: PopoverAnchors {
+                    start_date: self.form.start_date,
+                    end_date: self.form.end_date,
+                    calendar: self.form.calendar,
+                },
+                pointer: self.last_mouse,
+                calendar_options: &options,
+                current_calendar: current,
+            },
         );
         Vec::new()
     }
