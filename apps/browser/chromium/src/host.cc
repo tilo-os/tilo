@@ -7,6 +7,7 @@
 #include "capabilities.h"
 #include "site_info.h"
 #include "navigation_history.h"
+#include "fullscreen_state.h"
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
 #include "include/cef_command_line.h"
@@ -201,6 +202,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
   CefRefPtr<CefFrameHandler> GetFrameHandler() override { return this; }
+  void OnFullscreenModeChange(CefRefPtr<CefBrowser>,bool fullscreen) override {
+    if(!fullscreen_.Set(fullscreen)) return;
+    auto d=CefDictionaryValue::Create();d->SetBool("fullscreen",fullscreen);Event("fullscreen",d);
+  }
+  void OnRenderProcessTerminated(CefRefPtr<CefBrowser>,TerminationStatus,int,const CefString&) override {
+    fullscreen_.ResetForRendererTermination();
+    Event("renderer_terminated");
+  }
   void OnFrameCreated(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame) override { SendFilters(frame);SendScripts(frame); }
   void GetViewRect(CefRefPtr<CefBrowser>,CefRect& rect) override { rect=CefRect(0,0,geometry_.logical_width(),geometry_.logical_height()); }
   bool GetScreenInfo(CefRefPtr<CefBrowser>,CefScreenInfo& info) override {
@@ -390,6 +399,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="forward") browser_->GoForward();
     else if(op=="reload") browser_->Reload();
     else if(op=="stop") browser_->StopLoad();
+    else if(op=="exit_fullscreen") host->ExitFullscreen(true);
     else if(op=="find") {
       if(finding_) { if(pending_find_.size()<64) pending_find_.push_back(d->Copy(false)); }
       else { finding_=true;find_id_=d->GetInt("id");find_text_=d->GetString("text");select_initial_=!d->GetBool("next");host->Find(d->GetString("text"),d->GetBool("forward"),false,d->GetBool("next")); }
@@ -488,6 +498,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   std::map<std::string,std::pair<uint64_t,bool>> media_frames_;
   std::optional<uint64_t> pending_main_media_token_;
   std::optional<bool> last_media_playing_;bool media_limit_reported_=false;
+  qos::FullscreenState fullscreen_;
   CefRefPtr<qos::NavigationHistory> navigation_history_;
   CefRefPtr<qos::Capabilities> capabilities_;
   CefRefPtr<qos::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
@@ -570,6 +581,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   auto op=d->GetString("op").ToString();
   auto type=[&](const char* key,cef_value_type_t expected){return d->GetType(key)==expected;};
   auto number=[&](const char* key){auto t=d->GetType(key);return t==VTYPE_INT || (t==VTYPE_DOUBLE && std::isfinite(d->GetDouble(key)));};
+  auto no_payload=[&]{CefDictionaryValue::KeyList keys;d->GetKeys(keys);return std::all_of(keys.begin(),keys.end(),[](const CefString& key){return key=="op" || key=="tab";});};
   if(op=="create_tab" || op=="close_tab" || op=="try_close_tab") return d->HasKey("tab");
   if(op=="visibility") return type("visible",VTYPE_BOOL);
   if(op=="audio_muted") return type("muted",VTYPE_BOOL);
@@ -580,6 +592,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="context_action") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("command",VTYPE_INT) && d->GetInt("command")>=0;
   if(op=="find") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("text",VTYPE_STRING) && d->GetString("text").length()<=4096 && type("forward",VTYPE_BOOL) && type("next",VTYPE_BOOL);
   if(op=="stop_find") return true;
+  if(op=="exit_fullscreen") return no_payload();
   if(op=="zoom") return number("level") && Number(d,"level")>=-5 && Number(d,"level")<=9;
   if(op=="download_cancel" || op=="download_retry") return type("id",VTYPE_INT) && d->GetInt("id")>0;
   if(op=="modifiers") return type("ctrl",VTYPE_BOOL) && type("shift",VTYPE_BOOL) && type("alt",VTYPE_BOOL) && type("meta",VTYPE_BOOL);

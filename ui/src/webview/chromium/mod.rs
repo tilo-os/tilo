@@ -50,6 +50,7 @@ impl Shared {
                         | WebViewEvent::FaviconChanged { .. }
                         | WebViewEvent::AudioMutedChanged(_)
                         | WebViewEvent::MediaPlayingChanged { .. }
+                        | WebViewEvent::FullscreenChanged(_)
                         | WebViewEvent::LoadProgress(_)
                         | WebViewEvent::HistoryChanged { .. }
                 )
@@ -887,6 +888,10 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         "zoom" => value["level"]
             .as_f64()
             .is_some_and(|level| level.is_finite() && (-5.0..=9.0).contains(&level)),
+        "fullscreen" => value["fullscreen"].is_boolean(),
+        "renderer_terminated" => value
+            .as_object()
+            .is_some_and(|object| object.len() == if value.get("tab").is_some() { 2 } else { 1 }),
         "permission_prompt" => valid_id(value) && text("origin") && text("permissions"),
         "permission_closed" => valid_id(value),
         "download_prompt" => valid_id(value) && text("url") && text("name"),
@@ -1143,6 +1148,8 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             final_update: value["final"].as_bool()?,
         },
         "zoom" => WebViewEvent::ZoomChanged(value["level"].as_f64()?),
+        "fullscreen" => WebViewEvent::FullscreenChanged(value["fullscreen"].as_bool()?),
+        "renderer_terminated" => WebViewEvent::RendererTerminated,
         "uri" => WebViewEvent::UriChanged(value["url"].as_str()?.into()),
         "title" => WebViewEvent::TitleChanged(value["title"].as_str()?.into()),
         "favicon" => {
@@ -1274,6 +1281,7 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::GoForward => json!({"op":"forward"}),
         WebViewCommand::Reload => json!({"op":"reload"}),
         WebViewCommand::StopLoading => json!({"op":"stop"}),
+        WebViewCommand::ExitFullscreen => json!({"op":"exit_fullscreen"}),
         WebViewCommand::SetAudioMuted(muted) => json!({"op":"audio_muted","muted":muted}),
         WebViewCommand::Resize {
             width,
