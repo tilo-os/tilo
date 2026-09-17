@@ -38,3 +38,20 @@ hit in the fresh store without executing the build script. It also checks
 recipe, frozen asset and epoch invalidation, and immutable stage reuse by an OS
 consumer with a different release epoch and public marker. It does not compile
 WebKit or establish full OS capacity or boot readiness.
+
+## Import a completed WPE artifact
+
+Set `TILO_WPE_STAGE_RECEIPT` to the public receipt produced by the dedicated
+WPE stage job and set `TILO_WPE_SOURCE_DATE_EPOCH` to that dependency epoch.
+For fresh full-browser development builds, `build-image.sh` calls
+`wpe-stage-artifact.py import` with the current native architecture, checkout,
+frozen assets and pinned WPE buildroot. The importer validates dependency inputs
+and registry/payload identity before returning a full immutable local image ID.
+The OS build uses that ID as its WPE stage context while retaining its own
+release epoch and complete application build.
+
+An explicit receipt takes precedence over `TILO_WPE_BUILD_CACHE_REF`. An invalid,
+incompatible or unavailable artifact aborts the build; it never falls back to
+compiling WPE. Without a receipt, existing cache and default build behavior are
+unchanged. The receipt must come from the reviewed development producer; it is
+not a production signature or installation authority.
