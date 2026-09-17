@@ -1,0 +1,86 @@
+name: Wine / native build inputs
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["codex/arm64-platform-support"]
+    paths:
+      - .forgejo/workflows/build-wine.yml
+      - os/Containerfile.wine-tools
+      - os/dev/fetch-wine-source.py
+      - os/dev/wine-source.json
+      - os/dev/wine_rpm_contract.py
+      - os/tests/test_fetch_wine_source.py
+
+concurrency:
+  group: wine-inputs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-inputs:
+    runs-on: runner
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Verify native host and acquisition contract
+        run: |
+          bash os/dev/assert-native-arch.sh x86_64
+          python3 os/tests/test_fetch_wine_source.py
+          python3 os/tests/test_wine_rpm_contract.py
+          df -h .
+          grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
+
+      - name: Log in to candidate artifact registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: code.sandbox.example
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Set up native image builder
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker-container
+
+      - name: Freeze native tooling image
+        id: tools
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: os/Containerfile.wine-tools
+          platforms: linux/amd64
+          push: true
+          tags: code.sandbox.example/qos/wine-tools:candidate-${{ github.sha }}-${{ github.run_id }}
+          build-args: BASE_REF=${{ env.BASE_REF }}
+          provenance: false
+
+      - name: Acquire and authenticate the pinned Wine source
+        env:
+          TOOLS_DIGEST: ${{ steps.tools.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p wine-input-evidence
+          ref="code.sandbox.example/qos/wine-tools@$TOOLS_DIGEST"
+          printf '%s\n' "$ref" > wine-input-evidence/runtime-image.txt
+          docker pull "$ref"
+          container=$(docker create --entrypoint python3 "$ref" /qos/fetch-wine-source.py /wine-inputs/source)
+          cleanup() {
+            docker cp "$container":/wine-inputs/. wine-input-evidence/ || true
+            docker cp "$container":/usr/lib/qos/. wine-input-evidence/ || true
+            docker rm "$container" >/dev/null || true
+          }
+          trap cleanup EXIT
+          docker start --attach "$container"
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0
+
+      - name: Retain source and acquisition evidence
+        if: always()
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: wine-native-inputs-${{ github.sha }}
+          path: wine-input-evidence/
+          if-no-files-found: warn
