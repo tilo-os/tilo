@@ -335,6 +335,9 @@ impl PowerPane {
             Op::SetBlankTimeout { label } => {
                 let _ = local.put(&root, BLANK_KEY, label.as_str());
             }
+            Op::SetLockTimeout { label } => {
+                let _ = local.put(&root, LOCK_KEY, label.as_str());
+            }
             Op::SetSuspendTimeout { profile, label } => {
                 let key = match profile.as_str() {
                     "default" => SUSPEND_KEY,
@@ -649,6 +652,10 @@ impl PowerPane {
                     Box::new(
                         Dropdown::new(lock_opts, LOCK_KEY)
                             .with_id("power.lock")
+                            .on_action(
+                                crate::actions::power_text_binding("lock-after")
+                                    .expect("lock action is part of the static resource contract"),
+                            )
                             .with_placeholder(lock_label(self.prefs.lock_minutes)),
                     ),
                 ),
@@ -940,10 +947,19 @@ impl PowerPane {
         if let Some(label) = read_str(state, root, LOCK_KEY)
             && let Some(minutes) = lock_from_label(&label)
             && minutes != self.last_prefs.lock_minutes
+            && self.operation_is_running(&crate::actions::PowerOperation::SetLockTimeout {
+                label: label.clone(),
+            })
         {
             self.last_prefs.lock_minutes = minutes;
             self.prefs.lock_minutes = minutes;
-            self.persist();
+            let result = self
+                .persist()
+                .map(|()| "Automatic lock timeout saved.".into());
+            self.operation_finished(
+                &crate::actions::PowerOperation::SetLockTimeout { label },
+                result,
+            );
         }
 
         if let Some(label) = read_str(state, root, SUSPEND_KEY)
