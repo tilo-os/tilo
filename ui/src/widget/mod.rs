@@ -467,6 +467,13 @@ pub trait Widget {
         None
     }
 
+    /// Whether this widget introduces a document owner distinct from the
+    /// runner's outer State. This is a compatibility check, never identity
+    /// or authority for history access or restore.
+    fn has_separate_document_owner(&self) -> bool {
+        self.callback_binding().is_some() || self.record_intent().is_some()
+    }
+
     #[doc(hidden)]
     #[allow(
         private_interfaces,

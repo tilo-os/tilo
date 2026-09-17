@@ -304,6 +304,7 @@ pub struct ActivityTimeline {
     on_clear_filters: Option<ClearFiltersCallback>,
     /// `false` when the host has already painted a surface underneath.
     draws_own_surface: bool,
+    preview_selection: bool,
     dirty: bool,
 }
 
@@ -355,9 +356,13 @@ impl ActivityTimeline {
             time_range_label: None,
             on_clear_filters: None,
             draws_own_surface: true,
+            preview_selection: false,
             dirty: true,
         }
     }
+
+    /// Use selection/inspection without offering metadata or direct revert actions.
+    pub fn with_preview_selection(mut self) -> Self { self.preview_selection = true; self }
 
     pub fn with_entries(entries: Vec<HistoryEntry>) -> Self {
         let mut s = Self::new();
@@ -775,6 +780,7 @@ impl ActivityTimeline {
     }
 
     pub fn begin_naming_group_at_row(&mut self, i: usize) -> bool {
+        if self.preview_selection { return false; }
         let Some(VisualRow::Group(g)) = self.rows.get(i).copied() else {
             return false;
         };
@@ -792,7 +798,7 @@ impl ActivityTimeline {
 
     /// `false` when nothing is selected.
     pub fn begin_naming_selection(&mut self) -> bool {
-        if self.selection.is_none() {
+        if self.preview_selection || self.selection.is_none() {
             return false;
         }
         self.naming = Some(NamingState {
@@ -1093,7 +1099,7 @@ impl ActivityTimeline {
     pub fn revert_chip_rect(&self, i: usize) -> Option<Rect> {
         let row = self.row_rect(i)?;
         let entry = self.row_entry(i)?;
-        if !entry.is_revertible() {
+        if self.preview_selection || !entry.is_revertible() {
             return None;
         }
         let depth = self.row_depth(i);
@@ -1987,7 +1993,7 @@ impl ActivityTimeline {
 
         // Two veto conditions on the chip: op-class non-revertibility, and a
         // redaction — we never offer "revert" across a redaction boundary.
-        if is_hovered && entry.is_revertible() && !is_redacted_row {
+        if !self.preview_selection && is_hovered && entry.is_revertible() && !is_redacted_row {
             let chip_h = ROW_HEIGHT - 16.0;
             let chip_rect = Rect::new(
                 row.x1 - self.revert_chip_w() - 6.0,
@@ -2039,7 +2045,7 @@ impl ActivityTimeline {
         let chips = self.group_chip_rects_local(row, rg);
         Self::draw_group_row_title(
             scene, transform, tr, theme, row, rg, is_hovered, naming, title_x, title_size,
-            chips.0.x0,
+            if self.preview_selection { row.x1 + 8.0 } else { chips.0.x0 },
         );
 
         // Line two: who and how much, plus — right-aligned — when.
@@ -2048,7 +2054,7 @@ impl ActivityTimeline {
             scene, transform, tr, theme, row, rg, now, title_x, meta_y, title_size,
         );
 
-        if is_hovered || naming.is_some() {
+        if !self.preview_selection && (is_hovered || naming.is_some()) {
             let (name_rect, restore_rect) = chips;
             draw_chip(
                 scene,
@@ -2285,6 +2291,7 @@ impl ActivityTimeline {
     /// document actions sit together. `[Undo]` only allocates when a host
     /// installed [`ActivityTimeline::on_undo_band`].
     fn group_chip_rects_full(&self, row: Rect, rg: &RowGroup) -> GroupChips {
+        if self.preview_selection { return GroupChips { name: Rect::ZERO, undo: None, restore: None }; }
         let chip_h = 20.0;
         let cy = row.y0 + 15.0;
         let narrow = self.rect.width() < NARROW_WIDTH;
@@ -2549,7 +2556,7 @@ impl ActivityTimeline {
         );
 
         let clear_w = 54.0_f64;
-        let action_w = if naming { 0.0 } else { 96.0_f64 };
+        let action_w = if naming || self.preview_selection { 0.0 } else { 96.0_f64 };
         let clear = Rect::new(
             bar.x1 - 8.0 - clear_w,
             bar.center().y - 11.0,
@@ -2594,7 +2601,7 @@ impl ActivityTimeline {
                 clear.x0 - 6.0,
                 bar.center().y + 11.0,
             );
-            if action.x0 > bar.x0 + 10.0 {
+            if !self.preview_selection && action.x0 > bar.x0 + 10.0 {
                 self.name_selection_rect = action;
                 draw_chip(scene, transform, tr, theme, action, "Name these", true);
             }
