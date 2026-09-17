@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::mesh::DeviceKey;
-use crate::{DeviceRole, PowerAvailability, ServerAdvertisement};
+use crate::{ComputeAccelerator, PowerAvailability, ServerAdvertisement};
 
 pub const COMPUTE_JOB_SCHEMA_VERSION: u16 = 1;
 pub const MAX_COMPUTE_JOB_LIFETIME_MS: u64 = 5 * 60 * 1_000;
@@ -54,6 +54,12 @@ pub struct ComputeJobSpec {
 }
 
 impl ComputeJobSpec {
+    /// Validate the exact target, lifetime, catalogue identifiers, arguments,
+    /// content references, and resource ceilings.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first violated wire or policy invariant.
     pub fn validate_for(
         &self,
         expected_worker: DeviceKey,
@@ -89,7 +95,7 @@ impl ComputeJobSpec {
         if self.arguments.len() > MAX_COMPUTE_ARGUMENTS
             || argument_bytes > MAX_COMPUTE_ARGUMENT_BYTES
             || self.inputs.len() > MAX_COMPUTE_INPUTS
-            || self.inputs.iter().any(|digest| *digest == [0; 32])
+            || self.inputs.contains(&[0; 32])
         {
             return Err(ComputeError::ArgumentsTooLarge);
         }
@@ -105,6 +111,13 @@ impl ComputeJobSpec {
     }
 }
 
+/// Admit a validated job only to an eligible, available worker advertising
+/// the exact workspace, app, accelerator, and compute service.
+///
+/// # Errors
+///
+/// Returns [`ComputeError::WorkerUnavailable`] for any ineligible worker, or
+/// the underlying spec validation error.
 pub fn admit_compute_job(
     spec: &ComputeJobSpec,
     worker: &ServerAdvertisement,
@@ -116,6 +129,7 @@ pub fn admit_compute_job(
         || !worker.services.compute
         || !worker.workspaces.contains(&spec.workspace_id)
         || !worker.apps.contains(&spec.app_id)
+        || (spec.limits.gpu && !worker.accelerators.contains(&ComputeAccelerator::Gpu))
         || worker.assignment_capacity == 0
         || worker.active_assignments >= worker.assignment_capacity
         || worker.energy_saver
@@ -143,6 +157,11 @@ pub struct ComputeJobLifecycle {
 }
 
 impl ComputeJobLifecycle {
+    /// Start a pending lifecycle for one non-zero job identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ComputeError::InvalidBinding`] for the zero identifier.
     pub fn new(job_id: [u8; 16]) -> Result<Self, ComputeError> {
         if job_id == [0; 16] {
             return Err(ComputeError::InvalidBinding);
@@ -154,6 +173,11 @@ impl ComputeJobLifecycle {
         })
     }
 
+    /// Apply one exact-next lifecycle update and validate terminal metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an ordering, transition, or output validation error.
     pub fn advance(&mut self, sequence: u64, next: ComputeJobPhase) -> Result<(), ComputeError> {
         if sequence != self.sequence.saturating_add(1) {
             return Err(ComputeError::OutOfOrder);
@@ -175,8 +199,7 @@ impl ComputeJobLifecycle {
         }
         match &next {
             ComputeJobPhase::Completed { outputs }
-                if outputs.len() > MAX_COMPUTE_INPUTS
-                    || outputs.iter().any(|digest| *digest == [0; 32]) =>
+                if outputs.len() > MAX_COMPUTE_INPUTS || outputs.contains(&[0; 32]) =>
             {
                 return Err(ComputeError::InvalidOutput);
             }
@@ -226,7 +249,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::ServiceCapabilities;
+    use crate::{DeviceRole, ServiceCapabilities};
 
     fn spec() -> ComputeJobSpec {
         ComputeJobSpec {
@@ -258,6 +281,7 @@ mod tests {
             services: ServiceCapabilities::personal_server(),
             workspaces: BTreeSet::from([7]),
             apps: BTreeSet::from(["dev.tilo.video-editor".into()]),
+            accelerators: BTreeSet::from([ComputeAccelerator::Gpu]),
             priority: 0,
             latency_ms: 4,
             power: PowerAvailability::External,
@@ -291,6 +315,12 @@ mod tests {
         );
         candidate = worker();
         candidate.power = PowerAvailability::Battery(10);
+        assert_eq!(
+            admit_compute_job(&spec(), &candidate, 200),
+            Err(ComputeError::WorkerUnavailable)
+        );
+        candidate = worker();
+        candidate.accelerators.clear();
         assert_eq!(
             admit_compute_job(&spec(), &candidate, 200),
             Err(ComputeError::WorkerUnavailable)

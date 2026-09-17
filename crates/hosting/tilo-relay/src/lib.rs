@@ -97,9 +97,9 @@ pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use daemon::{Relay, RelayError, RelayHandle};
 pub use home_peer::{HomePeerRegistration, valid_home_peer_label};
 pub use mesh::{
-    DeviceMeshProfile, DeviceRole, Placement, PlacementRequest, PowerAvailability,
-    RemoteControlRoute, ReplicationIntent, ReplicationResource, ServerAdvertisement,
-    ServiceCapabilities, Workload, place, route_remote_control,
+    ComputeAccelerator, DeviceMeshProfile, DeviceRole, Placement, PlacementRequest,
+    PowerAvailability, RemoteControlRoute, ReplicationIntent, ReplicationResource,
+    ServerAdvertisement, ServiceCapabilities, Workload, place, route_remote_control,
 };
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
