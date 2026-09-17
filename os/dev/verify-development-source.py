@@ -25,7 +25,7 @@ ARCHITECTURES = {'x86_64': 'amd64', 'aarch64': 'arm64'}
 
 
 def inputs(source, target, architecture, revision):
-    selected = hardware.development_target(target)
+    selected = hardware.development_target(target, architecture)
     if not re.fullmatch(re.escape(selected['repository']) + r'@sha256:[0-9a-f]{64}', source):
         raise ValueError('source must be an immutable native image in the bound development repository')
     if architecture not in ARCHITECTURES or not re.fullmatch(r'[0-9a-f]{40}', revision):
