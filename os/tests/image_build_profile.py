@@ -136,6 +136,7 @@ done
 ''', executable=True)
         self.write('os/dev/sign-development-rootfs.py', '''import json,os,sys
 assert sys.argv[sys.argv.index('--rootfs-id') + 1] == 'sha256:''' + '1' * 64 + ''''
+assert sys.argv[sys.argv.index('--source-date-epoch') + 1] == '1700000000'
 if os.environ.get('TILO_TEST_SIGNER_FAIL') == 'exit': raise SystemExit(81)
 identity = 'mutable:tag' if os.environ.get('TILO_TEST_SIGNER_FAIL') == 'identity' else 'sha256:''' + '2' * 64 + ''''
 print(json.dumps({'signed_rootfs_id': identity}))

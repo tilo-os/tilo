@@ -313,6 +313,13 @@ trust and revision, sign the original loader externally, and add its verified
 signed companion through `os/Containerfile.development-loader`. Private keys
 never enter those build contexts. The existing sealing stages consume the
 resulting immutable image through a named `rootfs` context with pulling disabled.
+The helper requires an explicit `--source-date-epoch`; `build-image.sh` supplies
+its resolved `SOURCE_DATE_EPOCH`. The loader layer uses the same image and file
+timestamp normalization as the raw and final builds, avoiding wall-clock times
+in the inserted layer. Native fixtures check image creation time and the signed
+companion's installed modification time, then repeat production with the same
+authenticated signing output and require the same immutable image ID. This
+isolates layer reproducibility from any timestamps a signing provider embeds.
 
 This integration still requires native end-to-end acceptance, followed by signed
 disk and VM validation. The development container-only stop remains enabled.
