@@ -206,12 +206,14 @@ jobs:
               ;;
             http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*|\
             http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)
-              # The in-cluster Forgejo service is reached over the cluster's
-              # private network. Do not follow redirects from this allowlisted
-              # HTTP origin, and never permit arbitrary cleartext package URLs.
-              curl --proto '=http' --fail --retry 3 \
+              # Repository variables may be advanced by an in-cluster release
+              # runner, but large-disk runners do not resolve the service DNS.
+              # Preserve the package path while crossing the public TLS edge.
+              collection_public=${COLLECTION_URL/http:\/\/forgejo.forgejo.svc.cluster.local:3000/https:\/\/code.sandbox.example}
+              curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+                --fail --location --retry 3 \
                 --header "Authorization: Bearer $jwt" \
-                "$COLLECTION_URL" -o "$work/apps.tar.gz"
+                "$collection_public" -o "$work/apps.tar.gz"
               ;;
             *)
               printf 'unsupported app collection URL origin\n' >&2
@@ -298,8 +300,10 @@ jobs:
               ;;
             http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*|\
             http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)
-              curl --proto '=http' --fail --retry 3 \
-                --header "Authorization: Bearer $jwt" "$PAYLOAD_URL" \
+              payload_public=${PAYLOAD_URL/http:\/\/forgejo.forgejo.svc.cluster.local:3000/https:\/\/code.sandbox.example}
+              curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+                --fail --location --retry 3 \
+                --header "Authorization: Bearer $jwt" "$payload_public" \
                 --output "$work/desktop.tar.gz"
               ;;
             *)
