@@ -9,6 +9,7 @@
 //! agents all enter through the same brokered operation.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
 use ui::icons::Icon;
 
 use ui::search::{
@@ -30,10 +31,15 @@ pub const CONTACT_KIND: &str = "Contacts";
 #[derive(Clone)]
 pub struct ContactSearchProvider {
     catalog: SearchCatalog,
-    contacts: BTreeMap<ContactId, Contact>,
-    /// Canonical resource id → deterministic display spelling. Keeping this
-    /// separately from contacts means a group resolves even when it was not
-    /// included in the bounded contextual palette page.
+    lookup: Arc<RwLock<ContactSearchLookup>>,
+}
+
+/// Only the public label needed to resolve a search hit's canonical `open`
+/// action is retained beside the index. Full contacts remain authoritative in
+/// `ContactsApp`/the CRDT and exact edit resources are materialised there.
+#[derive(Default)]
+struct ContactSearchLookup {
+    contacts: BTreeMap<ContactId, String>,
     groups: BTreeMap<String, String>,
 }
 
@@ -42,50 +48,52 @@ impl ContactSearchProvider {
     pub fn new(store: &ContactStore) -> Self {
         let provider = Self {
             catalog: SearchCatalog::new(CONTACT_KIND),
-            contacts: store
-                .contacts
-                .iter()
-                .cloned()
-                .map(|contact| (contact.id, contact))
-                .collect(),
-            groups: crate::actions::ordered_groups(&store.contacts)
-                .into_iter()
-                .map(|name| (crate::actions::group_resource_id(&name), name))
-                .collect(),
+            lookup: Arc::new(RwLock::new(ContactSearchLookup::default())),
         };
-        // Browse pages use insertion order, so seed the catalogue in durable
-        // UUID order rather than incidental Automerge/map projection order.
-        for contact in provider.contacts.values() {
-            provider.index_contact(contact);
-        }
-        for group in provider.groups.values() {
-            provider.index_group(group);
-        }
+        provider
+            .refresh(store)
+            .expect("Contacts search index rows must have canonical addresses");
         provider
     }
 
-    fn index_contact(&self, contact: &Contact) {
-        let result = contact_result(contact);
-        let Some(address) = result.action_address() else {
-            return;
-        };
-        // NFC normalisation happens before the shared lowercasing/indexing
-        // layer, so a continuation cursor remains valid when callers switch
-        // between canonically equivalent Unicode spellings of the query.
-        let searchable = normalize_text(&searchable_fields(contact).join("\0"));
-        let _ = self.catalog.upsert(address.resource, searchable, result);
-    }
-
-    fn index_group(&self, group: &str) {
-        let result = group_result(group);
-        let Some(address) = result.action_address() else {
-            return;
-        };
-        // Prefixing the name helps people discover the filter through generic
-        // queries such as "group work", while the normalised name keeps direct
-        // matching equivalent to the in-app group picker.
-        let searchable = normalize_text(&format!("group {group}"));
-        let _ = self.catalog.upsert(address.resource, searchable, result);
+    /// Atomically replace the complete retained index. On error the prior
+    /// generation and exact lookup remain intact, so Ctrl+K never advertises
+    /// a partial book; callers can surface the diagnostic to the user.
+    pub fn refresh(&self, store: &ContactStore) -> Result<(), ui::search::SearchCatalogError> {
+        let mut lookup = ContactSearchLookup::default();
+        let mut rows = Vec::with_capacity(store.contacts.len());
+        for contact in &store.contacts {
+            let result = contact_result(contact);
+            let address = result
+                .action_address()
+                .expect("contact search result has a canonical action");
+            lookup.contacts.insert(contact.id, contact.display_name());
+            rows.push((
+                address.resource,
+                normalize_text(&searchable_fields(contact).join("\0")),
+                result,
+            ));
+        }
+        for group in crate::actions::ordered_groups(&store.contacts) {
+            let result = group_result(&group);
+            let address = result
+                .action_address()
+                .expect("group search result has a canonical action");
+            lookup
+                .groups
+                .insert(address.resource.clone(), group.clone());
+            rows.push((
+                address.resource,
+                normalize_text(&format!("group {group}")),
+                result,
+            ));
+        }
+        self.catalog.replace_all(rows)?;
+        *self
+            .lookup
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = lookup;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -170,13 +178,25 @@ impl SearchProvider for ContactSearchProvider {
     ) -> Option<tilo_actions::Resource> {
         if let Some(raw_id) = address.resource.strip_prefix("contacts.contact:") {
             let id = raw_id.parse::<ContactId>().ok()?;
-            let contact = self.contacts.get(&id)?;
+            let label = self
+                .lookup
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contacts
+                .get(&id)
+                .cloned()?;
             return (address == &crate::actions::open_contact_address(id))
-                .then(|| crate::actions::contact_resource(contact));
+                .then(|| crate::actions::contact_open_resource(id, &label));
         }
-        let group = self.groups.get(&address.resource)?;
-        (address == &crate::actions::open_group_address(group))
-            .then(|| crate::actions::group_resource(group))
+        let group = self
+            .lookup
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .groups
+            .get(&address.resource)
+            .cloned()?;
+        (address == &crate::actions::open_group_address(&group))
+            .then(|| crate::actions::group_resource(&group))
     }
 }
 

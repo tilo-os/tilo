@@ -50,7 +50,7 @@ use crate::doc::ContactsDoc;
 use crate::export_dialog::ExportDialog;
 use crate::model::{
     Address, Birthday, Contact, ContactId, ContactStore, GroupEntry, Labeled, SortKey,
-    group_names_equal, sample_contacts,
+    group_names_equal, normalize_text, sample_contacts,
 };
 use crate::responsive::{Pane, PushNav};
 use crate::vcard::{self, VCardVersion};
@@ -399,6 +399,17 @@ struct EditForm {
     inputs: Vec<FieldInput>,
 }
 
+/// Compact stable-id lookup and presentation order over the authoritative
+/// in-memory CRDT projection. It intentionally contains ids/positions and
+/// group spelling only; it is not a second contact-resource tree.
+#[derive(Default)]
+struct ContactsResourceIndex {
+    contacts: HashMap<ContactId, usize>,
+    ordered_contacts: Vec<ContactId>,
+    groups: HashMap<String, String>,
+    ordered_groups: Vec<String>,
+}
+
 impl EditForm {
     fn new(draft: Contact, is_new: bool) -> Self {
         let base = draft.clone();
@@ -708,6 +719,15 @@ struct Hit {
 )]
 pub struct ContactsApp {
     store: ContactStore,
+    resource_index: ContactsResourceIndex,
+    /// Retained complete Ctrl+K catalogue. A provider clone is O(1), so opening
+    /// search never reindexes or clones the address book.
+    search_provider: crate::search_provider::ContactSearchProvider,
+    search_heads: Vec<ChangeHash>,
+    #[cfg(test)]
+    resource_snapshot_materialized: Cell<usize>,
+    #[cfg(test)]
+    resource_exact_materialized: Cell<usize>,
     selected: Option<ContactId>,
     mode: Mode,
     form: Option<EditForm>,
@@ -864,10 +884,18 @@ impl ContactsApp {
     }
 
     fn configured(legacy_book: Option<PathBuf>, seed_samples: bool) -> Self {
+        let store = ContactStore::new();
         Self {
             legacy_book,
             seed_samples,
-            store: ContactStore::new(),
+            search_provider: crate::search_provider::ContactSearchProvider::new(&store),
+            store,
+            resource_index: ContactsResourceIndex::default(),
+            search_heads: Vec::new(),
+            #[cfg(test)]
+            resource_snapshot_materialized: Cell::new(0),
+            #[cfg(test)]
+            resource_exact_materialized: Cell::new(0),
             selected: None,
             mode: Mode::View,
             form: None,
@@ -1331,11 +1359,80 @@ impl ContactsApp {
         self.actions.last_dispatched()
     }
 
-    /// The context Ctrl+K needs to build the contacts resource tree: a snapshot
-    /// of the address book currently in the model.
+    fn rebuild_resource_index(&mut self) {
+        let mut index = ContactsResourceIndex::default();
+        for (position, contact) in self.store.contacts.iter().enumerate() {
+            index.contacts.insert(contact.id, position);
+        }
+        index.ordered_contacts = self
+            .store
+            .contacts
+            .iter()
+            .map(|contact| contact.id)
+            .collect();
+        index.ordered_contacts.sort_by(|left, right| {
+            let left = index
+                .contacts
+                .get(left)
+                .and_then(|position| self.store.contacts.get(*position));
+            let right = index
+                .contacts
+                .get(right)
+                .and_then(|position| self.store.contacts.get(*position));
+            match (left, right) {
+                (Some(left), Some(right)) => normalize_text(&left.display_name())
+                    .cmp(&normalize_text(&right.display_name()))
+                    .then_with(|| left.id.cmp(&right.id)),
+                _ => left.is_some().cmp(&right.is_some()),
+            }
+        });
+        for group in crate::actions::ordered_groups(&self.store.contacts) {
+            index.groups.insert(normalize_text(&group), group.clone());
+            index.ordered_groups.push(group);
+        }
+        self.resource_index = index;
+    }
+
+    fn refresh_search_provider(&mut self) {
+        match self.search_provider.refresh(&self.store) {
+            Ok(()) => self.search_heads.clone_from(&self.model_heads),
+            Err(error) => self.show_toast(format!("Contacts search update failed: {error}")),
+        }
+    }
+
+    /// The contextual Ctrl+K resource page is a bounded snapshot. It never
+    /// clones/sorts the entire address book merely because the palette opens.
     pub(crate) fn contacts_resource_ctx(&self) -> crate::actions::ContactsResourceCtx {
+        #[cfg(test)]
+        self.resource_snapshot_materialized.set(0);
         crate::actions::ContactsResourceCtx {
-            contacts: self.store.contacts.clone(),
+            contacts: self
+                .resource_index
+                .ordered_contacts
+                .iter()
+                .take(crate::actions::MAX_CONTEXT_CONTACT_RESOURCES)
+                .filter_map(|id| {
+                    self.resource_index
+                        .contacts
+                        .get(id)
+                        .and_then(|position| self.store.contacts.get(*position))
+                        .filter(|contact| contact.id == *id)
+                        .map(|contact| {
+                            #[cfg(test)]
+                            self.resource_snapshot_materialized
+                                .set(self.resource_snapshot_materialized.get().saturating_add(1));
+                            contact.clone()
+                        })
+                })
+                .collect(),
+            groups: self
+                .resource_index
+                .ordered_groups
+                .iter()
+                .take(crate::actions::MAX_CONTEXT_GROUP_RESOURCES)
+                .cloned()
+                .collect(),
+            contact_count: self.store.contacts.len(),
             import_busy: self.import_rx.is_some() || self.import_parse_rx.is_some(),
             export_busy: self.export_rx.is_some(),
             import_conflicts: self
@@ -1351,6 +1448,67 @@ impl ContactsApp {
                 })
                 .collect(),
         }
+    }
+
+    /// Exact resources read one validated contact/group from the authoritative
+    /// store via stable-id indices. A stale position is refused instead of
+    /// redirecting an action to whatever shifted into that vector slot.
+    pub(crate) fn exact_contacts_resource_ctx(
+        &self,
+        id: &str,
+    ) -> Option<crate::actions::ContactsResourceCtx> {
+        #[cfg(test)]
+        self.resource_exact_materialized.set(0);
+        let mut ctx = crate::actions::ContactsResourceCtx {
+            contacts: Vec::new(),
+            groups: Vec::new(),
+            contact_count: self.store.contacts.len(),
+            import_busy: self.import_rx.is_some() || self.import_parse_rx.is_some(),
+            export_busy: self.export_rx.is_some(),
+            import_conflicts: Vec::new(),
+        };
+        if id == "contacts.book" {
+            return Some(ctx);
+        }
+        if let Some(raw) = id.strip_prefix("contacts.contact:") {
+            let contact_id = raw.parse::<ContactId>().ok()?;
+            if crate::actions::contact_resource_id(contact_id) != id {
+                return None;
+            }
+            let position = *self.resource_index.contacts.get(&contact_id)?;
+            let contact = self
+                .store
+                .contacts
+                .get(position)
+                .filter(|contact| contact.id == contact_id)?
+                .clone();
+            #[cfg(test)]
+            self.resource_exact_materialized.set(1);
+            ctx.contacts.push(contact);
+            return Some(ctx);
+        }
+        if let Some(raw) = id.strip_prefix("contacts.group:") {
+            let group = self.resource_index.groups.get(raw)?.clone();
+            ctx.groups.push(group);
+            return Some(ctx);
+        }
+        if let Some(token) = id.strip_prefix("contacts.import-conflict:") {
+            let conflict = self
+                .import_conflicts
+                .iter()
+                .find(|conflict| conflict.token.to_string() == token)?;
+            ctx.import_conflicts
+                .push(crate::actions::ImportConflictResource {
+                    token: conflict.token.to_string(),
+                    incoming_name: conflict.incoming.display_name(),
+                    existing_name: self
+                        .store
+                        .get(conflict.existing)
+                        .map_or_else(|| "Deleted contact".into(), Contact::display_name),
+                });
+            return Some(ctx);
+        }
+        None
     }
 
     /// Whether the open edit form holds changes not yet written to the
@@ -4989,6 +5147,7 @@ impl Widget for ContactsApp {
             }
             self.seeded = true;
             self.model_heads = state.get_heads();
+            self.rebuild_resource_index();
             self.relayout = true;
             self.dirty = true;
         }
@@ -5002,6 +5161,7 @@ impl Widget for ContactsApp {
         if heads != self.model_heads {
             self.store.contacts = ContactsDoc::list_contacts(state);
             self.model_heads = heads;
+            self.rebuild_resource_index();
             if let Some(sel) = self.selected
                 && self.store.get(sel).is_none()
             {
@@ -5012,6 +5172,10 @@ impl Widget for ContactsApp {
         }
 
         crate::priority_contacts::publish_if_changed(&self.store);
+
+        if self.search_heads != self.model_heads {
+            self.refresh_search_provider();
+        }
 
         self.search.sync(state, path);
         if let Some(form) = &mut self.form {
@@ -5387,9 +5551,7 @@ impl Widget for ContactsApp {
     /// makes every contact findable there, alongside any actions the app
     /// exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::ContactSearchProvider::new(&self.store),
-        )]
+        vec![Box::new(self.search_provider.clone())]
     }
 
     fn get_rect(&self) -> Rect {
@@ -7978,6 +8140,64 @@ mod tests {
                 "selected chip edge must remain distinguishable from its pane"
             );
         }
+    }
+
+    #[test]
+    fn real_resource_provider_bounds_large_book_snapshot_and_exact_lookup() {
+        const LARGE: usize = 100_001;
+
+        let mut app = ContactsApp::sample();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        let template = app.store.contacts[0].clone();
+        app.store.contacts = (0..LARGE)
+            .map(|index| {
+                let mut contact = template.clone();
+                contact.id = uuid::Uuid::from_u128(7_000_000 + index as u128);
+                contact.first = format!("Contact {index}");
+                contact.last.clear();
+                contact.groups.clear();
+                contact
+            })
+            .collect();
+        let late_id = app.store.contacts.last().expect("late contact").id;
+        app.store
+            .contacts
+            .last_mut()
+            .expect("late contact")
+            .groups
+            .push(GroupEntry::new("Late group"));
+        app.rebuild_resource_index();
+
+        let root = <ContactsApp as qos_actions::ResourceProvider>::resources(&app, &doc);
+        assert_eq!(root.len(), 1);
+        assert!(
+            app.resource_snapshot_materialized.get()
+                <= crate::actions::MAX_CONTEXT_CONTACT_RESOURCES,
+            "root snapshot materialised {} contacts",
+            app.resource_snapshot_materialized.get()
+        );
+
+        let contact_id = crate::actions::contact_resource_id(late_id);
+        let contact =
+            <ContactsApp as qos_actions::ResourceProvider>::resource(&app, &doc, &contact_id)
+                .expect("late contact resolves through the real provider");
+        assert_eq!(contact.kind, "contacts.contact");
+        assert_eq!(app.resource_exact_materialized.get(), 1);
+
+        let group_id = crate::actions::group_resource_id("Late group");
+        let group = <ContactsApp as qos_actions::ResourceProvider>::resource(&app, &doc, &group_id)
+            .expect("late group resolves through the real provider");
+        assert_eq!(group.kind, "contacts.group");
+        assert_eq!(app.resource_exact_materialized.get(), 0);
+
+        app.store.contacts.pop();
+        assert!(
+            <ContactsApp as qos_actions::ResourceProvider>::resource(&app, &doc, &contact_id)
+                .is_none(),
+            "a stale exact id must not redirect to the preceding contact"
+        );
+        assert_eq!(app.resource_exact_materialized.get(), 0);
     }
 
     /// Contacts folds its address book into the unified Ctrl+K palette. A
