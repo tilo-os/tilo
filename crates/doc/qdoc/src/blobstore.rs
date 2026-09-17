@@ -236,6 +236,10 @@ struct RootWriteLock(std::fs::File);
 
 impl Drop for RootWriteLock {
     fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            let _ = self.0.unlock();
+        }
         #[cfg(unix)]
         {
             // The OS also releases this lock when a process dies.  Explicitly
@@ -281,7 +285,12 @@ impl FsBlobStore {
                 ));
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            file.lock()
+                .map_err(|error| BlobStoreError::Io(error.to_string()))?;
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             // Failing closed is preferable to claiming a process-wide quota
             // on a platform where this build has no interprocess lock.

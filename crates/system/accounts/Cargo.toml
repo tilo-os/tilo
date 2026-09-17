@@ -10,6 +10,7 @@ name = "accounts"
 path = "src/lib.rs"
 
 [dependencies]
+private-fs = { path = "../private-fs" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
 serde.workspace = true

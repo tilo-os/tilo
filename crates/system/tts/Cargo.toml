@@ -21,11 +21,13 @@ path = "src/lib.rs"
 # `ssip-client` (the only TTS dependency we link) is MIT OR Apache-2.0.
 
 [dependencies]
+thiserror.workspace = true
+log = "0.4"
+
+[target.'cfg(unix)'.dependencies]
 # Pure-Rust speech-dispatcher SSIP client. MIT OR Apache-2.0 — no C
 # linkage, no GPL propagation (speech-dispatcher sits behind the socket).
 ssip-client = "0.10"
-thiserror.workspace = true
-log = "0.4"
 
 [lints]
 workspace = true

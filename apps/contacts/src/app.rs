@@ -5011,6 +5011,7 @@ impl Widget for ContactsApp {
             self.dirty = true;
         }
 
+        #[cfg(unix)]
         crate::priority_contacts::publish_if_changed(&self.store);
 
         self.search.sync(state, path);
