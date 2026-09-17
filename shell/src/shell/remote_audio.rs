@@ -164,42 +164,61 @@ fn random_nonzero_u64(existing: &BTreeMap<u64, LocalAudioSelection>) -> u64 {
     }
 }
 
+fn reconcile_source_tokens(
+    state: &mut RemoteAudioState,
+    desired: Vec<LocalAudioSelection>,
+) -> Vec<RemoteAudioSourceView> {
+    state
+        .source_tokens
+        .retain(|_, existing| desired.contains(existing));
+    desired
+        .into_iter()
+        .map(|selection| {
+            let token = state
+                .source_tokens
+                .iter()
+                .find_map(|(token, existing)| (existing == &selection).then_some(*token))
+                .unwrap_or_else(|| {
+                    let token = random_nonzero_u64(&state.source_tokens);
+                    state.source_tokens.insert(token, selection.clone());
+                    token
+                });
+            let (label, application) = match selection {
+                LocalAudioSelection::System => ("All system audio".into(), false),
+                LocalAudioSelection::Application { label, .. } => (label, true),
+            };
+            RemoteAudioSourceView {
+                token,
+                label,
+                application,
+            }
+        })
+        .collect()
+}
+
 /// Refresh the shell-owned source picker. Tokens are process-local and are
-/// replaced on every snapshot, so neither apps nor peers ever see node ids.
+/// retained only while their freshly enumerated source and focus binding stay
+/// available, so neither apps nor peers ever see node ids.
 pub fn snapshot(focus: Option<&PhysicalGamepadBinding>) -> RemoteAudioView {
     let graph = media::audio::enumerate();
     let Ok(mut state) = state().lock() else {
         return RemoteAudioView::default();
     };
-    state.source_tokens.clear();
-    let system_token = random_nonzero_u64(&state.source_tokens);
-    state
-        .source_tokens
-        .insert(system_token, LocalAudioSelection::System);
-    let mut sources = vec![RemoteAudioSourceView {
-        token: system_token,
-        label: "All system audio".into(),
-        application: false,
-    }];
+    let mut desired = vec![LocalAudioSelection::System];
     if let Some(focus) = focus {
         for stream in graph.playback_streams.into_iter().take(64) {
-            let token = random_nonzero_u64(&state.source_tokens);
             let label = stream.label();
-            state.source_tokens.insert(
-                token,
-                LocalAudioSelection::Application {
-                    serial: stream.serial,
-                    label: label.clone(),
-                    focus: focus.clone(),
-                },
-            );
-            sources.push(RemoteAudioSourceView {
-                token,
+            let selection = LocalAudioSelection::Application {
+                serial: stream.serial,
                 label,
-                application: true,
-            });
+                focus: focus.clone(),
+            };
+            if !desired.contains(&selection) {
+                desired.push(selection);
+            }
         }
     }
+    let sources = reconcile_source_tokens(&mut state, desired);
     let mut routes = state
         .outbound
         .iter()
@@ -880,5 +899,36 @@ mod tests {
         };
         assert!(!selection_focus_valid(&selection, Some(&other)));
         assert!(!selection_focus_valid(&selection, None));
+    }
+
+    #[test]
+    fn picker_tokens_survive_refresh_only_while_the_source_binding_exists() {
+        let focus = PhysicalGamepadBinding {
+            app_id: "dev.tilo.music".into(),
+            workspace_id: "work".into(),
+            session_id: "surface-1".into(),
+        };
+        let application = LocalAudioSelection::Application {
+            serial: 42,
+            label: "Music".into(),
+            focus,
+        };
+        let desired = vec![LocalAudioSelection::System, application.clone()];
+        let mut state = RemoteAudioState::default();
+        let first = reconcile_source_tokens(&mut state, desired.clone());
+        let refreshed = reconcile_source_tokens(&mut state, desired);
+        assert_eq!(first, refreshed);
+        assert_eq!(state.source_tokens.len(), 2);
+
+        let without_application =
+            reconcile_source_tokens(&mut state, vec![LocalAudioSelection::System]);
+        assert_eq!(without_application.len(), 1);
+        assert_eq!(state.source_tokens.len(), 1);
+        assert!(
+            !state
+                .source_tokens
+                .values()
+                .any(|source| source == &application)
+        );
     }
 }
