@@ -137,6 +137,11 @@ impl UnixCapnpClient {
             // SOCK_STREAM Unix socket. We checked F_GETFD on it before
             // this call (via service_fd) so the slot is at least open.
             let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+            // The launcher clears CLOEXEC only for the initial app exec. Once
+            // the SDK owns the connection, later children must not retain it.
+            fcntl(&owned, nix::fcntl::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC))
+                .map_err(io::Error::from)
+                .map_err(NotAvailable::ConnectionFailed)?;
             let std_stream = std::os::unix::net::UnixStream::from(owned);
             std_stream
                 .set_nonblocking(true)
@@ -278,3 +283,5 @@ mod tests {
 
 #[cfg(unix)]
 pub mod fd_transport;
+
+pub mod native;

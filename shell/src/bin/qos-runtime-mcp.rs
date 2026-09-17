@@ -1,22 +1,50 @@
-//! Native stdio MCP host for one persistent shared-runtime profile.
+//! Persistent native runtime and stdio MCP entry point.
+use shell::runtime_host::{daemon, mcp_process};
+use std::{ffi::OsString, io, path::Path};
 
-use shell::runtime_host::mcp_process::{parse_args, prepare_profile_environment, run};
-
-fn main() -> std::process::ExitCode {
-    let result = parse_args(std::env::args_os().skip(1)).and_then(|args| {
-        let environment = prepare_profile_environment(&args.profile)?;
-        for (name, path) in environment {
-            // SAFETY: main has not created a runtime, broker, reader thread or
-            // child process. This is the executable's single-threaded startup
-            // boundary; no reusable serving function mutates the environment.
-            unsafe { std::env::set_var(name, path) };
-        }
+fn configure_profile(profile: &Path) -> io::Result<()> {
+    for (name, path) in mcp_process::prepare_profile_environment(profile)? {
+        // SAFETY: this executable has not started any threads. Reusable host
+        // code never mutates the environment; applications receive Command env.
+        unsafe { std::env::set_var(name, path) };
+    }
+    Ok(())
+}
+fn run() -> io::Result<()> {
+    let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
+    // Legacy manifest invocation remains an independently owned stdio session.
+    if arguments
+        .iter()
+        .take_while(|argument| *argument != "--" && *argument != "--run-app")
+        .any(|argument| argument == "--apps")
+    {
+        let args = mcp_process::parse_args(arguments)?;
+        configure_profile(&args.profile)?;
         let _ = tracing_subscriber::fmt()
             .with_writer(std::io::stderr)
             .try_init();
-        run(&args.profile, &args.apps)
-    });
-    match result {
+        return mcp_process::run(&args.profile, &args.apps);
+    }
+    let args = daemon::parse_args(arguments)?;
+    if args.mode == daemon::Mode::Daemon {
+        daemon::validate_profile(&args.profile)?;
+        configure_profile(&args.profile)?;
+    }
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .try_init();
+    match args.mode {
+        daemon::Mode::Daemon => daemon::serve(&args.profile),
+        daemon::Mode::Connect => daemon::connect(&args.profile),
+        daemon::Mode::RunApp {
+            app_id,
+            executable,
+            args: app_args,
+        } => daemon::run_app(&args.profile, &app_id, &executable, &app_args),
+    }
+}
+fn main() -> std::process::ExitCode {
+    match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("qos-runtime-mcp: {error}");
