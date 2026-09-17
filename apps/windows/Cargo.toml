@@ -28,6 +28,7 @@ winit.workspace = true
 taffy.workspace = true
 compat-service = { path = "../../crates/windows/compat-service" }
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
+bounded-command = { path = "../../crates/system/bounded-command" }
 
 [dev-dependencies]
 tempfile.workspace = true

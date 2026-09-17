@@ -386,6 +386,259 @@ pub struct ChannelHandle {
     inner: Rc<collab_capnp::channel_handle::Client>,
 }
 
+/// Maximum encoded size of one Nearby Send control command or reply. Transfer
+/// bytes never use this lane; the shell's existing resumable object transport
+/// owns payload delivery.
+pub const MAX_NEARBY_TRANSFER_WIRE_BYTES: usize = 64 * 1024;
+/// Maximum certified devices returned to one picker snapshot.
+pub const MAX_NEARBY_TRANSFER_TARGETS: usize = 32;
+pub const MAX_NEARBY_TRANSFER_DESTINATIONS: usize = 16;
+/// Maximum active/recent transfers returned to one status snapshot.
+pub const MAX_NEARBY_TRANSFER_STATUSES: usize = 128;
+/// Maximum UTF-8 byte length of a device label or rejection reason.
+pub const MAX_NEARBY_TRANSFER_LABEL_BYTES: usize = 256;
+/// Maximum UTF-8 byte length of a portable transfer display name.
+pub const MAX_NEARBY_TRANSFER_NAME_BYTES: usize = 512;
+/// Maximum raw byte length of one exact Files source path.
+pub const MAX_NEARBY_TRANSFER_PATH_BYTES: usize = 4_096;
+
+/// A short-lived shell capability naming one picker target. It deliberately
+/// carries no cryptographic peer identity and has no authority outside the
+/// authenticated app connection that received it.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct NearbyTargetHandle([u8; 16]);
+
+impl NearbyTargetHandle {
+    /// Wrap random bytes freshly issued by the shell's authenticated broker.
+    pub fn from_issued_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    /// Return the opaque bytes for equality, serialization, and stable action ids.
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+
+    /// Whether this is a structurally valid shell-issued handle.
+    pub fn valid(self) -> bool {
+        self.0 != [0; 16]
+    }
+}
+
+/// A short-lived shell capability naming one transfer for one authenticated
+/// Files connection. It is never the transport's global transfer identity.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct NearbyTransferHandle([u8; 16]);
+
+impl NearbyTransferHandle {
+    /// Wrap random bytes freshly issued by the shell's authenticated broker.
+    pub fn from_issued_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    /// Return opaque bytes for equality and serialization.
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+
+    /// Whether this is a structurally valid shell-issued handle.
+    pub fn valid(self) -> bool {
+        self.0 != [0; 16]
+    }
+}
+
+/// A short-lived shell capability naming one receiver destination for one
+/// authenticated Files connection. Applications never receive its host path.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct NearbyDestinationHandle([u8; 16]);
+
+impl NearbyDestinationHandle {
+    pub fn from_issued_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+
+    pub fn valid(self) -> bool {
+        self.0 != [0; 16]
+    }
+}
+
+/// Path-free receiver destination projected from this Files instance's
+/// current writable grants.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NearbyTransferDestination {
+    pub handle: NearbyDestinationHandle,
+    pub label: String,
+    pub remembered_for_session: bool,
+}
+
+/// A certified personal-device target safe to show in an application picker.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NearbyTransferTarget {
+    pub handle: NearbyTargetHandle,
+    pub label: String,
+    pub online: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NearbyTransferDirection {
+    Sending,
+    Receiving,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NearbyTransferPhase {
+    AwaitingConsent,
+    AwaitingDestination,
+    Queued,
+    Transferring,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// Bounded status projection. Paths and file contents are deliberately absent:
+/// receiver UI needs a portable display name, exact peer and byte progress.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NearbyTransferStatus {
+    pub handle: NearbyTransferHandle,
+    pub name: String,
+    pub device_label: String,
+    pub direction: NearbyTransferDirection,
+    pub phase: NearbyTransferPhase,
+    pub transferred_bytes: u64,
+    pub total_bytes: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NearbyTransferSnapshot {
+    pub targets: Vec<NearbyTransferTarget>,
+    pub destinations: Vec<NearbyTransferDestination>,
+    pub transfers: Vec<NearbyTransferStatus>,
+}
+
+/// Commands accepted by the shell-owned Nearby Send authority. `source_path`
+/// is raw Unix path bytes so a valid file never becomes inaccessible merely
+/// because its name is not UTF-8. The broker accepts `Send` only from the
+/// certified Files application and revalidates the exact target and source.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum NearbyTransferCommand {
+    Snapshot,
+    Send {
+        target: NearbyTargetHandle,
+        source_path: Vec<u8>,
+    },
+    Decide {
+        handle: NearbyTransferHandle,
+        accept: bool,
+        destination: Option<NearbyDestinationHandle>,
+        remember_for_session: bool,
+    },
+    Cancel {
+        handle: NearbyTransferHandle,
+    },
+    Retry {
+        handle: NearbyTransferHandle,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "result", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum NearbyTransferReply {
+    Snapshot { snapshot: NearbyTransferSnapshot },
+    Queued { handle: NearbyTransferHandle },
+    Accepted,
+    Rejected { reason: String },
+}
+
+impl NearbyTransferCommand {
+    /// Structural validation shared by clients and the shell broker. This is
+    /// deliberately independent of authorization: the broker must still bind
+    /// the app, source path, transfer id and device to its live route.
+    pub fn valid(&self) -> bool {
+        match self {
+            Self::Snapshot => true,
+            Self::Decide {
+                handle,
+                accept,
+                destination,
+                remember_for_session,
+            } => {
+                handle.valid()
+                    && if *accept {
+                        destination.is_some_and(NearbyDestinationHandle::valid)
+                    } else {
+                        destination.is_none() && !remember_for_session
+                    }
+            }
+            Self::Cancel { handle } | Self::Retry { handle } => handle.valid(),
+            Self::Send {
+                target,
+                source_path,
+            } => {
+                target.valid()
+                    && !source_path.is_empty()
+                    && source_path.len() <= MAX_NEARBY_TRANSFER_PATH_BYTES
+                    && !source_path.contains(&0)
+            }
+        }
+    }
+}
+
+impl NearbyTransferReply {
+    /// Validate the bounded, path-free status projection returned by a broker.
+    pub fn valid(&self) -> bool {
+        match self {
+            Self::Snapshot { snapshot } => {
+                snapshot.targets.len() <= MAX_NEARBY_TRANSFER_TARGETS
+                    && snapshot.destinations.len() <= MAX_NEARBY_TRANSFER_DESTINATIONS
+                    && snapshot.transfers.len() <= MAX_NEARBY_TRANSFER_STATUSES
+                    && snapshot.targets.iter().all(|target| {
+                        target.handle.valid()
+                            && !target.label.is_empty()
+                            && target.label.len() <= MAX_NEARBY_TRANSFER_LABEL_BYTES
+                    })
+                    && snapshot.destinations.iter().all(|destination| {
+                        destination.handle.valid()
+                            && !destination.label.is_empty()
+                            && destination.label.len() <= MAX_NEARBY_TRANSFER_LABEL_BYTES
+                    })
+                    && snapshot.transfers.iter().all(|transfer| {
+                        !transfer.name.is_empty()
+                            && transfer.name.len() <= MAX_NEARBY_TRANSFER_NAME_BYTES
+                            && !transfer.device_label.is_empty()
+                            && transfer.device_label.len() <= MAX_NEARBY_TRANSFER_LABEL_BYTES
+                            && transfer.transferred_bytes <= transfer.total_bytes
+                    })
+            }
+            Self::Queued { handle } => handle.valid(),
+            Self::Accepted => true,
+            Self::Rejected { reason } => {
+                !reason.is_empty() && reason.len() <= MAX_NEARBY_TRANSFER_LABEL_BYTES
+            }
+        }
+    }
+}
+
 impl ChannelHandle {
     /// Ask the broker to direct one current route holder to publish a complete
     /// document snapshot for this late joiner.
@@ -421,6 +674,57 @@ impl ChannelHandle {
         request.get().set_command_json(command_json);
         let reply = request.send().promise.await?;
         Ok(reply.get()?.get_reply_json()?.to_vec())
+    }
+
+    /// Submit one bounded Nearby Send control command. File contents remain on
+    /// the existing shell-owned resumable transport; this request carries only
+    /// picker/status/consent control data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker disconnects, rejects malformed
+    /// Cap'n Proto data, or returns an oversized/invalid typed reply.
+    pub async fn nearby_transfer_command(
+        &self,
+        app_id: &str,
+        command: &NearbyTransferCommand,
+    ) -> Result<NearbyTransferReply, NotAvailable> {
+        if !command.valid() {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "invalid nearby transfer command".into(),
+            )));
+        }
+        let command_json = serde_json::to_vec(command).map_err(|error| {
+            NotAvailable::Capnp(capnp::Error::failed(format!(
+                "encode nearby transfer command: {error}"
+            )))
+        })?;
+        if command_json.len() > MAX_NEARBY_TRANSFER_WIRE_BYTES {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "nearby transfer command exceeds wire bound".into(),
+            )));
+        }
+        let mut request = self.inner.nearby_transfer_command_request();
+        request.get().set_app_id(app_id);
+        request.get().set_command_json(&command_json);
+        let reply = request.send().promise.await?;
+        let bytes = reply.get()?.get_reply_json()?;
+        if bytes.len() > MAX_NEARBY_TRANSFER_WIRE_BYTES {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "nearby transfer reply exceeds wire bound".into(),
+            )));
+        }
+        let decoded: NearbyTransferReply = serde_json::from_slice(bytes).map_err(|error| {
+            NotAvailable::Capnp(capnp::Error::failed(format!(
+                "decode nearby transfer reply: {error}"
+            )))
+        })?;
+        if !decoded.valid() {
+            return Err(NotAvailable::Capnp(capnp::Error::failed(
+                "invalid nearby transfer reply".into(),
+            )));
+        }
+        Ok(decoded)
     }
 
     /// Subscribe to lifecycle edges addressed to this exact application
@@ -2003,6 +2307,11 @@ impl PresenceHandle {
     /// Publish or clear (`text == ""`) the local participant's short status.
     /// The broker authenticates authorship; `automatic` is presentation
     /// provenance, not authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
     pub async fn publish_status(
         &self,
         key_bytes: &[u8],
@@ -2382,5 +2691,96 @@ mod tests {
             Err(other) => panic!("unexpected error: {other:?}"),
             Ok(_) => panic!("expected ServiceFdMissing"),
         }
+    }
+
+    #[test]
+    fn nearby_transfer_contract_is_bounded_and_path_bytes_are_opaque() {
+        let command = NearbyTransferCommand::Send {
+            target: NearbyTargetHandle::from_issued_bytes([7; 16]),
+            source_path: vec![b'/', b't', b'm', b'p', b'/', 0xff],
+        };
+        assert!(command.valid());
+        let encoded = serde_json::to_vec(&command).expect("encode nearby command");
+        assert!(encoded.len() < MAX_NEARBY_TRANSFER_WIRE_BYTES);
+        assert_eq!(
+            serde_json::from_slice::<NearbyTransferCommand>(&encoded).expect("decode command"),
+            command
+        );
+
+        assert!(
+            !NearbyTransferCommand::Send {
+                target: NearbyTargetHandle::from_issued_bytes([7; 16]),
+                source_path: vec![b'a', 0, b'b'],
+            }
+            .valid()
+        );
+        assert!(
+            NearbyTransferCommand::Decide {
+                handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
+                accept: true,
+                destination: Some(NearbyDestinationHandle::from_issued_bytes([9; 16])),
+                remember_for_session: true,
+            }
+            .valid()
+        );
+        assert!(
+            !NearbyTransferCommand::Decide {
+                handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
+                accept: true,
+                destination: None,
+                remember_for_session: false,
+            }
+            .valid()
+        );
+        assert!(
+            !NearbyTransferCommand::Send {
+                target: NearbyTargetHandle::from_issued_bytes([7; 16]),
+                source_path: vec![b'a'; MAX_NEARBY_TRANSFER_PATH_BYTES + 1],
+            }
+            .valid()
+        );
+    }
+
+    #[test]
+    fn nearby_transfer_snapshot_rejects_unbounded_or_impossible_progress() {
+        let target = NearbyTransferTarget {
+            handle: NearbyTargetHandle::from_issued_bytes([3; 16]),
+            label: "Travel laptop".into(),
+            online: true,
+        };
+        let transfer = NearbyTransferStatus {
+            handle: NearbyTransferHandle::from_issued_bytes([4; 16]),
+            name: "Photos".into(),
+            device_label: target.label.clone(),
+            direction: NearbyTransferDirection::Sending,
+            phase: NearbyTransferPhase::Transferring,
+            transferred_bytes: 20,
+            total_bytes: 100,
+        };
+        let reply = NearbyTransferReply::Snapshot {
+            snapshot: NearbyTransferSnapshot {
+                targets: vec![target],
+                destinations: vec![NearbyTransferDestination {
+                    handle: NearbyDestinationHandle::from_issued_bytes([5; 16]),
+                    label: "Workspace files".into(),
+                    remembered_for_session: false,
+                }],
+                transfers: vec![transfer.clone()],
+            },
+        };
+        assert!(reply.valid());
+
+        let mut impossible = transfer;
+        impossible.transferred_bytes = 101;
+        assert!(
+            !NearbyTransferReply::Snapshot {
+                snapshot: NearbyTransferSnapshot {
+                    targets: Vec::new(),
+                    destinations: Vec::new(),
+                    transfers: vec![impossible],
+                },
+            }
+            .valid()
+        );
     }
 }

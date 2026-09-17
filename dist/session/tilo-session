@@ -85,6 +85,18 @@ journal_startup_failure() {
             --level-prefix=false >/dev/null 2>&1 || true
 }
 
+# A compositor return without the private logout marker is never a successful
+# desktop logout, even when a bug in the compositor happens to return status 0.
+# Preserve a non-zero compositor status verbatim, but turn a silent zero into a
+# failure and leave one stable journal breadcrumb for post-login diagnosis.
+journal_unexpected_shell_exit() {
+    status=$1
+    printf 'tilo-session: compositor exited without a logout request (exit status %s)\n' \
+        "$status" |
+        "$SYSTEMD_CAT" --identifier=tilo-session --priority=err \
+            --level-prefix=false >/dev/null 2>&1 || true
+}
+
 # The user manager is shared by every login of this Unix account.  Normally a
 # display manager has stopped the prior desktop's graphical targets before it
 # invokes us, but a killed wrapper or a failed logout can leave them active.
@@ -225,5 +237,10 @@ set -e
 shell_pid=
 if [ -e "$logout_request" ]; then
     status=0
+else
+    journal_unexpected_shell_exit "$status"
+    if [ "$status" = 0 ]; then
+        status=1
+    fi
 fi
 exit "$status"

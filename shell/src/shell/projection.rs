@@ -13,11 +13,15 @@
 use std::fmt;
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::time::Duration;
 
 pub use tilo_projector::{
     DisplayResolutionLimit, DisplayStreamPolicy, ProjectionDevice, ProjectionMode,
     ProjectionOptions, ProjectionProtocol,
 };
+
+const PROJECTOR_OUTPUT_LIMIT: usize = 1024 * 1024;
+const PROJECTOR_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectionStatus {
@@ -81,18 +85,25 @@ impl SystemProjectionBackend {
         }
     }
 
-    fn run(&self, args: &[&str], credential: Option<&str>) -> Result<std::process::Output, String> {
+    fn run(
+        &self,
+        args: &[&str],
+        credential: Option<&str>,
+    ) -> Result<bounded_command::Output, String> {
         let mut command = Command::new(&self.helper);
         command.args(args);
         if let Some(credential) = credential {
             command.env("TILO_PROJECTION_CREDENTIAL", credential);
         }
-        command.output().map_err(|e| {
-            format!("Projection service is unavailable ({e}). Check the Tilo projector service.")
-        })
+        bounded_command::run_prepared(command, None, PROJECTOR_OUTPUT_LIMIT, PROJECTOR_TIMEOUT)
+            .map_err(|e| {
+                format!(
+                    "Projection service is unavailable ({e}). Check the Tilo projector service."
+                )
+            })
     }
 
-    fn checked(&self, args: &[&str]) -> Result<std::process::Output, String> {
+    fn checked(&self, args: &[&str]) -> Result<bounded_command::Output, String> {
         self.checked_with_credential(args, None)
     }
 
@@ -100,16 +111,21 @@ impl SystemProjectionBackend {
         &self,
         args: &[&str],
         credential: Option<&str>,
-    ) -> Result<std::process::Output, String> {
+    ) -> Result<bounded_command::Output, String> {
         let out = self.run(args, credential)?;
         if out.status.success() {
             Ok(out)
         } else {
-            let message = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let message = String::from_utf8_lossy(&out.stderr)
+                .chars()
+                .filter(|character| !character.is_control() || *character == ' ')
+                .take(512)
+                .collect::<String>();
+            let message = message.trim();
             Err(if message.is_empty() {
                 format!("Projection service exited with {}", out.status)
             } else {
-                message
+                message.to_owned()
             })
         }
     }

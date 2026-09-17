@@ -12,7 +12,11 @@ out=$(realpath -m "$3")
 case "$architecture" in x86_64|aarch64) ;; *) exit 2 ;; esac
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-source_epoch=${SOURCE_DATE_EPOCH:-$(git -C "$repo_root" log -1 --format=%ct)}
+source_epoch=${SOURCE_DATE_EPOCH:-0}
+[[ $source_epoch =~ ^[0-9]+$ ]] || {
+    printf 'SOURCE_DATE_EPOCH must be a non-negative integer\n' >&2
+    exit 2
+}
 source_revision=${GITHUB_SHA:-$(git -C "$repo_root" rev-parse HEAD)}
 work=$(mktemp -d)
 cleanup() { rm -rf -- "$work"; }

@@ -13,11 +13,9 @@
 )]
 
 use std::ffi::OsStr;
-use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 use image::{DynamicImage, GrayImage, ImageFormat, Luma, imageops};
 use serde::{Deserialize, Serialize};
@@ -371,109 +369,48 @@ fn recognize_path_with_program_args_timeout(
     timeout: Duration,
 ) -> Result<Document, Error> {
     validate_language(language)?;
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(program_args)
         .arg(path)
         .arg("stdout")
         .arg("-l")
         .arg(language)
-        .arg("tsv")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                Error::Unavailable
-            } else {
-                Error::Io(error)
-            }
-        })?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| Error::Engine("OCR output stream was unavailable".into()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| Error::Engine("OCR error stream was unavailable".into()))?;
-    let stdout_rx = read_stream_bounded(stdout, MAX_TSV_BYTES);
-    let stderr_rx = read_stream_bounded(stderr, MAX_ENGINE_STDERR_BYTES);
-    let started = Instant::now();
-    let (status, stdout) = 'process: loop {
-        if let Ok(result) = stdout_rx.try_recv() {
-            let bytes = result?;
-            if bytes.len() > MAX_TSV_BYTES {
-                terminate(&mut child);
-                return Err(Error::Engine("OCR output exceeded the safety limit".into()));
-            }
-            if let Some(status) = child.try_wait()? {
-                break (status, bytes);
-            }
-            // The reader reached EOF just before the process became waitable.
-            // Keep polling without allocating any more output.
-            loop {
-                if let Some(status) = child.try_wait()? {
-                    break 'process (status, bytes);
-                }
-                if started.elapsed() >= timeout {
-                    terminate(&mut child);
-                    return Err(Error::Engine("OCR engine timed out".into()));
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
+        .arg("tsv");
+    let output = bounded_command::run_prepared_with_limits(
+        command,
+        None,
+        MAX_TSV_BYTES,
+        MAX_ENGINE_STDERR_BYTES,
+        timeout,
+    )
+    .map_err(|error| match error {
+        bounded_command::Error::Process(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Error::Unavailable
         }
-        if let Some(status) = child.try_wait()? {
-            let bytes = stdout_rx
-                .recv()
-                .map_err(|_| Error::Engine("OCR output reader stopped unexpectedly".into()))??;
-            break (status, bytes);
-        }
-        if started.elapsed() >= timeout {
-            terminate(&mut child);
-            return Err(Error::Engine("OCR engine timed out".into()));
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    // The process may become waitable before the reader notification wins the
-    // race above (notably after its writer receives SIGPIPE at our bound).
-    // Enforce the same limit on the joined path so an oversized stream can
-    // never be misreported as a generic engine exit.
-    if stdout.len() > MAX_TSV_BYTES {
-        terminate(&mut child);
-        return Err(Error::Engine("OCR output exceeded the safety limit".into()));
-    }
-    let stderr = stderr_rx
-        .recv()
-        .map_err(|_| Error::Engine("OCR error reader stopped unexpectedly".into()))??;
-    if !status.success() {
+        bounded_command::Error::Process(error) => Error::Io(error),
+        bounded_command::Error::OutputTooLarge {
+            stream: "stdout", ..
+        } => Error::Engine("OCR output exceeded the safety limit".into()),
+        bounded_command::Error::OutputTooLarge {
+            stream: "stderr", ..
+        } => Error::Engine("OCR diagnostics exceeded the safety limit".into()),
+        bounded_command::Error::Timeout(_) => Error::Engine("OCR engine timed out".into()),
+        _ => Error::Engine("OCR engine process failed".into()),
+    })?;
+    if !output.status.success() {
         return Err(Error::Engine(
-            String::from_utf8_lossy(&stderr)
+            String::from_utf8_lossy(&output.stderr)
                 .trim()
                 .chars()
+                .filter(|character| {
+                    !character.is_control() || matches!(character, ' ' | '\n' | '\t')
+                })
                 .take(500)
                 .collect(),
         ));
     }
-    parse_tsv(&String::from_utf8_lossy(&stdout), language)
-}
-
-fn read_stream_bounded(
-    reader: impl Read + Send + 'static,
-    limit: usize,
-) -> mpsc::Receiver<Result<Vec<u8>, std::io::Error>> {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let take = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
-        let result = reader.take(take).read_to_end(&mut bytes).map(|_| bytes);
-        let _ = tx.send(result);
-    });
-    rx
-}
-
-fn terminate(child: &mut std::process::Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+    parse_tsv(&String::from_utf8_lossy(&output.stdout), language)
 }
 
 fn validate_language(language: &str) -> Result<(), Error> {
@@ -604,6 +541,7 @@ fn parse_tsv_bounded(
 mod tests {
     use super::*;
     use std::fmt::Write as _;
+    use std::time::Instant;
 
     #[cfg(unix)]
     fn fake_engine(body: &str, timeout: Duration) -> Result<Document, Error> {
@@ -912,13 +850,13 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn noisy_successful_engine_cannot_deadlock_the_bounded_stderr_reader() {
-        let result = fake_engine(
+    fn noisy_successful_engine_fails_closed_without_deadlocking() {
+        let error = fake_engine(
             "(yes diagnostic | head -c 100000 >&2) || :; printf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n5\\t1\\t1\\t1\\t1\\t1\\t0\\t0\\t12\\t8\\t99\\tDone\\n'",
             Duration::from_secs(2),
         )
-        .unwrap();
-        assert_eq!(result.plain_text(), "Done");
+        .unwrap_err();
+        assert!(matches!(error, Error::Engine(message) if message.contains("diagnostics")));
     }
 
     #[cfg(unix)]

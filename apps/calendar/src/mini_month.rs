@@ -8,16 +8,12 @@
 use std::collections::HashSet;
 
 use chrono::{Datelike, NaiveDate};
-use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{Color, Fill};
 
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-
 use crate::app::{center_text, draw_chevron};
 use crate::date;
-use crate::draw_util::{fill_round, stroke_line, stroke_round};
+use crate::draw_util::{PaintContext, fill_round, stroke_line, stroke_round};
 
 const RESERVED_HEIGHT: f64 = 196.0;
 const BOTTOM_INSET: f64 = 12.0;
@@ -34,6 +30,16 @@ const CELL_HEIGHT: f64 = 22.0;
 pub(crate) enum Outcome {
     SelectDate(NaiveDate),
     ShiftMonth(i32),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct MiniMonthModel<'a> {
+    pub(crate) sidebar: Rect,
+    pub(crate) occupied_until: f64,
+    pub(crate) anchor: NaiveDate,
+    pub(crate) today: NaiveDate,
+    pub(crate) event_dates: &'a HashSet<NaiveDate>,
+    pub(crate) pointer: Point,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -62,22 +68,25 @@ impl MiniMonth {
     /// Paint the component if `occupied_until` has not entered its reserved
     /// footer band. Targets are rebuilt from the same layout used for drawing.
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "the component paints one compact header and one fixed 42-cell grid; keeping the shared geometry in one pass makes its targets and pixels visibly correspond"
     )]
     pub(crate) fn draw(
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        sidebar: Rect,
-        occupied_until: f64,
-        anchor: NaiveDate,
-        today: NaiveDate,
-        event_dates: &HashSet<NaiveDate>,
-        pointer: Point,
+        paint: &mut PaintContext<'_>,
+        model: &MiniMonthModel<'_>,
     ) -> Vec<(Rect, Outcome)> {
+        let scene = &mut *paint.scene;
+        let transform = paint.transform;
+        let text = &mut *paint.text;
+        let theme = paint.theme;
+        let MiniMonthModel {
+            sidebar,
+            occupied_until,
+            anchor,
+            today,
+            event_dates,
+            pointer,
+        } = *model;
         let Some(layout) = Self::layout(sidebar, occupied_until) else {
             return Vec::new();
         };

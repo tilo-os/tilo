@@ -3,6 +3,7 @@
 # user's PAM session; it owns the corresponding systemd --user target for
 # exactly as long as the compositor lives.
 set -euo pipefail
+ulimit -c 0
 
 readonly SYSTEMCTL=/usr/bin/systemctl
 readonly SHELL_BIN=/usr/bin/shell

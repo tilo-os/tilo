@@ -7,8 +7,9 @@
 //! ├── user-identity/
 //! │   ├── pubkey.bin      # 32-byte Ed25519 public key (present on every device)
 //! │   └── privkey.bin     # 32-byte Ed25519 secret seed (ONLY on primary devices)
+//! ├── device-private/
+//! │   └── keypair.bin     # 32-byte Ed25519 secret seed (per-device, always present)
 //! └── device/
-//!     ├── keypair.bin     # 32-byte Ed25519 secret seed (per-device, always present)
 //!     ├── cert.bin        # legacy/default postcard-encoded `DeviceCert`
 //!     └── certs/          # one certificate per user identity trusted by this device
 //! ```
@@ -25,19 +26,41 @@
 //! additionally be group-readable ([`DEVICE_KEY_MODE`]) but never
 //! reachable by anyone outside that group.
 
+#[cfg(unix)]
+use std::ffi::CString;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ed25519_dalek::SigningKey;
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 use crate::CanonicalError;
 use crate::cert::DeviceCert;
 
-/// Sequence for same-directory temporary device-key claim files.  Final
-/// ownership comes from the no-clobber hard link, not this name; `create_new`
+const MAX_DEVICE_CERT_BYTES: usize = 64 * 1024;
+
+fn protect_secret_process() -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        // A caller that loads identity key material must not leave it eligible
+        // for ptrace/core-dump capture, even when invoked outside the shipped
+        // systemd units. It remains disabled unless the caller deliberately
+        // re-enables it; shipped services independently enforce RLIMIT_CORE=0.
+        // SAFETY: PR_SET_DUMPABLE consumes scalar arguments only.
+        if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Sequence for same-directory temporary device-key claim files. Final
+/// ownership comes from the no-clobber rename, not this name; `create_new`
 /// only makes a stale temporary file impossible to overwrite.
 static DEVICE_KEY_CLAIM_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -51,7 +74,7 @@ pub struct IdentityPaths {
     pub user_pubkey: std::path::PathBuf,
     /// `<root>/user-identity/privkey.bin`
     pub user_privkey: std::path::PathBuf,
-    /// `<root>/device/keypair.bin`
+    /// `<root>/device-private/keypair.bin`
     pub device_privkey: std::path::PathBuf,
     /// `<root>/device/cert.bin`
     pub device_cert: std::path::PathBuf,
@@ -70,7 +93,7 @@ impl IdentityPaths {
         Self {
             user_pubkey: root.join("user-identity/pubkey.bin"),
             user_privkey: root.join("user-identity/privkey.bin"),
-            device_privkey: root.join("device/keypair.bin"),
+            device_privkey: root.join("device-private/keypair.bin"),
             device_cert: root.join("device/cert.bin"),
         }
     }
@@ -88,6 +111,9 @@ impl IdentityPaths {
         if let Some(parent) = self.device_privkey.parent() {
             fs::create_dir_all(parent)?;
         }
+        if let Some(parent) = self.device_cert.parent() {
+            fs::create_dir_all(parent)?;
+        }
         Ok(())
     }
 
@@ -98,7 +124,7 @@ impl IdentityPaths {
     /// preserves that one-device invariant without crossing identities.
     pub fn device_cert_for_user(&self, user_public_key: &[u8; 32]) -> std::path::PathBuf {
         let device_dir = self
-            .device_privkey
+            .device_cert
             .parent()
             .unwrap_or_else(|| Path::new("device"));
         device_dir
@@ -126,6 +152,14 @@ pub enum PersistError {
         /// The mode we found (raw `st_mode & 0o777`).
         mode: u32,
     },
+    /// A private key inode is reachable through another directory entry.
+    #[error("secret file {path} has {links} hard links; expected exactly one")]
+    InsecureLinkCount {
+        /// Key path whose opened inode had multiple names.
+        path: String,
+        /// Number of directory entries referencing the inode.
+        links: u64,
+    },
     /// An Ed25519 key file was not 32 bytes.
     #[error("expected 32-byte Ed25519 key, got {0} bytes")]
     WrongKeyLength(usize),
@@ -142,7 +176,7 @@ pub enum PersistError {
 /// [`PersistError::WrongKeyLength`] if the file is not exactly 32
 /// bytes.
 pub fn read_public_key(path: &Path) -> Result<[u8; 32], PersistError> {
-    let bytes = fs::read(path)?;
+    let bytes = read_regular_bounded(path, 32)?;
     if bytes.len() != 32 {
         return Err(PersistError::WrongKeyLength(bytes.len()));
     }
@@ -151,14 +185,53 @@ pub fn read_public_key(path: &Path) -> Result<[u8; 32], PersistError> {
     Ok(out)
 }
 
-/// Write a 32-byte Ed25519 public key to disk. Mode is left at the
-/// filesystem default (typically 0644) — public keys are non-secret.
+/// Read one authorization artifact without following its final symlink or
+/// accepting a blocking device/FIFO. The byte after `limit` is consumed only
+/// to distinguish an exact-size artifact from an oversized one.
+fn read_regular_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, PersistError> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "authorization artifact is not a regular file: {}",
+                path.display()
+            ),
+        )));
+    }
+    let mut bytes = Vec::with_capacity(limit.saturating_add(1));
+    file.take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "authorization artifact {} exceeds {limit} bytes",
+                path.display()
+            ),
+        )));
+    }
+    Ok(bytes)
+}
+
+/// Atomically write a 32-byte Ed25519 public key to disk. Mode is left at the
+/// filesystem default (typically 0644) — public keys are non-secret. Atomic
+/// replacement avoids both partial trust roots and following a final symlink.
 ///
 /// # Errors
 ///
 /// Returns an error if writing to `path` fails.
 pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
-    fs::write(path, pubkey)
+    path.parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
+    atomic_file::write(path, pubkey)
 }
 
 /// Read a 32-byte Ed25519 signing key from disk, enforcing 0600
@@ -175,19 +248,52 @@ pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
 /// cannot be read, or [`PersistError::WrongKeyLength`] if it is not
 /// exactly 32 bytes.
 pub fn read_signing_key(path: &Path) -> Result<SigningKey, PersistError> {
-    ensure_secret_mode(path)?;
-    signing_key_from_file(path)
+    signing_key_from_file(path, 0o077)
 }
 
 /// The length check and expansion shared by every secret-key reader.
 /// The mode policy is the caller's — see [`read_signing_key`] and
 /// [`read_device_key`].
-fn signing_key_from_file(path: &Path) -> Result<SigningKey, PersistError> {
-    let bytes = fs::read(path)?;
+fn signing_key_from_file(path: &Path, forbidden_mode: u32) -> Result<SigningKey, PersistError> {
+    protect_secret_process()?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Inspect and read the same opened inode. A separate metadata(path)
+        // followed by read(path) lets an attacker exchange a checked private
+        // file for a symlink between the two operations.
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("secret key is not a regular file: {}", path.display()),
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        reject_metadata_mode(path, &metadata, forbidden_mode)?;
+        if metadata.nlink() != 1 {
+            return Err(PersistError::InsecureLinkCount {
+                path: path.display().to_string(),
+                links: metadata.nlink(),
+            });
+        }
+    }
+
+    // Read one byte beyond the only valid size so a malicious pseudo-file or
+    // oversized secret is rejected without an unbounded allocation.
+    let mut bytes = Zeroizing::new(Vec::with_capacity(33));
+    file.take(33).read_to_end(&mut bytes)?;
     if bytes.len() != 32 {
         return Err(PersistError::WrongKeyLength(bytes.len()));
     }
-    let mut seed = [0u8; 32];
+    let mut seed = Zeroizing::new([0u8; 32]);
     seed.copy_from_slice(&bytes);
     Ok(SigningKey::from_bytes(&seed))
 }
@@ -199,12 +305,14 @@ fn signing_key_from_file(path: &Path) -> Result<SigningKey, PersistError> {
 /// Returns an error if `path` has no parent directory, or if the
 /// atomic write fails.
 pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
+    protect_secret_process()?;
     // A partial write must leave the previous secret intact, and the mode is
     // set on the temp file so the key is never briefly world-readable at its
     // final path.
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    atomic_file::write_with_mode(path, &sk.to_bytes(), 0o600)
+    let seed = Zeroizing::new(sk.to_bytes());
+    atomic_file::write_with_mode(path, seed.as_ref(), 0o600)
 }
 
 /// Mode the device key is stored with: owner read/write, group read,
@@ -231,8 +339,7 @@ pub const DEVICE_KEY_MODE: u32 = 0o640;
 /// [`PersistError::Io`] if it cannot be read, or
 /// [`PersistError::WrongKeyLength`] if it is not exactly 32 bytes.
 pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
-    ensure_not_world_accessible(path)?;
-    signing_key_from_file(path)
+    signing_key_from_file(path, 0o007)
 }
 
 /// Write the device key with [`DEVICE_KEY_MODE`], atomically.
@@ -242,9 +349,11 @@ pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
 /// Returns an error if `path` has no parent directory, or if the
 /// atomic write fails.
 pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
+    protect_secret_process()?;
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    atomic_file::write_with_mode(path, &sk.to_bytes(), DEVICE_KEY_MODE)
+    let seed = Zeroizing::new(sk.to_bytes());
+    atomic_file::write_with_mode(path, seed.as_ref(), DEVICE_KEY_MODE)
 }
 
 /// Whether [`load_or_create_device_key`] found a key or minted one.
@@ -288,6 +397,7 @@ pub enum DeviceKeyOutcome {
 pub fn load_or_create_device_key(
     paths: &IdentityPaths,
 ) -> Result<(SigningKey, DeviceKeyOutcome), PersistError> {
+    protect_secret_process()?;
     let path = paths.device_privkey.as_path();
     match fs::metadata(path) {
         Ok(_) => Ok((read_device_key(path)?, DeviceKeyOutcome::Loaded)),
@@ -318,25 +428,60 @@ pub fn load_or_create_device_key(
 /// rename correctly replaces a file for ordinary updates, but device-key
 /// creation must never replace a key another first-login process just made.
 /// The candidate is fully written and synced under a unique same-directory
-/// temporary name, then `hard_link` atomically claims the final name only if
-/// it is still absent.  A caller that loses returns `Ok(false)` and must load
-/// the winner from disk.
+/// temporary name, then Linux `renameat2(RENAME_NOREPLACE)` atomically claims
+/// the final name only if it is still absent. Unlike a hard-link claim, the
+/// private key is never briefly reachable through two names. A caller that
+/// loses returns `Ok(false)` and must load the winner from disk.
 fn publish_device_key_no_clobber(path: &Path, key: &SigningKey) -> Result<bool, PersistError> {
+    protect_secret_process()?;
     let parent = path.parent().ok_or_else(|| {
         PersistError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
             "device-key path has no parent",
         ))
     })?;
-    let temp = create_device_key_claim_temp(parent, &key.to_bytes())?;
-    let claim = fs::hard_link(&temp, path);
-    let _ = fs::remove_file(&temp);
+    let destination = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "device-key path contains a NUL byte",
+        ))
+    })?;
+    // Validate the caller-controlled final path before persisting a temporary
+    // secret. Otherwise an invalid NUL-containing basename would strand the
+    // complete candidate in the shared identity directory.
+    let seed = Zeroizing::new(key.to_bytes());
+    let temp = create_device_key_claim_temp(parent, &seed)?;
+    let source = CString::new(temp.as_os_str().as_bytes()).map_err(|_| {
+        let _ = fs::remove_file(&temp);
+        PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "device-key temporary path contains a NUL byte",
+        ))
+    })?;
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    let claim = if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    };
+    if claim.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
 
     match claim {
         Ok(()) => {
             // The key contents reached storage before the directory entry was
             // published.  Sync the parent as well, so a successful first boot
-            // survives a power loss after the hard-link claim.
+            // survives a power loss after the no-clobber rename.
             fs::File::open(parent)?.sync_all()?;
             Ok(true)
         }
@@ -408,6 +553,7 @@ pub fn adopt_device_key(
     paths: &IdentityPaths,
     seed: &[u8; 32],
 ) -> Result<SigningKey, PersistError> {
+    protect_secret_process()?;
     let path = paths.device_privkey.as_path();
     paths.ensure_directories()?;
     let sk = SigningKey::from_bytes(seed);
@@ -431,7 +577,7 @@ pub fn adopt_device_key(
 /// [`PersistError::Canonical`] if the bytes do not decode as a
 /// `DeviceCert`.
 pub fn read_device_cert(path: &Path) -> Result<DeviceCert, PersistError> {
-    let bytes = fs::read(path)?;
+    let bytes = read_regular_bounded(path, MAX_DEVICE_CERT_BYTES)?;
     let cert: DeviceCert = crate::canonical::from_canonical_bytes(&bytes)?;
     Ok(cert)
 }
@@ -474,20 +620,13 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 #[cfg(unix)]
-fn ensure_secret_mode(path: &Path) -> Result<(), PersistError> {
-    reject_modes(path, 0o077)
-}
-
-/// Weaker policy, for a secret deliberately shared with a group: no
-/// access at all for users outside it.
-fn ensure_not_world_accessible(path: &Path) -> Result<(), PersistError> {
-    reject_modes(path, 0o007)
-}
-
-fn reject_modes(path: &Path, forbidden: u32) -> Result<(), PersistError> {
+fn reject_metadata_mode(
+    path: &Path,
+    metadata: &fs::Metadata,
+    forbidden: u32,
+) -> Result<(), PersistError> {
     use std::os::unix::fs::PermissionsExt;
-    let meta = fs::metadata(path)?;
-    let mode = meta.permissions().mode() & 0o777;
+    let mode = metadata.permissions().mode() & 0o777;
     if mode & forbidden != 0 {
         return Err(PersistError::InsecurePermissions {
             path: path.display().to_string(),
@@ -497,16 +636,19 @@ fn reject_modes(path: &Path, forbidden: u32) -> Result<(), PersistError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn ensure_secret_mode(_path: &Path) -> Result<(), PersistError> {
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use ed25519_dalek::Signer;
     use std::sync::{Arc, Barrier};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn secret_operations_make_the_process_non_dumpable() {
+        protect_secret_process().expect("disable identity core dumps");
+        // SAFETY: PR_GET_DUMPABLE consumes scalar arguments only.
+        assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) }, 0);
+    }
 
     #[test]
     fn public_key_round_trip() {
@@ -516,6 +658,23 @@ mod tests {
         write_public_key(&path, &key).unwrap();
         let back = read_public_key(&path).unwrap();
         assert_eq!(key, back);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authorization_artifacts_never_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("pubkey.bin");
+        let link = tmp.path().join("linked-pubkey.bin");
+        fs::write(&real, [7_u8; 32]).unwrap();
+        symlink(&real, &link).unwrap();
+        assert!(matches!(read_public_key(&link), Err(PersistError::Io(_))));
+
+        write_public_key(&link, &[8_u8; 32]).unwrap();
+        assert_eq!(fs::read(&real).unwrap(), [7_u8; 32]);
+        assert_eq!(read_public_key(&link).unwrap(), [8_u8; 32]);
     }
 
     #[cfg(unix)]
@@ -550,6 +709,40 @@ mod tests {
         match read_signing_key(&path).unwrap_err() {
             PersistError::InsecurePermissions { mode, .. } => assert_eq!(mode, 0o644),
             other => panic!("expected InsecurePermissions, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn signing_key_never_follows_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real.key");
+        let link = tmp.path().join("linked.key");
+        let (sk, _pk) = crate::UserIdentity::generate("Alice", 1);
+        write_signing_key(&real, &sk).unwrap();
+        symlink(&real, &link).unwrap();
+
+        match read_signing_key(&link).unwrap_err() {
+            PersistError::Io(error) => assert_eq!(error.raw_os_error(), Some(libc::ELOOP)),
+            other => panic!("expected symlink refusal, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn signing_key_rejects_an_inode_with_multiple_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("private.key");
+        let alias = tmp.path().join("unexpected-alias.key");
+        let sk = SigningKey::from_bytes(&[9_u8; 32]);
+        write_signing_key(&path, &sk).unwrap();
+        fs::hard_link(&path, &alias).unwrap();
+
+        match read_signing_key(&path).unwrap_err() {
+            PersistError::InsecureLinkCount { links, .. } => assert_eq!(links, 2),
+            other => panic!("expected hard-link refusal, got {other:?}"),
         }
     }
 
@@ -632,6 +825,22 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn device_key_rejects_an_inode_with_multiple_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(tmp.path());
+        let (_, outcome) = load_or_create_device_key(&paths).unwrap();
+        assert_eq!(outcome, DeviceKeyOutcome::Created);
+        let alias = tmp.path().join("device-key-alias.bin");
+        fs::hard_link(&paths.device_privkey, &alias).unwrap();
+
+        match read_device_key(&paths.device_privkey).unwrap_err() {
+            PersistError::InsecureLinkCount { links, .. } => assert_eq!(links, 2),
+            other => panic!("expected hard-link refusal, got {other:?}"),
+        }
+    }
+
     /// The relaxation is scoped to the device key. A user-scoped secret
     /// still has to be owner-only — the group that reads the device key
     /// has no business reading the user's own signing key.
@@ -670,6 +879,11 @@ mod tests {
             second.verifying_key().to_bytes(),
             "the device identity must survive a restart"
         );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(fs::metadata(&paths.device_privkey).unwrap().nlink(), 1);
+        }
     }
 
     #[test]
@@ -749,6 +963,11 @@ mod tests {
 
         let adopted = adopt_device_key(&paths, &seed).unwrap();
         assert_eq!(adopted.to_bytes(), seed);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(fs::metadata(&paths.device_privkey).unwrap().nlink(), 1);
+        }
         let (loaded, outcome) = load_or_create_device_key(&paths).unwrap();
         assert_eq!(outcome, DeviceKeyOutcome::Loaded);
         assert_eq!(loaded.to_bytes(), seed);
@@ -770,6 +989,7 @@ mod tests {
         let paths = IdentityPaths::under(tmp.path());
         paths.ensure_directories().unwrap();
         assert!(tmp.path().join("user-identity").is_dir());
+        assert!(tmp.path().join("device-private").is_dir());
         assert!(tmp.path().join("device").is_dir());
     }
 }

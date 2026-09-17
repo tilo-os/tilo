@@ -33,6 +33,7 @@
 
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -667,15 +668,25 @@ pub trait GraphControl: Send + Sync {
 /// Run `bin` with `args`, mapping a missing binary or non-zero exit to the
 /// daemon's error string — the same best-effort shape `os_actions` uses.
 fn run(bin: &str, args: &[String]) -> Result<(), String> {
-    let out = Command::new(bin)
-        .args(args)
-        .output()
-        .map_err(|e| format!("{bin} not available: {e}"))?;
+    let mut command = Command::new(bin);
+    command.args(args);
+    let out = bounded_command::run_prepared(command, None, 64 * 1024, Duration::from_secs(3))
+        .map_err(|e| format!("{bin} control failed: {e}"))?;
     if out.status.success() {
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        Err(sanitize_diagnostic(&out.stderr))
     }
+}
+
+fn sanitize_diagnostic(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
+        .take(512)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Production [`GraphControl`]: `wpctl` for defaults + per-node volume/mute,
@@ -751,7 +762,13 @@ pub struct RealEnumerator;
 
 impl AudioEnumerator for RealEnumerator {
     fn enumerate(&self) -> AudioGraph {
-        let Ok(out) = Command::new("pw-dump").output() else {
+        let Ok(out) = bounded_command::run(
+            "pw-dump",
+            &[],
+            None,
+            8 * 1024 * 1024,
+            Duration::from_secs(5),
+        ) else {
             return AudioGraph::default();
         };
         if !out.status.success() {

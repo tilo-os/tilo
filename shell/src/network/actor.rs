@@ -2200,6 +2200,8 @@ async fn register_content_peer(registration: tilo_relay::ContentPeerRegistration
         .arg(&cache_dir)
         .arg("--endpoint-stdin")
         .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
         .spawn()
     {
@@ -2268,6 +2270,10 @@ async fn unregister_content_peers_for_relay(relay: EndpointId) -> bool {
             .arg(cache_dir)
             .arg("--relay-service-id")
             .arg(hex::encode(relay.as_bytes()))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
             .status(),
     )
     .await

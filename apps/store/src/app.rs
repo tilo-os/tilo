@@ -208,10 +208,13 @@ fn device_state_label(item: &StoreItem) -> String {
                 version,
                 available,
                 pinned,
+                user_managed,
             },
         ) => format!(
             "Cached {version} · available {available}\n{}",
-            if *pinned {
+            if !*user_managed {
+                "Provided by the system"
+            } else if *pinned {
                 "Kept on this device"
             } else {
                 "Not kept · cache may be reclaimed"
@@ -963,6 +966,18 @@ impl StoreApp {
         self
     }
 
+    /// Share the retained action/search catalogue with the serialized worker.
+    /// The worker updates it before publishing a UI snapshot, which keeps
+    /// refresh indexing out of the render/input path.
+    #[must_use]
+    pub fn with_search_index(
+        mut self,
+        search_index: crate::search_provider::StoreSearchIndex,
+    ) -> Self {
+        self.search_index = search_index;
+        self
+    }
+
     pub fn take_lifecycle_actions(
         &mut self,
     ) -> Vec<(String, ActionKind, tilo_actions::InvocationId)> {
@@ -1155,11 +1170,32 @@ impl StoreApp {
         self.structure_dirty = true;
     }
 
+    /// Apply a detail snapshot whose retained search projection was already
+    /// prepared by the serialized Store worker.  Catalogue-wide indexing is
+    /// intentionally never part of a frame-time snapshot drain.
+    pub fn set_detail_from_worker(&mut self, detail: StoreItem) {
+        if let Some(item) = self.items.iter_mut().find(|item| item.id == detail.id) {
+            *item = detail.clone();
+        } else {
+            self.items.push(detail.clone());
+        }
+        self.focused_detail = Some(detail.id);
+        self.structure_dirty = true;
+    }
+
     /// Replace the item feed. Idempotent — the widget re-derives its
     /// category chip row from `items` on the next `build_layout`.
     pub fn set_items(&mut self, items: Vec<StoreItem>) {
         self.items = items;
         self.search_index.sync(&self.items);
+        self.structure_dirty = true;
+    }
+
+    /// Apply a worker snapshot without rebuilding the retained search
+    /// directory on the UI thread. [`Self::set_items`] remains the
+    /// synchronous, self-contained constructor/test path.
+    pub fn set_items_from_worker(&mut self, items: Vec<StoreItem>) {
+        self.items = items;
         self.structure_dirty = true;
     }
 
@@ -4690,6 +4726,7 @@ impl Widget for StoreApp {
 mod tests {
     use super::*;
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
+    use ui::search::SearchProvider;
 
     fn item(name: &str, source: StoreSource, cat: &str, installed: InstalledState) -> StoreItem {
         let trust = match &source {
@@ -4742,6 +4779,7 @@ mod tests {
                     version: "1".into(),
                     available: "1".into(),
                     pinned: false,
+                    user_managed: true,
                 },
             ),
             item("Chess", StoreSource::Flathub, "Games", InstalledState::Not),
@@ -4753,6 +4791,36 @@ mod tests {
     fn visible_items_show_everything_when_filter_is_all() {
         let app = seeded_app();
         assert_eq!(app.visible_items().len(), 3);
+    }
+
+    #[test]
+    fn worker_snapshot_does_not_reindex_on_the_ui_thread() {
+        let index = crate::search_provider::StoreSearchIndex::default();
+        let mut app = StoreApp::new().with_search_index(index.clone());
+        let indexed = item(
+            "Indexed catalogue row",
+            StoreSource::Flathub,
+            "Utilities",
+            InstalledState::Not,
+        );
+        let rendered = item(
+            "Rendered worker snapshot",
+            StoreSource::Flathub,
+            "Utilities",
+            InstalledState::Not,
+        );
+
+        // The worker publishes the retained directory before its snapshot.
+        // If `set_items_from_worker` ever silently rebuilt it, this assertion
+        // would instead find the rendered row and reintroduce refresh work to
+        // the frame path.
+        index.sync(&[indexed]);
+        app.set_items_from_worker(vec![rendered]);
+
+        assert_eq!(app.items()[0].name, "Rendered worker snapshot");
+        let hits = index.provider().search("Indexed catalogue row");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Indexed catalogue row");
     }
 
     #[test]
@@ -5300,6 +5368,7 @@ mod tests {
             version: "1".into(),
             available: "1".into(),
             pinned: false,
+            user_managed: true,
         };
         app.set_flatpak_available(false);
         let doc = AutoCommit::new();
@@ -5483,6 +5552,7 @@ mod tests {
             version: "1".into(),
             available: "1".into(),
             pinned: false,
+            user_managed: true,
         };
         let resource = store_app_resource(
             app.items.iter().find(|item| item.id == "id.chess").unwrap(),

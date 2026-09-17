@@ -172,10 +172,17 @@ RPMS_REF="${_tilo_rpms_ref_override:-${RPMS_REF:-}}"
 # The digest-pinned tilo-kernel image (built by .forgejo/workflows/build-kernel.yml
 # — see os/kernel/Containerfile).  os/Containerfile swaps kernel-core →
 # tilo-kernel-core out of it.  Cross-time reproducible.
-# shellcheck disable=SC1091
+# An explicit digest is useful while validating a newly published kernel, but
+# it is held to the same repository and signature policy as the tracked pin.
 _tilo_kernel_ref_override="${KERNEL_RPMS_REF:-}"
+# shellcheck disable=SC1091
 [ -f "$TILO_OS_DIR/kernel-snapshot.env" ] && . "$TILO_OS_DIR/kernel-snapshot.env"
-KERNEL_RPMS_REF="${_tilo_kernel_ref_override:-${KERNEL_RPMS_REF:-}}"
+case "$(uname -m)" in
+  x86_64) _tilo_native_kernel_ref="${KERNEL_RPMS_X86_64_REF:-}"; _tilo_registry_arch=amd64 ;;
+  aarch64) _tilo_native_kernel_ref="${KERNEL_RPMS_AARCH64_REF:-}"; _tilo_registry_arch=arm64 ;;
+  *) die "unsupported kernel architecture: $(uname -m)" ;;
+esac
+KERNEL_RPMS_REF="${_tilo_kernel_ref_override:-$_tilo_native_kernel_ref}"
 [ -n "${KERNEL_RPMS_REF:-}" ] || die "no KERNEL_RPMS_REF — run the build-kernel CI job (or podman build -f os/kernel/Containerfile) first"
 # Pre-flight: every host-side COPY source exists. Decidable in a second, and the
 # alternative is finding out ~20 minutes in from a message naming a path with a
@@ -197,6 +204,67 @@ KERNEL_RPMS_REF="${_tilo_kernel_ref_override:-${KERNEL_RPMS_REF:-}}"
 # Both of these check what a build would produce, so they have nothing to say
 # about an image that already exists.
 if [ "$TILO_SKIP_BUILD" != "1" ]; then
+if [ "${TILO_PUBLIC_TRUST_MODE:-production}" = production ]; then
+[[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]] \
+  || die "RPMS_REF must pin code.podesta.ai/qos/rpms by sha256 digest"
+command -v cosign >/dev/null || die "building an OS image requires cosign to verify the frozen RPM repository"
+_tilo_rpms_digest="${RPMS_REF##*@}"
+_tilo_package_set_sha256="$({ "$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch x86_64; "$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch aarch64; } | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
+_tilo_native_package_set_sha256="$("$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch "$(uname -m)" | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
+_tilo_rpms_provenance="$(cosign verify-attestation \
+  --key "$TILO_REPO/keys/cosign.pub" --type slsaprovenance1 "$RPMS_REF")" \
+  || die "frozen RPM provenance verification failed"
+cosign verify --key "$TILO_REPO/keys/cosign.pub" "$RPMS_REF" >/dev/null \
+  || die "frozen RPM signature verification failed"
+printf '%s' "$_tilo_rpms_provenance" | jq -e \
+  --arg digest "$_tilo_rpms_digest" --arg base "$BASE_REF" \
+  --arg package_set_sha256 "$_tilo_package_set_sha256" \
+  --arg native_package_set_sha256 "$_tilo_native_package_set_sha256" \
+  --arg native_arch "$_tilo_registry_arch" '
+    [.[].payload | @base64d | fromjson | .predicate]
+    | any(
+        .buildDefinition.buildType == "https://tilo.dev/buildtypes/frozen-rpm-index/v1"
+        and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
+        and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
+        and .buildDefinition.externalParameters.packageSetSha256ByArchitecture[$native_arch] == $native_package_set_sha256
+        and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
+        and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
+      )
+  ' >/dev/null || die "frozen RPM provenance does not bind its package set, digest, base, and architectures"
+command -v skopeo >/dev/null || die "building an OS image requires skopeo to inspect signed build inputs"
+_tilo_rpms_platforms="$(skopeo inspect --raw "docker://$RPMS_REF" | jq -c \
+  '[.manifests[].platform | {os,architecture}] | sort_by(.architecture)')" \
+  || die "could not inspect the frozen RPM index"
+[ "$_tilo_rpms_platforms" = '[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]' ] \
+  || die "frozen RPM index does not contain exactly amd64 and arm64"
+[[ "$KERNEL_RPMS_REF" =~ ^code\.podesta\.ai/qos/qos-kernel@sha256:[0-9a-f]{64}$ ]] \
+  || die "KERNEL_RPMS_REF must pin code.podesta.ai/qos/qos-kernel by sha256 digest"
+command -v cosign >/dev/null || die "building an OS image requires cosign to verify the Tilo kernel"
+cosign verify --key "$TILO_REPO/keys/cosign.pub" "$KERNEL_RPMS_REF" >/dev/null \
+  || die "Tilo kernel signature verification failed"
+_tilo_kernel_digest="${KERNEL_RPMS_REF##*@}"
+_tilo_kernel_provenance="$(cosign verify-attestation \
+  --key "$TILO_REPO/keys/cosign.pub" --type slsaprovenance1 "$KERNEL_RPMS_REF")" \
+  || die "Tilo kernel provenance verification failed"
+printf '%s' "$_tilo_kernel_provenance" | jq -e \
+  --arg digest "$_tilo_kernel_digest" --arg architecture "$(uname -m)" \
+  --arg base "$BASE_REF" --arg rpms "$RPMS_REF" '
+    [.[].payload | @base64d | fromjson | .predicate]
+    | any(
+        .buildDefinition.buildType == "https://tilo.dev/buildtypes/kernel-rpm/v1"
+        and .buildDefinition.externalParameters.architecture == $architecture
+        and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
+        and any(.buildDefinition.resolvedDependencies[]?;
+          .uri | test("^git\\+ssh://code\\.podesta\\.ai/tilo/tilo@[0-9a-f]{40}$"))
+        and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
+        and any(.buildDefinition.resolvedDependencies[]?; .uri == $rpms)
+      )
+  ' >/dev/null || die "Tilo kernel provenance does not bind its source, architecture, digest, base, and RPM inputs"
+_tilo_kernel_arch="$(skopeo inspect "docker://$KERNEL_RPMS_REF" | jq -er .Architecture)" \
+  || die "could not inspect the signed Tilo kernel architecture"
+[ "$_tilo_kernel_arch" = "$_tilo_registry_arch" ] \
+  || die "signed Tilo kernel architecture is $_tilo_kernel_arch, expected $_tilo_registry_arch"
+fi # Production provenance; development inputs have independent pinned receipts.
 bash "$TILO_OS_DIR/dev/verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF" \
   || die "the frozen RPM snapshot does not match the current Containerfiles"
 bash "$TILO_OS_DIR/tests/containerfile_sources.sh" >/dev/null \

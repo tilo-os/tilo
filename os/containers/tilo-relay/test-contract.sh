@@ -59,7 +59,7 @@ need "$entrypoint" "/usr/bin/tilo-relay"
 need "$entrypoint" "/usr/bin/tilo-enroll join"
 need "$entrypoint" "/usr/bin/tilo-enroll pair"
 need "$entrypoint" "/var/lib/tilo-relay/decommissioned"
-need "$entrypoint" "exec sleep infinity"
+need "$entrypoint" "exec /usr/bin/busybox sleep infinity"
 need "$entrypoint" "wait -n"
 
 echo "tilo-relay container contract: PASS"

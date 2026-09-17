@@ -88,6 +88,8 @@ systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 systemctl --user start tilo-graphical-session.target
 systemd-cat --identifier=tilo-session --level-prefix=false $work/shell --host-desktop-session --firstboot --backend drm
 shell --host-desktop-session --firstboot --backend drm
+systemd-cat --identifier=tilo-session --priority=err --level-prefix=false
+tilo-session: compositor exited without a logout request (exit status 7)
 systemctl --user stop tilo-graphical-session.target
 dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
@@ -96,7 +98,11 @@ cmp "$work/expected" "$log"
 ! grep -Fq 'must-not-be-logged' "$log"
 
 : >"$log"
+set +e
 TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_PREDECESSOR=1 "$work/tilo-session"
+status=$?
+set -e
+[[ $status == 1 ]]
 cat >"$work/expected-predecessor" <<EOF
 systemctl --user is-active --quiet tilo-graphical-session.target
 systemctl --user is-active --quiet graphical-session.target
@@ -107,6 +113,8 @@ systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 systemctl --user start tilo-graphical-session.target
 systemd-cat --identifier=tilo-session --level-prefix=false $work/shell --host-desktop-session --firstboot --backend drm
 shell --host-desktop-session --firstboot --backend drm
+systemd-cat --identifier=tilo-session --priority=err --level-prefix=false
+tilo-session: compositor exited without a logout request (exit status 0)
 systemctl --user stop tilo-graphical-session.target
 dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
@@ -132,6 +140,7 @@ grep -Fqx 'shell-term' "$log"
 # being killed alongside `loginctl terminate-session self`.
 : >"$log"
 TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_REQUEST_LOGOUT=1 "$work/tilo-session"
+! grep -Fq 'compositor exited without a logout request' "$log"
 grep -Fqx 'systemctl --user stop tilo-graphical-session.target' "$log"
 grep -Fqx 'dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=' "$log"
 grep -Fqx 'systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE' "$log"

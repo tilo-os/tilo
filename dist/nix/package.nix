@@ -19,7 +19,6 @@
 , mesa
 , pipewire
 , dbus
-, openssl
 , fontconfig
 , freetype
 , harfbuzz
@@ -60,7 +59,7 @@ rustPlatform.buildRustPackage rec {
   nativeBuildInputs = [ pkg-config cmake clang capnproto makeWrapper ];
   buildInputs = [
     libxkbcommon wayland seatd libinput systemd libdrm mesa pipewire dbus
-    openssl fontconfig freetype harfbuzz fuse3
+    fontconfig freetype harfbuzz fuse3
     gst_all_1.gstreamer gst_all_1.gst-plugins-base
   ];
   # Bindgen executes on the build machine even when the package's host
@@ -120,7 +119,7 @@ rustPlatform.buildRustPackage rec {
 
   meta = {
     description = "Tilo collaborative compositor as a Wayland session";
-    homepage = "https://code.podesta.ai/qos/tilo";
+    homepage = "https://code.podesta.ai/tilo/tilo";
     license = lib.licenses.agpl3Only;
     platforms = [ "x86_64-linux" "aarch64-linux" ];
     mainProgram = "tilo-shell";

@@ -44,6 +44,7 @@ pub mod bluetooth;
 pub mod bluez;
 pub mod display;
 pub mod firmware;
+pub mod linux_physical_gamepad;
 pub mod linux_virtual_gamepad;
 pub mod modem;
 pub mod network;
@@ -78,6 +79,10 @@ pub use firmware::{
     FirmwareEvent, FirmwareHistoryEntry, FirmwareInstallOutcome, FirmwareUpdate,
     get_firmware_history, get_firmware_updates, refresh_firmware_metadata, start_firmware_install,
 };
+pub use linux_physical_gamepad::{
+    LinuxPhysicalGamepadCatalog, LinuxPhysicalGamepadSource, PhysicalGamepadDrain,
+    PhysicalGamepadId, PhysicalGamepadInfo,
+};
 pub use linux_virtual_gamepad::{
     LinuxGamepadDevice, LinuxGamepadDeviceProvider, LinuxVirtualGamepadFactory,
     UinputGamepadDeviceProvider,
@@ -92,16 +97,17 @@ pub use network::{
     configure_connection_policy, configure_connection_policy_patch, configure_hotspot,
     configure_ipv4, connect_enterprise_wifi, connect_wifi, connection_diagnostics,
     connection_profile_settings, create_mobile_profile, delete_vpn_connection,
-    delete_vpn_connection_uuid, forget_network_profile, get_connectivity, get_link_status,
-    get_radio_state, get_wifi, get_wired, import_vpn_config, inspect_certificate,
+    delete_vpn_connection_uuid, disconnect_wifi, forget_network_profile, get_connectivity,
+    get_link_status, get_radio_state, get_wifi, get_wired, import_vpn_config, inspect_certificate,
     list_hotspot_clients, list_saved_network_profiles, list_vpn_connections, list_wifi_networks,
     set_airplane_mode, set_hotspot, set_mobile_broadband, set_network_autoconnect,
     set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wired,
 };
 pub use peripheral_forwarding::{
-    ForwardedGamepadEvent, ForwardedPeripheralBroker, ForwardedPeripheralIdentity, GamepadAxis,
-    GamepadButton, PeripheralAuditEvent, PeripheralDeviceId, PeripheralLeaseId,
-    PeripheralRevocation, VirtualGamepad, VirtualGamepadFactory, VirtualGamepadPlan,
+    AUTHORIZATION_TTL, ForwardedGamepadEvent, ForwardedPeripheralBroker,
+    ForwardedPeripheralIdentity, GamepadAxis, GamepadButton, PeripheralAuditEvent,
+    PeripheralBrokerError, PeripheralDeviceId, PeripheralLeaseId, PeripheralRevocation,
+    VirtualGamepad, VirtualGamepadFactory, VirtualGamepadPlan,
 };
 pub use power::{PowerProfile, available_power_profiles, get_power_profile, set_power_profile};
 pub use printing::{DiscoveredPrinter, PrintJob, PrinterQueue, QueueState, Scanner};

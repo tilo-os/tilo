@@ -16,12 +16,12 @@ for tool in gpg rpmkeys; do
 done
 
 case $arches in
-    # Nine package artifacts plus the native OS payload pair, four public
+    # Ten package artifacts plus the native OS payload pair, four public
     # RPM-key trust artifacts, and the maintained verified repo definition.
     # ARM adds its package/payload set, but only the x86 lane publishes the
     # duplicate-free key and repo trust bundle.
-    amd64) expected_count=17 ;;
-    amd64,arm64) expected_count=24 ;;
+    amd64) expected_count=18 ;;
+    amd64,arm64) expected_count=26 ;;
     *) echo "unsupported release architecture set: $arches" >&2; exit 2 ;;
 esac
 
@@ -54,6 +54,10 @@ for name in tilo-session tilo-session-devel; do
     fi
 done
 expect_one "tilo-session-amd64.nar.gz"
+expect_one "tilo-session-apps-${version}-1.fc44.x86_64.rpm"
+if [[ $arches == amd64,arm64 ]]; then
+    expect_one "tilo-session-apps-${version}-1.fc44.aarch64.rpm"
+fi
 if [[ $arches == amd64,arm64 ]]; then
     expect_one "tilo-session-arm64.nar.gz"
 fi

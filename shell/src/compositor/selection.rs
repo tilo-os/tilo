@@ -468,6 +468,16 @@ pub fn merge_shared_clipboard_history(
     }
 }
 
+/// Remove retained entries imported from the personal fabric. The active
+/// Wayland selection is intentionally left alone: a person may already have
+/// activated one, and policy revocation stops projection rather than erasing
+/// an explicit local clipboard choice.
+pub fn clear_shared_clipboard_history(store: &SharedSelection) {
+    if let Ok(mut store) = store.lock() {
+        store.history.retain(|item| !item.fabric_imported);
+    }
+}
+
 /// Clipboard-manager metadata, newest first. Primary selection is never
 /// retained and payload bytes never leave the privileged compositor here.
 pub fn clipboard_history(store: &SharedSelection) -> Vec<ClipboardHistorySnapshot> {
@@ -1824,6 +1834,13 @@ mod tests {
             Some("from the other screen")
         );
         assert!(shareable_clipboard_history(&s).is_empty());
+
+        clear_shared_clipboard_history(&s);
+        assert!(clipboard_history(&s).is_empty());
+        assert_eq!(
+            mirror_text(&s, Target::Clipboard).as_deref(),
+            Some("from the other screen")
+        );
     }
 
     #[test]

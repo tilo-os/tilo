@@ -149,14 +149,29 @@ impl PhotosSearchProvider {
         Ok(provider)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one snapshot builder keeps every searchable resource kind in a single collision and admission boundary"
-    )]
     fn replace_from_library(
         &self,
         library: &crate::model::PhotoLibrary,
     ) -> Result<(), SearchCatalogError> {
+        self.replace_from_library_before_publish(library, || {})
+    }
+
+    /// Construct a complete replacement before taking the public snapshot
+    /// lock. The hook makes the lock boundary directly regression-testable:
+    /// a query must remain able to read the previous generation after all
+    /// expensive catalogue work has completed but before publication.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one snapshot builder keeps every searchable resource kind in a single collision and admission boundary"
+    )]
+    fn replace_from_library_before_publish<F>(
+        &self,
+        library: &crate::model::PhotoLibrary,
+        before_publish: F,
+    ) -> Result<(), SearchCatalogError>
+    where
+        F: FnOnce(),
+    {
         let mut entries = BTreeMap::<String, (String, SearchResult, MaterializationSeed)>::new();
         let mut collisions = HashSet::<String>::new();
         let mut insert =
@@ -302,15 +317,30 @@ impl PhotosSearchProvider {
             .iter()
             .map(|(id, (_, _, seed))| (id.clone(), seed.clone()))
             .collect();
-        let mut state = self
-            .state
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.catalog.replace_all(
+
+        // Build postings, grams, and tokens without holding the public
+        // snapshot lock. A large import must not turn Ctrl+K or an exact
+        // resource lookup into a wait for a 100k-row index rebuild. The
+        // short lock below publishes the catalogue and its matching seeds as
+        // one generation, so callers never observe fresh hits with stale
+        // exact materialisation data.
+        let catalog = SearchCatalog::new(PHOTO_SEARCH_KIND);
+        catalog.replace_all(
             entries
                 .iter()
                 .map(|(id, (text, result, _))| (id.clone(), text.clone(), result.clone())),
         )?;
+        before_publish();
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // `replace_all` gives a new catalogue its own initial generation;
+        // align it with the generation immediately following the published
+        // one before making either half visible. An exhausted generation
+        // leaves the old snapshot intact.
+        catalog.advance_after(state.catalog.stats().generation)?;
+        state.catalog = catalog;
         state.seeds = seeds;
         drop(state);
         Ok(())
@@ -715,5 +745,56 @@ mod tests {
         let after = provider.resource(&address.resource).unwrap();
         assert_eq!(after.id, before.id);
         assert_eq!(after.actions.len(), before.actions.len());
+    }
+
+    #[test]
+    fn prior_search_and_exact_lookup_stay_available_until_a_rebuild_publishes() {
+        let doc = open_doc("before.png");
+        let provider = PhotosSearchProvider::new(&doc).unwrap();
+        let before_address = provider
+            .search("before")
+            .into_iter()
+            .find_map(|hit| hit.action_address())
+            .expect("fixture photograph is searchable");
+
+        let mut replacement = PhotosDoc::library(&doc);
+        replacement
+            .photos
+            .push(crate::model::LibraryPhoto::from_image(
+                OpenImage::from_path("/pictures/after.png", 16, 16),
+            ));
+        let (built_tx, built_rx) = std::sync::mpsc::sync_channel(0);
+        let (publish_tx, publish_rx) = std::sync::mpsc::sync_channel(0);
+        let replacement_provider = provider.clone();
+
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                replacement_provider
+                    .replace_from_library_before_publish(&replacement, || {
+                        built_tx.send(()).expect("test observes completed rebuild");
+                        publish_rx.recv().expect("test releases publication");
+                    })
+                    .expect("valid replacement publishes");
+            });
+            built_rx.recv().expect("replacement finished off-lock work");
+
+            // This runs exactly in the window after the new postings/seeds
+            // exist but before the short atomic swap. If rebuild work ever
+            // re-enters the public state lock, either operation deadlocks
+            // here instead of continuing against the prior generation.
+            assert!(
+                provider
+                    .search("before")
+                    .iter()
+                    .any(|hit| hit.action_address() == Some(before_address.clone()))
+            );
+            assert!(provider.resource(&before_address.resource).is_some());
+            publish_tx.send(()).expect("release publication");
+        });
+
+        assert!(provider.search("after").iter().any(|hit| {
+            hit.action_address()
+                .is_some_and(|address| address.resource.contains("after.png"))
+        }));
     }
 }

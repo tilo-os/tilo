@@ -108,8 +108,9 @@ assert "gpgcheck=1" in rpm_repo_generator
 assert "repo_gpgcheck=0" in rpm_repo_generator
 assert "make-repo-file.sh" in (ROOT / "dist/ci/run-package-job.sh").read_text()
 assert "rpm-sign" in rpm_build_deps
-assert "expected_count=17" in rpm_release_verifier
-assert "expected_count=24" in rpm_release_verifier
+assert "expected_count=18" in rpm_release_verifier
+assert "expected_count=26" in rpm_release_verifier
+assert 'tilo-session-apps-${version}-1.fc44.x86_64.rpm' in rpm_release_verifier
 assert "RPM is unsigned" in rpm_release_verifier
 assert "make-repo-file.sh" in rpm_release_verifier
 assert "cmp -- \"$expected_repo\" \"$release_dir/tilo-fedora-44.repo\"" in rpm_release_verifier

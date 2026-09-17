@@ -1,0 +1,13 @@
+[Unit]
+Description=Maintain Tilo boot entries outside the login critical path
+
+[Timer]
+# Boot-entry reconciliation is maintenance, not session readiness. Update and
+# shutdown hooks cover newly staged deployments, so keep its fallback I/O away
+# from the login burst.
+OnBootSec=30s
+AccuracySec=1s
+Unit=tilo-boot-entries.service
+
+[Install]
+WantedBy=timers.target

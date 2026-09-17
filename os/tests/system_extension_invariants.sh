@@ -11,11 +11,20 @@ userspace="$repo/os/usr/lib/systemd/system/tilo-system-extension-userspace.servi
 boot="$repo/os/usr/lib/systemd/system/tilo-system-extension-boot-stage.service"
 model="$repo/os/usr/lib/systemd/system/tilo-local-model.service"
 user_model="$repo/os/usr/lib/systemd/user/tilo-models.service"
+model_storage="$repo/os/usr/lib/systemd/user/tilo-model-storage.service"
+gateway="$repo/os/usr/lib/systemd/user/tilo-model-gateway.service"
+user_model_socket="$repo/os/usr/lib/systemd/user/tilo-models.socket"
+model_gateway="$repo/os/usr/lib/systemd/user/tilo-model-gateway.service"
+model_gateway_socket="$repo/os/usr/lib/systemd/user/tilo-model-gateway.socket"
+user_model_source="$repo/crates/agent/local-model-service/src/main.rs"
+model_gateway_source="$repo/crates/agent/model-gateway/src/main.rs"
+settings_models_source="$repo/apps/settings/src/panes/agent_models.rs"
 socket="$repo/os/usr/lib/systemd/system/tilo-system-extension-dispatcher.socket"
 dispatcher="$repo/os/usr/lib/systemd/system/tilo-system-extension-dispatcher@.service"
 dispatch_helper="$repo/os/usr/libexec/tilo-system-extension-dispatch"
 manager_source="$repo/crates/system/system-extension/src/bin/tilo-system-extension-manager.rs"
 boot_status="$repo/os/usr/lib/systemd/system/tilo-system-extension-boot-pack-status.service"
+boot_status_timer="$repo/os/usr/lib/systemd/system/tilo-system-extension-boot-pack-status.timer"
 boot_stage="$repo/os/usr/lib/systemd/system/tilo-system-extension-boot-pack-stage.service"
 boot_stage_path="$repo/os/usr/lib/systemd/system/tilo-system-extension-boot-pack-stage.path"
 polkit="$repo/os/etc/polkit-1/rules.d/49-tilo-updates.rules"
@@ -34,11 +43,13 @@ for source in \
     'os/usr/lib/systemd/system/tilo-system-extension-boot-stage.service /usr/lib/systemd/system/tilo-system-extension-boot-stage.service' \
     'os/usr/lib/systemd/system/tilo-local-model.service /usr/lib/systemd/system/tilo-local-model.service' \
     'os/usr/lib/systemd/user/tilo-models.service /usr/lib/systemd/user/tilo-models.service' \
+    'os/usr/lib/systemd/user/tilo-model-storage.service /usr/lib/systemd/user/tilo-model-storage.service' \
     'os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf /usr/lib/user-tmpfiles.d/tilo-model-manager.conf' \
     'os/usr/lib/systemd/system/tilo-system-extension-dispatcher.socket /usr/lib/systemd/system/tilo-system-extension-dispatcher.socket' \
     'os/usr/lib/systemd/system/tilo-system-extension-dispatcher@.service /usr/lib/systemd/system/tilo-system-extension-dispatcher@.service' \
     'os/usr/libexec/tilo-system-extension-dispatch /usr/libexec/tilo-system-extension-dispatch' \
     'os/usr/lib/systemd/system/tilo-system-extension-boot-pack-status.service /usr/lib/systemd/system/tilo-system-extension-boot-pack-status.service' \
+    'os/usr/lib/systemd/system/tilo-system-extension-boot-pack-status.timer /usr/lib/systemd/system/tilo-system-extension-boot-pack-status.timer' \
     'os/usr/lib/systemd/system/tilo-system-extension-boot-pack-stage.service /usr/lib/systemd/system/tilo-system-extension-boot-pack-stage.service' \
     'os/usr/lib/systemd/system/tilo-system-extension-boot-pack-stage.path /usr/lib/systemd/system/tilo-system-extension-boot-pack-stage.path' \
     'os/usr/lib/sysusers.d/tilo-local-model.conf /usr/lib/sysusers.d/tilo-local-model.conf' \
@@ -97,21 +108,69 @@ need "$user_model" 'ProtectSystem=strict' 'per-user model manager can write the 
 need "$user_model" 'ProtectHome=read-only' 'per-user model manager has broad home access'
 need "$user_model" 'ReadWritePaths=%h/.local/share/tilo %h/.local/share/containers %t/tilo' 'per-user model manager lacks narrowly writable model/runtime state'
 need "$user_model" 'RuntimeDirectory=tilo' 'per-user model manager does not create its runtime parent'
-need "$user_model" 'ExecStartPre=/usr/bin/systemd-tmpfiles --user --create /usr/lib/user-tmpfiles.d/tilo-model-manager.conf' 'per-user model manager does not provision fresh-user persistent state before startup'
+need "$user_model" 'Requires=tilo-model-storage.service' 'per-user model manager does not require storage preparation before sandbox setup'
+need "$user_model" 'After=tilo-model-storage.service' 'per-user model manager can build its namespace before storage preparation'
+need "$model_storage" 'ExecStart=/usr/bin/systemd-tmpfiles --user --create /usr/lib/user-tmpfiles.d/tilo-model-manager.conf' 'storage preparation does not provision fresh-user persistent state before sandbox setup'
+need "$gateway" 'Requires=tilo-model-storage.service' 'model gateway does not require storage preparation before sandbox setup'
+need "$gateway" 'After=tilo-model-storage.service' 'model gateway can build its namespace before storage preparation'
+need "$gateway" 'ProtectSystem=strict' 'model gateway can write the immutable root'
+need "$gateway" 'ProtectHome=read-only' 'model gateway has broad home access'
+need "$gateway" 'ReadWritePaths=%h/.config/tilo %t/tilo' 'model gateway lacks narrowly writable provider/runtime state'
+if sed '/^[[:space:]]*#/d' "$model_storage" | grep -Eq '^(ProtectHome|ReadWritePaths)='; then
+    bad 'storage preparation is sandboxed before it can create home paths'
+else
+    ok 'storage preparation runs before confined model namespaces are constructed'
+fi
 for line in \
     'd %h/.local/share/tilo            0700' \
     'd %h/.local/share/tilo/models     0700' \
     'd %h/.local/share/containers     0700' \
+    'd %h/.config/tilo                0700' \
     'd %t/tilo/services                0700'; do
     need "$user_tmpfiles" "$line" "fresh-user tmpfiles does not provision $line"
 done
-need "$containerfile" 'systemctl --global enable tilo-models.service' 'per-user model manager is not enabled in the image'
+need "$user_model_socket" 'ListenStream=%t/tilo/services/models.sock' 'model manager has no fixed activation socket'
+need "$user_model_socket" 'SocketMode=0600' 'model manager activation socket is not private'
+need "$user_model_socket" 'Backlog=16' 'model manager activation queue is unbounded'
+need "$user_model_socket" 'Service=tilo-models.service' 'model activation socket starts the wrong service'
+need "$user_model_source" 'std::env::var("LISTEN_PID")' 'model manager ignores systemd socket activation'
+need "$user_model_source" 'actual.as_pathname() != Some(expected)' 'model manager accepts a listener at an unexpected path'
+need "$user_model_source" 'bounded_command::run_prepared(' 'model manager trusts unbounded runtime helpers'
+if grep -Fq '.output()' "$user_model_source"; then
+    bad 'model manager can allocate unbounded helper output'
+fi
+need "$containerfile" 'systemctl --global enable tilo-models.socket' 'per-user model socket is not enabled in the image'
+if grep -Fq 'systemctl --global enable tilo-models.service' "$containerfile"; then
+    bad 'model manager process still starts eagerly at every login'
+fi
+need "$model_gateway_socket" 'ListenStream=%t/tilo/services/model-gateway.sock' 'hosted-model gateway has no fixed activation socket'
+need "$model_gateway_socket" 'SocketMode=0600' 'hosted-model activation socket is not private'
+need "$model_gateway_socket" 'Backlog=16' 'hosted-model activation queue is unbounded'
+need "$model_gateway_socket" 'Service=tilo-model-gateway.service' 'hosted-model socket starts the wrong service'
+need "$model_gateway_source" 'std::env::var("LISTEN_PID")' 'hosted-model gateway ignores systemd socket activation'
+need "$model_gateway_source" 'actual.as_pathname() != Some(expected)' 'hosted-model gateway accepts a listener at an unexpected path'
+need "$model_gateway" 'RuntimeDirectoryPreserve=yes' 'hosted-model shutdown can remove sibling service sockets'
+need "$model_gateway" 'PrivateDevices=yes' 'hosted-model gateway has ambient device access'
+need "$model_gateway" 'PrivateIPC=yes' 'hosted-model gateway shares host IPC objects'
+need "$model_gateway" 'RestrictNamespaces=yes' 'hosted-model gateway can create new namespaces'
+need "$model_gateway" 'MemoryDenyWriteExecute=yes' 'hosted-model gateway can create executable writable memory'
+need "$model_gateway" 'CapabilityBoundingSet=' 'hosted-model gateway retains capabilities'
+need "$model_gateway" 'AmbientCapabilities=' 'hosted-model gateway can inherit ambient capabilities'
+need "$model_gateway" 'KeyringMode=private' 'hosted-model gateway shares the session keyring'
+need "$model_gateway" 'SystemCallFilter=@system-service' 'hosted-model gateway lacks a syscall allowlist'
+need "$model_gateway" 'SystemCallFilter=~@clock @debug @keyring @module @mount @obsolete @raw-io @reboot @resources @swap' 'hosted-model gateway retains privileged syscall groups'
+need "$containerfile" 'systemctl --global enable tilo-model-gateway.socket' 'hosted-model socket is not enabled in the image'
+if grep -Fq 'systemctl --global enable tilo-model-gateway.service' "$containerfile"; then
+    bad 'hosted-model process still starts eagerly at every login'
+fi
 [ "$fail" -ne 0 ] || ok 'Settings reaches a confined per-user model manager through the app-service channel with fresh-user storage'
 
 need "$socket" 'ListenStream=/run/tilo/system-extension-api/request.sock' 'desktop request socket is not fixed-path'
 need "$socket" 'SocketGroup=tilo-identity' 'desktop request socket is not group-gated'
 need "$socket" 'SocketMode=0660' 'desktop request socket permissions drifted'
 need "$socket" 'Accept=yes' 'desktop request is not backgrounded per request'
+need "$socket" 'Backlog=16' 'desktop request activation queue is unbounded'
+need "$socket" 'MaxConnections=16' 'desktop request socket can fan out unbounded root workers'
 need "$dispatcher" 'StandardInput=socket' 'dispatcher does not receive only its socket request'
 need "$dispatcher" 'PrivateNetwork=yes' 'dispatcher can reach a network'
 need "$dispatcher" 'ReadWritePaths=/run/tilo/system-extension-api /run/tilo/system-extensions /var/lib/tilo/system-extensions' 'dispatcher receives a broad writable root'
@@ -137,7 +196,12 @@ containerfile_has_copy "$containerfile" /out/tilo-system-extension-manager \
   /usr/libexec/tilo-system-extension-manager builder \
   || bad 'image does not package privileged BootPack manager'
 need "$containerfile" '-p system-extension' 'image builder does not compile privileged BootPack manager'
-need "$containerfile" 'systemctl enable tilo-system-extension-boot-pack-status.service' 'BootPack reboot status is not projected after boot'
+need "$containerfile" 'systemctl enable tilo-system-extension-boot-pack-status.timer' 'BootPack reboot status is not projected after boot'
+need "$boot_status_timer" 'Unit=tilo-system-extension-boot-pack-status.service' 'BootPack status timer starts the wrong unit'
+need "$boot_status_timer" 'OnBootSec=5s' 'BootPack status projection is not deferred beyond the login-critical path'
+if grep -Fq 'systemctl enable tilo-system-extension-boot-pack-status.service' "$containerfile"; then
+    bad 'BootPack status projection is still enabled directly on the boot path'
+fi
 need "$containerfile" 'systemctl enable tilo-system-extension-boot-pack-stage.path' 'BootPack fixed queue is not path-activated'
 need "$repo/os/tests/system_extension_boot_pack_stage.sh" 'systemd-run' 'BootPack stage has no systemd execution-profile integration test'
 
@@ -160,6 +224,10 @@ need "$manager_source" '["switch", "--transport=registry", image]' 'manager does
 need "$manager_source" 'reboot_required' 'manager has no typed reboot-required projection'
 need "$boot_status" 'ExecStart=/usr/libexec/tilo-system-extension-manager project-status' 'BootPack status unit does not re-project state after reboot'
 need "$boot_status" 'PrivateNetwork=yes' 'BootPack status unit has network access'
+for resource_policy in 'Nice=10' 'CPUWeight=20' 'IOWeight=20' \
+    'IOSchedulingClass=best-effort' 'IOSchedulingPriority=7'; do
+    need "$boot_status" "$resource_policy" "BootPack status projection does not yield with $resource_policy"
+done
 need "$boot_stage_path" 'PathExists=/var/lib/tilo/system-extensions/boot-pack-request' 'BootPack request queued before path activation can be stranded'
 need "$boot_stage_path" 'PathChanged=/var/lib/tilo/system-extensions/boot-pack-request' 'BootPack stage has no fixed root-owned queue watch'
 need "$boot_stage" 'ExecStart=/usr/libexec/tilo-system-extension-manager stage-pending' 'BootPack stage service accepts arbitrary execution input'
@@ -175,6 +243,12 @@ fi
 need "$dispatch_helper" 'boot-pack-request' 'dispatcher does not enqueue BootPack id in a fixed root-owned path'
 need "$dispatch_helper" '"state":"queued"' 'dispatcher does not project queued BootPack state'
 need "$manager_source" 'could not clear terminal BootPack request' 'BootPack failure can loop forever instead of consuming a terminal request'
+need "$settings_models_source" 'bounded_command::run(' 'Settings model lifecycle can hang on an unbounded manager client'
+if grep -Eq 'Command::new|\.output\(\)|wait_with_output|\.spawn\(\)' "$settings_models_source"; then
+    bad 'Settings model lifecycle contains an unbounded manager subprocess'
+else
+    ok 'Settings model lifecycle uses only bounded manager transactions'
+fi
 need "$dispatcher" 'ReadOnlyPaths=/usr/share/tilo/system-extensions /sys/bus/pci/devices' 'PCI recommendation worker cannot use the local hardware facts safely'
 if grep -Eiq '(Command::new\([^)]*(sh|bash|curl|wget|dnf|rpm-ostree|modprobe|insmod|mount)|system\()' "$manager_source"; then
     bad 'BootPack manager gained shell, package-manager, downloader, mount, or module-load authority'

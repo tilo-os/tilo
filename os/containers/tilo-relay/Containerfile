@@ -38,7 +38,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         rust cargo sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang clang-devel pkgconf-pkg-config \
-        openssl-devel \
     && dnf clean all
 
 WORKDIR /build
@@ -80,25 +79,33 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/tilo-relay-admin \
           target/release/tilo-enroll \
           target/release/fs \
-          /out/
+          /out/ \
+    && /build/os/scripts/verify-elf-hardening.sh /out
 
 # ---- Stage 2: runtime --------------------------------------------------------
 FROM quay.io/fedora/fedora-minimal:44
 
-# Runtime deps: openssl for iroh's TLS side; ca-certificates for the
-# hosted iroh relay endpoints. microdnf accepts the same --setopt+
-# --disablerepo/--enablerepo flags as dnf5 (which it wraps).
+# Runtime dependency: CA roots for rustls connections to hosted Iroh relay
+# endpoints. Iroh does not use the system OpenSSL ABI. BusyBox is statically
+# linked, so it remains usable after removing the package manager, coreutils,
+# and their otherwise inherited OpenSSL dependency closure.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     microdnf install -y --setopt=reposdir=/repo --disablerepo='*' --enablerepo=frozen \
-        ca-certificates \
-    && microdnf clean all
+        ca-certificates busybox \
+    && /usr/bin/busybox cp /etc/pki/tls/certs/ca-bundle.crt /ca-bundle.crt \
+    && microdnf remove -y --setopt=protected_packages= openssl-libs coreutils dnf5 \
+    && /usr/bin/busybox mkdir -p /etc/pki/tls/certs \
+    && /usr/bin/busybox mv /ca-bundle.crt /etc/pki/tls/certs/ca-bundle.crt \
+    && ! /usr/bin/busybox find / -xdev \
+        \( -name 'libssl.so*' -o -name 'libcrypto.so*' -o -name openssl \) \
+        -print -quit | /usr/bin/busybox grep -q .
 
 COPY --from=builder /out/tilo-relay /usr/bin/tilo-relay
 COPY --from=builder /out/tilo-relay-admin /usr/bin/tilo-relay-admin
 COPY --from=builder /out/tilo-enroll /usr/bin/tilo-enroll
 COPY --from=builder /out/fs /usr/bin/fs
 COPY os/containers/tilo-relay/tilo-home-peer /usr/bin/tilo-home-peer
-RUN chmod 0755 /usr/bin/tilo-home-peer
+RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-home-peer
 COPY os/usr/lib/systemd/system/tilo-relay.service /usr/lib/systemd/system/tilo-relay.service
 
 # Where the daemon writes state + reads config. The container

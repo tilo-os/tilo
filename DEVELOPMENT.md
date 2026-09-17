@@ -31,7 +31,6 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `libavcodec` `libavformat` `libavutil` | `libavcodec-free-devel` `libavformat-free-devel` | shell's default hdr-decode feature |
 | `libswscale` | `libswscale-free-devel` | FFmpeg software scaling used by the shell |
 | `gstreamer-1.0` `gstreamer-app-1.0` | `gstreamer1-devel` `gstreamer1-plugins-base-devel` | media apps |
-| `openssl` | `openssl-devel` | |
 | `capnp` (binary) | `capnproto` | runtime-collab schema |
 | `libclang` (shared library) | `clang-libs` | bindgen for PipeWire and FFmpeg bindings; Python 3 checks that it can load |
 | `bwrap` (binary) | `bubblewrap` | the launcher's confinement tests drive the real sandbox |
@@ -99,6 +98,68 @@ reaches the host's server and every compilation misses.
 
 Not needed if the libraries are present natively — a nix/devenv shell removes both
 the routing and the sccache-namespace problem, and the shim with them.
+
+### Fedora 44 disposable-VM loop
+
+For desktop UX work, do **not** build an RPM after every edit.  The dedicated
+loop keeps a prepared Fedora 44 toolbox and one target directory for this
+checkout, builds only the selected debug executable, and copies that executable
+to a disposable VM.  It deliberately never runs `rpm-ostree`, changes the host
+login session, or reboots a machine.
+
+```bash
+# One time.  This builds a dependency image and creates a persistent distrobox.
+dist/dev/fedora44-vm-iterate.sh bootstrap
+
+# Usually the entire edit/build step.  This is debug, with no release fat LTO.
+dist/dev/fedora44-vm-iterate.sh build shell
+
+# The VM's loopback SSH forward is intentionally required, never guessed.
+TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh deploy shell
+dist/dev/fedora44-vm-iterate.sh handoff
+# After the normal VM UI logout/login:
+TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh verify
+
+# The three commands above, after the first container setup.
+TILO_VM_SSH_PORT=2230 dist/dev/fedora44-vm-iterate.sh cycle shell
+```
+
+Use SSH keys normally (set `TILO_VM_SSH_IDENTITY` when the key is not in the
+SSH agent), or provide `TILO_VM_PASSWORD` only in the invoking environment.
+The loop checks
+`systemd-detect-virt` in the remote guest before
+copying anything.  It intentionally does not use remote `loginctl`, `systemctl`,
+or a QEMU power action: after `handoff` (or `cycle`), log out through the VM's
+visible UI and then log back in.  That is part of the test — it exercises the
+session wrapper's cleanup path rather than making remote termination look like
+a valid logout.  QEMU and the physical host remain untouched.
+
+`verify` is a read-only proof after that UI transition: it compares the
+deployed debug shell with `/proc/<pid>/exe` for a running shell in the guest,
+not merely with the configuration file that asks the greeter to start it.
+
+The VM needs the `tilo-session-devel` developer entry once, and **"Tilo (my
+build)"** must be selected in its greeter once.  `deploy shell` writes the
+marked debug binary to `~/.local/share/tilo-dev/shell` and updates the existing
+developer-session config, so later cycles do not install an RPM.  Change the
+remote account/location with `TILO_VM_USER`, `TILO_VM_HOST`, and
+`TILO_VM_DEV_ROOT`; `TILO_VM_SSH_PORT` is always mandatory. Build an app or
+the two canonical host executables on demand with, for example,
+`build calculator`, `build tilo-launcher`, `build tilo-unlock-helper`, or
+`build host`, rather than rebuilding the application collection.
+
+The shell command builds `--bin shell --features dev-session` so Cargo does not
+also compile screenshot tooling during compositor iteration. It retains the
+normal shell features inside Fedora 44, matching the actual session rather than
+silently dropping media behavior to work around a host ABI mismatch.
+
+The loop also gives this checkout a dedicated sccache server and namespace.
+Distrobox copies host environment variables inward; sharing either its generic
+cache or the host cache can replay a path-sensitive Rust build script (such as
+the vendored shader compiler, which embeds `CARGO_MANIFEST_DIR`) into the host
+target directory. This is not a valid host or Fedora 44 artifact. The cache is
+persistent for warm iterations; set `TILO_FEDORA44_SCCACHE_PORT` only if two
+active checkouts collide on its derived port.
 
 ### Hardware-dependent settings
 

@@ -375,15 +375,14 @@ fn paint_scanouts(
         if entry.scanout.xrgb_damage_requested() {
             entry.scanout.invalidate_xrgb_history();
         }
-        entry.scanout.present_into(cursor, |dst, pitch| {
-            let result = match damage.filter(|_| sparse_coordinates_match) {
+        if let Err(e) = entry.scanout.present_into(cursor, |dst, pitch| {
+            match damage.filter(|_| sparse_coordinates_match) {
                 Some(damage) => bridge.paint_damage_into_xrgb8888(scene, damage, dst, pitch),
                 None => bridge.paint_into_xrgb8888(scene, dst, pitch),
-            };
-            if let Err(e) = result {
-                tracing::error!("DRM backend: paint_into_xrgb8888: {e}");
             }
-        });
+        }) {
+            tracing::error!("DRM backend: paint_into_xrgb8888: {e}");
+        }
         return;
     }
 

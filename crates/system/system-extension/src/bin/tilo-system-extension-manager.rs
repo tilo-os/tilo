@@ -1,4 +1,4 @@
-//! Fixed-verb privileged consumer for signed BootPack catalogue entries.
+//! Fixed-verb privileged consumer for signed `BootPack` catalogue entries.
 //!
 //! This binary deliberately has no general installer interface. Its sole
 //! mutating verb takes a catalogue id, resolves it under an image-owned path,
@@ -8,8 +8,11 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Read as _;
+use std::os::unix::process::CommandExt as _;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use ed25519_dalek::Verifier as _;
 use serde::{Deserialize, Serialize};
@@ -26,6 +29,8 @@ const STAGE_PATH: &str = "/var/lib/tilo/system-extensions/boot-pack-stage.json";
 const REQUEST_PATH: &str = "/var/lib/tilo/system-extensions/boot-pack-request";
 const STATUS_PATH: &str = "/run/tilo/system-extension-api/status.json";
 const MAX_CATALOG_BYTES: u64 = 1024 * 1024;
+const MAX_BOOTC_STATUS_BYTES: u64 = 1024 * 1024;
+const HELPER_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,7 +52,7 @@ struct BootPackStage {
 }
 
 /// A separately-signed, data-only hardware policy.  It deliberately cannot
-/// contain an image reference: the BootPack catalogue remains the sole source
+/// contain an image reference: the `BootPack` catalogue remains the sole source
 /// of a deployable image.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -70,13 +75,14 @@ struct PciRecommendationCatalog {
 struct PciRecommendation {
     /// Stable release-owned rule id, useful when diagnosing a no-match.
     id: String,
-    /// An exact id in the separately signed BootPack catalogue.
+    /// An exact id in the separately signed `BootPack` catalogue.
     boot_pack_id: String,
     pci: PciMatch,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_field_names)] // These names mirror the PCI sysfs ABI.
 struct PciMatch {
     vendor_id: u16,
     device_id: u16,
@@ -93,6 +99,7 @@ struct PciCatalogSigningPayload<'a> {
 }
 
 #[derive(Clone, Debug)]
+#[allow(clippy::struct_field_names)] // These names mirror the PCI sysfs ABI.
 struct PciDevice {
     vendor_id: u16,
     device_id: u16,
@@ -217,12 +224,12 @@ fn project_status() -> Result<(), String> {
 fn project_stage(stage: &BootPackStage) -> Result<(), String> {
     // This projection carries no path, registry credentials, or catalogue
     // bytes. It is intentionally safe for Settings to snapshot unprivileged.
-    let reboot_required = current_host_image()
-        .map(|host| host.digest != format!("sha256:{}", stage.image_digest))
-        // A broken status query must never falsely claim the new driver booted.
-        .unwrap_or(true);
-    let state = if reboot_required { "staged" } else { "active" };
-    project_status_value(&stage.extension_id, state, reboot_required, None)
+    let reboot_required = current_host_image().map_or(true, |host| {
+        host.digest != format!("sha256:{}", stage.image_digest)
+    });
+    // A broken status query must never falsely claim the new driver booted.
+    let activation_state = if reboot_required { "staged" } else { "active" };
+    project_status_value(&stage.extension_id, activation_state, reboot_required, None)
 }
 
 fn project_status_value(
@@ -408,8 +415,8 @@ impl PciMatch {
     }
 
     fn specificity(&self) -> u8 {
-        2 + u8::from(self.subsystem_vendor_id.is_some())
-            + u8::from(self.subsystem_device_id.is_some())
+        2_u8.saturating_add(u8::from(self.subsystem_vendor_id.is_some()))
+            .saturating_add(u8::from(self.subsystem_device_id.is_some()))
     }
 }
 
@@ -443,9 +450,9 @@ fn read_pci_devices() -> Result<Vec<PciDevice>, String> {
 fn valid_pci_address(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() == 12
-        && bytes[4] == b':'
-        && bytes[7] == b':'
-        && bytes[10] == b'.'
+        && bytes.get(4) == Some(&b':')
+        && bytes.get(7) == Some(&b':')
+        && bytes.get(10) == Some(&b'.')
         && bytes
             .iter()
             .enumerate()
@@ -492,15 +499,86 @@ fn safe_read(path: &Path) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))
 }
 
-fn current_host_image() -> Result<HostImage, String> {
-    let output = Command::new("/usr/bin/bootc")
-        .args(["status", "--format", "json"])
-        .output()
-        .map_err(|error| format!("could not inspect bootc deployment: {error}"))?;
-    if !output.status.success() {
-        return Err("bootc status refused to identify the running deployment".into());
+fn bounded_stdout(
+    program: &Path,
+    args: &[&str],
+    limit: u64,
+    timeout: Duration,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        // A timed-out helper may have passed stdout to a descendant. Give the
+        // transaction its own process group so killing it also closes every
+        // inherited pipe and the bounded reader cannot remain pinned.
+        .process_group(0);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("could not start {label}: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("{label} stdout is unavailable"))?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let read_limit = limit.saturating_add(1);
+        let _ = stdout.take(read_limit).read_to_end(&mut bytes);
+        bytes
+    });
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .unwrap_or_else(Instant::now);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {}
+            Err(error) => return Err(format!("could not wait for {label}: {error}")),
+        }
+        if Instant::now() >= deadline {
+            if let Ok(pid) = i32::try_from(child.id()) {
+                // SAFETY: the child was placed in a process group whose id is
+                // its pid; a negative pid targets exactly that group.
+                if let Some(process_group) = pid.checked_neg() {
+                    unsafe { libc::kill(process_group, libc::SIGKILL) };
+                }
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let bytes = reader
+        .join()
+        .map_err(|_| format!("{label} output reader failed"))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        return Err(format!("{label} output exceeds {limit} bytes"));
     }
-    let status: serde_json::Value = serde_json::from_slice(&output.stdout)
+    let Some(status) = status else {
+        return Err(format!(
+            "{label} timed out after {} ms",
+            timeout.as_millis()
+        ));
+    };
+    if !status.success() {
+        return Err(format!("{label} failed with {status}"));
+    }
+    Ok(bytes)
+}
+
+fn current_host_image() -> Result<HostImage, String> {
+    let output = bounded_stdout(
+        Path::new("/usr/bin/bootc"),
+        &["status", "--format", "json"],
+        MAX_BOOTC_STATUS_BYTES,
+        HELPER_TIMEOUT,
+        "bootc status",
+    )?;
+    let status: serde_json::Value = serde_json::from_slice(&output)
         .map_err(|_| "bootc returned malformed deployment status".to_string())?;
     let image = status
         .pointer("/status/booted/image/image/image")
@@ -536,14 +614,14 @@ fn bootc_switch_with(program: &Path, image: &str) -> Result<(), String> {
 }
 
 fn uname(flag: &str, label: &str) -> Result<String, String> {
-    let output = Command::new("/usr/bin/uname")
-        .arg(flag)
-        .output()
-        .map_err(|error| format!("could not inspect {label}: {error}"))?;
-    if !output.status.success() {
-        return Err(format!("uname could not identify {label}"));
-    }
-    let value = String::from_utf8(output.stdout)
+    let output = bounded_stdout(
+        Path::new("/usr/bin/uname"),
+        &[flag],
+        256,
+        HELPER_TIMEOUT,
+        &format!("uname {label}"),
+    )?;
+    let value = String::from_utf8(output)
         .map_err(|_| format!("uname returned invalid {label}"))?
         .trim()
         .to_string();
@@ -676,7 +754,7 @@ mod tests {
         let specific = PciMatch {
             subsystem_vendor_id: device.subsystem_vendor_id,
             subsystem_device_id: device.subsystem_device_id,
-            ..generic.clone()
+            ..generic
         };
         assert!(generic.matches(&device));
         assert!(specific.matches(&device));
@@ -726,6 +804,41 @@ mod tests {
             fs::read_to_string(capture).unwrap(),
             format!("switch\n--transport=registry\n{image}\n")
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn privileged_helper_capture_rejects_overflow_and_timeout() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let overflow = directory.path().join("overflow");
+        fs::write(&overflow, "#!/bin/sh\nhead -c 8192 /dev/zero\n").unwrap();
+        fs::set_permissions(&overflow, fs::Permissions::from_mode(0o755)).unwrap();
+        let error = bounded_stdout(
+            &overflow,
+            &[],
+            4096,
+            Duration::from_secs(1),
+            "overflow probe",
+        )
+        .unwrap_err();
+        assert!(error.contains("output exceeds"), "{error}");
+
+        let hangs = directory.path().join("hangs");
+        fs::write(&hangs, "#!/bin/sh\nsleep 5\n").unwrap();
+        fs::set_permissions(&hangs, fs::Permissions::from_mode(0o755)).unwrap();
+        let started = Instant::now();
+        let error = bounded_stdout(
+            &hangs,
+            &[],
+            4096,
+            Duration::from_millis(25),
+            "timeout probe",
+        )
+        .unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

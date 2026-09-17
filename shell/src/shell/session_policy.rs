@@ -144,9 +144,10 @@ pub fn take_deferred_peer_sync_activation(deferred: &mut bool, onboarding_active
 pub fn should_activate_first_use(
     identity_missing: bool,
     progress_pending: bool,
+    identity_recovery: bool,
     test_control_session: bool,
 ) -> bool {
-    !test_control_session && (identity_missing || progress_pending)
+    !test_control_session && (identity_missing || progress_pending || identity_recovery)
 }
 
 pub fn portal_screencast_should_publish(has_streams: bool, session_locked: bool) -> bool {
@@ -211,13 +212,17 @@ mod tests {
 
     #[test]
     fn unfinished_post_identity_setup_reactivates_trusted_first_use_chrome() {
-        assert!(should_activate_first_use(false, true, false));
+        assert!(should_activate_first_use(false, true, false, false));
         assert!(
-            !should_activate_first_use(false, false, false),
+            !should_activate_first_use(false, false, false, false),
             "an established user without a journal must not see first-use again"
         );
         assert!(
-            !should_activate_first_use(true, true, true),
+            should_activate_first_use(false, false, true, false),
+            "a missing secret-service key must reopen the recovery flow"
+        );
+        assert!(
+            !should_activate_first_use(true, true, true, true),
             "the explicit development control session remains isolated"
         );
     }

@@ -67,8 +67,9 @@ def main():
     selected = inputs(os.environ)
     if args.validate_only:
         return
-    if not os.environ.get("GITHUB_REF", "").startswith("refs/heads/codex/"):
-        raise ValueError("development packaging requires a codex branch")
+    branch = os.environ.get("GITHUB_REF", "")
+    if branch != "refs/heads/main" and not branch.startswith("refs/heads/codex/"):
+        raise ValueError("development packaging requires main or a codex branch")
     sha, run_id = os.environ["GITHUB_SHA"], os.environ["GITHUB_RUN_ID"]
     if not re.fullmatch(r"[0-9a-f]{40}", sha) or not run_id.isdecimal():
         raise ValueError("invalid CI source identity")
