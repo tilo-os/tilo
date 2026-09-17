@@ -937,9 +937,9 @@ impl CollaboratorsOverlay {
             Fill::NonZero,
             transform,
             if cursor.is_some_and(|point| self.status.contains(point)) || model.status_editing {
-                colors.surface_white_10
+                colors.lift(0.10)
             } else {
-                colors.surface_white_5
+                colors.lift(0.05)
             },
             None,
             &RoundedRect::from_rect(self.status, f64::from(theme.tokens.radii.sm)),
@@ -1016,7 +1016,7 @@ impl CollaboratorsOverlay {
                 if active {
                     colors.accent[5]
                 } else {
-                    colors.surface_white_5
+                    colors.lift(0.05)
                 },
                 None,
                 &RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm)),
@@ -1031,7 +1031,7 @@ impl CollaboratorsOverlay {
                 text,
                 theme.tokens.typography.scale.xs,
                 if active {
-                    Color::WHITE
+                    colors.ink_on_any(&[colors.accent[5]], colors.text_primary, 4.5)
                 } else {
                     colors.text_dim
                 },

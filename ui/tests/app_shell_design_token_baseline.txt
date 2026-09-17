@@ -120,8 +120,8 @@ shell/src/compositor/backend/headless.rs literal_color 1
 shell/src/compositor/backend/winit.rs literal_color 1
 shell/src/compositor/capture.rs white_or_black 2
 shell/src/compositor/drag_feedback.rs literal_color 1
-shell/src/compositor/frame.rs literal_color 1
-shell/src/compositor/frame.rs white_or_black 2
+shell/src/shell/frame.rs literal_color 1
+shell/src/shell/frame.rs white_or_black 2
 shell/src/compositor/projection_capture.rs literal_color 1
 shell/src/shell/desktop_backdrop.rs literal_color 1
 shell/src/shell/editor_app.rs literal_color 1
