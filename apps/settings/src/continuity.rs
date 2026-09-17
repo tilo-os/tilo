@@ -22,10 +22,11 @@ pub(crate) enum Capability {
     FileTransfer,
     RealtimeSessions,
     TypedGamepad,
+    AppContinuations,
 }
 
 impl Capability {
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::Clipboard,
         Self::Notifications,
         Self::WifiSettings,
@@ -34,6 +35,7 @@ impl Capability {
         Self::FileTransfer,
         Self::RealtimeSessions,
         Self::TypedGamepad,
+        Self::AppContinuations,
     ];
 
     pub(crate) const fn key(self) -> &'static str {
@@ -46,6 +48,7 @@ impl Capability {
             Self::FileTransfer => "file_transfer",
             Self::RealtimeSessions => "realtime_sessions",
             Self::TypedGamepad => "typed_gamepad",
+            Self::AppContinuations => "app_continuations",
         }
     }
 
@@ -59,6 +62,7 @@ impl Capability {
             Self::FileTransfer => "File transfer",
             Self::RealtimeSessions => "Realtime sessions",
             Self::TypedGamepad => "Typed gamepad forwarding",
+            Self::AppContinuations => "App continuations",
         }
     }
 
@@ -72,6 +76,9 @@ impl Capability {
             Self::FileTransfer => "Accept explicit file sends between your certified devices.",
             Self::RealtimeSessions => "Hand off active calls and other live app sessions.",
             Self::TypedGamepad => "Forward typed gamepad events, never an untyped input stream.",
+            Self::AppContinuations => {
+                "Offer app placement and bounded resume state to your certified devices."
+            }
         }
     }
 }
@@ -110,6 +117,7 @@ pub(crate) struct ContinuityPrivacy {
     pub(crate) file_transfer: bool,
     pub(crate) realtime_sessions: bool,
     pub(crate) typed_gamepad: bool,
+    pub(crate) app_continuations: bool,
     pub(crate) audit: Vec<AuditEntry>,
 }
 
@@ -136,6 +144,7 @@ impl ContinuityPrivacy {
             Capability::FileTransfer => self.file_transfer,
             Capability::RealtimeSessions => self.realtime_sessions,
             Capability::TypedGamepad => self.typed_gamepad,
+            Capability::AppContinuations => self.app_continuations,
         }
     }
 
@@ -149,6 +158,7 @@ impl ContinuityPrivacy {
             Capability::FileTransfer => &mut self.file_transfer,
             Capability::RealtimeSessions => &mut self.realtime_sessions,
             Capability::TypedGamepad => &mut self.typed_gamepad,
+            Capability::AppContinuations => &mut self.app_continuations,
         };
         *slot = allowed;
     }

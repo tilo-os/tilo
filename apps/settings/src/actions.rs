@@ -596,7 +596,8 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "device_mesh.continuity.display_input"
         | "device_mesh.continuity.file_transfer"
         | "device_mesh.continuity.realtime_sessions"
-        | "device_mesh.continuity.typed_gamepad" => boolean(),
+        | "device_mesh.continuity.typed_gamepad"
+        | "device_mesh.continuity.app_continuations" => boolean(),
         key if key.starts_with("device_mesh.workspace.") && !presentation_key => boolean(),
         _ => false,
     };
@@ -3142,6 +3143,11 @@ fn device_mesh_section(doc: &AutoCommit) -> Resource {
             "device_mesh.continuity.typed_gamepad",
             "Continuity typed gamepad forwarding",
         ),
+        (
+            "continuity-app-continuations",
+            "device_mesh.continuity.app_continuations",
+            "Continuity app continuations",
+        ),
     ] {
         section = section.with_action(bool_flip_spec(id, key, b(key, false), label));
     }
@@ -3780,6 +3786,10 @@ mod tests {
             (
                 "continuity-typed-gamepad",
                 "device_mesh.continuity.typed_gamepad",
+            ),
+            (
+                "continuity-app-continuations",
+                "device_mesh.continuity.app_continuations",
             ),
         ];
 
