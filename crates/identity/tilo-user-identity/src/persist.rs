@@ -83,9 +83,15 @@ impl IdentityPaths {
     /// Returns an error if either subdirectory cannot be created.
     pub fn ensure_directories(&self) -> io::Result<()> {
         if let Some(parent) = self.user_pubkey.parent() {
+            #[cfg(windows)]
+            private_fs::directory(parent)?;
+            #[cfg(not(windows))]
             fs::create_dir_all(parent)?;
         }
         if let Some(parent) = self.device_privkey.parent() {
+            #[cfg(windows)]
+            private_fs::directory(parent)?;
+            #[cfg(not(windows))]
             fs::create_dir_all(parent)?;
         }
         Ok(())
@@ -164,9 +170,8 @@ pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
 /// Read a 32-byte Ed25519 signing key from disk, enforcing 0600
 /// permissions.
 ///
-/// On non-Unix targets the permission check is a no-op (still
-/// checks length); Tilo runs only on Linux, so this is the
-/// production path everywhere the compositor ships.
+/// Windows validates ownership and a user-only DACL on the opened handle,
+/// refusing reparse points rather than following a substituted secret path.
 ///
 /// # Errors
 ///
@@ -175,6 +180,7 @@ pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
 /// cannot be read, or [`PersistError::WrongKeyLength`] if it is not
 /// exactly 32 bytes.
 pub fn read_signing_key(path: &Path) -> Result<SigningKey, PersistError> {
+    #[cfg(unix)]
     ensure_secret_mode(path)?;
     signing_key_from_file(path)
 }
@@ -183,6 +189,14 @@ pub fn read_signing_key(path: &Path) -> Result<SigningKey, PersistError> {
 /// The mode policy is the caller's — see [`read_signing_key`] and
 /// [`read_device_key`].
 fn signing_key_from_file(path: &Path) -> Result<SigningKey, PersistError> {
+    #[cfg(windows)]
+    let bytes = {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        private_fs::read(path)?.take(33).read_to_end(&mut bytes)?;
+        bytes
+    };
+    #[cfg(not(windows))]
     let bytes = fs::read(path)?;
     if bytes.len() != 32 {
         return Err(PersistError::WrongKeyLength(bytes.len()));
@@ -204,6 +218,9 @@ pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     // final path.
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
+    #[cfg(windows)]
+    return private_fs::write_atomic(path, &sk.to_bytes());
+    #[cfg(not(windows))]
     atomic_file::write_with_mode(path, &sk.to_bytes(), 0o600)
 }
 
@@ -231,6 +248,7 @@ pub const DEVICE_KEY_MODE: u32 = 0o640;
 /// [`PersistError::Io`] if it cannot be read, or
 /// [`PersistError::WrongKeyLength`] if it is not exactly 32 bytes.
 pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
+    #[cfg(unix)]
     ensure_not_world_accessible(path)?;
     signing_key_from_file(path)
 }
@@ -244,6 +262,9 @@ pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
 pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
+    #[cfg(windows)]
+    return private_fs::write_atomic(path, &sk.to_bytes());
+    #[cfg(not(windows))]
     atomic_file::write_with_mode(path, &sk.to_bytes(), DEVICE_KEY_MODE)
 }
 
@@ -337,7 +358,7 @@ fn publish_device_key_no_clobber(path: &Path, key: &SigningKey) -> Result<bool, 
             // The key contents reached storage before the directory entry was
             // published.  Sync the parent as well, so a successful first boot
             // survives a power loss after the hard-link claim.
-            fs::File::open(parent)?.sync_all()?;
+            atomic_file::sync_directory(parent)?;
             Ok(true)
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
@@ -358,14 +379,20 @@ fn create_device_key_claim_temp(
             ".tilo-device-key-claim-{}-{sequence}",
             std::process::id()
         ));
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(DEVICE_KEY_MODE);
-        }
-        match options.open(&temp) {
+        #[cfg(windows)]
+        let candidate = private_fs::create_new(&temp);
+        #[cfg(not(windows))]
+        let candidate = {
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(DEVICE_KEY_MODE);
+            }
+            options.open(&temp)
+        };
+        match candidate {
             Ok(mut file) => {
                 #[cfg(unix)]
                 {
@@ -480,10 +507,12 @@ fn ensure_secret_mode(path: &Path) -> Result<(), PersistError> {
 
 /// Weaker policy, for a secret deliberately shared with a group: no
 /// access at all for users outside it.
+#[cfg(unix)]
 fn ensure_not_world_accessible(path: &Path) -> Result<(), PersistError> {
     reject_modes(path, 0o007)
 }
 
+#[cfg(unix)]
 fn reject_modes(path: &Path, forbidden: u32) -> Result<(), PersistError> {
     use std::os::unix::fs::PermissionsExt;
     let meta = fs::metadata(path)?;
@@ -497,16 +526,61 @@ fn reject_modes(path: &Path, forbidden: u32) -> Result<(), PersistError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn ensure_secret_mode(_path: &Path) -> Result<(), PersistError> {
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use ed25519_dalek::Signer;
     use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn replacing_a_signing_key_preserves_private_readability() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("signing.bin");
+        let first = SigningKey::from_bytes(&[17; 32]);
+        let second = SigningKey::from_bytes(&[29; 32]);
+        write_signing_key(&path, &first).unwrap();
+        assert_eq!(
+            read_signing_key(&path).unwrap().to_bytes(),
+            first.to_bytes()
+        );
+        write_signing_key(&path, &second).unwrap();
+        assert_eq!(
+            read_signing_key(&path).unwrap().to_bytes(),
+            second.to_bytes()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn public_windows_key_is_neither_read_nor_silently_replaced() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(root.path());
+        let (original, _) = load_or_create_device_key(&paths).unwrap();
+        let result = std::process::Command::new("icacls.exe")
+            .arg(&paths.device_privkey)
+            .args(["/grant", "*S-1-1-0:(R)"])
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{result:?}");
+        for result in [
+            read_signing_key(&paths.device_privkey),
+            read_device_key(&paths.device_privkey),
+            load_or_create_device_key(&paths).map(|(key, _)| key),
+        ] {
+            assert!(matches!(result, Err(PersistError::Io(error))
+                if error.kind() == io::ErrorKind::PermissionDenied));
+        }
+        assert_eq!(
+            write_device_key(&paths.device_privkey, &SigningKey::from_bytes(&[9; 32]))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied,
+        );
+        assert_eq!(
+            fs::read(&paths.device_privkey).unwrap(),
+            original.to_bytes()
+        );
+    }
 
     #[test]
     fn public_key_round_trip() {

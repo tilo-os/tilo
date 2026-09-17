@@ -106,7 +106,17 @@ impl RenderContext {
         // these are the values vello would have used.
         let instance = Instance::new(wgpu::InstanceDescriptor {
             display: None,
-            backends: wgpu::Backends::from_env().unwrap_or_default(),
+            // Use the host's native graphics API on Windows. Probing every
+            // backend can enter optional Vulkan translation-layer drivers
+            // before a working DX12 adapter is selected. Keep WGPU_BACKEND
+            // available for explicit diagnostics and alternate drivers.
+            backends: wgpu::Backends::from_env().unwrap_or_else(|| {
+                if cfg!(target_os = "windows") {
+                    wgpu::Backends::DX12
+                } else {
+                    wgpu::Backends::default()
+                }
+            }),
             flags: wgpu::InstanceFlags::from_build_config().with_env(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::from_env_or_default(),
