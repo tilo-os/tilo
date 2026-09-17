@@ -98,6 +98,10 @@ const LIBRARY_PAGE_SIZE: usize = 24;
 /// favourite, and removal targets at the 44px touch minimum.
 const LIBRARY_TWO_COLUMN_MAX_W: f64 = 720.0;
 const LIBRARY_ONE_COLUMN_MAX_W: f64 = 460.0;
+/// The gallery controls use the shared 44px minimum target with a little
+/// breathing room. Keeping this one value in both paint and test geometry
+/// prevents a visual refinement from silently shrinking an accessible hit.
+const LIBRARY_ACTION_H: f64 = 48.0;
 
 /// Grid density is presentation-local, but text scale is part of that
 /// presentation. Keep the decision pure so wide/high-text and sheet-open
@@ -110,7 +114,11 @@ fn library_column_count(width: f64, large_text: bool, metadata_editor: bool) -> 
     } else if width < LIBRARY_TWO_COLUMN_MAX_W {
         2
     } else if width >= 1_440.0 {
-        5
+        // Three generous columns make a real library feel like a collection,
+        // not a thumbnail contact sheet: filenames, provenance and actions
+        // stay readable and a five-item sample forms an intentional second
+        // row instead of leaving most of a desktop canvas blank.
+        3
     } else {
         4
     }
@@ -808,8 +816,18 @@ impl PhotosApp {
                 Some((
                     *card,
                     details,
-                    Rect::new(card.x1 - 88.0, card.y1 - 44.0, card.x1 - 44.0, card.y1),
-                    Rect::new(card.x1 - 44.0, card.y1 - 44.0, card.x1, card.y1),
+                    Rect::new(
+                        card.x1 - LIBRARY_ACTION_H * 2.0,
+                        card.y1 - LIBRARY_ACTION_H,
+                        card.x1 - LIBRARY_ACTION_H,
+                        card.y1,
+                    ),
+                    Rect::new(
+                        card.x1 - LIBRARY_ACTION_H,
+                        card.y1 - LIBRARY_ACTION_H,
+                        card.x1,
+                        card.y1,
+                    ),
                 ))
             })
             .collect()
@@ -2830,7 +2848,7 @@ impl PhotosApp {
         // overlap their independent destructive controls.
         let large_text = theme.text_scale > 1.25;
         let columns = library_column_count(bounds.width(), large_text, self.metadata_editor);
-        let gap = if columns <= 2 { 8.0 } else { 12.0 };
+        let gap = if columns <= 2 { 8.0 } else { 16.0 };
         let card_w =
             ((bounds.width() - f64::from(PAD * 2.0) - gap * columns.saturating_sub(1) as f64)
                 / columns as f64)
@@ -2842,17 +2860,54 @@ impl PhotosApp {
         } else {
             38.0
         };
-        let heading_y = bounds.y0 + f64::from(PAD);
+        let desktop_library = !large_text && bounds.width() >= LIBRARY_TWO_COLUMN_MAX_W;
+        let masthead = Rect::new(
+            bounds.x0 + f64::from(PAD),
+            bounds.y0 + 8.0,
+            bounds.x1 - f64::from(PAD),
+            bounds.y0 + 76.0,
+        );
+        if desktop_library {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &masthead,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &masthead,
+            );
+        }
+        let heading_y = if desktop_library {
+            masthead.y0 + 15.0
+        } else {
+            bounds.y0 + f64::from(PAD)
+        };
         text_renderer.draw_text_weighted(
             scene,
             &tr("photos-library"),
-            18.0,
+            if desktop_library { 24.0 } else { 18.0 },
             theme.text_primary,
-            transform * Affine::translate((bounds.x0 + f64::from(PAD), heading_y)),
+            transform
+                * Affine::translate((
+                    if desktop_library {
+                        masthead.x0 + 16.0
+                    } else {
+                        bounds.x0 + f64::from(PAD)
+                    },
+                    heading_y,
+                )),
             Some((bounds.width() - f64::from(PAD * 2.0)) as f32),
             TextWeight::Medium,
         );
-        let count = if large_text {
+        let count = if desktop_library {
+            format!("{} photographs · shared library", self.library_total)
+        } else if large_text {
             format!("{} photographs", self.library_total)
         } else if self.library_total == 0 {
             "0".to_owned()
@@ -2861,20 +2916,52 @@ impl PhotosApp {
             let last = (self.library_offset + self.library_items.len()).min(self.library_total);
             format!("{first}–{last} / {}", self.library_total)
         };
-        let count_width = if large_text { 180.0 } else { 100.0 };
+        let count_width = if desktop_library {
+            260.0
+        } else if large_text {
+            180.0
+        } else {
+            100.0
+        };
         text_renderer.draw_text_weighted(
             scene,
             &count,
             13.0,
             theme.text_dim,
             transform
-                * Affine::translate((bounds.x1 - f64::from(PAD) - count_width, heading_y + 3.0)),
+                * Affine::translate((
+                    if desktop_library {
+                        masthead.x0 + 16.0
+                    } else {
+                        bounds.x1 - f64::from(PAD) - count_width
+                    },
+                    if desktop_library {
+                        heading_y + 32.0
+                    } else {
+                        heading_y + 3.0
+                    },
+                )),
             Some(count_width as f32),
             TextWeight::Regular,
         );
         if !self.library_albums.is_empty() {
-            let mut x = bounds.x0 + f64::from(PAD);
-            let y = heading_y + if large_text { 54.0 } else { 24.0 };
+            let mut x = bounds.x0 + f64::from(PAD) + if desktop_library { 60.0 } else { 0.0 };
+            let y = if desktop_library {
+                masthead.y1 + 13.0
+            } else {
+                heading_y + if large_text { 54.0 } else { 24.0 }
+            };
+            if desktop_library {
+                text_renderer.draw_text_weighted(
+                    scene,
+                    "ALBUMS",
+                    10.0,
+                    theme.text_dim,
+                    transform * Affine::translate((bounds.x0 + f64::from(PAD), y + 7.0)),
+                    Some(54.0),
+                    TextWeight::Medium,
+                );
+            }
             let mut albums = vec![(
                 None,
                 if large_text {
@@ -2943,9 +3030,33 @@ impl PhotosApp {
         // behind global search: folders and people are an everyday browse
         // route.  The six-per-kind cap keeps this compact; every other label
         // remains available through the canonical resource/search surface.
-        let header_h = if large_text { 72.0 } else { 31.0 };
+        let header_h = if desktop_library {
+            108.0
+        } else if large_text {
+            72.0
+        } else {
+            31.0
+        };
         let filter_y = heading_y + header_h + album_h;
-        let mut filter_x = bounds.x0 + f64::from(PAD);
+        let mut filter_x = bounds.x0 + f64::from(PAD) + if desktop_library { 60.0 } else { 0.0 };
+        // On a full desktop shelf paging belongs beside filtering, not below
+        // the last row where it would steal a complete card lane. Reserve a
+        // named 44px control pair whenever this view has more than its two
+        // intended rows; narrow and enlarged-text layouts retain their
+        // dedicated full-width pager below the filters.
+        let desktop_pager = desktop_library && self.library_total > columns.saturating_mul(2);
+        let filter_x1 = bounds.x1 - f64::from(PAD) - if desktop_pager { 192.0 } else { 0.0 };
+        if desktop_library {
+            text_renderer.draw_text_weighted(
+                scene,
+                "FILTER",
+                10.0,
+                theme.text_dim,
+                transform * Affine::translate((bounds.x0 + f64::from(PAD), filter_y + 8.0)),
+                Some(54.0),
+                TextWeight::Medium,
+            );
+        }
         let compact_filters = columns <= 2;
         let mut filters = vec![(
             None,
@@ -3019,7 +3130,7 @@ impl PhotosApp {
                     if compact_filters { 110.0 } else { 196.0 },
                 )
             };
-            if filter_x + width > bounds.x1 - f64::from(PAD) {
+            if filter_x + width > filter_x1 {
                 break;
             }
             let chip_h = if large_text { 44.0 } else { 28.0 };
@@ -3066,6 +3177,55 @@ impl PhotosApp {
                 bounds: chip,
             });
             filter_x += width + 8.0;
+        }
+        if desktop_pager {
+            let previous = Rect::new(
+                filter_x1 + 8.0,
+                filter_y - 8.0,
+                filter_x1 + 92.0,
+                filter_y + 36.0,
+            );
+            let next = Rect::new(
+                previous.x1 + 8.0,
+                filter_y - 8.0,
+                previous.x1 + 92.0,
+                filter_y + 36.0,
+            );
+            for (forward, rect, label) in [(false, previous, "Previous"), (true, next, "Next")] {
+                let enabled = self.can_page_library(forward);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    if enabled {
+                        theme.tokens.colors.surfaces.raised
+                    } else {
+                        theme.tokens.colors.neutral[2]
+                    },
+                    None,
+                    &rect,
+                );
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    theme.border_standard,
+                    None,
+                    &rect,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    label,
+                    11.0,
+                    if enabled {
+                        theme.text_primary
+                    } else {
+                        theme.text_dim
+                    },
+                    transform * Affine::translate((rect.x0 + 9.0, rect.y0 + 13.0)),
+                    Some((rect.width() - 18.0) as f32),
+                    TextWeight::Medium,
+                );
+                self.library_page_hits.push((forward, enabled, rect));
+            }
         }
         // On a phone the album-management actions sit beneath the chips, not
         // over the final row of photographs. Reserve their compact strip in
@@ -3163,6 +3323,11 @@ impl PhotosApp {
                 320.0
             } else if columns == 1 {
                 320.0
+            } else if desktop_library {
+                // Two complete desktop rows are more useful than one large
+                // row above a blank canvas. The card remains comfortably
+                // wide at this three-column breakpoint.
+                168.0
             } else {
                 178.0
             },
@@ -3170,7 +3335,14 @@ impl PhotosApp {
         // The footer has two text lines and an honest 44px action row. Keep
         // it roomy instead of letting desktop density turn controls into
         // loose glyphs or make metadata collide with a filename.
-        let card_h = preview_h + if large_text { 128.0 } else { 88.0 };
+        let card_h = preview_h
+            + if large_text {
+                132.0
+            } else if desktop_library {
+                104.0
+            } else {
+                92.0
+            };
         let rows = ((bounds.y1 - top - f64::from(PAD)).max(0.0) / (card_h + gap)).floor() as usize;
         // The editor is modal at large text: leaving a partially visible
         // ultra-wide thumbnail behind it creates a false second target and
@@ -3254,12 +3426,13 @@ impl PhotosApp {
                 None,
                 &Rect::new(footer.x0, footer.y0, footer.x1, footer.y0 + 1.0),
             );
-            let action_y = card.y1 - 44.0;
-            let control_w = 44.0;
+            let action_y = card.y1 - LIBRARY_ACTION_H;
+            let control_w = LIBRARY_ACTION_H;
             let details = Rect::new(
                 card.x0 + 8.0,
                 action_y,
-                (card.x0 + 108.0).min(card.x1 - control_w * 2.0),
+                (card.x0 + if desktop_library { 136.0 } else { 108.0 })
+                    .min(card.x1 - control_w * 2.0),
                 card.y1,
             );
             let remove = Rect::new(
@@ -3281,7 +3454,7 @@ impl PhotosApp {
             text_renderer.draw_text_weighted(
                 scene,
                 &display_name,
-                13.0,
+                if desktop_library { 14.0 } else { 13.0 },
                 theme.text_primary,
                 transform
                     * Affine::translate((x + 9.0, preview.y1 + if large_text { 8.0 } else { 9.0 })),
@@ -3298,7 +3471,7 @@ impl PhotosApp {
                 text_renderer.draw_text_weighted(
                     scene,
                     &metadata,
-                    11.0,
+                    if desktop_library { 12.0 } else { 11.0 },
                     theme.text_dim,
                     transform
                         * Affine::translate((
@@ -3335,9 +3508,9 @@ impl PhotosApp {
                 text_renderer.draw_text_weighted(
                     scene,
                     "Details",
-                    11.0,
+                    12.0,
                     theme.tokens.colors.accent[6],
-                    transform * Affine::translate((details.x0 + 26.0, details.y0 + 14.0)),
+                    transform * Affine::translate((details.x0 + 28.0, details.y0 + 15.0)),
                     Some((details.width() - 30.0) as f32),
                     TextWeight::Medium,
                 );
@@ -3346,9 +3519,9 @@ impl PhotosApp {
                     transform,
                     Rect::new(
                         details.x0 + 10.0,
-                        details.y0 + 14.0,
+                        details.y0 + 16.0,
                         details.x0 + 26.0,
-                        details.y0 + 30.0,
+                        details.y0 + 32.0,
                     ),
                     Icon::Pencil,
                     theme.tokens.colors.accent[6],
@@ -4913,7 +5086,7 @@ impl Widget for PhotosApp {
                 id: photo.id.clone(),
                 name: photo.image.name.clone(),
                 favorite: photo.favorite,
-                metadata: photo.metadata_summary(),
+                metadata: photo.metadata_card_summary(),
             })
             .collect();
         self.library_albums = library
