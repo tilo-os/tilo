@@ -65,8 +65,8 @@ fn line_h(size: f32, text_scale: f64) -> f64 {
         clippy::cast_possible_truncation,
         reason = "text scale is clamped to 0.5..=4.0 by Theme"
     )]
-    let scaled = size * text_scale as f32;
-    f64::from(ui::text_render::TextStyle::new(scaled).line_height_px())
+    let scale = text_scale as f32;
+    ui::text_metrics::line_height_px(size, scale)
 }
 
 /// A floating capsule's width: the shared `Button`'s side padding around the

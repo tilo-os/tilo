@@ -99,7 +99,12 @@ const STATUS_PAD_Y: f32 = 4.0;
 /// Line height the renderer will give `size` at `text_scale` — the default
 /// `TextStyle` leading on the scaled size, not a local copy of that factor.
 fn line_h(size: f32, text_scale: f32) -> f32 {
-    ui::text_render::TextStyle::new(size * text_scale).line_height_px()
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a line height in logical px fits f32 exactly as the renderer reports it"
+    )]
+    let line = ui::text_metrics::line_height_px(size, text_scale) as f32;
+    line
 }
 
 /// Toolbar capsule height at `text_scale`: the authored [`BTN_H`] at 1×.

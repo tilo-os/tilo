@@ -59,11 +59,54 @@ pub fn centered_text_top(band_y0: f64, band_height: f64, measured_line_height: f
     band_y0 + (band_height - measured_line_height) / 2.0
 }
 
-// A renderer-less `line_height_px(size, text_scale)` is deliberately absent:
-// every caller in `ui` has a `TextRenderer` in hand and the `.1` of
-// `measure*` is the line box the renderer will actually paint. The one
-// renderer-less copy left in the tree is `math::layout::line_h` (size × 1.25
-// for the maths layout), owned with `text_render`.
+/// The renderer's sanitised text scale: the clamp `TextRenderer::set_text_scale`
+/// applies, so a scale the renderer refuses to honour is not honoured here
+/// either.
+fn sanitized_text_scale(text_scale: f32) -> f32 {
+    if text_scale.is_finite() {
+        text_scale.clamp(0.5, 4.0)
+    } else {
+        1.0
+    }
+}
+
+/// Height of one line of `size`-pt text at `text_scale` **without a renderer
+/// in hand** — exactly what [`TextRenderer::measure`] reports for a single
+/// line, `size × text_scale × line_height` of the legacy [`TextStyle`].
+///
+/// Widgets that paint have a renderer and use the `.1` of `measure*`; this is
+/// for the layout passes that solve a row grid before any paint (an app's
+/// `build_layout` / `measure`, a metrics struct built from the theme) and
+/// must agree with what paint will measure. One owner for the formula, so
+/// the apps stop carrying `size × 1.25` copies.
+pub fn line_height_px(size: f32, text_scale: f32) -> f64 {
+    f64::from(TextStyle::new(size * sanitized_text_scale(text_scale)).line_height_px())
+}
+
+/// How much taller one line of `size`-pt text is at `text_scale` than at 1×;
+/// zero at or below 1×, so an authored design never shrinks.
+pub fn line_growth(size: f32, text_scale: f32) -> f64 {
+    (line_height_px(size, text_scale) - line_height_px(size, 1.0)).max(0.0)
+}
+
+/// The authored (or token) 1× `minimum`, or the `measured` line plus its pad
+/// rounded up to a whole pixel once scaled type needs more — never a fraction
+/// short of what the painter lays down, and a whole pixel at every scale.
+pub fn at_least_whole(minimum: f64, measured: f64) -> f64 {
+    measured.ceil().max(minimum)
+}
+
+/// An authored 1× height grown by exactly the extra room its text lines
+/// (`sizes`) need at `text_scale`, snapped up to a whole pixel: the design
+/// exactly at 1× (a 28 px row stays 28, not `16.25 + 12 = 28.25`), and at 2×
+/// grown by the lines' growth alone.
+pub fn authored_h(authored: f64, sizes: &[f32], text_scale: f32) -> f64 {
+    let growth: f64 = sizes
+        .iter()
+        .map(|&size| line_growth(size, text_scale))
+        .sum();
+    (authored + growth).ceil()
+}
 
 #[cfg(test)]
 mod tests {
@@ -92,6 +135,35 @@ mod tests {
         tr.set_text_scale(2.0);
         // A token that resolves below the old modal floor stays the token.
         assert_eq!(renderer_type_size(&tr, 10.0), 5.0);
+    }
+
+    #[test]
+    fn line_height_px_matches_what_the_renderer_measures() {
+        for scale in [1.0_f32, 2.0, 0.75] {
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let (_, measured) = tr.measure("Ag", 14.0, None);
+            assert!(
+                (line_height_px(14.0, scale) - f64::from(measured)).abs() < 1e-4,
+                "at {scale}x the renderer-less line ({}) must equal the measured one ({measured})",
+                line_height_px(14.0, scale)
+            );
+        }
+        // Sanitised like the renderer: out-of-range and non-finite scales.
+        assert_eq!(line_height_px(14.0, 9.0), line_height_px(14.0, 4.0));
+        assert_eq!(line_height_px(14.0, f32::NAN), line_height_px(14.0, 1.0));
+    }
+
+    #[test]
+    fn growth_and_authored_heights_keep_the_one_x_design_exact() {
+        assert_eq!(line_growth(14.0, 1.0), 0.0);
+        assert_eq!(line_growth(14.0, 0.75), 0.0, "smaller text never shrinks a design");
+        assert!(line_growth(14.0, 2.0) > 17.0);
+        assert_eq!(authored_h(28.0, &[13.0], 1.0), 28.0);
+        assert_eq!(authored_h(74.0, &[26.0, 13.0], 1.0), 74.0);
+        assert!(authored_h(28.0, &[13.0], 2.0) >= 28.0 + line_growth(13.0, 2.0));
+        assert_eq!(at_least_whole(16.0, 13.75), 16.0);
+        assert_eq!(at_least_whole(16.0, 17.75), 18.0);
     }
 
     #[test]

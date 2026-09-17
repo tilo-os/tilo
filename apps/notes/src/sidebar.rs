@@ -79,12 +79,7 @@ const ROW_TEXT_SIZE: f32 = 14.0;
 /// without measuring each row's own title (a fixed probe, once per row
 /// height). The crate's one copy of the line formula.
 fn line_h(size: f32, text_scale: f64) -> f64 {
-    let scale = if text_scale.is_finite() {
-        num::f32_of_f64(text_scale.clamp(0.5, 4.0))
-    } else {
-        1.0
-    };
-    f64::from(ui::text_render::TextStyle::new(size * scale).line_height_px())
+    ui::text_metrics::line_height_px(size, num::f32_of_f64(text_scale))
 }
 
 /// Outbound commands from the sidebar to the parent `NotesApp`. The

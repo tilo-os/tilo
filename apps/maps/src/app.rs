@@ -2486,18 +2486,13 @@ fn text_vmid(y: f64, h: f64, size: f32, text_scale: f32) -> f64 {
 /// measures for a single line. The crate's one copy of the line formula;
 /// `text_vmid` and the authored row heights below all read it.
 fn line_h(size: f32, text_scale: f32) -> f64 {
-    let scale = if text_scale.is_finite() {
-        text_scale.clamp(0.5, 4.0)
-    } else {
-        1.0
-    };
-    f64::from(ui::text_render::TextStyle::new(size * scale).line_height_px())
+    ui::text_metrics::line_height_px(size, text_scale)
 }
 
 /// How much taller one line of `size`-pt text is at `text_scale` than at 1×;
 /// zero at or below 1×.
 fn line_growth(size: f32, text_scale: f32) -> f64 {
-    (line_h(size, text_scale) - line_h(size, 1.0)).max(0.0)
+    ui::text_metrics::line_growth(size, text_scale)
 }
 
 /// Base (unscaled) text sizes handed to the legacy renderer, read from the
@@ -2515,11 +2510,7 @@ fn text_lg() -> f32 {
 /// at `text_scale`, snapped up to a whole pixel — the design exactly at 1×
 /// (a 28px row stays 28, not `16.25 + 12 = 28.25`), and never a fraction.
 fn authored_h(authored: f64, sizes: &[f32], text_scale: f32) -> f64 {
-    let growth: f64 = sizes
-        .iter()
-        .map(|&size| line_growth(size, text_scale))
-        .sum();
-    (authored + growth).ceil()
+    ui::text_metrics::authored_h(authored, sizes, text_scale)
 }
 
 /// Intrinsic size of the floating navigation card at `text_scale`: the
