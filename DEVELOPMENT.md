@@ -192,6 +192,22 @@ drive letters are preserved. Windows imports remain local unless an absolute
 The installer does not provide that workspace service. Books captures accept an
 EPUB positional argument and wait for its import to finish.
 
+Clocks saves private device state under `%LOCALAPPDATA%/tilo/clocks.json` on
+Windows (an absolute `XDG_STATE_HOME` overrides that location). Its live startup
+restores that state; screenshot scenarios never save or consume shell commands.
+The installer registers `dev.tilo.clocks` on the Start menu shortcut and in the
+current user's notification display-name registry. The SDK's `notifications`
+feature provides Windows toast submission and app-scoped history inspection.
+Alerts obey Windows notification settings and Do Not Disturb. Clocks currently
+delivers alarms and completed timers while its window is running; scheduling
+after process exit and activation from a notification are still pending.
+
+For device verification, build `cargo build --locked -p ui --example windows-host
+--features notifications`. The helper accepts `history dev.tilo.clocks` to inspect
+only Clocks' notifications and `remove dev.tilo.clocks TAG` to dismiss one test
+notification. `show ID TAG TITLE BODY` exercises the production SDK API; Windows
+may reject a settings query before the app's first notification is submitted.
+
 For smaller local development artifacts, set `CARGO_PROFILE_DEV_DEBUG=0` and
 `CARGO_PROFILE_TEST_DEBUG=0` in the PowerShell environment before building. Do not
 set `CARGO_TARGET_DIR`. When checking Linux from WSL in the same worktree, run

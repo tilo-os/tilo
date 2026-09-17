@@ -2,8 +2,8 @@
 # Cap'n Proto and the pinned Rust/MSVC toolchain must be available on PATH.
 [CmdletBinding()]
 param(
-    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook')]
-    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook'),
+    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks')]
+    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks'),
     [ValidateSet('dev', 'release')]
     [string]$Profile = 'dev'
 )
@@ -43,6 +43,24 @@ foreach ($application in $applications) {
     }
 }
 
+$hostHelper = $null
+if ('clocks' -in $applications) {
+    Push-Location -LiteralPath $repository
+    try {
+        $hostMessages = & cargo build --locked --profile $Profile -p ui --example windows-host --features notifications --message-format=json-render-diagnostics
+        $hostExitCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    foreach ($line in $hostMessages) {
+        $entry = $line | ConvertFrom-Json
+        if ($entry.reason -eq 'compiler-artifact' -and $entry.target.name -eq 'windows-host' -and $entry.executable) {
+            $hostHelper = $entry.executable
+        }
+    }
+    if ($hostExitCode -ne 0 -or -not $hostHelper) { throw 'Could not build Windows notification registration helper.' }
+}
+
 $installDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Tilo/Applications'
 $menuDirectory = Join-Path ([Environment]::GetFolderPath('Programs')) 'Tilo'
 New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
@@ -72,5 +90,12 @@ foreach ($application in $applications) {
     $shortcut.WorkingDirectory = [Environment]::GetFolderPath('UserProfile')
     $shortcut.Description = "Tilo $title"
     $shortcut.Save()
+    if ($application -eq 'clocks') {
+        & $hostHelper register 'dev.tilo.clocks' "Tilo $title" $destination $shortcutPath
+        if ($LASTEXITCODE -ne 0) { throw 'Could not register Clocks for Windows notifications.' }
+        $notificationKey = 'HKCU:/Software/Classes/AppUserModelId/dev.tilo.clocks'
+        New-Item -Path $notificationKey -Force | Out-Null
+        New-ItemProperty -LiteralPath $notificationKey -Name DisplayName -Value "Tilo $title" -PropertyType String -Force | Out-Null
+    }
     [pscustomobject]@{ Application = $title; Executable = $destination; Shortcut = $shortcutPath }
 }
