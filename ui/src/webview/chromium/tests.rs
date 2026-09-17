@@ -1,6 +1,60 @@
 use super::*;
 
 #[test]
+fn fullscreen_protocol_decodes_valid_edges_and_rejects_malformed_known_events() {
+    assert_eq!(
+        decode_event(&json!({"event":"fullscreen","fullscreen":true})),
+        Some(WebViewEvent::FullscreenChanged(true))
+    );
+    assert_eq!(
+        decode_event(&json!({"event":"fullscreen","fullscreen":false})),
+        Some(WebViewEvent::FullscreenChanged(false))
+    );
+    assert_eq!(
+        decode_event(&json!({"event":"renderer_terminated"})),
+        Some(WebViewEvent::RendererTerminated)
+    );
+    assert!(validate_event(&json!({"event":"fullscreen","fullscreen":true})).is_ok());
+    assert!(validate_event(&json!({"event":"renderer_terminated"})).is_ok());
+    for malformed in [
+        json!({"event":"fullscreen"}),
+        json!({"event":"fullscreen","fullscreen":"true"}),
+        json!({"event":"renderer_terminated","status":"crashed"}),
+    ] {
+        assert!(validate_event(&malformed).is_err(), "{malformed}");
+    }
+    assert_eq!(
+        encode_command(WebViewCommand::ExitFullscreen),
+        Some(json!({"op":"exit_fullscreen"}))
+    );
+}
+
+#[test]
+fn fullscreen_state_events_coalesce_without_dropping_renderer_termination() {
+    let shared = Shared::default();
+    shared.event(WebViewEvent::FullscreenChanged(true));
+    shared.event(WebViewEvent::FullscreenChanged(false));
+    shared.event(WebViewEvent::RendererTerminated);
+    for progress in 0..100 {
+        shared.event(WebViewEvent::LoadProgress(f64::from(progress) / 100.0));
+    }
+    assert_eq!(
+        shared
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![
+            WebViewEvent::FullscreenChanged(false),
+            WebViewEvent::RendererTerminated,
+            WebViewEvent::LoadProgress(0.99),
+        ]
+    );
+}
+
+#[test]
 fn bounded_identity_events_decode_and_reject_oversize_favicons() {
     let event = decode_event(&serde_json::json!({"event":"favicon","page_url":"https://fixture.test/","width":1,"height":1,"png":"iVBORw=="})).unwrap();
     assert!(matches!(

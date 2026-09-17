@@ -413,6 +413,10 @@ pub struct BrowserWidget {
     pending_pip: Option<ui::floating_surface::FloatingSurfaceRequest>,
     pending_pip_region_update: Option<Rect>,
     published_pip_region: Option<Rect>,
+    /// CEF document/video fullscreen state for this tab.
+    content_fullscreen: bool,
+    /// Actual primary-window state reported by the root widget.
+    window_fullscreen_active: bool,
     active_pip_element: Option<MediaElementInfo>,
     /// The no-video fallback mirrors the live page viewport instead of a
     /// semantic media element. Kept explicit so media polling never mistakes
@@ -488,6 +492,26 @@ impl BrowserWidget {
     /// wire the engine's waker to the winit event-loop proxy.
     pub fn engine_handle(&self) -> SharedEngine {
         self.engine.clone()
+    }
+    pub(crate) fn content_fullscreen(&self) -> bool {
+        self.content_fullscreen
+    }
+    pub(crate) fn set_window_fullscreen_active(&mut self, active: bool) {
+        if self.window_fullscreen_active != active {
+            self.window_fullscreen_active = active;
+            self.structure_dirty = true;
+        }
+    }
+    /// Clear this tab's desired state immediately and tell Alloy to leave
+    /// document fullscreen. Returns whether an exit was initiated.
+    pub(crate) fn exit_content_fullscreen(&mut self) -> bool {
+        if !self.content_fullscreen {
+            return false;
+        }
+        self.content_fullscreen = false;
+        self.structure_dirty = true;
+        self.engine.send(WebViewCommand::ExitFullscreen);
+        true
     }
 
     /// Widget over an explicit engine — used by tests.
@@ -731,6 +755,8 @@ impl BrowserWidget {
             pending_pip: None,
             pending_pip_region_update: None,
             published_pip_region: None,
+            content_fullscreen: false,
+            window_fullscreen_active: false,
             active_pip_element: None,
             pip_page_fallback: false,
             active_pip: false,
@@ -1472,6 +1498,13 @@ impl BrowserWidget {
         reason = "The browser chrome is intentionally composed in one ordered layout function."
     )]
     fn build_composition(&self) -> Box<dyn Widget> {
+        if self.content_fullscreen && self.window_fullscreen_active {
+            return Box::new(
+                WebView::new(self.engine.clone())
+                    .with_scale_factor(self.window_scale)
+                    .with_test_id("browser.surface"),
+            );
+        }
         // Compact, square-ish icon buttons (44×40 — a comfortable touch
         // target) instead of the toolkit's 120×40 label-button default,
         // so three of them leave the address bar the rest of the width
@@ -2525,6 +2558,18 @@ impl BrowserWidget {
                     {
                         self.media_document_generation = Some(document_generation);
                         self.media_playing = playing;
+                        self.structure_dirty = true;
+                    }
+                }
+                WebViewEvent::FullscreenChanged(active) => {
+                    if self.content_fullscreen != active {
+                        self.content_fullscreen = active;
+                        self.structure_dirty = true;
+                    }
+                }
+                WebViewEvent::RendererTerminated => {
+                    if self.content_fullscreen {
+                        self.content_fullscreen = false;
                         self.structure_dirty = true;
                     }
                 }
@@ -5221,6 +5266,70 @@ mod architecture_tests {
         widget.apply_engine_events();
         assert!(widget.media_playing);
         assert_eq!(widget.media_document_generation, Some(8));
+    }
+
+    #[test]
+    fn fullscreen_events_and_renderer_loss_drive_tab_state() {
+        struct FullscreenEngine {
+            events: std::sync::Mutex<Vec<WebViewEvent>>,
+            capture: std::sync::Arc<TestEngine>,
+        }
+        impl WebViewEngine for FullscreenEngine {
+            fn send(&self, command: WebViewCommand) {
+                self.capture.send(command);
+            }
+            fn frames(&self) -> ui::webview::FrameSlot {
+                self.capture.frames()
+            }
+            fn drain_events(&self) -> Vec<WebViewEvent> {
+                std::mem::take(&mut *self.events.lock().unwrap())
+            }
+        }
+        let capture = TestEngine::new();
+        let engine = std::sync::Arc::new(FullscreenEngine {
+            events: std::sync::Mutex::new(vec![WebViewEvent::FullscreenChanged(true)]),
+            capture: capture.clone(),
+        });
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+
+        widget.apply_engine_events();
+        assert!(widget.content_fullscreen());
+        assert!(widget.take_structure_dirty());
+
+        engine
+            .events
+            .lock()
+            .unwrap()
+            .push(WebViewEvent::RendererTerminated);
+        widget.apply_engine_events();
+        assert!(!widget.content_fullscreen());
+        assert!(widget.take_structure_dirty());
+
+        engine.events.lock().unwrap().extend([
+            WebViewEvent::FullscreenChanged(true),
+            WebViewEvent::FullscreenChanged(false),
+        ]);
+        widget.apply_engine_events();
+        assert!(!widget.content_fullscreen());
+    }
+
+    #[test]
+    fn exiting_content_fullscreen_is_idempotent_and_routes_native_command_once() {
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        widget.content_fullscreen = true;
+
+        assert!(widget.exit_content_fullscreen());
+        assert!(!widget.exit_content_fullscreen());
+        assert!(!widget.content_fullscreen());
+        assert_eq!(
+            engine
+                .commands()
+                .iter()
+                .filter(|command| matches!(command, WebViewCommand::ExitFullscreen))
+                .count(),
+            1
+        );
     }
 
     #[test]
