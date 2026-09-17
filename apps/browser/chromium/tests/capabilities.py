@@ -34,7 +34,7 @@ class Capabilities(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.shutdown();cls.server.server_close()
     def setUp(self):
-        self.h=Host();self.addCleanup(self.h.close);self.addCleanup(self.save_evidence)
+        self.h=Host(args=['--use-fake-device-for-media-stream'] if self._testMethodName=='test_fake_camera_microphone_policy_grant_revoke_and_new_request' else []);self.addCleanup(self.h.close);self.addCleanup(self.save_evidence)
     def save_evidence(self):
         if directory:=os.environ.get('QOS_SITE_EVIDENCE_DIR'):
             path=Path(directory);path.mkdir(parents=True,exist_ok=True)
@@ -80,6 +80,46 @@ class Capabilities(unittest.TestCase):
                 self.assertIn('CERT',error['message'])
                 self.assertFalse(any(e['event']=='loaded' and e.get('url')==url and e.get('status')==200 for e in self.h.seen))
             finally:server.shutdown();server.server_close()
+
+    def test_fake_camera_microphone_policy_grant_revoke_and_new_request(self):
+        def request(marker):
+            self.h.send(op='scripts',scripts=["navigator.mediaDevices.getUserMedia({video:true,audio:true}).then(s=>{s.getTracks().forEach(t=>t.stop());document.title='"+marker+"-granted'}).catch(e=>document.title='"+marker+"-'+e.name)"])
+        self.h.navigate(self.url+'/')
+        request('first')
+        prompt=self.h.until(lambda e:e['event']=='permission_prompt')
+        self.assertIn('camera',prompt['permissions']);self.assertIn('microphone',prompt['permissions'])
+        self.h.send(op='permission_decision',id=prompt['id'],allow=True)
+        self.h.until(lambda e:e['event']=='title' and e['title']=='first-granted')
+        state=self.status(self.url)
+        self.assertEqual(state['permissions']['camera'],'allowed')
+        self.assertEqual(state['permissions']['microphone'],'allowed')
+        request('remembered')
+        remembered=self.h.until(lambda e:e['event']=='permission_prompt' or (e['event']=='title' and e['title'].startswith('remembered-')))
+        self.assertEqual(remembered.get('title'),'remembered-granted',remembered)
+        self.h.send(op='scripts',scripts=[])
+        other=self.url.replace('127.0.0.1','localhost')
+        self.h.navigate(other+'/')
+        other_state=self.status(other,3)
+        self.assertEqual(other_state['permissions']['camera'],'ask')
+        self.assertEqual(other_state['permissions']['microphone'],'ask')
+        request('other')
+        other_prompt=self.h.until(lambda e:e['event']=='permission_prompt')
+        self.h.send(op='permission_decision',id=other_prompt['id'],allow=False)
+        self.h.until(lambda e:e['event']=='title' and e['title']=='other-NotAllowedError')
+        self.h.send(op='scripts',scripts=[])
+        self.h.navigate(self.url+'/')
+        state=self.status(self.url,4)
+        self.h.send(op='site_action',request_id=5,origin=self.url,generation=state['generation'],action='revoke')
+        self.assertTrue(self.h.until(lambda e:e['event']=='site_result' and e['request_id']==5)['success'])
+        state=self.status(self.url,6)
+        self.assertEqual(state['permissions']['camera'],'blocked')
+        self.assertEqual(state['permissions']['microphone'],'blocked')
+        after=len(self.h.seen)
+        request('after-revoke')
+        outcome=self.h.until(lambda e:e['event']=='permission_prompt' or (e['event']=='title' and e['title'].startswith('after-revoke-')))
+        self.assertEqual(outcome.get('title'),'after-revoke-NotAllowedError',outcome)
+        self.h.settle(.2)
+        self.assertFalse(any(e['event']=='permission_prompt' for e in self.h.seen[after:]))
 
     def test_synthetic_notification_grant_then_revoke(self):
         self.h.navigate(self.url+'/')
