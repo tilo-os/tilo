@@ -233,6 +233,54 @@ print('sha256:''' + '3' * 64 + '''')
         self.assertNotIn('--cache-to', arguments)
         self.assertEqual(arguments.count('1700000000'), 2)
 
+    def test_completed_wpe_artifact_takes_priority_and_preserves_release_epoch(self):
+        inputs = self.development_pipeline_inputs()
+        self.write('os/dev/prepare-wpe-stage.py', "raise AssertionError('must never compile WPE')\n")
+        self.write('os/dev/wpe-stage-artifact.py', """import sys
+from pathlib import Path
+assert sys.argv[1] == 'import'
+args = dict(zip(sys.argv[2::2], sys.argv[3::2]))
+assert args['--architecture'] == 'aarch64'
+assert args['--epoch'] == '0'
+assert args['--receipt'] == '/private/receipt with spaces.json'
+assert args['--wpe'] == 'code.sandbox.example/qos/tilo-wpe-buildroot@sha256:' + '4' * 64
+assert Path(args['--assets']) == Path(args['--repo']) / 'os/external-assets/cache'
+print('sha256:' + '5' * 64)
+""")
+        self.commit_fixture()
+        inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='code.sandbox.example/qos/tilo-wpe-buildroot@sha256:' + '4' * 64,
+            TILO_WPE_STAGE_RECEIPT='/private/receipt with spaces.json', TILO_WPE_SOURCE_DATE_EPOCH='0',
+            TILO_WPE_BUILD_CACHE_REF='code.sandbox.example/qos/tilo-development-wpe-cache-aarch64')
+        result = self.run_builder(**inputs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = self.log.read_bytes().decode().split('\0')
+        self.assertEqual(arguments.count('wpe-builder=container-image://sha256:' + '5' * 64), 2)
+        self.assertEqual(arguments.count('1700000000'), 2)
+        self.assertNotIn('--cache-to', arguments)
+
+    def test_completed_wpe_import_failure_never_falls_back_to_compilation(self):
+        inputs = self.development_pipeline_inputs()
+        self.write('os/dev/prepare-wpe-stage.py', "raise AssertionError('must never compile WPE')\n")
+        inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='code.sandbox.example/qos/tilo-wpe-buildroot@sha256:' + '4' * 64,
+            TILO_WPE_STAGE_RECEIPT='/private/required.json', TILO_WPE_SOURCE_DATE_EPOCH='0',
+            TILO_WPE_BUILD_CACHE_REF='code.sandbox.example/qos/tilo-development-wpe-cache-aarch64')
+        for source, status in (("raise SystemExit(82)\n", 82), ("print('mutable:tag')\n", 1)):
+            with self.subTest(source=source):
+                self.write('os/dev/wpe-stage-artifact.py', source)
+                self.commit_fixture()
+                result = self.run_builder(**inputs)
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertFalse(self.log.exists(), 'failed artifact import reached OS build')
+                self.assertNotIn('must never compile WPE', result.stderr)
+
+    def test_completed_wpe_import_requires_development_browser_and_epoch(self):
+        inputs = self.development_pipeline_inputs()
+        self.assert_rejected_before_build(self.run_builder(TILO_WPE_STAGE_RECEIPT='/private/required.json'),
+                                          'WPE artifact import requires a fresh full-browser development build')
+        inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='code.sandbox.example/qos/tilo-wpe-buildroot@sha256:' + '4' * 64,
+                      TILO_WPE_STAGE_RECEIPT='/private/required.json')
+        self.assert_rejected_before_build(self.run_builder(**inputs), 'WPE artifact import requires an explicit dependency epoch')
+
     def test_wpe_cache_is_rejected_for_production_or_browserless_build(self):
         result = self.run_builder(TILO_WPE_BUILD_CACHE_REF='code.sandbox.example/qos/tilo-development-wpe-cache-aarch64')
         self.assert_rejected_before_build(result, 'WPE stage caching requires a fresh full-browser development build')
