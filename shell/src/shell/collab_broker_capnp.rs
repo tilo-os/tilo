@@ -6792,7 +6792,19 @@ pub(crate) mod tests {
     pub(crate) fn local_directory_fixture_with_membership(
         membership: crate::shell::state::WorkspaceTreeHandle,
     ) -> LocalDirectoryFixture {
-        const PEER_ID: u64 = 71;
+        local_directory_fixture_with_peer(membership, Some(71))
+    }
+
+    pub(crate) fn local_directory_fixture_with_first_allocated_peer(
+        membership: crate::shell::state::WorkspaceTreeHandle,
+    ) -> LocalDirectoryFixture {
+        local_directory_fixture_with_peer(membership, None)
+    }
+
+    fn local_directory_fixture_with_peer(
+        membership: crate::shell::state::WorkspaceTreeHandle,
+        peer_id: Option<u64>,
+    ) -> LocalDirectoryFixture {
         let cluster_id = membership
             .read()
             .active_workspace()
@@ -6808,6 +6820,7 @@ pub(crate) mod tests {
             Some(Arc::clone(&membership)),
             None,
         );
+        let peer_id = peer_id.unwrap_or_else(|| state.next_peer_id());
         let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
         let directory_state = Rc::new(RefCell::new(TestActionDirectory {
             revision: "directory-r1".into(),
@@ -6822,7 +6835,7 @@ pub(crate) mod tests {
                 state: Rc::clone(&directory_state),
             });
         directories.directories.borrow_mut().insert(
-            PEER_ID,
+            peer_id,
             RegisteredActionDirectory {
                 app_id: route.app_id.clone(),
                 route: route.clone(),
@@ -6834,9 +6847,9 @@ pub(crate) mod tests {
             .lock()
             .expect("directory roots")
             .insert(
-                PEER_ID,
+                peer_id,
                 ActionDirectoryRoot {
-                    peer_id: PEER_ID,
+                    peer_id,
                     app_id: route.app_id.clone(),
                     cluster_id: cluster_id.clone(),
                     record_id: route.record_id.clone(),
@@ -6848,7 +6861,7 @@ pub(crate) mod tests {
             .invocation_subscribers
             .lock()
             .expect("invocation subscribers")
-            .insert(PEER_ID, invocation_tx);
+            .insert(peer_id, invocation_tx);
         LocalDirectoryFixture {
             broker: crate::shell::collab_broker::AppActionBroker::from_state_for_test(Arc::clone(
                 &state,
@@ -6860,7 +6873,7 @@ pub(crate) mod tests {
             directory_state,
             cluster_id,
             route,
-            peer_id: PEER_ID,
+            peer_id,
             invocation_rx,
         }
     }
