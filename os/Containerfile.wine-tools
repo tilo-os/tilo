@@ -17,4 +17,9 @@ RUN test "$(uname -m)" = x86_64 \
  && test -f /etc/mock/fedora-44-i386.cfg \
  && test -f /etc/mock/fedora-44-x86_64.cfg \
  && command -v mock-hermetic-repo
+# Mock mounts bootstrap images inside the CI container. Use the supported VFS
+# backend so this does not depend on a host /dev/fuse device or nested overlay.
+RUN printf '%s\n' '[storage]' 'driver = "vfs"' \
+      'runroot = "/run/containers/storage"' \
+      'graphroot = "/var/lib/containers/storage"' > /etc/containers/storage.conf
 COPY os/dev/fetch-wine-source.py os/dev/wine_rpm_contract.py os/dev/wine-source.json os/dev/wine-mock-producer.py os/dev/merge-wine-rpms.py /qos/

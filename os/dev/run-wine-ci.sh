@@ -31,6 +31,9 @@ cleanup() {
         docker cp "$builder":/work/output "$evidence/raw" || true
     fi
     if "$resolver_owned"; then
+        # Mock root.log includes package-manager/scriptlet diagnostics omitted
+        # from its console summary; retain the full result directory on failure.
+        docker cp "$resolver:/work/bundle/resolution" "$evidence/resolution" || true
         for file in resolve.log repository.log resolved-config.log manifest.json; do
             docker cp "$resolver:/work/bundle/$file" "$evidence/$file" || true
         done
