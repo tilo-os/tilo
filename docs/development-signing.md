@@ -310,6 +310,36 @@ acceptance remain required integration work.
 
 ## Verify the boot loader before sealing
 
+### Compute the installation seal without a discovery install
+
+After constructing the provisional final image from the signed rootfs, use
+the pinned native bootc 1.16.4 storage command through:
+
+```sh
+python3 os/dev/compute-development-composefs.py \
+  --image-id "$PROVISIONAL_FINAL_IMAGE_ID" --architecture aarch64 \
+  > composefs-before.json
+```
+
+The host must be already-root native Linux, with bootc and Podman addressing
+the same local rootful store. The helper rejects remote engines, mutable tags,
+foreign architectures and other bootc versions. It records the tool hash,
+immutable image ID and exact composefs digest. Temporary composefs data uses
+`/var/tmp`; no disk is installed or partitioned.
+
+bootc v1.16.4's `compute-composefs-digest-from-storage` applies the same OCI
+filesystem and boot transformation as its fresh-install composefs pipeline,
+using the default EROFS format. Use the returned `composefs_digest` with
+`reseal-image.sh`'s immutable mode, then sign the target UKI/PCR prediction.
+`sign-target-prediction.sh` projects the selected verified signed UKI into
+`/boot/tilo-target/tilo-target.efi`; without an explicit target, more than one
+normal UKI is an error.
+
+Recompute the storage digest after those `/boot`-only layers and require exact
+equality before publishing and signing the final image. The final source,
+prediction and disk verifiers still run; this computation is not installed-byte
+or boot acceptance.
+
 `os/dev/verify-development-loader.py` validates a signed systemd-boot loader
 against its original executable, native architecture, and independently pinned
 EFI certificate fingerprint. It checks the Authenticode envelope and actual
