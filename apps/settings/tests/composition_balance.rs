@@ -12,34 +12,41 @@ const W: f32 = 1200.0;
 const H: f32 = 760.0;
 
 fn lay_out(app: &mut SettingsApp) {
+    lay_out_at(app, W, H);
+}
+
+/// Run the production `sync → build_layout → compute_layout → apply_layout`
+/// cycle on any widget at an explicit viewport. Shared with the sibling
+/// geometry modules in this test binary (`alignment_review`).
+pub(crate) fn lay_out_at(widget: &mut dyn Widget, w: f32, h: f32) {
     let theme = ui::Theme::dark();
     let mut doc = automerge::AutoCommit::new();
     let root = automerge::ROOT;
-    app.sync(&mut doc, &root);
+    widget.sync(&mut doc, &root);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = app.build_layout(&mut taffy, &theme, &mut node_map);
+    let node = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let outer = taffy
         .new_with_children(
             taffy::Style {
                 size: taffy::Size {
-                    width: taffy::Dimension::length(W),
-                    height: taffy::Dimension::length(H),
+                    width: taffy::Dimension::length(w),
+                    height: taffy::Dimension::length(h),
                 },
                 ..Default::default()
             },
             &[node],
         )
         .unwrap();
-    app.sync(&mut doc, &root);
+    widget.sync(&mut doc, &root);
     let measure_map = node_map.clone();
     let mut tr = TextRenderer::new();
     taffy
         .compute_layout_with_measure(
             outer,
             taffy::Size {
-                width: taffy::AvailableSpace::Definite(W),
-                height: taffy::AvailableSpace::Definite(H),
+                width: taffy::AvailableSpace::Definite(w),
+                height: taffy::AvailableSpace::Definite(h),
             },
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = measure_map.get(&node_id) {
@@ -50,8 +57,8 @@ fn lay_out(app: &mut SettingsApp) {
             },
         )
         .unwrap();
-    app.apply_layout(&taffy, node, Point::ORIGIN);
-    app.sync(&mut doc, &root);
+    widget.apply_layout(&taffy, node, Point::ORIGIN);
+    widget.sync(&mut doc, &root);
 }
 
 fn named(widget: &dyn Widget, label: &str, out: &mut Vec<Rect>) {
