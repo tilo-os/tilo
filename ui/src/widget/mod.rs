@@ -710,6 +710,16 @@ pub trait Widget {
         None
     }
 
+    /// Reveal a newly keyboard-focused descendant inside any enclosing
+    /// viewport. Containers override this to scroll; ordinary widgets simply
+    /// recurse toward the target and report whether it was found.
+    fn reveal_descendant(&mut self, target: *const dyn Widget) -> bool {
+        self.children_mut().into_iter().any(|child| {
+            std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(child), target)
+                || child.reveal_descendant(target)
+        })
+    }
+
     /// Named hit rects for widgets that paint several affordances into one
     /// rect instead of composing children. Same space as
     /// [`Widget::get_rect`]; zero-area entries are dropped.
