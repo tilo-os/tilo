@@ -68,6 +68,10 @@ pub fn u8_of_i64(value: i64) -> u8 {
     u8::try_from(value).unwrap_or(if value < 0 { 0 } else { u8::MAX })
 }
 
+pub fn u8_of_f64(value: f64) -> u8 {
+    value as u8
+}
+
 pub fn usize_of_f64(value: f64) -> usize {
     value as usize
 }
@@ -88,6 +92,8 @@ mod tests {
     fn integer_boundaries_saturate_instead_of_wrapping() {
         assert_eq!(u8_of_i64(-1), 0);
         assert_eq!(u8_of_i64(999), u8::MAX);
+        assert_eq!(u8_of_f64(-1.0), 0);
+        assert_eq!(u8_of_f64(999.0), u8::MAX);
         assert_eq!(u32_of_i64(-1), 0);
         assert_eq!(i32_of_usize(usize::MAX), i32::MAX);
         assert_eq!(usize_of_i64(-1), 0);
