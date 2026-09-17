@@ -8,7 +8,7 @@ use ui::headless::Driver;
 use ui::ux_bench::Counts;
 use winit::{
     dpi::PhysicalPosition,
-    event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent},
+    event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent},
 };
 
 #[cfg(test)]
@@ -22,6 +22,9 @@ const MAX_COMMANDS: u32 = 512;
 enum Command {
     Observe {},
     Click { x: f64, y: f64 },
+    /// A secondary (right) button press and release at a logical point:
+    /// the pointer route to a context menu, which no semantic action opens.
+    ContextClick { x: f64, y: f64 },
     Key { key: String, modifiers: Vec<String> },
     Type { text: String },
     Wheel { x: f64, y: f64, dx: f64, dy: f64 },
@@ -32,7 +35,7 @@ fn validate_command(raw: &str, viewport: [u32; 2]) -> Result<Command, String> {
     let command: Command =
         serde_json::from_str(raw).map_err(|e| format!("invalid command: {e}"))?;
     match &command {
-        Command::Click { x, y } | Command::Wheel { x, y, .. } => {
+        Command::Click { x, y } | Command::ContextClick { x, y } | Command::Wheel { x, y, .. } => {
             if !x.is_finite()
                 || !y.is_finite()
                 || *x < 0.
@@ -100,6 +103,23 @@ fn apply(driver: &mut Driver, command: &Command, scale: f64, counts: &mut Counts
     match command {
         Command::Click { x, y } => {
             driver.click_at(*x, *y);
+            counts.clicks += 1;
+        }
+        Command::ContextClick { x, y } => {
+            // Through the production dispatch path (`Driver::send`), like
+            // `click_at` does for the primary button: move, press, release.
+            let device_id = DeviceId::dummy();
+            driver.send(&WindowEvent::CursorMoved {
+                device_id,
+                position: PhysicalPosition::new(x * scale, y * scale),
+            });
+            for state in [ElementState::Pressed, ElementState::Released] {
+                driver.send(&WindowEvent::MouseInput {
+                    device_id,
+                    state,
+                    button: MouseButton::Right,
+                });
+            }
             counts.clicks += 1;
         }
         Command::Key { key, modifiers } => {

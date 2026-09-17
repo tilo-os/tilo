@@ -39,10 +39,12 @@ use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, Image, ImageFit, OutputSpan,
     PROMPT_HEIGHT, PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
+    context_menu::ContextMenu,
 };
 use ui::{CommandEntry, CommandPalette};
 
 use crate::shell::chrome_state::{Chrome, WsTab};
+use crate::shell::{TabMenuAction, build_tab_context_menu};
 use crate::shell::collaborators_overlay::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay,
 };
@@ -609,6 +611,9 @@ enum ShortcutGuideFocus {
 /// semantic path onto the wrong target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AccessibleOverlay {
+    /// The tab right-click menu. Published first while open: it is the
+    /// topmost transient and its rows are what a reader should land on.
+    TabContextMenu,
     CommandPalette,
     Overview,
     MemberSheet,
@@ -646,6 +651,61 @@ impl DesktopControlsSource {
 
     fn is_explicit(&self) -> bool {
         matches!(self, Self::Explicit(_))
+    }
+}
+
+/// Which tab a right-click asked about, resolved when the request is
+/// harvested so a later selection acts on that tab even if focus moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TabMenuTarget {
+    strip: StripId,
+    group: GroupId,
+    tab: u64,
+}
+
+/// The tab right-click menu. Lives on the host rather than the tab bar
+/// because it paints above every window (the bar is clipped to its group),
+/// and because its actions mutate the persisted tree, which only the host
+/// can reach. The widget is the shared `ui::widget::ContextMenu`: the same
+/// surface, rows, accent highlight and keyboard model every app menu has.
+#[derive(Default)]
+struct TabContextMenu {
+    menu: ContextMenu,
+    /// Row index → action; `None` is a separator. Index-aligned with
+    /// `menu.items()` by [`build_tab_context_menu`]. (A `MenuItem` id on
+    /// the shared widget would replace this parallel list — recorded for
+    /// F4.)
+    items: Vec<Option<TabMenuAction>>,
+    target: Option<TabMenuTarget>,
+    /// Title of the tab the menu is for, for the accessible name.
+    title: String,
+    /// The pointer position the menu opened at, so a refused row can
+    /// re-open the menu exactly where it was.
+    anchor: Point,
+    /// A press the menu absorbed has a release still to come; swallow that
+    /// one too, even after the press closed the menu, so a dismissing or
+    /// selecting click never ends on the window underneath.
+    swallow_release: bool,
+}
+
+impl TabContextMenu {
+    fn is_open(&self) -> bool {
+        self.menu.is_open() && self.target.is_some()
+    }
+
+    /// The `i`-th action row's item index (separators are not actions and
+    /// publish no semantic node).
+    fn item_index_of_action(&self, ordinal: usize) -> Option<usize> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.is_some())
+            .nth(ordinal)
+            .map(|(index, _)| index)
+    }
+
+    fn item_index_of(&self, action: TabMenuAction) -> Option<usize> {
+        self.items.iter().position(|item| *item == Some(action))
     }
 }
 
@@ -767,6 +827,19 @@ pub struct ShellOverlayHost {
     /// Width of one scope segment: the widest scope label plus `s3` each
     /// side, measured at draw and cached for the same reason.
     search_scope_segment_w: f64,
+    /// The §9.6 pointer floor (`metrics.min_pointer_target`) at the live
+    /// theme, cached at draw like the control height so hit-testing and
+    /// semantic bounds grow a 28 px Selector to a 32 px target without a
+    /// theme in hand (S1-28).
+    search_pointer_floor_h: f64,
+    /// The band rect the chips and switch were laid out in, and whether the
+    /// switch took the first row alone, both frozen at draw. The palette's
+    /// band getters answer from `host_filter_strip_rows` live, so a row
+    /// request made during draw would otherwise change the band — and the
+    /// switch's geometry — before the next paint, and a click would be
+    /// tested against a layout nobody has seen yet.
+    search_band_at_draw: Rect,
+    search_scope_own_row: bool,
     /// Records each room holds, shared with the records search provider.
     room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
     /// Set whenever [`Self::refresh_search_results`] rewrites the
@@ -822,6 +895,11 @@ pub struct ShellOverlayHost {
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
+    /// The tab right-click menu; see [`TabContextMenu`]. Opened by
+    /// `harvest_pending_tab_context_menus` from the tab bar's request,
+    /// routed by `route_tab_context_menu_event`, drawn in the top overlay
+    /// pass, published as an accessible overlay while open.
+    tab_menu: TabContextMenu,
     /// Portal session-operation inhibitors shared with the backend serving
     /// `org.freedesktop.portal.Inhibit`. A logout/user switch must consult
     /// this exact registry before any irreversible OS action is spawned.
@@ -1188,12 +1266,21 @@ fn f64_floor_to_usize_saturating(v: f64) -> usize {
 }
 
 /// Narrowest a chip is ever squeezed to before its label is just an
-/// ellipsis.
-const CHIP_MIN_W_PX: f64 = 34.0;
-/// Height of a Selector at 100 % text (HIG §9.6). The filter band's chips
-/// and scope switch rest at this height and grow with their measured
-/// label — see [`ShellOverlayHost::filter_control_height`].
-const SELECTOR_HEIGHT_PX: f64 = 28.0;
+/// ellipsis: the §9.6 pointer floor — a pill narrower than a finger is
+/// not a target whatever it says. (Was a tuned 34 until 2026-09-17.)
+const CHIP_MIN_W_PX: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
+/// Height of a Selector at 100 % text (HIG §9.6, `metrics.selector_height`).
+/// The unscaled token, for the constructor's resting value before any theme
+/// is seen; the live band reads `theme.tokens.metrics.selector_height` in
+/// [`ShellOverlayHost::filter_control_height`] and grows with the measured
+/// label from there.
+const SELECTOR_HEIGHT_PX: f64 = ui::tokens::Metrics::BASE.selector_height as f64;
+
+/// Share of the band's width the scope switch may take while it shares the
+/// first row with the kind chips. Past it — 200 % text on a narrow card —
+/// the switch takes the first row alone rather than eliding its labels
+/// (S1-29); see [`ShellOverlayHost::scope_switch_has_own_row`].
+const SCOPE_TRACK_SHARE: f64 = 0.55;
 
 /// Where each chip of the filter strip goes.
 #[derive(Debug, Clone, PartialEq)]
@@ -1374,18 +1461,61 @@ fn share_row(natural: &[f64], available: f64, gap: f64) -> Vec<f64> {
 /// One pill in the search card's filter band, shared by the kind chips
 /// and the "All" reset chip.
 #[allow(clippy::too_many_arguments)]
+/// One filter chip: a Selector (HIG §9.1) whose body is its selection tier
+/// (§9.3 — idle transparent, hover `lift(0.5)`, chosen `lift(1.0)` with a
+/// hairline and inner glow) and whose label is ink chosen against whatever
+/// that tier painted, so it stays legible on every preset. Until
+/// 2026-09-17 the chosen chip wore `accent[5]` (§9.4 reserves accent for
+/// live state) and the idle one a `lift(0.35)` wash of its own.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "immediate-mode paint helper: scene, transform, renderer, theme and this chip's own content"
+)]
 fn draw_filter_chip(
     scene: &mut Scene,
     transform: Affine,
     text_renderer: &mut TextRenderer,
+    theme: &Theme,
     rect: Rect,
     label: &str,
     text_size: f32,
-    fill: vello::peniko::Color,
-    text_color: vello::peniko::Color,
+    state: ui::chrome::SelectionState,
 ) {
-    let shape = RoundedRect::from_rect(rect, rect.height() / 2.0);
-    scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+    let colors = &theme.tokens.colors;
+    let radius = ui::chrome::ChromeRole::Selector.radius(theme, rect.height());
+    let shape = RoundedRect::from_rect(rect, radius);
+    let tier = ui::chrome::selection_tier(theme, state);
+    if tier.fill.components[3] > 0.0 {
+        scene.fill(vello::peniko::Fill::NonZero, transform, tier.fill, None, &shape);
+    }
+    if let Some(border) = tier.border {
+        scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, border, None, &shape);
+    }
+    if let Some(glow) = tier.inner_glow {
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            glow,
+            None,
+            &RoundedRect::from_rect(rect.inset(1.0), (radius - 1.0).max(0.0)),
+        );
+    }
+    // The chosen chip's label is the control label (`text_primary`); the
+    // others recede to `text_dim`. Either way the ink is measured against
+    // the surface actually under it — the lifted body, or the panel ground
+    // showing through an idle chip.
+    let lifted = state.active || state.pressed || state.hover;
+    let under = if lifted {
+        tier.fill
+    } else {
+        ui::chrome::shell::panel_ground(theme)
+    };
+    let tone = if state.active {
+        colors.text_primary
+    } else {
+        colors.text_dim
+    };
+    let text_color = colors.ink_on(under, tone, ui::tokens::colors::ON_FILL_MIN_CONTRAST);
     // Control labels are medium weight (HIG §9.6); measured and drawn at
     // the same weight so the centring holds.
     let (lw, lh) = text_renderer.measure_weighted(label, text_size, None, TextWeight::Medium);
@@ -1409,9 +1539,15 @@ fn draw_filter_chip(
 const OVERVIEW_TRANSITION_MS: u64 = 400;
 
 /// Vertical inset below the top bar where the floating sidebar wheel
-/// starts. Matches `TOPBAR_HEIGHT_PX`; kept local to avoid a
-/// cross-module import for one f32.
-const SIDEBAR_TOP_OFFSET_PX: f32 = 40.0;
+/// starts, and the top of the band the room-activity sheet, the
+/// permission prompt and the notification stack lay out under. The
+/// production builder (`build_nirios_overlay_host_with_options`) passes
+/// `TOPBAR_HEIGHT_PX` through `with_sidebar_top`; this default is what a
+/// bare `ShellOverlayHost::new` gets, and it is the same value so a
+/// fixture observes the geometry the desktop paints. (It was a stale 40
+/// beside a 48 px bar until 2026-09-17, which put every bare-host
+/// fixture's wheel and prompts 8 px under the bar.)
+const SIDEBAR_TOP_OFFSET_PX: f32 = crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX;
 
 /// Clamp range for the viewport-driven sidebar width, so the disc's
 /// `apply_layout` keeps the visible-arc curvature identical across
@@ -1430,8 +1566,17 @@ fn sidebar_width_for_viewport(viewport_h: f32) -> f32 {
 
 /// Wallpaper gutter between the wheel disc's right edge and the first
 /// window, so the radial switcher reads as separated chrome rather than
-/// butting into content.
-const WHEEL_TO_STRIP_GAP_PX: f64 = 28.0;
+/// butting into content. `spacing.s8` (32): the disc's rim shadow reaches
+/// `sidebar_wheel_disc::RIM_SHADOW_REACH` (26 px) past its footprint, so
+/// the next step down, `s6` (24), would lay that shadow over the first
+/// window's edge; 32 clears it and is also the pointer floor
+/// (`metrics.min_pointer_target`) every bar control already sits on. Was
+/// 28, off the 4/8/12/16/24/32 scale, until 2026-09-17 (S1-21).
+const WHEEL_TO_STRIP_GAP_PX: f64 = ui::tokens::Spacing::BASE.s8 as f64;
+const _: () = assert!(
+    WHEEL_TO_STRIP_GAP_PX > crate::shell::sidebar_wheel_disc::RIM_SHADOW_REACH,
+    "the wheel gutter must hold the disc's rim shadow with wallpaper to spare"
+);
 
 /// Left edge at which full-size workspace content clears both the floating
 /// rail and the wallpaper/shadow gutter that separates it from app content.
@@ -1443,8 +1588,10 @@ pub(crate) fn workspace_rail_clearance_for_viewport(viewport_h: f64) -> f64 {
 
 /// Wallpaper gutter at the far edge of a display, matching
 /// [`WHEEL_TO_STRIP_GAP_PX`] — without it a full-width group's border,
-/// corners and shadow fall off screen at the bezel.
-const STRIP_TRAILING_GUTTER_PX: f64 = 28.0;
+/// corners and shadow fall off screen at the bezel. A window casts `e2`
+/// (blur 8 → visible falloff ≈ 10 px plus a 2 px offset), so `s8` holds
+/// the whole shadow with room to spare.
+const STRIP_TRAILING_GUTTER_PX: f64 = WHEEL_TO_STRIP_GAP_PX;
 
 /// One display the compositor is painting across, in its combined
 /// coordinate space. The compositor renders one scene spanning every
@@ -1691,8 +1838,11 @@ impl ShellOverlayHost {
     }
 
     fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
-        let mut order = Vec::with_capacity(6);
+        let mut order = Vec::with_capacity(7);
         let flags = self.overlay_flags();
+        if self.tab_menu.is_open() {
+            order.push(AccessibleOverlay::TabContextMenu);
+        }
         // The palette has a complete semantic tree (query, result list, and
         // focused result).  It is drawn as a top overlay, so publish it from
         // the same ordered synthetic tree as every other overlay rather than
@@ -1926,6 +2076,9 @@ impl ShellOverlayHost {
             search_chip_rows: 1,
             search_filter_control_h: SELECTOR_HEIGHT_PX,
             search_scope_segment_w: 0.0,
+            search_pointer_floor_h: ui::tokens::Metrics::BASE.min_pointer_target as f64,
+            search_band_at_draw: Rect::ZERO,
+            search_scope_own_row: false,
             room_records: inputs.room_records,
             palette_layout_dirty: false,
             palette_layout_host_w: f64::NAN,
@@ -1947,6 +2100,7 @@ impl ShellOverlayHost {
             qs_notification_history_start: 0,
             qs_notification_wheel_remainder: 0.0,
             power_menu: PowerMenu::default(),
+            tab_menu: TabContextMenu::default(),
             session_inhibitors: qos_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
             strip_rail_hover: None,
@@ -4008,37 +4162,22 @@ impl ShellOverlayHost {
     /// started their widget animation when this runs.
     fn commit_tab_close(chrome: &Chrome, gid: GroupId, tab_id: u64) -> bool {
         let mut st = chrome.borrow_mut();
-        let surface = {
-            let tree = st.tree();
-            tree.workspaces
-                .iter()
-                .flat_map(|workspace| workspace.strips.iter())
-                .flat_map(|strip| strip.window_groups.iter())
-                .find(|group| group.id == gid)
-                .and_then(|group| group.tabs.iter().find(|tab| tab.id == tab_id))
-                .and_then(|tab| match &tab.tile {
-                    crate::shell::state::TileContent::Foreign { surface_id, .. } => {
-                        Some(*surface_id)
-                    }
-                    _ => None,
-                })
-        };
-        let removed = {
-            let mut tree = st.tree_mut();
-            crate::shell::tab_binding::remove_tab(&mut tree, tab_id)
-        };
-        if !removed {
+        // The tab must be where the caller believes it is — a stale group
+        // id must not close a tab that has since moved elsewhere.
+        let in_group = st
+            .tree()
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .any(|group| group.id == gid && group.tabs.iter().any(|tab| tab.id == tab_id));
+        if !in_group {
             return false;
         }
-        st.hosted_inputs.prune_documents(&mut st.tree_mut());
-        // Close is durable before the client is asked to exit. A crash, an
-        // unrelated revision or a slow client must all observe absence.
-        st.tree().flush_to_disk();
-        if let Some(surface_id) = surface {
-            st.request_surface_close(surface_id);
-        }
-        st.bump();
-        true
+        // One lifecycle for every door — `✕`, chord, tab menu, `tab.close`
+        // action: `window_actions::close_tab` (document, tree, prune, flush,
+        // surface close, bump, in that order).
+        crate::shell::window_actions::close_tab(&mut st, tab_id).is_ok()
     }
 
     /// Drain close buttons from the rendered rows into the same lifecycle
@@ -5801,6 +5940,12 @@ impl ShellOverlayHost {
         // Collect under an immutable borrow, apply under the mutable
         // one — same shape as the other harvesters.
         let mut writes: Vec<(StripId, usize, crate::shell::state::WindowGroup)> = Vec::new();
+        // The live active tab of every group in the strips being written,
+        // so a source group whose active tab moved out takes the tab the
+        // bar itself made active (`TabBar::remove_tab`: the neighbour that
+        // slid into the slot, else the last) rather than a rule of its own.
+        let mut live_active: std::collections::HashMap<GroupId, u64> =
+            std::collections::HashMap::new();
         // Snapshot each strip's known tab ids under one read borrow, then
         // drop it — the unsafe row-pointer walk below doesn't touch the
         // tree, so there's no reason to hold the lock across it.
@@ -5823,6 +5968,7 @@ impl ShellOverlayHost {
             // accessor.
             let row: &GroupRow = unsafe { &*ptr };
             for (idx, wg) in row.groups.iter().enumerate() {
+                live_active.insert(wg.id, wg.active_tab_id());
                 if !tree_ids.contains(&wg.id) {
                     writes.push((strip_id, idx, build_state_group_from_widget(wg)));
                 }
@@ -5833,14 +5979,61 @@ impl ShellOverlayHost {
         }
         let st = chrome.borrow_mut();
         let mut tree = st.tree_mut();
+        // Groups a move emptied, with the strip they left, for the
+        // active-group repair once the workspace borrow is released.
+        let mut emptied: Vec<(StripId, GroupId)> = Vec::new();
         for (strip_id, idx, group) in writes {
+            let moved: std::collections::HashSet<u64> = group.tabs.iter().map(|t| t.id).collect();
             for ws in &mut tree.workspaces {
-                if let Some(strip) = ws.strips.iter_mut().find(|s| s.id == strip_id) {
-                    let insert_at = idx.min(strip.window_groups.len());
-                    strip.window_groups.insert(insert_at, group.clone());
+                let Some(strip) = ws.strips.iter_mut().find(|s| s.id == strip_id) else {
+                    continue;
+                };
+                // A widget-side split *moves* tabs: they left their source
+                // group when the new one appeared, so the tree's copy of the
+                // source must lose them too. Left in place, the next resync
+                // sees "tree has it, row does not" and re-creates each one in
+                // the source as a second, hostless card (and revives a source
+                // the row already pruned). Until 2026-09-17 this harvest only
+                // inserted, so every in-strip drag-out duplicated its tab at
+                // the next chrome revision.
+                for existing in &mut strip.window_groups {
+                    let before = existing.tabs.len();
+                    let removed_at = existing.tabs.iter().position(|t| moved.contains(&t.id));
+                    existing.tabs.retain(|t| !moved.contains(&t.id));
+                    if existing.tabs.len() == before {
+                        continue;
+                    }
+                    if moved.contains(&existing.active_tab) {
+                        let live = live_active
+                            .get(&existing.id)
+                            .copied()
+                            .filter(|id| existing.tabs.iter().any(|t| t.id == *id));
+                        existing.active_tab = live.unwrap_or_else(|| {
+                            removed_at
+                                .and_then(|i| existing.tabs.get(i))
+                                .or_else(|| existing.tabs.last())
+                                .map_or(0, |t| t.id)
+                        });
+                    }
+                    if existing.tabs.is_empty() {
+                        emptied.push((strip_id, existing.id));
+                    }
+                }
+                strip
+                    .window_groups
+                    .retain(|g| !emptied.iter().any(|(_, id)| *id == g.id));
+                let insert_at = idx.min(strip.window_groups.len());
+                strip.window_groups.insert(insert_at, group.clone());
+            }
+            // Focus follows the tab out of a source that is gone.
+            for (emptied_strip, emptied_group) in emptied.drain(..) {
+                if tree.active_group.get(&emptied_strip) == Some(&emptied_group) {
+                    tree.active_group.insert(emptied_strip, group.id);
                 }
             }
         }
+        // Durable like a width change: a split survives the next restart.
+        tree.flush_to_disk();
     }
 
     /// `(strip_id, group_id, rect)` triples from the live per-strip
@@ -6079,6 +6272,9 @@ impl ShellOverlayHost {
             }
         };
 
+        // Bounds are the pointer targets (`selector_hit_rect`: the painted
+        // pill grown to the §9.6 floor), the same rects a press is tested
+        // against — what a reader names is exactly what a finger hits.
         let kinds = self.search_registry.registered_kinds();
         let mut chips = Vec::with_capacity(kinds.len().saturating_add(1));
         chips.push(bounded(
@@ -6087,7 +6283,7 @@ impl ShellOverlayHost {
                 .with_semantic_key("palette:filter:all")
                 .with_action_target("palette:filter:all")
                 .with_key(0),
-            self.search_all_chip_rect,
+            self.search_all_chip_hit_rect(),
             self.active_kind_filter.is_empty(),
         ));
         for (i, kind) in kinds.iter().enumerate() {
@@ -6098,7 +6294,7 @@ impl ShellOverlayHost {
                     .with_semantic_key(key.clone())
                     .with_action_target(key)
                     .with_key(u64::try_from(i.saturating_add(1)).unwrap_or(u64::MAX)),
-                self.search_chip_rects.get(i).copied().unwrap_or(Rect::ZERO),
+                self.search_chip_hit_rect(i),
                 self.active_kind_filter.contains(kind),
             ));
         }
@@ -6144,8 +6340,8 @@ impl ShellOverlayHost {
     /// `[0, i]` is chip `i` (0 = "All"), `[1, i]` is scope segment `i`.
     fn search_filter_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
         let rect = match path {
-            [0, 0] => self.search_all_chip_rect,
-            [0, i] => self.search_chip_rects.get(i.checked_sub(1)?).copied()?,
+            [0, 0] => self.search_all_chip_hit_rect(),
+            [0, i] => self.search_chip_hit_rect(i.checked_sub(1)?),
             [1, i] => self.search_scope_segment_hit_rect(*i),
             _ => return None,
         };
@@ -7420,23 +7616,106 @@ impl ShellOverlayHost {
             return Rect::ZERO;
         }
         let track = self.search_scope_track_rect();
-        Rect::new(seg.x0, track.y0, seg.x1, track.y1)
+        self.selector_hit_rect(Rect::new(seg.x0, track.y0, seg.x1, track.y1))
+    }
+
+    /// The pointer target of a Selector painted at `painted`: the same
+    /// width, grown about its centre to the §9.6 pointer floor
+    /// (`metrics.min_pointer_target`, cached at draw) when the pill is
+    /// shorter. A 28 px chip in a 36 px row therefore accepts a press 2 px
+    /// above and below its paint (S1-28). Hit-testing, semantic bounds and
+    /// the bench all read this rect; paint reads `painted`. The rows are
+    /// `row_h` apart and `row_h - s1 ≥` the floor, so two rows' targets
+    /// never overlap.
+    fn selector_hit_rect(&self, painted: Rect) -> Rect {
+        if painted.area() <= 0.0 {
+            return Rect::ZERO;
+        }
+        // The floor is already clamped to `row_h − s1` at draw
+        // (`search_pointer_floor_h`), so two rows' targets never overlap
+        // however the palette scales its rows; clipping to the band keeps
+        // the first and last rows' targets off the query field and the
+        // results.
+        let h = painted.height().max(self.search_pointer_floor_h);
+        let cy = painted.center().y;
+        let grown = Rect::new(painted.x0, cy - h / 2.0, painted.x1, cy + h / 2.0);
+        // Clipped to the band the pill was laid out in (frozen at draw),
+        // never to a band a pending row request has already moved.
+        let band = self.search_band_for_targets();
+        if band.area() <= 0.0 {
+            return grown;
+        }
+        let clipped = grown.intersect(band);
+        if clipped.area() <= 0.0 { painted } else { clipped }
+    }
+
+    fn search_all_chip_hit_rect(&self) -> Rect {
+        self.selector_hit_rect(self.search_all_chip_rect)
+    }
+
+    /// Pointer target of kind chip `i` (0 = the first registered kind; the
+    /// "All" reset is [`Self::search_all_chip_hit_rect`]).
+    fn search_chip_hit_rect(&self, i: usize) -> Rect {
+        self.selector_hit_rect(self.search_chip_rects.get(i).copied().unwrap_or(Rect::ZERO))
+    }
+
+    /// Width the scope switch needs to show every label whole: one measured
+    /// segment per scope plus the bezel either side.
+    fn search_scope_measured_track_w(&self) -> f64 {
+        let count = self.search_scope_list().len().max(1);
+        self.search_scope_segment_w * usize_to_f64_lossy(count) + 2.0 * SEGMENT_INSET_PX
+    }
+
+    /// Whether the scope switch *wants* the band's first row alone: its
+    /// measured width passes [`SCOPE_TRACK_SHARE`] of the band — 200 % text
+    /// on a narrow card — so the labels stay whole and the kind chips start
+    /// on the next row, rather than "Workspace" eliding to "Works…" beside
+    /// a first row of chips (S1-29). This is what the band asks the palette
+    /// to reserve a row for.
+    fn scope_switch_wants_own_row(&self) -> bool {
+        let b = self.search_banner_rect();
+        b.width() > 0.0 && self.search_scope_measured_track_w() > b.width() * SCOPE_TRACK_SHARE
+    }
+
+    /// Whether the scope switch *takes* the first row alone: it wants to,
+    /// and the palette had already granted the band a second row when the
+    /// band was last drawn. On the frame the want first appears the band is
+    /// still one row tall, so the switch shares that row (capped, as
+    /// before) and the chips stay where they are, off the results; the
+    /// next layout supplies the row. Frozen at draw
+    /// (`search_scope_own_row`), so a click is tested against the switch
+    /// that was painted, not one the pending row request has already moved.
+    fn scope_switch_has_own_row(&self) -> bool {
+        self.search_scope_own_row
+    }
+
+    /// The band the chips and switch were laid out in: the frame's frozen
+    /// rect once anything has been drawn, the palette's live band before.
+    fn search_band_for_targets(&self) -> Rect {
+        if self.search_band_at_draw.area() > 0.0 {
+            self.search_band_at_draw
+        } else {
+            self.search_banner_rect()
+        }
     }
 
     /// Outer track of the scope segmented control — the rounded body the
     /// individual segments sit inside.
     fn search_scope_track_rect(&self) -> Rect {
-        let b = self.search_banner_rect();
+        let b = self.search_band_for_targets();
         if b.width() <= 0.0 {
             return Rect::ZERO;
         }
-        let count = self.search_scope_list().len().max(1);
         // Segments are as wide as the widest label needs (measured at
-        // draw), capped at a share of the band so the kind chips keep
-        // their first row.
-        let w = (self.search_scope_segment_w * usize_to_f64_lossy(count)
-            + 2.0 * SEGMENT_INSET_PX)
-            .min(b.width() * 0.55);
+        // draw). While the switch shares the first row it is capped at a
+        // share of the band so the kind chips keep that row; on its own
+        // row it may take the whole band.
+        let measured = self.search_scope_measured_track_w();
+        let w = if self.scope_switch_has_own_row() {
+            measured.min(b.width())
+        } else {
+            measured.min(b.width() * SCOPE_TRACK_SHARE)
+        };
         let h = self.search_filter_control_h;
         // Anchored to the *first* row of the band, not to the middle of
         // it: when the kind chips wrap to a second row the switch must
@@ -7447,10 +7726,16 @@ impl ShellOverlayHost {
     }
 
     /// Label size for the filter band's chips and scope segments: the
-    /// chrome control label (HIG §9.6, `scale.sm` medium), which already
-    /// carries the person's text scale.
-    fn filter_label_size(theme: &Theme) -> f32 {
-        theme.tokens.typography.scale.sm
+    /// chrome control label (HIG §9.6, `scale.sm` medium), renderer-
+    /// relative. The theme's `scale.sm` already carries the person's text
+    /// scale and the legacy `TextRenderer` APIs scale again (the round-one
+    /// systemic finding: 4× glyphs at 200 %), so the renderer's factor is
+    /// divided out here — the same cure `draw_shortcut_help_button` uses —
+    /// and every measure and draw in the band goes through this one size.
+    /// Until 2026-09-17 the band's labels painted at 48 px at 200 % and the
+    /// pills grew to hold them.
+    fn filter_label_size(theme: &Theme, text_renderer: &TextRenderer) -> f32 {
+        theme.tokens.typography.scale.sm / text_renderer.text_scale().max(f32::EPSILON)
     }
 
     /// Shared height for every control in the filter band, so the chips
@@ -7460,11 +7745,11 @@ impl ShellOverlayHost {
     /// spilling over it, and stops `s1` short of the band's row so two
     /// rows of chips keep a gutter instead of touching.
     fn filter_control_height(theme: &Theme, text_renderer: &mut TextRenderer, row_h: f64) -> f64 {
-        let size = Self::filter_label_size(theme);
+        let size = Self::filter_label_size(theme, text_renderer);
         let (_, lh) = text_renderer.measure_weighted("Ag", size, None, TextWeight::Medium);
         let s1 = f64::from(theme.tokens.spacing.s1);
         (f64::from(lh) + f64::from(theme.tokens.spacing.s2))
-            .max(SELECTOR_HEIGHT_PX)
+            .max(f64::from(theme.tokens.metrics.selector_height))
             .min(row_h - s1)
     }
 
@@ -7472,7 +7757,7 @@ impl ShellOverlayHost {
     /// band's label size plus `s3` either side — measured, so "Everywhere"
     /// and a long app title get room instead of an ellipsis.
     fn scope_segment_width(&self, theme: &Theme, text_renderer: &mut TextRenderer) -> f64 {
-        let size = Self::filter_label_size(theme);
+        let size = Self::filter_label_size(theme, text_renderer);
         let pad = 2.0 * f64::from(theme.tokens.spacing.s3);
         self.search_scope_list()
             .into_iter()
@@ -10724,8 +11009,11 @@ impl ShellOverlayHost {
             && let Some(p) = self.last_cursor
         {
             // A direct way to reach "nothing selected", not just
-            // untick every chip one at a time.
-            if self.search_all_chip_rect.area() > 0.0 && self.search_all_chip_rect.contains(p) {
+            // untick every chip one at a time. Targets are the pointer
+            // rects (`selector_hit_rect`), the same ones the semantic
+            // nodes publish.
+            let all_hit = self.search_all_chip_hit_rect();
+            if all_hit.area() > 0.0 && all_hit.contains(p) {
                 if !self.active_kind_filter.is_empty() {
                     self.active_kind_filter.clear();
                     self.last_search_query.clear(); // force a refresh
@@ -10735,8 +11023,8 @@ impl ShellOverlayHost {
                 return true;
             }
             let kinds = self.search_registry.registered_kinds();
-            for (idx, rect) in self.search_chip_rects.iter().enumerate() {
-                if rect.contains(p) {
+            for idx in 0..self.search_chip_rects.len() {
+                if self.search_chip_hit_rect(idx).contains(p) {
                     if let Some(kind) = kinds.get(idx).cloned() {
                         self.toggle_kind_filter(kind);
                         self.last_search_query.clear(); // force a refresh
@@ -10877,6 +11165,10 @@ impl ShellOverlayHost {
             // the widget above. Commit that exact tab before this input
             // dispatch returns so no revision or crash can restore it.
             let _ = self.harvest_pending_tab_closes();
+            // A right-click on a tab pill has just been recorded by its bar;
+            // open the menu in the same dispatch so it is on screen — and
+            // in the accessibility tree — by the time this event returns.
+            self.harvest_pending_tab_context_menus();
         }
 
         // Same step as Super+Left/Right, avoiding a park on the window
@@ -10893,6 +11185,416 @@ impl ShellOverlayHost {
                 }
             }
         }
+    }
+}
+
+/// The tab right-click menu: request harvest, routing, actions, semantics
+/// and paint. Everything a person, a script or a reader does with the
+/// menu passes through here, so the three routes cannot disagree.
+impl ShellOverlayHost {
+    /// Drains every tab bar's right-click request
+    /// ([`UiWindowGroup::take_tab_context_menu`]) and opens the menu for
+    /// it. Run synchronously inside the pointer dispatch that produced the
+    /// request, so the menu is up — and in the accessibility tree — when
+    /// that event returns; `update` runs it again as a fallback.
+    fn harvest_pending_tab_context_menus(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        // Every bar is drained (a request left behind would open a menu on
+        // some later, unrelated event). One pointer press reaches one bar,
+        // so more than one request means a stale one survived; the request
+        // at the pointer's current position is the one just made, and the
+        // rest are dropped — deterministic, not HashMap order.
+        let mut requests: Vec<(TabMenuTarget, usize, Point, String)> = Vec::new();
+        for (&strip_id, &ptr) in &self.group_row_ptrs {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in &mut row.groups {
+                if let Some((tab_id, point)) = g.take_tab_context_menu() {
+                    let title = g
+                        .tabs()
+                        .iter()
+                        .find(|t| t.id == tab_id)
+                        .map(|t| t.title.clone())
+                        .unwrap_or_default();
+                    let target = TabMenuTarget {
+                        strip: strip_id,
+                        group: g.id,
+                        tab: tab_id,
+                    };
+                    requests.push((target, g.tab_count(), point, title));
+                }
+            }
+        }
+        let cursor = self.last_cursor;
+        let nearest = requests.into_iter().min_by(|a, b| {
+            let da = cursor.map_or(0.0, |c| c.distance(a.2));
+            let db = cursor.map_or(0.0, |c| c.distance(b.2));
+            da.total_cmp(&db)
+                .then_with(|| a.0.strip.raw().cmp(&b.0.strip.raw()))
+                .then_with(|| a.0.group.cmp(&b.0.group))
+        });
+        let Some((target, tab_count, point, title)) = nearest else {
+            return;
+        };
+        self.open_tab_context_menu(target, tab_count, point, title);
+    }
+
+    fn open_tab_context_menu(
+        &mut self,
+        target: TabMenuTarget,
+        tab_count: usize,
+        at: Point,
+        title: String,
+    ) {
+        let (menu, items) = build_tab_context_menu(tab_count);
+        self.tab_menu = TabContextMenu {
+            menu,
+            items,
+            target: Some(target),
+            title,
+            anchor: at,
+            swallow_release: false,
+        };
+        // Anchored to the pointer as a zero-size rect: `open_anchored`
+        // hangs the menu below-right of it and flips above / clamps inside
+        // the host when the pointer is near an edge. Geometry is usable at
+        // once for hit-testing; `draw` settles the rows at live text
+        // metrics.
+        let anchor = Rect::new(at.x, at.y, at.x, at.y);
+        self.tab_menu.menu.open_anchored(anchor, self.rect);
+    }
+
+    fn close_tab_context_menu(&mut self) {
+        self.tab_menu.menu.close();
+        self.tab_menu.target = None;
+    }
+
+    /// A menu whose tab or group has gone (closed by a peer, a revision, a
+    /// chord) has nothing left to act on — close it rather than let a stale
+    /// selection fire against whatever now carries that id.
+    fn prune_stale_tab_context_menu(&mut self) {
+        let Some(target) = self.tab_menu.target else {
+            return;
+        };
+        if !self.tab_menu.menu.is_open() {
+            self.tab_menu.target = None;
+            return;
+        }
+        let alive = self.group_row_ptrs.get(&target.strip).is_some_and(|&ptr| {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.groups
+                .iter()
+                .any(|g| g.id == target.group && g.tabs().iter().any(|t| t.id == target.tab))
+        });
+        if !alive {
+            self.close_tab_context_menu();
+        }
+    }
+
+    /// Route one event to the open tab menu. `true` when the menu owned the
+    /// event. The widget's own model does the work — hover arms a row,
+    /// Up/Down move it, Enter fires it, Escape closes, a left press inside
+    /// selects and one outside dismisses (absorbed, so the thing under the
+    /// menu is not also activated). Two shell-level rules sit on top: a
+    /// Super chord closes the menu and still runs, and a second right-click
+    /// outside it closes this menu and falls through so the tab bar under
+    /// the pointer can open its own in the same dispatch.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one routing gate in the host's handle_event chain, same shape as its siblings"
+    )]
+    fn route_tab_context_menu_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        // A press the menu absorbed owes one release: swallow it even when
+        // that press closed the menu, or a dismissing click's release lands
+        // on the window (or the client) underneath as a stray button-up.
+        if let WindowEvent::MouseInput {
+            state: ElementState::Released,
+            ..
+        } = event
+            && self.tab_menu.swallow_release
+        {
+            self.tab_menu.swallow_release = false;
+            *handled = true;
+            return true;
+        }
+        if !self.tab_menu.is_open() {
+            return false;
+        }
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+            && modifiers.state().super_key()
+        {
+            self.close_tab_context_menu();
+            return false;
+        }
+        match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Right,
+                ..
+            } => {
+                let inside = self
+                    .last_cursor
+                    .is_some_and(|p| self.tab_menu.menu.contains([p.x, p.y]));
+                self.close_tab_context_menu();
+                if inside {
+                    self.tab_menu.swallow_release = true;
+                    *handled = true;
+                }
+                // Outside: fall through so the tab bar under the pointer can
+                // open its own menu in this same dispatch (and that menu
+                // then absorbs the release, being open).
+                return inside;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } => {
+                self.tab_menu.swallow_release = true;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                ..
+            } => {
+                // The release of the opening right-click.
+                *handled = true;
+                return true;
+            }
+            _ => {}
+        }
+        // `ContextMenu::handle_event` ignores the node id and the tree —
+        // the menu is a host field, not a taffy child — but takes them by
+        // the trait's shape; its `handled`/`focus` outputs are not needed
+        // because the host absorbs every event while the menu is up.
+        let mut widget_handled = false;
+        let mut widget_focus: Option<NodeId> = None;
+        self.tab_menu.menu.handle_event(
+            event,
+            scale_factor,
+            &modifiers,
+            state,
+            path,
+            &mut widget_handled,
+            &mut widget_focus,
+            node_id,
+            taffy,
+        );
+        // Modal while up: hover, wheel and stray keys stop here rather
+        // than reaching the tab bar or the app under the menu.
+        *handled = true;
+        self.apply_tab_menu_selection();
+        if !self.tab_menu.menu.is_open() {
+            self.tab_menu.target = None;
+        }
+        true
+    }
+
+    /// Fire the row `ContextMenu::take_selection` reports (a click or
+    /// Enter), once. The action runs first; only a performed action
+    /// releases the target and closes the menu. A refusal (the shared
+    /// widget has already folded the menu on the click) re-opens it where
+    /// it was with the same row armed, and the refusal itself has been
+    /// surfaced as a warning notification by `window_actions`.
+    fn apply_tab_menu_selection(&mut self) {
+        let Some(index) = self.tab_menu.menu.take_selection() else {
+            return;
+        };
+        let Some(Some(action)) = self.tab_menu.items.get(index).copied() else {
+            return;
+        };
+        let Some(target) = self.tab_menu.target else {
+            return;
+        };
+        if self.perform_tab_menu_action(target, action) {
+            self.close_tab_context_menu();
+            return;
+        }
+        let anchor = self.tab_menu.anchor;
+        self.tab_menu
+            .menu
+            .open_anchored(Rect::new(anchor.x, anchor.y, anchor.x, anchor.y), self.rect);
+        let _ = self.tab_menu.menu.focus_item(index);
+    }
+
+    /// Run one tab-menu action against its tab; `true` when it was
+    /// performed. Shared by the pointer and keyboard selection and by the
+    /// accessibility route, so every door reaches the same operation — and
+    /// the same operation the `tab.*` actions in the registry run
+    /// (`window_actions::close_tab` / `split_tab`), so a script and a
+    /// right-click cannot disagree.
+    fn perform_tab_menu_action(&mut self, target: TabMenuTarget, action: TabMenuAction) -> bool {
+        match action {
+            // The `✕` and the keyboard chord's own durable lifecycle: tree
+            // and document first, then the widget's close animation.
+            TabMenuAction::CloseTab => self.close_tab_in_group(target.group, Some(target.tab)),
+            TabMenuAction::SplitRight | TabMenuAction::MoveToNewGroup => {
+                let Some(chrome) = self.chrome.clone() else {
+                    return false;
+                };
+                let placement = match action {
+                    TabMenuAction::SplitRight => crate::shell::window_actions::SplitPlacement::Right,
+                    _ => crate::shell::window_actions::SplitPlacement::StripEnd,
+                };
+                // Tree first: cache + replicated document + chrome bump, so
+                // the split is durable before anything moves on screen and
+                // an unrelated revision between here and the next frame
+                // cannot evict it.
+                let new_group = {
+                    let mut st = chrome.borrow_mut();
+                    match crate::shell::window_actions::split_tab(&mut st, target.tab, placement) {
+                        Ok(id) => id,
+                        Err(err) => {
+                            st.push_warning_notification(
+                                "Can't move this tab",
+                                err.user_message(),
+                            );
+                            return false;
+                        }
+                    }
+                };
+                // Then move the live tab host into a group carrying the
+                // tree's id, so the resync the bump triggers finds the group
+                // already present and keeps the person's window state
+                // (terminal scrollback, open document) instead of building a
+                // fresh host. If the host cannot be moved the resync builds
+                // one — correct, just colder.
+                if let Some(&ptr) = self.group_row_ptrs.get(&target.strip) {
+                    // SAFETY: see field doc on `group_row_ptrs`.
+                    let row: &mut GroupRow = unsafe { &mut *ptr };
+                    let src = row.groups.iter().position(|g| g.id == target.group);
+                    let detached = src
+                        .and_then(|i| row.groups.get_mut(i))
+                        .and_then(|g| g.detach_tab(target.tab));
+                    if let (Some(src), Some((desc, host))) = (src, detached) {
+                        let at = match action {
+                            TabMenuAction::SplitRight => src.saturating_add(1),
+                            _ => row.groups.len(),
+                        };
+                        let mut group = UiWindowGroup::from_detached(
+                            new_group,
+                            desc,
+                            host,
+                            ui::widget::WindowWidth::Normal,
+                        );
+                        group.start_spawn_animation();
+                        row.insert_group(group, at);
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    /// Painted rect of the `ordinal`-th *action* row (separators publish
+    /// no node), in host coordinates.
+    fn tab_menu_action_rect(&self, ordinal: usize) -> Option<Rect> {
+        let index = self.tab_menu.item_index_of_action(ordinal)?;
+        self.tab_menu.menu.item_rect(index)
+    }
+
+    /// The menu as an assistive technology reads it: a `Menu` whose
+    /// `MenuItem` children carry the shared widget's row bounds, the
+    /// armed row as focused, and `tabmenu:*` targets that
+    /// `perform_semantic_action` activates.
+    fn tab_context_menu_accessibility(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let hovered = self.tab_menu.menu.hovered();
+        let actions: Vec<(usize, TabMenuAction)> = self
+            .tab_menu
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| item.map(|action| (index, action)))
+            .collect();
+        let count = actions.len();
+        let children = actions
+            .iter()
+            .enumerate()
+            .map(|(ordinal, &(index, action))| {
+                let node = AccessNode::new(Role::MenuItem)
+                    .with_name(action.label())
+                    .with_semantic_key(action.semantic_key())
+                    .with_action_target(action.semantic_key())
+                    .with_position(ordinal.saturating_add(1), count)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: hovered == Some(index),
+                        ..AccessState::default()
+                    });
+                match self.tab_menu.menu.item_rect(index) {
+                    Some(rect) => node.with_bounds(rect),
+                    None => node,
+                }
+            })
+            .collect();
+        AccessNode::new(Role::Menu)
+            .with_name(format!("{} tab menu", self.tab_menu.title))
+            .with_semantic_key("tabmenu")
+            .with_bounds(self.tab_menu.menu.get_rect())
+            .with_state(AccessState {
+                expanded: Some(true),
+                ..AccessState::default()
+            })
+            .with_children(children)
+    }
+
+    /// Whether the tab menu is up. For tests and the bench state snapshot.
+    pub fn tab_context_menu_is_open(&self) -> bool {
+        self.tab_menu.is_open()
+    }
+
+    /// Painted rect of the open tab menu, `None` when closed.
+    pub fn tab_context_menu_rect(&self) -> Option<Rect> {
+        self.tab_menu.is_open().then(|| self.tab_menu.menu.get_rect())
+    }
+
+    fn draw_tab_context_menu(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if !self.tab_menu.is_open() {
+            return;
+        }
+        // Settle the rows at the live text metrics before reading the rect
+        // (`ContextMenu::draw` does the same), so the shadow follows exactly
+        // the outline the widget is about to paint.
+        self.tab_menu.menu.layout_within(text_renderer, theme);
+        let rect = self.tab_menu.menu.get_rect();
+        // A popover is a Panel (HIG §9.1): `e4`, following the radius the
+        // shared widget paints itself with (`radii.md` today — F4-16).
+        ui::surface::shadow(
+            scene,
+            transform,
+            rect,
+            f64::from(theme.tokens.radii.md),
+            &theme.tokens.elevation.e4,
+        );
+        self.tab_menu
+            .menu
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 }
 
@@ -11310,6 +12012,10 @@ impl Widget for ShellOverlayHost {
         // fallback for accessibility/synthetic activation paths that can
         // queue a widget close without returning through pointer dispatch.
         let close_dirty = self.harvest_pending_tab_closes();
+        // Same fallback for a right-click request that arrived outside
+        // pointer dispatch; and drop a menu whose tab has since gone.
+        self.harvest_pending_tab_context_menus();
+        self.prune_stale_tab_context_menu();
         self.harvest_floating_surface_requests();
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
@@ -12033,6 +12739,10 @@ impl Widget for ShellOverlayHost {
                     content_node,
                     taffy,
                 );
+                // A right-click that lands while a drag still owns the
+                // pointer is a request like any other; opened here, not on
+                // whichever later event happens to run the fallback.
+                self.harvest_pending_tab_context_menus();
             }
             return;
         }
@@ -12045,6 +12755,21 @@ impl Widget for ShellOverlayHost {
             path,
             handled,
             focus_target,
+        ) {
+            return;
+        }
+        // The tab right-click menu owns the pointer and the keyboard while
+        // it is up, below the genuinely modal sheets above (a portal answer
+        // still wins) and above every other overlay and the windows.
+        if self.route_tab_context_menu_event(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            node_id,
+            taffy,
         ) {
             return;
         }
@@ -12215,6 +12940,9 @@ impl Widget for ShellOverlayHost {
         let mut root = AccessNode::new(Role::Group).with_name("qOS workspace");
         for overlay in self.accessible_overlay_order() {
             match overlay {
+                AccessibleOverlay::TabContextMenu => {
+                    root.children.push(self.tab_context_menu_accessibility());
+                }
                 AccessibleOverlay::CommandPalette => {
                     if let Some(mut palette) = self.palette.accessibility() {
                         // The filter band is the host's, painted over the
@@ -12419,9 +13147,46 @@ impl Widget for ShellOverlayHost {
         Some(root)
     }
 
+    /// The semantic route into the tab menu: an assistive technology, a
+    /// script or the bench activates `tabmenu:<slug>` and gets the same
+    /// operation a click or Enter on that row performs. Only a row the open
+    /// menu actually offers may fire — a single-tab group has no split.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let Some(menu_action) = TabMenuAction::from_semantic_key(target) else {
+            return false;
+        };
+        if !self.tab_menu.is_open() || self.tab_menu.item_index_of(menu_action).is_none() {
+            return false;
+        }
+        let Some(tab) = self.tab_menu.target else {
+            return false;
+        };
+        // The action first; a refusal leaves the menu up (and has been
+        // surfaced as a notification), a performed action closes it.
+        let performed = self.perform_tab_menu_action(tab, menu_action);
+        if performed {
+            self.close_tab_context_menu();
+        }
+        performed
+    }
+
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let (&overlay_index, child_path) = path.split_first()?;
         match self.accessible_overlay_order().get(overlay_index)? {
+            AccessibleOverlay::TabContextMenu => match child_path {
+                [] => Some(self.tab_menu.menu.get_rect()),
+                [ordinal] => self.tab_menu_action_rect(*ordinal),
+                _ => None,
+            },
             AccessibleOverlay::CommandPalette => match child_path {
                 // The trailing child is the host's filter band (see
                 // `accessibility`); everything before it is the palette's.
@@ -12477,6 +13242,13 @@ impl Widget for ShellOverlayHost {
             return false;
         };
         match overlay {
+            AccessibleOverlay::TabContextMenu => match child_path {
+                [ordinal] => self
+                    .tab_menu
+                    .item_index_of_action(*ordinal)
+                    .is_some_and(|index| self.tab_menu.menu.focus_item(index)),
+                _ => false,
+            },
             AccessibleOverlay::CommandPalette => {
                 self.palette.focus_synthetic_accessibility(child_path)
             }
@@ -13535,14 +14307,18 @@ impl ShellOverlayHost {
             } else {
                 transform
             };
-            ui::surface::soft_shadow(
+            // A Panel casts `e4` (HIG §9.1), following the outline the
+            // sheet paints itself with (`radii.lg` in `room_activity.rs`);
+            // the token's own colour, not a ramp slot, and its strength
+            // fades in with the sheet.
+            let mut sheet_shadow = theme.tokens.elevation.e4;
+            sheet_shadow.color = sheet_shadow.color.with_alpha_factor(alpha);
+            ui::surface::shadow(
                 scene,
                 sheet_xform,
                 sheet,
-                theme.tokens.colors.neutral[0],
-                40.0,
-                16.0,
-                0.55 * alpha,
+                f64::from(theme.tokens.radii.lg),
+                &sheet_shadow,
             );
             self.room_activity
                 .draw(scene, sheet_xform, text_renderer, theme, presence);
@@ -13621,21 +14397,25 @@ impl ShellOverlayHost {
             } else {
                 transform
             };
-            ui::surface::soft_shadow(
+            // A Panel casts `e4` (HIG §9.1) along the card's own outline
+            // (`ChromeRole::Panel.radius`, the radius
+            // `draw_quick_settings_card_background` paints), fading in
+            // with the panel.
+            let mut qs_shadow = theme.tokens.elevation.e4;
+            qs_shadow.color = qs_shadow.color.with_alpha_factor(openness);
+            ui::surface::shadow(
                 scene,
                 qs_xform,
                 qs_rect,
-                theme.tokens.colors.neutral[0],
-                34.0,
-                12.0,
-                0.5 * openness,
+                ui::chrome::ChromeRole::Panel.radius(theme, qs_rect.height()),
+                &qs_shadow,
             );
             self.draw_quick_settings(scene, qs_xform, text_renderer, theme);
             if in_flight {
                 scene.pop_layer();
             }
-            // The in-flight layer clips every QS command to `clip`. Once settled, account for
-            // both `soft_shadow` and the card background's theme-derived panel-shadow ring.
+            // The in-flight layer clips every QS command to `clip`. Once
+            // settled, the damage bounds cover the `e4` shadow's reach.
             return Some(if in_flight {
                 transform.transform_rect_bbox(clip)
             } else {
@@ -13721,26 +14501,49 @@ impl ShellOverlayHost {
         let size = theme.tokens.typography.scale.sm / text_renderer.text_scale();
         let label = "Help  F1 · Super+?";
         let (w, h) = text_renderer.measure_weighted(label, size, None, TextWeight::Semibold);
+        // Label padding `s6` across / `s3` down, `s4` off the display
+        // corner (the same pixels as before, now the theme's steps). The
+        // pill is at least the §9.6 pointer floor plus `s1` tall (36 at
+        // 100 %), and as wide as its measured label needs — a 140 px width
+        // floor added nothing the label did not.
+        let spacing = &theme.tokens.spacing;
+        let (pad_x, pad_y, inset) = (
+            f64::from(spacing.s6),
+            f64::from(spacing.s3),
+            f64::from(spacing.s4),
+        );
+        let min_h = f64::from(theme.tokens.metrics.min_pointer_target + spacing.s1);
         self.shortcut_help_drawn_rect = Rect::new(
-            self.rect.x1 - (f64::from(w) + 24.0).max(140.0) - 16.0,
-            self.rect.y1 - (f64::from(h) + 12.0).max(36.0) - 16.0,
-            self.rect.x1 - 16.0,
-            self.rect.y1 - 16.0,
+            self.rect.x1 - (f64::from(w) + pad_x) - inset,
+            self.rect.y1 - (f64::from(h) + pad_y).max(min_h) - inset,
+            self.rect.x1 - inset,
+            self.rect.y1 - inset,
         );
         let rect = self.shortcut_help_button_rect();
         let colors = &theme.tokens.colors;
-        scene.fill(
-            Fill::NonZero,
+        // A floating pill over the desktop is Panel material (HIG §9.1–9.2):
+        // the panel ground with its derived edge, never a ramp slot
+        // (`neutral[1]` until 2026-09-17, S1-27), and ink chosen against
+        // that ground rather than assumed.
+        let pill = RoundedRect::from_rect(rect, rect.height() / 2.0);
+        let surface = ui::chrome::ChromeRole::Panel.surface(theme);
+        scene.fill(Fill::NonZero, transform, surface, None, &pill);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.neutral[1],
+            ui::chrome::shell::panel_border(theme),
             None,
-            &RoundedRect::from_rect(rect, rect.height() / 2.0),
+            &pill,
         );
         text_renderer.draw_text_weighted(
             scene,
             label,
             size,
-            colors.text_primary,
+            colors.ink_on(
+                surface,
+                colors.text_primary,
+                ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+            ),
             transform.pre_translate(
                 (
                     rect.center().x - f64::from(w) / 2.0,
@@ -13808,13 +14611,28 @@ impl ShellOverlayHost {
         draw_modal_scrim_at(scene, transform, self.rect, 1.0, theme);
         let panel = self.shortcut_help_panel_rect();
         let colors = &theme.tokens.colors;
-        ui::surface::soft_shadow(scene, transform, panel, colors.neutral[0], 40.0, 12.0, 0.55);
-        scene.fill(
-            Fill::NonZero,
+        // The guide is a Panel (HIG §9.1): `radii.xl`, the panel ground
+        // from the semantic surface tier (never `neutral[0]`, §9.2), a
+        // derived hairline edge, and an `e4` shadow along that outline.
+        // Was an 18 px radius — off the 4/8/12/24 scale — on a ramp slot
+        // with a sprite shadow until 2026-09-17 (S1-26).
+        let role = ui::chrome::ChromeRole::Panel;
+        let panel_radius = role.radius(theme, panel.height());
+        let panel_shape = RoundedRect::from_rect(panel, panel_radius);
+        ui::surface::shadow(
+            scene,
             transform,
-            colors.neutral[0],
+            panel,
+            panel_radius,
+            &theme.tokens.elevation.e4,
+        );
+        scene.fill(Fill::NonZero, transform, role.surface(theme), None, &panel_shape);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            ui::chrome::shell::panel_border(theme),
             None,
-            &RoundedRect::from_rect(panel, 18.0),
+            &panel_shape,
         );
         let title_size = theme.tokens.typography.scale.xl;
         text_renderer.draw_text_weighted(
@@ -14378,6 +15196,11 @@ impl ShellOverlayHost {
             }
         }
 
+        // The tab menu: above the windows and the strip chrome it was
+        // opened from, below the sheets that follow (a portal answer or a
+        // token prompt is modal; a menu is not).
+        self.draw_tab_context_menu(scene, transform, text_renderer, theme, presence);
+
         // Owns the keyboard while up, so it must sit above the palette
         // that opened it.
         self.draw_peer_sync(scene, transform, text_renderer, theme);
@@ -14422,22 +15245,28 @@ impl ShellOverlayHost {
             return;
         };
         draw_scrim_at(scene, transform, self.rect, 1.0, theme);
-        let sheet = RoundedRect::from_rect(layout.sheet, 16.0);
+        // A review sheet is a Panel (HIG §9.1): `radii.xl` and an `e4`
+        // shadow along that outline, painted before the surface so the
+        // sheet sits on its shadow rather than under it. Was a 16 px
+        // radius (off the scale) with a sprite shadow on a ramp slot until
+        // 2026-09-17 (S1-26); the sheet's other literals (title 20 px,
+        // `surfaces.raised` body) belong to the portal owner (S2).
+        let sheet_radius =
+            ui::chrome::ChromeRole::Panel.radius(theme, layout.sheet.height());
+        let sheet = RoundedRect::from_rect(layout.sheet, sheet_radius);
+        ui::surface::shadow(
+            scene,
+            transform,
+            layout.sheet,
+            sheet_radius,
+            &theme.tokens.elevation.e4,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
             theme.tokens.colors.surfaces.raised,
             None,
             &sheet,
-        );
-        ui::surface::soft_shadow(
-            scene,
-            transform,
-            layout.sheet,
-            theme.tokens.colors.neutral[0],
-            36.0,
-            12.0,
-            0.6,
         );
         text_renderer.draw_text(
             scene,
@@ -14469,15 +15298,11 @@ impl ShellOverlayHost {
                 scene,
                 transform,
                 text_renderer,
+                theme,
                 *rect,
                 choice,
-                14.0,
-                if selected {
-                    theme.tokens.colors.accent[5].with_alpha_factor(0.26)
-                } else {
-                    theme.tokens.colors.surfaces.base
-                },
-                theme.tokens.colors.text_primary,
+                theme.tokens.typography.scale.base,
+                ui::chrome::SelectionState::active(selected),
             );
         }
         // USB is intentionally a real multi-select sheet, rather than a
@@ -14507,34 +15332,26 @@ impl ShellOverlayHost {
                 scene,
                 transform,
                 text_renderer,
+                theme,
                 *rect,
                 &label,
-                14.0,
-                if focused {
-                    theme.tokens.colors.accent[5].with_alpha_factor(0.26)
-                } else {
-                    theme.tokens.colors.surfaces.base
-                },
-                theme.tokens.colors.text_primary,
+                theme.tokens.typography.scale.base,
+                ui::chrome::SelectionState::active(focused),
             );
         }
         if let Some(editor) = view.launcher_editor() {
             if let Some(name_rect) = layout.launcher_name {
                 let focused = self.portal_dialogs.launcher_name_focused();
                 draw_filter_chip(
-                    scene,
-                    transform,
-                    text_renderer,
-                    name_rect,
-                    self.portal_dialogs.launcher_name().unwrap_or(editor.name),
-                    14.0,
-                    if focused {
-                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
-                    } else {
-                        theme.tokens.colors.surfaces.base
-                    },
-                    theme.tokens.colors.text_primary,
-                );
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                name_rect,
+                self.portal_dialogs.launcher_name().unwrap_or(editor.name),
+                theme.tokens.typography.scale.base,
+                ui::chrome::SelectionState::active(focused),
+            );
             }
             for (index, (label, rect)) in editor
                 .icon_choices
@@ -14544,19 +15361,15 @@ impl ShellOverlayHost {
             {
                 let selected = self.portal_dialogs.launcher_icon() == Some(index);
                 draw_filter_chip(
-                    scene,
-                    transform,
-                    text_renderer,
-                    *rect,
-                    label,
-                    14.0,
-                    if selected {
-                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
-                    } else {
-                        theme.tokens.colors.surfaces.base
-                    },
-                    theme.tokens.colors.text_primary,
-                );
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                *rect,
+                label,
+                theme.tokens.typography.scale.base,
+                ui::chrome::SelectionState::active(selected),
+            );
             }
         }
         for (index, (row, rect)) in view.shortcut_rows().iter().zip(&layout.choices).enumerate() {
@@ -14574,15 +15387,11 @@ impl ShellOverlayHost {
                 scene,
                 transform,
                 text_renderer,
+                theme,
                 *rect,
                 &label,
-                14.0,
-                if selected {
-                    theme.tokens.colors.accent[5].with_alpha_factor(0.26)
-                } else {
-                    theme.tokens.colors.surfaces.base
-                },
-                theme.tokens.colors.text_primary,
+                theme.tokens.typography.scale.base,
+                ui::chrome::SelectionState::active(selected),
             );
             if let Some(status) = &row.status {
                 text_renderer.draw_text(
@@ -14595,25 +15404,29 @@ impl ShellOverlayHost {
                 );
             }
         }
-        draw_filter_chip(
+        // The sheet's two buttons are the shared `Button` (never a chip
+        // painter wearing button colours): Cancel neutral, the commit
+        // primary, both at the Control radius. Was `surfaces.base` /
+        // `accent[5]` pills at a literal 14 px until 2026-09-17 (S1-26).
+        let button_radius = ui::chrome::ChromeRole::Control.radius(theme, layout.cancel.height());
+        Button::paint(
             scene,
             transform,
             text_renderer,
-            layout.cancel,
-            "Cancel",
-            14.0,
-            theme.tokens.colors.surfaces.base,
-            theme.tokens.colors.text_primary,
+            theme,
+            &ButtonFace::new(layout.cancel, "Cancel")
+                .radius(button_radius)
+                .hovered(self.last_cursor.is_some_and(|p| layout.cancel.contains(p))),
         );
-        draw_filter_chip(
+        Button::paint(
             scene,
             transform,
             text_renderer,
-            layout.confirm,
-            view.confirm_label(),
-            14.0,
-            theme.tokens.colors.accent[5],
-            theme.tokens.colors.text_primary,
+            theme,
+            &ButtonFace::new(layout.confirm, view.confirm_label())
+                .primary()
+                .radius(button_radius)
+                .hovered(self.last_cursor.is_some_and(|p| layout.confirm.contains(p))),
         );
     }
 
@@ -14734,38 +15547,48 @@ impl ShellOverlayHost {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
         let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
         let hover = self.last_cursor.is_some_and(|c| rect.contains(c));
         let m = self.overview_metrics;
 
         let rr = RoundedRect::from_rect(rect, m.row_radius);
-        if selected {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                accent.with_alpha_factor(0.16),
-                None,
-                &rr,
-            );
+        // A room row is a Control — a list row you press — so "which one is
+        // chosen" is the shared selection tier (HIG §9.3), not an accent
+        // tint: idle transparent, hover `lift(0.5)`, selected `lift(1.0)`
+        // with the hairline edge and inner glow every other active control
+        // carries. Until 2026-09-17 the selected row wore a 16 % accent
+        // fill and an accent stroke (§9.4 reserves accent for live state)
+        // and the idle row a `neutral[1]` ramp slot (§9.2; S1-27).
+        let tier = ui::chrome::selection_tier(
+            theme,
+            ui::chrome::SelectionState::new(selected, hover, false),
+        );
+        if tier.fill.components[3] > 0.0 {
+            scene.fill(Fill::NonZero, transform, tier.fill, None, &rr);
+        }
+        if let Some(border) = tier.border {
+            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, border, None, &rr);
+        }
+        if let Some(glow) = tier.inner_glow {
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
                 transform,
-                accent,
+                glow,
                 None,
-                &rr,
+                &RoundedRect::from_rect(rect.inset(1.0), (m.row_radius - 1.0).max(0.0)),
             );
-        } else if hover {
-            scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &rr);
-        } else {
+        }
+        if !selected && !hover {
             // A destination occupies the whole row, not only its label and
-            // avatar. The quiet surface makes that click target legible and
-            // gives the otherwise empty horizontal space a job.
-            scene.fill(Fill::NonZero, transform, colors.neutral[1], None, &rr);
+            // avatar: a derived hairline keeps the click target legible on
+            // the panel ground without giving it a body of its own.
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
                 transform,
-                colors.border_standard.with_alpha_factor(0.55),
+                ui::tokens::colors::Colors::hairline_on(
+                    ground,
+                    ui::chrome::shell::HAIRLINE_ALPHA,
+                ),
                 None,
                 &rr,
             );
@@ -15961,24 +16784,34 @@ impl ShellOverlayHost {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let colors = &tokens.colors;
         let band = self.search_banner_rect();
         if band.width() <= 0.0 {
             self.search_chip_rects.clear();
             return;
         }
 
-        let chip_text_size = Self::filter_label_size(theme);
-        let idle_fill = colors.lift(0.35);
-        let active_fill = colors.accent[5];
-        let active_text = colors.text_primary;
-        let idle_text = colors.text_dim;
+        let chip_text_size = Self::filter_label_size(theme, text_renderer);
         let row_h = self.palette.filter_strip_row_height();
         let control_h = Self::filter_control_height(theme, text_renderer, row_h);
         // Cached before any geometry helper runs, so the switch painted
         // below and the hit rects consulted later agree.
         self.search_filter_control_h = control_h;
+        // The pointer floor a target may grow to: §9.6's 32, but never past
+        // `row_h − s1`, so neighbouring rows' targets keep the gutter the
+        // pills keep (the palette's row is `36·text_scale`; below 100 %
+        // text it is the row, not the floor, that bounds the target).
+        self.search_pointer_floor_h = f64::from(tokens.metrics.min_pointer_target)
+            .min(row_h - f64::from(tokens.spacing.s1))
+            .max(control_h);
         self.search_scope_segment_w = self.scope_segment_width(theme, text_renderer);
+        // Frozen for this frame: the band everything below is laid out in,
+        // and whether the switch takes its first row alone (it wants to
+        // and the palette has already granted the second row). Hit-tests
+        // read these, not the palette's live getters, so a row request made
+        // a few lines down cannot move the targets before the next paint.
+        self.search_band_at_draw = band;
+        self.search_scope_own_row =
+            self.scope_switch_wants_own_row() && band.height() + 0.5 >= 2.0 * row_h;
 
         self.draw_search_banner_scope_switch(
             scene,
@@ -16012,15 +16845,34 @@ impl ShellOverlayHost {
                 ) + 2.0 * chip_pad
             })
             .collect();
-        // The scope track's left edge bounds the chip strip. It stayed behind in
-        // the other half when this block was split out, so recompute it here —
-        // it is a pure geometry helper on `self`.
+        // The scope track's left edge bounds the chip strip's first row —
+        // unless the switch has taken that row for itself (200 % text on a
+        // narrow card), in which case the chips start on the next row with
+        // the whole band and the switch keeps its labels whole (S1-29).
         let track = self.search_scope_track_rect();
+        // `has` decides this frame's layout, `wants` what the band asks the
+        // palette to reserve: on the frame the want first appears the band
+        // is one row tall, so the switch still shares that row (capped) and
+        // the chips stay in it — never laid into a row that does not exist
+        // yet, over the first result — while the request goes out; the next
+        // layout grants the row and the switch takes it.
+        let own_row = self.scope_switch_has_own_row();
+        let wants_own_row = self.scope_switch_wants_own_row();
+        let reserved_rows = self.palette.host_filter_strip_rows();
+        let (chip_band, first_row_x1, rows_for_chips) = if own_row {
+            (
+                Rect::new(band.x0, band.y0 + row_h, band.x1, band.y1),
+                band.x1,
+                reserved_rows.saturating_sub(1).max(1),
+            )
+        } else {
+            (band, track.x0 - chip_pad, reserved_rows)
+        };
         let strip = lay_out_chip_strip(
             &natural,
-            band,
-            track.x0 - chip_pad,
-            self.palette.host_filter_strip_rows(),
+            chip_band,
+            first_row_x1,
+            rows_for_chips,
             row_h,
             control_h,
             chip_gap,
@@ -16036,6 +16888,11 @@ impl ShellOverlayHost {
                     .and_then(|k| kinds.get(k))
                     .is_some_and(|kind| self.active_kind_filter.contains(kind)),
             };
+            // Hover is judged on the pointer target, not the pill, so the
+            // 2 px of floor above and below a chip light it too.
+            let hover = self
+                .last_cursor
+                .is_some_and(|p| self.selector_hit_rect(rect).contains(p));
             // Only a chip that had to be squeezed loses any of its label;
             // it keeps one side's padding before it elides.
             let label = text_renderer.elide_to_width_weighted(
@@ -16048,11 +16905,11 @@ impl ShellOverlayHost {
                 scene,
                 transform,
                 text_renderer,
+                theme,
                 rect,
                 &label,
                 chip_text_size,
-                if is_active { active_fill } else { idle_fill },
-                if is_active { active_text } else { idle_text },
+                ui::chrome::SelectionState::new(is_active, hover, false),
             );
             match i {
                 0 => self.search_all_chip_rect = rect,
@@ -16063,10 +16920,12 @@ impl ShellOverlayHost {
 
         // The next layout grows the band and moves result rows down;
         // until it runs, the chips stay squeezed into the band there is
-        // but remain clickable.
-        if strip.rows_needed != self.search_chip_rows {
-            self.search_chip_rows = strip.rows_needed;
-            if self.palette.set_host_filter_strip_rows(strip.rows_needed) {
+        // but remain clickable. A switch that wants its own row is one
+        // more row — asked for now, taken once granted.
+        let rows_needed = strip.rows_needed.saturating_add(usize::from(wants_own_row));
+        if rows_needed != self.search_chip_rows {
+            self.search_chip_rows = rows_needed;
+            if self.palette.set_host_filter_strip_rows(rows_needed) {
                 self.palette_layout_dirty = true;
             }
         }
@@ -16085,9 +16944,7 @@ impl ShellOverlayHost {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let active_fill = colors.accent[5];
-        let active_text = colors.text_primary;
-        let idle_text = colors.text_dim;
+        let ground = ui::chrome::shell::panel_ground(theme);
 
         let active = self
             .chrome
@@ -16095,18 +16952,19 @@ impl ShellOverlayHost {
             .map(|c| c.borrow().search_scope)
             .unwrap_or_default();
         let track = self.search_scope_track_rect();
-        let track_shape = RoundedRect::from_rect(track, track.height() / 2.0);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            colors.lift(0.35),
-            None,
-            &track_shape,
+        // The track is the set's outline, not a body: a hairline derived on
+        // the panel ground (HIG §9.5), no fill — the segments carry the
+        // state. Until 2026-09-17 it wore a `lift(0.35)` body with a
+        // hairline measured against `surfaces.raised` and the chosen
+        // segment an `accent[5]` fill (§9.4).
+        let track_shape = RoundedRect::from_rect(
+            track,
+            ui::chrome::ChromeRole::Selector.radius(theme, track.height()),
         );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
+            ui::tokens::colors::Colors::hairline_on(ground, ui::chrome::shell::HAIRLINE_ALPHA),
             None,
             &track_shape,
         );
@@ -16114,16 +16972,40 @@ impl ShellOverlayHost {
         for (idx, scope) in scopes.iter().enumerate() {
             let seg = self.search_scope_pill_rect(idx);
             let is_active = *scope == active;
-            if is_active {
-                let shape = RoundedRect::from_rect(seg, seg.height() / 2.0);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+            let hover = self
+                .last_cursor
+                .is_some_and(|p| self.search_scope_segment_hit_rect(idx).contains(p));
+            // Each segment is a Selector on the shared tiers (§9.3): the
+            // chosen one lifted with hairline and glow, a hovered one half
+            // lifted, the rest transparent inside the track.
+            let tier = ui::chrome::selection_tier(
+                theme,
+                ui::chrome::SelectionState::new(is_active, hover, false),
+            );
+            let radius = ui::chrome::ChromeRole::Selector.radius(theme, seg.height());
+            let shape = RoundedRect::from_rect(seg, radius);
+            if tier.fill.components[3] > 0.0 {
+                scene.fill(vello::peniko::Fill::NonZero, transform, tier.fill, None, &shape);
+            }
+            if let Some(border) = tier.border {
+                scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, border, None, &shape);
+            }
+            if let Some(glow) = tier.inner_glow {
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
                     transform,
-                    active_fill,
+                    glow,
                     None,
-                    &shape,
+                    &RoundedRect::from_rect(seg.inset(1.0), (radius - 1.0).max(0.0)),
                 );
             }
+            let under = if is_active || hover { tier.fill } else { ground };
+            let tone = if is_active {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            };
+            let ink = colors.ink_on(under, tone, ui::tokens::colors::ON_FILL_MIN_CONTRAST);
             let text = self.search_scope_pill_label(*scope);
             // A segment that had to be squeezed under its measured width
             // keeps `s2` of its padding before it elides.
@@ -16139,7 +17021,7 @@ impl ShellOverlayHost {
                 scene,
                 &text,
                 chip_text_size,
-                if is_active { active_text } else { idle_text },
+                ink,
                 transform.pre_translate(
                     (
                         f64::midpoint(seg.x0, seg.x1) - f64::from(tw) / 2.0,
@@ -16807,21 +17689,19 @@ impl ShellOverlayHost {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let field = self.qs_password_field_rect();
-        let field_shape = RoundedRect::from_rect(field, 10.0);
-        // Opaque, not the former translucent surface wash the
-        // popover's other cards use — that let the app underneath show
-        // through the passphrase field.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.neutral[1],
-            None,
-            &field_shape,
+        // A field is a Control (HIG §9.1): `radii.lg`, body from the
+        // selection tiers — the full lift, which is opaque (it resolves to
+        // the theme's raised surface), so the app underneath cannot show
+        // through the passphrase field. Was `neutral[1]` under a 0.35 wash
+        // at a 10 px radius until 2026-09-17 (S1-27, §9.2).
+        let field_shape = RoundedRect::from_rect(
+            field,
+            ui::chrome::ChromeRole::Control.radius(theme, field.height()),
         );
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.lift(0.35),
+            colors.lift(1.0),
             None,
             &field_shape,
         );
@@ -16993,19 +17873,558 @@ impl ShellOverlayHost {
 
 /// Exact conservative extent of Quick Settings after its animation layer has settled. This must
 /// track both shadows that `draw_quick_settings` emits, rather than a theme-independent margin.
+/// Damage bounds of the settled quick-settings card: the card plus the
+/// full reach of its `e4` shadow (3σ of the blur, the downward offset, and
+/// the one-pixel card stroke centred on its edge). The shadow is the
+/// token's own — the same `ui::surface::shadow` call paints it — so this
+/// is derived from the token rather than restating a sprite's spread.
 fn quick_settings_settled_bounds(rect: Rect, theme: &Theme, transform: Affine) -> Rect {
     let panel_reach = ui::surface::std_dev_for(theme.tokens.elevation.e4.blur) * 3.0
         + f64::from(theme.tokens.elevation.e4.offset_y)
-        + 0.5; // one-pixel card stroke centred on its edge
-    let left_right = 34.0_f64.max(panel_reach);
-    let top = 22.0_f64.max(panel_reach);
-    let bottom = 46.0_f64.max(panel_reach);
-    transform.transform_rect_bbox(Rect::new(
-        rect.x0 - left_right,
-        rect.y0 - top,
-        rect.x1 + left_right,
-        rect.y1 + bottom,
-    ))
+        + 0.5;
+    transform.transform_rect_bbox(rect.inflate(panel_reach, panel_reach))
+}
+
+#[cfg(test)]
+mod tab_context_menu_tests {
+    //! The tab right-click menu on the production host: opened by the tab
+    //! bar's request through `handle_event`, moved by the arrow keys,
+    //! closed by Escape, acted on by a click, and reached through the
+    //! semantic route. Every assertion reads the host's own state or the
+    //! accessibility tree it publishes — what a reader observes.
+    use super::overlay_event_absorb_tests::lay_out_host_with_theme;
+    use super::*;
+    use crate::shell::build_nirios_overlay_host_with_chrome;
+    use crate::shell::state::{
+        AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent,
+        WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
+        WorkspaceTree,
+    };
+    use std::collections::HashMap as StdHashMap;
+    use taffy::{NodeId, TaffyTree};
+    use ui::a11y::{AccessNode, Role};
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+    use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+
+    const TAB_A: u64 = 0xa1;
+    const TAB_B: u64 = 0xa2;
+    const GROUP: GroupId = 7001;
+
+    /// One strip, one group, `tabs` stub tabs ("Notes", "Files").
+    fn tree_with_tabs(tabs: usize) -> (WorkspaceTree, StripId) {
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
+        let mut group_tabs = vec![Tab {
+            id: TAB_A,
+            title: "Notes".into(),
+            tile: TileContent::Stub {
+                kind: AppKind::Other("Test".into()),
+                label: "notes".into(),
+            },
+        }];
+        if tabs > 1 {
+            group_tabs.push(Tab {
+                id: TAB_B,
+                title: "Files".into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("Test".into()),
+                    label: "files".into(),
+                },
+            });
+        }
+        let strip = Strip {
+            id: strip_id,
+            name: "Main".into(),
+            window_groups: vec![StateGroup {
+                id: GROUP,
+                tabs: group_tabs,
+                active_tab: TAB_A,
+                width: StateWidth::Normal,
+                maximized: false,
+            }],
+        };
+        let ws = Workspace {
+            owner: None,
+            pending_ownership_transfer: None,
+            ownership_transfer_audit: Vec::new(),
+            ownership_transfer_cancellations: Vec::new(),
+            capabilities: Vec::new(),
+            default_apps: desktop_policy::WorkspaceDefaults::default(),
+            tasks: Vec::new(),
+            effect_receipts: Vec::new(),
+            id: ws_id,
+            room: crate::shell::state::RoomId::new(),
+            name: "Home".into(),
+            strips: vec![strip],
+            collaborators: vec![],
+            shared_surfaces: SharedSurfaces::default(),
+        };
+        let mut active_strip = StdHashMap::new();
+        active_strip.insert(ws_id, strip_id);
+        let mut active_group = StdHashMap::new();
+        active_group.insert(strip_id, GROUP);
+        let tree = WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        };
+        (tree, strip_id)
+    }
+
+    struct Harness {
+        host: ShellOverlayHost,
+        chrome: Chrome,
+        strip: StripId,
+        group: GroupId,
+        /// The fixture group's tab ids in bar order.
+        tabs: Vec<u64>,
+        /// The fixture group's tab titles in bar order.
+        titles: Vec<String>,
+        taffy: TaffyTree<()>,
+        root: NodeId,
+        theme: Theme,
+        doc: AutoCommit,
+    }
+
+    const VW: f64 = 1280.0;
+    const VH: f64 = 800.0;
+
+    /// The production host over a real tree. Two or more tabs uses the
+    /// demo workspace (Notes, Files, Terminal, Document in one group),
+    /// whose Automerge document mirrors its structure — a close is a
+    /// document deletion first (`tab_binding::remove_tab`), so a hand-built
+    /// tree with no mirror refuses it. The single-tab case, which never
+    /// closes, uses the hand-built tree. One structure pass settles the
+    /// host's chrome revision the way the first frame's `update` does.
+    fn harness(tabs: usize) -> Harness {
+        let tree = if tabs >= 2 {
+            WorkspaceTree::bootstrap_demo()
+        } else {
+            tree_with_tabs(1).0
+        };
+        let (strip, group, tab_ids, titles) = {
+            let strip = &tree.workspaces[0].strips[0];
+            let group = &strip.window_groups[0];
+            (
+                strip.id,
+                group.id,
+                group.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+                group.tabs.iter().map(|t| t.title.clone()).collect::<Vec<_>>(),
+            )
+        };
+        assert!(tab_ids.len() >= tabs, "fixture has the tabs the test asked for");
+        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let theme = Theme::dark();
+        let (taffy, root) = lay_out_host_with_theme(&mut host, VW, VH, &theme);
+        let _ = host.take_structure_dirty();
+        Harness {
+            host,
+            chrome,
+            strip,
+            group,
+            tabs: tab_ids,
+            titles,
+            taffy,
+            root,
+            theme,
+            doc: AutoCommit::new(),
+        }
+    }
+
+    impl Harness {
+        fn send(&mut self, event: &WindowEvent) -> bool {
+            let mut handled = false;
+            let mut focus: Option<NodeId> = None;
+            self.host.handle_event(
+                event,
+                1.0,
+                &Modifiers::default(),
+                &mut self.doc,
+                &automerge::ROOT,
+                &mut handled,
+                &mut focus,
+                self.root,
+                &self.taffy,
+            );
+            handled
+        }
+
+        fn move_to(&mut self, p: Point) {
+            let _ = self.send(&WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: PhysicalPosition::new(p.x, p.y),
+            });
+        }
+
+        fn press(&mut self, button: MouseButton) -> bool {
+            let pressed = self.send(&WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button,
+            });
+            let _ = self.send(&WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Released,
+                button,
+            });
+            pressed
+        }
+
+        fn key(&mut self, key: Key) -> bool {
+            let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+            event.logical_key = key;
+            event.physical_key =
+                PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+            event.location = KeyLocation::Standard;
+            event.state = ElementState::Pressed;
+            event.repeat = false;
+            event.text = None;
+            self.send(&WindowEvent::KeyboardInput {
+                device_id: DeviceId::dummy(),
+                event,
+                is_synthetic: false,
+            })
+        }
+
+        /// Centre of tab pill `index` in the fixture's only group, as the
+        /// production tab bar laid it out.
+        fn pill_centre(&mut self, index: usize) -> Point {
+            let group = self
+                .host
+                .group_at_for_tests(self.strip, 0)
+                .expect("the fixture's group is live");
+            let rect = group.tab_rects()[index];
+            assert!(rect.area() > 0.0, "pill {index} was laid out: {rect:?}");
+            rect.center()
+        }
+
+        fn right_click_pill(&mut self, index: usize) {
+            let p = self.pill_centre(index);
+            self.move_to(p);
+            let handled = self.press(MouseButton::Right);
+            assert!(handled, "the tab bar claims the right-click");
+        }
+
+        fn menu_node(&self) -> Option<AccessNode> {
+            self.host
+                .accessibility()
+                .expect("the host publishes a tree")
+                .children
+                .into_iter()
+                .find(|n| n.role == Role::Menu)
+        }
+
+        fn group_ids(&self) -> Vec<u64> {
+            let st = self.chrome.borrow();
+            let tree = st.tree();
+            tree.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .map(|g| g.id)
+                .collect()
+        }
+
+        fn tab_ids(&self, group: usize) -> Vec<u64> {
+            let st = self.chrome.borrow();
+            let tree = st.tree();
+            tree.workspaces[0].strips[0].window_groups[group]
+                .tabs
+                .iter()
+                .map(|t| t.id)
+                .collect()
+        }
+    }
+
+    /// The whole pointer story, on the production `handle_event` path: a
+    /// right-click on a pill opens the menu at the pointer with every
+    /// action bounded and named; Down arms the first row, Down again the
+    /// second; Escape closes it and the tree forgets it.
+    #[test]
+    fn right_click_on_a_tab_opens_the_menu_arrows_move_the_highlight_and_escape_closes() {
+        let mut h = harness(2);
+        assert!(!h.host.tab_context_menu_is_open());
+        assert!(h.menu_node().is_none(), "no menu is published while closed");
+
+        let p = h.pill_centre(1);
+        h.right_click_pill(1);
+        assert!(h.host.tab_context_menu_is_open(), "the right-click opened the menu");
+        let rect = h.host.tab_context_menu_rect().expect("an open menu has a rect");
+        assert!(
+            (rect.x0 - p.x).abs() < 0.5 && (rect.y0 - p.y).abs() < 0.5,
+            "the menu hangs off the pointer ({p:?}), not a fixed spot: {rect:?}"
+        );
+        assert!(
+            rect.x1 <= VW && rect.y1 <= VH,
+            "the menu stays inside the host: {rect:?}"
+        );
+
+        let menu = h.menu_node().expect("the open menu is the first overlay in the tree");
+        let expected_name = format!("{} tab menu", h.titles[1]);
+        assert_eq!(menu.name.as_deref(), Some(expected_name.as_str()));
+        assert_eq!(menu.state.expanded, Some(true));
+        let labels: Vec<_> = menu.children.iter().filter_map(|c| c.name.as_deref()).collect();
+        assert_eq!(labels, ["Close Tab", "Split Right", "Move to New Group"]);
+        for (i, item) in menu.children.iter().enumerate() {
+            assert_eq!(item.role, Role::MenuItem);
+            assert!(item.state.focusable);
+            assert!(!item.state.focused, "row {i} is not armed before any hover or key");
+            let bounds = item.bounds.map(ui::AccessBounds::to_rect).expect("row is bounded");
+            assert!(rect.contains(bounds.center()), "row {i} lies inside the menu");
+            assert_eq!(
+                h.host.synthetic_accessibility_rect(&[0, i]),
+                Some(bounds),
+                "the routed geometry for row {i} is its published rect"
+            );
+            assert!(
+                item.action_target.as_deref().is_some_and(|t| t.starts_with("tabmenu:")),
+                "row {i} carries a semantic address: {:?}",
+                item.action_target
+            );
+        }
+
+        assert!(h.key(Key::Named(NamedKey::ArrowDown)), "the menu owns the keyboard");
+        let focused: Vec<bool> = h
+            .menu_node()
+            .expect("still open")
+            .children
+            .iter()
+            .map(|c| c.state.focused)
+            .collect();
+        assert_eq!(focused, [true, false, false], "Down arms the first row");
+
+        h.key(Key::Named(NamedKey::ArrowDown));
+        let focused: Vec<bool> = h
+            .menu_node()
+            .expect("still open")
+            .children
+            .iter()
+            .map(|c| c.state.focused)
+            .collect();
+        assert_eq!(focused, [false, true, false], "Down again moves to the second row");
+
+        assert!(h.key(Key::Named(NamedKey::Escape)));
+        assert!(!h.host.tab_context_menu_is_open(), "Escape closes the menu");
+        assert!(h.menu_node().is_none(), "a closed menu leaves the tree");
+        assert_eq!(h.tab_ids(0), h.tabs, "nothing was acted on");
+    }
+
+    /// A left press outside the menu dismisses it and is absorbed — the
+    /// window beneath must not also be activated by the dismissing click.
+    #[test]
+    fn a_click_outside_the_menu_dismisses_it_and_goes_no_further() {
+        let mut h = harness(2);
+        h.right_click_pill(0);
+        assert!(h.host.tab_context_menu_is_open());
+        h.move_to(Point::new(VW - 40.0, VH - 40.0));
+        let handled = h.press(MouseButton::Left);
+        assert!(handled, "the dismissing click is absorbed");
+        assert!(!h.host.tab_context_menu_is_open());
+        assert_eq!(h.tab_ids(0), h.tabs);
+    }
+
+    /// Clicking "Close Tab" runs the same durable lifecycle as the `✕` and
+    /// the chord: the tab is gone from the persisted tree before the event
+    /// returns.
+    #[test]
+    fn clicking_close_tab_removes_that_tab_from_the_tree() {
+        let mut h = harness(2);
+        h.right_click_pill(1);
+        let close = h
+            .menu_node()
+            .expect("open")
+            .children
+            .into_iter()
+            .find(|c| c.name.as_deref() == Some("Close Tab"))
+            .and_then(|c| c.bounds.map(ui::AccessBounds::to_rect))
+            .expect("Close Tab is a bounded row");
+        h.move_to(close.center());
+        assert!(h.press(MouseButton::Left));
+        assert!(!h.host.tab_context_menu_is_open(), "a selection closes the menu");
+        let closed = h.tabs[1];
+        let remaining: Vec<u64> = h.tabs.iter().copied().filter(|t| *t != closed).collect();
+        assert_eq!(h.tab_ids(0), remaining, "the right-clicked tab was closed, the rest remain");
+    }
+
+    /// "Split Right" through Enter is tree-first (`window_actions::split_tab`:
+    /// cache, replicated document, chrome bump) with the live tab host moved
+    /// under the tree's new group id in the same dispatch — so the tree is
+    /// right before any frame, and the resync the bump triggers finds the
+    /// group present and keeps the window state.
+    #[test]
+    fn split_right_by_keyboard_moves_the_tab_into_a_new_group_beside_it() {
+        let mut h = harness(2);
+        h.right_click_pill(1);
+        h.key(Key::Named(NamedKey::ArrowDown)); // Close Tab
+        h.key(Key::Named(NamedKey::ArrowDown)); // Split Right
+        assert!(h.key(Key::Named(NamedKey::Enter)));
+        assert!(!h.host.tab_context_menu_is_open());
+        // Tree-first: the tree is already split before any structure pass.
+        assert_eq!(h.group_ids().len(), 2, "the tree split in the same dispatch");
+        let _ = h.host.take_structure_dirty();
+        let groups = h.group_ids();
+        assert_eq!(groups.len(), 2, "a second group appeared: {groups:?}");
+        assert_eq!(groups[0], h.group, "the source group keeps its slot");
+        let moved = h.tabs[1];
+        let remaining: Vec<u64> = h.tabs.iter().copied().filter(|t| *t != moved).collect();
+        assert_eq!(h.tab_ids(0), remaining, "the tree's source group lost the moved tab");
+        assert_eq!(h.tab_ids(1), [moved], "the split tab is the new group's only tab");
+
+        // The next chrome revision runs the tree→row resync. Before
+        // 2026-09-17 the mirror only inserted the new group, so the tree
+        // still listed the moved tab in its source and this resync
+        // re-created it there as a second, hostless card — for the menu and
+        // for the drag-out split alike. Both live groups must stay exact.
+        h.chrome.borrow_mut().bump();
+        let _ = h.host.take_structure_dirty();
+        let live_source: Vec<u64> = h
+            .host
+            .group_at_for_tests(h.strip, 0)
+            .expect("source group is live")
+            .tabs()
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(live_source, remaining, "no duplicate of the moved tab in the source");
+        let live_new: Vec<u64> = h
+            .host
+            .group_at_for_tests(h.strip, 1)
+            .expect("new group is live")
+            .tabs()
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(live_new, [moved]);
+        assert_eq!(h.group_ids().len(), 2, "the resync neither revived nor evicted a group");
+    }
+
+    /// The registry door: `tab.split-right` runs `window_actions::split_active_tab`
+    /// on the focused tab with no menu and no live host in hand; the tree
+    /// splits at once and the resync builds the widget side — one group
+    /// per tree group, the moved tab in the new one, nothing duplicated.
+    #[test]
+    fn the_registry_split_action_lands_in_the_tree_and_the_resync_builds_the_group() {
+        let mut h = harness(2);
+        let active = crate::shell::window_actions::active_tab_id(&h.chrome.borrow())
+            .expect("the demo workspace has a focused tab");
+        let new_group = {
+            let mut st = h.chrome.borrow_mut();
+            crate::shell::window_actions::split_active_tab(
+                &mut st,
+                crate::shell::window_actions::SplitPlacement::Right,
+            )
+            .expect("a multi-tab group splits")
+        };
+        assert_eq!(h.group_ids(), [h.group, new_group], "tree-first, beside the source");
+        assert_eq!(h.tab_ids(1), [active]);
+        assert!(!h.tab_ids(0).contains(&active), "the source lost the moved tab");
+        // The bump `split_active_tab` made drives the resync.
+        let _ = h.host.take_structure_dirty();
+        let live: Vec<Vec<u64>> = (0..2)
+            .map(|i| {
+                h.host
+                    .group_at_for_tests(h.strip, i)
+                    .expect("both groups are live")
+                    .tabs()
+                    .iter()
+                    .map(|t| t.id)
+                    .collect()
+            })
+            .collect();
+        assert_eq!(live[1], [active], "the resync built the new group around the tab");
+        assert!(!live[0].contains(&active), "and took it out of the source");
+        // The refusal path: a single-tab group is not split, and says why.
+        let mut single = harness(1);
+        let err = {
+            let mut st = single.chrome.borrow_mut();
+            crate::shell::window_actions::split_active_tab(
+                &mut st,
+                crate::shell::window_actions::SplitPlacement::Right,
+            )
+            .expect_err("a group's only tab is not split")
+        };
+        assert_eq!(err, crate::shell::window_actions::TabActionError::OnlyTab);
+        assert_eq!(single.group_ids().len(), 1, "nothing changed");
+    }
+
+    /// The semantic door: an assistive technology or a script activates
+    /// `tabmenu:new-group` on the open menu and gets the same operation.
+    #[test]
+    fn the_semantic_route_performs_the_same_action_as_the_pointer() {
+        let mut h = harness(2);
+        h.right_click_pill(1);
+        let performed = h.host.perform_semantic_action(
+            "tabmenu:new-group",
+            &ui::a11y::Action::Activate,
+            &mut h.doc,
+            &automerge::ROOT,
+        );
+        assert!(performed, "an offered row activates");
+        assert!(!h.host.tab_context_menu_is_open());
+        let _ = h.host.take_structure_dirty();
+        assert_eq!(h.group_ids().len(), 2);
+        assert_eq!(h.tab_ids(1), [h.tabs[1]]);
+
+        // A target that is not on the menu — or a menu that is not open —
+        // refuses rather than acting on a stale tab.
+        assert!(!h.host.perform_semantic_action(
+            "tabmenu:close",
+            &ui::a11y::Action::Activate,
+            &mut h.doc,
+            &automerge::ROOT,
+        ));
+    }
+
+    /// A single-tab group is offered Close only: splitting its one tab
+    /// would dissolve and re-create the group, a no-op that reads as a
+    /// glitch. The split targets refuse through every route.
+    #[test]
+    fn a_single_tab_group_is_offered_close_only() {
+        let mut h = harness(1);
+        h.right_click_pill(0);
+        let labels: Vec<_> = h
+            .menu_node()
+            .expect("open")
+            .children
+            .iter()
+            .filter_map(|c| c.name.clone())
+            .collect();
+        assert_eq!(labels, ["Close Tab"]);
+        assert!(!h.host.perform_semantic_action(
+            "tabmenu:split-right",
+            &ui::a11y::Action::Activate,
+            &mut h.doc,
+            &automerge::ROOT,
+        ));
+        assert!(h.host.tab_context_menu_is_open(), "a refused target leaves the menu up");
+    }
+
+    /// The menu paints through the shared widget with the live theme and
+    /// an `e4` shadow following its outline, and never paints when closed.
+    #[test]
+    fn the_open_menu_paints_and_the_closed_one_does_not() {
+        let mut h = harness(2);
+        let mut tr = TextRenderer::new();
+        let presence = ui::presence::PresenceCtx::default();
+        let mut closed = Scene::new();
+        h.host
+            .draw_tab_context_menu(&mut closed, Affine::IDENTITY, &mut tr, &h.theme, &presence);
+        assert!(
+            closed.encoding().is_empty(),
+            "a closed menu contributes nothing to the scene"
+        );
+        h.right_click_pill(1);
+        let mut open = Scene::new();
+        h.host
+            .draw_tab_context_menu(&mut open, Affine::IDENTITY, &mut tr, &h.theme, &presence);
+        assert!(
+            !open.encoding().is_empty(),
+            "an open menu paints its surface, rows and shadow"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -17804,8 +19223,26 @@ mod overview_transition_tests {
     /// display edge, or its border/corners/shadow — which live in the last
     /// few pixels — get clipped by the bezel. Mirrors the gutter the near
     /// edge already reserves beside the wheel disc.
+    ///
+    /// The gutter itself is pinned to the spacing scale: 2026-09-17 moved
+    /// it from 28 px (off-grid, S1-21) to `s8`. `s8` rather than `s6`
+    /// because the disc's rim shadow reaches 26 px past its footprint and
+    /// `s6` (24) would lay it over the first window; 32 is also the
+    /// pointer floor the bar controls already sit on, so the wheel-to-
+    /// window margin and a control's hit rect are one measure.
     #[test]
     fn a_full_width_window_stops_short_of_both_screen_edges() {
+        assert_eq!(
+            WHEEL_TO_STRIP_GAP_PX,
+            f64::from(ui::tokens::Spacing::BASE.s8),
+            "the wheel gutter is a spacing step, not a tuned literal",
+        );
+        assert!(
+            WHEEL_TO_STRIP_GAP_PX > crate::shell::sidebar_wheel_disc::RIM_SHADOW_REACH,
+            "the gutter must hold the disc's rim shadow ({}) with wallpaper to spare",
+            crate::shell::sidebar_wheel_disc::RIM_SHADOW_REACH,
+        );
+        assert_eq!(STRIP_TRAILING_GUTTER_PX, WHEEL_TO_STRIP_GAP_PX);
         let mut h = host().with_sidebar(Box::new(Container::new()));
         h.set_output_geometry(&[OutputGeometry {
             x: 0.0,
@@ -20219,7 +21656,7 @@ mod overlay_event_absorb_tests {
     /// Same compositor layout pass with the caller's production theme. This
     /// keeps the visual-review fixtures honest for large-text and
     /// high-contrast variants without changing their chrome state.
-    fn lay_out_host_with_theme(
+    pub(super) fn lay_out_host_with_theme(
         host: &mut ShellOverlayHost,
         vw: f64,
         vh: f64,
@@ -20676,7 +22113,7 @@ mod overlay_event_absorb_tests {
         assert_eq!(at_base, SELECTOR_HEIGHT_PX, "resting height is the Selector's");
 
         let large = Theme::dark().with_text_scale(2.0);
-        let size = ShellOverlayHost::filter_label_size(&large);
+        let size = ShellOverlayHost::filter_label_size(&large, &tr);
         let (_, lh) = tr.measure_weighted("Ag", size, None, TextWeight::Medium);
         let at_large = ShellOverlayHost::filter_control_height(&large, &mut tr, row_h);
         assert!(
@@ -20734,9 +22171,25 @@ mod overlay_event_absorb_tests {
         assert_eq!(all.role, Role::ToggleButton);
         assert_eq!(all.name.as_deref(), Some("Filter: All"));
         assert_eq!(all.state.checked, Some(true), "the palette starts unfiltered");
-        assert_eq!(
-            all.bounds.map(ui::AccessBounds::to_rect),
-            Some(h.host.search_all_chip_rect)
+        // 2026-09-17 (S1-28): a chip's published bounds are its pointer
+        // target — the painted pill grown to the §9.6 floor, the rect a
+        // press is hit-tested against — not the pill itself. The pill sits
+        // inside it, horizontally identical.
+        let floor = f64::from(Theme::dark().tokens.metrics.min_pointer_target);
+        let pill_inside_target = |pill: Rect, target: Rect| {
+            (pill.x0 - target.x0).abs() < 0.01
+                && (pill.x1 - target.x1).abs() < 0.01
+                && target.y0 <= pill.y0 + 0.01
+                && target.y1 >= pill.y1 - 0.01
+                && target.height() + 0.01 >= floor
+                && (target.center().y - pill.center().y).abs() < 0.01
+        };
+        let all_target = all.bounds.map(ui::AccessBounds::to_rect).expect("All is bounded");
+        assert_eq!(all_target, h.host.search_all_chip_hit_rect());
+        assert!(
+            pill_inside_target(h.host.search_all_chip_rect, all_target),
+            "All's target {all_target:?} must wrap its pill {:?} to the {floor} px floor",
+            h.host.search_all_chip_rect
         );
         for (i, kind) in kinds.iter().enumerate() {
             let chip = &kinds_group.children[i + 1];
@@ -20747,14 +22200,20 @@ mod overlay_event_absorb_tests {
                 "a chip must not publish the bare kind label — a window title may share it"
             );
             assert_eq!(chip.state.checked, Some(false));
+            let target = chip.bounds.map(ui::AccessBounds::to_rect).expect("chip is bounded");
             assert_eq!(
-                chip.bounds.map(ui::AccessBounds::to_rect),
-                Some(h.host.search_chip_rects[i]),
-                "chip {i} carries the rect it was painted at"
+                target,
+                h.host.search_chip_hit_rect(i),
+                "chip {i} carries its pointer target"
+            );
+            assert!(
+                pill_inside_target(h.host.search_chip_rects[i], target),
+                "chip {i}'s target {target:?} must wrap its pill {:?} to the {floor} px floor",
+                h.host.search_chip_rects[i]
             );
             assert_eq!(
                 h.host.synthetic_accessibility_rect(&[0, band_index, 0, i + 1]),
-                Some(h.host.search_chip_rects[i]),
+                Some(target),
                 "the routed geometry for chip {i} is the same rect"
             );
             assert!(
@@ -20778,10 +22237,12 @@ mod overlay_event_absorb_tests {
             assert_eq!(node.role, Role::RadioButton);
             let hit = h.host.search_scope_segment_hit_rect(idx);
             assert_eq!(node.bounds.map(ui::AccessBounds::to_rect), Some(hit));
+            let track = h.host.search_scope_track_rect();
             assert!(
                 hit.contains(h.host.search_scope_pill_rect(idx).center())
-                    && (hit.height() - h.host.search_scope_track_rect().height()).abs() < 0.01,
-                "segment {idx}'s target is its full-height slice of the track: {hit:?}"
+                    && (hit.height() - track.height().max(floor)).abs() < 0.01
+                    && (hit.center().y - track.center().y).abs() < 0.01,
+                "segment {idx}'s target is its slice of the track grown to the {floor} px floor: {hit:?} vs {track:?}"
             );
             assert!(
                 node.name.as_deref().is_some_and(|n| n.starts_with("Scope: ")),
@@ -20806,17 +22267,242 @@ mod overlay_event_absorb_tests {
         assert_ne!(keys[0], keys[1], "a case/whitespace twin gets its own address");
         assert_eq!(keys[2], "palette:filter:ci-builds");
 
+        // Paint and target are two rects with one centre line: the pills
+        // share top and bottom edges at the Selector height, and their
+        // pointer targets share top and bottom edges at the floor.
         let all_rect = h.host.search_all_chip_rect;
+        let track = h.host.search_scope_track_rect();
+        assert!(
+            (all_rect.y0 - track.y0).abs() < 0.5 && (all_rect.y1 - track.y1).abs() < 0.5,
+            "All chip {all_rect:?} and scope track {track:?} do not share top and bottom edges"
+        );
+        let all_target = h.host.search_all_chip_hit_rect();
         let first_scope = h.host.search_scope_segment_hit_rect(0);
         assert!(
-            (all_rect.y0 - first_scope.y0).abs() < 0.5 && (all_rect.y1 - first_scope.y1).abs() < 0.5,
-            "All chip {all_rect:?} and scope switch {first_scope:?} do not share top and bottom edges"
+            (all_target.y0 - first_scope.y0).abs() < 0.5
+                && (all_target.y1 - first_scope.y1).abs() < 0.5,
+            "All target {all_target:?} and scope target {first_scope:?} do not share top and bottom edges"
         );
         assert!(
-            (all_rect.height() - SELECTOR_HEIGHT_PX).abs() < 0.01,
-            "a chip rests at the Selector height, got {}",
+            (all_rect.height() - f64::from(Theme::dark().tokens.metrics.selector_height)).abs()
+                < 0.01,
+            "a chip rests at the Selector height (`metrics.selector_height`), got {}",
             all_rect.height()
         );
+        assert!(
+            all_target.height() + 0.01 >= floor,
+            "a chip's target meets the pointer floor {floor}, got {}",
+            all_target.height()
+        );
+    }
+
+    /// At 200 % text on a compact card the two scope labels need more than
+    /// the share of the band the switch may take beside the chips, so the
+    /// switch takes the first row alone, whole, and the chips start on the
+    /// next row: no "Works…", no overlap, one more reserved row (S1-29).
+    /// At 100 % on a wide card the switch shares the first row as before.
+    #[test]
+    fn a_scope_switch_too_wide_to_share_the_first_row_takes_its_own() {
+        let (vw, vh) = (800.0, 700.0);
+        let mut h = build_harness_sized(vw, vh);
+        h.host.set_palette_visible(true);
+        h.host.set_palette_focus(true);
+        h.host.force_palette_settled();
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        // Paint, relayout, paint: the first paint measures the switch and
+        // asks the palette for the extra row; the second lays out with it.
+        for _ in 0..3 {
+            let (tree, root) = lay_out_host_with_theme(&mut h.host, vw, vh, &theme);
+            h.taffy = tree;
+            h.root_node = root;
+            h.host.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &ui::presence::PresenceCtx::default(),
+            );
+        }
+        assert!(
+            h.host.scope_switch_has_own_row(),
+            "the measured switch ({}) exceeds its share of the {} px band",
+            h.host.search_scope_measured_track_w(),
+            h.host.search_banner_rect().width()
+        );
+        let band = h.host.search_banner_rect();
+        let row_h = h.host.palette.filter_strip_row_height();
+        let track = h.host.search_scope_track_rect();
+        assert!(
+            (track.center().y - (band.y0 + row_h / 2.0)).abs() < 0.5,
+            "the switch sits on the band's first row: {track:?} in {band:?}"
+        );
+        let measured = h.host.search_scope_measured_track_w();
+        assert!(
+            (track.width() - measured.min(band.width())).abs() < 0.5,
+            "on its own row the switch is its full measured width ({measured}), capped only by the band ({}), not by the shared-row share: {track:?}",
+            band.width()
+        );
+        assert!(
+            measured <= band.width(),
+            "two scope labels at 200 % fit an 800 px card once the label is drawn at the person's size, not double-scaled: {measured} vs {}",
+            band.width()
+        );
+        for idx in 0..h.host.search_scope_list().len() {
+            let seg = h.host.search_scope_pill_rect(idx);
+            let label = h.host.search_scope_pill_label(h.host.search_scope_list()[idx]);
+            let size = ShellOverlayHost::filter_label_size(&theme, &tr);
+            let (w, _) = tr.measure_weighted(&label, size, None, TextWeight::Medium);
+            assert!(
+                f64::from(w) + f64::from(theme.tokens.spacing.s2) <= seg.width(),
+                "{label:?} ({w} px) fits its segment {seg:?} whole"
+            );
+        }
+        let all = h.host.search_all_chip_rect;
+        assert!(
+            all.y0 >= band.y0 + row_h - 0.5,
+            "the chips start on the second row: All {all:?} under row 1 of {band:?}"
+        );
+        assert!(
+            h.host.search_chip_rows >= 2,
+            "the band reserved a row for the switch plus the chips' rows"
+        );
+        for (i, chip) in h.host.search_chip_rects.iter().enumerate() {
+            assert!(
+                chip.intersect(track).is_zero_area(),
+                "chip {i} {chip:?} does not run under the switch {track:?}"
+            );
+        }
+
+        // Wide card, 100 %: the switch shares the first row with "All".
+        let (vw, vh) = (1280.0, 800.0);
+        let mut wide = build_harness_sized(vw, vh);
+        wide.host.set_palette_visible(true);
+        wide.host.set_palette_focus(true);
+        wide.host.force_palette_settled();
+        settle(&mut wide, vw, vh);
+        assert!(!wide.host.scope_switch_has_own_row());
+        let all = wide.host.search_all_chip_rect;
+        let track = wide.host.search_scope_track_rect();
+        assert!((all.center().y - track.center().y).abs() < 0.5);
+    }
+
+    /// Below 100 % text the palette's row (`36·text_scale`) is shorter than
+    /// the unscaled pointer floor, so a target grown to the floor would
+    /// overlap its neighbours' and the first row's would protrude above
+    /// the band. The floor is clamped to `row_h − s1` and every target is
+    /// clipped to the band: rows never share a pixel, nothing leaves the
+    /// band, and every target still wraps its pill.
+    #[test]
+    fn selector_targets_never_overlap_or_leave_the_band_at_small_text() {
+        let (vw, vh) = (900.0, 700.0);
+        let mut h = build_harness_sized(vw, vh);
+        h.host.set_palette_visible(true);
+        h.host.set_palette_focus(true);
+        h.host.force_palette_settled();
+        let theme = Theme::dark().with_text_scale(0.75);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(0.75);
+        for _ in 0..3 {
+            let (tree, root) = lay_out_host_with_theme(&mut h.host, vw, vh, &theme);
+            h.taffy = tree;
+            h.root_node = root;
+            h.host.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &ui::presence::PresenceCtx::default(),
+            );
+        }
+        let band = h.host.search_banner_rect();
+        let row_h = h.host.palette.filter_strip_row_height();
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        assert!(
+            h.host.search_pointer_floor_h <= row_h - s1 + 0.01,
+            "the floor ({}) is clamped to the row less its gutter ({})",
+            h.host.search_pointer_floor_h,
+            row_h - s1
+        );
+        let mut targets: Vec<(Rect, Rect)> = vec![(
+            h.host.search_all_chip_rect,
+            h.host.search_all_chip_hit_rect(),
+        )];
+        for i in 0..h.host.search_chip_rects.len() {
+            targets.push((h.host.search_chip_rects[i], h.host.search_chip_hit_rect(i)));
+        }
+        for idx in 0..h.host.search_scope_list().len() {
+            targets.push((
+                h.host.search_scope_pill_rect(idx),
+                h.host.search_scope_segment_hit_rect(idx),
+            ));
+        }
+        assert!(targets.len() >= 4, "the band has chips and scopes to check");
+        for (pill, target) in &targets {
+            assert!(
+                target.y0 >= band.y0 - 0.01 && target.y1 <= band.y1 + 0.01,
+                "target {target:?} stays inside the band {band:?}"
+            );
+            assert!(
+                target.y0 <= pill.y0 + 0.01 && target.y1 >= pill.y1 - 0.01,
+                "target {target:?} still wraps its pill {pill:?}"
+            );
+        }
+        for (i, (_, a)) in targets.iter().enumerate() {
+            for (_, b) in targets.iter().skip(i + 1) {
+                let overlap = a.intersect(*b);
+                assert!(
+                    overlap.is_zero_area() || overlap.width() <= 1.0 || overlap.height() <= 1.0,
+                    "targets overlap by more than a pixel: {a:?} vs {b:?}"
+                );
+            }
+        }
+    }
+
+    /// The band's "which one is chosen" is the shared selection tier, not
+    /// the accent: the chosen chip's body is the full lift, an idle one has
+    /// no body, and the ink on each is legible against what is under it
+    /// (HIG §9.3 / §9.4; the accent is reserved for live state).
+    #[test]
+    fn filter_band_paints_selection_as_a_lift_never_as_accent() {
+        use ui::a11y::contrast_ratio;
+        let theme = Theme::dark();
+        let colors = &theme.tokens.colors;
+        let chosen = ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(true));
+        let idle = ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(false));
+        assert_eq!(chosen.fill, colors.lift(1.0));
+        assert_ne!(
+            chosen.fill,
+            colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+            "a chosen chip is lifted, not accent-filled"
+        );
+        assert!(chosen.border.is_some() && chosen.inner_glow.is_some());
+        assert_eq!(idle.fill.components[3], 0.0, "an idle chip has no body of its own");
+        // The ink the painter picks for each state clears the fill it sits on.
+        let ground = ui::chrome::shell::panel_ground(&theme);
+        let chosen_ink = colors.ink_on(
+            chosen.fill,
+            colors.text_primary,
+            ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+        );
+        let idle_ink = colors.ink_on(ground, colors.text_dim, ui::tokens::colors::ON_FILL_MIN_CONTRAST);
+        assert!(contrast_ratio(chosen_ink, chosen.fill) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST);
+        assert!(contrast_ratio(idle_ink, ground) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST);
+        // And the same holds on the light and high-contrast presets.
+        for theme in [Theme::light(), Theme::high_contrast()] {
+            let colors = &theme.tokens.colors;
+            let chosen = ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(true));
+            let ink = colors.ink_on(
+                chosen.fill,
+                colors.text_primary,
+                ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+            );
+            assert!(
+                contrast_ratio(ink, chosen.fill) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST,
+                "chosen-chip ink must clear its lift on every preset"
+            );
+        }
     }
 
     /// Every filter must be reachable at every width. An unpainted chip has

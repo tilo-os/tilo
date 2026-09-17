@@ -233,8 +233,10 @@ const FADE_IN_STOP: f32 = 0.13;
 
 /// How far past the footprint's right edge the rim's shadow may reach;
 /// the paint group is clipped this much wider so the shadow can sit
-/// outside the rim and still be faded with everything else.
-const RIM_SHADOW_REACH: f64 = 26.0;
+/// outside the rim and still be faded with everything else. Read by the
+/// host to size the wallpaper gutter between the disc and the first
+/// window (`overlay_host::WHEEL_TO_STRIP_GAP_PX` must exceed it).
+pub(crate) const RIM_SHADOW_REACH: f64 = 26.0;
 
 /// Clear space between the footprint's left edge and the band's inner
 /// arc, so the band visibly ends on its own curve rather than the clip.
