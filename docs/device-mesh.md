@@ -111,10 +111,33 @@ authorization.
 - **App continuation** remains in `personal_continuity`. The fabric advertises
   capability but does not duplicate launch intents, CRDT records, topology, or
   focus state.
+- **Notifications** project only the app-authorized redacted or full payload.
+  Dismiss and action replies return to the exact originating device instead of
+  turning a mirrored notification into ambient remote-control authority.
+- **Nearby Send** uses the resumable content transport, but Files sees only
+  short-lived handles bound to its authenticated workspace and connection.
+  The receiver consents locally, source traversal is anchored to an opened
+  capability, and staging work is bounded and canceled on teardown.
+- **Call handoff** moves a typed call session and its controls, not an app's
+  capture handles. The target compositor asks once, mints local camera,
+  microphone, or screen grants only after consent, and revokes the whole batch
+  if the handoff cannot commit.
+- **Controller forwarding** normalizes a locally classified physical gamepad
+  into fixed axes, buttons, and hat events. Raw HID descriptors, serials,
+  evdev codes, keyboard events, and pointer events are not representable on the
+  wire. Both compositors continuously enforce the exact focused app and
+  workspace and neutralize the virtual controller when that binding changes.
+
+The Devices surface exposes these capabilities individually. Disabling a
+capability tears down its active leases; disabling continuity tears down all of
+them. Device identities and transport routes stay compositor-owned rather than
+being disclosed to applications.
 
 This separation is an intentional Tilo advantage over product-specific
 continuity silos: collaborative documents remain multi-person CRDT state,
 personal interaction state remains private to certified devices, and physical
-machine state remains local. The fabric model is bounded and convergent before
-transport wiring. It can be carried by a future negotiated relay protocol
-without breaking older Postcard enum decoders.
+machine state remains local. Continuity is carried over negotiated certified
+peer channels with explicit capability and schema versions; older peers can
+continue using the collaboration protocol without being asked to decode new
+continuity messages. Proximity improves discovery and layout, but never grants
+authority by itself.
