@@ -46,11 +46,19 @@ def write_json(path, data):
 
 
 def run(argv, log):
-    # Persist the exact invocation and all diagnostics even when Mock fails.
-    with Path(log).open('w') as output:
-        output.write(json.dumps(argv) + '\n')
+    # Retain exact diagnostic bytes and expose progress during long CI builds.
+    with Path(log).open('wb') as output:
+        output.write((json.dumps(argv) + '\n').encode())
         output.flush()
-        subprocess.run(argv, stdout=output, stderr=subprocess.STDOUT, check=True)
+        with subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT) as process:
+            while chunk := process.stdout.read1(65536):
+                output.write(chunk)
+                output.flush()
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+            returncode = process.wait()
+        if returncode:
+            raise subprocess.CalledProcessError(returncode, argv)
 
 
 def verify_i686_execution(directory):
