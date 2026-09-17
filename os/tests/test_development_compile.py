@@ -25,6 +25,69 @@ CACHE = driver.cache_configuration(CACHE_ENV)
 
 
 class CompileBoundaries(unittest.TestCase):
+    def test_adoption_excludes_current_producer_and_requires_pin(self):
+        inputs = dict(wpe='', generation='7', revision=REVISION, branch='refs/heads/codex/test',
+                      wpe_adoption_receipt='/work/adoption.json', wpe_adoption_sha256='d' * 64)
+        driver.validate_inputs(**inputs)
+        for change in ({'wpe': WPE}, {'wpe_stage_receipt': '/work/stage.json'},
+                       {'wpe_adoption_sha256': ''}, {'wpe_adoption_receipt': None},
+                       {'wpe_adoption_sha256': 'not-a-hash'}, {'mode': 'cache-only'}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                driver.validate_inputs(**(inputs | change))
+        env = driver.build_environment('', '7', REVISION, 'c' * 64, '/signer', CACHE,
+                                       'aarch64', adoption_sha256='d' * 64)
+        for unused in ('WPE_BUILDROOT_REF', 'TILO_WPE_STAGE_RECEIPT', 'TILO_WPE_SOURCE_DATE_EPOCH',
+                       'TILO_WPE_BUILD_CACHE_REF', 'TILO_WPE_BUILD_JOBS'):
+            self.assertNotIn(unused, env)
+        self.assertEqual(env['TILO_WPE_ADOPTION_SHA256'], 'd' * 64)
+        self.assertEqual(env['TILO_WPE_ADOPTION_RECEIPT'], str(driver.EVIDENCE / 'wpe-adoption.json'))
+        self.assertEqual(env['TILO_PUBLIC_TRUST_MODE'], 'development')
+        self.assertEqual(env['TILO_WITH_BROWSER'], '1')
+        self.assertTrue(env['TILO_TARGET_IMGREF'].endswith('-aarch64'))
+
+    @unittest.skipUnless(hasattr(os, 'O_NOFOLLOW'), 'native Linux receipt reader')
+    def test_adoption_preserves_exact_pinned_bytes_and_unknown_history(self):
+        import test_adopt_development_wpe as fixtures
+        fixture = fixtures.AdoptionTests('test_reviewed_audit_preserves_unknown_build_identity')
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        path = fixture.repo / 'adoption.json'
+        original = fixture.adopted
+        for change, architecture, accepted in (({}, 'x86_64', True),
+                ({'audit': fixture.audit | {'original_build_epoch': 0}}, 'x86_64', False),
+                ({'audit': fixture.audit | {'original_source_revision': REVISION}}, 'x86_64', False),
+                ({}, 'aarch64', False), ({'production_signed': True}, 'x86_64', False)):
+            raw = (json.dumps(original | change, indent=3) + '\n\n').encode()
+            path.write_bytes(raw)
+            digest = hashlib.sha256(raw).hexdigest()
+            with self.subTest(change=change, architecture=architecture):
+                if accepted:
+                    receipt, snapshot = driver.adopted_wpe_receipt(path, digest, architecture)
+                    self.assertEqual(snapshot, raw)
+                    self.assertIsNone(receipt['audit']['original_build_epoch'])
+                    self.assertIsNone(receipt['audit']['original_source_revision'])
+                else:
+                    with self.assertRaises(ValueError):
+                        driver.adopted_wpe_receipt(path, digest, architecture)
+        with self.assertRaises(ValueError):
+            driver.adopted_wpe_receipt(path, '0' * 64, 'x86_64')
+
+    def test_adoption_failure_never_falls_back_or_starts_cache_or_build(self):
+        with patch.object(driver.os, 'getuid', return_value=0, create=True), \
+             patch.object(driver.platform, 'machine', return_value='x86_64'), \
+             patch.object(driver, 'run', side_effect=[REVISION, '']), \
+             patch.object(driver, 'adopted_wpe_receipt', side_effect=ValueError('invalid adoption')), \
+             patch.object(driver, 'completed_wpe_receipt') as current, \
+             patch.object(driver, 'verify_remote_cache') as cache, \
+             patch.object(driver, 'compile_with_capacity_watchdog') as build:
+            with self.assertRaisesRegex(ValueError, 'invalid adoption'):
+                driver.main(['--mode', 'full-build', '--generation', '7', '--revision', REVISION,
+                    '--branch', 'refs/heads/codex/test', '--wpe-adoption-receipt', '/work/adoption.json',
+                    '--wpe-adoption-sha256', 'd' * 64])
+            current.assert_not_called()
+            cache.assert_not_called()
+            build.assert_not_called()
+
     def test_arm_requires_explicit_kernel_and_never_uses_x64_default(self):
         kernel = 'code.sandbox.example/qos/tilo-kernel@sha256:' + 'c' * 64
         rpms = 'code.sandbox.example/qos/tilo-rpms@sha256:' + 'd' * 64
