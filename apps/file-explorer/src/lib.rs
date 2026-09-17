@@ -43,6 +43,7 @@ pub mod history_control;
 pub mod i18n;
 pub mod identity_directory;
 pub mod model;
+pub mod nearby_send;
 pub mod path_bar;
 pub mod places_sidebar;
 pub mod received_shares;

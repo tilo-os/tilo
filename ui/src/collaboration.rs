@@ -30,6 +30,10 @@ pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
 
 pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
+pub use runtime_collab::{
+    NearbyTransferCommand, NearbyTransferDirection, NearbyTransferPhase, NearbyTransferReply,
+    NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget,
+};
 
 use crate::presence::PresenceKey;
 
@@ -169,6 +173,13 @@ pub enum CollabRequest {
         request_id: u64,
         app_id: String,
         command: crate::realtime_continuity::RealtimeCommand,
+    },
+    /// One Files-owned picker/status/consent command. The broker authenticates
+    /// the app route and keeps payload bytes on the shell transfer transport.
+    NearbyTransferCommand {
+        request_id: u64,
+        app_id: String,
+        command: runtime_collab::NearbyTransferCommand,
     },
     OpenWorkspaceControl {
         session_id: u64,
@@ -500,6 +511,10 @@ pub enum CollabEvent {
     RealtimeCommandResult {
         request_id: u64,
         result: Result<crate::realtime_continuity::RealtimeReply, String>,
+    },
+    NearbyTransferCommandResult {
+        request_id: u64,
+        result: Result<runtime_collab::NearbyTransferReply, String>,
     },
     Realtime(crate::realtime_continuity::RealtimeEvent),
 }
@@ -923,6 +938,12 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.string_capacity(app_id);
             serialized_bytes(command, &mut meter);
         }
+        CollabRequest::NearbyTransferCommand {
+            app_id, command, ..
+        } => {
+            meter.string_capacity(app_id);
+            serialized_bytes(command, &mut meter);
+        }
         CollabRequest::ClearContinuation { app_id } => meter.string_capacity(app_id),
         CollabRequest::LaunchPublishedApplication {
             app_id,
@@ -1229,6 +1250,10 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             workspace_control_event_bytes(event, &mut meter);
         }
         CollabEvent::RealtimeCommandResult { result, .. } => match result {
+            Ok(reply) => serialized_bytes(reply, &mut meter),
+            Err(error) => meter.string_capacity(error),
+        },
+        CollabEvent::NearbyTransferCommandResult { result, .. } => match result {
             Ok(reply) => serialized_bytes(reply, &mut meter),
             Err(error) => meter.string_capacity(error),
         },
@@ -3671,6 +3696,19 @@ async fn dispatch_sdk_request(
             };
             let _ =
                 inbound_tx.send_durable(CollabEvent::RealtimeCommandResult { request_id, result });
+        }
+        CollabRequest::NearbyTransferCommand {
+            request_id,
+            app_id,
+            command,
+        } => {
+            let result = route
+                .channel
+                .nearby_transfer_command(&app_id, &command)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = inbound_tx
+                .send_durable(CollabEvent::NearbyTransferCommandResult { request_id, result });
         }
         CollabRequest::OpenWorkspaceControl {
             session_id,
