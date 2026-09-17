@@ -1164,7 +1164,7 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
     // hosts can construct this context directly, and resource discovery must
     // stay bounded regardless of which adapter supplied it.
     for group in ctx.groups.iter().take(MAX_CONTEXT_GROUP_RESOURCES) {
-        root = root.with_child(group_resource(&group));
+        root = root.with_child(group_resource(group));
     }
     for contact in ctx.contacts.iter().take(MAX_CONTEXT_CONTACT_RESOURCES) {
         root = root.with_child(contact_resource(contact));
