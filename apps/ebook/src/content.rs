@@ -307,7 +307,7 @@ pub fn load_library<S: BuildHasher>(
     //    the same content is recorded twice, so the shelf shows it as shared.
     let mut out: Vec<LoadedBook> = Vec::new();
     for entry in BooksDoc::read_library_entries(doc) {
-        let canonical_shared = shared_book_path(&entry.id);
+        let canonical_shared = workspace_book_path(&entry.id);
         let path = if canonical_shared.is_file() {
             canonical_shared
         } else if !entry.shared {
@@ -347,7 +347,10 @@ pub fn load_library<S: BuildHasher>(
 /// Resolve the only replicated location hint: a content-addressed workspace
 /// object. The root is local configuration; the document stores neither it nor
 /// any other raw path.
-fn shared_book_path(id: &str) -> PathBuf {
+/// Deterministically resolve a replicated book id to its local workspace
+/// object. The id is the only cross-device locator; no peer path is ever
+/// accepted as authority.
+pub fn workspace_book_path(id: &str) -> PathBuf {
     let file_id = id.strip_prefix("book:").unwrap_or(id);
     workspace_books_dir().join(format!("book-{file_id}.epub"))
 }
@@ -645,7 +648,7 @@ mod tests {
         unsafe { std::env::remove_var(LIBRARY_DIR_ENV) };
         assert_eq!(lib.len(), 1, "the imported book is on the shelf");
         assert_eq!(lib[0].book.id, book.id);
-        assert_eq!(lib[0].path, shared_book_path(&book.id));
+        assert_eq!(lib[0].path, workspace_book_path(&book.id));
         let bytes = doc.save();
         let stored = String::from_utf8_lossy(&bytes);
         assert!(

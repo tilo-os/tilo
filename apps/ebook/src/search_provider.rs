@@ -87,7 +87,9 @@ struct SearchEntry {
 enum BodyChunk {
     Scanned {
         matched: bool,
+        next_span: usize,
         next_byte: usize,
+        matcher_state: usize,
         done: bool,
     },
     Done,
@@ -439,46 +441,142 @@ impl BookSearchProvider {
         entry: &SearchEntry,
         query: &str,
         block_index: usize,
+        span_index: usize,
         byte_offset: usize,
+        matcher_state: usize,
     ) -> BodyChunk {
         let SearchTarget::Chapter { book, chapter } = entry.target else {
             return BodyChunk::Done;
         };
-        let Some(block) = self
+        let Some(chapter) = self
             .books
             .get(book)
             .and_then(|book| book.chapters.get(chapter))
-            .and_then(|chapter| chapter.blocks.get(block_index))
         else {
-            return BodyChunk::Done;
+            return BodyChunk::Invalid;
+        };
+        let Some(block) = chapter.blocks.get(block_index) else {
+            // The scanner emits this exact one-past-the-last-block sentinel
+            // after a fully consumed final block. Any other offset is an
+            // untrusted cursor, not permission to skip prose.
+            return (block_index == chapter.blocks.len() && span_index == 0 && byte_offset == 0)
+                .then_some(BodyChunk::Done)
+                .unwrap_or(BodyChunk::Invalid);
+        };
+        let Some(mut matcher) = FoldMatcher::with_state(query, matcher_state) else {
+            return BodyChunk::Invalid;
         };
         match block {
             crate::model::Block::Math { source, .. } => {
-                Self::source_body_chunk(source, query, byte_offset)
+                if span_index != 0 {
+                    return BodyChunk::Invalid;
+                }
+                // A block boundary is textual too. Feed it once at the start
+                // of the next valid block, so cross-block phrases survive a
+                // chunk yield without making a concatenated chapter string.
+                if byte_offset == 0 && block_index > 0 && matcher.push(' ') {
+                    return BodyChunk::Scanned {
+                        matched: true,
+                        next_span: span_index,
+                        next_byte: byte_offset,
+                        matcher_state: matcher.state(),
+                        done: false,
+                    };
+                }
+                Self::source_body_chunk(source, span_index, byte_offset, &mut matcher)
             }
-            _ if block.spans().len() == 1 => {
-                Self::source_body_chunk(&block.spans()[0].text, query, byte_offset)
+            crate::model::Block::Separator => {
+                if span_index != 0 || byte_offset != 0 {
+                    return BodyChunk::Invalid;
+                }
+                BodyChunk::Scanned {
+                    matched: false,
+                    next_span: span_index,
+                    next_byte: byte_offset,
+                    matcher_state: matcher.state(),
+                    done: true,
+                }
             }
-            _ => BodyChunk::Scanned {
-                matched: block_contains(block, query),
-                next_byte: 0,
-                done: true,
-            },
+            _ => {
+                let Some(span) = block.spans().get(span_index) else {
+                    if block.spans().is_empty() && span_index == 0 && byte_offset == 0 {
+                        return BodyChunk::Scanned {
+                            matched: false,
+                            next_span: span_index,
+                            next_byte: byte_offset,
+                            matcher_state: matcher.state(),
+                            done: true,
+                        };
+                    }
+                    return BodyChunk::Invalid;
+                };
+                if byte_offset == 0 && block_index > 0 && span_index == 0 && matcher.push(' ') {
+                    return BodyChunk::Scanned {
+                        matched: true,
+                        next_span: span_index,
+                        next_byte: byte_offset,
+                        matcher_state: matcher.state(),
+                        done: false,
+                    };
+                }
+                if byte_offset == 0 && span_index > 0 && span.space_before && matcher.push(' ') {
+                    return BodyChunk::Scanned {
+                        matched: true,
+                        next_span: span_index,
+                        next_byte: byte_offset,
+                        matcher_state: matcher.state(),
+                        done: false,
+                    };
+                }
+                Self::source_body_chunk(&span.text, span_index, byte_offset, &mut matcher)
+            }
         }
     }
 
-    fn source_body_chunk(source: &str, query: &str, byte_offset: usize) -> BodyChunk {
+    fn source_body_chunk(
+        source: &str,
+        span_index: usize,
+        byte_offset: usize,
+        matcher: &mut FoldMatcher,
+    ) -> BodyChunk {
         if byte_offset > source.len() || !source.is_char_boundary(byte_offset) {
             return BodyChunk::Invalid;
         }
         let (start, end, done) = source_chunk(source, byte_offset);
-        // Recheck a bounded overlap so a match crossing a yield point is
-        // never lost. Query input itself is capped at 1,024 scalars.
-        let overlap = rewind_scalars(source, start, query.chars().count());
+        let found = source[start..end]
+            .chars()
+            .any(|character| matcher.push(character));
         BodyChunk::Scanned {
-            matched: normalized_contains(&source[overlap..end], query),
+            matched: found,
+            next_span: span_index,
             next_byte: end,
+            matcher_state: matcher.state(),
             done,
+        }
+    }
+
+    fn next_body_position(
+        &self,
+        entry: &SearchEntry,
+        block_index: usize,
+        span_index: usize,
+    ) -> Option<(usize, usize)> {
+        let SearchTarget::Chapter { book, chapter } = entry.target else {
+            return None;
+        };
+        let block = self
+            .books
+            .get(book)?
+            .chapters
+            .get(chapter)?
+            .blocks
+            .get(block_index)?;
+        if matches!(block, crate::model::Block::Math { .. })
+            || span_index.saturating_add(1) >= block.spans().len()
+        {
+            Some((block_index.saturating_add(1), 0))
+        } else {
+            Some((block_index, span_index.saturating_add(1)))
         }
     }
 
@@ -487,6 +585,34 @@ impl BookSearchProvider {
         reason = "all exact action variants are kept together so their canonical payloads can be audited"
     )]
     fn resource_for(&self, entry: &SearchEntry, address: &ActionAddress) -> Option<Resource> {
+        if let SearchTarget::RemoteBook(index) = entry.target {
+            let remote = self.registry.get(index)?;
+            // A remote metadata hit is never a dead reveal. The operation is
+            // typed and derives its only path from the content id, so opening
+            // a peer's result remains a capability-safe workspace hydrate.
+            let hydrate = ActionSpec::operation(
+                "open",
+                "Download and open",
+                OperationKind::Effect,
+                EBOOK_OPERATION_TYPE,
+                &EbookOperation::HydrateSharedBook {
+                    book_id: remote.id.clone(),
+                },
+            )
+            .ok()?
+            .with_contract(ActionContract {
+                risk: RiskLevel::Low,
+                retry: RetryPolicy::Idempotent,
+                execution: ExecutionMode::Background { cancellable: true },
+                result: ResultSpec::Job,
+                tags: vec!["workspace".into(), "materialize".into(), "remote".into()],
+                ..ActionContract::default()
+            });
+            return Some(
+                Resource::new(&address.resource, "ebook.remote-book", &entry.result.title)
+                    .with_action(hydrate),
+            );
+        }
         let (kind, book_id, chapter, block) = match entry.target {
             SearchTarget::Book(index) => {
                 let book = self.books.get(index)?;
@@ -695,18 +821,31 @@ impl BookSearchProvider {
         SearchCursor::opaque(self.generation, query, None, Some(phase | offset as u64))
     }
 
-    fn body_start(cursor: &SearchCursor) -> Option<(usize, usize, usize)> {
+    fn body_start(cursor: &SearchCursor) -> Option<(usize, usize, usize, usize, usize)> {
         let state = cursor.opaque_parts().2?;
         let mut parts = state.strip_prefix("body:")?.split(':');
-        let (Some(entry), Some(block), Some(byte)) = (parts.next(), parts.next(), parts.next())
-        else {
+        let (Some(entry), Some(block), Some(span), Some(byte), Some(matcher_state)) = (
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ) else {
             return None;
         };
         if parts.next().is_some() {
             return None;
         }
-        match (entry.parse(), block.parse(), byte.parse()) {
-            (Ok(entry), Ok(block), Ok(byte)) => Some((entry, block, byte)),
+        match (
+            entry.parse(),
+            block.parse(),
+            span.parse(),
+            byte.parse(),
+            matcher_state.parse(),
+        ) {
+            (Ok(entry), Ok(block), Ok(span), Ok(byte), Ok(matcher_state)) => {
+                Some((entry, block, span, byte, matcher_state))
+            }
             _ => None,
         }
     }
@@ -716,12 +855,16 @@ impl BookSearchProvider {
         query: &str,
         entry: usize,
         block: usize,
+        span: usize,
         byte: usize,
+        matcher_state: usize,
     ) -> SearchCursor {
         SearchCursor::opaque(
             self.generation,
             query,
-            Some(format!("body:{entry}:{block}:{byte}")),
+            Some(format!(
+                "body:{entry}:{block}:{span}:{byte}:{matcher_state}"
+            )),
             Some(BODY_PHASE),
         )
     }
@@ -841,7 +984,7 @@ impl SearchProvider for BookSearchProvider {
                 // unrelated body rows.
                 return SearchPage {
                     results,
-                    next: Some(self.next_body_cursor(&query, 0, 0, 0)),
+                    next: Some(self.next_body_cursor(&query, 0, 0, 0, 0, 0)),
                     inspected,
                 };
             } else {
@@ -866,7 +1009,7 @@ impl SearchProvider for BookSearchProvider {
                 }
                 let next = (offset < self.entries.len())
                     .then(|| self.next_cursor(&query, false, offset))
-                    .or_else(|| Some(self.next_body_cursor(&query, 0, 0, 0)));
+                    .or_else(|| Some(self.next_body_cursor(&query, 0, 0, 0, 0, 0)));
                 return SearchPage {
                     results,
                     next,
@@ -881,7 +1024,13 @@ impl SearchProvider for BookSearchProvider {
                 inspected: 0,
             };
         };
-        let Some((mut entry_index, mut block_index, mut byte_offset)) = Self::body_start(cursor)
+        let Some((
+            mut entry_index,
+            mut block_index,
+            mut span_index,
+            mut byte_offset,
+            mut matcher_state,
+        )) = Self::body_start(cursor)
         else {
             return SearchPage {
                 results: Vec::new(),
@@ -909,11 +1058,20 @@ impl SearchProvider for BookSearchProvider {
                 inspected += 1;
                 entry_index += 1;
                 block_index = 0;
+                span_index = 0;
                 byte_offset = 0;
+                matcher_state = 0;
                 continue;
             }
             inspected += 1;
-            match self.body_chunk_matches(entry, &query, block_index, byte_offset) {
+            match self.body_chunk_matches(
+                entry,
+                &query,
+                block_index,
+                span_index,
+                byte_offset,
+                matcher_state,
+            ) {
                 BodyChunk::Invalid => {
                     return SearchPage {
                         results: Vec::new(),
@@ -924,27 +1082,60 @@ impl SearchProvider for BookSearchProvider {
                 BodyChunk::Done => {
                     entry_index += 1;
                     block_index = 0;
+                    span_index = 0;
                     byte_offset = 0;
+                    matcher_state = 0;
                 }
                 BodyChunk::Scanned { matched: true, .. } => {
                     results.push(entry.result.clone());
                     entry_index += 1;
                     block_index = 0;
+                    span_index = 0;
                     byte_offset = 0;
+                    matcher_state = 0;
                 }
                 BodyChunk::Scanned {
                     next_byte,
+                    next_span,
+                    matcher_state: next_matcher_state,
                     done: false,
                     ..
-                } => byte_offset = next_byte,
-                BodyChunk::Scanned { done: true, .. } => {
-                    block_index += 1;
+                } => {
+                    span_index = next_span;
+                    byte_offset = next_byte;
+                    matcher_state = next_matcher_state;
+                }
+                BodyChunk::Scanned {
+                    matcher_state: next_matcher_state,
+                    done: true,
+                    ..
+                } => {
+                    let Some((next_block, next_span)) =
+                        self.next_body_position(entry, block_index, span_index)
+                    else {
+                        return SearchPage {
+                            results: Vec::new(),
+                            next: None,
+                            inspected: 0,
+                        };
+                    };
+                    block_index = next_block;
+                    span_index = next_span;
                     byte_offset = 0;
+                    matcher_state = next_matcher_state;
                 }
             }
         }
-        let next = (entry_index < self.entries.len())
-            .then(|| self.next_body_cursor(&query, entry_index, block_index, byte_offset));
+        let next = (entry_index < self.entries.len()).then(|| {
+            self.next_body_cursor(
+                &query,
+                entry_index,
+                block_index,
+                span_index,
+                byte_offset,
+                matcher_state,
+            )
+        });
         SearchPage {
             results,
             next,
@@ -1031,6 +1222,18 @@ impl FoldMatcher {
         }
     }
 
+    fn with_state(query: &str, state: usize) -> Option<Self> {
+        let mut stream = Self::new(query);
+        (state < stream.needle.len()).then(|| {
+            stream.matched = state;
+            stream
+        })
+    }
+
+    const fn state(&self) -> usize {
+        self.matched
+    }
+
     fn push(&mut self, character: char) -> bool {
         for folded in character.to_lowercase() {
             while self.matched > 0 && folded != self.needle[self.matched] {
@@ -1047,30 +1250,6 @@ impl FoldMatcher {
     }
 }
 
-fn block_contains(block: &crate::model::Block, query: &str) -> bool {
-    match block {
-        crate::model::Block::Math { source, .. } => normalized_contains(source, query),
-        crate::model::Block::Separator => false,
-        _ => {
-            let mut matcher = FoldMatcher::new(query);
-            if matcher.needle.is_empty() {
-                return true;
-            }
-            for (index, span) in block.spans().iter().enumerate() {
-                if index > 0 && span.space_before && matcher.push(' ') {
-                    return true;
-                }
-                for character in span.text.chars() {
-                    if matcher.push(character) {
-                        return true;
-                    }
-                }
-            }
-            false
-        }
-    }
-}
-
 fn source_chunk(source: &str, byte_offset: usize) -> (usize, usize, bool) {
     let start = byte_offset;
     let mut end = start;
@@ -1078,19 +1257,6 @@ fn source_chunk(source: &str, byte_offset: usize) -> (usize, usize, bool) {
         end += character.len_utf8();
     }
     (start, end, end == source.len())
-}
-
-fn rewind_scalars(source: &str, mut byte: usize, scalars: usize) -> usize {
-    for _ in 0..scalars {
-        if byte == 0 {
-            break;
-        }
-        byte = source[..byte]
-            .char_indices()
-            .next_back()
-            .map_or(0, |(index, _)| index);
-    }
-    byte
 }
 
 #[cfg(test)]
@@ -1174,7 +1340,7 @@ mod tests {
         let mut cursor = Some(SearchCursor::opaque(
             3,
             "tail-needle",
-            Some("body:0:0:0".into()),
+            Some("body:0:0:0:0:0".into()),
             Some(BODY_PHASE),
         ));
         let mut found = false;
@@ -1258,7 +1424,7 @@ mod tests {
         let mut cursor = Some(SearchCursor::opaque(
             1,
             "needle-at-the-end",
-            Some("body:0:0:0".into()),
+            Some("body:0:0:0:0:0".into()),
             Some(BODY_PHASE),
         ));
         let mut pages = 0;
@@ -1277,6 +1443,89 @@ mod tests {
     }
 
     #[test]
+    fn million_scalar_multi_span_paragraph_resumes_inside_the_first_span() {
+        let mut tail = crate::model::Span::plain("tail-needle");
+        tail.space_before = true;
+        let books = vec![Book {
+            id: "multi-span".into(),
+            title: "Multi span".into(),
+            chapters: vec![crate::model::Chapter {
+                title: "One paragraph".into(),
+                blocks: vec![crate::model::Block::Paragraph {
+                    spans: vec![crate::model::Span::plain("x".repeat(1_000_000)), tail],
+                }],
+                ..crate::model::Chapter::default()
+            }],
+            ..Book::default()
+        }];
+        let provider = BookSearchProvider::new(&books, &[]);
+        let mut cursor = Some(SearchCursor::opaque(
+            1,
+            "tail-needle",
+            Some("body:1:0:0:0:0".into()),
+            Some(BODY_PHASE),
+        ));
+        let mut pages = 0;
+        let mut found = false;
+        while let Some(next) = cursor {
+            let page = provider.search_page("tail-needle", Some(&next), 1, 1);
+            assert_eq!(page.inspected, 1);
+            pages += 1;
+            found |= page
+                .results
+                .iter()
+                .any(|result| result.kind == CHAPTER_KIND);
+            cursor = page.next;
+        }
+        assert!(found);
+        assert!(pages >= 978, "the first span was not resumed in chunks");
+        assert_eq!(provider.stats().retained_chapter_scalars, 0);
+    }
+
+    #[test]
+    fn body_phrase_can_cross_inline_and_block_boundaries() {
+        let mut beta = crate::model::Span::plain("beta");
+        beta.space_before = true;
+        let books = vec![Book {
+            id: "boundaries".into(),
+            title: "Boundaries".into(),
+            chapters: vec![crate::model::Chapter {
+                title: "Boundaries".into(),
+                blocks: vec![
+                    crate::model::Block::Paragraph {
+                        spans: vec![crate::model::Span::plain("alpha"), beta],
+                    },
+                    crate::model::Block::Paragraph {
+                        spans: vec![crate::model::Span::plain("gamma")],
+                    },
+                ],
+                ..crate::model::Chapter::default()
+            }],
+            ..Book::default()
+        }];
+        let provider = BookSearchProvider::new(&books, &[]);
+        let mut cursor = Some(SearchCursor::opaque(
+            1,
+            "beta gamma",
+            Some("body:1:0:0:0:0".into()),
+            Some(BODY_PHASE),
+        ));
+        let mut found = false;
+        while let Some(next) = cursor {
+            let page = provider.search_page("beta gamma", Some(&next), 1, 1);
+            found |= page
+                .results
+                .iter()
+                .any(|result| result.kind == CHAPTER_KIND);
+            cursor = page.next;
+        }
+        assert!(
+            found,
+            "streaming state must survive span and block boundaries"
+        );
+    }
+
+    #[test]
     fn skipped_body_rows_consume_the_page_budget() {
         let books = (0..10)
             .map(|index| Book {
@@ -1286,7 +1535,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let provider = BookSearchProvider::new(&books, &[]);
-        let cursor = SearchCursor::opaque(1, "absent", Some("body:0:0:0".into()), Some(BODY_PHASE));
+        let cursor =
+            SearchCursor::opaque(1, "absent", Some("body:0:0:0:0:0".into()), Some(BODY_PHASE));
         let page = provider.search_page("absent", Some(&cursor), 3, 3);
         assert!(page.results.is_empty());
         assert_eq!(page.inspected, 3);
@@ -1318,8 +1568,13 @@ mod tests {
     fn malformed_or_stale_continuations_fail_closed() {
         let provider = BookSearchProvider::new(&sample_books(), &[]);
         for cursor in [
-            SearchCursor::opaque(0, "reader", Some("body:0:0:0".into()), Some(BODY_PHASE)),
-            SearchCursor::opaque(1, "different", Some("body:0:0:0".into()), Some(BODY_PHASE)),
+            SearchCursor::opaque(0, "reader", Some("body:0:0:0:0:0".into()), Some(BODY_PHASE)),
+            SearchCursor::opaque(
+                1,
+                "different",
+                Some("body:0:0:0:0:0".into()),
+                Some(BODY_PHASE),
+            ),
             SearchCursor::opaque(
                 1,
                 "reader",
@@ -1349,11 +1604,34 @@ mod tests {
             ..Book::default()
         }];
         let provider = BookSearchProvider::new(&books, &[]);
-        let cursor = SearchCursor::opaque(1, "needle", Some("body:1:0:1".into()), Some(BODY_PHASE));
+        let cursor =
+            SearchCursor::opaque(1, "needle", Some("body:1:0:0:1:0".into()), Some(BODY_PHASE));
         let page = provider.search_page("needle", Some(&cursor), 1, 1);
         assert!(page.results.is_empty());
         assert!(page.next.is_none());
         assert_eq!(page.inspected, 0);
+    }
+
+    #[test]
+    fn hostile_out_of_range_body_positions_fail_closed() {
+        let books = vec![Book {
+            id: "positions".into(),
+            chapters: vec![crate::model::Chapter {
+                blocks: vec![crate::model::Block::Paragraph {
+                    spans: vec![crate::model::Span::plain("one")],
+                }],
+                ..crate::model::Chapter::default()
+            }],
+            ..Book::default()
+        }];
+        let provider = BookSearchProvider::new(&books, &[]);
+        for state in ["body:1:99:0:0:0", "body:1:0:99:0:0", "body:1:0:0:0:99"] {
+            let cursor = SearchCursor::opaque(1, "one", Some(state.into()), Some(BODY_PHASE));
+            let page = provider.search_page("one", Some(&cursor), 1, 1);
+            assert!(page.results.is_empty(), "{state}");
+            assert!(page.next.is_none(), "{state}");
+            assert_eq!(page.inspected, 0, "{state}");
+        }
     }
 
     #[test]
@@ -1385,7 +1663,108 @@ mod tests {
     }
 
     #[test]
-    fn remote_metadata_is_not_a_false_local_reveal() {
+    fn exact_resources_preserve_book_and_annotation_action_contracts() {
+        let book = Book {
+            id: "book".into(),
+            title: "Contract book".into(),
+            chapters: vec![crate::model::Chapter {
+                blocks: vec![crate::model::Block::Paragraph {
+                    spans: vec![crate::model::Span::plain("body")],
+                }],
+                ..crate::model::Chapter::default()
+            }],
+            ..Book::default()
+        };
+        let group = uuid::Uuid::from_u128(7);
+        let highlight = Annotation::new("book", AnnoKind::Highlight, 0, 0)
+            .with_group(group)
+            .with_excerpt("amber passage");
+        let comment = Annotation::new("book", AnnoKind::Note, 0, 0)
+            .with_group(group)
+            .with_note("peer comment");
+        let note = Annotation::new("book", AnnoKind::Note, 0, 0).with_note("reader note");
+        let provider = BookSearchProvider::new(&[book], &[highlight, comment, note]);
+
+        let book_resource = provider
+            .resolve_action_resource(
+                &provider
+                    .search("contract book")
+                    .into_iter()
+                    .find(|result| result.kind == BOOK_KIND)
+                    .and_then(|result| result.action_address())
+                    .expect("book address"),
+            )
+            .expect("book resource");
+        let share = book_resource
+            .actions
+            .iter()
+            .find(|action| action.id == "share")
+            .expect("share");
+        assert!(matches!(
+            share.contract.execution,
+            ExecutionMode::Background { .. }
+        ));
+        assert_eq!(share.contract.retry, RetryPolicy::Idempotent);
+        assert_eq!(share.contract.result, ResultSpec::Job);
+        assert_eq!(share.contract.tags, ["workspace", "materialize"]);
+        let remove = book_resource
+            .actions
+            .iter()
+            .find(|action| action.id == "remove-from-library")
+            .expect("remove");
+        assert_eq!(remove.contract.risk, RiskLevel::Destructive);
+        assert_eq!(remove.contract.confirmation, ConfirmationPolicy::Confirm);
+        assert!(remove.contract.reversible);
+        assert_eq!(remove.contract.tags, ["library", "tombstone"]);
+
+        let highlight_resource = provider
+            .resolve_action_resource(
+                &provider
+                    .search("amber")
+                    .pop()
+                    .and_then(|result| result.action_address())
+                    .expect("highlight address"),
+            )
+            .expect("highlight resource");
+        let mut highlight_actions = highlight_resource
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect::<Vec<_>>();
+        highlight_actions.sort_unstable();
+        assert_eq!(
+            highlight_actions,
+            ["add-comment", "change-color", "delete-highlight", "open"]
+        );
+
+        for (query, expected) in [
+            (
+                "peer comment",
+                ["delete-comment", "edit-comment", "open"].as_slice(),
+            ),
+            ("reader note", ["delete", "edit", "open"].as_slice()),
+        ] {
+            let resource = provider
+                .resolve_action_resource(
+                    &provider
+                        .search(query)
+                        .pop()
+                        .and_then(|result| result.action_address())
+                        .expect("annotation address"),
+                )
+                .expect("annotation resource");
+            let mut actions = resource
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>();
+            actions.sort_unstable();
+            assert_eq!(actions, expected, "{query}");
+        }
+    }
+
+    #[test]
+    fn remote_metadata_hydrates_and_opens_the_canonical_workspace_book() {
         let entry = LibraryEntry {
             id: "book:remote".into(),
             title: "Remote Atlas".into(),
@@ -1396,10 +1775,27 @@ mod tests {
         };
         let provider = BookSearchProvider::new_with_registry(&[], &[], &[entry]);
         let hit = provider.search("mira").pop().expect("metadata");
-        assert!(
-            provider
-                .resolve_action_resource(&hit.action_address().expect("address"))
-                .is_none()
+        let resource = provider
+            .resolve_action_resource(&hit.action_address().expect("address"))
+            .expect("actionable remote resource");
+        let open = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("open");
+        assert_eq!(open.label, "Download and open");
+        assert!(matches!(
+            open.contract.execution,
+            ExecutionMode::Background { .. }
+        ));
+        let tilo_actions::ActionInput::Immediate(operation) = &open.input else {
+            panic!("remote open is a lifecycle operation");
+        };
+        assert_eq!(
+            crate::actions::decode_operation(&operation.type_id, &operation.payload).unwrap(),
+            Some(EbookOperation::HydrateSharedBook {
+                book_id: "book:remote".into(),
+            })
         );
     }
 
