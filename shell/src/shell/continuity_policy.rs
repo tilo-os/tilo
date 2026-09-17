@@ -161,6 +161,8 @@ impl ContinuityPolicySnapshot {
             | PersonalFabricAction::GamepadForwardEvent { .. }
             | PersonalFabricAction::GamepadForwardStop { .. } => ContinuityCapability::TypedGamepad,
             PersonalFabricAction::SetDisplayPlacement { .. }
+            | PersonalFabricAction::DeviceHealthProbe { .. }
+            | PersonalFabricAction::DeviceHealthReport { .. }
             | PersonalFabricAction::InputLeaseGranted { .. }
             | PersonalFabricAction::InputLeaseRevoked { .. }
             | PersonalFabricAction::Input { .. } => ContinuityCapability::DisplayInput,
