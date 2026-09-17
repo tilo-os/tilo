@@ -1092,6 +1092,7 @@ struct RealtimeBridge {
     sessions: HashMap<String, RealtimeBinding>,
     subscribers: HashMap<u64, RealtimeSubscriber>,
     pending_imported_offers: VecDeque<crate::shell::realtime_session::ImportedRealtimeFabricOffer>,
+    consent_capabilities_issued: std::collections::HashSet<String>,
 }
 
 impl Default for RealtimeBridge {
@@ -1112,6 +1113,7 @@ impl Default for RealtimeBridge {
             sessions: HashMap::new(),
             subscribers: HashMap::new(),
             pending_imported_offers: VecDeque::new(),
+            consent_capabilities_issued: std::collections::HashSet::new(),
         }
     }
 }
@@ -1359,6 +1361,7 @@ impl RealtimeFabricAppBridge {
                 });
             } else if binding.imported
                 && session.phase == RealtimeSessionPhase::AwaitingTargetAccept
+                && !realtime.consent_capabilities_issued.contains(token)
             {
                 view.consents.push(RealtimeConsentUiView {
                     session: token.clone(),
@@ -1455,6 +1458,9 @@ impl RealtimeFabricAppBridge {
             if !binding.imported {
                 return Err("only an imported offer can be authorized here".into());
             }
+            if realtime.consent_capabilities_issued.contains(session) {
+                return Err("capture consent is already being applied".into());
+            }
             let target = realtime
                 .broker
                 .lock()
@@ -1485,6 +1491,7 @@ impl RealtimeFabricAppBridge {
                 .map_err(|error| error.to_string())?;
             drop(realtime);
             if let Ok(mut realtime) = self.state.realtime.lock() {
+                realtime.consent_capabilities_issued.remove(session);
                 realtime.notify(
                     peer,
                     &ui::realtime_continuity::RealtimeEvent::Ended {
@@ -1530,6 +1537,12 @@ impl RealtimeFabricAppBridge {
             .realtime
             .lock()
             .map_err(|_| "realtime broker is unavailable".to_string())?;
+        if !realtime
+            .consent_capabilities_issued
+            .insert(session.to_string())
+        {
+            return Err("capture consent is already being applied".into());
+        }
         realtime.notify(
             peer,
             &ui::realtime_continuity::RealtimeEvent::CaptureAuthorized {
@@ -1679,6 +1692,7 @@ impl CapnpBrokerState {
                 release_realtime_capture_leases(&realtime.capture, &leases);
                 if terminal {
                     realtime.sessions.remove(&token);
+                    realtime.consent_capabilities_issued.remove(&token);
                 } else if let Some(binding) = realtime.sessions.get_mut(&token) {
                     binding.authorization = None;
                     binding.target_peer = None;
@@ -4762,6 +4776,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     binding.target_peer = Some(self.peer_id);
                     binding.capture_leases = leases;
                 }
+                bridge.consent_capabilities_issued.remove(&session);
                 ui::realtime_continuity::RealtimeReply::Accepted
             }
             ui::realtime_continuity::RealtimeCommand::MediaReady { session } => {
