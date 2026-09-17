@@ -1741,9 +1741,22 @@ impl FrameBuilder {
         self.rebuild_layout_tree();
     }
 
+    /// Replace desktop chrome with the trusted identity-recovery ceremony.
+    pub fn enable_recovery_onboarding(&mut self, identity_dir: std::path::PathBuf) {
+        self.host.enable_recovery_onboarding(identity_dir);
+        self.rebuild_layout_tree();
+    }
+
     /// Replace desktop chrome with the reduced host-install identity OOBE.
     pub fn enable_host_desktop_onboarding(&mut self, identity_dir: std::path::PathBuf) {
         self.host.enable_host_desktop_onboarding(identity_dir);
+        self.rebuild_layout_tree();
+    }
+
+    /// Replace desktop chrome with host-install identity recovery.
+    pub fn enable_host_desktop_recovery_onboarding(&mut self, identity_dir: std::path::PathBuf) {
+        self.host
+            .enable_host_desktop_recovery_onboarding(identity_dir);
         self.rebuild_layout_tree();
     }
 
