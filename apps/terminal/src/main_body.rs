@@ -799,6 +799,17 @@ impl TerminalWidget {
         self.session_disconnected.load(Ordering::Acquire)
     }
 
+    /// Whether the first-run prompt is an honest description of the current
+    /// surface. Once the transport has ended there is no input destination,
+    /// even when the process exited before producing a single byte.
+    pub(crate) fn should_draw_empty_state(&self) -> bool {
+        !self.alt_active && !self.ever_nonblank && !self.is_disconnected()
+    }
+
+    pub(crate) fn should_draw_live_cursor(&self) -> bool {
+        !self.is_disconnected()
+    }
+
     fn mark_disconnected(&self, message: &'static str) {
         set_terminal_disconnected(
             &self.session_disconnected,
@@ -2250,7 +2261,7 @@ impl Widget for TerminalWidget {
         if !self.grid_is_blank() {
             self.ever_nonblank = true;
         }
-        if !self.alt_active && !self.ever_nonblank {
+        if self.should_draw_empty_state() {
             self.draw_empty_state(scene, transform, text_renderer, theme);
             self.draw_disconnected_status(scene, transform, text_renderer, theme);
             // An empty first-run surface is still fully interactive. In
@@ -3375,7 +3386,8 @@ impl TerminalWidget {
         // Absolute grid row of the cursor → visible row (may be scrolled off).
         let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
         let scrolled_back = !self.alt_active && scroll > 0;
-        if self.modes.cursor_visible
+        if self.should_draw_live_cursor()
+            && self.modes.cursor_visible
             && !scrolled_back
             && cursor_abs >= start_y
             && cursor_abs < start_y + visible_rows.max(1)
@@ -3646,7 +3658,10 @@ impl TerminalWidget {
             2.0,
         );
 
-        let label = "Tilo Terminal";
+        // The OS already presents the application identity in window chrome;
+        // the empty surface should describe its state instead of repeating a
+        // brand/title inside the client area.
+        let label = "Ready for input";
         let size = theme.tokens.typography.scale.lg;
         let (lw, _) = tr.measure(label, size, None);
         tr.draw_text_weighted(

@@ -536,6 +536,14 @@ fn exited_pty_publishes_a_persistent_disconnected_accessibility_state() {
         widget.is_disconnected(),
         "PTY EOF must settle the session state"
     );
+    assert!(
+        !widget.should_draw_empty_state(),
+        "an ended empty session must not claim it is ready for input"
+    );
+    assert!(
+        !widget.should_draw_live_cursor(),
+        "an ended session must not paint a live input cursor"
+    );
     let node = Widget::accessibility(&widget).expect("terminal semantics");
     assert!(
         node.description

@@ -4239,7 +4239,9 @@ impl RemoteApp {
             .iter()
             .filter(|connection| connection_readiness(connection).can_connect())
             .count();
-        let stat = if connectable < total {
+        let stat = if compact_header && connectable < total {
+            format!("{total} saved · {online} online · {connectable} ready")
+        } else if connectable < total {
             format!("{total} saved · {online} online · {connectable} connectable here")
         } else {
             format!("{total} saved · {online} online")
@@ -4257,9 +4259,9 @@ impl RemoteApp {
         let add_w = if compact_header { 88.0 } else { 150.0 };
         let add = Rect::new(
             content.x1 - pad - add_w,
-            header.y0 + 16.0,
+            header.y0 + 14.0,
             content.x1 - pad,
-            header.y0 + 48.0,
+            header.y0 + 50.0,
         );
         self.draw_button(
             scene,
@@ -5618,7 +5620,7 @@ impl RemoteApp {
                     "Connection failed",
                     &[
                         err,
-                        "This is the real error — nothing is simulated.".to_string(),
+                        "Check the connection details, then try again.".to_string(),
                     ],
                     StatusTone::Error,
                     false,
@@ -5712,7 +5714,17 @@ impl RemoteApp {
             StatusTone::Pending => tokens.colors.semantic.warning,
             StatusTone::Error => tokens.colors.semantic.danger,
         };
-        let card = Self::draw_status_session_card(scene, transform, theme, content, body);
+        // Status explanations are app/runtime strings rather than retained text
+        // widgets, so normalize them into bounded display lines here. Keeping
+        // this at the shared card boundary prevents every transport state from
+        // accidentally painting beyond a narrow card.
+        let card_width = 460.0_f64.min(content.width() - 40.0);
+        let body_width = (card_width - 32.0).max(1.0) as f32;
+        let body_lines: Vec<String> = body
+            .iter()
+            .flat_map(|line| text_renderer.clamp_to_lines(line, 13.0, body_width, 3))
+            .collect();
+        let card = Self::draw_status_session_card(scene, transform, theme, content, &body_lines);
         let y = Self::draw_status_session_identity(
             scene,
             transform,
@@ -5730,7 +5742,7 @@ impl RemoteApp {
             card,
             accent,
             title,
-            body,
+            &body_lines,
             y,
         );
         self.draw_status_session_actions(

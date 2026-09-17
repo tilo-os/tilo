@@ -1245,7 +1245,8 @@ impl VpnApp {
         let base_header_h = if compact { 144.0 } else { HEADER_H };
         let has_notice =
             self.import_rx.is_some() || self.operation_error.is_some() || self.shot_loading;
-        let header_h = base_header_h + if has_notice { 48.0 } else { 0.0 };
+        let notice_h = if compact { 104.0 } else { 56.0 };
+        let header_h = base_header_h + if has_notice { notice_h } else { 0.0 };
         let header = Rect::new(r.x0, r.y0, r.x1, r.y0 + header_h);
         let notice = has_notice.then_some(Rect::new(
             header.x0,
@@ -1256,15 +1257,21 @@ impl VpnApp {
         // Recovery controls live inside the notice band. They are deliberately
         // large enough for touch and reserve their space before the message is
         // ellipsized, so an error can never paint underneath an action.
-        let notice_dismiss =
-            notice.map(|r| Rect::new(r.x1 - 16.0 - 68.0, r.y0 + 6.0, r.x1 - 16.0, r.y1 - 6.0));
+        let notice_dismiss = notice.map(|r| {
+            let (y0, y1) = if compact {
+                (r.y1 - 48.0, r.y1 - 4.0)
+            } else {
+                (r.y0 + 6.0, r.y1 - 6.0)
+            };
+            Rect::new(r.x1 - 16.0 - 68.0, y0, r.x1 - 16.0, y1)
+        });
         let notice_retry = notice.map(|r| {
-            Rect::new(
-                r.x1 - 16.0 - 68.0 - 8.0 - 78.0,
-                r.y0 + 6.0,
-                r.x1 - 16.0 - 76.0,
-                r.y1 - 6.0,
-            )
+            let (y0, y1) = if compact {
+                (r.y1 - 48.0, r.y1 - 4.0)
+            } else {
+                (r.y0 + 6.0, r.y1 - 6.0)
+            };
+            Rect::new(r.x1 - 16.0 - 68.0 - 8.0 - 78.0, y0, r.x1 - 16.0 - 76.0, y1)
         });
         // No bottom chrome strip: the body spans to the window bottom.
         let body = Rect::new(r.x0, header.y1, r.x1, r.y1);
@@ -1287,7 +1294,7 @@ impl VpnApp {
         } else {
             header.y0 + 18.0
         };
-        let by1 = by0 + 36.0;
+        let by1 = by0 + 40.0;
         let (add_btn, tor_pill, imp_conf, imp_ovpn) = if compact {
             let left = header.x0 + 16.0;
             let right = header.x1 - 16.0;
@@ -1312,9 +1319,9 @@ impl VpnApp {
             let row = Rect::new(list.x0 + 12.0, y, list.x1 - 12.0, y + ROW_H);
             let toggle = Rect::new(
                 row.x1 - 16.0 - 46.0,
-                row.center().y - 13.0,
+                row.center().y - 20.0,
                 row.x1 - 16.0,
-                row.center().y + 13.0,
+                row.center().y + 20.0,
             );
             rows.push((c.id, row, toggle));
             y += ROW_H + ROW_GAP;
@@ -1348,10 +1355,10 @@ impl VpnApp {
             } else {
                 92.0
             };
-            tabs.push((t, Rect::new(tx, tabs_y, tx + w, tabs_y + 34.0)));
+            tabs.push((t, Rect::new(tx, tabs_y, tx + w, tabs_y + 40.0)));
             tx += w + 4.0;
         }
-        let content = Rect::new(dinner.x0, tabs_y + 34.0 + 16.0, dinner.x1, dinner.y1);
+        let content = Rect::new(dinner.x0, tabs_y + 40.0 + 16.0, dinner.x1, dinner.y1);
 
         // Per-tunnel tor pill (in the Status tab kv-table) — computed on draw,
         // recomputed here for hit-testing.
@@ -1387,7 +1394,7 @@ impl VpnApp {
                 detail.x0 + 16.0,
                 detail.y0 + 10.0,
                 detail.x0 + 112.0,
-                detail.y0 + 42.0,
+                detail.y0 + 50.0,
             ),
             notice,
             notice_retry,
@@ -1422,12 +1429,7 @@ fn kv_tor_rect(content: Rect) -> Rect {
     // 5th kv row; rows are 30px tall starting after the chart.
     let kv_top = content.y0 + 72.0 + 16.0 + 176.0 + 16.0;
     let row_y = kv_top + 4.0 * 30.0;
-    Rect::new(
-        content.x1 - 84.0,
-        row_y + 2.0,
-        content.x1 - 84.0 + 64.0,
-        row_y + 26.0,
-    )
+    Rect::new(content.x1 - 84.0, row_y - 5.0, content.x1, row_y + 35.0)
 }
 
 fn point_in(r: Rect, p: Point) -> bool {
@@ -1529,6 +1531,33 @@ fn ellipsize(s: &str, max_chars: usize) -> String {
     }
 }
 
+fn wrap_notice(s: &str, max_chars: usize) -> (String, String) {
+    if s.chars().count() <= max_chars {
+        return (s.to_owned(), String::new());
+    }
+    let mut first = String::new();
+    let mut remaining = Vec::new();
+    for word in s.split_whitespace() {
+        let projected = first
+            .chars()
+            .count()
+            .saturating_add(usize::from(!first.is_empty()))
+            .saturating_add(word.chars().count());
+        if remaining.is_empty() && projected <= max_chars {
+            if !first.is_empty() {
+                first.push(' ');
+            }
+            first.push_str(word);
+        } else {
+            remaining.push(word);
+        }
+    }
+    if first.is_empty() {
+        return (ellipsize(s, max_chars), String::new());
+    }
+    (first, ellipsize(&remaining.join(" "), max_chars))
+}
+
 impl VpnApp {
     fn status_color(theme: &Theme, status: ConnStatus) -> Color {
         match status {
@@ -1624,6 +1653,7 @@ impl VpnApp {
             lay.tor_pill,
             "Tor",
             self.vault.tor_global,
+            point_in(lay.tor_pill, self.last_mouse),
         );
 
         // Add button (accent).
@@ -1657,7 +1687,9 @@ impl VpnApp {
             };
             scene.fill(Fill::NonZero, t, color.multiply_alpha(0.10), None, &notice);
             let has_recovery = self.operation_error.is_some();
-            let text_right = if has_recovery {
+            let text_right = if lay.compact {
+                notice.x1 - 24.0
+            } else if has_recovery {
                 lay.notice_retry
                     .filter(|_| self.retry_import_kind.is_some())
                     .map_or_else(
@@ -1668,18 +1700,51 @@ impl VpnApp {
                 notice.x1 - 24.0
             };
             let message_chars = ((text_right - notice.x0 - 24.0) / 6.5).max(12.0).floor() as usize;
-            text_vc(
-                tr,
-                scene,
-                t,
-                &ellipsize(&label, message_chars),
-                12.0,
-                color,
-                notice.x0 + 24.0,
-                notice.y0,
-                notice.height(),
-                TextWeight::Semibold,
-            );
+            let message_height = if lay.compact {
+                notice.height() - 48.0
+            } else {
+                notice.height()
+            };
+            if lay.compact {
+                let (first, second) = wrap_notice(&label, message_chars);
+                text_w(
+                    tr,
+                    scene,
+                    t,
+                    &first,
+                    12.0,
+                    color,
+                    notice.x0 + 24.0,
+                    notice.y0 + 14.0,
+                    TextWeight::Semibold,
+                );
+                if !second.is_empty() {
+                    text_w(
+                        tr,
+                        scene,
+                        t,
+                        &second,
+                        12.0,
+                        color,
+                        notice.x0 + 24.0,
+                        notice.y0 + 32.0,
+                        TextWeight::Semibold,
+                    );
+                }
+            } else {
+                text_vc(
+                    tr,
+                    scene,
+                    t,
+                    &ellipsize(&label, message_chars),
+                    12.0,
+                    color,
+                    notice.x0 + 24.0,
+                    notice.y0,
+                    message_height,
+                    TextWeight::Semibold,
+                );
+            }
             if has_recovery {
                 if let (Some(retry), Some(_)) = (lay.notice_retry, self.retry_import_kind) {
                     Button::paint(
@@ -1721,39 +1786,10 @@ impl VpnApp {
         r: Rect,
         label: &str,
         on: bool,
+        hovered: bool,
     ) {
-        let bg = if on {
-            theme.tokens.colors.accent[5].multiply_alpha(0.22)
-        } else {
-            theme.tokens.colors.surfaces.base
-        };
-        fill_round(scene, t, r, f64::from(theme.tokens.radii.full), bg);
-        stroke_round(
-            scene,
-            t,
-            r,
-            f64::from(theme.tokens.radii.full),
-            if on {
-                theme.tokens.colors.accent[5]
-            } else {
-                theme.tokens.colors.border_standard
-            },
-            1.0,
-        );
-        // status dot
-        let dot: Color = if on {
-            theme.tokens.colors.accent[6]
-        } else {
-            theme.tokens.colors.neutral[5]
-        };
-        scene.fill(
-            Fill::NonZero,
-            t,
-            dot,
-            None,
-            &Circle::new(Point::new(r.x0 + 18.0, r.center().y), 5.0),
-        );
-        let txt = format!("{label}  {}", if on { "On" } else { "Off" });
+        let switch = Rect::new(r.x1 - 52.0, r.center().y - 14.0, r.x1, r.center().y + 14.0);
+        let txt = format!("{label} {}", if on { "on" } else { "off" });
         text_vc(
             tr,
             scene,
@@ -1761,10 +1797,16 @@ impl VpnApp {
             &txt,
             12.0,
             theme.text_primary,
-            r.x0 + 32.0,
+            r.x0,
             r.y0,
             r.height(),
             TextWeight::Semibold,
+        );
+        Toggle::paint(
+            scene,
+            t,
+            theme,
+            &ToggleFace::new(switch, on).hovered(hovered),
         );
     }
 
@@ -1931,11 +1973,14 @@ impl VpnApp {
     }
 
     fn draw_switch(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, on: bool) {
+        // Keep a generous 40px activation region while preserving the
+        // platform switch's compact visual proportions within it.
+        let face = Rect::new(r.x1 - 46.0, r.center().y - 14.0, r.x1, r.center().y + 14.0);
         Toggle::paint(
             scene,
             t,
             theme,
-            &ToggleFace::new(r, on).on_color(theme.tokens.colors.semantic.success),
+            &ToggleFace::new(face, on).on_color(theme.tokens.colors.semantic.success),
         );
     }
 
@@ -2762,41 +2807,20 @@ impl VpnApp {
             .enumerate()
         {
             let sx = x + i as f64 * 130.0;
-            let r = Rect::new(sx, seg_y, sx + 122.0, seg_y + 34.0);
+            let r = Rect::new(sx, seg_y, sx + 122.0, seg_y + 40.0);
             let active = self.add_kind == k;
-            let bg = if active {
-                theme.tokens.colors.accent[5].multiply_alpha(0.22)
-            } else {
-                theme.tokens.colors.surfaces.base
-            };
-            fill_round(scene, t, r, f64::from(theme.tokens.radii.md), bg);
-            stroke_round(
-                scene,
-                t,
-                r,
-                f64::from(theme.tokens.radii.md),
-                if active {
-                    theme.tokens.colors.accent[5]
-                } else {
-                    theme.tokens.colors.border_standard
-                },
-                1.0,
-            );
             let lbl = format!("{} (.{})", k.long_name(), k.ext());
-            text_center(
-                tr,
-                scene,
-                t,
-                &lbl,
-                12.0,
-                theme.text_primary,
-                r,
-                if active {
+            let face = ButtonFace::new(r, &lbl)
+                .radius(f64::from(theme.tokens.radii.md))
+                .text_size(12.0)
+                .weight(if active {
                     TextWeight::Semibold
                 } else {
                     TextWeight::Regular
-                },
-            );
+                })
+                .hovered(point_in(r, self.last_mouse));
+            let face = if active { face.primary() } else { face };
+            Button::paint(scene, t, tr, theme, &face);
         }
     }
 
@@ -3040,7 +3064,7 @@ impl VpnApp {
             .enumerate()
         {
             let sx = card.x0 + 28.0 + i as f64 * 130.0;
-            let r = Rect::new(sx, seg_y, sx + 122.0, seg_y + 34.0);
+            let r = Rect::new(sx, seg_y, sx + 122.0, seg_y + 40.0);
             if point_in(r, p) {
                 self.add_kind = k;
                 return;
@@ -3115,15 +3139,15 @@ impl VpnApp {
 }
 
 fn add_modal_button_rects(card: Rect) -> (Rect, Rect) {
-    let by = card.y1 - 52.0;
+    let by = card.y1 - 56.0;
     (
         Rect::new(
             card.x1 - 28.0 - 200.0,
             by,
             card.x1 - 28.0 - 110.0,
-            by + 36.0,
+            by + 40.0,
         ),
-        Rect::new(card.x1 - 28.0 - 100.0, by, card.x1 - 28.0, by + 36.0),
+        Rect::new(card.x1 - 28.0 - 100.0, by, card.x1 - 28.0, by + 40.0),
     )
 }
 
@@ -4497,6 +4521,48 @@ mod tests {
         dispatch(&mut app, &mut doc, &press());
         assert_eq!(app.vault.connections.len(), before);
         assert_eq!(app.modal, Modal::None, "Cancel dismisses without saving");
+    }
+
+    #[test]
+    fn primary_navigation_and_notice_actions_have_comfortable_targets() {
+        let (mut app, _doc) = demo_with_doc();
+
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.operation_error = Some("Import failed".into());
+        let wide = app.layout();
+        assert!(wide.add_btn.height() >= 40.0);
+        assert!(wide.tor_pill.height() >= 40.0);
+        assert!(
+            wide.rows
+                .iter()
+                .all(|(_, _, toggle)| toggle.height() >= 40.0)
+        );
+        assert!(wide.tor_row.height() >= 40.0);
+        assert!(wide.tabs.iter().all(|(_, rect)| rect.height() >= 40.0));
+        assert!(wide.notice_retry.is_some_and(|rect| rect.height() >= 44.0));
+        assert!(
+            wide.notice_dismiss
+                .is_some_and(|rect| rect.height() >= 44.0)
+        );
+
+        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        let compact = app.layout();
+        assert!(compact.back_btn.height() >= 40.0);
+        assert!(compact.tabs.iter().all(|(_, rect)| rect.height() >= 40.0));
+        assert!(
+            compact
+                .notice_retry
+                .is_some_and(|rect| rect.height() >= 44.0)
+        );
+        assert!(
+            compact
+                .notice_dismiss
+                .is_some_and(|rect| rect.height() >= 44.0)
+        );
+
+        let (cancel, choose) = add_modal_button_rects(compact.modal_card);
+        assert!(cancel.height() >= 40.0);
+        assert!(choose.height() >= 40.0);
     }
 
     #[test]
