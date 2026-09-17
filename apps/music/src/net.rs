@@ -33,11 +33,16 @@ pub fn connection_is_stable() -> bool {
 ///
 /// NM's metered enum: `yes`/`yes (guessed)` ⇒ metered; `no`/`no (guessed)` ⇒
 /// not metered; `unknown` ⇒ we can't tell.
+#[cfg(target_os = "linux")]
 fn nm_metered() -> Option<bool> {
-    let out = std::process::Command::new("nmcli")
-        .args(["-t", "-f", "GENERAL.METERED", "device", "show"])
-        .output()
-        .ok()?;
+    let out = bounded_command::run(
+        "nmcli",
+        &["-t", "-f", "GENERAL.METERED", "device", "show"],
+        None,
+        256 * 1024,
+        std::time::Duration::from_secs(3),
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -58,6 +63,11 @@ fn nm_metered() -> Option<bool> {
     }
     // Only assert "not metered" if at least one device reported a known state.
     saw_known.then_some(false)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn nm_metered() -> Option<bool> {
+    None
 }
 
 #[cfg(test)]
