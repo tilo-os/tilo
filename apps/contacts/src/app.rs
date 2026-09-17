@@ -8169,7 +8169,7 @@ mod tests {
             .push(GroupEntry::new("Late group"));
         app.rebuild_resource_index();
 
-        let root = <ContactsApp as qos_actions::ResourceProvider>::resources(&app, &doc);
+        let root = <ContactsApp as tilo_actions::ResourceProvider>::resources(&app, &doc);
         assert_eq!(root.len(), 1);
         assert!(
             app.resource_snapshot_materialized.get()
@@ -8180,20 +8180,21 @@ mod tests {
 
         let contact_id = crate::actions::contact_resource_id(late_id);
         let contact =
-            <ContactsApp as qos_actions::ResourceProvider>::resource(&app, &doc, &contact_id)
+            <ContactsApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &contact_id)
                 .expect("late contact resolves through the real provider");
         assert_eq!(contact.kind, "contacts.contact");
         assert_eq!(app.resource_exact_materialized.get(), 1);
 
         let group_id = crate::actions::group_resource_id("Late group");
-        let group = <ContactsApp as qos_actions::ResourceProvider>::resource(&app, &doc, &group_id)
-            .expect("late group resolves through the real provider");
+        let group =
+            <ContactsApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &group_id)
+                .expect("late group resolves through the real provider");
         assert_eq!(group.kind, "contacts.group");
         assert_eq!(app.resource_exact_materialized.get(), 0);
 
         app.store.contacts.pop();
         assert!(
-            <ContactsApp as qos_actions::ResourceProvider>::resource(&app, &doc, &contact_id)
+            <ContactsApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &contact_id)
                 .is_none(),
             "a stale exact id must not redirect to the preceding contact"
         );
@@ -8210,6 +8211,8 @@ mod tests {
         for c in sample_contacts() {
             app.store.upsert(c);
         }
+        app.rebuild_resource_index();
+        app.refresh_search_provider();
         let id = app
             .store
             .contacts
@@ -8268,6 +8271,7 @@ mod tests {
         for c in sample_contacts() {
             app.store.upsert(c);
         }
+        app.rebuild_resource_index();
         // Grace Hopper is in "Work" only; narrowing the list to "Friends"
         // (Alan Turing's group) filters her out of the visible set.
         app.group_filter = Some("Friends".to_string());
