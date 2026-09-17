@@ -15,6 +15,8 @@ const MIN_FREE_BYTES: u64 = 1024 * 1024 * 1024;
 const MIN_FREE_PERCENT: u64 = 10;
 const MIN_BATTERY_PERCENT: u8 = 25;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(15);
+const NETWORK_PROBE_LIMIT: usize = 1024 * 1024;
+const NETWORK_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn connected_unmetered_device(output: &str) -> bool {
     let mut connected = false;
@@ -46,20 +48,33 @@ fn full_connectivity(output: &str) -> bool {
 }
 
 async fn network_allows() -> bool {
-    let connectivity = tokio::process::Command::new("nmcli")
-        .args(["-t", "-f", "CONNECTIVITY", "general"])
-        .output()
-        .await;
-    let devices = tokio::process::Command::new("nmcli")
-        .args([
-            "-t",
-            "-f",
-            "GENERAL.STATE,GENERAL.METERED",
-            "device",
-            "show",
-        ])
-        .output()
-        .await;
+    let Ok((connectivity, devices)) = tokio::task::spawn_blocking(|| {
+        let connectivity = bounded_command::run(
+            "nmcli",
+            &["-t", "-f", "CONNECTIVITY", "general"],
+            None,
+            NETWORK_PROBE_LIMIT,
+            NETWORK_PROBE_TIMEOUT,
+        );
+        let devices = bounded_command::run(
+            "nmcli",
+            &[
+                "-t",
+                "-f",
+                "GENERAL.STATE,GENERAL.METERED",
+                "device",
+                "show",
+            ],
+            None,
+            NETWORK_PROBE_LIMIT,
+            NETWORK_PROBE_TIMEOUT,
+        );
+        (connectivity, devices)
+    })
+    .await
+    else {
+        return false;
+    };
     let (Ok(connectivity), Ok(devices)) = (connectivity, devices) else {
         return false;
     };
