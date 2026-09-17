@@ -5,11 +5,9 @@
 use chrono::{DateTime, Datelike, Local, NaiveTime, TimeZone, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
-#[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::PathBuf;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -272,13 +270,20 @@ impl Stopwatch {
 }
 
 fn state_path() -> Option<PathBuf> {
-    std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|p| p.join(".local/state"))
-        })
+    state_path_with(|key| std::env::var_os(key))
+}
+
+fn state_path_with(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let absolute = |key| env(key).map(PathBuf::from).filter(|p| p.is_absolute());
+    #[cfg(windows)]
+    let native = || {
+        absolute("LOCALAPPDATA")
+            .or_else(|| absolute("USERPROFILE").map(|p| p.join("AppData/Local")))
+    };
+    #[cfg(not(windows))]
+    let native = || absolute("HOME").map(|p| p.join(".local/state"));
+    absolute("XDG_STATE_HOME")
+        .or_else(native)
         .map(|p| p.join("tilo/clocks.json"))
 }
 
@@ -338,30 +343,28 @@ impl ClockState {
 
     #[must_use]
     pub fn load() -> Self {
-        state_path()
-            .and_then(|p| fs::read(p).ok())
+        state_path().map(|p| Self::load_at(&p)).unwrap_or_default()
+    }
+
+    fn load_at(path: &Path) -> Self {
+        fs::read(path)
+            .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default()
     }
+
     pub fn save(&self) -> io::Result<()> {
         let path = state_path()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no state directory"))?;
+        self.save_at(&path)
+    }
+
+    fn save_at(&self, path: &Path) -> io::Result<()> {
         let dir = path
             .parent()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid state path"))?;
-        fs::create_dir_all(dir)?;
-        #[cfg(unix)]
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
-        let tmp = path.with_extension("json.new");
-        let mut options = OpenOptions::new();
-        options.create(true).truncate(true).write(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut file = options.open(&tmp)?;
-        serde_json::to_writer_pretty(&mut file, self)?;
-        file.flush()?;
-        file.sync_all()?;
-        fs::rename(tmp, path)
+        private_fs::directory(dir)?;
+        atomic_file::write_with_mode(path, &serde_json::to_vec_pretty(self)?, 0o600)
     }
 }
 
@@ -467,6 +470,84 @@ pub fn next_alarm_local(alarm: &Alarm, after: DateTime<Local>) -> Option<DateTim
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_timer_survives_replacement_and_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("private/clocks.json");
+        let now = Utc::now();
+        let mut state = ClockState::default();
+        let mut timer = Timer::new("Tea — Grün", Duration::from_secs(60));
+        timer.start(now);
+        state.timers.push(timer);
+        state.save_at(&path).unwrap();
+        assert_eq!(ClockState::load_at(&path), state);
+
+        state.timers[0].label = "Updated tea timer".into();
+        state.save_at(&path).unwrap();
+        let mut reopened = ClockState::load_at(&path);
+        assert_eq!(
+            reopened, state,
+            "replacing the saved file preserves the complete state"
+        );
+        let later = now + chrono::Duration::seconds(61);
+        assert_eq!(reopened.tick(later, later.with_timezone(&Local)).len(), 1);
+        reopened.save_at(&path).unwrap();
+        let mut after_delivery = ClockState::load_at(&path);
+        assert!(
+            after_delivery
+                .tick(later, later.with_timezone(&Local))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn save_failure_is_reported_without_overwriting_a_blocker() {
+        let directory = tempfile::tempdir().unwrap();
+        let blocker = directory.path().join("not-a-directory");
+        fs::write(&blocker, b"keep me").unwrap();
+        assert!(
+            ClockState::default()
+                .save_at(&blocker.join("clocks.json"))
+                .is_err()
+        );
+        assert_eq!(fs::read(blocker).unwrap(), b"keep me");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_state_path_ignores_relative_overrides() {
+        let env = |key: &str| match key {
+            "XDG_STATE_HOME" => Some("relative".into()),
+            "LOCALAPPDATA" => Some(r"C:\Users\Reader\AppData\Local".into()),
+            _ => None,
+        };
+        assert_eq!(
+            state_path_with(env),
+            Some(PathBuf::from(
+                r"C:\Users\Reader\AppData\Local\tilo\clocks.json"
+            ))
+        );
+        assert_eq!(
+            state_path_with(|key| (key == "USERPROFILE").then(|| r"C:\Users\Reader".into())),
+            state_path_with(env)
+        );
+        assert!(state_path_with(|_| None).is_none());
+    }
+
+    #[test]
+    fn absolute_state_override_is_used_for_the_real_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = state_path_with(|key| {
+            (key == "XDG_STATE_HOME").then(|| directory.path().as_os_str().to_owned())
+        })
+        .unwrap();
+        let state = ClockState::default();
+        state.save_at(&path).unwrap();
+        assert_eq!(path, directory.path().join("tilo/clocks.json"));
+        assert_eq!(ClockState::load_at(&path), state);
+    }
+
     #[test]
     fn timer_survives_suspend_by_deadline() {
         let now = Utc::now();
