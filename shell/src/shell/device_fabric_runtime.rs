@@ -64,6 +64,7 @@ struct OutboundGamepadForwarding {
     target: crate::shell::personal_continuity::DeviceId,
     lease_nonce: Option<[u8; 16]>,
     sequence: u64,
+    requested: Instant,
 }
 
 #[derive(Default)]
@@ -1337,11 +1338,33 @@ impl DeviceFabricRuntime {
             .filter(|snapshot| snapshot.presence.online)
             .map(|snapshot| snapshot.owner.clone())
             .collect::<BTreeSet<_>>();
-        if let Ok(mut state) = gamepad_authorization_state().lock() {
-            state.pending.retain(|_, request| {
-                online.contains(&request.source)
-                    && request.received.elapsed() <= os_actions::AUTHORIZATION_TTL
-            });
+        let expired_pending = gamepad_authorization_state().lock().map_or_else(
+            |_| Vec::new(),
+            |mut state| {
+                let expired = state
+                    .pending
+                    .iter()
+                    .filter_map(|(id, request)| {
+                        (!online.contains(&request.source)
+                            || request.received.elapsed() > os_actions::AUTHORIZATION_TTL)
+                            .then_some((*id, request.source.clone()))
+                    })
+                    .collect::<Vec<_>>();
+                for (id, _) in &expired {
+                    state.pending.remove(id);
+                }
+                expired
+            },
+        );
+        for (forwarding_id, source) in expired_pending {
+            let _ = network.send_personal_fabric_action(
+                &source,
+                PersonalFabricAction::GamepadForwardGrant {
+                    forwarding_id,
+                    accepted: false,
+                    lease_nonce: [0; 16],
+                },
+            );
         }
         let ended = self
             .inbound_gamepads
@@ -1369,8 +1392,10 @@ impl DeviceFabricRuntime {
                 .iter()
                 .filter_map(|(id, session)| {
                     (!policy.permits(ContinuityCapability::TypedGamepad)
-                        || !online.contains(&session.target))
-                    .then_some((*id, session.clone()))
+                        || !online.contains(&session.target)
+                        || (session.lease_nonce.is_none()
+                            && session.requested.elapsed() > os_actions::AUTHORIZATION_TTL))
+                        .then_some((*id, session.clone()))
                 })
                 .collect::<Vec<_>>();
             for (forwarding_id, session) in ended {
@@ -4298,6 +4323,7 @@ pub fn request_typed_gamepad_forwarding(
                 target: target.clone(),
                 lease_nonce: None,
                 sequence: 0,
+                requested: Instant::now(),
             },
         );
     Ok(forwarding_id)
