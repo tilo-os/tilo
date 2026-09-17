@@ -400,6 +400,7 @@ fn compositor_minted_host_token_relocates_and_retires_its_launch_note() {
             .is_none(),
         "activation consumed the desktop-id placement note before another window can claim it"
     );
+    drop(tree);
 
     activation.activate(token, &target);
     h.pump();
