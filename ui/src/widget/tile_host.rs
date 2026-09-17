@@ -289,6 +289,7 @@ struct Binding {
 struct PendingBinding {
     store: RecordStore,
     tab: RecordCheckout,
+    create: bool,
 }
 
 impl Binding {
@@ -300,7 +301,7 @@ impl Binding {
             .as_ref()
             .or_else(|| (self.live == self.tab.id).then_some(&self.tab));
         if let Some(requested) = requested {
-            self.store.open_record_checked(requested)?;
+            self.store.open_existing_record_checked(requested)?;
         }
         if let Some(want) = want
             && want.id != self.live
@@ -311,28 +312,20 @@ impl Binding {
         Ok(self.live.clone())
     }
 
-    fn follow(
-        &mut self,
-        want: Option<RecordCheckout>,
-    ) -> Result<RecordId, crate::record::RecordOpenError> {
-        if let Some(want) = want
-            && want.id != self.live
-        {
-            admit_record(&self.store, &want)?;
-            self.live = want.id;
-            self.established = false;
-        }
-        Ok(self.live.clone())
-    }
+
 }
 
 fn admit_record(
     store: &RecordStore,
     checkout: &RecordCheckout,
+    create: bool,
 ) -> Result<(), crate::record::RecordOpenError> {
-    match store.open_record_checked(checkout) {
+    if create && store.canonical_namespace().is_none() {
+        return store.open_record_checked(checkout);
+    }
+    match store.open_existing_record_checked(checkout) {
         Ok(()) => Ok(()),
-        Err(crate::record::RecordOpenError::MissingRecord) => {
+        Err(crate::record::RecordOpenError::MissingRecord) if create => {
             let mut reservation = store.reserve_record(checkout)?;
             reservation.initialize(|_| Ok(()))
         }
@@ -458,14 +451,24 @@ impl TileHost {
     /// Idempotent on the same record — rebinding would hand the tab a
     /// fresh empty document, and the tree re-binds every tile on rebuild.
     pub fn bind_record(&mut self, store: RecordStore, tab: RecordCheckout) {
+        self.bind_record_intent(store, tab, false);
+    }
+
+    /// Admit a newly created scratch resource owned by this caller. Creation
+    /// applies only to this exact checkout, never to later record intents.
+    pub fn bind_or_create_record(&mut self, store: RecordStore, tab: RecordCheckout) {
+        self.bind_record_intent(store, tab, true);
+    }
+
+    fn bind_record_intent(&mut self, store: RecordStore, tab: RecordCheckout, create: bool) {
         if let Some(b) = &self.binding
             && b.tab.id == tab.id
         {
             return;
         }
-        if let Err(error) = admit_record(&store, &tab) {
+        if let Err(error) = admit_record(&store, &tab, create) {
             self.binding = None;
-            self.pending_binding = Some(PendingBinding { store, tab });
+            self.pending_binding = Some(PendingBinding { store, tab, create });
             self.record_error = Some(format!("Document storage unavailable: {error}"));
             return;
         }
@@ -483,7 +486,7 @@ impl TileHost {
 
     fn resolve_record(&mut self) -> Result<Option<RecordId>, crate::record::RecordOpenError> {
         if let Some(pending) = self.pending_binding.take() {
-            if let Err(error) = admit_record(&pending.store, &pending.tab) {
+            if let Err(error) = admit_record(&pending.store, &pending.tab, pending.create) {
                 self.pending_binding = Some(pending);
                 self.record_error = Some(format!("Document storage unavailable: {error}"));
                 return Err(error);
@@ -502,7 +505,7 @@ impl TileHost {
         let Some(binding) = self.binding.as_mut() else {
             return Ok(None);
         };
-        let live = match binding.follow(want) {
+        let live = match binding.follow_checked(want) {
             Ok(live) => live,
             Err(error) => {
                 self.record_error = Some(format!("Document storage unavailable: {error}"));
@@ -810,6 +813,13 @@ impl Widget for TileHost {
         if !matches!(&self.content, TileContent::App(_)) {
             return Ok(None);
         }
+        if let Some(pending) = &self.pending_binding {
+            // A failed bind is not an unbound tile. Never lend the outer
+            // document (or create the missing record) to mutable admission.
+            pending.store.open_existing_record_checked(&pending.tab)
+                .map_err(|error| error.to_string())?;
+            return Err("Document binding has not completed".into());
+        }
         // Resolve a requested legacy binding before exposing any document.
         // Failure must not advance/announce its scope or fall back to the host.
         let live = match &mut self.binding {
@@ -855,6 +865,10 @@ impl Widget for TileHost {
             reports.extend(root.take_component_close_reports());
         }
         reports
+    }
+
+    fn has_separate_document_owner(&self) -> bool {
+        self.binding.is_some() || self.pending_binding.is_some() || self.callback_binding().is_some()
     }
 
     fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
@@ -1912,7 +1926,7 @@ mod tests {
             text: "must not write".into(),
             opens: Some(file),
         })));
-        host.bind_record(store.clone(), scratch.clone());
+        host.bind_or_create_record(store.clone(), scratch.clone());
         host.sync(&mut AutoCommit::new(), &ROOT);
 
         assert_eq!(host.binding.as_ref().unwrap().live, scratch.id);
@@ -1949,7 +1963,7 @@ mod tests {
             text: "recovered".into(),
             opens: None,
         })));
-        host.bind_record(store.clone(), scratch.clone());
+        host.bind_or_create_record(store.clone(), scratch.clone());
         assert!(host.binding.is_none());
         assert!(host.pending_binding.is_some());
         assert!(host.record_error.is_some());
@@ -2059,7 +2073,7 @@ mod tests {
             text: "unsaved".into(),
             opens: None,
         })));
-        scratch.bind_record(store.clone(), tab_checkout(1));
+        scratch.bind_or_create_record(store.clone(), tab_checkout(1));
         scratch.sync(&mut parent, &ROOT);
         assert_eq!(
             body_of(&store, &RecordId::for_tab(1)).as_deref(),
@@ -2068,11 +2082,14 @@ mod tests {
         );
 
         let file = std::path::PathBuf::from("/work/report.odt");
+        store.open_record(&RecordCheckout::new(
+            RecordId::for_file(&file), crate::record::RecordKind::new("file"),
+        ));
         let mut opened = TileHost::new(TileContent::App(Box::new(Scribe {
             text: "the report".into(),
             opens: Some(file.clone()),
         })));
-        opened.bind_record(store.clone(), tab_checkout(2));
+        opened.bind_or_create_record(store.clone(), tab_checkout(2));
         opened.sync(&mut parent, &ROOT);
         assert_eq!(
             body_of(&store, &RecordId::for_file(&file)).as_deref(),
@@ -2091,6 +2108,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn explicit_scratch_creation_does_not_authorize_missing_file_follow() {
+        let store = RecordStore::in_memory();
+        let file = std::path::PathBuf::from("/work/missing.txt");
+        let file_id = RecordId::for_file(&file);
+        let scratch = tab_checkout(94);
+        let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
+            text: "must not create".into(),
+            opens: Some(file),
+        })));
+        host.bind_or_create_record(store.clone(), scratch.clone());
+        assert!(store.open_existing_record_checked(&scratch).is_ok());
+        host.sync(&mut AutoCommit::new(), &ROOT);
+        assert_eq!(host.binding.as_ref().unwrap().live, scratch.id);
+        assert!(host.record_error.is_some());
+        assert!(!store.open_records().iter().any(|checkout| checkout.id == file_id));
+        assert_eq!(body_of(&store, &scratch.id), None);
+    }
+
     /// Two tabs opened on one file are one document — a copy would
     /// diverge, and no amount of merging makes two copies one file again.
     #[test]
@@ -2098,12 +2134,15 @@ mod tests {
         let store = RecordStore::in_memory();
         let mut parent = AutoCommit::new();
         let file = std::path::PathBuf::from("/work/shared.odt");
+        store.open_record(&RecordCheckout::new(
+            RecordId::for_file(&file), crate::record::RecordKind::new("file"),
+        ));
         for (tab, text) in [(3u64, "first"), (4u64, "second")] {
             let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
                 text: text.into(),
                 opens: Some(file.clone()),
             })));
-            host.bind_record(store.clone(), tab_checkout(tab));
+            host.bind_or_create_record(store.clone(), tab_checkout(tab));
             host.sync(&mut parent, &ROOT);
         }
         assert_eq!(
@@ -2116,6 +2155,19 @@ mod tests {
             Some("second"),
             "the second tab edited the same document as the first",
         );
+    }
+
+    #[test]
+    fn existing_follow_validates_kind_even_when_record_id_does_not_change() {
+        let store = RecordStore::in_memory();
+        let file = std::path::PathBuf::from("/work/kind-conflict");
+        let checkout = RecordCheckout::new(RecordId::for_file(&file), crate::record::RecordKind::new("note"));
+        let mut host = TileHost::new(TileContent::App(Box::new(Scribe { text: "must not write".into(), opens: Some(file) })));
+        host.bind_or_create_record(store.clone(), checkout.clone());
+        host.sync(&mut AutoCommit::new(), &ROOT);
+        assert!(host.record_error.is_some());
+        assert_eq!(host.binding.as_ref().unwrap().live, checkout.id);
+        assert_eq!(body_of(&store, &checkout.id), None);
     }
 
     fn stub_host() -> TileHost {

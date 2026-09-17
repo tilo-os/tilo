@@ -1429,6 +1429,25 @@ impl RecordStore {
             .ok_or(RecordOpenError::MissingRecord)
     }
 
+    /// Existing-only admission for presentation owners. Legacy stores must
+    /// already have opened their resource through an explicit owner path.
+    pub(crate) fn open_existing_record_checked(&self, want: &RecordCheckout) -> Result<(), RecordOpenError> {
+        let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
+        if set.canonical_root.is_some() { return set.try_open_record(want).map(|_| ()); }
+        let slot = set.open.get(&want.id).ok_or(RecordOpenError::MissingRecord)?;
+        let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
+        // Legacy in-memory owners legitimately have no workspace. Match that
+        // captured namespace exactly; do not manufacture a canonical scope.
+        let expected_scope = (!set.home.is_empty()).then_some(set.home.as_str());
+        if identity(doc).is_none_or(|found| found.id != want.id || found.kind != want.kind)
+            || want.kind.as_str().is_empty()
+            || home(doc).as_deref() != Some(set.home.as_str())
+            || room_scope(doc).as_deref() != expected_scope {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        Ok(())
+    }
+
     /// Exact runtime owner identity; namespace equality is insufficient for reentry.
     pub(crate) fn same_owner(&self, other: &Self) -> bool {
         std::rc::Rc::ptr_eq(&self.0, &other.0)

@@ -592,7 +592,7 @@ pub fn build_tree_update_with_resources<S: BuildHasher>(
     scale: f64,
     resources: &[qos_actions::Resource],
 ) -> TreeUpdate {
-    build_tree_update_with_resources_impl::<S, false>(root, node_map, focused, scale, resources)
+    build_tree_update_with_resources_impl::<S, false>(&[root], node_map, focused, scale, resources)
 }
 /// Host traversal retaining the originating component through every callback.
 pub(crate) fn build_tree_update_with_resources_bound<S: BuildHasher>(
@@ -602,10 +602,17 @@ pub(crate) fn build_tree_update_with_resources_bound<S: BuildHasher>(
     scale: f64,
     resources: &[qos_actions::Resource],
 ) -> TreeUpdate {
-    build_tree_update_with_resources_impl::<S, true>(root, node_map, focused, scale, resources)
+    build_tree_update_with_resources_impl::<S, true>(&[root], node_map, focused, scale, resources)
 }
+pub(crate) fn build_presentation_tree_bound<S: BuildHasher>(
+    roots: &[&dyn Widget], node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
+    focused: Option<TaffyNodeId>, scale: f64,
+) -> TreeUpdate {
+    build_tree_update_with_resources_impl::<S, true>(roots, node_map, focused, scale, &[])
+}
+
 fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
-    root: &dyn Widget,
+    roots: &[&dyn Widget],
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
     scale: f64,
@@ -627,8 +634,9 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
     root_node.set_label("qOS application window");
 
     let mut root_children: Vec<AkNodeId> = Vec::new();
+    for root in roots {
     visit::<BOUND>(
-        root,
+        *root,
         &ptr_to_taffy,
         scale,
         focused,
@@ -637,6 +645,7 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
         &mut root_children,
         &mut active_descendant,
     );
+    }
     let mut resource_ids = HashMap::new();
     append_resource_nodes(resources, &mut nodes, &mut root_children, &mut resource_ids);
     root_node.set_children(root_children);
