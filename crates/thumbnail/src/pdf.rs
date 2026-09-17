@@ -3,7 +3,7 @@
 //! pdfium's `FPDF_InitLibrary` must run once per process and its default
 //! marshalling takes a never-released global lock on that first init, so a
 //! *second* `Pdfium` deadlocks. We bind once behind a `OnceLock` and leak the
-//! handle (it lives the whole process), exactly as `apps/pdf_viewer` does, and
+//! handle (it lives the whole process), exactly as `apps/pdf-viewer` does, and
 //! serialise every render behind a global `Mutex` because the shared handle is
 //! `!Sync` and thumbnail workers are multi-threaded. When no `libpdfium` is on
 //! the host the binding fails and we return `None` — the caller draws a badge.
@@ -21,7 +21,7 @@ static PDF_LOCK: Mutex<()> = Mutex::new(());
 
 /// The address of a leaked, process-lifetime `Pdfium`, or `0` for "no pdfium
 /// available". A `usize` because `Pdfium` is `!Sync` and cannot sit in a static
-/// directly (see `apps/pdf_viewer/src/source.rs` for the full rationale).
+/// directly (see `apps/pdf-viewer/src/source.rs` for the full rationale).
 fn shared_pdfium() -> Option<&'static Pdfium> {
     static ADDR: OnceLock<usize> = OnceLock::new();
     let addr = *ADDR.get_or_init(|| match find_pdfium() {
