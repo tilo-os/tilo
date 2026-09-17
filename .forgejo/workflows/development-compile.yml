@@ -42,6 +42,14 @@ on:
         description: 'Full-build only: public JSON receipt from the completed WPE producer'
         required: false
         type: string
+      wpe_adoption_receipt:
+        description: Alternative development receipt for reviewed retained WPE bytes; excludes current producer inputs
+        required: false
+        type: string
+      wpe_adoption_sha256:
+        description: Independently reviewed SHA256 of the exact adoption receipt JSON
+        required: false
+        type: string
 
 concurrency:
   group: development-compile-${{ github.ref }}-${{ inputs.architecture }}
@@ -72,12 +80,14 @@ jobs:
           KERNEL_CANDIDATE: ${{ inputs.kernel_candidate }}
           RPMS_CANDIDATE: ${{ inputs.rpms_candidate }}
           BUILDER_CANDIDATE: ${{ inputs.builder_candidate }}
+          WPE_ADOPTION_RECEIPT: ${{ inputs.wpe_adoption_receipt }}
+          WPE_ADOPTION_SHA256: ${{ inputs.wpe_adoption_sha256 }}
         run: |
           set -euo pipefail
           bash os/dev/assert-native-arch.sh "$ARCHITECTURE"
           python3 os/tests/test_development_compile.py
           python3 os/tests/test_compile_retention.py
-          python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("compile", "os/dev/compile-development-os.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_inputs(os.environ["WPE_CANDIDATE"], os.environ["TEST_GENERATION"], os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"], os.environ["COMPILE_MODE"], os.environ["ARCHITECTURE"], os.environ["KERNEL_CANDIDATE"])'
+          python3 -c 'import importlib.util,os; s=importlib.util.spec_from_file_location("compile", "os/dev/compile-development-os.py"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_inputs(os.environ["WPE_CANDIDATE"], os.environ["TEST_GENERATION"], os.environ["GITHUB_SHA"], os.environ["GITHUB_REF"], os.environ["COMPILE_MODE"], os.environ["ARCHITECTURE"], os.environ["KERNEL_CANDIDATE"], wpe_adoption_receipt=os.environ["WPE_ADOPTION_RECEIPT"] or None, wpe_adoption_sha256=os.environ["WPE_ADOPTION_SHA256"])'
           python3 - <<'PY'
           import os, re
           for name in ('KERNEL_CANDIDATE', 'RPMS_CANDIDATE', 'BUILDER_CANDIDATE'):
@@ -107,6 +117,8 @@ jobs:
           KERNEL_CANDIDATE: ${{ inputs.kernel_candidate }}
           RPMS_CANDIDATE: ${{ inputs.rpms_candidate }}
           BUILDER_CANDIDATE: ${{ inputs.builder_candidate }}
+          WPE_ADOPTION_RECEIPT: ${{ inputs.wpe_adoption_receipt }}
+          WPE_ADOPTION_SHA256: ${{ inputs.wpe_adoption_sha256 }}
         shell: bash
         run: |
           set -euo pipefail
@@ -117,7 +129,7 @@ jobs:
           mkdir "$evidence"
           cleanup() {
             # Export an explicit public allowlist, never the private workspace.
-            for file in inputs.json native-inputs.json tools.json workspace.json result.json wpe-stage.json raw-rootfs.json raw-rootfs-audit.json retained-rootfs.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json cache-configuration.json base-installation-tooling.json raw-installation-tooling.json; do
+            for file in inputs.json native-inputs.json tools.json workspace.json result.json wpe-stage.json wpe-adoption.json raw-rootfs.json raw-rootfs-audit.json retained-rootfs.json installed-rpms.tsv admission-capacity.json capacity.json memory-initial.json memory-final.json cache-configuration.json base-installation-tooling.json raw-installation-tooling.json; do
               docker cp "$name:/evidence/$file" "$evidence/$file" >/dev/null 2>&1 || true
             done
             mkdir -p "$evidence/public-trust"
@@ -134,9 +146,13 @@ jobs:
           python3 - "$context/wpe-stage.json" <<'PY'
           import os, pathlib, sys
           raw = os.environ.get('WPE_STAGE_RECEIPT', '').encode()
-          if len(raw) > 65536 or (os.environ['COMPILE_MODE'] == 'full-build' and not raw):
-              raise SystemExit('full-build requires a bounded completed WPE receipt')
+          adopted = os.environ.get('WPE_ADOPTION_RECEIPT', '').encode()
+          if max(len(raw), len(adopted)) > 65536 or (raw and adopted):
+              raise SystemExit('select exactly one bounded WPE receipt')
+          if os.environ['COMPILE_MODE'] == 'full-build' and not (raw or adopted):
+              raise SystemExit('full-build requires a completed or adopted WPE receipt')
           pathlib.Path(sys.argv[1]).write_bytes(raw)
+          pathlib.Path(sys.argv[1]).with_name('wpe-adoption.json').write_bytes(adopted)
           PY
           # Existing runner credentials enter only a private disposable volume,
           # then Podman secret mounts. They never enter a build context or ARG.
@@ -157,6 +173,10 @@ jobs:
           docker volume create "$name-work"
           docker volume create "$name-storage"
           docker volume create "$name-cache-secrets"
+          wpe_receipt_args=(--wpe-stage-receipt /work/wpe-stage.json)
+          if [ -n "$WPE_ADOPTION_RECEIPT" ]; then
+            wpe_receipt_args=(--wpe-adoption-receipt /work/wpe-adoption.json --wpe-adoption-sha256 "$WPE_ADOPTION_SHA256")
+          fi
           # These volumes and privileges exist only in the disposable Kata CI
           # guest. No physical disk, TPM, host directory or Docker socket is mounted.
           docker create --name "$name" --privileged --memory=9g --memory-swap=9g \
@@ -169,10 +189,11 @@ jobs:
             "$name:tools" --mode "$COMPILE_MODE" --wpe "$WPE_CANDIDATE" --generation "$TEST_GENERATION" \
               --architecture "$ARCHITECTURE" --kernel-candidate "$KERNEL_CANDIDATE" \
               --rpms-candidate "$RPMS_CANDIDATE" --builder-candidate "$BUILDER_CANDIDATE" \
-              --wpe-stage-receipt /work/wpe-stage.json \
+              "${wpe_receipt_args[@]}" \
               --revision "$GITHUB_SHA" --branch "$GITHUB_REF"
           docker cp . "$name:/work/repo"
           docker cp "$context/wpe-stage.json" "$name:/work/wpe-stage.json"
+          docker cp "$context/wpe-adoption.json" "$name:/work/wpe-adoption.json"
           docker cp "$cache_secrets/." "$name:/run/tilo-cache-secrets/"
           python3 - "${DOCKER_CONFIG:-$HOME/.docker}/config.json" "$context/registry-auth.json" <<'PY'
           import json, os, sys
