@@ -13,6 +13,8 @@ use uuid::Uuid;
 
 pub mod actions;
 pub mod app;
+#[cfg(windows)]
+mod native_timers;
 pub use app::ClocksApp;
 
 #[must_use]
@@ -108,6 +110,10 @@ pub struct ClockState {
     pub world_clocks: Vec<WorldClock>,
     pub alarms: Vec<Alarm>,
     pub timers: Vec<Timer>,
+    /// Native schedules owned by this profile, retained until cancellation or
+    /// delivery is confirmed even when the corresponding timer was deleted.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub native_timer_owners: BTreeSet<Uuid>,
     pub stopwatch: Stopwatch,
 }
 
