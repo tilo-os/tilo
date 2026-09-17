@@ -70,6 +70,10 @@ const BOUNDARY_HIT: f64 = 11.0;
 const RESIZE_HIT: f64 = 4.0;
 const PILL_R: f64 = 8.0;
 const DELETE_SIDE: f64 = 15.0;
+/// Cell type, a deliberate off-scale value between `base` (14) and `lg` (16):
+/// the authored default of this grid, kept exact at 1×. `TextInput` takes a
+/// *base* size and applies the renderer's text scale itself, so the cells
+/// still follow the accessibility text scale.
 const CELL_FONT: f32 = 15.0;
 
 // ---------------------------------------------------------------------------
