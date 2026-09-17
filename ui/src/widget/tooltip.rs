@@ -11,7 +11,6 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::WindowEvent;
 
 use crate::text_metrics::renderer_type_size;
-use crate::color_compat::ColorCompat;
 use crate::widget::TaffyTreeExt;
 
 /// Middle of the 400-600ms comfort band: shows help promptly on a

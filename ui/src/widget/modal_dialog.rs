@@ -15,7 +15,6 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::text_metrics::{centered_text_top, renderer_type_size};
-use crate::color_compat::ColorCompat;
 use crate::platform::{DialogActionOrder, PlatformConventions};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
