@@ -110,7 +110,7 @@ int main(void) {
             goto cleanup;
         }
     }
-    puts("QOS_VULKAN_BUFFER_PASS 4096 bytes");
+    puts("TILO_VULKAN_BUFFER_PASS 4096 bytes");
     result = 0;
 cleanup:
     if (device) vkDeviceWaitIdle(device);

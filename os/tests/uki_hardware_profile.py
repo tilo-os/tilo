@@ -47,11 +47,11 @@ class HardwareProfileTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.kver = "7.1.5-qos.1.aarch64"
+        self.kver = "7.1.5-tilo.1.aarch64"
         self.dtb = self.root / f"usr/lib/modules/{self.kver}/dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb"
         self.dtb.parent.mkdir(parents=True)
         self.dtb.write_bytes(dtb_fixture())
-        definition = self.root / "usr/lib/qos/hardware-profile-definition.json"
+        definition = self.root / "usr/lib/tilo/hardware-profile-definition.json"
         definition.parent.mkdir(parents=True, exist_ok=True)
         definition.write_bytes((REPO / "os/hardware/profiles/lenovo-83ed.json").read_bytes())
         self.metadata = self.root / profile.PROFILE
@@ -60,7 +60,7 @@ class HardwareProfileTests(unittest.TestCase):
             "schema_version": 1, "id": "lenovo-83ed", "architecture": "aarch64",
             "devicetree": "/" + self.dtb.relative_to(self.root).as_posix(),
             "devicetree_sha256": hashlib.sha256(self.dtb.read_bytes()).hexdigest(),
-            "target_update_ref": "code.podesta.ai/qos/qos:board-fixture",
+            "target_update_ref": "code.podesta.ai/qos/tilo:board-fixture",
         }
         self.write_profile()
         # Model Linux image metadata even on Windows/non-root test hosts. File
@@ -88,25 +88,25 @@ class HardwareProfileTests(unittest.TestCase):
 
     def test_generic_image_has_no_device_tree(self):
         self.metadata.unlink()
-        (self.root / "usr/lib/qos/hardware-profile-definition.json").unlink()
+        (self.root / "usr/lib/tilo/hardware-profile-definition.json").unlink()
         self.assertIsNone(self.resolve("x86_64"))
 
     def test_installer_uses_bound_origin_and_rejects_conflicting_override(self):
         bound = self.data["target_update_ref"]
         self.assertEqual(install_update_origin(self.root), bound)
         self.assertEqual(install_update_origin(self.root, bound), bound)
-        for override in (DEFAULT_TARGET_IMGREF, "registry.invalid/qos:fixture", bound + "\n"):
+        for override in (DEFAULT_TARGET_IMGREF, "registry.invalid/tilo:fixture", bound + "\n"):
             with self.subTest(override=override), self.assertRaisesRegex(ValueError, "conflicts"):
                 install_update_origin(self.root, override)
 
     def test_generic_installer_keeps_default_and_validated_overrides(self):
         self.metadata.unlink()
-        (self.root / "usr/lib/qos/hardware-profile-definition.json").unlink()
+        (self.root / "usr/lib/tilo/hardware-profile-definition.json").unlink()
         self.assertEqual(install_update_origin(self.root), DEFAULT_TARGET_IMGREF)
-        for value in ("code.podesta.ai/qos/qos:fixture", "code.podesta.ai/qos/qos@sha256:" + "a" * 64):
+        for value in ("code.podesta.ai/qos/tilo:fixture", "code.podesta.ai/qos/tilo@sha256:" + "a" * 64):
             self.assertEqual(install_update_origin(self.root, value), value)
-        for value in ("registry.invalid/qos:fixture", "code.podesta.ai/qos/qos:",
-                      "code.podesta.ai/qos/qos:fixture/elsewhere", "code.podesta.ai/qos/qos@sha256:x"):
+        for value in ("registry.invalid/tilo:fixture", "code.podesta.ai/qos/tilo:",
+                      "code.podesta.ai/qos/tilo:fixture/elsewhere", "code.podesta.ai/qos/tilo@sha256:x"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 install_update_origin(self.root, value)
 
@@ -120,20 +120,20 @@ class HardwareProfileTests(unittest.TestCase):
             install_update_origin(self.root)
 
     def test_untrusted_bound_origin_is_rejected_by_installer_and_uki_builder(self):
-        for value in (None, "", "registry.invalid/qos:fixture", "code.podesta.ai/qos/qos:"):
+        for value in (None, "", "registry.invalid/tilo:fixture", "code.podesta.ai/qos/tilo:"):
             self.data["target_update_ref"] = value
             self.write_profile()
             with self.subTest(value=value):
-                with self.assertRaisesRegex(ValueError, "QOS_TARGET_IMGREF"):
+                with self.assertRaisesRegex(ValueError, "TILO_TARGET_IMGREF"):
                     install_update_origin(self.root)
-                with self.assertRaisesRegex(ValueError, "QOS_TARGET_IMGREF"):
+                with self.assertRaisesRegex(ValueError, "TILO_TARGET_IMGREF"):
                     self.resolve()
 
     def test_valid_profile_resolves_exact_kernel_device_tree(self):
         self.assertEqual(self.resolve(), self.dtb)
 
     def test_firmware_provided_boot_profile_does_not_inject_a_device_tree(self):
-        definition = self.root / "usr/lib/qos/hardware-profile-definition.json"
+        definition = self.root / "usr/lib/tilo/hardware-profile-definition.json"
         value = json.loads(definition.read_text())
         value["devicetree"] = None
         definition.write_text(json.dumps(value))
@@ -146,7 +146,7 @@ class HardwareProfileTests(unittest.TestCase):
             self.resolve()
 
     def test_definition_is_subject_to_the_same_ownership_and_path_checks(self):
-        definition = self.root / "usr/lib/qos/hardware-profile-definition.json"
+        definition = self.root / "usr/lib/tilo/hardware-profile-definition.json"
         self.metadata_overrides[definition] = {0: stat.S_IFREG | 0o666}
         with self.assertRaisesRegex(ValueError, "not group/world writable"):
             self.resolve()
@@ -189,7 +189,7 @@ class HardwareProfileTests(unittest.TestCase):
 
     def test_writable_unowned_and_symlinked_inputs_fail_closed(self):
         for path in (self.metadata, self.metadata.parent, self.dtb, self.dtb.parent,
-                     self.root / "usr/lib/qos/hardware-profile-definition.json"):
+                     self.root / "usr/lib/tilo/hardware-profile-definition.json"):
             for mutation in ({0: stat.S_IFREG | 0o666}, {4: 1000}, {0: stat.S_IFLNK | 0o777}):
                 with self.subTest(path=path, mutation=mutation), self.assertRaises(ValueError):
                     self.metadata_overrides[path] = mutation
@@ -200,7 +200,7 @@ class HardwareProfileTests(unittest.TestCase):
 
     def test_installer_rejects_writable_unowned_and_redirected_metadata(self):
         for path in (self.metadata, self.metadata.parent,
-                     self.root / "usr/lib/qos/hardware-profile-definition.json"):
+                     self.root / "usr/lib/tilo/hardware-profile-definition.json"):
             for mutation in ({0: stat.S_IFREG | 0o666}, {4: 1000}, {0: stat.S_IFLNK | 0o777}):
                 with self.subTest(path=path, mutation=mutation), self.assertRaises(ValueError):
                     self.metadata_overrides[path] = mutation
@@ -225,7 +225,7 @@ class HardwareProfileTests(unittest.TestCase):
         data[pe:pe + 4] = b"PE\0\0"
         struct.pack_into("<H", data, pe + 6, 2)
         struct.pack_into("<H", data, pe + 20, optional_size)
-        command = b"qos.generation=1 qos.install root=qos-auto composefs=" + b"0" * 128
+        command = b"tilo.generation=1 tilo.install root=tilo-auto composefs=" + b"0" * 128
         for index, (name, payload, location, address) in enumerate((
                 (b".cmdline", command, raw, 0x1000),
                 (b".dtb", self.dtb.read_bytes(), 0x800, 0x2000))):
@@ -237,7 +237,7 @@ class HardwareProfileTests(unittest.TestCase):
         target = self.root / "target.efi"
         live.write_bytes(data)
         target.write_bytes(data)
-        cmdline.remove_cmdline(target, "qos.install")
+        cmdline.remove_cmdline(target, "tilo.install")
         cmdline.append_cmdline(live, "rd.luks.options=tpm2-device=auto,fido2-device=auto")
         for image in (live, target):
             with contextlib.redirect_stdout(io.StringIO()):

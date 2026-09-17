@@ -1,7 +1,7 @@
 //! `.qpkg` ingest.
 //!
 //! Accepts the bytes of a .qpkg tar archive (as produced by
-//! `qos-pkg pack`), pulls every blob into the daemon's on-disk
+//! `tilo-pkg pack`), pulls every blob into the daemon's on-disk
 //! `FsBlobStore`, unpacks the payload eagerly to
 //! `<store>/payloads/<pkg-id-hex>/`, then writes a `RegistryEntry`
 //! with the requested pinning and the manifest text.

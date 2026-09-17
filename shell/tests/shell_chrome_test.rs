@@ -1,5 +1,5 @@
 //! Interaction tests for shell chrome widgets (`OverviewView`, `GlobalSearch`,
-//! `QuickSettings`, `WorkspaceSettings`, `SidebarWheel`, `TopBar`, …).
+//! `QuickSettings`, `WorkspaceSettings`, `SidebarWheelDisc`, `TopBar`, …).
 
 #![allow(
     clippy::unwrap_used,
@@ -10,24 +10,6 @@
     clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
-
-#[test]
-fn visual_smoke_checklist_is_documented() {
-    let src = include_str!("../src/shell/mod.rs");
-    assert!(
-        src.contains("# Visual smoke checklist"),
-        "visual smoke checklist missing"
-    );
-    for marker in [
-        "Cmd+K",
-        "Cmd+Tab",
-        "overscroll",
-        "QuickSettings",
-        "remote cursor",
-    ] {
-        assert!(src.contains(marker), "missing smoke item: {marker}");
-    }
-}
 
 use std::collections::HashMap;
 
@@ -407,123 +389,6 @@ fn topbar_chrome_active_center_dot_is_larger_than_inactive() {
 }
 
 #[test]
-fn sidebar_wheel_switches_active_strip() {
-    use shell::shell::sidebar_wheel::SidebarWheel;
-    use shell::shell::state::{Strip, StripId, Workspace, WorkspaceId, WorkspaceTree};
-    let strip_1 = Strip::new(StripId::new(), "s1");
-    let strip_2 = Strip::new(StripId::new(), "s2");
-    let strip_3 = Strip::new(StripId::new(), "s3");
-    let mut ws = Workspace::new(WorkspaceId::new(), "A");
-    ws.strips = vec![strip_1, strip_2, strip_3];
-
-    let mut tree = WorkspaceTree {
-        workspaces: vec![ws],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![],
-        ..Default::default()
-    };
-    let ws_id = tree.workspaces[0].id;
-    tree.active = ws_id;
-    tree.active_strip
-        .insert(ws_id, tree.workspaces[0].strips[0].id);
-
-    let mut w = SidebarWheel::new();
-    w.on_wheel(1, &mut tree);
-    assert_eq!(tree.active_strip[&ws_id], tree.workspaces[0].strips[1].id);
-    w.on_wheel(1, &mut tree);
-    assert_eq!(tree.active_strip[&ws_id], tree.workspaces[0].strips[2].id);
-    // clamped — overscroll not yet committing
-    w.on_wheel(1, &mut tree);
-    assert_eq!(tree.active_strip[&ws_id], tree.workspaces[0].strips[2].id);
-}
-
-#[test]
-fn sidebar_wheel_overscroll_commits_new_workspace_past_threshold() {
-    use shell::shell::sidebar_wheel::SidebarWheel;
-    use shell::shell::state::{Strip, StripId, Workspace, WorkspaceId, WorkspaceTree};
-    let strip_1 = Strip::new(StripId::new(), "s1");
-    let mut ws = Workspace::new(WorkspaceId::new(), "A");
-    ws.strips = vec![strip_1];
-
-    let mut tree = WorkspaceTree {
-        workspaces: vec![ws],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![],
-        ..Default::default()
-    };
-    let ws_id = tree.workspaces[0].id;
-    tree.active = ws_id;
-    tree.active_strip
-        .insert(ws_id, tree.workspaces[0].strips[0].id);
-
-    let mut w = SidebarWheel::new();
-    // at the top/bottom end, wheel direction +1 = downward overscroll
-    w.begin_overscroll(1);
-    for _ in 0..10 {
-        w.drag_overscroll(1, 10.0);
-    } // 100px of pull
-    assert!(w.overscroll_hint_visible());
-    assert!(w.overscroll_progress() > 0.0);
-
-    // below threshold → snap back
-    w.release_overscroll(&mut tree);
-    assert_eq!(tree.workspaces.len(), 1);
-
-    w.begin_overscroll(1);
-    for _ in 0..30 {
-        w.drag_overscroll(1, 10.0);
-    } // 300px
-    assert!(w.overscroll_progress() >= 1.0);
-    w.release_overscroll(&mut tree);
-    assert_eq!(tree.workspaces.len(), 2);
-    assert_eq!(tree.active, tree.workspaces[1].id);
-}
-
-#[test]
-fn sidebar_wheel_overscroll_below_threshold_snaps_back() {
-    use shell::shell::sidebar_wheel::SidebarWheel;
-    use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
-    let mut tree = WorkspaceTree {
-        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![],
-        ..Default::default()
-    };
-    tree.active = tree.workspaces[0].id;
-    let mut w = SidebarWheel::new();
-    w.begin_overscroll(-1);
-    w.drag_overscroll(-1, 50.0);
-    w.release_overscroll(&mut tree);
-    assert_eq!(tree.workspaces.len(), 1);
-    assert!(w.overscroll_progress().abs() <= f32::EPSILON);
-}
-
-#[test]
-fn sidebar_wheel_management_button_creates_workspace() {
-    use shell::shell::sidebar_wheel::SidebarWheel;
-    use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
-    let mut tree = WorkspaceTree {
-        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![],
-        ..Default::default()
-    };
-    tree.active = tree.workspaces[0].id;
-    let w = SidebarWheel::new();
-    w.click_management_new_workspace(&mut tree);
-    assert_eq!(tree.workspaces.len(), 2);
-    assert_eq!(tree.active, tree.workspaces[1].id);
-}
-
-#[test]
 fn topbar_center_widget_cycles_with_wheel_cooldown() {
     use shell::shell::topbar::{CenterWidget, TopBar};
     use std::time::Duration;
@@ -577,44 +442,27 @@ fn cmd_tab_toggles_overview() {
 }
 
 #[test]
-fn overscroll_commit_fires_toast() {
-    use shell::shell::Shell;
-    let mut shell = Shell::new_for_test();
-    let before = shell.toast_count();
-    shell.simulate_overscroll_commit();
-    assert!(shell.toast_count() > before);
-}
-
-#[test]
-fn toast_fires_on_rename_and_create() {
+fn workspace_rename_fires_info_toast() {
     use shell::shell::Shell;
     use ui::widget::toast::ToastKind;
     let mut shell = Shell::new_for_test();
     let b0 = shell.toast_count();
-    shell.simulate_overscroll_commit(); // "Workspace created"
     shell.simulate_rename_active_workspace("New Name");
     let kinds: Vec<ToastKind> = shell.toast_kinds();
-    assert!(
-        kinds
-            .iter()
-            .any(|k| matches!(k, ToastKind::Info | ToastKind::Success))
-    );
-    assert!(shell.toast_count() >= b0 + 2);
+    assert!(kinds.iter().any(|kind| matches!(kind, ToastKind::Info)));
+    assert_eq!(shell.toast_count(), b0 + 1);
 }
 
 #[test]
 fn sidebar_wheel_event_routes_through_shell() {
     use shell::shell::Shell;
     let mut shell = Shell::new_for_test();
-    let strips_before = shell.active_strip_index();
-    shell.simulate_sidebar_wheel(1);
-    // Either the index advanced or the clamp held at the last strip — both
-    // valid. This only asserts the shell routed the wheel to the sidebar
-    // widget without mutating the search/overview flags.
-    // Deliberately not asserted on: `active_strip_index` is still a placeholder
-    // that always answers 0, so comparing it would pass whatever the wheel did.
-    // The binding stays to mark the spot for when it reports a real index.
-    let _ = strips_before;
+    assert_eq!(shell.append_empty_strip_for_test("Second"), 1);
+    assert_eq!(shell.active_strip_index(), 0);
+    assert_eq!(shell.simulate_sidebar_wheel(1), 1);
+    assert_eq!(shell.active_strip_index(), 1);
+    assert_eq!(shell.simulate_sidebar_wheel(-1), 0);
+    assert_eq!(shell.active_strip_index(), 0);
     assert!(!shell.search_visible());
     assert!(!shell.overview_visible());
 }
@@ -668,7 +516,7 @@ fn overview_header_font_size_is_at_least_32px() {
     use shell::shell::state::WorkspaceTree;
     use ui::theme::Theme;
     let tree = WorkspaceTree::bootstrap_demo();
-    let (host, _chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
+    let (host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
     let theme = Theme::dark();
     let size = host.overview_header_font_size(&theme);
     assert!(

@@ -276,7 +276,7 @@ pub fn display_snapshot_path() -> Option<std::path::PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         .filter(|path| path.is_absolute())
-        .map(|path| path.join("qos/display-state.json"))
+        .map(|path| path.join("tilo/display-state.json"))
 }
 
 pub fn unix_ms() -> u64 {
@@ -538,7 +538,7 @@ pub struct RichInputConfig {
     pub left_handed: bool,
     pub accel_profile: AccelProfile,
     pub key_repeat: f64,
-    /// Exact physical repeat values imported from the host desktop. A qOS
+    /// Exact physical repeat values imported from the host desktop. A Tilo
     /// repeat-slider choice clears both and resumes using `key_repeat`.
     pub key_repeat_delay_ms: Option<u32>,
     pub key_repeat_rate_hz: Option<u32>,
@@ -733,7 +733,7 @@ impl RichInputConfig {
     }
 
     /// XKB option fragments owned by this preference section. Layout
-    /// switching is Alt+Shift because Super+Space is qOS global search;
+    /// switching is Alt+Shift because Super+Space is Tilo global search;
     /// Compose remains independently configurable.
     pub fn xkb_options(&self) -> Vec<String> {
         let mut options = Vec::new();
@@ -1094,7 +1094,7 @@ impl Default for ShortcutConfig {
             (ShortcutAction::FocusPreviousWindow, super_chord("left")),
             (ShortcutAction::FocusNextWindow, super_chord("right")),
             // Conventional application tab cycling belongs to the focused
-            // qOS window group too. Keeping this distinct from Super+Tab
+            // Tilo window group too. Keeping this distinct from Super+Tab
             // means the overview is never opened while changing tabs.
             (ShortcutAction::PreviousTab, ctrl_shift_chord("tab")),
             (ShortcutAction::NextTab, ctrl_chord("tab")),
@@ -1477,7 +1477,7 @@ mod tests {
     #[serial_test::serial]
     fn saved_shortcuts_reload_as_the_same_valid_effective_config() {
         let dir = std::env::temp_dir().join(format!(
-            "qos-shortcut-save-reload-{}-{}",
+            "tilo-shortcut-save-reload-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

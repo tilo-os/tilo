@@ -1,4 +1,4 @@
-//! VPN — qOS native app (CRDT-native, built on the `ui` toolkit).
+//! VPN — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A `WireGuard` / `OpenVPN` client. The whole saved fleet lives in the
 //! shared Automerge document ([`doc`]); the UI is a single custom-drawn

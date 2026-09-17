@@ -8,11 +8,6 @@
 //! [`ui::widget::TextInput`] (the shared caret / selection / clipboard core, so
 //! Ctrl+C/X/V and drag-select work), or — for a confirmation — just a message.
 //!
-//! This is the audit's "dialog redundancy" fix applied to feeds: the
-//! hand-painted single-input card (with its fake text field and
-//! "Press enter to add" copy) is gone; every feeds dialog now routes through
-//! the one shared modal.
-
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};

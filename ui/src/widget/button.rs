@@ -28,6 +28,10 @@ pub struct Button {
     /// icon-only button, used as the accessible name when none was set
     /// explicitly.
     tooltip: Option<String>,
+    /// Original presentation captured while a responsive toolbar displays
+    /// this button icon-first. Kept separately so an app's explicit tooltip
+    /// and accessible name are restored exactly when space returns.
+    compact_presentation: Option<(String, Option<String>, Option<String>)>,
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
@@ -61,7 +65,7 @@ pub struct Button {
     /// Resource and handler synthesized by the low-ceremony `on_effect` /
     /// `on_view` APIs. The closure is still ordinary Rust, but it is reachable
     /// only through the same published action door as agents and search.
-    native_resource: Option<qos_actions::Resource>,
+    native_resource: Option<tilo_actions::Resource>,
     native_handler: Option<Box<dyn FnMut()>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -92,6 +96,7 @@ impl Button {
             label: label.to_string(),
             accessible_name: None,
             tooltip: None,
+            compact_presentation: None,
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
@@ -147,7 +152,7 @@ impl Button {
     /// exported resource action. The host resolves policy against the fresh
     /// resource tree before dispatch.
     #[must_use]
-    pub fn on_action(mut self, binding: qos_actions::ActionBinding<()>) -> Self {
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
         self.on_click_path = None;
         self.click_value = None;
@@ -159,10 +164,10 @@ impl Button {
     ///
     /// This is the quick-app path: it keeps closure ergonomics without making
     /// an invisible callback-only control. For replayable document mutations,
-    /// prefer a typed document [`Action`](qos_actions::Action).
+    /// prefer a typed document [`Action`](tilo_actions::Action).
     #[must_use]
     pub fn on_effect<F: FnMut() + 'static>(self, handler: F) -> Self {
-        self.on_native(qos_actions::OperationKind::Effect, handler)
+        self.on_native(tilo_actions::OperationKind::Effect, handler)
     }
 
     /// Publish a zero-argument transient presentation action. View actions are
@@ -170,7 +175,7 @@ impl Button {
     /// history and collaboration logs.
     #[must_use]
     pub fn on_view<F: FnMut() + 'static>(self, handler: F) -> Self {
-        self.on_native(qos_actions::OperationKind::View, handler)
+        self.on_native(tilo_actions::OperationKind::View, handler)
     }
 
     #[expect(
@@ -179,12 +184,12 @@ impl Button {
     )]
     fn on_native<F: FnMut() + 'static>(
         mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         handler: F,
     ) -> Self {
-        const TYPE_ID: &str = "qos.ui.control.invoke";
-        let resource_id = format!("qos.control:{}", self.id);
-        let mut spec = qos_actions::ActionSpec::operation(
+        const TYPE_ID: &str = "tilo.ui.control.invoke";
+        let resource_id = format!("tilo.control:{}", self.id);
+        let mut spec = tilo_actions::ActionSpec::operation(
             "invoke",
             self.label.clone(),
             kind,
@@ -192,10 +197,10 @@ impl Button {
             &self.id,
         )
         .expect("a control id is always JSON serializable");
-        spec.contract.discovery = qos_actions::DiscoveryScope::Launchable;
-        let resource = qos_actions::Resource::new(resource_id, "qos.control", self.label.clone())
+        spec.contract.discovery = tilo_actions::DiscoveryScope::Launchable;
+        let resource = tilo_actions::Resource::new(resource_id, "tilo.control", self.label.clone())
             .with_action(spec);
-        let binding = qos_actions::ActionBinding::unit_for(&resource, "invoke")
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "invoke")
             .expect("the synthesized invoke action is nullary");
         self = self.on_action(binding);
         self.native_resource = Some(resource);
@@ -326,6 +331,43 @@ impl Button {
     pub fn set_style(&mut self, style: ButtonStyle) {
         if self.style != style {
             self.style = style;
+            self.dirty = true;
+        }
+    }
+
+    /// Prefer the icon in a space-constrained toolbar while retaining the
+    /// original visible label as the accessible name and hover tooltip.
+    ///
+    /// Apps should use this for responsive presentation only; activation,
+    /// focus and resource-action semantics are intentionally unchanged.
+    pub fn set_compact_toolbar_presentation(&mut self, compact: bool) {
+        if compact && !self.label.is_empty() && self.compact_presentation.is_none() {
+            self.compact_presentation = Some((
+                std::mem::take(&mut self.label),
+                self.accessible_name.take(),
+                self.tooltip.take(),
+            ));
+            self.accessible_name = self
+                .compact_presentation
+                .as_ref()
+                .and_then(|presentation| presentation.1.clone())
+                .or_else(|| {
+                    self.compact_presentation
+                        .as_ref()
+                        .map(|presentation| presentation.0.clone())
+                });
+            self.tooltip = self
+                .compact_presentation
+                .as_ref()
+                .and_then(|presentation| presentation.2.clone())
+                .or_else(|| self.accessible_name.clone());
+            self.dirty = true;
+        } else if !compact
+            && let Some((label, accessible_name, tooltip)) = self.compact_presentation.take()
+        {
+            self.label = label;
+            self.accessible_name = accessible_name;
+            self.tooltip = tooltip;
             self.dirty = true;
         }
     }
@@ -1040,27 +1082,27 @@ impl Widget for Button {
         self.effectively_enabled()
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         self.native_resource.iter().cloned().collect()
     }
 
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         self.native_resource
             .as_ref()
-            .map(|_| std::iter::once("qos.ui.control.invoke".to_owned()).collect())
+            .map(|_| std::iter::once("tilo.ui.control.invoke".to_owned()).collect())
             .unwrap_or_default()
     }
 
     fn invoke_resource_operation_v2(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Result<Option<qos_actions::ActionOutput>, String> {
-        if kind == qos_actions::OperationKind::Document
-            || type_id != "qos.ui.control.invoke"
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        if kind == tilo_actions::OperationKind::Document
+            || type_id != "tilo.ui.control.invoke"
             || self.native_handler.is_none()
         {
             return Ok(None);
@@ -1072,12 +1114,12 @@ impl Widget for Button {
         if let Some(handler) = &mut self.native_handler {
             handler();
         }
-        Ok(Some(qos_actions::ActionOutput::default()))
+        Ok(Some(tilo_actions::ActionOutput::default()))
     }
 
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         if let Some(action) = &mut self.action {
             let before = action.is_available();
@@ -1088,7 +1130,7 @@ impl Widget for Button {
         }
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
 
@@ -1269,17 +1311,17 @@ mod tests {
 
     #[test]
     fn action_mode_suppresses_raw_mutation_and_callback() {
-        let resource = qos_actions::Resource::new("doc:1", "doc", "Document").with_action(
-            qos_actions::ActionSpec::operation(
+        let resource = tilo_actions::Resource::new("doc:1", "doc", "Document").with_action(
+            tilo_actions::ActionSpec::operation(
                 "save",
                 "Save",
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 "test.save",
                 &(),
             )
             .unwrap(),
         );
-        let binding = qos_actions::ActionBinding::unit_for(&resource, "save").unwrap();
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let callback_calls = calls.clone();
         let mut button = Button::new("save", "Save", Some("legacy"))
@@ -1295,7 +1337,7 @@ mod tests {
         let intent = button.take_control_invocation().expect("one intent");
         assert_eq!(
             intent.address,
-            qos_actions::ActionAddress::new("doc:1", "save")
+            tilo_actions::ActionAddress::new("doc:1", "save")
         );
         assert!(intent.arguments.is_empty());
         assert_eq!(button.control_action_bindings().len(), 1);
@@ -1303,17 +1345,17 @@ mod tests {
 
     #[test]
     fn action_availability_revokes_and_restores_without_overriding_authored_state() {
-        let resource = qos_actions::Resource::new("doc:1", "doc", "Document").with_action(
-            qos_actions::ActionSpec::operation(
+        let resource = tilo_actions::Resource::new("doc:1", "doc", "Document").with_action(
+            tilo_actions::ActionSpec::operation(
                 "save",
                 "Save",
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 "test.save",
                 &(),
             )
             .unwrap(),
         );
-        let binding = qos_actions::ActionBinding::unit_for(&resource, "save").unwrap();
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
         let mut button = Button::new("save", "Save", None).on_action(binding);
         button.activate(&mut AutoCommit::new(), &automerge::ROOT);
         Widget::refresh_control_action_availability(&mut button, &std::collections::HashSet::new());
@@ -1324,7 +1366,7 @@ mod tests {
         );
         Widget::refresh_control_action_availability(
             &mut button,
-            &std::collections::HashSet::from([qos_actions::ActionAddress::new("doc:1", "save")]),
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new("doc:1", "save")]),
         );
         assert!(Widget::is_enabled(&button));
 
@@ -1332,7 +1374,7 @@ mod tests {
         Widget::refresh_control_action_availability(&mut button, &std::collections::HashSet::new());
         Widget::refresh_control_action_availability(
             &mut button,
-            &std::collections::HashSet::from([qos_actions::ActionAddress::new("doc:1", "save")]),
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new("doc:1", "save")]),
         );
         assert!(
             !Widget::is_enabled(&button),
@@ -1498,12 +1540,12 @@ mod tests {
     /// must win over stale pointer/focus state and never recover a semantic
     /// action colour or focus ring.
     #[test]
-    #[ignore = "developer visual audit writes /tmp/qos-button-disabled-audit"]
+    #[ignore = "developer visual audit writes /tmp/tilo-button-disabled-audit"]
     fn disabled_button_visual_audit() {
         use std::path::Path;
         use vello::peniko::Color;
 
-        let output = Path::new("/tmp/qos-button-disabled-audit");
+        let output = Path::new("/tmp/tilo-button-disabled-audit");
         std::fs::create_dir_all(output).expect("visual-audit output directory");
         for (name, theme) in [
             ("light", Theme::light()),
@@ -1793,6 +1835,41 @@ mod tests {
         assert_eq!(Widget::tooltip(&b), Some("Search"));
         let plain = Button::new("id", "Save", None);
         assert_eq!(Widget::tooltip(&plain), None, "no tooltip unless attached");
+    }
+
+    #[test]
+    fn compact_toolbar_presentation_round_trips_authored_semantics() {
+        let mut button = Button::new("publish", "Publish", None)
+            .with_icon(crate::icons::Icon::CloudDownload)
+            .with_accessible_name("Publish document")
+            .tooltip("Publish this document now");
+
+        button.set_compact_toolbar_presentation(true);
+        assert!(button.label.is_empty(), "only the icon should be painted");
+        assert_eq!(
+            Widget::accessibility(&button).unwrap().name.as_deref(),
+            Some("Publish document"),
+            "compaction never makes an icon-only control silent"
+        );
+        assert_eq!(
+            Widget::tooltip(&button),
+            Some("Publish this document now"),
+            "the authored tooltip survives compaction"
+        );
+
+        button.set_compact_toolbar_presentation(false);
+        assert_eq!(button.label, "Publish");
+        assert_eq!(
+            button.accessible_name.as_deref(),
+            Some("Publish document"),
+            "expansion restores the authored accessible name rather than retaining a fallback"
+        );
+        assert_eq!(
+            Widget::accessibility(&button).unwrap().name.as_deref(),
+            Some("Publish"),
+            "the visible label again takes precedence after expansion"
+        );
+        assert_eq!(Widget::tooltip(&button), Some("Publish this document now"));
     }
 
     #[test]

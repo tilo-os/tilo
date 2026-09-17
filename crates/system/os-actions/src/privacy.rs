@@ -365,7 +365,7 @@ fn immutable_system_binary(path: &Path) -> bool {
 
 fn humanize_binary(binary: &str) -> String {
     let raw = binary
-        .strip_prefix("qos-")
+        .strip_prefix("tilo-")
         .unwrap_or(binary)
         .replace(['-', '_'], " ");
     raw.split_ascii_whitespace()
@@ -426,7 +426,7 @@ mod tests {
             "Name:\tbad\nUid:\t1000\t1000\t1000\t1000\n",
         )
         .unwrap();
-        symlink("/usr/bin/qos-video-chat", process.join("exe")).unwrap();
+        symlink("/usr/bin/tilo-video-chat", process.join("exe")).unwrap();
         let json = r#"[
           {"id":7,"type":"PipeWire:Interface:Client","info":{"props":{
             "pipewire.sec.pid":4242,"application.name":"Settings (spoofed)"}}},

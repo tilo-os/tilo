@@ -13,7 +13,7 @@ OS = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("guest_contract", OS / "dev/windows_guest_contract.py")
 CONTRACT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONTRACT)
-REF = "registry.example/qos/guest-buildroot@sha256:" + "a" * 64
+REF = "registry.example/tilo/guest-buildroot@sha256:" + "a" * 64
 
 
 def fixture_header(path):

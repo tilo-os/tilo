@@ -1,6 +1,5 @@
-//! vCard import/export — hand-rolled parser + serializer covering the
-//! 3.0 (RFC 2426) and 4.0 (RFC 6350) flavours an address book actually
-//! meets in the wild.
+//! Dependency-free vCard import/export covering the 3.0 (RFC 2426) and 4.0
+//! (RFC 6350) variants used by address books.
 //!
 //! We deliberately keep this small and dependency-free: contacts only
 //! needs the property set a person/organization card uses — `FN`, `N`,
@@ -255,7 +254,10 @@ pub fn parse_vcards_report(input: &str) -> VCardParseReport {
             }
             cur = Some((
                 Contact {
-                    id: Uuid::new_v4(),
+                    // A valid UID below replaces this sentinel. UID-less
+                    // imports are assigned a deterministic semantic identity
+                    // when the complete card is available at END:VCARD.
+                    id: Uuid::nil(),
                     ..Default::default()
                 },
                 false,
@@ -263,8 +265,9 @@ pub fn parse_vcards_report(input: &str) -> VCardParseReport {
             continue;
         }
         if upper.starts_with("END:VCARD") {
-            if let Some((c, invalid)) = cur.take() {
+            if let Some((mut c, invalid)) = cur.take() {
                 if !invalid && has_contact_data(&c) {
+                    assign_import_identities(&mut c);
                     report.contacts.push(c);
                 } else {
                     report.skipped_cards += 1;
@@ -292,6 +295,120 @@ pub fn parse_vcards_report(input: &str) -> VCardParseReport {
         report.skipped_cards += 1;
     }
     report
+}
+
+/// Give imported data stable identities before it crosses the action/CRDT
+/// boundary. External cards frequently omit UID, while vCard has no standard
+/// identity for repeated TEL/EMAIL/ADR/CATEGORIES rows. Deriving both from
+/// bounded semantic content makes an exact re-import idempotent and makes two
+/// disconnected peers produce the same absolute list operations.
+fn assign_import_identities(contact: &mut Contact) {
+    if contact.id.is_nil() {
+        let birthday = contact
+            .birthday
+            .as_ref()
+            .map(Birthday::iso)
+            .unwrap_or_default();
+        let mut parts = vec![
+            "contact".to_string(),
+            contact.first.clone(),
+            contact.last.clone(),
+            contact.org.clone(),
+            contact.title.clone(),
+            contact.website.clone(),
+            birthday,
+            contact.notes.clone(),
+        ];
+        parts.extend(
+            contact
+                .phones
+                .iter()
+                .flat_map(|row| ["phone".to_string(), row.label.clone(), row.value.clone()]),
+        );
+        parts.extend(
+            contact
+                .emails
+                .iter()
+                .flat_map(|row| ["email".to_string(), row.label.clone(), row.value.clone()]),
+        );
+        parts.extend(contact.addresses.iter().flat_map(|row| {
+            [
+                "address".to_string(),
+                row.label.clone(),
+                row.street.clone(),
+                row.city.clone(),
+                row.region.clone(),
+                row.postal.clone(),
+                row.country.clone(),
+            ]
+        }));
+        parts.extend(
+            contact
+                .groups
+                .iter()
+                .flat_map(|row| ["group".to_string(), row.value.clone()]),
+        );
+        contact.id = deterministic_uuid(parts.iter().map(String::as_str));
+    }
+
+    let contact_id = contact.id.to_string();
+    for (index, row) in contact.phones.iter_mut().enumerate() {
+        row.id = deterministic_uuid([
+            contact_id.as_str(),
+            "phone",
+            &index.to_string(),
+            &row.label,
+            &row.value,
+        ]);
+    }
+    for (index, row) in contact.emails.iter_mut().enumerate() {
+        row.id = deterministic_uuid([
+            contact_id.as_str(),
+            "email",
+            &index.to_string(),
+            &row.label,
+            &row.value,
+        ]);
+    }
+    for (index, row) in contact.addresses.iter_mut().enumerate() {
+        row.id = deterministic_uuid([
+            contact_id.as_str(),
+            "address",
+            &index.to_string(),
+            &row.label,
+            &row.street,
+            &row.city,
+            &row.region,
+            &row.postal,
+            &row.country,
+        ]);
+    }
+    for (index, row) in contact.groups.iter_mut().enumerate() {
+        row.id = deterministic_uuid([contact_id.as_str(), "group", &index.to_string(), &row.value]);
+    }
+}
+
+fn deterministic_uuid<'a>(parts: impl IntoIterator<Item = &'a str>) -> Uuid {
+    let mut first = 0xcbf2_9ce4_8422_2325_u64;
+    let mut second = 0x8422_2325_cbf2_9ce4_u64;
+    for part in parts {
+        // Length framing ensures ["ab", "c"] cannot alias ["a", "bc"].
+        for byte in part.len().to_be_bytes().into_iter().chain(part.bytes()) {
+            first = (first ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            second = (second ^ u64::from(byte)).wrapping_mul(0x9e37_79b1_85eb_ca87);
+        }
+    }
+    let mut bytes = [0_u8; 16];
+    let (first_half, second_half) = bytes.split_at_mut(8);
+    first_half.copy_from_slice(&first.to_be_bytes());
+    second_half.copy_from_slice(&second.to_be_bytes());
+    if let Some(version) = bytes.get_mut(6) {
+        *version = (*version & 0x0f) | 0x50;
+    }
+    if let Some(variant) = bytes.get_mut(8) {
+        *variant = (*variant & 0x3f) | 0x80;
+    }
+    Uuid::from_bytes(bytes)
 }
 
 /// RFC line unfolding: any line beginning with SP or TAB continues the
@@ -747,6 +864,38 @@ mod tests {
         let parsed = parse_vcards(&card);
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].id, id);
+    }
+
+    #[test]
+    fn uidless_import_has_stable_contact_and_row_identities() {
+        let card = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;TYPE=work:+1 202 555 0143\r\nEMAIL;TYPE=work:grace@example.com\r\nADR;TYPE=home:;;12 Main St;Arlington;VA;22201;US\r\nCATEGORIES:Pioneers,Friends\r\nEND:VCARD\r\n";
+        let first = parse_vcards(card).pop().unwrap();
+        let second = parse_vcards(card).pop().unwrap();
+
+        assert!(!first.id.is_nil());
+        assert_eq!(first.id, second.id, "exact reimports keep one identity");
+        assert_eq!(first.phones[0].id, second.phones[0].id);
+        assert_eq!(first.emails[0].id, second.emails[0].id);
+        assert_eq!(first.addresses[0].id, second.addresses[0].id);
+        assert_eq!(first.groups[0].id, second.groups[0].id);
+        assert_eq!(first.groups[1].id, second.groups[1].id);
+    }
+
+    #[test]
+    fn stable_identity_is_length_framed_and_content_sensitive() {
+        assert_ne!(
+            deterministic_uuid(["ab", "c"]),
+            deterministic_uuid(["a", "bc"])
+        );
+        let original = parse_vcards(
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada Lovelace\r\nEMAIL:ada@example.com\r\nEND:VCARD\r\n",
+        )[0]
+        .clone();
+        let changed = parse_vcards(
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ada Lovelace\r\nEMAIL:ada@elsewhere.example\r\nEND:VCARD\r\n",
+        )[0]
+        .clone();
+        assert_ne!(original.id, changed.id);
     }
 
     #[test]

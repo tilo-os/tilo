@@ -100,7 +100,7 @@ impl OskService {
         let command = match service_launch_command(&self.socket) {
             Ok(command) => command,
             Err(error) => {
-                tracing::warn!(target: "qos::osk", %error, "on-screen keyboard unavailable");
+                tracing::warn!(target: "tilo::osk", %error, "on-screen keyboard unavailable");
                 return;
             }
         };
@@ -109,7 +109,7 @@ impl OskService {
         let running = Arc::clone(&self.running);
         let process_group = Arc::clone(&self.process_group);
         let supervisor = std::thread::Builder::new()
-            .name("qos-osk-service".to_string())
+            .name("tilo-osk-service".to_string())
             .spawn(move || {
                 let mut cmd = Command::new(&command.program);
                 cmd.args(&command.args)
@@ -125,7 +125,7 @@ impl OskService {
                 let mut child = match cmd.spawn() {
                     Ok(child) => child,
                     Err(error) => {
-                        tracing::warn!(target: "qos::osk", %error, "could not start on-screen keyboard");
+                        tracing::warn!(target: "tilo::osk", %error, "could not start on-screen keyboard");
                         return;
                     }
                 };
@@ -140,13 +140,13 @@ impl OskService {
                     match child.try_wait() {
                         Ok(Some(status)) => {
                             if !status.success() {
-                                tracing::warn!(target: "qos::osk", ?status, "on-screen keyboard exited");
+                                tracing::warn!(target: "tilo::osk", ?status, "on-screen keyboard exited");
                             }
                             break;
                         }
                         Ok(None) => {}
                         Err(error) => {
-                            tracing::warn!(target: "qos::osk", %error, "could not inspect on-screen keyboard");
+                            tracing::warn!(target: "tilo::osk", %error, "could not inspect on-screen keyboard");
                             break;
                         }
                     }
@@ -157,7 +157,7 @@ impl OskService {
         if let Err(error) = supervisor {
             self.stop = None;
             self.running.store(false, Ordering::Release);
-            tracing::warn!(target: "qos::osk", %error, "could not create OSK supervisor thread");
+            tracing::warn!(target: "tilo::osk", %error, "could not create OSK supervisor thread");
         }
     }
 }

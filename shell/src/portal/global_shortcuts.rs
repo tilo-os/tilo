@@ -69,7 +69,7 @@ impl GlobalShortcut {
     }
 }
 
-/// The response to qOS's binding sheet.  `Allowed` is intentionally a list:
+/// The response to Tilo's binding sheet.  `Allowed` is intentionally a list:
 /// users may approve some requested shortcuts and reject conflicting ones.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GlobalShortcutConsent {
@@ -121,7 +121,7 @@ impl GlobalShortcutsService for UnavailableGlobalShortcuts {
         _: GlobalShortcutBindingRequest,
         _: oneshot::Sender<PortalResult<GlobalShortcutConsent>>,
     ) -> PortalResult<()> {
-        PortalResult::Unavailable("qOS global-shortcut chrome is not attached".into())
+        PortalResult::Unavailable("Tilo global-shortcut chrome is not attached".into())
     }
     fn release_session(&self, _: &str) {}
 }
@@ -139,7 +139,7 @@ struct ShellShortcutRegistry {
     installed: Vec<InstalledShortcut>,
 }
 
-/// Concrete qOS shortcut service.  It uses the same compositor-owned review
+/// Concrete Tilo shortcut service.  It uses the same compositor-owned review
 /// sheet as other sensitive portal actions, then keeps only canonical physical
 /// accelerators.  There is no executable/action data in this registry: a hit
 /// can only queue `Activated` for the already-authenticated portal session.
@@ -282,7 +282,7 @@ impl GlobalShortcutsService for ShellGlobalShortcutsService {
                     .and_then(canonical_accelerator);
                 let status = accelerator.as_deref().and_then(|accelerator| {
                     if is_reserved_accelerator(accelerator) {
-                        Some("Reserved by qOS. Choose another shortcut.".into())
+                        Some("Reserved by Tilo. Choose another shortcut.".into())
                     } else if let Some(app_id) = installed.get(accelerator) {
                         Some(format!(
                             "Already used by {}. Choose another shortcut.",
@@ -1160,7 +1160,7 @@ fn accelerator_for_code(code: &str, modifiers: Modifiers) -> Option<String> {
     Some(format!("{}+{code}", parts.join("+")))
 }
 
-/// qOS-owned accelerators always win.  Exposed to the trusted dialog so it
+/// Tilo-owned accelerators always win.  Exposed to the trusted dialog so it
 /// can explain a rejected capture before any registry mutation occurs.
 pub fn is_reserved_accelerator(accelerator: &str) -> bool {
     matches!(

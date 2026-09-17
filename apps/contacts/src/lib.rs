@@ -1,4 +1,4 @@
-//! Contacts — a CRDT-native address book for qOS, built on the `ui`
+//! Contacts — a CRDT-native address book for Tilo, built on the `ui`
 //! toolkit.
 //!
 //! `app_root()` is the single integration point used by both the live

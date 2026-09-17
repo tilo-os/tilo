@@ -11,6 +11,7 @@ use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
+use crate::input_controls::InputPaintCtx;
 use crate::model::{hex_string, hsv_to_rgb, rgb_to_hsv};
 use crate::paint;
 
@@ -30,6 +31,19 @@ pub(super) struct ColorEdit {
 enum DragPart {
     Sv,
     Hue,
+}
+
+struct SvHueLayout {
+    x0: f64,
+    x1: f64,
+    top: f64,
+    size: f64,
+}
+
+struct PickerRow {
+    x0: f64,
+    x1: f64,
+    y: f64,
 }
 
 #[derive(Clone)]
@@ -307,36 +321,63 @@ impl ColorPicker {
         );
 
         let top = y + 46.0;
-        self.draw_sv_hue(scene, transform, colors, ix0, ix1, top, 190.0, &pick);
+        self.draw_sv_hue(
+            &mut InputPaintCtx {
+                scene,
+                transform,
+                text,
+                theme,
+            },
+            &SvHueLayout {
+                x0: ix0,
+                x1: ix1,
+                top,
+                size: 190.0,
+            },
+            &pick,
+        );
         let preview_y = top + 206.0;
         draw_preview(scene, transform, text, colors, ix0, preview_y, &pick);
-        self.draw_chips(scene, transform, theme, ix0, ix1, preview_y + 46.0, cursor);
+        self.draw_chips(
+            &mut InputPaintCtx {
+                scene,
+                transform,
+                text,
+                theme,
+            },
+            &PickerRow {
+                x0: ix0,
+                x1: ix1,
+                y: preview_y + 46.0,
+            },
+            cursor,
+        );
         self.draw_buttons(scene, transform, text, theme, ix1, y + height - 46.0);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn draw_sv_hue(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        colors: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
-        top: f64,
-        size: f64,
-        pick: &Pick,
-    ) {
-        self.sv = Rect::new(ix0, top, ix0 + size, top + size);
-        self.hue = Rect::new(ix1 - 22.0, top, ix1, top + size);
-        let cell = size / 20.0;
+    fn draw_sv_hue(&mut self, ctx: &mut InputPaintCtx<'_>, layout: &SvHueLayout, pick: &Pick) {
+        let colors = &ctx.theme.tokens.colors;
+        self.sv = Rect::new(
+            layout.x0,
+            layout.top,
+            layout.x0 + layout.size,
+            layout.top + layout.size,
+        );
+        self.hue = Rect::new(
+            layout.x1 - 22.0,
+            layout.top,
+            layout.x1,
+            layout.top + layout.size,
+        );
+        let cell = layout.size / 20.0;
         for row in 0..20 {
             for col in 0..20 {
                 let sat = (col as f32 + 0.5) / 20.0;
                 let val = 1.0 - (row as f32 + 0.5) / 20.0;
                 let rgb = hsv_to_rgb(pick.hue, sat, val);
                 paint::fill_rect(
-                    scene,
-                    t,
+                    ctx.scene,
+                    ctx.transform,
                     Rect::new(
                         self.sv.x0 + f64::from(col) * cell,
                         self.sv.y0 + f64::from(row) * cell,
@@ -347,15 +388,28 @@ impl ColorPicker {
                 );
             }
         }
-        paint::stroke_round(scene, t, self.sv, 6.0, colors.border_standard, 1.0);
-        let cursor = Point::new(
-            self.sv.x0 + f64::from(pick.sat) * size,
-            self.sv.y0 + f64::from(1.0 - pick.val) * size,
-        );
-        paint::circle(scene, t, cursor, 7.0, Color::from_rgba8(255, 255, 255, 230));
         paint::stroke_round(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
+            self.sv,
+            6.0,
+            colors.border_standard,
+            1.0,
+        );
+        let cursor = Point::new(
+            self.sv.x0 + f64::from(pick.sat) * layout.size,
+            self.sv.y0 + f64::from(1.0 - pick.val) * layout.size,
+        );
+        paint::circle(
+            ctx.scene,
+            ctx.transform,
+            cursor,
+            7.0,
+            Color::from_rgba8(255, 255, 255, 230),
+        );
+        paint::stroke_round(
+            ctx.scene,
+            ctx.transform,
             Rect::new(
                 cursor.x - 6.0,
                 cursor.y - 6.0,
@@ -366,22 +420,29 @@ impl ColorPicker {
             Color::from_rgba8(0, 0, 0, 180),
             1.5,
         );
-        let band = size / 48.0;
+        let band = layout.size / 48.0;
         for i in 0..48 {
             let rgb = hsv_to_rgb(i as f32 / 48.0 * 360.0, 1.0, 1.0);
             let by = self.hue.y0 + f64::from(i) * band;
             paint::fill_rect(
-                scene,
-                t,
+                ctx.scene,
+                ctx.transform,
                 Rect::new(self.hue.x0, by, self.hue.x1, by + band + 0.8),
                 Color::from_rgb8(rgb[0], rgb[1], rgb[2]),
             );
         }
-        paint::stroke_round(scene, t, self.hue, 4.0, colors.border_standard, 1.0);
-        let mark_y = self.hue.y0 + f64::from(pick.hue / 360.0) * size;
         paint::stroke_round(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
+            self.hue,
+            4.0,
+            colors.border_standard,
+            1.0,
+        );
+        let mark_y = self.hue.y0 + f64::from(pick.hue / 360.0) * layout.size;
+        paint::stroke_round(
+            ctx.scene,
+            ctx.transform,
             Rect::new(
                 self.hue.x0 - 3.0,
                 mark_y - 3.0,
@@ -394,20 +455,7 @@ impl ColorPicker {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw context plus chip row geometry"
-    )]
-    fn draw_chips(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        ix0: f64,
-        ix1: f64,
-        y: f64,
-        cursor: Point,
-    ) {
+    fn draw_chips(&mut self, ctx: &mut InputPaintCtx<'_>, row: &PickerRow, cursor: Point) {
         const CHIPS: [[u8; 3]; 10] = [
             [0xEF, 0x44, 0x44],
             [0xF5, 0x9E, 0x0B],
@@ -420,27 +468,27 @@ impl ColorPicker {
             [0x2A, 0x2A, 0x2E],
             [0x14, 0x18, 0x22],
         ];
-        let gap = (ix1 - ix0 - CHIPS.len() as f64 * 26.0) / (CHIPS.len() as f64 - 1.0);
-        let mut x = ix0;
+        let gap = (row.x1 - row.x0 - CHIPS.len() as f64 * 26.0) / (CHIPS.len() as f64 - 1.0);
+        let mut x = row.x0;
         for rgb in CHIPS {
-            let rect = Rect::new(x, y, x + 26.0, y + 26.0);
+            let rect = Rect::new(x, row.y, x + 26.0, row.y + 26.0);
             paint::fill_round(
-                scene,
-                t,
+                ctx.scene,
+                ctx.transform,
                 rect,
                 6.0,
                 Color::from_rgb8(rgb[0], rgb[1], rgb[2]),
             );
             let hover = rect.contains(cursor);
             paint::stroke_round(
-                scene,
-                t,
+                ctx.scene,
+                ctx.transform,
                 rect,
                 6.0,
                 if hover {
-                    theme.border_focus
+                    ctx.theme.border_focus
                 } else {
-                    theme.tokens.colors.border_standard
+                    ctx.theme.tokens.colors.border_standard
                 },
                 if hover { 2.0 } else { 1.0 },
             );

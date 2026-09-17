@@ -1,4 +1,4 @@
-//! Runtime tile/workspace tree for the nirios shell.
+//! Runtime tile/workspace tree for the tilo shell.
 //!
 //! The serializable, JSON-persisted shape lives in [`crate::shell::state`]:
 //! it carries only symbolic placeholders, since live `Box<dyn AppWidget>`
@@ -7,6 +7,7 @@
 //! `AppWidget` for each placeholder. The two mirror each other's field
 //! layout so shell UI can treat them uniformly — only `tile` differs.
 
+use std::collections::HashMap;
 use ui::widget::{AppKind as UiAppKind, AppWidget};
 
 use crate::shell::state::{GroupId, StripId, TabId, WindowWidth, WorkspaceId};
@@ -123,12 +124,53 @@ impl Workspace {
 pub struct WorkspaceTree {
     pub workspaces: Vec<Workspace>,
     pub active: WorkspaceId,
+    /// Focused strip per workspace. The runtime tree mirrors the persisted
+    /// tree's navigation state instead of making chrome guess the first strip.
+    pub active_strip: HashMap<WorkspaceId, StripId>,
 }
 
 impl WorkspaceTree {
     pub fn new(workspaces: Vec<Workspace>) -> Self {
         let active = workspaces.first().map(|w| w.id).unwrap_or_default();
-        Self { workspaces, active }
+        let active_strip = workspaces
+            .iter()
+            .filter_map(|workspace| {
+                workspace
+                    .strips
+                    .first()
+                    .map(|strip| (workspace.id, strip.id))
+            })
+            .collect();
+        Self {
+            workspaces,
+            active,
+            active_strip,
+        }
+    }
+
+    /// Move the active workspace's focused strip one step in `dir`, clamping
+    /// at both ends. Returns the resulting index, or `None` when the active
+    /// workspace has no strips.
+    pub fn move_active_strip(&mut self, dir: i32) -> Option<usize> {
+        let workspace = self
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == self.active)?;
+        let last = workspace.strips.len().checked_sub(1)?;
+        let current = self
+            .active_strip
+            .get(&self.active)
+            .and_then(|id| workspace.strips.iter().position(|strip| strip.id == *id))
+            .unwrap_or(0)
+            .min(last);
+        let next = match dir.signum() {
+            -1 => current.saturating_sub(1),
+            1 => current.saturating_add(1).min(last),
+            _ => current,
+        };
+        self.active_strip
+            .insert(self.active, workspace.strips.get(next)?.id);
+        Some(next)
     }
 }
 
@@ -138,4 +180,28 @@ fn next_runtime_id() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(1 << 32);
     N.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Strip, Workspace, WorkspaceTree};
+
+    #[test]
+    fn active_strip_navigation_clamps_and_handles_empty_workspaces() {
+        let mut empty = WorkspaceTree::new(vec![Workspace::new("Empty", Vec::new())]);
+        assert_eq!(empty.move_active_strip(1), None);
+
+        let strips = vec![
+            Strip::new("One", Vec::new()),
+            Strip::new("Two", Vec::new()),
+            Strip::new("Three", Vec::new()),
+        ];
+        let mut tree = WorkspaceTree::new(vec![Workspace::new("Home", strips)]);
+        assert_eq!(tree.move_active_strip(-1), Some(0));
+        assert_eq!(tree.move_active_strip(1), Some(1));
+        assert_eq!(tree.move_active_strip(1), Some(2));
+        assert_eq!(tree.move_active_strip(1), Some(2));
+        assert_eq!(tree.move_active_strip(-1), Some(1));
+        assert_eq!(tree.move_active_strip(0), Some(1));
+    }
 }

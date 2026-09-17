@@ -11,7 +11,7 @@ That path was broken, and quietly. The local test registry published a
 manifest it made up instead of the one the payload was built with, so
 the installed package declared no `[sandbox.services]`. The launcher
 then opened no collab socket and handed the app no
-`QOS_SVC_COLLAB_FD`, and the toolkit fell back to its disabled
+`TILO_SVC_COLLAB_FD`, and the toolkit fell back to its disabled
 backend. No warning: every service a package declares is optional, and
 a service that was never declared is not even an absence. Presence
 rides the compositor rather than the app's socket, so a peer's caret
@@ -56,7 +56,7 @@ import time
 from reaper import die_with_parent, track
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-APP = "dev.qos.word-processor"
+APP = "dev.tilo.word-processor"
 DISPLAY_NAME = "Word Processor"
 APPLICATIONS = "applications"
 QUERY = "word processor"
@@ -118,36 +118,36 @@ class Session:
         home = os.path.expanduser("~")
         env = {
             **os.environ,
-            "QOS_TEST_CONTROL": self.socket,
-            "QOS_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
+            "TILO_TEST_CONTROL": self.socket,
+            "TILO_STATE_PATH": os.path.join(self.dir, "config", "state.json"),
             "XDG_DATA_HOME": os.path.join(self.dir, "data"),
             "XDG_CACHE_HOME": os.path.join(self.dir, "cache"),
             "XDG_STATE_HOME": os.path.join(self.dir, "state"),
             "XDG_CONFIG_HOME": os.path.join(self.dir, "config"),
             "XDG_RUNTIME_DIR": runtime,
-            "QOS_APPS_DATA_DIR": apps_dir,
+            "TILO_APPS_DATA_DIR": apps_dir,
             # Machine state an install does not fetch and a launch
             # cannot do without.
-            "QOS_RUNTIME_BUNDLE_DIR": os.path.join(home, ".local/share/qos-runtime"),
+            "TILO_RUNTIME_BUNDLE_DIR": os.path.join(home, ".local/share/tilo-runtime"),
             # Without its own device key a session's peer-sync turns
             # itself off, and the only symptom is a missing peer.* action.
-            "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
+            "TILO_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
             # Tall enough that two tiles — this session's app and the
             # peer's, which sharing a workspace places here too — both
             # still show a page rather than only their toolbars.
-            "NIRIOS_HEADLESS_SIZE": "1280x1400",
+            "TILO_HEADLESS_SIZE": "1280x1400",
             # The app prints `collab connected=` under this, which is
             # the line that told us which path was disabled.
-            "QUICK_COLLAB_DEBUG": "1",
+            "RUST_LOG": "tilo.state=debug",
             "RUST_LOG": "info",
         }
         if store_config is not None:
-            env["QOS_STORE_CONFIG_DIR"] = store_config
-            env["QOS_STORE_CACHE_DIR"] = os.path.join(self.dir, "store-cache")
-            os.makedirs(env["QOS_STORE_CACHE_DIR"], exist_ok=True)
-        for var, binary in (("QOS_CATALOGUE_BIN", "qos-catalogue"),
-                            ("QOS_INSTALL_BIN", "qos-install"),
-                            ("QOS_LAUNCHER_BIN", "qos-launcher")):
+            env["TILO_STORE_CONFIG_DIR"] = store_config
+            env["TILO_STORE_CACHE_DIR"] = os.path.join(self.dir, "store-cache")
+            os.makedirs(env["TILO_STORE_CACHE_DIR"], exist_ok=True)
+        for var, binary in (("TILO_CATALOGUE_BIN", "tilo-catalogue"),
+                            ("TILO_INSTALL_BIN", "tilo-install"),
+                            ("TILO_LAUNCHER_BIN", "tilo-launcher")):
             found = tool(binary)
             if found:
                 env[var] = str(found)
@@ -418,11 +418,11 @@ def main() -> int:
 
     shell = tool("shell")
     example = REPO / "target" / "debug" / "examples" / "serve-test-registry"
-    payload = (REPO / "target" / "qos-apps-live" / "payloads" / APP / "bin"
+    payload = (REPO / "target" / "tilo-apps-live" / "payloads" / APP / "bin"
                / "word-processor")
     missing = [what for what, path in (
-        ("shell", shell), ("qos-launcher", tool("qos-launcher")),
-        ("qos-install", tool("qos-install")), ("qos-catalogue", tool("qos-catalogue")),
+        ("shell", shell), ("tilo-launcher", tool("tilo-launcher")),
+        ("tilo-install", tool("tilo-install")), ("tilo-catalogue", tool("tilo-catalogue")),
         ("serve-test-registry", example), ("the word-processor payload", payload),
     ) if not path or not pathlib.Path(path).exists()]
     if missing:
@@ -435,10 +435,10 @@ def main() -> int:
     # a detail. An older payload announces its collaboration channel
     # under a different key, so the delta arrives at bob's broker and
     # matches nothing — which looks exactly like a replication failure
-    # and is a stale binary. `target/qos-apps-live` is the store the
+    # and is a stale binary. `target/tilo-apps-live` is the store the
     # payload alice's registry serves comes from, so it is the one that
     # cannot drift from it.
-    live_apps = REPO / "target" / "qos-apps-live"
+    live_apps = REPO / "target" / "tilo-apps-live"
     bob_payload = live_apps / "payloads" / APP / "bin" / "word-processor"
     if not bob_payload.exists():
         print(f"bob needs a current {APP} in {live_apps}; pack and install one there")

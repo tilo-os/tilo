@@ -1,4 +1,4 @@
-//! Standard command-line lifecycle for qOS applications.
+//! Standard command-line lifecycle for Tilo applications.
 //!
 //! Ordinary apps provide their live and screenshot roots; this module owns
 //! common argument validation, persistence, headless driving, offscreen
@@ -34,7 +34,7 @@ pub struct LaunchArgs {
     pub viewport: Option<(u32, u32)>,
     pub scenario: Option<String>,
     pub headless: Option<headless::Spec>,
-    /// Lay out the production root and print its qOS-native certification.
+    /// Lay out the production root and print its Tilo-native certification.
     pub native_audit: bool,
     pub pseudo_locale: bool,
     pub text_scale: Option<f32>,
@@ -477,7 +477,7 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         println!("{report}");
         if !audit.is_certified() {
             return Err(LaunchError::Operation(format!(
-                "{} does not satisfy the qOS-native application contract",
+                "{} does not satisfy the Tilo-native application contract",
                 spec.app_id
             )));
         }
@@ -527,7 +527,7 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
 }
 
 fn shot_theme(args: &LaunchArgs) -> Theme {
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
@@ -549,7 +549,7 @@ fn shot_theme(args: &LaunchArgs) -> Theme {
 /// image should not claim reduced-motion support while a launched app animates
 /// (or vice versa).
 fn shot_motion_reduced() -> bool {
-    ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+    ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
         .into_iter()
         .filter_map(|key| std::env::var(key).ok())
         .any(|value| motion_env_value_enabled(&value))
@@ -938,7 +938,7 @@ mod tests {
     #[test]
     fn app_command_can_finish_before_window_startup() {
         CUSTOM_COMMAND_RAN.store(false, Ordering::SeqCst);
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root)
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root)
             .allowed_live_flags(&["--utility"])
             .command_handler(custom_command);
         run_with_args(&spec, &strings(&["app", "--utility"])).unwrap();
@@ -947,7 +947,7 @@ mod tests {
 
     #[test]
     fn privileged_app_can_reject_headless_driving() {
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root).disable_headless();
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root).disable_headless();
         let result = run_with_args(&spec, &strings(&["app", "--headless-drive", "{}"]));
         assert_eq!(result, Err(LaunchError::HeadlessUnsupported));
     }
@@ -960,19 +960,19 @@ mod tests {
             &[],
         )
         .unwrap();
-        let undeclared = LaunchSpec::new("dev.qos.test", dummy_root);
+        let undeclared = LaunchSpec::new("dev.tilo.test", dummy_root);
         assert!(matches!(
             validate_spec_args(&args, &undeclared),
             Err(LaunchError::Scenario(_))
         ));
-        let declared = LaunchSpec::new("dev.qos.test", dummy_root).scenarios(&["wide"]);
+        let declared = LaunchSpec::new("dev.tilo.test", dummy_root).scenarios(&["wide"]);
         validate_spec_args(&args, &declared).unwrap();
     }
 
     #[test]
     fn ordinary_launch_spec_reuses_live_root_for_screenshots() {
         let args = parse_args(&strings(&["app", "--shots=/tmp/ordinary.png"]), &[], &[]).unwrap();
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root);
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root);
         let root = spec
             .screenshot_root(&args)
             .expect("default screenshot root");
@@ -1049,7 +1049,7 @@ mod tests {
     fn argument_aware_root_propagates_initialization_failure() {
         let args =
             parse_args_extended(&strings(&["app", "broken.qdoc"]), &[], &[], &[], &[], 1).unwrap();
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root)
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root)
             .live_root_with_args(fallible_root)
             .max_positionals(1);
         match spec.live_root(&args) {
@@ -1072,7 +1072,7 @@ mod tests {
     #[test]
     fn custom_shot_pipeline_uses_standard_mode_dispatch() {
         CUSTOM_SHOT_RAN.store(false, Ordering::SeqCst);
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root)
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root)
             .shot_handler(custom_shot)
             .live_handler(unexpected_live);
         run_with_args(&spec, &strings(&["app", "--shots", "/tmp/custom.png"])).unwrap();
@@ -1096,7 +1096,7 @@ mod tests {
     #[test]
     fn custom_live_pipeline_runs_after_standard_mode_dispatch() {
         CUSTOM_LIVE_RAN.store(false, Ordering::SeqCst);
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root).live_handler(custom_live);
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root).live_handler(custom_live);
         run_with_args(&spec, &strings(&["app"])).unwrap();
         assert!(CUSTOM_LIVE_RAN.load(Ordering::SeqCst));
     }
@@ -1107,7 +1107,7 @@ mod tests {
 
     #[test]
     fn app_can_replace_only_the_persistence_loader() {
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root).open_state(custom_open_state);
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root).open_state(custom_open_state);
         assert!(std::ptr::fn_addr_eq(
             spec.open_state,
             custom_open_state as OpenState

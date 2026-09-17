@@ -1,6 +1,6 @@
 //! # Visual smoke checklist
 //!
-//! Run `cargo run -p quick-desktop` and verify:
+//! Run `cargo run -p tilo-desktop` and verify:
 //!
 //! - `TopBar` renders with a live clock; wheel over the center area cycles to
 //!   the CPU/RAM sparkline and the calendar (200 ms cooldown).
@@ -11,9 +11,8 @@
 //! - The workspace-name button opens `WorkspaceSettings`; switching to the Roles
 //!   tab lets you toggle per-app permissions via `DataTable`; the Files tab
 //!   shows per-role × per-file matrix.
-//! - `SidebarWheel` scrolls strips; overscrolling past the threshold shows the
-//!   "New session" hint and commits a new workspace; releasing before the
-//!   threshold snaps back.
+//! - `SidebarWheelDisc` switches workspaces, resists with overscroll at each
+//!   end, and exposes an add-workspace control on the disc band.
 //! - Right-clicking a tile opens the context menu.
 //! - Hovering the workspace-name button reveals a tooltip after ~600 ms.
 //! - Creating a workspace (any path) triggers a toast.
@@ -34,6 +33,9 @@ pub mod color_pipeline;
 pub mod crdt_text;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
+pub mod device_fabric;
+pub mod device_fabric_runtime;
+pub mod device_fabric_secrets;
 pub mod doc_open;
 pub mod editor_app;
 mod file_picker_overlay;
@@ -46,6 +48,7 @@ pub mod identity_provisioning;
 pub mod launcher;
 pub mod media_keys;
 pub mod mpris;
+pub mod nearby_transfer;
 pub mod network;
 pub mod notes_app;
 pub mod notification;
@@ -73,13 +76,12 @@ mod quick_settings_drill_in;
 mod quick_settings_root;
 mod quick_settings_vpn;
 mod quick_settings_wifi;
+pub mod realtime_session;
 pub mod remote_cursors;
 pub mod room_activity;
 pub mod room_records;
 pub mod search;
 pub mod session_audio_policy;
-pub mod sidebar_wheel;
-pub mod sidebar_wheel_chrome;
 pub mod sidebar_wheel_disc;
 pub mod split_row;
 pub mod state;
@@ -116,7 +118,6 @@ use crate::shell::global_search::GlobalSearch;
 use browser::BrowserWidget;
 
 use crate::shell::notes_app::NotesApp;
-use crate::shell::sidebar_wheel::SidebarWheel;
 use crate::shell::tile::{
     Strip as RuntimeStrip, Tab as RuntimeTab, TileContent as RuntimeTile,
     WindowGroup as RuntimeGroup, Workspace as RuntimeWorkspace, WorkspaceTree as RuntimeTree,
@@ -140,7 +141,7 @@ pub use collaboration_launchpad::{
 use file_explorer::FileExplorerWidget;
 use terminal::TerminalWidget;
 
-/// Root nirios shell handle. Owns the runtime workspace tree — the live
+/// Root tilo shell handle. Owns the runtime workspace tree — the live
 /// counterpart to the persisted [`state::WorkspaceTree`], holding real
 /// `Box<dyn AppWidget>`s in [`tile::TileContent::App`] instead of
 /// `AppPlaceholder` symbols — and the single Automerge document shared
@@ -159,8 +160,6 @@ pub struct Shell {
     state: ui::state::State,
 
     topbar: TopBar,
-    /// Overscroll past threshold creates a new workspace.
-    sidebar: SidebarWheel,
     /// Hidden unless `search_visible`.
     search: GlobalSearch,
     ws_settings: WorkspaceSettings,
@@ -209,7 +208,6 @@ impl Shell {
             tree,
             state: ui::state::State::new(),
             topbar: TopBar::new(),
-            sidebar: SidebarWheel::new(),
             search: GlobalSearch::new(),
             ws_settings: WorkspaceSettings::new(active_ws_id),
             #[cfg(any(test, debug_assertions))]
@@ -325,10 +323,6 @@ impl Shell {
 
     pub fn topbar(&self) -> &TopBar {
         &self.topbar
-    }
-
-    pub fn sidebar_wheel(&self) -> &SidebarWheel {
-        &self.sidebar
     }
 
     pub fn overview_visible(&self) -> bool {
@@ -531,53 +525,7 @@ impl Shell {
     /// active-strip index.
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_sidebar_wheel(&mut self, dir: i32) -> usize {
-        // `SidebarWheel::on_wheel` reads/writes `active_strip` on
-        // `state::WorkspaceTree`, not the runtime tree, so dispatch against
-        // a scratch state tree and copy the result back out.
-        let active_ws = self.tree.active;
-        let mut scratch = state::WorkspaceTree {
-            workspaces: self
-                .tree
-                .workspaces
-                .iter()
-                .map(|w| {
-                    let mut s = state::Workspace::new(w.id, &w.name);
-                    s.strips = w
-                        .strips
-                        .iter()
-                        .map(|st| state::Strip::new(st.id, &st.name))
-                        .collect();
-                    s
-                })
-                .collect(),
-            active: active_ws,
-            active_strip: std::collections::HashMap::default(),
-            active_group: std::collections::HashMap::default(),
-            collaborators: vec![],
-            ..Default::default()
-        };
-        // Seed the active-strip entry for the active workspace.
-        if let Some(ws) = self.tree.workspaces.iter().find(|w| w.id == active_ws)
-            && let Some(first) = ws.strips.first()
-        {
-            scratch.active_strip.insert(active_ws, first.id);
-        }
-        self.sidebar.on_wheel(dir, &mut scratch);
-        // Snap back the active strip id (if changed) by index lookup.
-
-        scratch
-            .active_strip
-            .get(&active_ws)
-            .and_then(|id| {
-                scratch
-                    .workspaces
-                    .iter()
-                    .find(|w| w.id == active_ws)?
-                    .strips
-                    .iter()
-                    .position(|s| s.id == *id)
-            })
-            .unwrap_or(0)
+        self.tree.move_active_strip(dir).unwrap_or(0)
     }
 
     /// Index of the currently-active strip on the active workspace in the
@@ -586,38 +534,29 @@ impl Shell {
     /// that case).
     #[cfg(any(test, debug_assertions))]
     pub fn active_strip_index(&self) -> usize {
-        // No per-workspace active-strip map on the runtime tree yet (that
-        // lives on `state::WorkspaceTree`) — `0` is a stable placeholder;
-        // callers wanting the live selection use the `state` tree path.
-        let _ = self;
-        0
+        let active_ws = self.tree.active;
+        let Some(workspace) = self.tree.workspaces.iter().find(|w| w.id == active_ws) else {
+            return 0;
+        };
+        self.tree
+            .active_strip
+            .get(&active_ws)
+            .and_then(|id| workspace.strips.iter().position(|strip| strip.id == *id))
+            .unwrap_or(0)
     }
 
-    /// Drives the sidebar's overscroll gesture past the commit threshold;
-    /// asserts the toast side of the new-workspace routing (the append
-    /// itself lands on `state::WorkspaceTree`, not the runtime tree).
     #[cfg(any(test, debug_assertions))]
-    pub fn simulate_overscroll_commit(&mut self) {
-        use ui::widget::toast::ToastKind;
-        // Scratch state tree, same reason as `simulate_sidebar_wheel`.
-        let mut scratch = state::WorkspaceTree {
-            workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
-            active: state::WorkspaceId::from(0),
-            active_strip: std::collections::HashMap::default(),
-            active_group: std::collections::HashMap::default(),
-            collaborators: vec![],
-            ..Default::default()
+    pub fn append_empty_strip_for_test(&mut self, name: &str) -> usize {
+        let Some(workspace) = self
+            .tree
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == self.tree.active)
+        else {
+            return 0;
         };
-        if let Some(w) = scratch.workspaces.first() {
-            scratch.active = w.id;
-        }
-        self.sidebar.begin_overscroll(1);
-        for _ in 0..30 {
-            // 300px of pull, comfortably past the 240px threshold.
-            self.sidebar.drag_overscroll(1, 10.0);
-        }
-        self.sidebar.release_overscroll(&mut scratch);
-        self.toasts.push("Workspace created", ToastKind::Success);
+        workspace.strips.push(RuntimeStrip::new(name, Vec::new()));
+        workspace.strips.len().saturating_sub(1)
     }
 
     /// Same route as a real tray-gear click: `TopBarOutput::OpenQuickSettings`.
@@ -625,26 +564,6 @@ impl Shell {
     pub fn simulate_tray_gear_click(&mut self) {
         let out = self.topbar.click_tray_settings();
         self.handle_topbar_output(out);
-    }
-
-    /// The button-click counterpart to [`Self::simulate_overscroll_commit`].
-    #[cfg(any(test, debug_assertions))]
-    pub fn simulate_new_workspace_via_management(&mut self) {
-        use ui::widget::toast::ToastKind;
-        // Scratch state tree, same reason as `simulate_sidebar_wheel`.
-        let mut scratch = state::WorkspaceTree {
-            workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
-            active: state::WorkspaceId::from(0),
-            active_strip: std::collections::HashMap::default(),
-            active_group: std::collections::HashMap::default(),
-            collaborators: vec![],
-            ..Default::default()
-        };
-        if let Some(w) = scratch.workspaces.first() {
-            scratch.active = w.id;
-        }
-        let _ = self.sidebar.click_management_new_workspace(&mut scratch);
-        self.toasts.push("Workspace created", ToastKind::Success);
     }
 
     /// Renames via [`WorkspaceSettings::rename`], matching the production
@@ -792,7 +711,7 @@ fn default_demo_tabs() -> DemoTabs {
 
     // Seeds a welcome paragraph on first boot; later boots load the shared doc.
     let notes = NotesApp::with_seed(
-        "Welcome to nirios.\n\n\
+        "Welcome to tilo.\n\n\
          These notes sync live with anyone invited to this workspace — edits \
          replicate through the same CRDT path every widget uses.\n\n\
          Ctrl+Z / Ctrl+Y undo and redo across the whole shell.",
@@ -951,45 +870,45 @@ pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
 /// v1 renders the active workspace's active strip as a `StripView` overlay
 /// above the active `WorkspaceView`, with placeholder groups laid out
 /// horizontally.
-pub fn build_nirios_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
-    let (root, _chrome) = build_nirios_root_with_chrome(tree);
+pub fn build_tilo_root(tree: &WorkspaceTree) -> Box<dyn Widget> {
+    let (root, _chrome) = build_tilo_root_with_chrome(tree);
     root
 }
 
 /// Lets the caller expose the peer-sync palette commands (`/invite`,
-/// `/connect`) for a network-enabled session. [`build_nirios_root`] keeps
+/// `/connect`) for a network-enabled session. [`build_tilo_root`] keeps
 /// the zero-arg shape so call-sites that don't care don't have to thread it.
-pub fn build_nirios_root_with_options(
+pub fn build_tilo_root_with_options(
     tree: &WorkspaceTree,
     enable_peer_sync: bool,
 ) -> Box<dyn Widget> {
-    let (host, _chrome) = build_nirios_overlay_host_with_options(tree, enable_peer_sync);
+    let (host, _chrome) = build_tilo_overlay_host_with_options(tree, enable_peer_sync);
     Box::new(host) as Box<dyn Widget>
 }
 
 /// Also returns the shared chrome handle, so integration tests can observe
 /// overlay toggles without drilling through the widget tree.
-pub fn build_nirios_root_with_chrome(
+pub fn build_tilo_root_with_chrome(
     tree: &WorkspaceTree,
 ) -> (Box<dyn Widget>, chrome_state::Chrome) {
-    let (host, chrome) = build_nirios_overlay_host_with_chrome(tree);
+    let (host, chrome) = build_tilo_overlay_host_with_chrome(tree);
     (Box::new(host) as Box<dyn Widget>, chrome)
 }
 
 /// Returns the concrete [`overlay_host::ShellOverlayHost`] instead of a
 /// boxed trait object, so tests can assert on host-local state like
-/// `palette_visible()`. Production wiring goes through `build_nirios_root`.
-pub fn build_nirios_overlay_host_with_chrome(
+/// `palette_visible()`. Production wiring goes through `build_tilo_root`.
+pub fn build_tilo_overlay_host_with_chrome(
     tree: &WorkspaceTree,
 ) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
-    build_nirios_overlay_host_with_options(tree, false)
+    build_tilo_overlay_host_with_options(tree, false)
 }
 
-pub fn build_nirios_overlay_host_with_options(
+pub fn build_tilo_overlay_host_with_options(
     tree: &WorkspaceTree,
     enable_peer_sync: bool,
 ) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
-    build_nirios_overlay_host_with_handle(tree.clone().shared(), enable_peer_sync)
+    build_tilo_overlay_host_with_handle(tree.clone().shared(), enable_peer_sync)
 }
 
 /// Extracted so [`ShellOverlayHost::resync_strips_from_tree`] can reach for
@@ -1036,15 +955,15 @@ pub fn install_document_opener(chrome: &chrome_state::Chrome) {
 /// peer-sync's `WorkspaceTreeReplica` hold) so chrome mutations land on the
 /// tree other subsystems read from. Reads it once for the initial widget
 /// tree; later rebuilds run `sync_from_tree` on each chrome widget.
-pub fn build_nirios_overlay_host_with_handle(
+pub fn build_tilo_overlay_host_with_handle(
     tree_handle: state::WorkspaceTreeHandle,
     enable_peer_sync: bool,
 ) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
     // In-memory records: a host built without being told where to keep them
     // is a test, a probe or a `--shots` run, none of which may leave a
     // user's tabs on disk. A session passes its own store through
-    // [`build_nirios_overlay_host_with_records`].
-    build_nirios_overlay_host_with_records(
+    // [`build_tilo_overlay_host_with_records`].
+    build_tilo_overlay_host_with_records(
         tree_handle,
         enable_peer_sync,
         ui::record::RecordStore::in_memory(),
@@ -1053,7 +972,7 @@ pub fn build_nirios_overlay_host_with_handle(
 
 /// A scratch tab belongs to the compositor, not to any installed app, so
 /// its records live under this package in the compositor's own state dir.
-pub const SHELL_RECORDS_PACKAGE: &str = "org.nirios.Shell";
+pub const SHELL_RECORDS_PACKAGE: &str = "org.tilo.Shell";
 
 pub fn session_record_store() -> ui::record::RecordStore {
     ui::record::RecordStore::open(SHELL_RECORDS_PACKAGE)
@@ -1152,7 +1071,7 @@ pub(crate) fn build_workspace_root_with_scene_parts(
                     // Reserves canvas-x [0, SIDEBAR_WIDTH] for the wheel
                     // disc (which lives in the overlay layer) so wheel and
                     // strip share the same canvas and pan together.
-                    .with_leading_inset(f64::from(sidebar_wheel_chrome::SIDEBAR_WIDTH_PX)),
+                    .with_leading_inset(f64::from(sidebar_wheel_disc::SIDEBAR_RESERVE_PX)),
             );
             // Captured before unsizing into `Box<dyn Widget>`; the
             // coercion preserves the address, valid for the host's lifetime.
@@ -1196,7 +1115,7 @@ pub(crate) fn build_workspace_root_with_scene_parts(
     )
 }
 
-/// As [`build_nirios_overlay_host_with_handle`], but with the store the
+/// As [`build_tilo_overlay_host_with_handle`], but with the store the
 /// open tabs' documents live in named by the caller.
 // `tree_handle` is only ever read here (`.clone()`/`.read()`), never
 // moved, so `&WorkspaceTreeHandle` would be the tighter signature — but
@@ -1208,7 +1127,7 @@ pub(crate) fn build_workspace_root_with_scene_parts(
     reason = "tree_handle is only ever borrowed here, but narrowing the signature would touch \
               call sites in shell::compositor, outside this pass's scope"
 )]
-pub fn build_nirios_overlay_host_with_records(
+pub fn build_tilo_overlay_host_with_records(
     tree_handle: state::WorkspaceTreeHandle,
     enable_peer_sync: bool,
     records: ui::record::RecordStore,

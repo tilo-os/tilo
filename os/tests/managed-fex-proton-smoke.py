@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Run offline UMU/Proton through the shipped ARM manifests and qOS supervisor.
+"""Run offline UMU/Proton through the shipped ARM manifests and Tilo supervisor.
 
 Use a disposable native ARM container with an init process, networking disabled,
-and capabilities dropped. Mount the verified guest root at /opt/qos/x86, the UMU
+and capabilities dropped. Mount the verified guest root at /opt/tilo/x86, the UMU
 zipapp at /usr/libexec/umu_run.py, and the shipped manifests under
-/usr/share/qos/windows. Mount the Steam runtime read-only except for a private
+/usr/share/tilo/windows. Mount the Steam runtime read-only except for a private
 writable file over its platform files/.ref. This is a runtime integration test;
-it does not exercise the outer qOS capsule or Landlock policy.
+it does not exercise the outer Tilo capsule or Landlock policy.
 """
 
 import argparse
@@ -35,7 +35,7 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if any(args.output_dir.iterdir()):
         parser.error("output directory must be empty")
-    with tempfile.TemporaryDirectory(prefix="qos-managed-umu-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="tilo-managed-umu-") as temporary:
         home = Path(temporary)
         local = home / "data/umu/steamrt3"
         local.mkdir(parents=True)
@@ -51,23 +51,23 @@ def main():
             "UMU_LOG": "debug", "PROTONPATH": str(proton),
             "WINEPREFIX": str(home / "prefix"), "GAMEID": "umu-0",
             "WINEDEBUG": "-all",
-            "STEAM_COMPAT_EMULATOR": "/usr/share/qos/windows/fex-emulator.json",
-            "STEAM_COMPAT_GRAPHICS_PROVIDER": "/usr/share/qos/windows/fex-graphics-provider.json",
+            "STEAM_COMPAT_EMULATOR": "/usr/share/tilo/windows/fex-emulator.json",
+            "STEAM_COMPAT_GRAPHICS_PROVIDER": "/usr/share/tilo/windows/fex-graphics-provider.json",
             "STEAM_COMPAT_MACHINE_ARCHITECTURE": "aarch64-linux-gnu",
             "PRESSURE_VESSEL_COPY_RUNTIME": "1",
             "PRESSURE_VESSEL_VARIABLE_DIR": str(home / "var"),
             "PRESSURE_VESSEL_GENERATE_LOCALES": "0",
             "PRESSURE_VESSEL_SYSTEMD_SCOPE": "0",
             "PRESSURE_VESSEL_GRAPHICS_PROVIDER_aarch64_linux_gnu": "/",
-            "PRESSURE_VESSEL_GRAPHICS_PROVIDER_x86_64_linux_gnu": "/opt/qos/x86",
-            "PRESSURE_VESSEL_GRAPHICS_PROVIDER_i386_linux_gnu": "/opt/qos/x86",
+            "PRESSURE_VESSEL_GRAPHICS_PROVIDER_x86_64_linux_gnu": "/opt/tilo/x86",
+            "PRESSURE_VESSEL_GRAPHICS_PROVIDER_i386_linux_gnu": "/opt/tilo/x86",
         }
         log = args.output_dir / "umu.log"
         with log.open("w") as output:
             try:
                 process = subprocess.run(
                     [str(helper), "proton", "cmd.exe", "/c",
-                     r"echo QOS_MANAGED_UMU_PASS>C:\qos-console.txt"],
+                     r"echo TILO_MANAGED_UMU_PASS>C:\tilo-console.txt"],
                     env=environment, stdin=subprocess.DEVNULL, stdout=output,
                     stderr=subprocess.STDOUT, timeout=args.timeout,
                 )
@@ -75,7 +75,7 @@ def main():
             except subprocess.TimeoutExpired:
                 # The disposable container's init and teardown own descendants.
                 status, timed_out = None, True
-        marker = home / "prefix/drive_c/qos-console.txt"
+        marker = home / "prefix/drive_c/tilo-console.txt"
         actual = marker.read_text().strip() if marker.is_file() else None
         output = log.read_text(errors="replace")
         offline = all(text in output for text in (
@@ -86,7 +86,7 @@ def main():
             "exit_code": status, "timed_out": timed_out,
             "console_marker": actual, "offline_runtime_verified": offline,
             "passed": not timed_out and status == 0
-                      and actual == "QOS_MANAGED_UMU_PASS" and offline,
+                      and actual == "TILO_MANAGED_UMU_PASS" and offline,
         }
         (args.output_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps(result), flush=True)

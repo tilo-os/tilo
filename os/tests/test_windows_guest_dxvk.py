@@ -62,8 +62,8 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(len(record["files"]), 10)
         self.assertEqual({item["bits"] for item in record["files"]}, {32, 64})
         self.assertEqual(builtin.read_bytes(), b"original Wine builtin")
-        self.assertEqual((self.root / "usr/share/licenses/qos-dxvk/LICENSE").read_text(), "fixture license")
-        self.assertTrue((self.root / "usr/share/qos/dxvk/provenance.json").is_file())
+        self.assertEqual((self.root / "usr/share/licenses/tilo-dxvk/LICENSE").read_text(), "fixture license")
+        self.assertTrue((self.root / "usr/share/tilo/dxvk/provenance.json").is_file())
 
     def test_modified_archive_and_license_rejected(self):
         for name in (DXVK.ARCHIVE, DXVK.LICENSE):

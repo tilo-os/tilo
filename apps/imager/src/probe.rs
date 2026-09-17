@@ -1,11 +1,13 @@
 //! Live target enumeration: turn `lsblk -J -b` into a list of
 //! [`TargetDrive`]s.
 //!
-//! Best-effort and side-effect free — if `lsblk` is missing or returns
-//! nonsense we degrade to `None`, letting the caller fall back to the
-//! curated sample so the UI is always populated. This module is only
-//! exercised in the live binary; `--shots` never calls it, so the
-//! screenshot stays deterministic offline.
+//! Best-effort and side-effect free — if the platform probe is missing or
+//! returns nonsense we degrade to `None`, letting the caller retain its last
+//! trustworthy snapshot. A successful probe with no usable drives is
+//! deliberately `Some(Vec::new())`: that distinction lets Rescan remove an
+//! unplugged drive instead of leaving a stale destructive target selected.
+//! This module is only exercised in the live binary; `--shots` never calls it,
+//! so the screenshot stays deterministic offline.
 
 #[cfg(target_os = "macos")]
 use std::io::Write;
@@ -36,7 +38,7 @@ pub fn pick_image_native() -> ui::PortalChannel {
 #[cfg(target_os = "macos")]
 fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
     let script = r#"try
-set picked to choose file with prompt "Choose a qOS or disk image"
+set picked to choose file with prompt "Choose a Tilo or disk image"
 POSIX path of picked
 on error number -128
 return ""
@@ -51,7 +53,7 @@ end try"#;
 
 #[cfg(target_os = "windows")]
 fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
-    let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Title='Choose a qOS or disk image'; $d.Filter='Disk images (*.iso;*.img;*.raw)|*.iso;*.img;*.raw|All files (*.*)|*.*'; if($d.ShowDialog() -eq 'OK'){[Console]::Out.Write($d.FileName)}"#;
+    let script = r#"Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Title='Choose a Tilo or disk image'; $d.Filter='Disk images (*.iso;*.img;*.raw)|*.iso;*.img;*.raw|All files (*.*)|*.*'; if($d.ShowDialog() -eq 'OK'){[Console]::Out.Write($d.FileName)}"#;
     let out = Command::new("powershell.exe")
         .args(["-NoProfile", "-STA", "-Command", script])
         .output()?;
@@ -62,8 +64,9 @@ fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
     Ok((!path.is_empty()).then(|| std::path::PathBuf::from(path)))
 }
 
-/// Enumerate candidate write targets. Returns `None` when `lsblk` is
-/// unavailable or produced no usable disks.
+/// Enumerate candidate write targets. Returns `None` when the platform probe
+/// is unavailable or malformed, and `Some(Vec::new())` when it succeeded but
+/// found no usable disks.
 pub fn probe() -> Option<Vec<TargetDrive>> {
     probe_platform()
 }
@@ -85,7 +88,7 @@ fn probe_platform() -> Option<Vec<TargetDrive>> {
     let json: Value = serde_json::from_slice(&out.stdout).ok()?;
     let drives = parse_lsblk(&json)?;
     #[cfg(feature = "flatpak-media-writer")]
-    if std::env::var("QOS_IMAGER_FLATPAK").as_deref() == Ok("1") {
+    if std::env::var("TILO_IMAGER_FLATPAK").as_deref() == Ok("1") {
         return harden_flatpak_inventory(drives);
     }
     Some(drives)
@@ -180,7 +183,7 @@ fn harden_flatpak_inventory(drives: Vec<TargetDrive>) -> Option<Vec<TargetDrive>
         drive.is_system |= host_system;
         safe.push(drive);
     }
-    (!safe.is_empty()).then_some(safe)
+    Some(safe)
 }
 
 #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
@@ -225,7 +228,7 @@ fn udisks_object_path(device_name: &str) -> String {
 
 /// macOS: enumerate external physical media only. Internal disks are omitted
 /// because raw imaging the running APFS container is never a valid media-
-/// creation operation; the live qOS installer handles internal installation.
+/// creation operation; the live Tilo installer handles internal installation.
 #[cfg(target_os = "macos")]
 fn probe_platform() -> Option<Vec<TargetDrive>> {
     let plist = Command::new("diskutil")
@@ -297,7 +300,7 @@ pub fn parse_diskutil(json: &Value) -> Option<Vec<TargetDrive>> {
             })
         })
         .collect::<Vec<_>>();
-    (!drives.is_empty()).then_some(drives)
+    Some(drives)
 }
 
 #[cfg(target_os = "windows")]
@@ -331,11 +334,11 @@ $disks | ConvertTo-Json -Compress -Depth 4"#;
 /// Parse PowerShell `Get-Disk` JSON. Kept platform-neutral for fixture tests.
 pub fn parse_windows_disks(json: &Value) -> Option<Vec<TargetDrive>> {
     let one;
-    let disks = if let Some(items) = json.as_array() {
-        items
+    let (disks, inventory_is_array) = if let Some(items) = json.as_array() {
+        (items, true)
     } else {
         one = vec![json.clone()];
-        &one
+        (&one, false)
     };
     let drives = disks
         .iter()
@@ -370,7 +373,11 @@ pub fn parse_windows_disks(json: &Value) -> Option<Vec<TargetDrive>> {
             })
         })
         .collect::<Vec<_>>();
-    (!drives.is_empty()).then_some(drives)
+    // `Get-Disk | ConvertTo-Json` emits `[]` when the inventory is
+    // authoritatively empty. A singleton object remains accepted for older
+    // PowerShell producers, but a malformed singleton must still be a probe
+    // failure rather than an empty snapshot.
+    (inventory_is_array || !drives.is_empty()).then_some(drives)
 }
 
 fn windows_partitions(disk: &Value) -> Vec<TargetPartition> {
@@ -446,11 +453,7 @@ pub fn parse_lsblk(json: &Value) -> Option<Vec<TargetDrive>> {
         });
     }
 
-    if drives.is_empty() {
-        None
-    } else {
-        Some(drives)
-    }
+    Some(drives)
 }
 
 /// Flatten partitions; flag the drive as the system disk if any child is
@@ -515,33 +518,20 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
                 .to_string()
         });
 
-    // A qOS image (by name or volume label) can drive a full pre-configured
-    // install; anything else is written as-is.
-    let hay = format!(
-        "{} {}",
-        name.to_ascii_lowercase(),
-        label.to_ascii_lowercase()
-    );
-    let is_qos = hay.contains("qos");
-    let kind = if is_qos {
-        SourceKind::QosImage
-    } else {
-        SourceKind::IsoFile
-    };
-
-    // Only bless real disk-image extensions; a stray `.txt` is not an image.
-    let looks_like_image = matches!(ext.as_str(), "iso" | "img" | "raw" | "bin" | "dd") || is_qos;
+    // Local files have no authenticated release-catalog provenance. Even a
+    // Tilo-looking filename or volume label is therefore write-only.
+    let looks_like_image = matches!(ext.as_str(), "iso" | "img" | "raw" | "bin" | "dd");
     if !looks_like_image {
         return None;
     }
 
     Some(Source {
-        kind,
+        kind: SourceKind::IsoFile,
         path: path.to_string_lossy().to_string(),
         name,
         size,
         label,
-        installable: is_qos,
+        installable: false,
         identity: SourceIdentity::from_file(&file),
         expected_sha256: None,
     })
@@ -710,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn skips_zero_size_and_non_disk() {
+    fn successful_linux_probe_can_authoritatively_return_no_drives() {
         let json: Value = serde_json::from_str(
             r#"{"blockdevices":[
                  {"name":"loop0","size":0,"type":"loop"},
@@ -718,7 +708,8 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        assert!(parse_lsblk(&json).is_none());
+        assert_eq!(parse_lsblk(&json).unwrap().len(), 0);
+        assert!(parse_lsblk(&serde_json::json!({})).is_none());
     }
 
     /// Build a file whose ISO-9660 PVD carries `label`, so the real reader
@@ -747,20 +738,21 @@ mod tests {
 
     #[test]
     fn reads_real_iso9660_volume_label() {
-        let iso = iso_with_label("QOS_1_0_X86_64");
+        let iso = iso_with_label("TILO_1_0_X86_64");
         assert_eq!(
             read_iso_label(iso.path()).as_deref(),
-            Some("QOS_1_0_X86_64")
+            Some("TILO_1_0_X86_64")
         );
     }
 
     #[test]
-    fn inspect_source_uses_volume_label_and_marks_qos_installable() {
-        let iso = iso_with_label("QOS_1_0");
+    fn tilo_looking_local_source_remains_unverified_and_write_only() {
+        let iso = iso_with_label("TILO_1_0");
         let src = inspect_source(iso.path()).expect("inspect");
-        assert_eq!(src.kind, SourceKind::QosImage);
-        assert!(src.installable, "a qOS image can be pre-configured");
-        assert_eq!(src.label, "QOS_1_0");
+        assert_eq!(src.kind, SourceKind::IsoFile);
+        assert!(!src.installable);
+        assert!(src.expected_sha256.is_none());
+        assert_eq!(src.label, "TILO_1_0");
         assert!(src.size > 0);
         assert!(
             std::path::Path::new(&src.name)
@@ -784,6 +776,16 @@ mod tests {
         let f = tempfile::Builder::new().suffix(".txt").tempfile().unwrap();
         assert!(inspect_source(f.path()).is_none());
         assert!(inspect_source(std::path::Path::new("/no/such/file.iso")).is_none());
+    }
+
+    #[test]
+    fn tilo_filename_does_not_turn_non_image_into_official_media() {
+        let f = tempfile::Builder::new()
+            .prefix("tilo-official-")
+            .suffix(".txt")
+            .tempfile()
+            .unwrap();
+        assert!(inspect_source(f.path()).is_none());
     }
 
     #[test]
@@ -815,6 +817,13 @@ mod tests {
         assert_eq!(drives[0].name, "disk4");
         assert!(drives[0].removable);
         assert_eq!(drives[0].partitions[0].label.as_deref(), Some("TRANSFER"));
+    }
+
+    #[test]
+    fn successful_macos_probe_can_authoritatively_return_no_external_drives() {
+        let empty = serde_json::json!({"AllDisksAndPartitions": []});
+        assert_eq!(parse_diskutil(&empty).unwrap().len(), 0);
+        assert!(parse_diskutil(&serde_json::json!({})).is_none());
     }
 
     #[test]
@@ -860,5 +869,14 @@ mod tests {
         assert_eq!(drives[0].partitions.len(), 1);
         assert_eq!(drives[0].partitions[0].name, "F:");
         assert_eq!(drives[0].contents_summary(), "1 partition(s): CAMERA");
+    }
+
+    #[test]
+    fn successful_windows_probe_can_authoritatively_return_no_drives() {
+        assert_eq!(
+            parse_windows_disks(&serde_json::json!([])).unwrap().len(),
+            0
+        );
+        assert!(parse_windows_disks(&serde_json::json!({})).is_none());
     }
 }

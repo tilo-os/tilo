@@ -74,7 +74,7 @@ enum KeyCustody {
     LocalFile,
 }
 
-/// Resolve the data directory: `$XDG_DATA_HOME/qos-authenticator`
+/// Resolve the data directory: `$XDG_DATA_HOME/tilo-authenticator`
 /// (falling back to `$HOME/.local/share/...`). Returns `None` when no
 /// home directory is discoverable.
 pub fn data_dir() -> Option<PathBuf> {
@@ -82,10 +82,10 @@ pub fn data_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
-    Some(base.join("qos-authenticator"))
+    Some(base.join("tilo-authenticator"))
 }
 
-/// Path of the encrypted vault (`.../qos-authenticator/vault.enc`). This is
+/// Path of the encrypted vault (`.../tilo-authenticator/vault.enc`). This is
 /// the real vault file — its presence is what "is there a saved vault?"
 /// checks against.
 pub fn vault_path() -> Option<PathBuf> {
@@ -297,7 +297,7 @@ fn secret_service_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
 
 fn lookup_secret_service_key() -> Result<Option<Zeroizing<[u8; KEY_LEN]>>, String> {
     let output = Command::new("secret-tool")
-        .args(["lookup", "application", "qOS", "purpose", "totp-vault"])
+        .args(["lookup", "application", "Tilo", "purpose", "totp-vault"])
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("secret-tool could not start: {error}"))?;
@@ -322,9 +322,9 @@ fn store_secret_service_key(key: &[u8; KEY_LEN]) -> Result<(), String> {
     let mut child = Command::new("secret-tool")
         .args([
             "store",
-            "--label=qOS authenticator vault",
+            "--label=Tilo authenticator vault",
             "application",
-            "qOS",
+            "Tilo",
             "purpose",
             "totp-vault",
         ])
@@ -483,7 +483,7 @@ mod tests {
     use crate::model::demo_accounts;
 
     fn temp_dir() -> PathBuf {
-        std::env::temp_dir().join(format!("qos-totp-store-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("tilo-totp-store-{}", uuid::Uuid::new_v4()))
     }
 
     #[test]

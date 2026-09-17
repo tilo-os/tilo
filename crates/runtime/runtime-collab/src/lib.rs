@@ -1,4 +1,4 @@
-//! `runtime-collab` — Cap'n Proto client for the qOS
+//! `runtime-collab` — Cap'n Proto client for the Tilo
 //! collaboration broker.
 //!
 //! ## Usage shape
@@ -227,12 +227,13 @@ pub use collab_capnp::collab_service::Client as CollabServiceClient;
 pub use collab_capnp::context_stream::Client as ContextStreamClient;
 pub use collab_capnp::invocation_stream::Client as InvocationStreamClient;
 pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
+pub use collab_capnp::realtime_stream::Client as RealtimeStreamClient;
 pub use collab_capnp::stream::Client as StreamClient;
 pub use collab_capnp::task_run_stream::Client as TaskRunStreamClient;
 
 /// Version tag distinguishing a certified join presentation from invalid
 /// identity bytes.
-pub const CERTIFIED_JOIN_PREFIX: &[u8] = b"qos-collab-certified-join-v1\0";
+pub const CERTIFIED_JOIN_PREFIX: &[u8] = b"tilo-collab-certified-join-v1\0";
 
 /// Peer-verifiable proof that an enrolled device joined one workspace.
 /// `device_certificate` is the JSON form supplied by `runtime-identity`; the
@@ -276,7 +277,7 @@ impl CertifiedJoinIdentity {
     }
 }
 
-/// Try to dial the qOS collab broker via the launcher-supplied service
+/// Try to dial the Tilo collab broker via the launcher-supplied service
 /// fd. Returns [`NotAvailable`] when the env var is unset (likely: app
 /// running as a Flatpak on stock Linux) or the fd is no longer open.
 ///
@@ -386,6 +387,60 @@ pub struct ChannelHandle {
 }
 
 impl ChannelHandle {
+    /// Ask the broker to direct one current route holder to publish a complete
+    /// document snapshot for this late joiner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker cannot accept or complete the
+    /// snapshot request.
+    pub async fn request_document_snapshot(&self) -> Result<(), NotAvailable> {
+        self.inner
+            .request_document_snapshot_request()
+            .send()
+            .promise
+            .await?;
+        Ok(())
+    }
+
+    /// Submit one bounded realtime-session continuity command. The broker
+    /// authenticates `app_id` against this channel and returns a versioned
+    /// application-contract reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker rejects the command or the
+    /// local capability disconnects.
+    pub async fn realtime_command(
+        &self,
+        app_id: &str,
+        command_json: &[u8],
+    ) -> Result<Vec<u8>, NotAvailable> {
+        let mut request = self.inner.realtime_command_request();
+        request.get().set_app_id(app_id);
+        request.get().set_command_json(command_json);
+        let reply = request.send().promise.await?;
+        Ok(reply.get()?.get_reply_json()?.to_vec())
+    }
+
+    /// Subscribe to lifecycle edges addressed to this exact application
+    /// connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the local broker is unavailable.
+    pub async fn subscribe_realtime(&self) -> Result<RealtimeStream, NotAvailable> {
+        let reply = self
+            .inner
+            .subscribe_realtime_request()
+            .send()
+            .promise
+            .await?;
+        Ok(RealtimeStream {
+            inner: Rc::new(reply.get()?.get_stream()?),
+        })
+    }
+
     /// Open the certified workspace-control capability for `target_device`.
     ///
     /// # Errors
@@ -435,6 +490,25 @@ impl ChannelHandle {
     pub async fn clear_continuation(&self, app_id: &str) -> Result<(), NotAvailable> {
         let mut req = self.inner.clear_continuation_request();
         req.get().set_app_id(app_id);
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Replace this process's private media handoff descriptors. The shell
+    /// authenticates the channel route and never relays `reports_json` as room
+    /// collaboration state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker request fails.
+    pub async fn report_playback(
+        &self,
+        app_id: &str,
+        reports_json: &[u8],
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.report_playback_request();
+        req.get().set_app_id(app_id);
+        req.get().set_reports_json(reports_json);
         req.send().promise.await?;
         Ok(())
     }
@@ -1088,9 +1162,13 @@ impl ChannelHandle {
     pub async fn launch_published_application(
         &self,
         app_id: &str,
+        content_hash: Option<&str>,
     ) -> Result<(u64, String), NotAvailable> {
         let mut request = self.inner.launch_published_application_request();
         request.get().set_app_id(app_id);
+        request
+            .get()
+            .set_content_hash(content_hash.unwrap_or_default());
         let reply = request.send().promise.await?;
         let result = reply.get()?;
         Ok((
@@ -1105,7 +1183,7 @@ impl ChannelHandle {
 
     /// Ask this session to open the "say something about this" surface,
     /// addressed to the compositor on the far end of this socket, not the
-    /// room. `reference` is a serialised `qos_reference::ResourceRef`
+    /// room. `reference` is a serialised `tilo_reference::ResourceRef`
     /// (JSON); `beside` is `(x, y, w, h)` **in this window's own
     /// coordinates** — the session converts, since only it knows where this
     /// window sits on a desktop. The panel can't be drawn here: it opens
@@ -1318,7 +1396,7 @@ pub struct ActionEvent {
     /// The registry type id the action was encoded under. Names the app
     /// that owns the document it belongs to.
     pub type_id: String,
-    /// The encoded action, exactly as `qos_actions::EncodedAction`
+    /// The encoded action, exactly as `tilo_actions::EncodedAction`
     /// carries it.
     pub payload: Vec<u8>,
     /// The broker's attribution for whoever sent the frame. Who *sent*
@@ -1388,8 +1466,8 @@ impl ActionStream {
 }
 
 /// What one exported action's invocation must carry, as it crosses the
-/// wire — the transport-side twin of `qos_actions::door::InputSpec`.
-/// Kept here rather than depending on `qos-actions` so this crate stays
+/// wire — the transport-side twin of `tilo_actions::door::InputSpec`.
+/// Kept here rather than depending on `tilo-actions` so this crate stays
 /// a client for one socket; an app wanting the richer type converts at
 /// its own edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1611,7 +1689,7 @@ pub struct Invocation {
     /// resulting change commits under — not an authority; the session
     /// already decided this may happen.
     pub actor: String,
-    /// Serialized broker-owned [`qos_actions::ActionContext`] when this
+    /// Serialized broker-owned [`tilo_actions::ActionContext`] when this
     /// invocation originated from a leased workspace task. Empty for ordinary
     /// invocations so legacy application callers remain context-neutral.
     pub context_json: String,
@@ -1621,6 +1699,24 @@ pub struct Invocation {
 #[derive(Clone)]
 pub struct InvocationStream {
     inner: Rc<InvocationStreamClient>,
+}
+
+/// Client-pulled active-session lifecycle stream.
+#[derive(Clone)]
+pub struct RealtimeStream {
+    inner: Rc<RealtimeStreamClient>,
+}
+
+impl RealtimeStream {
+    /// Pull one bounded, versioned event payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker disconnects.
+    pub async fn read(&self) -> Result<Vec<u8>, NotAvailable> {
+        let reply = self.inner.read_request().send().promise.await?;
+        Ok(reply.get()?.get_event_json()?.to_vec())
+    }
 }
 
 impl InvocationStream {
@@ -1883,7 +1979,7 @@ impl PresenceHandle {
 
     /// Publish an invocation-scoped semantic interaction. The broker derives
     /// the actor from this authenticated handle; the JSON carries only the
-    /// versioned action/target lifecycle from `qos_actions`.
+    /// versioned action/target lifecycle from `tilo_actions`.
     ///
     /// # Errors
     ///
@@ -1899,6 +1995,26 @@ impl PresenceHandle {
             let mut b = req.get();
             b.set_key_bytes(key_bytes);
             b.set_interaction_json(interaction_json);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
+    /// Publish or clear (`text == ""`) the local participant's short status.
+    /// The broker authenticates authorship; `automatic` is presentation
+    /// provenance, not authority.
+    pub async fn publish_status(
+        &self,
+        key_bytes: &[u8],
+        text: &str,
+        automatic: bool,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_status_request();
+        {
+            let mut b = req.get();
+            b.set_key_bytes(key_bytes);
+            b.set_text(text);
+            b.set_automatic(automatic);
         }
         req.send().promise.await?;
         Ok(())
@@ -1984,10 +2100,14 @@ pub enum PresencePayload {
     Following {
         target: Option<String>,
     },
-    /// Versioned `qos_actions::InteractionUpdate` JSON. Actor identity is the
+    /// Versioned `tilo_actions::InteractionUpdate` JSON. Actor identity is the
     /// enclosing broker-attributed [`PresenceEvent::user_id`], never this
     /// caller-controlled payload.
     InteractionJson(String),
+    Status {
+        text: String,
+        automatic: bool,
+    },
     Arrived,
     Left,
 }
@@ -2073,6 +2193,14 @@ fn decode_presence_payload(
                 })?
                 .to_owned(),
         ),
+        W::Status(value) => PresencePayload::Status {
+            text: value
+                .get_text()?
+                .to_str()
+                .map_err(|error| capnp::Error::failed(format!("invalid status utf8: {error}")))?
+                .to_owned(),
+            automatic: value.get_automatic(),
+        },
         W::Arrived(()) => PresencePayload::Arrived,
         W::Left(()) => PresencePayload::Left,
     })
@@ -2108,6 +2236,9 @@ pub struct ChannelContext {
     /// `None` means stop following; ordinary context snapshots keep this
     /// field at `None` and replace roster/permissions as before.
     pub follow_changed: Option<Option<String>>,
+    /// True only on a directed broker request to publish current document
+    /// state. It is not a roster update and must not replace local context.
+    pub snapshot_requested: bool,
 }
 
 /// Client-pulled channel-context stream.
@@ -2173,6 +2304,7 @@ impl ContextStream {
             collaborators,
             permissions,
             follow_changed,
+            snapshot_requested: ctx.get_snapshot_requested(),
         })
     }
 }
@@ -2231,9 +2363,9 @@ mod tests {
     use super::*;
     use std::env;
 
-    fn clear_qos_env() {
+    fn clear_tilo_env() {
         for (key, _) in env::vars() {
-            if key.starts_with("QOS_") {
+            if key.starts_with("TILO_") {
                 unsafe { env::remove_var(&key) };
             }
         }
@@ -2241,7 +2373,7 @@ mod tests {
 
     #[test]
     fn try_connect_without_env_returns_service_fd_missing() {
-        clear_qos_env();
+        clear_tilo_env();
         // Not using `expect_err` because `CollabClient` intentionally
         // doesn't implement `Debug` (the underlying capnp client hook
         // isn't `Debug`).

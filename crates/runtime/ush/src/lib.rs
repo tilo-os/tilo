@@ -4,10 +4,10 @@
 //! (read-only) and a stack of user-owned layers, puts a shell inside it, and
 //! brokers every request that would reach past it.
 //!
-//! # Why this exists in qOS
+//! # Why this exists in Tilo
 //!
 //! `apps/terminal` used to `exec` `$SHELL` directly, which fails with
-//! `ENOENT` inside a qOS app sandbox: the system read profile binds the
+//! `ENOENT` inside a Tilo app sandbox: the system read profile binds the
 //! loader, fonts, `/sys` and the CA bundle but no executable directory —
 //! adding `/usr/bin` would hand every app the host's whole command set, and
 //! per-directory capabilities would prompt for `/usr/share/terminfo`. A
@@ -19,7 +19,7 @@
 //! Three principals, in decreasing authority. Read this before changing
 //! anything in [`guest`], [`broker`] or [`profile`].
 //!
-//! 1. **The supervisor** ([`supervisor`], [`broker`]) is qOS code, running
+//! 1. **The supervisor** ([`supervisor`], [`broker`]) is Tilo code, running
 //!    in the user's session *outside* any app sandbox. It needs
 //!    `unshare`/`mount`/`pivot_root` — syscalls apps are blanket-denied —
 //!    because it is what *creates* the confinement, the same way `bwrap`
@@ -35,7 +35,7 @@
 //!    `bwrap` installs the filter after mounting and immediately before
 //!    exec, so the supervisor's need for those syscalls never propagates.
 //!
-//! 3. **An app**, launched through `qos-launcher`, is untrusted and cannot
+//! 3. **An app**, launched through `tilo-launcher`, is untrusted and cannot
 //!    reach this runtime by executing it — a sandboxed app has neither the
 //!    syscalls nor a path to the binary. `apps/terminal` asks the
 //!    supervisor over its service socket and gets back a pty, not a
@@ -59,7 +59,7 @@
 //! The base is read-only in a stronger sense than "mounted `ro`": you can
 //! add to it and shadow it, but not alter a file that came from the image.
 //!
-//! # Permissions are qOS's, not a second system
+//! # Permissions are Tilo's, not a second system
 //!
 //! `perm trust-dir`, and every other decision the broker makes, is a
 //! `collab_types::caps::CapOverride` evaluated by `decide_capability` — the
@@ -97,7 +97,7 @@ pub use store::Store;
 /// capability vocabulary because that's what the compositor's permissions
 /// panel renders and revokes; one subject for the whole runtime, not per
 /// session, so trusting a directory stays trusted for the next shell too.
-pub const RUNTIME_APP_ID: &str = "dev.qos.ush";
+pub const RUNTIME_APP_ID: &str = "dev.tilo.ush";
 
 /// Where the guest can see the runtime's own binary and its command shims:
 /// a `tmpfs` the supervisor populates, first on `PATH`, not guest-writable.

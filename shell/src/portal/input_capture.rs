@@ -210,7 +210,7 @@ impl InputCaptureCompositorHandle {
                 .map(|session| PortalSignal::ZonesChanged { session }),
         );
     }
-    /// Returns true iff qOS must not deliver this event locally.
+    /// Returns true iff Tilo must not deliver this event locally.
     pub fn observe(&self, input: CapturedInput) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;
@@ -573,7 +573,7 @@ impl InputCaptureBackend {
             "clipboard_enabled",
             Value::Bool(clipboard_enabled),
         );
-        // qOS currently has no durable input-capture restore store. Explicitly
+        // Tilo currently has no durable input-capture restore store. Explicitly
         // declining persistence is preferable to silently accepting it: the
         // caller can see that it must prompt again next time.
         if requested_persist_mode != 0 {
@@ -995,7 +995,7 @@ fn opt_u32(values: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
     u32::try_from(values.get(key)?.try_clone().ok()?).ok()
 }
 
-/// InputCapture v2 accepts the common persistence vocabulary. Until qOS has
+/// InputCapture v2 accepts the common persistence vocabulary. Until Tilo has
 /// a durable, revocable restore store, a valid request is answered with the
 /// effective mode zero in `Start` rather than a misleading restore record.
 fn requested_persist_mode(values: &HashMap<String, OwnedValue>) -> Result<u32, ()> {
@@ -1065,7 +1065,7 @@ fn make_eis_transport() -> io::Result<(EisTransport, StdOwnedFd)> {
     let (server, client) = UnixStream::pair()?;
     let (tx, commands) = smithay::reexports::calloop::channel::channel();
     std::thread::Builder::new()
-        .name("qos-input-capture-eis".into())
+        .name("tilo-input-capture-eis".into())
         .spawn(move || run_eis(server, commands))?;
     Ok((EisTransport { tx }, StdOwnedFd::from(client)))
 }
@@ -1102,7 +1102,7 @@ fn run_eis(
                         // server has advertised a seat and its capabilities.
                         // The connection owns the seat object thereafter.
                         let _seat = connection.add_seat(
-                            Some("qos"),
+                            Some("tilo"),
                             DeviceCapability::Keyboard
                                 | DeviceCapability::Pointer
                                 | DeviceCapability::Button
@@ -1122,7 +1122,7 @@ fn run_eis(
                             {
                                 current.keyboard = Some(add_device(
                                     &bind.seat,
-                                    "qos keyboard",
+                                    "tilo keyboard",
                                     DeviceCapability::Keyboard.into(),
                                     state.sequence,
                                 ));
@@ -1132,7 +1132,7 @@ fn run_eis(
                             {
                                 current.pointer = Some(add_device(
                                     &bind.seat,
-                                    "qos pointer",
+                                    "tilo pointer",
                                     DeviceCapability::Pointer
                                         | DeviceCapability::Button
                                         | DeviceCapability::Scroll,
@@ -1309,7 +1309,7 @@ mod tests {
             y2: 100,
         }];
         state.sessions.insert(
-            "/org/freedesktop/portal/desktop/session/qos/one".into(),
+            "/org/freedesktop/portal/desktop/session/tilo/one".into(),
             session,
         );
         drop(state);
@@ -1346,7 +1346,7 @@ mod tests {
     #[test]
     fn clipboard_request_is_bound_to_an_active_capture_only() {
         let handle = InputCaptureCompositorHandle::native(Vec::new());
-        let session = "/org/freedesktop/portal/desktop/session/qos/clipboard".to_string();
+        let session = "/org/freedesktop/portal/desktop/session/tilo/clipboard".to_string();
         let owner = ":1.7";
         handle.state.lock().unwrap().sessions.insert(
             session.clone(),

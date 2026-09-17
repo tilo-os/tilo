@@ -11,14 +11,14 @@ name = "app_catalogue"
 path = "src/lib.rs"
 
 [[bin]]
-name = "qos-catalogue"
+name = "tilo-catalogue"
 path = "src/main.rs"
 
 [dependencies]
 atomic-file = { path = "../../system/atomic-file" }
 # The registry wire format + the per-entry publisher signature check.
 registry-types = { path = "../registry-types" }
-# Read side of the `qos-install` registry — the same list the desktop
+# Read side of the `tilo-install` registry — the same list the desktop
 # enumerates installed apps from, so "available" is exactly "not in
 # there".
 launcher = { path = "../launcher" }
@@ -37,8 +37,7 @@ reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 rustls.workspace = true
 
 [dev-dependencies]
-# The end-to-end test packs and publishes a real .qpkg, then installs it
-# with the real installer — no part of the path is stubbed.
+# The end-to-end test packs, publishes, and installs a .qpkg.
 pkg = { path = "../pkg" }
 app-registry = { path = "../app-registry" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }

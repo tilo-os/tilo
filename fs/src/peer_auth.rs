@@ -13,14 +13,14 @@
 use std::collections::HashMap;
 
 use ed25519_dalek::{Signer, Verifier};
-use qos_user_identity::{
-    DeviceCapabilities, DeviceCert, DeviceCertError, RevocationList, verify_device_cert_at,
-};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tilo_user_identity::{
+    DeviceCapabilities, DeviceCert, DeviceCertError, RevocationList, verify_device_cert_at,
+};
 
 /// Frozen domain-separation tag for collaborative-FS peer proofs.
-pub const FS_PEER_AUTH_TAG: &[u8] = b"qos-fs-peer-auth-v1\0";
+pub const FS_PEER_AUTH_TAG: &[u8] = b"tilo-fs-peer-auth-v1\0";
 
 /// Default maximum lifetime of a transport authentication challenge.
 pub const DEFAULT_CHALLENGE_TTL_NS: u64 = 30_000_000_000;

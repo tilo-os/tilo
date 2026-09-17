@@ -91,6 +91,6 @@ int main(int argc, char **argv) {
         glXDestroyPbuffer(display, surface);
     }
     XCloseDisplay(display);
-    puts("QOS_GL_PIXELS_PASS");
+    puts("TILO_GL_PIXELS_PASS");
     return 0;
 }

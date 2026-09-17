@@ -22,7 +22,7 @@ IMAGE_ID = "sha256:" + "a" * 64
 
 class MediaProfilesTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix="qos media profile ")
+        self.tmp = tempfile.TemporaryDirectory(prefix="tilo media profile ")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.qcow = self.root / "installer.qcow2"
@@ -32,7 +32,7 @@ class MediaProfilesTests(unittest.TestCase):
             "schema_version": 1, "id": "lenovo-83ed", "architecture": "aarch64",
             "devicetree": "/usr/lib/modules/fixture/dtb/" + self.definition["devicetree"],
             "devicetree_sha256": "b" * 64,
-            "target_update_ref": "code.podesta.ai/qos/qos:board-fixture",
+            "target_update_ref": "code.podesta.ai/qos/tilo:board-fixture",
         }
 
     def create_sidecar(self, qcow=None, image_id=IMAGE_ID):
@@ -40,14 +40,14 @@ class MediaProfilesTests(unittest.TestCase):
         with mock.patch.object(provenance.subprocess, "check_output", side_effect=[
             image_id + " arm64\n", json.dumps(snapshot)
         ]) as podman:
-            path = provenance.create("localhost/qos-installer:fixture", qcow or self.qcow)
+            path = provenance.create("localhost/tilo-installer:fixture", qcow or self.qcow)
         return path, podman.call_args_list
 
     def test_final_image_is_read_by_immutable_id_and_profile_payload_is_bound(self):
         path, calls = self.create_sidecar()
         command = calls[1].args[0]
         self.assertIn(IMAGE_ID.removeprefix("sha256:"), command)
-        self.assertNotIn("localhost/qos-installer:fixture", command)
+        self.assertNotIn("localhost/tilo-installer:fixture", command)
         self.assertIn("--read-only", command)
         self.assertIn("--network=none", command)
         record = json.loads(path.read_text())
@@ -89,10 +89,10 @@ class MediaProfilesTests(unittest.TestCase):
             provenance.validate(self.qcow, "aarch64", "lenovo-83ed")
 
     def test_untrusted_update_origin_or_changed_definition_cannot_be_recorded(self):
-        self.profile["target_update_ref"] = "untrusted.example/qos:latest"
+        self.profile["target_update_ref"] = "untrusted.example/tilo:latest"
         with self.assertRaises(ValueError):
             self.create_sidecar()
-        self.profile["target_update_ref"] = "code.podesta.ai/qos/qos:board-fixture"
+        self.profile["target_update_ref"] = "code.podesta.ai/qos/tilo:board-fixture"
         self.definition["firmware"] = {}
         with self.assertRaisesRegex(ValueError, "reviewed packaging definition"):
             self.create_sidecar()
@@ -125,7 +125,7 @@ class MediaProfilesTests(unittest.TestCase):
         return subprocess.run(
             ["/bin/bash", str(self.packaging / "package-install-medium.sh"),
              str(qcow or self.qcow), arch, str(self.assets)],
-            env=self.env | {"QOS_HARDWARE_PROFILE": profile}, text=True,
+            env=self.env | {"TILO_HARDWARE_PROFILE": profile}, text=True,
             capture_output=True, timeout=15, check=False,
         )
 
@@ -143,7 +143,7 @@ class MediaProfilesTests(unittest.TestCase):
         generic_out = self.root / "catalog-generic"
         result = self.catalog(generic_out)
         self.assertEqual(result.returncode, 0, result.stderr)
-        generic = json.loads((generic_out / "qos-installer-catalog-v1.json").read_text())
+        generic = json.loads((generic_out / "tilo-installer-catalog-v1.json").read_text())
         self.assertEqual(generic["schema"], 1)
         self.assertEqual({release["hardware_profile"] for release in generic["releases"]}, {"generic"})
         board_qcow = self.root / "board.qcow2"
@@ -151,12 +151,12 @@ class MediaProfilesTests(unittest.TestCase):
         self.create_sidecar(board_qcow)
         result = self.package("aarch64", "lenovo-83ed", board_qcow)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue((self.assets / "qos-installer-linux-aarch64.img.zst").is_file())
-        self.assertTrue((self.assets / "qos-installer-linux-aarch64-lenovo-83ed.img.zst").is_file())
+        self.assertTrue((self.assets / "tilo-installer-linux-aarch64.img.zst").is_file())
+        self.assertTrue((self.assets / "tilo-installer-linux-aarch64-lenovo-83ed.img.zst").is_file())
         board_out = self.root / "catalog-board"
         result = self.catalog(board_out)
         self.assertEqual(result.returncode, 0, result.stderr)
-        catalog = json.loads((board_out / "qos-installer-catalog-v2.json").read_text())
+        catalog = json.loads((board_out / "tilo-installer-catalog-v2.json").read_text())
         self.assertEqual(catalog["schema"], 2)
         self.assertEqual(len(catalog["releases"]), 3)
         board = next(release for release in catalog["releases"] if release["hardware_profile"] == "lenovo-83ed")

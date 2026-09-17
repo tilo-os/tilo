@@ -1,7 +1,7 @@
 //! Diagnostic output that cannot take the application down with it.
 //!
 //! `eprintln!` ends in the standard library's `print_to`, whose last act is
-//! `panic!("failed printing to {label}: {e}")`. A qOS application is launched
+//! `panic!("failed printing to {label}: {e}")`. A Tilo application is launched
 //! with its stderr on a pipe the compositor reads, so when that reading end
 //! goes away the next write returns `EPIPE` and that panic fires — under the
 //! release profile's `panic = "abort"`, instantly and without unwinding. A

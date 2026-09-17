@@ -76,10 +76,10 @@ containerfile_instructions "$containerfile" |
 
 for path in \
   os/scripts/finalize-rpmdb.sh \
-  os/usr/libexec/qos-session \
-  os/usr/libexec/qos-disk-encrypt \
-  os/usr/libexec/qos-verified-boot-install-preflight \
-  os/usr/libexec/qos-security-audit; do
+  os/usr/libexec/tilo-session \
+  os/usr/libexec/tilo-disk-encrypt \
+  os/usr/libexec/tilo-verified-boot-install-preflight \
+  os/usr/libexec/tilo-security-audit; do
   containerfile_instructions "$containerfile" |
     awk -v path="$path" '
       $1 == "COPY" {

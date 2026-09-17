@@ -1,4 +1,4 @@
-//! Shared chrome state for the nirios shell root.
+//! Shared chrome state for the tilo shell root.
 //!
 //! Chrome widgets sit at sibling positions in the widget tree and mutate
 //! the same fields, so this packages that state into one
@@ -28,6 +28,10 @@ fn visual_notification_alerts_enabled() -> bool {
         .get("visual_alerts")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+}
+
+fn notification_unix_ms() -> u64 {
+    u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
 }
 
 /// One capability request waiting for the user to answer it. Dropping
@@ -105,6 +109,45 @@ pub struct OverlayFlags {
     /// Screenshot / recording / arbitrary-region `PiP` selector
     /// (`Super+Shift+S`, or direct `PiP` via `Super+Shift+P`).
     pub capture: bool,
+    /// Compact, non-activating timer/stopwatch controller requested by Clocks.
+    pub clock: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "this is a backwards-compatible JSON snapshot produced by the Clocks app; active, stopwatch, paused, and overlay are independent wire fields, and replacing them with enums would change the external schema"
+)]
+pub struct ClockActivity {
+    #[serde(default)]
+    pub version: u8,
+    #[serde(default = "clock_activity_active_default")]
+    pub active: bool,
+    /// UUID of the exact timer represented by this snapshot. Older Clocks
+    /// builds omit it; the singleton stopwatch intentionally has no ID.
+    #[serde(default)]
+    pub activity_id: Option<String>,
+    pub label: String,
+    pub remaining_secs: u64,
+    pub stopwatch: bool,
+    #[serde(default)]
+    pub paused: bool,
+    #[serde(default)]
+    pub overlay: bool,
+    #[serde(default)]
+    pub generation: u64,
+    #[serde(default)]
+    pub producer_pid: u32,
+    #[serde(default)]
+    pub notification_id: Option<String>,
+    #[serde(default)]
+    pub notification_title: String,
+    #[serde(default)]
+    pub notification_body: String,
+}
+
+fn clock_activity_active_default() -> bool {
+    true
 }
 
 /// Device-local reduction of the active workspace's collaborative history.
@@ -119,6 +162,26 @@ pub struct ActivityGlance {
     /// transient reveal without stealing the user's selected center widget.
     pub pulse: u64,
     pub focus: Option<ActivityFocus>,
+}
+
+#[derive(Debug)]
+struct PendingNotificationHistoryClear {
+    notifications: Vec<Notification>,
+    deadline: std::time::Instant,
+}
+
+const NOTIFICATION_CLEAR_UNDO_WINDOW: std::time::Duration = std::time::Duration::from_secs(8);
+
+fn retain_newest_history(history: &mut Vec<Notification>) {
+    let excess = history.len().saturating_sub(MAX_HISTORY);
+    if excess != 0 {
+        history.drain(..excess);
+    }
+}
+
+fn notification_clear_deadline(now: std::time::Instant) -> std::time::Instant {
+    now.checked_add(NOTIFICATION_CLEAR_UNDO_WINDOW)
+        .unwrap_or(now)
 }
 
 /// Intent-addressable destination inside History. Kept device-local; links
@@ -247,7 +310,7 @@ impl Default for QuickSettingsState {
             bluetooth_available: false,
             wired: None,
             battery: os_actions::BatteryInfo::from_root(std::path::Path::new(
-                "/nonexistent/qos-power-supply",
+                "/nonexistent/tilo-power-supply",
             )),
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
@@ -313,6 +376,8 @@ pub struct ChromeState {
     /// [`crate::shell::status::StatusBridge`] with no lock held across
     /// a draw. `None` until a poller publishes.
     pub status: crate::shell::status::SystemStatus,
+    /// Session-local projection from Clocks; schedules never enter chrome.
+    pub clock_activity: Option<ClockActivity>,
     /// At most one — an OSD counts a value up, so eight volume presses
     /// show one slab, not eight banners. See [`crate::shell::osd`].
     pub osd: Option<crate::shell::osd::Osd>,
@@ -329,6 +394,8 @@ pub struct ChromeState {
     /// Bumped on every tree mutation. Widgets poll this in `update` to
     /// re-sync caches — cheaper than diffing, simpler than an event bus.
     pub revision: u64,
+    /// Last non-UI tree mutation observed by the compositor tick.
+    observed_external_tree_revision: u64,
     /// Passive, private history awareness for the top bar. Never serialized
     /// into or replicated with [`WorkspaceTree`].
     pub activity_glance: ActivityGlance,
@@ -353,6 +420,9 @@ pub struct ChromeState {
     /// that leaves [`Self::notifications`] lands here, as does
     /// anything [`Self::dnd`] suppressed.
     notification_history: Vec<Notification>,
+    /// History removed by the most recent Clear all action. Kept only long
+    /// enough to make that destructive-looking action safely reversible.
+    pending_notification_history_clear: Option<PendingNotificationHistoryClear>,
     /// Exact unread counts accepted only from launcher-verified senders.
     /// The top-bar tray consumes the aggregate; a future dock can consume the
     /// same per-package map without inventing another badge protocol.
@@ -415,6 +485,8 @@ pub struct ChromeState {
     /// Last layout pass, so placement can ask "which border can the
     /// user actually see" without reaching into the widget tree.
     strip_viewport: Option<crate::shell::placement::StripViewport>,
+    /// Logical desktop bounds from the overlay host's latest layout pass.
+    viewport_size: Option<(f64, f64)>,
 }
 
 impl ChromeState {
@@ -438,11 +510,13 @@ impl ChromeState {
             search_scope: SearchScope::default(),
             open_target: OpenTarget::default(),
             status: crate::shell::status::SystemStatus::default(),
+            clock_activity: None,
             osd: None,
             ws_settings_tab: WsTab::default(),
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: crate::shell::workspace_settings::GrantDraft::default(),
             revision: 0,
+            observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             activity_focus_request: None,
             pending_grants: VecDeque::new(),
@@ -451,6 +525,7 @@ impl ChromeState {
             notifications: Vec::new(),
             notification_bridge: None,
             notification_history: Vec::new(),
+            pending_notification_history_clear: None,
             notification_badges: BTreeMap::new(),
             notification_sound: None,
             priority_contacts: crate::priority_contacts::PriorityContactRegistry::in_memory(),
@@ -469,6 +544,7 @@ impl ChromeState {
             record_requests: Vec::new(),
             close_surface_requests: Vec::new(),
             strip_viewport: None,
+            viewport_size: None,
             records: RecordStore::in_memory(),
         }))
     }
@@ -493,6 +569,14 @@ impl ChromeState {
 
     pub fn strip_viewport(&self) -> Option<&crate::shell::placement::StripViewport> {
         self.strip_viewport.as_ref()
+    }
+
+    pub fn set_viewport_size(&mut self, size: (f64, f64)) {
+        self.viewport_size = Some(size);
+    }
+
+    pub fn viewport_size(&self) -> Option<(f64, f64)> {
+        self.viewport_size
     }
 
     pub fn push_peer_sync_request(&mut self, request: crate::shell::overlay_host::PeerSyncAction) {
@@ -614,6 +698,18 @@ impl ChromeState {
 
     pub fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Fold broker/portal mutations of the shared tree into retained chrome's
+    /// ordinary revision stream. Returns true exactly once per observed epoch.
+    pub fn sync_external_tree_revision(&mut self) -> bool {
+        let external = self.tree().external_revision;
+        if external == self.observed_external_tree_revision {
+            return false;
+        }
+        self.observed_external_tree_revision = external;
+        self.bump();
+        true
     }
 
     /// Publish a compact history reduction. A semantic no-op deliberately
@@ -1061,7 +1157,11 @@ impl ChromeState {
     pub fn dismiss_notification(&mut self, id: u64) {
         if let Some(pos) = self.notifications.iter().position(|n| n.id == id) {
             let removed = self.notifications.remove(pos);
-            self.emit_closed(&removed, CloseReason::Dismissed);
+            if let Some(command) = removed.remote_dismiss_command() {
+                self.queue_remote_notification_command(command);
+            } else {
+                self.emit_closed(&removed, CloseReason::Dismissed);
+            }
             self.record_history(removed);
             self.bump();
         }
@@ -1075,7 +1175,14 @@ impl ChromeState {
             return false;
         };
         let removed = self.notifications.remove(pos);
-        if let (Some(bridge), Some(dbus_id)) = (self.notification_bridge.as_ref(), removed.dbus_id)
+        if let Some(command) = removed
+            .default_action_key()
+            .and_then(|key| removed.remote_action_command(&key))
+            .or_else(|| removed.remote_dismiss_command())
+        {
+            self.queue_remote_notification_command(command);
+        } else if let (Some(bridge), Some(dbus_id)) =
+            (self.notification_bridge.as_ref(), removed.dbus_id)
         {
             if let Some(key) = removed.default_action_key() {
                 bridge.note_action(dbus_id, key);
@@ -1085,6 +1192,21 @@ impl ChromeState {
         self.record_history(removed);
         self.bump();
         true
+    }
+
+    fn queue_remote_notification_command(
+        &self,
+        command: crate::notifications::ContinuityCommandEgress,
+    ) {
+        let Some(bridge) = self.notification_bridge.as_ref() else {
+            return;
+        };
+        let _ = bridge.request_remote_continuity_command(
+            &command.target_device,
+            command.id,
+            command.command,
+            notification_unix_ms(),
+        );
     }
 
     /// Used by the `CloseNotification` pump path. No-op if no live
@@ -1097,6 +1219,18 @@ impl ChromeState {
         {
             let removed = self.notifications.remove(pos);
             self.emit_closed(&removed, reason);
+            self.record_history(removed);
+            self.bump();
+        }
+    }
+
+    fn close_notification_by_dbus_id_silently(&mut self, dbus_id: u32) {
+        if let Some(pos) = self
+            .notifications
+            .iter()
+            .position(|notification| notification.dbus_id == Some(dbus_id))
+        {
+            let removed = self.notifications.remove(pos);
             self.record_history(removed);
             self.bump();
         }
@@ -1175,10 +1309,55 @@ impl ChromeState {
     /// Clear the history log (the "Clear all" affordance in the
     /// notification centre). Bumps the revision so the surface re-syncs.
     pub fn clear_notification_history(&mut self) {
+        self.clear_notification_history_at(std::time::Instant::now());
+    }
+
+    fn clear_notification_history_at(&mut self, now: std::time::Instant) {
         if !self.notification_history.is_empty() {
-            self.notification_history.clear();
+            let mut removed = std::mem::take(&mut self.notification_history);
+            if let Some(pending) = self.pending_notification_history_clear.as_mut() {
+                pending.notifications.append(&mut removed);
+                retain_newest_history(&mut pending.notifications);
+                pending.deadline = notification_clear_deadline(now);
+            } else {
+                self.pending_notification_history_clear = Some(PendingNotificationHistoryClear {
+                    notifications: removed,
+                    deadline: notification_clear_deadline(now),
+                });
+            }
             self.bump();
         }
+    }
+
+    /// Whether Clear all can still be undone.
+    pub fn can_undo_notification_history_clear(&self) -> bool {
+        self.pending_notification_history_clear.is_some()
+    }
+
+    /// Restore the cleared oldest-first snapshot ahead of notifications that
+    /// arrived during the undo window, preserving exact chronological order.
+    pub fn undo_notification_history_clear(&mut self) -> bool {
+        let Some(mut pending) = self.pending_notification_history_clear.take() else {
+            return false;
+        };
+        pending.notifications.append(&mut self.notification_history);
+        retain_newest_history(&mut pending.notifications);
+        self.notification_history = pending.notifications;
+        self.bump();
+        true
+    }
+
+    /// Expire the undo snapshot. Returns true only on the clearing edge.
+    pub fn expire_notification_history_clear(&mut self, now: std::time::Instant) -> bool {
+        let expired = self
+            .pending_notification_history_clear
+            .as_ref()
+            .is_some_and(|pending| now >= pending.deadline);
+        if expired {
+            self.pending_notification_history_clear = None;
+            self.bump();
+        }
+        expired
     }
 
     // ---------- Do-Not-Disturb ----------
@@ -1280,6 +1459,8 @@ impl ChromeState {
             // A fresh Notify with an existing id supersedes the prior toast.
             self.notifications.retain(|n| n.dbus_id != Some(dbus_id));
             let verified_app_id = inc.caller.as_ref().map(|caller| caller.app_id.clone());
+            let sharing = bridge.take_sharing(dbus_id);
+            let urgency = inc.urgency;
             let badge_count = inc.badge_count;
             let verified_priority_contact = verified_app_id.is_some()
                 && inc
@@ -1298,6 +1479,30 @@ impl ChromeState {
             let mut notification = Notification::from_incoming(inc);
             notification.show_preview = effective.previews;
             notification.show_on_lock_screen = effective.lock_screen;
+            if effective.cross_device
+                && let (Some(app_id), Some(app_name)) =
+                    (verified_app_id.clone(), notification.app_name.clone())
+            {
+                let now_unix_ms = notification_unix_ms();
+                let lifetime_ms = u64::try_from(notification.dismiss_after.as_millis())
+                    .unwrap_or(crate::notifications::MAX_CONTINUITY_NOTIFICATION_TTL_MS)
+                    .clamp(1, crate::notifications::MAX_CONTINUITY_NOTIFICATION_TTL_MS);
+                let _ = bridge.project_continuity_notification(
+                    crate::notifications::ContinuityNotificationDraft {
+                        dbus_id,
+                        app_id,
+                        app_name,
+                        title: notification.title.clone(),
+                        body: notification.body.clone(),
+                        actions: notification.actions.clone(),
+                        urgency,
+                        sharing,
+                        previews_allowed: effective.previews,
+                        expires_unix_ms: now_unix_ms.saturating_add(lifetime_ms),
+                    },
+                    now_unix_ms,
+                );
+            }
             // Keep the verified producer's latest state even while badge
             // display is disabled. Visibility is a policy filter below; if we
             // discarded updates here, re-enabling badges would resurrect a
@@ -1324,6 +1529,123 @@ impl ChromeState {
         }
         for id in bridge.drain_close_requests() {
             self.close_notification_by_dbus_id(id, CloseReason::Closed);
+        }
+        for id in bridge.drain_continuity_local_closes() {
+            self.close_notification_by_dbus_id_silently(id);
+        }
+        self.pump_remote_continuity_notifications(&bridge);
+    }
+
+    fn pump_remote_continuity_notifications(&mut self, bridge: &NotificationBridge) {
+        use chrono::{Datelike, Timelike};
+
+        let now_unix_ms = notification_unix_ms();
+        bridge.expire_remote_continuity(now_unix_ms);
+        for event in bridge.drain_remote_continuity_events() {
+            match event {
+                crate::notifications::RemoteContinuityEvent::Upsert(remote) => {
+                    let app_id = remote.projection.app_id.clone();
+                    let now = chrono::Local::now();
+                    let effective = self.notification_policy.effective_for(
+                        Some(&app_id),
+                        now.timestamp(),
+                        u16::try_from(now.hour().saturating_mul(60).saturating_add(now.minute()))
+                            .unwrap_or(u16::MAX),
+                        u8::try_from(now.weekday().num_days_from_monday()).unwrap_or(u8::MAX),
+                    );
+                    if !effective.cross_device {
+                        continue;
+                    }
+                    let Some(mut notification) =
+                        Notification::from_remote_continuity(remote, now_unix_ms)
+                    else {
+                        continue;
+                    };
+                    if !effective.previews {
+                        notification.body.clear();
+                        notification.show_preview = false;
+                    }
+                    if self.replace_remote_notification(&notification) {
+                        continue;
+                    }
+                    if effective.banners {
+                        self.push_notification_full(notification);
+                    } else {
+                        self.record_history(notification);
+                        self.bump();
+                    }
+                }
+                crate::notifications::RemoteContinuityEvent::Retire { source_device, id } => {
+                    self.retire_remote_notification(&source_device, id);
+                }
+            }
+        }
+    }
+
+    fn replace_remote_notification(&mut self, replacement: &Notification) -> bool {
+        let Some(route) = replacement.remote_route.as_ref() else {
+            return false;
+        };
+        if let Some(existing) = self
+            .notifications
+            .iter_mut()
+            .find(|notification| notification.remote_route.as_ref() == Some(route))
+        {
+            let id = existing.id;
+            *existing = replacement.clone();
+            existing.id = id;
+            self.bump();
+            return true;
+        }
+        if let Some(existing) = self
+            .notification_history
+            .iter_mut()
+            .find(|notification| notification.remote_route.as_ref() == Some(route))
+        {
+            let id = existing.id;
+            *existing = replacement.clone();
+            existing.id = id;
+            self.bump();
+            return true;
+        }
+        false
+    }
+
+    fn retire_remote_notification(
+        &mut self,
+        source_device: &str,
+        id: crate::notifications::ContinuityNotificationId,
+    ) {
+        let matches = |notification: &Notification| {
+            notification.remote_route.as_ref().is_some_and(|route| {
+                route.source_device == source_device && route.notification_id == id
+            })
+        };
+        let before = (
+            self.notifications.len(),
+            self.notification_history.len(),
+            self.pending_notification_history_clear
+                .as_ref()
+                .map_or(0, |pending| pending.notifications.len()),
+        );
+        self.notifications
+            .retain(|notification| !matches(notification));
+        self.notification_history
+            .retain(|notification| !matches(notification));
+        if let Some(pending) = self.pending_notification_history_clear.as_mut() {
+            pending
+                .notifications
+                .retain(|notification| !matches(notification));
+        }
+        let after = (
+            self.notifications.len(),
+            self.notification_history.len(),
+            self.pending_notification_history_clear
+                .as_ref()
+                .map_or(0, |pending| pending.notifications.len()),
+        );
+        if after != before {
+            self.bump();
         }
     }
 
@@ -1352,6 +1674,65 @@ mod visual_alert_tests {
                 .borrow()
                 .visual_alert_active(now + std::time::Duration::from_millis(451))
         );
+    }
+}
+
+#[cfg(test)]
+mod notification_history_clear_tests {
+    use super::*;
+    use crate::shell::notification::Notification;
+
+    #[test]
+    fn clear_undo_restores_exact_order_before_new_arrivals() {
+        let chrome = ChromeState::new(WorkspaceTree::default());
+        let now = std::time::Instant::now();
+        let mut state = chrome.borrow_mut();
+        state.record_history(Notification::new("first", "one"));
+        state.record_history(Notification::new("second", "two"));
+        state.clear_notification_history_at(now);
+        state.record_history(Notification::new("new", "three"));
+
+        assert!(state.undo_notification_history_clear());
+        let titles: Vec<_> = state
+            .notification_history()
+            .iter()
+            .map(|notification| notification.title.as_str())
+            .collect();
+        assert_eq!(titles, ["first", "second", "new"]);
+        assert!(!state.undo_notification_history_clear());
+    }
+
+    #[test]
+    fn clear_snapshot_expires_at_eight_seconds() {
+        let chrome = ChromeState::new(WorkspaceTree::default());
+        let now = std::time::Instant::now();
+        let mut state = chrome.borrow_mut();
+        state.record_history(Notification::new("one", "body"));
+        state.clear_notification_history_at(now);
+
+        assert!(!state.expire_notification_history_clear(now + std::time::Duration::from_secs(7)));
+        assert!(state.can_undo_notification_history_clear());
+        assert!(state.expire_notification_history_clear(now + std::time::Duration::from_secs(8)));
+        assert!(!state.can_undo_notification_history_clear());
+        assert!(!state.undo_notification_history_clear());
+    }
+
+    #[test]
+    fn second_clear_extends_one_recoverable_snapshot() {
+        let chrome = ChromeState::new(WorkspaceTree::default());
+        let now = std::time::Instant::now();
+        let mut state = chrome.borrow_mut();
+        state.record_history(Notification::new("before", "body"));
+        state.clear_notification_history_at(now);
+        state.record_history(Notification::new("during", "body"));
+        state.clear_notification_history_at(now + std::time::Duration::from_secs(4));
+        assert!(state.undo_notification_history_clear());
+        let titles: Vec<_> = state
+            .notification_history()
+            .iter()
+            .map(|notification| notification.title.as_str())
+            .collect();
+        assert_eq!(titles, ["before", "during"]);
     }
 }
 
@@ -1597,7 +1978,7 @@ mod active_tab_tests {
         let grants = ws.app_grants_snapshot();
         drop(guard);
         assert!(
-            grants.contains_key("org.nirios.Editor"),
+            grants.contains_key("org.tilo.Editor"),
             "built-in Editor must be keyed by its canonical app-id; \
              grants = {grants:?}"
         );
@@ -1675,5 +2056,18 @@ mod active_tab_tests {
         let before = st.strip_focus().1;
         assert!(!st.focus_strip_index(count + 5));
         assert_eq!(st.strip_focus().1, before);
+    }
+
+    #[test]
+    fn broker_tree_epoch_invalidates_chrome_exactly_once() {
+        let cell = ChromeState::new(WorkspaceTree::default());
+        let mut state = cell.borrow_mut();
+        let initial = state.revision;
+        assert!(!state.sync_external_tree_revision());
+        state.tree_mut().external_revision = 1;
+        assert!(state.sync_external_tree_revision());
+        assert_eq!(state.revision, initial.wrapping_add(1));
+        assert!(!state.sync_external_tree_revision());
+        assert_eq!(state.revision, initial.wrapping_add(1));
     }
 }

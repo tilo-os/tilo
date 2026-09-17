@@ -17,7 +17,7 @@ else
   printf 'skip  imager broker adversarial fixtures require root installation\n'
   exit 0
 fi
-trusted="/run/qos-imager-broker-test-$$"
+trusted="/run/tilo-imager-broker-test-$$"
 "${root_do[@]}" mkdir -p "$trusted"
 
 cat > "$tmp/signer" <<'EOF'
@@ -33,16 +33,16 @@ kind="$1"; output="$2"
 umask 077
 printf 'BROKER_NOISE=must-not-escape\n'
 case "${CASE:-valid}" in
-  duplicate) printf 'QOS_LINUX_SIGNER=%s\nQOS_LINUX_SIGNER=%s\n' "$SIGNER" "$SIGNER" > "$output" ;;
-  multiline) printf 'QOS_LINUX_SIGNER=%s\nQOS_LINUX_VERIFY_KEY=%s\nBAD=value\n' "$SIGNER" "$KEY" > "$output" ;;
-  mac-duplicate) printf 'QOS_MAC_SIGNING_IDENTITY=%s\nQOS_MAC_SIGNING_IDENTITY=%s\n' "$MAC_ID" "$MAC_ID" > "$output" ;;
-  mac-invalid) printf 'QOS_MAC_SIGNING_IDENTITY=unsafe;identity\nQOS_NOTARY_KEYCHAIN_PROFILE=%s\n' "$MAC_PROFILE" > "$output" ;;
+  duplicate) printf 'TILO_LINUX_SIGNER=%s\nTILO_LINUX_SIGNER=%s\n' "$SIGNER" "$SIGNER" > "$output" ;;
+  multiline) printf 'TILO_LINUX_SIGNER=%s\nTILO_LINUX_VERIFY_KEY=%s\nBAD=value\n' "$SIGNER" "$KEY" > "$output" ;;
+  mac-duplicate) printf 'TILO_MAC_SIGNING_IDENTITY=%s\nTILO_MAC_SIGNING_IDENTITY=%s\n' "$MAC_ID" "$MAC_ID" > "$output" ;;
+  mac-invalid) printf 'TILO_MAC_SIGNING_IDENTITY=unsafe;identity\nTILO_NOTARY_KEYCHAIN_PROFILE=%s\n' "$MAC_PROFILE" > "$output" ;;
   token-newline) printf 'token-with-newline\n' > "$output" ;;
   *)
     if [ "$kind" = linux ]; then
-      printf 'QOS_LINUX_SIGNER=%s\nQOS_LINUX_VERIFY_KEY=%s\n' "$SIGNER" "$KEY" > "$output"
+      printf 'TILO_LINUX_SIGNER=%s\nTILO_LINUX_VERIFY_KEY=%s\n' "$SIGNER" "$KEY" > "$output"
     elif [ "$kind" = macos ]; then
-      printf 'QOS_MAC_SIGNING_IDENTITY=%s\nQOS_NOTARY_KEYCHAIN_PROFILE=%s\n' \
+      printf 'TILO_MAC_SIGNING_IDENTITY=%s\nTILO_NOTARY_KEYCHAIN_PROFILE=%s\n' \
         "$MAC_ID" "$MAC_PROFILE" > "$output"
     else
       printf 'one-token-without-newline' > "$output"
@@ -58,12 +58,12 @@ EOF
 base=(env RUNNER_TEMP="$tmp" GITHUB_WORKSPACE="$repo"
   ACTIONS_ID_TOKEN_REQUEST_URL=https://code.invalid/token
   ACTIONS_ID_TOKEN_REQUEST_TOKEN=request SIGNER="$trusted/signer" KEY="$trusted/key"
-  MAC_ID='Developer ID Application: qOS Release (A1B2C3D4E5)'
-  MAC_PROFILE=qos-release-notary)
+  MAC_ID='Developer ID Application: Tilo Release (A1B2C3D4E5)'
+  MAC_PROFILE=tilo-release-notary)
 output="$("${base[@]}" "$repo/apps/imager/packaging/acquire-release-credentials.sh" \
   linux "$trusted/broker")"
-grep -Fxq "QOS_LINUX_SIGNER=$trusted/signer" <<< "$output"
-grep -Fxq "QOS_LINUX_VERIFY_KEY=$trusted/key" <<< "$output"
+grep -Fxq "TILO_LINUX_SIGNER=$trusted/signer" <<< "$output"
+grep -Fxq "TILO_LINUX_VERIFY_KEY=$trusted/key" <<< "$output"
 ! grep -Fq 'BROKER_NOISE' <<< "$output"
 
 for rejected in duplicate multiline lax; do
@@ -77,8 +77,8 @@ done
 
 output="$("${base[@]}" "$repo/apps/imager/packaging/acquire-release-credentials.sh" \
   macos "$trusted/broker")"
-grep -Fxq 'QOS_MAC_SIGNING_IDENTITY=Developer ID Application: qOS Release (A1B2C3D4E5)' <<< "$output"
-grep -Fxq 'QOS_NOTARY_KEYCHAIN_PROFILE=qos-release-notary' <<< "$output"
+grep -Fxq 'TILO_MAC_SIGNING_IDENTITY=Developer ID Application: Tilo Release (A1B2C3D4E5)' <<< "$output"
+grep -Fxq 'TILO_NOTARY_KEYCHAIN_PROFILE=tilo-release-notary' <<< "$output"
 ! grep -Fq 'BROKER_NOISE' <<< "$output"
 for rejected in mac-duplicate mac-invalid; do
   if "${base[@]}" CASE="$rejected" \
@@ -91,13 +91,13 @@ done
 
 token="$tmp/token"
 token_stdout="$("${base[@]}" "$repo/apps/imager/packaging/acquire-release-token.sh" \
-  homebrew "$trusted/broker" "$token")"
+  release "$trusted/broker" "$token")"
 [ -z "$token_stdout" ]
 [ "$(cat "$token")" = one-token-without-newline ]
 rm -f "$token"
 for rejected in token-newline lax; do
   if "${base[@]}" CASE="$rejected" \
-      "$repo/apps/imager/packaging/acquire-release-token.sh" homebrew "$trusted/broker" "$token" \
+      "$repo/apps/imager/packaging/acquire-release-token.sh" release "$trusted/broker" "$token" \
       >/dev/null 2>&1; then
     printf 'imager token helper accepted %s broker output\n' "$rejected" >&2
     exit 1

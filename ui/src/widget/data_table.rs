@@ -2612,6 +2612,40 @@ mod tests {
     }
 
     #[test]
+    fn column_resize_uses_press_origin_clamps_and_stops_on_release() {
+        let mut table = DataTable::<R>::new(vec![ColumnDef::new(
+            "name",
+            "Name",
+            ColumnWidth::Fixed(80.0),
+        )]);
+
+        table.begin_resize("name", 200.0);
+        table.drag_resize(215.0);
+        assert_eq!(table.column_width_px("name"), Some(95.0));
+        table.drag_resize(220.0);
+        assert_eq!(
+            table.column_width_px("name"),
+            Some(100.0),
+            "drag deltas must stay relative to the initial press"
+        );
+
+        table.end_resize();
+        table.drag_resize(1_000.0);
+        assert_eq!(
+            table.column_width_px("name"),
+            Some(100.0),
+            "release must end resize ownership"
+        );
+
+        table.begin_resize("name", 100.0);
+        table.drag_resize(0.0);
+        assert_eq!(
+            table.column_width_px("name"),
+            Some(DataTable::<R>::MIN_COL_WIDTH)
+        );
+    }
+
+    #[test]
     fn model_selection_builder_discards_absent_keys() {
         let mut selection = crate::selection::KeySelection::new();
         selection.toggle(3);

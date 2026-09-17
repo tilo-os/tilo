@@ -21,8 +21,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/common.sh"
 
 GEN="${1:-1}"
-LOG="$QOS_CFS_RUN/seal-gen$GEN.log"
-mkdir -p "$QOS_CFS_RUN"
+LOG="$TILO_CFS_RUN/seal-gen$GEN.log"
+mkdir -p "$TILO_CFS_RUN"
 
 # The digest install expects, out of the mismatch message.
 expected_digest() {
@@ -50,7 +50,7 @@ msg "UKI carries    sha512:${had:0:32}…"
 msg "install wants  sha512:${want:0:32}…"
 
 msg "pass 2: rebuild sealing the digest install asked for"
-QOS_CFS_DIGEST="$want" bash "$HERE/build.sh" "$GEN" 2>&1 | tee "$LOG.build2" | tail -3
+TILO_CFS_DIGEST="$want" bash "$HERE/build.sh" "$GEN" 2>&1 | tee "$LOG.build2" | tail -3
 
 msg "pass 2: install"
 if bash "$HERE/install.sh" "$GEN" 2>&1 | tee "$LOG.install2" | tail -5; then

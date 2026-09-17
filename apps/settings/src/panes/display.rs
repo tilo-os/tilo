@@ -95,7 +95,7 @@ pub const DISPLAY_SCALES: &[(&str, f64)] = &[
 ];
 
 /// Map a scale factor to the closest offered label (defaults to "100%").
-fn scale_label(scale: f64) -> &'static str {
+pub(crate) fn scale_label(scale: f64) -> &'static str {
     // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
     // could hold a non-finite scale, and this must degrade to "100%" rather
     // than panic the pane.
@@ -113,7 +113,7 @@ fn scale_factor_of(label: &str) -> Option<f64> {
         .map(|(_, s)| *s)
 }
 
-fn output_key(connector: &str, field: &str) -> String {
+pub(crate) fn output_key(connector: &str, field: &str) -> String {
     format!("display.output.{connector}.{field}")
 }
 
@@ -124,7 +124,7 @@ const TRANSFORMS: &[(&str, OutputTransform)] = &[
     ("Portrait left", OutputTransform::Rotate270),
 ];
 
-fn transform_label(transform: OutputTransform) -> &'static str {
+pub(crate) fn transform_label(transform: OutputTransform) -> &'static str {
     TRANSFORMS
         .iter()
         .find(|(_, candidate)| *candidate == transform)
@@ -288,6 +288,7 @@ pub struct DisplayPane {
     snapshot_stamp: Option<SystemTime>,
     hardware_probe: Option<std::sync::mpsc::Receiver<(f32, bool)>>,
     brightness_tx: Option<std::sync::mpsc::Sender<f32>>,
+    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     needs_seed: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
@@ -320,7 +321,7 @@ impl DisplayPane {
             .spawn(move || {
                 while let Ok(percent) = brightness_rx.recv() {
                     if let Err(error) = worker_dispatcher.set_brightness(percent) {
-                        tracing::warn!(target: "qos::settings", op = "set_brightness", %error, "display worker dispatch failed");
+                        tracing::warn!(target: "tilo::settings", op = "set_brightness", %error, "display worker dispatch failed");
                     }
                 }
             })
@@ -341,6 +342,7 @@ impl DisplayPane {
                 .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
             hardware_probe: Some(probe_rx),
             brightness_tx: Some(brightness_tx),
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
@@ -393,6 +395,7 @@ impl DisplayPane {
             snapshot_stamp: None,
             hardware_probe: None,
             brightness_tx: None,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
@@ -410,6 +413,29 @@ impl DisplayPane {
     pub fn with_ambient_sensor(mut self, available: bool) -> Self {
         self.ambient_sensor_available = available;
         self
+    }
+
+    #[must_use]
+    pub fn with_operation_status(
+        mut self,
+        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
+    ) -> Self {
+        self.operation_status = status.clone();
+        self
+    }
+
+    fn finish_display_operation(&self, result: Result<String, String>) {
+        let crate::actions::LocalOperationStatus::Running { token } = self.operation_status.get()
+        else {
+            return;
+        };
+        if !token.starts_with(crate::actions::DISPLAY_OPERATION_TYPE) {
+            return;
+        }
+        self.operation_status.set(match result {
+            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
+            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
+        });
     }
 
     pub fn outputs(&self) -> &[DisplayOutput] {
@@ -882,7 +908,7 @@ impl DisplayPane {
         let mut p = SystemPrefs::load();
         f(&mut p.display);
         if let Err(e) = p.save() {
-            warn!(target: "qos::settings", op = "display_prefs_save", error = %e, "failed to persist display prefs");
+            warn!(target: "tilo::settings", op = "display_prefs_save", error = %e, "failed to persist display prefs");
         }
     }
 
@@ -1235,7 +1261,7 @@ impl DisplayPane {
                 if let Some(sender) = &self.brightness_tx {
                     let _ = sender.send(percent);
                 } else if let Err(e) = self.dispatcher.set_brightness(percent) {
-                    warn!(target: "qos::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
+                    warn!(target: "tilo::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
                 }
             }
         }
@@ -1309,6 +1335,9 @@ impl DisplayPane {
         Self::apply_mirror_pairs(connected, &mut next, &mut changed);
         if changed {
             self.stage_output_candidate(connected, next);
+            self.finish_display_operation(Ok(
+                "Display change staged. Apply it to preview the new configuration.".into(),
+            ));
         }
     }
 
@@ -1590,7 +1619,7 @@ impl DisplayPane {
         match next.validate_for(&descriptors) {
             Ok(()) => self.pending_candidate = Some(next),
             Err(error) => {
-                warn!(target: "qos::settings", ?error, "rejected invalid display configuration");
+                warn!(target: "tilo::settings", ?error, "rejected invalid display configuration");
             }
         }
     }
@@ -1614,26 +1643,50 @@ impl DisplayPane {
     fn sync_transaction_controls(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if read_bool(state, root, APPLY_DISPLAY_KEY) == Some(true) {
             let _ = state.put(root, APPLY_DISPLAY_KEY, false);
-            if let Some(candidate) = self.pending_candidate.clone()
-                && let Err(error) = DisplayTransaction::request(candidate)
-            {
-                warn!(target: "qos::settings", %error, "failed to stage display configuration");
+            match self.pending_candidate.clone() {
+                Some(candidate) => {
+                    if let Err(error) = DisplayTransaction::request(candidate) {
+                        warn!(target: "tilo::settings", %error, "failed to stage display configuration");
+                        self.finish_display_operation(Err(format!(
+                            "Display configuration could not be staged: {error}"
+                        )));
+                    }
+                }
+                None => self.finish_display_operation(Err(
+                    "There are no staged display changes to apply.".into(),
+                )),
             }
         }
         if read_bool(state, root, KEEP_DISPLAY_KEY) == Some(true) {
             let _ = state.put(root, KEEP_DISPLAY_KEY, false);
-            if let Some(mut transaction) = DisplayTransaction::load()
-                && let Err(error) = transaction.request_confirmation()
-            {
-                warn!(target: "qos::settings", %error, "failed to confirm display configuration");
+            match DisplayTransaction::load() {
+                Some(mut transaction) => {
+                    if let Err(error) = transaction.request_confirmation() {
+                        warn!(target: "tilo::settings", %error, "failed to confirm display configuration");
+                        self.finish_display_operation(Err(format!(
+                            "Display configuration could not be kept: {error}"
+                        )));
+                    }
+                }
+                None => self.finish_display_operation(Err(
+                    "There is no display transaction to keep.".into(),
+                )),
             }
         }
         if read_bool(state, root, REVERT_DISPLAY_KEY) == Some(true) {
             let _ = state.put(root, REVERT_DISPLAY_KEY, false);
-            if let Some(mut transaction) = DisplayTransaction::load()
-                && let Err(error) = transaction.request_revert()
-            {
-                warn!(target: "qos::settings", %error, "failed to revert display configuration");
+            match DisplayTransaction::load() {
+                Some(mut transaction) => {
+                    if let Err(error) = transaction.request_revert() {
+                        warn!(target: "tilo::settings", %error, "failed to revert display configuration");
+                        self.finish_display_operation(Err(format!(
+                            "Display configuration could not be reverted: {error}"
+                        )));
+                    }
+                }
+                None => self.finish_display_operation(Err(
+                    "There is no display transaction to revert.".into(),
+                )),
             }
         }
         if let Some(transaction) = DisplayTransaction::load() {
@@ -1650,6 +1703,15 @@ impl DisplayPane {
                     self.pending_candidate = None;
                     let committed = self.output_config.clone();
                     self.write_output_controls(state, root, &committed);
+                    let result = match transaction.state {
+                        DisplayTransactionState::Confirmed => Ok("Display changes kept.".into()),
+                        DisplayTransactionState::Reverted => Ok("Display changes reverted.".into()),
+                        DisplayTransactionState::Rejected => Err(transaction
+                            .message
+                            .unwrap_or_else(|| "Display configuration was rejected.".into())),
+                        _ => return,
+                    };
+                    self.finish_display_operation(result);
                 }
             }
         }

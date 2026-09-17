@@ -40,11 +40,11 @@ const MINSEC_MAX: u8 = 59;
 
 /// Fixed width of one spinner cell. Picked so the two-digit value reads
 /// comfortably at the `lg` type-scale (16 px) without crowding the arrows.
-const SPINNER_WIDTH: f32 = 36.0;
+const SPINNER_WIDTH: f32 = 44.0;
 /// Fixed height of the picker. Three vertical regions of equal height
 /// (arrow, value, arrow) of 24 px each — the value cell ends up matching the
 /// `lg` text height with some breathing room.
-const PICKER_HEIGHT: f32 = 72.0;
+const PICKER_HEIGHT: f32 = 132.0;
 /// Width of the colon separator between spinners.
 const COLON_WIDTH: f32 = 8.0;
 
@@ -93,6 +93,9 @@ type TimeChange = Box<dyn FnMut(u8, u8, Option<u8>)>;
 
 /// Three-spinner time picker. See module docs.
 pub struct TimePicker {
+    /// Stable semantic/action id. Callers rendering more than one picker in a
+    /// retained tree set this explicitly with [`Self::with_id`].
+    id: String,
     /// Fluent message id spoken for the complete time control.
     accessible_name: Option<String>,
     hours: u8,           // 0..=23
@@ -124,6 +127,7 @@ impl TimePicker {
     /// constructor.
     pub fn new(hours: u8, minutes: u8) -> Self {
         Self {
+            id: "time_picker".into(),
             accessible_name: None,
             hours: hours.min(HOUR_MAX),
             minutes: minutes.min(MINSEC_MAX),
@@ -166,6 +170,14 @@ impl TimePicker {
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.accessible_name = Some(name.into());
+        self
+    }
+
+    /// Set the stable semantic/action id used by accessibility, search and
+    /// direct agent invocation.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
         self
     }
 
@@ -615,6 +627,10 @@ impl Widget for TimePicker {
         "TimePicker"
     }
 
+    fn test_id(&self) -> Option<&str> {
+        Some(&self.id)
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -647,6 +663,8 @@ impl Widget for TimePicker {
         };
         Some(
             AccessNode::new(Role::ComboBox)
+                .with_semantic_key(&self.id)
+                .with_action_target(&self.id)
                 .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
                 .with_value(value)
                 .with_state(AccessState {
@@ -655,6 +673,12 @@ impl Widget for TimePicker {
                     ..Default::default()
                 }),
         )
+    }
+
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        vec![crate::widget::ControlBindingMetadata::semantic(
+            self.id.clone(),
+        )]
     }
 
     fn perform_action(

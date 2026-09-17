@@ -419,7 +419,7 @@ impl AudioRuntimeControl for RealAudioRuntime {
 
 /// Stable node name used to distinguish our virtual accessibility sink from
 /// real hardware during subsequent graph enumerations.
-pub const ACCESSIBILITY_MONO_SINK_NAME: &str = "qos_accessibility_mono";
+pub const ACCESSIBILITY_MONO_SINK_NAME: &str = "tilo_accessibility_mono";
 
 pub fn balance_channel_percent(base_volume: f32, balance: f32) -> (f32, f32) {
     let base = base_volume.clamp(0.0, 1.5) * 100.0;
@@ -432,7 +432,7 @@ fn mono_load_args(master: &str) -> Vec<String> {
         "load-module".into(),
         "module-remap-sink".into(),
         format!("sink_name={ACCESSIBILITY_MONO_SINK_NAME}"),
-        "sink_properties=device.description=qOS_Mono_Output".into(),
+        "sink_properties=device.description=Tilo_Mono_Output".into(),
         format!("master={master}"),
         "channels=2".into(),
         "channel_map=mono,mono".into(),

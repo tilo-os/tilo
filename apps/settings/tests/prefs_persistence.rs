@@ -4,7 +4,7 @@
 //!
 //! These run in this dedicated test binary (a separate process) so pointing
 //! `XDG_CONFIG_HOME` at a throwaway directory fully isolates the shared
-//! `~/.config/qos/settings.json` the panes write. A process-wide lock
+//! `~/.config/tilo/settings.json` the panes write. A process-wide lock
 //! serialises the env mutation so the tests don't race each other.
 
 #![allow(
@@ -45,7 +45,7 @@ impl settings::account_probe::AccountTester for AcceptAccount {
 /// Returns the directory (kept alive for the test's duration).
 fn temp_home(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "qos-settings-persist-{}-{}",
+        "tilo-settings-persist-{}-{}",
         std::process::id(),
         name
     ));

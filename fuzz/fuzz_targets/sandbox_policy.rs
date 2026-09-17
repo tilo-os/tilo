@@ -1,21 +1,17 @@
 #![no_main]
 
-use libfuzzer_sys::fuzz_target;
 use launcher::landlock_shim::{ShimArgs, access_plan};
+use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    // NUL is an impossible byte in an actual argv element, so it makes a
-    // mutation-friendly token separator while still allowing hostile paths,
-    // flags, descriptors, ports, and arbitrarily placed `--` separators.
+    // NUL is a mutation-friendly separator that cannot occur inside argv.
     let args: Vec<String> = data
         .split(|byte| *byte == 0)
         .map(|token| String::from_utf8_lossy(token).into_owned())
         .collect();
 
     if let Ok(parsed) = ShimArgs::parse(&args) {
-        // Exercise the policy compiler independently of the running kernel.
-        // Production currently requires V5; older ABIs remain relevant to
-        // fail-closed compatibility handling and should stay total too.
+        // Keep policy compilation total across supported Landlock ABIs.
         for abi in [
             landlock::ABI::V1,
             landlock::ABI::V2,

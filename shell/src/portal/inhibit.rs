@@ -1,10 +1,10 @@
-//! `org.freedesktop.impl.portal.Inhibit` backed by qOS's logind mirror.
+//! `org.freedesktop.impl.portal.Inhibit` backed by Tilo's logind mirror.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use qos_power_mgmt::{InhibitRegistry, InhibitToken};
+use tilo_power_mgmt::{InhibitRegistry, InhibitToken};
 use zbus::interface;
 use zbus::names::OwnedUniqueName;
 use zbus::zvariant::{ObjectPath, OwnedValue};
@@ -176,7 +176,7 @@ impl InhibitBackend {
         if let Ok(mut sessions) = self.monitors.0.lock() {
             sessions.insert(path.clone());
         }
-        // Send the initial state as required; later qOS session transitions
+        // Send the initial state as required; later Tilo session transitions
         // use the same signal helper before logout/session replacement.
         let mut state = HashMap::new();
         state.insert(

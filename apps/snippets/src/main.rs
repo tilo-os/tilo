@@ -1,4 +1,4 @@
-//! Snippets — standard qOS application entry point.
+//! Snippets — standard Tilo application entry point.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -41,7 +41,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.snippets", snippets::app_root)
+        &LaunchSpec::new("dev.tilo.snippets", snippets::app_root)
             .shot_root(shot_root)
             .scenarios(&["narrow", "detail", "empty"])
             .configure_app(|app| snippets::actions::register(app.action_registry_mut())),

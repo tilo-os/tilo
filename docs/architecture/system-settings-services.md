@@ -6,20 +6,20 @@ of them.
 ## Updates
 
 - `bootc` owns image deployments and rollback targets. The update pane starts
-  `qos-deployment-update.service`, then reads `bootc status --format json`.
+  `tilo-deployment-update.service`, then reads `bootc status --format json`.
 - `fwupd` owns firmware discovery, signature verification and installation.
   OS and firmware state are presented together, but their transactions remain
   independent.
 - systemd owns update timing. The narrowly authorized
-  `qos-update-policy@.service` accepts five fixed instances and writes only the
-  bootc timer override and `/var/lib/qos/update-policy`.
-- `qos-update-policy-check` is an `ExecCondition` on the bootc service. It asks
+  `tilo-update-policy@.service` accepts five fixed instances and writes only the
+  bootc timer override and `/var/lib/tilo/update-policy`.
+- `tilo-update-policy-check` is an `ExecCondition` on the bootc service. It asks
   NetworkManager whether an active link is explicitly metered. Unknown state
   does not postpone security updates; an explicit metered link does when the
   policy is `avoid`.
 - history comes from the bootc service journal. Release-note links are accepted
   only from HTTPS OCI image metadata. Rollback health reports the retained
-  deployment and qOS boot-confirmation timer independently.
+  deployment and Tilo boot-confirmation timer independently.
 
 ## Region and time
 
@@ -98,4 +98,4 @@ printer which answered but omitted supplies. Settings says "not reported" or
 - live captions remain a read-only unavailable capability until the image ships a
   local speech-to-text engine and model lifecycle. No caption preference is
   persisted today. Arbitrary Wayland-client caret/focus highlighting likewise
-  awaits a trusted geometry protocol; qOS toolkit text carets already work.
+  awaits a trusted geometry protocol; Tilo toolkit text carets already work.

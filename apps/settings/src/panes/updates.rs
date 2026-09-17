@@ -1,6 +1,6 @@
 //! Updates pane — the system update manager surface.
 //!
-//! qOS is an immutable bootc image: updates are atomic image pulls staged
+//! Tilo is an immutable bootc image: updates are atomic image pulls staged
 //! for the next boot, not piecemeal package upgrades. This pane shows the
 //! current deployment, whether a newer image is *actually* staged (read from
 //! `bootc status --format json`), and real actions:
@@ -74,7 +74,7 @@ pub struct UpdateDetails {
     pub history: Vec<String>,
     /// OCI documentation/source URL declared by the current or staged image.
     pub release_notes: Option<String>,
-    /// Whether qOS's delayed boot confirmation/rollback floor is armed.
+    /// Whether Tilo's delayed boot confirmation/rollback floor is armed.
     pub rollback_health: Option<String>,
 }
 
@@ -102,7 +102,7 @@ impl UpdateDetails {
             .map(|output| parse_update_history(&String::from_utf8_lossy(&output.stdout)))
             .unwrap_or_default();
         let protection_enabled = Command::new("systemctl")
-            .args(["is-enabled", "qos-rollback-confirm.timer"])
+            .args(["is-enabled", "tilo-rollback-confirm.timer"])
             .output()
             .ok()
             .is_some_and(|output| {
@@ -176,7 +176,7 @@ impl UpdateStatus {
         let current = fs::read_to_string(Path::new("/etc/os-release"))
             .ok()
             .and_then(|s| parse_pretty_name(&s))
-            .unwrap_or_else(|| "qOS (Fedora bootc)".to_string());
+            .unwrap_or_else(|| "Tilo (Fedora bootc)".to_string());
         Self {
             current_version: current,
             staged_version: read_bootc_staged(),
@@ -338,7 +338,7 @@ const ROLLBACK_CAVEATS: &[&str] = &[
 /// The "How updates work" note. The second line is the part a person cannot
 /// discover by looking at the machine, which is the reason it is written down.
 const HOW_UPDATES_WORK: &[&str] = &[
-    "qOS updates are atomic: a new image is staged and applied on restart, so \
+    "Tilo updates are atomic: a new image is staged and applied on restart, so \
      an update never half-installs.",
     "If a new image fails to reach a login screen three times in a row, this \
      machine goes back to the previous one by itself. If there is nothing to \
@@ -350,9 +350,9 @@ const HOW_UPDATES_WORK: &[&str] = &[
 const UPDATE_TIMER: &str = "bootc-fetch-apply-updates.timer";
 /// The unit that performs a rollback as root. polkit authorises a local active
 /// session in `wheel` to start exactly this one — see
-/// `os/etc/polkit-1/rules.d/49-qos-updates.rules`.
-const ROLLBACK_UNIT: &str = "qos-deployment-rollback.service";
-const UPDATE_POLICY_PATH: &str = "/var/lib/qos/update-policy";
+/// `os/etc/polkit-1/rules.d/49-tilo-updates.rules`.
+const ROLLBACK_UNIT: &str = "tilo-deployment-rollback.service";
+const UPDATE_POLICY_PATH: &str = "/var/lib/tilo/update-policy";
 
 fn read_update_policy() -> std::collections::BTreeMap<String, String> {
     fs::read_to_string(UPDATE_POLICY_PATH)
@@ -378,7 +378,7 @@ fn start_update_policy(action: &str) -> Result<(), String> {
     ) {
         return Err("invalid update policy action".into());
     }
-    let unit = format!("qos-update-policy@{action}.service");
+    let unit = format!("tilo-update-policy@{action}.service");
     let output = Command::new("systemctl")
         .args(["start", "--wait", &unit])
         .output()
@@ -530,7 +530,7 @@ impl UpdateControl for RealUpdateControl {
 
     fn check_now(&self) -> Result<(), String> {
         let output = Command::new("systemctl")
-            .args(["start", "--wait", "qos-deployment-update.service"])
+            .args(["start", "--wait", "tilo-deployment-update.service"])
             .output()
             .map_err(|error| format!("systemctl not available: {error}"))?;
         if output.status.success() {
@@ -947,12 +947,17 @@ impl UpdatesPane {
             self.overview_card(),
             self.status_card(),
             self.firmware_card(),
-            self.firmware_history_card(),
             self.detail_card(),
             self.lifecycle_card(),
             self.rollback_card(),
             self.help_card(),
         ];
+        // Firmware history is useful only when fwupd answered and there is a
+        // transaction to describe. If the service is unavailable, the single
+        // firmware recovery card above owns that explanation and retry.
+        if matches!(&self.firmware_history, Ok(history) if !history.is_empty()) {
+            all.insert(3, self.firmware_history_card());
+        }
         if let Some(msg) = &self.notice {
             // In front of everything, because it is about the thing the person
             // just tried to do. A failed switch that only warns into the
@@ -999,27 +1004,25 @@ impl UpdatesPane {
     }
 
     fn overview_card(&self) -> El {
-        card(
-            "Update overview",
-            rows(vec![
-                value_row(
-                    "Operating system",
-                    if self.status.staged_version.is_some() {
-                        "Update staged · restart required"
-                    } else {
-                        "No staged update"
-                    },
-                ),
-                value_row(
-                    "Device firmware",
-                    match &self.firmware_updates {
-                        Err(_) => "Could not query fwupd",
-                        Ok(updates) if updates.is_empty() => "Up to date",
-                        Ok(_) => "Updates available",
-                    },
-                ),
-            ]),
-        )
+        let mut overview = vec![value_row(
+            "Operating system",
+            if self.status.staged_version.is_some() {
+                "Update staged · restart required"
+            } else {
+                "No staged update"
+            },
+        )];
+        if let Ok(updates) = &self.firmware_updates {
+            overview.push(value_row(
+                "Device firmware",
+                if updates.is_empty() {
+                    "Up to date"
+                } else {
+                    "Updates available"
+                },
+            ));
+        }
+        card("Update overview", rows(overview))
     }
 
     fn detail_card(&self) -> El {
@@ -1342,7 +1345,7 @@ impl UpdatesPane {
         let mut p = SystemPrefs::load();
         p.updates = self.prefs.clone();
         if let Err(e) = p.save() {
-            warn!(target: "qos::settings", op = "update_prefs_save", error = %e, "failed to persist update prefs");
+            warn!(target: "tilo::settings", op = "update_prefs_save", error = %e, "failed to persist update prefs");
         }
     }
 
@@ -1563,7 +1566,7 @@ impl UpdatesPane {
         let wake = self.wake;
         let (tx, rx) = mpsc::channel();
         if std::thread::Builder::new()
-            .name("qos-update-check".into())
+            .name("tilo-update-check".into())
             .spawn(move || {
                 let result = control.check_now().map(|()| {
                     let status = status_provider();
@@ -1609,7 +1612,7 @@ impl UpdatesPane {
         let wake = self.wake;
         let (tx, rx) = mpsc::channel();
         if std::thread::Builder::new()
-            .name("qos-firmware-refresh".into())
+            .name("tilo-firmware-refresh".into())
             .spawn(move || {
                 let result = control.refresh_firmware();
                 let _ = tx.send(result);
@@ -1682,7 +1685,7 @@ impl UpdatesPane {
         if !self.dispatched_restart {
             self.dispatched_restart = true;
             if let Err(e) = self.rebooter.reboot() {
-                warn!(target: "qos::settings", op = "reboot", error = %e, "restart & update failed");
+                warn!(target: "tilo::settings", op = "reboot", error = %e, "restart & update failed");
                 self.notice = Some(format!("Restarting into the staged update failed: {e}"));
                 self.operation_failed(
                     crate::actions::UpdateOperation::Restart,
@@ -1706,7 +1709,9 @@ impl UpdatesPane {
         let Some(b) = read_bool_opt(state, root, AUTO_KEY) else {
             return;
         };
+        let operation = crate::actions::UpdateOperation::SetAutomatic { enabled: b };
         if b == self.last_prefs.auto {
+            self.operation_succeeded(operation, "automatic-update timer was already selected");
             return;
         }
         self.last_prefs.auto = b;
@@ -1726,9 +1731,17 @@ impl UpdatesPane {
                     )
                 });
                 self.persist();
+                if effective == b {
+                    self.operation_succeeded(operation, "automatic-update timer changed");
+                } else {
+                    self.operation_failed(
+                        operation,
+                        "the system did not accept the automatic-update timer change",
+                    );
+                }
             }
             Err(e) => {
-                warn!(target: "qos::settings", op = "set_update_timer", error = %e, "automatic updates could not be changed");
+                warn!(target: "tilo::settings", op = "set_update_timer", error = %e, "automatic updates could not be changed");
                 self.notice = Some(format!("Automatic updates could not be changed: {e}"));
                 // Put the switch back where the machine actually is.
                 self.timer_enabled = self.control.timer_enabled();
@@ -1736,6 +1749,10 @@ impl UpdatesPane {
                 self.prefs.auto = effective;
                 self.last_prefs.auto = effective;
                 let _ = state.put(root, AUTO_KEY, automerge::ScalarValue::Boolean(effective));
+                self.operation_failed(
+                    operation,
+                    format!("Automatic updates could not be changed: {e}"),
+                );
             }
         }
         self.structure_dirty = true;
@@ -1853,7 +1870,7 @@ impl UpdatesPane {
                     );
                 }
                 Err(e) => {
-                    warn!(target: "qos::settings", op = "rollback", error = %e, "rollback failed");
+                    warn!(target: "tilo::settings", op = "rollback", error = %e, "rollback failed");
                     self.notice = Some(format!("Rolling back failed: {e}"));
                     self.operation_failed(
                         crate::actions::UpdateOperation::Rollback,
@@ -2064,12 +2081,12 @@ mod tests {
 
     fn pane_with(staged: Option<&str>, rebooter: Arc<RecordingRebooter>) -> UpdatesPane {
         let status = UpdateStatus {
-            current_version: "qOS 2026.06".into(),
+            current_version: "Tilo 2026.06".into(),
             staged_version: staged.map(std::string::ToString::to_string),
         };
         let requeried = UpdateStatus {
-            current_version: "qOS 2026.06".into(),
-            staged_version: Some("qOS 2026.07".into()),
+            current_version: "Tilo 2026.06".into(),
+            staged_version: Some("Tilo 2026.07".into()),
         };
         UpdatesPane::with_parts(
             status,
@@ -2083,25 +2100,24 @@ mod tests {
     #[test]
     fn parses_pretty_name() {
         assert_eq!(
-            parse_pretty_name("PRETTY_NAME=\"qOS 42\"\n").as_deref(),
-            Some("qOS 42")
+            parse_pretty_name("PRETTY_NAME=\"Tilo 42\"\n").as_deref(),
+            Some("Tilo 42")
         );
     }
 
     #[test]
     fn parse_bootc_staged_detects_and_ignores() {
-        let staged =
-            r#"{"status":{"staged":{"version":"qOS 2026.07"},"booted":{"version":"qOS 2026.06"}}}"#;
-        assert_eq!(parse_bootc_staged(staged).as_deref(), Some("qOS 2026.07"));
+        let staged = r#"{"status":{"staged":{"version":"Tilo 2026.07"},"booted":{"version":"Tilo 2026.06"}}}"#;
+        assert_eq!(parse_bootc_staged(staged).as_deref(), Some("Tilo 2026.07"));
 
-        let none = r#"{"status":{"staged":null,"booted":{"version":"qOS 2026.06"}}}"#;
+        let none = r#"{"status":{"staged":null,"booted":{"version":"Tilo 2026.06"}}}"#;
         assert_eq!(parse_bootc_staged(none), None);
 
         let image =
-            r#"{"status":{"staged":{"image":{"image":{"image":"quay.io/qos/qos:latest"}}}}}"#;
+            r#"{"status":{"staged":{"image":{"image":{"image":"quay.io/tilo/tilo:latest"}}}}}"#;
         assert_eq!(
             parse_bootc_staged(image).as_deref(),
-            Some("quay.io/qos/qos:latest")
+            Some("quay.io/tilo/tilo:latest")
         );
     }
 
@@ -2133,7 +2149,7 @@ mod tests {
         );
         assert_eq!(
             pane.status().staged_version.as_deref(),
-            Some("qOS 2026.07"),
+            Some("Tilo 2026.07"),
             "the re-query result landed"
         );
         assert!(pane.take_structure_dirty(), "check refreshes the view");
@@ -2260,7 +2276,7 @@ mod tests {
     #[test]
     fn restart_reboots_once() {
         let reb = Arc::new(RecordingRebooter::default());
-        let mut pane = pane_with(Some("qOS 2026.07"), reb.clone());
+        let mut pane = pane_with(Some("Tilo 2026.07"), reb.clone());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
@@ -2382,7 +2398,7 @@ mod tests {
 
     fn pane_with_control(control: Arc<FakeControl>) -> UpdatesPane {
         let status = UpdateStatus {
-            current_version: "qOS 2026.06".into(),
+            current_version: "Tilo 2026.06".into(),
             staged_version: None,
         };
         let requeried = status.clone();
@@ -2405,7 +2421,7 @@ mod tests {
         let control = Arc::new(FakeControl::new(Some(true), None));
         let pane = UpdatesPane::with_parts_and_control(
             UpdateStatus {
-                current_version: "qOS".into(),
+                current_version: "Tilo".into(),
                 staged_version: None,
             },
             UpdatePrefs {
@@ -2413,7 +2429,7 @@ mod tests {
                 ..UpdatePrefs::default()
             },
             Arc::new(|| UpdateStatus {
-                current_version: "qOS".into(),
+                current_version: "Tilo".into(),
                 staged_version: None,
             }),
             Arc::new(|| "now".to_string()),
@@ -2512,12 +2528,12 @@ mod tests {
     #[test]
     fn rolling_back_needs_a_confirmation_and_then_acts() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_rollback");
-        let control = Arc::new(FakeControl::new(Some(true), Some("qos:gen41")));
+        let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")));
         let mut pane = pane_with_control(control.clone());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
-        assert_eq!(pane.rollback_target(), Some("qos:gen41"));
+        assert_eq!(pane.rollback_target(), Some("tilo:gen41"));
 
         // First click: nothing happens to the machine.
         let _ = doc.put(&root, ROLLBACK_KEY, automerge::ScalarValue::Boolean(true));
@@ -2559,7 +2575,7 @@ mod tests {
     #[test]
     fn a_failed_rollback_is_reported_in_the_pane() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_rollback_fail");
-        let control = Arc::new(FakeControl::new(Some(true), Some("qos:gen41")).failing_rollback());
+        let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")).failing_rollback());
         let mut pane = pane_with_control(control);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -2582,7 +2598,7 @@ mod tests {
     #[test]
     fn the_help_text_does_not_promise_what_is_not_offered() {
         let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_help_text");
-        let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), Some("qos:gen41"))));
+        let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), Some("tilo:gen41"))));
         let help = pane.help_lines().join("\n");
         assert!(
             !help.contains("you can roll back to the previous image at boot"),
@@ -2618,8 +2634,8 @@ mod tests {
 
     #[test]
     fn parse_bootc_rollback_detects_and_ignores() {
-        let has = r#"{"status":{"rollback":{"image":{"image":{"image":"qos:gen41"}}}}}"#;
-        assert_eq!(parse_bootc_rollback(has).as_deref(), Some("qos:gen41"));
+        let has = r#"{"status":{"rollback":{"image":{"image":{"image":"tilo:gen41"}}}}}"#;
+        assert_eq!(parse_bootc_rollback(has).as_deref(), Some("tilo:gen41"));
         let none = r#"{"status":{"rollback":null}}"#;
         assert_eq!(parse_bootc_rollback(none), None);
         let bare = r#"{"status":{"rollback":{}}}"#;
@@ -2633,10 +2649,10 @@ mod tests {
 
     #[test]
     fn release_notes_only_accept_https_image_metadata() {
-        let json = r#"{"status":{"staged":{"image":{"annotations":{"org.opencontainers.image.documentation":"https://updates.qos.example/releases/42"}}}}}"#;
+        let json = r#"{"status":{"staged":{"image":{"annotations":{"org.opencontainers.image.documentation":"https://updates.tilo.example/releases/42"}}}}}"#;
         assert_eq!(
             parse_bootc_release_notes(json).as_deref(),
-            Some("https://updates.qos.example/releases/42")
+            Some("https://updates.tilo.example/releases/42")
         );
         let unsafe_url = r#"{"releaseNotes":"file:///etc/shadow"}"#;
         assert_eq!(parse_bootc_release_notes(unsafe_url), None);

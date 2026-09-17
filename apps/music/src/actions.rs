@@ -42,8 +42,8 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use qos_actions::resource::INVALID_ARGUMENTS_TYPE;
-use qos_actions::{
+use tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
+use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
     Resource, ResourceProvider, ResultSpec, RetryPolicy,
@@ -294,8 +294,8 @@ pub enum MusicAction {
 }
 
 /// Durable, browseable history metadata for a library mutation.
-pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
-    let mut context = qos_actions::ActionContext::for_action("org.qos.Music", "Music", action);
+pub fn history_context(action: &MusicAction) -> tilo_actions::ActionContext {
+    let mut context = tilo_actions::ActionContext::for_action("org.tilo.Music", "Music", action);
     let (label, id, kind, resource_label): (&str, &str, &str, &str) = match action {
         MusicAction::CreatePlaylist { id, name } => ("Create playlist", id, "music.playlist", name),
         MusicAction::RenamePlaylist { id, name } => ("Rename playlist", id, "music.playlist", name),
@@ -360,7 +360,7 @@ pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
         ),
     };
     context.action_label = label.to_string();
-    context.resource = Some(qos_actions::ActionResource {
+    context.resource = Some(tilo_actions::ActionResource {
         id: format!("{kind}:{id}"),
         kind: kind.to_string(),
         label: resource_label.to_string(),
@@ -1567,7 +1567,7 @@ impl ResourceProvider for crate::app::MusicApp {
 mod tests {
     use super::*;
     use crate::app::MusicApp;
-    use qos_actions::{ActionInput, ArgValue, LocalTransport};
+    use tilo_actions::{ActionInput, ArgValue, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -1640,7 +1640,7 @@ mod tests {
                 .unwrap()
                 .contract
                 .risk,
-            qos_actions::RiskLevel::Destructive
+            tilo_actions::RiskLevel::Destructive
         );
 
         let player = lib
@@ -1696,7 +1696,7 @@ mod tests {
 
         // The full flattened tree exports every action, including the nested
         // track ops that sort after the playlists.
-        let flat: Vec<&str> = qos_actions::flatten(&resources)
+        let flat: Vec<&str> = tilo_actions::flatten(&resources)
             .iter()
             .map(|f| f.action.label.as_str())
             .collect();
@@ -1736,7 +1736,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -1803,8 +1803,8 @@ mod tests {
         let action = add_track_action(&pid, &new_track, playlist.append_rank());
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1835,8 +1835,8 @@ mod tests {
         assert!(!cover.contains("/tmp/"));
 
         let action = set_cover_action(&playlist, &cover);
-        let envelope = qos_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
-        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
+        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1897,8 +1897,8 @@ mod tests {
         let action = set_liked_action(&track, true);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1980,7 +1980,7 @@ mod tests {
         let encoded = prompted_encode(spec, "Late Night");
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let lib = crate::doc::load_library(&doc);
         assert_eq!(
@@ -2013,7 +2013,7 @@ mod tests {
             "queue-remove",
         ] {
             let action = root.actions.iter().find(|action| action.id == id).unwrap();
-            assert_eq!(action.kind, qos_actions::OperationKind::Effect, "{id}");
+            assert_eq!(action.kind, tilo_actions::OperationKind::Effect, "{id}");
             assert_eq!(
                 action.contract.permission,
                 PermissionRequirement::Write,
@@ -2085,7 +2085,7 @@ mod tests {
                 .expect("generic resource shape binds before Music validates its kind/state");
             assert_eq!(
                 encoded.type_id,
-                qos_actions::resource::INVALID_ARGUMENTS_TYPE,
+                tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
                 "{address}"
             );
         }
@@ -2108,7 +2108,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             encoded.type_id,
-            qos_actions::resource::INVALID_ARGUMENTS_TYPE
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE
         );
     }
 
@@ -2206,7 +2206,7 @@ mod tests {
     fn document_mutations_advertise_write_permission_and_views_advertise_read() {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
-        for flat in qos_actions::flatten(&resources) {
+        for flat in tilo_actions::flatten(&resources) {
             let permission = flat.action.contract.permission;
             match flat.action.kind {
                 OperationKind::Document => assert_eq!(
@@ -2274,7 +2274,7 @@ mod tests {
         let operation_handlers =
             std::collections::HashSet::from([MUSIC_OPERATION_TYPE.to_string()]);
         let violations =
-            qos_actions::validate_surface(&resources, &registry(), &operation_handlers);
+            tilo_actions::validate_surface(&resources, &registry(), &operation_handlers);
         assert!(violations.is_empty(), "{violations:#?}");
     }
 
@@ -2388,8 +2388,8 @@ mod tests {
 
         let move_action = move_track_action(&playlist.id, &moved, rank);
         let remove_action = remove_track_action(&playlist.id, &removed);
-        qos_actions::apply_local(&mut a, &move_action, encode(&move_action)).unwrap();
-        qos_actions::apply_local(&mut b, &remove_action, encode(&remove_action)).unwrap();
+        tilo_actions::apply_local(&mut a, &move_action, encode(&move_action)).unwrap();
+        tilo_actions::apply_local(&mut b, &remove_action, encode(&remove_action)).unwrap();
 
         let a_bytes = a.save();
         let b_bytes = b.save();

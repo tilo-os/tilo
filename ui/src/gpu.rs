@@ -4,7 +4,7 @@
 //! device with [`wgpu::MemoryHints::Manual`] instead of the default.
 //!
 //! `vello::util::RenderContext` defaults to `MemoryHints::Performance` — right
-//! for a game alone on a discrete card, wrong for a qOS session where a dozen
+//! for a game alone on a discrete card, wrong for a Tilo session where a dozen
 //! clients share one integrated GPU whose memory is the machine's memory.
 //! Measured on an idle file manager: 488 MB across 459 buffers, of which
 //! 448 MB was three suballocator chunks (256 + 128 + 64 MB) and only 20 MB
@@ -136,7 +136,7 @@ impl RenderContext {
             } else {
                 if dispatch_timestamps_requested {
                     eprintln!(
-                        "qos: VELLO_GPU_DISPATCH_TIMESTAMPS=1 requested, but this adapter does not support TIMESTAMP_QUERY_INSIDE_PASSES"
+                        "tilo: VELLO_GPU_DISPATCH_TIMESTAMPS=1 requested, but this adapter does not support TIMESTAMP_QUERY_INSIDE_PASSES"
                     );
                 }
                 timestamp_feature
@@ -144,12 +144,12 @@ impl RenderContext {
         } else {
             if gpu_timestamps_requested {
                 eprintln!(
-                    "qos: VELLO_GPU_TIMESTAMPS=1 requested, but this adapter does not support TIMESTAMP_QUERY"
+                    "tilo: VELLO_GPU_TIMESTAMPS=1 requested, but this adapter does not support TIMESTAMP_QUERY"
                 );
             }
             if dispatch_timestamps_requested {
                 eprintln!(
-                    "qos: VELLO_GPU_DISPATCH_TIMESTAMPS=1 requires VELLO_GPU_TIMESTAMPS=1 with TIMESTAMP_QUERY"
+                    "tilo: VELLO_GPU_DISPATCH_TIMESTAMPS=1 requires VELLO_GPU_TIMESTAMPS=1 with TIMESTAMP_QUERY"
                 );
             }
             wgpu::Features::empty()

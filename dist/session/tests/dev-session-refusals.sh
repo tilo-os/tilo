@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Drive dist/session/qos-session-dev against the inputs it is supposed to
+# Drive dist/session/tilo-session-dev against the inputs it is supposed to
 # refuse, and one it is supposed to accept.
 #
 # The script deliberately reads exactly one path — the invoking user's
-# ~/.config/qos/dev-session, resolved from the passwd database, with no
+# ~/.config/tilo/dev-session, resolved from the passwd database, with no
 # environment variable or argument that can point it elsewhere. That is what
 # makes it worth testing on the real path rather than a temporary one, so this
 # saves any existing config and puts it back on the way out.
@@ -16,13 +16,13 @@ set -uo pipefail
 umask 0077
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-wrapper=$here/../qos-session-dev
+wrapper=$here/../tilo-session-dev
 home=$(getent passwd "$(id -u)" | cut -d: -f6)
-conf=$home/.config/qos/dev-session
+conf=$home/.config/tilo/dev-session
 # Under the home directory, not /tmp: the accepting case needs a target no one
 # else can write, and /tmp is 1777 by definition.
 mkdir -p "$home/.cache"
-scratch=$(mktemp -d "$home/.cache/qos-dev-session-test.XXXXXX")
+scratch=$(mktemp -d "$home/.cache/tilo-dev-session-test.XXXXXX")
 saved=
 
 cleanup() {
@@ -72,8 +72,8 @@ refuse "target does not exist"
 
 # A world-writable directory anywhere above the target means someone else can
 # decide what runs as this session.
-marked=/tmp/qos-dev-session-test-$$
-printf '#!/bin/sh\n# qos-dev-session-build-marker-v1\nexit 0\n' >"$marked"
+marked=/tmp/tilo-dev-session-test-$$
+printf '#!/bin/sh\n# tilo-dev-session-build-marker-v1\nexit 0\n' >"$marked"
 chmod 0755 "$marked"
 echo "$marked" >"$conf"
 refuse "target under a world-writable directory"
@@ -81,7 +81,7 @@ rm -f "$marked"
 
 # Same binary, this time somewhere only this user can write.
 marked=$scratch/marked-shell
-printf '#!/bin/sh\n# qos-dev-session-build-marker-v1\nprintf "started %%s\\n" "$*"\n' >"$marked"
+printf '#!/bin/sh\n# tilo-dev-session-build-marker-v1\nprintf "started %%s\\n" "$*"\n' >"$marked"
 chmod 0755 "$marked"
 chmod 0755 "$scratch"
 

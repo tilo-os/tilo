@@ -61,6 +61,8 @@ pub const ENTERPRISE_IDENTITY_KEY: &str = "network.enterprise.identity";
 pub const ENTERPRISE_ANONYMOUS_KEY: &str = "network.enterprise.anonymous";
 pub const ENTERPRISE_CA_KEY: &str = "network.enterprise.ca";
 pub const ENTERPRISE_CONNECT_KEY: &str = "network.enterprise.connect";
+/// Opens or closes the task-focused enterprise network setup surface.
+pub const ENTERPRISE_EDITOR_KEY: &str = "network.enterprise.editor";
 pub const ENTERPRISE_CA_CHOOSE_KEY: &str = "network.enterprise.ca.choose";
 pub const ENTERPRISE_METHOD_KEY: &str = "network.enterprise.method";
 pub const ENTERPRISE_PHASE2_KEY: &str = "network.enterprise.phase2";
@@ -259,6 +261,7 @@ pub struct NetworkPane {
     sims: Vec<os_actions::SimInfo>,
     diagnostics: Option<os_actions::ConnectionDiagnostics>,
     advanced_open: bool,
+    enterprise_editor_open: bool,
     /// Configured VPN connections (read-only status), sampled at
     /// construction and on refresh.
     vpns: Vec<VpnInfo>,
@@ -266,6 +269,9 @@ pub struct NetworkPane {
     tool_opener: ToolOpener,
     initial_wifi_enabled: bool,
     last_wifi_enabled: bool,
+    /// Shared only with the Settings operation host; it is process-local and
+    /// never written to the CRDT alongside the radio latches below.
+    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     needs_seed: bool,
     /// Track which `network.join.<ssid>` keys we already dispatched
     /// for, so a single button press doesn't re-fire on every frame.
@@ -348,11 +354,13 @@ impl NetworkPane {
             sims: os_actions::list_mobile_sims().unwrap_or_default(),
             diagnostics: None,
             advanced_open: false,
+            enterprise_editor_open: false,
             vpns,
             vpn_lister,
             tool_opener: Arc::new(os_actions::open_tool),
             initial_wifi_enabled: initial_wifi,
             last_wifi_enabled: initial_wifi,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             needs_seed: true,
             dispatched_connects: Vec::new(),
             connection_tx,
@@ -360,7 +368,7 @@ impl NetworkPane {
             connection_notice: None,
             ca_picker_rx: None,
             hotspot_password: Arc::new(Mutex::new(String::new())),
-            hotspot_ssid: "qOS Hotspot".into(),
+            hotspot_ssid: "Tilo Hotspot".into(),
             hotspot_band: "Automatic".into(),
             hotspot_qr_visible: false,
             hotspot_clients: os_actions::list_hotspot_clients().unwrap_or_default(),
@@ -397,11 +405,13 @@ impl NetworkPane {
             sims: Vec::new(),
             diagnostics: None,
             advanced_open: false,
+            enterprise_editor_open: false,
             vpns: Vec::new(),
             vpn_lister: Arc::new(Vec::<VpnInfo>::new),
             tool_opener: Arc::new(os_actions::open_tool),
             initial_wifi_enabled,
             last_wifi_enabled: initial_wifi_enabled,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             needs_seed: true,
             dispatched_connects: Vec::new(),
             connection_tx,
@@ -409,7 +419,7 @@ impl NetworkPane {
             connection_notice: None,
             ca_picker_rx: None,
             hotspot_password: Arc::new(Mutex::new(String::new())),
-            hotspot_ssid: "qOS Hotspot".into(),
+            hotspot_ssid: "Tilo Hotspot".into(),
             hotspot_band: "Automatic".into(),
             hotspot_qr_visible: false,
             hotspot_clients: Vec::new(),
@@ -441,11 +451,13 @@ impl NetworkPane {
             sims: Vec::new(),
             diagnostics: None,
             advanced_open: false,
+            enterprise_editor_open: false,
             vpns: Vec::new(),
             vpn_lister: Arc::new(Vec::<VpnInfo>::new),
             tool_opener: Arc::new(os_actions::open_tool),
             initial_wifi_enabled: true,
             last_wifi_enabled: true,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             needs_seed: true,
             dispatched_connects: Vec::new(),
             connection_tx,
@@ -453,7 +465,7 @@ impl NetworkPane {
             connection_notice: None,
             ca_picker_rx: None,
             hotspot_password: Arc::new(Mutex::new(String::new())),
-            hotspot_ssid: "qOS Hotspot".into(),
+            hotspot_ssid: "Tilo Hotspot".into(),
             hotspot_band: "Automatic".into(),
             hotspot_qr_visible: false,
             hotspot_clients: Vec::new(),
@@ -491,6 +503,41 @@ impl NetworkPane {
 
     pub fn vpns(&self) -> &[VpnInfo] {
         &self.vpns
+    }
+
+    /// Attach the host-owned lifecycle for typed device-local operations.
+    #[must_use]
+    pub fn with_operation_status(
+        mut self,
+        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
+    ) -> Self {
+        self.operation_status = status.clone();
+        self
+    }
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "callers construct the exact typed request whose token is completed"
+    )]
+    fn finish_local_operation(
+        &self,
+        operation: crate::actions::NetworkOperation,
+        result: Result<String, String>,
+    ) {
+        let token = crate::actions::local_operation_token_for(
+            crate::actions::NETWORK_OPERATION_TYPE,
+            &operation,
+        );
+        if !matches!(
+            self.operation_status.get(),
+            crate::actions::LocalOperationStatus::Running { token: running } if running == token
+        ) {
+            return;
+        }
+        self.operation_status.set(match result {
+            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
+            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
+        });
     }
 
     fn vpn_key(name: &str) -> String {
@@ -577,7 +624,7 @@ impl NetworkPane {
         let mut cards = vec![
             self.internet_access_card(),
             self.wifi_card(),
-            card("Enterprise Wi-Fi", rows(self.enterprise_rows())),
+            self.enterprise_card(),
             self.wired_card(),
             self.profile_card(),
             card("Connection diagnostics", rows(self.diagnostic_rows())),
@@ -947,7 +994,7 @@ impl NetworkPane {
                 out.push(caption(recommendation));
             }
         } else {
-            out.push(caption("Checks NetworkManager state, address, gateway and DNS without sending traffic to a qOS service."));
+            out.push(caption("Checks NetworkManager state, address, gateway and DNS without sending traffic to a Tilo service."));
         }
         out
     }
@@ -1031,9 +1078,6 @@ impl NetworkPane {
 
     fn enterprise_rows(&self) -> Vec<El> {
         vec![
-            caption(
-                "PEAP, TTLS and EAP-TLS use NetworkManager's 802.1X support. Server certificate validation is mandatory.",
-            ),
             choice_row(
                 "Method",
                 Box::new(
@@ -1120,6 +1164,32 @@ impl NetworkPane {
                     .push(Box::new(Spacer::new())),
             ),
         ]
+    }
+
+    /// Keep specialist 802.1X credentials out of the ordinary connection
+    /// view. The affordance remains visible, while the form appears only when
+    /// someone has chosen to add that kind of network.
+    fn enterprise_card(&self) -> El {
+        let mut content = vec![caption(
+            "Use an enterprise network for PEAP, TTLS, or EAP-TLS sign-in. Server certificate validation is mandatory.",
+        )];
+        if self.enterprise_editor_open {
+            content.extend(self.enterprise_rows());
+        }
+        content.push(Box::new(
+            Row::new()
+                .push(Box::new(Button::new(
+                    "settings.network.enterprise.editor",
+                    if self.enterprise_editor_open {
+                        "Close enterprise setup"
+                    } else {
+                        "Set up enterprise"
+                    },
+                    Some(ENTERPRISE_EDITOR_KEY),
+                )))
+                .push(Box::new(Spacer::new())),
+        ));
+        card("Enterprise Wi-Fi", rows(content))
     }
 
     fn hotspot_config_from_values(
@@ -1390,7 +1460,7 @@ impl NetworkPane {
                 Err(error) => {
                     self.connection_notice =
                         Some(format!("Could not configure {subject}: {error}"));
-                    warn!(target: "qos::settings", op = "network_job", %subject, %error, "network pane operation failed");
+                    warn!(target: "tilo::settings", op = "network_job", %subject, %error, "network pane operation failed");
                 }
             }
             self.structure_dirty = true;
@@ -1510,6 +1580,7 @@ impl NetworkPane {
             MOBILE_CREATE_KEY,
             MOBILE_UNLOCK_KEY,
             ENTERPRISE_CONNECT_KEY,
+            ENTERPRISE_EDITOR_KEY,
             ENTERPRISE_CA_CHOOSE_KEY,
             CAPTIVE_PORTAL_KEY,
             DIAGNOSTICS_KEY,
@@ -1594,7 +1665,7 @@ impl NetworkPane {
         {
             self.last_wifi_enabled = *b;
             if let Err(e) = self.dispatcher.set_wifi(*b) {
-                warn!(target: "qos::settings", op = "set_wifi", error = %e, "network pane dispatch failed");
+                warn!(target: "tilo::settings", op = "set_wifi", error = %e, "network pane dispatch failed");
             }
         }
 
@@ -1605,14 +1676,29 @@ impl NetworkPane {
             && *enabled != self.wired.connected
             && self.wired.device.is_some()
         {
-            match self.dispatcher.set_wired(*enabled) {
-                Ok(()) => self.wired.connected = *enabled,
+            let enabled = *enabled;
+            match self.dispatcher.set_wired(enabled) {
+                Ok(()) => {
+                    self.wired.connected = enabled;
+                    self.finish_local_operation(
+                        crate::actions::NetworkOperation::SetWiredEnabled { enabled },
+                        Ok(if enabled {
+                            "Wired networking enabled.".into()
+                        } else {
+                            "Wired networking disabled.".into()
+                        }),
+                    );
+                }
                 Err(e) => {
-                    warn!(target: "qos::settings", op = "set_wired", error = %e, "network pane dispatch failed");
+                    warn!(target: "tilo::settings", op = "set_wired", error = %e, "network pane dispatch failed");
                     let _ = state.put(
                         root,
                         WIRED_ENABLED_KEY,
                         automerge::ScalarValue::Boolean(self.wired.connected),
+                    );
+                    self.finish_local_operation(
+                        crate::actions::NetworkOperation::SetWiredEnabled { enabled },
+                        Err(format!("Could not change wired networking: {e}")),
                     );
                 }
             }
@@ -1649,14 +1735,42 @@ impl NetworkPane {
                 _ => self.dispatcher.set_mobile_broadband(enabled),
             };
             match result {
-                Ok(()) => match op {
-                    "airplane" => self.radios.airplane_mode = enabled,
-                    "hotspot" => self.radios.hotspot_active = enabled,
-                    _ => self.radios.wwan_enabled = enabled,
-                },
+                Ok(()) => {
+                    let operation = match op {
+                        "airplane" => {
+                            self.radios.airplane_mode = enabled;
+                            crate::actions::NetworkOperation::SetAirplaneMode { enabled }
+                        }
+                        "hotspot" => {
+                            self.radios.hotspot_active = enabled;
+                            crate::actions::NetworkOperation::SetHotspot { enabled }
+                        }
+                        _ => {
+                            self.radios.wwan_enabled = enabled;
+                            crate::actions::NetworkOperation::SetMobileBroadband { enabled }
+                        }
+                    };
+                    self.finish_local_operation(
+                        operation,
+                        Ok(format!(
+                            "{} {}.",
+                            op,
+                            if enabled { "enabled" } else { "disabled" }
+                        )),
+                    );
+                }
                 Err(e) => {
-                    warn!(target: "qos::settings", op, error = %e, "radio action failed");
+                    warn!(target: "tilo::settings", op, error = %e, "radio action failed");
                     let _ = state.put(root, key, old);
+                    let operation = match op {
+                        "airplane" => crate::actions::NetworkOperation::SetAirplaneMode { enabled },
+                        "hotspot" => crate::actions::NetworkOperation::SetHotspot { enabled },
+                        _ => crate::actions::NetworkOperation::SetMobileBroadband { enabled },
+                    };
+                    self.finish_local_operation(
+                        operation,
+                        Err(format!("Could not change {op} state: {e}")),
+                    );
                 }
             }
         }
@@ -1670,7 +1784,7 @@ impl NetworkPane {
                 match self.dispatcher.set_vpn_connection(&vpn.name, enabled) {
                     Ok(()) => vpn.active = enabled,
                     Err(e) => {
-                        warn!(target: "qos::settings", op = "set_vpn_connection", profile = %vpn.name, error = %e, "VPN action failed");
+                        warn!(target: "tilo::settings", op = "set_vpn_connection", profile = %vpn.name, error = %e, "VPN action failed");
                         let _ = state.put(root, key, vpn.active);
                     }
                 }
@@ -1736,7 +1850,7 @@ impl NetworkPane {
         let _ = state.put(root, HOTSPOT_APPLY_KEY, false);
         self.hotspot_ssid = read_str(state, root, HOTSPOT_SSID_KEY)
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "qOS Hotspot".into());
+            .unwrap_or_else(|| "Tilo Hotspot".into());
         self.hotspot_band =
             read_str(state, root, HOTSPOT_BAND_KEY).unwrap_or_else(|| "Automatic".into());
         match self.hotspot_config_from_values(&self.hotspot_ssid, &self.hotspot_band) {
@@ -1761,7 +1875,7 @@ impl NetworkPane {
         let _ = state.put(root, HOTSPOT_QR_KEY, false);
         self.hotspot_ssid = read_str(state, root, HOTSPOT_SSID_KEY)
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "qOS Hotspot".into());
+            .unwrap_or_else(|| "Tilo Hotspot".into());
         self.hotspot_band =
             read_str(state, root, HOTSPOT_BAND_KEY).unwrap_or_else(|| "Automatic".into());
         match self.hotspot_config_from_values(&self.hotspot_ssid, &self.hotspot_band) {
@@ -1889,14 +2003,35 @@ impl NetworkPane {
         self.structure_dirty = true;
     }
 
+    fn sync_enterprise_editor(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, ENTERPRISE_EDITOR_KEY) {
+            return;
+        }
+        let _ = state.put(root, ENTERPRISE_EDITOR_KEY, false);
+        self.enterprise_editor_open = !self.enterprise_editor_open;
+        self.structure_dirty = true;
+    }
+
     fn sync_diagnostics(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if !read_bool(state, root, DIAGNOSTICS_KEY) {
             return;
         }
         let _ = state.put(root, DIAGNOSTICS_KEY, false);
         match os_actions::connection_diagnostics() {
-            Ok(d) => self.diagnostics = Some(d),
-            Err(e) => self.connection_notice = Some(format!("Diagnostics unavailable: {e}")),
+            Ok(d) => {
+                self.diagnostics = Some(d);
+                self.finish_local_operation(
+                    crate::actions::NetworkOperation::RunDiagnostics,
+                    Ok("Network diagnostics completed.".into()),
+                );
+            }
+            Err(e) => {
+                self.connection_notice = Some(format!("Diagnostics unavailable: {e}"));
+                self.finish_local_operation(
+                    crate::actions::NetworkOperation::RunDiagnostics,
+                    Err(format!("Diagnostics unavailable: {e}")),
+                );
+            }
         }
         self.structure_dirty = true;
     }
@@ -2110,7 +2245,7 @@ impl NetworkPane {
                 route: VpnRoute::Profile,
                 profile: Some(profile.clone()),
             }) {
-                warn!(target: "qos::settings", profile = %profile, error = %e, "could not open VPN Studio");
+                warn!(target: "tilo::settings", profile = %profile, error = %e, "could not open VPN Studio");
             }
         }
         if read_bool(state, root, Self::VPN_STUDIO_OVERVIEW_KEY) {
@@ -2119,7 +2254,7 @@ impl NetworkPane {
                 route: VpnRoute::Overview,
                 profile: None,
             }) {
-                warn!(target: "qos::settings", error = %e, "could not open VPN Studio");
+                warn!(target: "tilo::settings", error = %e, "could not open VPN Studio");
             }
         }
     }
@@ -2136,9 +2271,19 @@ impl NetworkPane {
         }
         let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
         match (self.lister)() {
-            Ok(nets) => self.networks = nets,
+            Ok(nets) => {
+                self.networks = nets;
+                self.finish_local_operation(
+                    crate::actions::NetworkOperation::Refresh,
+                    Ok("Network list refreshed.".into()),
+                );
+            }
             Err(e) => {
-                warn!(target: "qos::settings", op = "list_wifi_networks", error = %e, "rescan failed");
+                warn!(target: "tilo::settings", op = "list_wifi_networks", error = %e, "rescan failed");
+                self.finish_local_operation(
+                    crate::actions::NetworkOperation::Refresh,
+                    Err(format!("Could not refresh network list: {e}")),
+                );
             }
         }
         if let Ok(wired) = os_actions::get_wired() {
@@ -2268,6 +2413,7 @@ impl Widget for NetworkPane {
         self.sync_ipv4_apply(state, root);
         self.sync_mobile_create(state, root);
         self.sync_advanced_toggle(state, root);
+        self.sync_enterprise_editor(state, root);
         self.sync_diagnostics(state, root);
         self.sync_profile_policy(state, root);
         self.sync_mobile_unlock(state, root);
@@ -2421,18 +2567,21 @@ mod tests {
                 ssid: "Home_Network".to_string(),
                 signal: 4,
                 secure: true,
+                security: os_actions::WifiSecurity::Wpa3,
                 connected: true,
             },
             WifiNetworkInfo {
                 ssid: "Cafe_Guest".to_string(),
                 signal: 3,
                 secure: false,
+                security: os_actions::WifiSecurity::Open,
                 connected: false,
             },
             WifiNetworkInfo {
                 ssid: "Neighbour_5G".to_string(),
                 signal: 2,
                 secure: true,
+                security: os_actions::WifiSecurity::Wpa2,
                 connected: false,
             },
         ]
@@ -2475,6 +2624,26 @@ mod tests {
         assert_eq!(by_ssid, vec!["Home_Network", "Cafe_Guest", "Neighbour_5G"]);
         // Status line picks the connected network.
         assert_eq!(pane.connection_status_text(), "Connected to Home_Network");
+    }
+
+    #[test]
+    fn enterprise_editor_opens_only_after_its_explicit_action() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = NetworkPane::with_dispatcher(
+            rec as Arc<dyn Dispatcher + Send + Sync>,
+            true,
+            sample_networks(),
+        );
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        assert!(!pane.enterprise_editor_open);
+
+        let _ = doc.put(&root, ENTERPRISE_EDITOR_KEY, true);
+        pane.sync(&mut doc, &root);
+        assert!(pane.enterprise_editor_open);
+        assert!(pane.take_structure_dirty());
+        assert!(!read_bool(&doc, &root, ENTERPRISE_EDITOR_KEY));
     }
 
     #[test]
@@ -2568,6 +2737,7 @@ mod tests {
             ssid: "NewSpot".to_string(),
             signal: 4,
             secure: false,
+            security: os_actions::WifiSecurity::Open,
             connected: false,
         }];
         pane.lister = {

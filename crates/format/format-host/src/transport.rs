@@ -12,10 +12,11 @@ use crate::format_router_capnp::format_router;
 use crate::router::Router;
 use crate::service::FormatRouterService;
 
-/// Default socket path: `$XDG_RUNTIME_DIR/qos/services/format-router.sock`.
 pub fn default_socket_path() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
-    base.join("qos").join("services").join("format-router.sock")
+    base.join("tilo")
+        .join("services")
+        .join("format-router.sock")
 }
 
 /// Bind the Unix socket, accept connections, and serve capnp RPC. Returns the
@@ -36,7 +37,6 @@ pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
     // path already exists.
     let _ = std::fs::remove_file(socket);
     let listener = UnixListener::bind(socket)?;
-    // Lock the socket to user-only.
     let _ = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600));
     Ok(listener)
 }

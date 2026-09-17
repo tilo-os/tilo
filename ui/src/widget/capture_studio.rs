@@ -160,7 +160,7 @@ impl AudioCaptureMode {
 }
 
 /// A live shell/app surface that can be selected without first moving it
-/// fully onto the physical display. `virtual_rect` is its place in qOS's
+/// fully onto the physical display. `virtual_rect` is its place in Tilo's
 /// continuous desktop; `visible_rect` is the portion currently paintable on
 /// this output.
 #[derive(Clone, Debug, PartialEq)]
@@ -2889,7 +2889,7 @@ impl CaptureStudio {
             );
         }
 
-        // qOS can record virtual content that is not presently on this
+        // Tilo can record virtual content that is not presently on this
         // monitor. A paired edge rail + chevron confirms that the recording
         // continues there without dimming, moving, or annotating the app.
         // These marks share the short-lived scope-confirmation alpha and are
@@ -5251,7 +5251,7 @@ mod tests {
         let mut target = CaptureTarget {
             id: "notes".into(),
             title: "Notes".into(),
-            app_id: "dev.qos.notes".into(),
+            app_id: "dev.tilo.notes".into(),
             visible_rect: Rect::new(0.0, 90.0, 84.0, 590.0),
             virtual_rect: Rect::new(-916.0, 90.0, 84.0, 590.0),
             complete_rect: Some(Rect::new(-916.0, 90.0, 394.0, 1_278.0)),
@@ -5285,7 +5285,7 @@ mod tests {
         let target = CaptureTarget {
             id: "notes".into(),
             title: "Notes".into(),
-            app_id: "dev.qos.notes".into(),
+            app_id: "dev.tilo.notes".into(),
             visible_rect: Rect::new(0.0, 90.0, 84.0, 590.0),
             virtual_rect: Rect::new(-916.0, 90.0, 84.0, 590.0),
             complete_rect: Some(Rect::new(-916.0, 90.0, 394.0, 1_278.0)),
@@ -5418,7 +5418,7 @@ mod tests {
         s.set_candidates(vec![CaptureTarget {
             id: "notes".into(),
             title: "Notes".into(),
-            app_id: "org.qos.Notes".into(),
+            app_id: "org.tilo.Notes".into(),
             visible_rect: Rect::new(100., 100., 900., 600.),
             virtual_rect: Rect::new(100., 100., 1500., 900.),
             complete_rect: Some(Rect::new(100., 100., 1500., 1900.)),
@@ -5887,7 +5887,7 @@ mod tests {
         s.set_candidates(vec![CaptureTarget {
             id: "notes".into(),
             title: "Notes".into(),
-            app_id: "dev.qos.notes".into(),
+            app_id: "dev.tilo.notes".into(),
             visible_rect: Rect::new(240.0, 120.0, 1_280.0, 820.0),
             virtual_rect: Rect::new(-400.0, 120.0, 1_280.0, 820.0),
             complete_rect: None,
@@ -5992,7 +5992,7 @@ mod tests {
         s.set_candidates(vec![CaptureTarget {
             id: "notes".into(),
             title: "Notes".into(),
-            app_id: "dev.qos.notes".into(),
+            app_id: "dev.tilo.notes".into(),
             visible_rect: app,
             virtual_rect: app,
             complete_rect: None,
@@ -6013,7 +6013,7 @@ mod tests {
         s.set_candidates(vec![CaptureTarget {
             id: "canvas".into(),
             title: "Canvas".into(),
-            app_id: "dev.qos.canvas".into(),
+            app_id: "dev.tilo.canvas".into(),
             visible_rect: Rect::new(0.0, 80.0, 1_600.0, 900.0),
             virtual_rect: Rect::new(-720.0, 80.0, 2_240.0, 1_480.0),
             complete_rect: None,
@@ -6129,7 +6129,7 @@ mod tests {
         s.set_candidates(vec![CaptureTarget {
             id: "offscreen-notes".into(),
             title: "Notes".into(),
-            app_id: "org.qos.Notes".into(),
+            app_id: "org.tilo.Notes".into(),
             visible_rect: Rect::ZERO,
             virtual_rect: Rect::new(1400., 80., 2300., 720.),
             complete_rect: None,
@@ -6151,7 +6151,7 @@ mod tests {
             CaptureTarget {
                 id: "notes".into(),
                 title: "Notes".into(),
-                app_id: "org.qos.Notes".into(),
+                app_id: "org.tilo.Notes".into(),
                 visible_rect: Rect::new(0.0, 0.0, 400.0, 400.0),
                 virtual_rect: Rect::new(0.0, 0.0, 400.0, 400.0),
                 complete_rect: None,
@@ -6159,7 +6159,7 @@ mod tests {
             CaptureTarget {
                 id: "files".into(),
                 title: "Files".into(),
-                app_id: "org.qos.Files".into(),
+                app_id: "org.tilo.Files".into(),
                 visible_rect: Rect::new(400.0, 0.0, 800.0, 400.0),
                 virtual_rect: Rect::new(400.0, 0.0, 800.0, 400.0),
                 complete_rect: None,

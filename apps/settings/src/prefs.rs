@@ -16,7 +16,7 @@
 //! Preferences live in the **same** shared document the region store uses:
 //!
 //! ```text
-//! $XDG_CONFIG_HOME/qos/settings.json   (falls back to ~/.config/qos/settings.json)
+//! $XDG_CONFIG_HOME/tilo/settings.json   (falls back to ~/.config/tilo/settings.json)
 //! ```
 //!
 //! namespaced by domain so each section grows independently and unrelated
@@ -165,7 +165,7 @@ pub struct InputPrefs {
     pub mouse_pointer_speed: Option<f64>,
     /// 0.0..=1.0 key-repeat rate.
     pub key_repeat: f64,
-    /// Exact host-imported repeat pair. A qOS slider selection clears both.
+    /// Exact host-imported repeat pair. A Tilo slider selection clears both.
     pub key_repeat_delay_ms: Option<u32>,
     pub key_repeat_rate_hz: Option<u32>,
     /// xkb layout code, e.g. `"us"`, `"de"`.
@@ -279,7 +279,7 @@ impl InputPrefs {
 /// A configurable response to a power event (lid close, power key, critical
 /// battery). Serialises to the lowercase labels the compositor's power policy
 /// parses (`"suspend"` / `"lock"` / `"ignore"`) — the on-disk JSON is the
-/// contract shared with `qos-power-mgmt`, not a code dependency.
+/// contract shared with `tilo-power-mgmt`, not a code dependency.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PowerActionPref {
@@ -338,7 +338,7 @@ fn default_critical_action() -> PowerActionPref {
 /// reads. The active power *profile* is live system state
 /// (`powerprofilesctl`), not stored here. Every field added after the initial
 /// two carries `#[serde(default)]` so a config written before it existed still
-/// loads. The keys mirror `qos_power_mgmt::config`'s reader exactly.
+/// loads. The keys mirror `tilo_power_mgmt::config`'s reader exactly.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PowerPrefs {
     /// Master toggle for idle-suspend. `false` disables it regardless of
@@ -467,7 +467,7 @@ impl AppearancePrefs {
     pub const THEMES: &'static [&'static str] = &[
         "Dark",
         "Light",
-        "qOS Blue",
+        "Tilo Blue",
         "Catppuccin Mocha",
         "Catppuccin Latte",
         "Dracula",
@@ -618,7 +618,7 @@ pub struct AccessibilityPrefs {
     /// Paint full-screen guide lines through the hardware pointer.
     #[serde(default)]
     pub cursor_crosshair: bool,
-    /// Make text insertion carets wider in every qOS toolkit application.
+    /// Make text insertion carets wider in every Tilo toolkit application.
     #[serde(default)]
     pub thick_text_caret: bool,
     /// Turn F6/F7 switch signals into standard scan-next/activate actions.
@@ -953,12 +953,12 @@ impl SystemPrefs {
     }
 
     /// Persist to the shared settings path, preserving foreign keys. Creates
-    /// the `qos` config directory if needed. Returns the path written.
+    /// the `tilo` config directory if needed. Returns the path written.
     ///
     /// # Errors
     ///
     /// Returns an error if no config directory can be resolved (no `HOME` or
-    /// `XDG_CONFIG_HOME`), if the `qos` config directory cannot be created,
+    /// `XDG_CONFIG_HOME`), if the `tilo` config directory cannot be created,
     /// or if the settings file cannot be written.
     pub fn save(&self) -> std::io::Result<std::path::PathBuf> {
         let path =
@@ -974,8 +974,8 @@ impl SystemPrefs {
 
 /// RAII config-directory isolation for the in-crate unit tests that drive a
 /// pane's real persist path. Pointing `XDG_CONFIG_HOME` at a throwaway
-/// directory keeps those tests from writing the developer's (or a qOS user's)
-/// real `~/.config/qos/settings.json` — running the suite must never mutate
+/// directory keeps those tests from writing the developer's (or a Tilo user's)
+/// real `~/.config/tilo/settings.json` — running the suite must never mutate
 /// live settings. A process-wide lock serialises the env mutation; the guard
 /// restores the environment and removes the temp directory on drop.
 #[cfg(test)]
@@ -999,7 +999,7 @@ pub(crate) mod test_env {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let dir = std::env::temp_dir().join(format!(
-                "qos-settings-libtest-{}-{}",
+                "tilo-settings-libtest-{}-{}",
                 std::process::id(),
                 name
             ));
@@ -1029,6 +1029,19 @@ pub(crate) mod test_env {
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_owned_default_has_an_explicit_continuity_policy() {
+        let region = RegionSettings::default().to_json_merged("");
+        let document = SystemPrefs::default().to_json_merged(&region);
+        let parsed = settings_store::parse(&document);
+        let missing = settings_store::continuity::unclassified_leaves(&parsed);
+        assert!(
+            missing.is_empty(),
+            "new settings must explicitly choose personal, device-local, secret, or derived: \
+             {missing:?}"
+        );
+    }
 
     #[test]
     fn defaults_are_sensible() {
@@ -1305,7 +1318,7 @@ mod tests {
     }
 
     /// The `power` section serialises to exactly the keys and lowercase action
-    /// labels the compositor's `qos_power_mgmt::config` reader parses. This is
+    /// labels the compositor's `tilo_power_mgmt::config` reader parses. This is
     /// the write side of the cross-crate JSON contract (the read side is
     /// pinned in that crate's `full_section_parses` test); if either drifts
     /// this test — or that one — fails.

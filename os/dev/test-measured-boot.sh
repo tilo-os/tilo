@@ -4,7 +4,7 @@
 #   ./os/dev/test-measured-boot.sh [DISK]
 #
 # Boots the qcow2 with a software TPM, runs the image's own
-# /usr/libexec/qos-rollback-boot-check, then blanks `qos.generation=` out of the
+# /usr/libexec/tilo-rollback-boot-check, then blanks `tilo.generation=` out of the
 # installed UKI in place, reboots, and runs it again.
 #
 # The second half is the point. Every symptom of a UKI that never measured —
@@ -28,17 +28,17 @@ DISK="${1:-}"
 source "$HERE/_common.sh"
 set +e   # this script reports rather than aborts; _common.sh sets -e
 
-[ -n "$DISK" ] || DISK="$QOS_DISK"
+[ -n "$DISK" ] || DISK="$TILO_DISK"
 [ -f "$DISK" ] || die "no disk image at $DISK (build one with os/dev/build-image.sh)"
 
-OUT="${OUT:-$QOS_RUN/measured-boot}"
+OUT="${OUT:-$TILO_RUN/measured-boot}"
 mkdir -p "$OUT"
 
-SSHOPTS=(-p "$QOS_SSH_PORT" -o StrictHostKeyChecking=no
+SSHOPTS=(-p "$TILO_SSH_PORT" -o StrictHostKeyChecking=no
          -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -o LogLevel=ERROR)
-GUEST="$QOS_USER@127.0.0.1"
-g() { sshpass -p "$QOS_PASS" ssh "${SSHOPTS[@]}" "$GUEST" "$@"; }
-groot() { g "echo $QOS_PASS | sudo -S -p '' $*" ; }
+GUEST="$TILO_USER@127.0.0.1"
+g() { sshpass -p "$TILO_PASS" ssh "${SSHOPTS[@]}" "$GUEST" "$@"; }
+groot() { g "echo $TILO_PASS | sudo -S -p '' $*" ; }
 
 say() { printf '\n\033[1;35m### %s\033[0m\n' "$*"; }
 
@@ -59,12 +59,12 @@ wait_ssh_gone() {
   return 1
 }
 
-cleanup() { QOS_DISK="$DISK" "$VM" stop >/dev/null 2>&1; }
+cleanup() { TILO_DISK="$DISK" "$VM" stop >/dev/null 2>&1; }
 trap cleanup EXIT
 
 # --- positive run -------------------------------------------------------------
 say "boot with a software TPM (4 MB OVMF — the only build that measures)"
-QOS_DISK="$DISK" QOS_TPM=1 "$VM" boot --2d --tpm || die "the VM did not start"
+TILO_DISK="$DISK" TILO_TPM=1 "$VM" boot --2d --tpm || die "the VM did not start"
 wait_ssh || { warn "ssh never came up"; "$VM" serial | tail -60; exit 1; }
 
 say "the command line the UKI sealed, read back out of the PE on the ESP"
@@ -75,14 +75,14 @@ say "what the kernel was actually given"
 g 'cat /proc/cmdline' | tee "$OUT/proc-cmdline.txt"
 
 say "boot-side checks, generation present"
-groot /usr/libexec/qos-rollback-boot-check > "$OUT/check-positive.txt" 2>&1
+groot /usr/libexec/tilo-rollback-boot-check > "$OUT/check-positive.txt" 2>&1
 positive_rc=$?
 cat "$OUT/check-positive.txt"
 
 # --- negative run -------------------------------------------------------------
-say "blank qos.generation= out of the UKI, in place, at the same length"
-groot "python3 /tmp/uki-cmdline.py blank qos.generation" | tee "$OUT/blank.txt"
-grep -q '^blanked qos.generation' "$OUT/blank.txt" \
+say "blank tilo.generation= out of the UKI, in place, at the same length"
+groot "python3 /tmp/uki-cmdline.py blank tilo.generation" | tee "$OUT/blank.txt"
+grep -q '^blanked tilo.generation' "$OUT/blank.txt" \
   || { warn "the generation was not blanked; the negative run would prove nothing"; exit 1; }
 
 say "reboot onto the UKI with no generation"
@@ -93,7 +93,7 @@ wait_ssh || { warn "the guest did not come back — a UKI edited at the wrong le
 
 say "boot-side checks, generation absent"
 g 'cat > /tmp/uki-cmdline.py' < "$HERE/uki-cmdline.py"
-groot /usr/libexec/qos-rollback-boot-check > "$OUT/check-negative.txt" 2>&1
+groot /usr/libexec/tilo-rollback-boot-check > "$OUT/check-negative.txt" 2>&1
 negative_rc=$?
 cat "$OUT/check-negative.txt"
 
@@ -102,13 +102,13 @@ say "verdict"
 fails=0
 verdict() { if [ "$1" = 0 ]; then printf '[ OK ]   %s\n' "$2"; else printf '[FAIL]   %s\n' "$2"; fails=$((fails+1)); fi; }
 
-grep -q 'qos\.generation=[0-9]' "$OUT/sealed-cmdline.txt"; verdict $? "the UKI seals qos.generation="
+grep -q 'tilo\.generation=[0-9]' "$OUT/sealed-cmdline.txt"; verdict $? "the UKI seals tilo.generation="
 [ "$positive_rc" = 0 ]; verdict $? "the boot-side check passes with the generation sealed"
 [ "$negative_rc" != 0 ]; verdict $? "the boot-side check fails with the generation blanked"
 
 # The discrimination this whole script exists for: it must fail because the
 # generation is gone, not because nothing was measured.
-grep -qE '^\[FAIL\].*no qos\.generation= on the kernel command line' "$OUT/check-negative.txt"
+grep -qE '^\[FAIL\].*no tilo\.generation= on the kernel command line' "$OUT/check-negative.txt"
 verdict $? "  ...and it fails on the missing generation specifically"
 grep -qE '^\[ OK \].*PCR 11 holds a non-zero measurement' "$OUT/check-negative.txt"
 verdict $? "  ...while PCR 11 still holds a measurement (so this is not 'nothing measured')"

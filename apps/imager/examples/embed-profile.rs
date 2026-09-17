@@ -5,7 +5,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use imager::{DiskLayout, InstallProfile};
+use imager::{Filesystem, InstallProfile};
 
 fn value(args: &[String], name: &str) -> io::Result<String> {
     let position = args
@@ -27,9 +27,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("profile target must be a non-symlink regular file".into());
     }
 
-    let layout = match value(&args, "--filesystem")?.as_str() {
-        "btrfs" => DiskLayout::BtrfsSubvols,
-        "ext4" => DiskLayout::WholeDisk,
+    let filesystem = match value(&args, "--filesystem")?.as_str() {
+        "btrfs" => Filesystem::Btrfs,
+        "ext4" => Filesystem::Ext4,
+        "xfs" => Filesystem::Xfs,
         other => return Err(format!("unsupported filesystem: {other}").into()),
     };
     let profile = InstallProfile {
@@ -45,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         locale: value(&args, "--locale")?,
         keyboard: value(&args, "--keyboard")?,
         timezone: value(&args, "--timezone")?,
-        layout,
+        filesystem,
         encrypt: false,
         encryption_passphrase: String::new(),
         persist_mb: 0,

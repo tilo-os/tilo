@@ -1,7 +1,7 @@
 //! Device-local EPUB capability registry.
 //!
 //! A source path is a local portal grant, not collaborative content. Keep it
-//! in qOS' private settings store so reopening a book or watching a folder
+//! in Tilo' private settings store so reopening a book or watching a folder
 //! survives restart without putting a path into the Automerge document.
 
 use std::collections::HashMap;

@@ -1,4 +1,4 @@
-//! `qos-model-manager` — the small production CLI Settings invokes.
+//! `tilo-model-manager` — the small production CLI Settings invokes.
 //!
 //! It accepts only signed catalog selections, writes only its private store,
 //! downloads only pinned HTTPS URLs, and delegates process lifetime to a
@@ -30,7 +30,7 @@ use sha2::{Digest, Sha256};
 
 #[derive(Parser)]
 #[command(
-    name = "qos-model-manager",
+    name = "tilo-model-manager",
     about = "Verified local model lifecycle manager"
 )]
 struct Cli {
@@ -90,7 +90,7 @@ enum Action {
         model: String,
     },
     /// The launcher-owned per-user service endpoint. Sandboxed apps reach it
-    /// through `QOS_SVC_MODELS_FD`; it alone has network and storage access.
+    /// through `TILO_SVC_MODELS_FD`; it alone has network and storage access.
     #[command(hide = true)]
     Serve {
         #[arg(long)]
@@ -98,7 +98,7 @@ enum Action {
     },
 }
 
-const MODELS_SERVICE_FD: &str = "QOS_SVC_MODELS_FD";
+const MODELS_SERVICE_FD: &str = "TILO_SVC_MODELS_FD";
 const RPC_VERSION: u16 = 1;
 const MAX_RPC_FRAME: usize = 1024 * 1024;
 
@@ -237,8 +237,8 @@ struct LocalModelSnapshot {
     accelerator_setup: Option<AcceleratorSetup>,
 }
 
-const SYSTEM_EXTENSION_SOCKET: &str = "/run/qos/system-extension-api/request.sock";
-const SYSTEM_EXTENSION_STATUS: &str = "/run/qos/system-extension-api/status.json";
+const SYSTEM_EXTENSION_SOCKET: &str = "/run/tilo/system-extension-api/request.sock";
+const SYSTEM_EXTENSION_STATUS: &str = "/run/tilo/system-extension-api/status.json";
 
 #[derive(Deserialize)]
 struct BootPackRecommendations {
@@ -283,10 +283,10 @@ fn load_catalog(path: &PathBuf, keys: &PathBuf) -> Result<CatalogPayload, String
     .map_err(|_| "invalid catalog public key")?;
     let signature =
         Signature::from_slice(&signed.signature).map_err(|_| "invalid catalog signature")?;
-    if signed.signature_domain != "qos.local-model.catalog.v1" {
+    if signed.signature_domain != "tilo.local-model.catalog.v1" {
         return Err("unexpected catalog signature domain".into());
     }
-    let mut payload = b"qos.local-model.catalog.v1\0".to_vec();
+    let mut payload = b"tilo.local-model.catalog.v1\0".to_vec();
     payload.extend(serde_json::to_vec(&signed.payload).map_err(|error| error.to_string())?);
     key.verify(&payload, &signature)
         .map_err(|_| "catalog signature verification failed")?;
@@ -480,7 +480,7 @@ impl ProcessSupervisor for SystemdSupervisor {
     }
     fn start(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError> {
         let digest = hex::encode(Sha256::digest(command.endpoint.model_id.as_bytes()));
-        let unit = format!("qos-vllm-{}", &digest[..16]);
+        let unit = format!("tilo-vllm-{}", &digest[..16]);
         let status = Command::new("systemd-run")
             .args([
                 "--user",
@@ -566,7 +566,7 @@ fn local_hardware() -> HardwareSnapshot {
         })
         .map(|kib| kib / 1024)
         .unwrap_or(0);
-    let free_storage_mib = free_storage_mib("/var/lib/qos/models").unwrap_or(0);
+    let free_storage_mib = free_storage_mib("/var/lib/tilo/models").unwrap_or(0);
     let mut accelerators = Vec::new();
     // NVIDIA's vendor tool is called with a fixed query/format, never a
     // caller-provided argument. Sysfs discovery keeps absence honest.
@@ -865,7 +865,7 @@ fn main() {
         Ok(Some(output)) => println!("{output}"),
         Ok(None) => {}
         Err(error) => {
-            eprintln!("qos-model-manager: {error}");
+            eprintln!("tilo-model-manager: {error}");
             std::process::exit(1);
         }
     }
@@ -964,7 +964,7 @@ fn forward_to_service(cli: &Cli) -> Result<Option<String>, String> {
         return Err("path overrides are unavailable through the model service".into());
     }
     let fd = service_fd().ok_or_else(|| "model service descriptor is unavailable".to_string())?;
-    // SAFETY: the qOS launcher gives this process sole ownership of the
+    // SAFETY: the Tilo launcher gives this process sole ownership of the
     // connected descriptor. It is consumed exactly once for this RPC.
     let mut stream = unsafe { UnixStream::from_raw_fd(fd) };
     write_rpc(
@@ -1122,22 +1122,22 @@ fn paths(cli: &Cli) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     Ok((
         cli.root.clone().unwrap_or_else(user_model_root),
         cli.catalog.clone().unwrap_or_else(|| {
-            PathBuf::from("/usr/share/qos/system-extensions/local-model-catalog.json")
+            PathBuf::from("/usr/share/tilo/system-extensions/local-model-catalog.json")
         }),
         cli.keys.clone().unwrap_or_else(|| {
-            PathBuf::from("/usr/share/qos/system-extensions/local-model-keys.json")
+            PathBuf::from("/usr/share/tilo/system-extensions/local-model-keys.json")
         }),
     ))
 }
 
 fn user_model_root() -> PathBuf {
     if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
-        return PathBuf::from(data).join("qos/models");
+        return PathBuf::from(data).join("tilo/models");
     }
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".local/share/qos/models")
+        .join(".local/share/tilo/models")
 }
 
 fn allocate_loopback_port() -> Result<u16, String> {
@@ -1418,7 +1418,7 @@ fn enqueue_worker(
 ) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let digest = hex::encode(Sha256::digest(model.as_bytes()));
-    let unit = format!("qos-model-download-{}", &digest[..16]);
+    let unit = format!("tilo-model-download-{}", &digest[..16]);
     let mut command = Command::new("systemd-run");
     command
         .args(["--user", "--collect", "--service-type=exec", "--unit"])
@@ -1462,7 +1462,7 @@ fn enqueue_start_worker(
 ) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let digest = hex::encode(Sha256::digest(model.as_bytes()));
-    let unit = format!("qos-model-start-{}", &digest[..16]);
+    let unit = format!("tilo-model-start-{}", &digest[..16]);
     let mut command = Command::new("systemd-run");
     command
         .args(["--user", "--collect", "--service-type=exec", "--unit"])
@@ -1537,10 +1537,10 @@ mod tests {
     #[test]
     fn podman_mounts_only_verified_model_path_and_uses_container_path() {
         let command = VllmCommand {
-            runtime_image: "registry.example/qos/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            runtime_image: "registry.example/tilo/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             runtime_kind: RuntimeKind::Cpu,
             args: vec!["serve".into(), "/models/model".into()],
-            model_path: PathBuf::from("/home/ada/.local/share/qos/models/sha256/abc"),
+            model_path: PathBuf::from("/home/ada/.local/share/tilo/models/sha256/abc"),
             model_container_path: "/models/model".into(),
             endpoint: agent_provider_config::local::LocalEndpoint { url: "http://127.0.0.1:9000/v1".into(), model_id: "tiny".into() },
             runtime_extension_id: "runtime".into(),
@@ -1549,7 +1549,7 @@ mod tests {
         assert!(argv.windows(2).any(|pair| pair
             == [
                 "--mount",
-                "type=bind,src=/home/ada/.local/share/qos/models/sha256/abc,dst=/models/model,ro"
+                "type=bind,src=/home/ada/.local/share/tilo/models/sha256/abc,dst=/models/model,ro"
             ]));
         assert!(
             argv.windows(2)
@@ -1559,7 +1559,7 @@ mod tests {
         assert!(
             !argv
                 .iter()
-                .any(|arg| arg == "/home/ada/.local/share/qos/models/sha256/abc")
+                .any(|arg| arg == "/home/ada/.local/share/tilo/models/sha256/abc")
         );
     }
 

@@ -273,10 +273,10 @@ impl FsBlobStore {
         Ok(RootWriteLock(file))
     }
 
-    /// The store this machine uses unless told otherwise. `QOS_BLOB_STORE` overrides it, letting two
+    /// The store this machine uses unless told otherwise. `TILO_BLOB_STORE` overrides it, letting two
     /// sessions on one host be genuinely separate peers rather than one store they both hit.
     pub fn default_root() -> PathBuf {
-        if let Ok(v) = std::env::var("QOS_BLOB_STORE")
+        if let Ok(v) = std::env::var("TILO_BLOB_STORE")
             && !v.is_empty()
         {
             return PathBuf::from(v);
@@ -291,7 +291,7 @@ impl FsBlobStore {
                     .map(|h| PathBuf::from(h).join(".cache"))
             })
             .unwrap_or_else(std::env::temp_dir);
-        base.join("qos").join("blobs")
+        base.join("tilo").join("blobs")
     }
 
     fn path_for(&self, hash: &str) -> Option<PathBuf> {

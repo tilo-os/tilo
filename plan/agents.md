@@ -42,34 +42,34 @@ otherwise. Pause must be an enforced restriction, never a display-only state.
 
 ## Provider and model architecture
 
-qOS owns identity, credentials, grants, confirmation, audit and runtime
+Tilo owns identity, credentials, grants, confirmation, audit and runtime
 lifecycle. Provider translation is delegated to mature components:
 
 ```text
 Agent profile / Task Center
            |
            v
-qOS model gateway (per-user, secrets stay here)
+Tilo model gateway (per-user, secrets stay here)
            |
            +-- LiteLLM Proxy -> OpenAI, Anthropic, compatible cloud APIs
            +-- vLLM OpenAI-compatible server -> local model
            +-- compatible endpoint -> remote vLLM, LM Studio, Ollama, etc.
            |
            v
-Agent runtime -> qOS action/resource gateway -> collaboration broker -> app
+Agent runtime -> Tilo action/resource gateway -> collaboration broker -> app
 ```
 
 [LiteLLM](https://docs.litellm.ai/) is a provider-normalization layer only; it
-does not decide qOS permissions or own downloads. Provider profiles store a
+does not decide Tilo permissions or own downloads. Provider profiles store a
 stable id, label, endpoint kind, base URL, model alias, enabled state and a
-reference to a secret in the accounts vault. Agents connect only to the qOS
+reference to a secret in the accounts vault. Agents connect only to the Tilo
 gateway; provider credentials never enter their sandbox.
 
 Local installation uses the [Hugging Face Hub download/cache
 workflow](https://huggingface.co/docs/huggingface_hub/guides/download), pinned
 to an immutable revision, and starts [vLLM's OpenAI-compatible
 server](https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/)
-against that resolved snapshot. qOS presents license, size, revision,
+against that resolved snapshot. Tilo presents license, size, revision,
 download/load progress and VRAM state, then supervises the process behind a
 loopback or network-namespace boundary. Downloading is an explicit management
 operation, never a side effect of an agent request.
@@ -84,12 +84,12 @@ directly.
 
 Small models should retain the bounded discovery sequence already used by the
 agent app: list applications, list operations, describe one operation, then
-invoke a descriptor revealed in the current plan. qOS can expose these as MCP
+invoke a descriptor revealed in the current plan. Tilo can expose these as MCP
 tools alongside directly registered high-value actions.
 
 Resources need the same treatment. The broker should publish inert typed
 resource descriptors—including resources with no actions—and project them to
-stable `qos://workspace/...` MCP resource addresses. Hard-coded facts in the
+stable `tilo://workspace/...` MCP resource addresses. Hard-coded facts in the
 agent app can then disappear as apps adopt the shared contract.
 
 ## Delivery order

@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use shell::shell::build_nirios_overlay_host_with_chrome;
+use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::chrome_state::Chrome;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
@@ -126,7 +126,7 @@ struct Harness {
 impl Harness {
     fn new() -> Self {
         let (tree, strip, groups, tabs) = strip_tree();
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .expect("the built-in shortcut table is valid");
         let mut h = Harness {

@@ -33,7 +33,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
     ResourceProvider, RetryPolicy,
@@ -961,7 +961,7 @@ fn navigation_resource() -> Resource {
 /// this beside `navigation_resource` means a redesign cannot accidentally
 /// leave a pretty custom control on a private callback path while Ctrl+K and
 /// agents use a different operation.
-pub fn navigation_binding(route: &Route) -> Option<qos_actions::ActionBinding<()>> {
+pub fn navigation_binding(route: &Route) -> Option<tilo_actions::ActionBinding<()>> {
     let action_id = match route {
         Route::Home => "home",
         Route::Trending => "trending",
@@ -974,14 +974,14 @@ pub fn navigation_binding(route: &Route) -> Option<qos_actions::ActionBinding<()
             return None;
         }
     };
-    qos_actions::ActionBinding::unit_for(&navigation_resource(), action_id).ok()
+    tilo_actions::ActionBinding::unit_for(&navigation_resource(), action_id).ok()
 }
 
 /// Binding for the visible navigation-drawer toggle. The rail state is local
 /// presentation state, but the verb remains an addressable view action so
 /// keyboard users, assistive technology, Ctrl+K, and agents use one route.
-pub fn sidebar_binding() -> Option<qos_actions::ActionBinding<()>> {
-    qos_actions::ActionBinding::unit_for(&navigation_resource(), "toggle-sidebar").ok()
+pub fn sidebar_binding() -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(&navigation_resource(), "toggle-sidebar").ok()
 }
 
 fn library_resource(model: &TubeModel) -> Resource {
@@ -1403,7 +1403,7 @@ mod tests {
     use super::*;
     use crate::app::TubeApp;
     use crate::model::Route;
-    use qos_actions::{ActionRegistry, LocalTransport};
+    use tilo_actions::{ActionRegistry, LocalTransport};
     use ui::widget::Widget;
 
     /// A `TubeApp` sitting on the watch page of a sample video that has comments.
@@ -1636,7 +1636,7 @@ mod tests {
     #[test]
     fn queue_membership_is_an_absolute_keyed_tombstone() {
         let mut doc = AutoCommit::new();
-        qos_actions::Action::apply(
+        tilo_actions::Action::apply(
             &TubeAction::SetQueueMembership {
                 video_id: "video-1".into(),
                 queued: true,
@@ -1644,7 +1644,7 @@ mod tests {
             &mut doc,
         )
         .expect("queue add applies");
-        qos_actions::Action::apply(
+        tilo_actions::Action::apply(
             &TubeAction::SetQueueMembership {
                 video_id: "video-1".into(),
                 queued: false,
@@ -1669,7 +1669,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let comment_id = "video-1#comment".to_string();
         let reply_id = reply_key(&comment_id, "Useful explanation");
-        qos_actions::Action::apply(
+        tilo_actions::Action::apply(
             &TubeAction::SetCommentLiked {
                 comment_id: comment_id.clone(),
                 liked: false,
@@ -1677,7 +1677,7 @@ mod tests {
             &mut doc,
         )
         .expect("comment-like tombstone applies");
-        qos_actions::Action::apply(
+        tilo_actions::Action::apply(
             &TubeAction::SetCommentReply {
                 comment_id: comment_id.clone(),
                 reply_id: reply_id.clone(),
@@ -1732,7 +1732,7 @@ mod tests {
             TubeAction::CyclePreferredQuality,
         ] {
             assert!(matches!(
-                qos_actions::Action::apply(&action, &mut doc),
+                tilo_actions::Action::apply(&action, &mut doc),
                 Err(ActionError::Refused(_))
             ));
         }
@@ -1904,9 +1904,9 @@ mod tests {
         palette: &mut ui::ActionPalette,
         doc: &mut AutoCommit,
         registry: &ActionRegistry,
-        transport: &mut dyn qos_actions::ActionTransport,
+        transport: &mut dyn tilo_actions::ActionTransport,
         needle: &str,
-    ) -> qos_actions::Dispatched {
+    ) -> tilo_actions::Dispatched {
         let idx = palette
             .result_labels()
             .iter()
@@ -1933,7 +1933,7 @@ mod tests {
         assert_eq!(read_bool(&doc, "likes", &vid), None, "not liked yet");
         let mut tx = LocalTransport::new();
         let d = run_row(&mut palette, &mut doc, &registry(), &mut tx, "Like video");
-        assert!(matches!(d, qos_actions::Dispatched::AppliedLocal(_)));
+        assert!(matches!(d, tilo_actions::Dispatched::AppliedLocal(_)));
         assert_eq!(
             read_bool(&doc, "likes", &vid),
             Some(true),
@@ -1981,7 +1981,7 @@ mod tests {
             &mut tx,
             "Cycle preferred quality",
         );
-        assert!(matches!(quality, qos_actions::Dispatched::AppliedLocal(_)));
+        assert!(matches!(quality, tilo_actions::Dispatched::AppliedLocal(_)));
         assert_eq!(
             read_str(&doc, "settings", "preferred_quality").as_deref(),
             Some("720p")
@@ -1996,7 +1996,10 @@ mod tests {
             &mut tx,
             "Cycle Sponsor handling",
         );
-        assert!(matches!(category, qos_actions::Dispatched::AppliedLocal(_)));
+        assert!(matches!(
+            category,
+            tilo_actions::Dispatched::AppliedLocal(_)
+        ));
         let (Value::Object(ObjType::Map), tube) = doc.get(&ROOT, "tube").unwrap().unwrap() else {
             panic!("tube root exists");
         };
@@ -2057,7 +2060,7 @@ mod tests {
             .take_dispatch(&mut doc, &registry(), &mut tx)
             .expect("the selected action attempted dispatch")
             .unwrap_err();
-        assert!(matches!(error, qos_actions::ActionError::Refused(_)));
+        assert!(matches!(error, tilo_actions::ActionError::Refused(_)));
         assert!(doc.get(&ROOT, "tube").unwrap().is_none());
         let _ = vid;
     }
@@ -2093,7 +2096,7 @@ mod tests {
         assert_eq!(pair.kind, OperationKind::Effect);
         assert!(!matches!(
             pair.contract.confirmation,
-            qos_actions::ConfirmationPolicy::None
+            tilo_actions::ConfirmationPolicy::None
         ));
         let revoke = resource.children[0]
             .actions
@@ -2104,7 +2107,7 @@ mod tests {
         assert_eq!(revoke.contract.retry, RetryPolicy::Idempotent);
         assert!(!matches!(
             revoke.contract.confirmation,
-            qos_actions::ConfirmationPolicy::None
+            tilo_actions::ConfirmationPolicy::None
         ));
         assert_eq!(pair.params()[0].ty, ParamType::Secret);
     }

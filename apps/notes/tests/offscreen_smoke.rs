@@ -68,7 +68,7 @@ fn render_one_frame_against_seeded_workspace() {
             let demo = "\
 # Welcome to notes
 
-A collaborative notes app for qOS.
+A collaborative notes app for Tilo.
 
 ## Block types
 

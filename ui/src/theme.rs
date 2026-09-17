@@ -145,7 +145,7 @@ impl Default for Theme {
 pub(crate) const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
     Theme::dark,
     Theme::light,
-    Theme::qos_blue,
+    Theme::tilo_blue,
     Theme::dracula,
     Theme::nord,
     Theme::gruvbox,
@@ -306,10 +306,10 @@ impl Theme {
     }
 
     /// Kept verbatim as a preset so nothing from the first design is lost.
-    pub fn qos_blue() -> Self {
+    pub fn tilo_blue() -> Self {
         let mut t = Tokens::dark();
-        t.colors = crate::tokens::Colors::qos_blue();
-        Self::from_tokens("qOS Blue", t)
+        t.colors = crate::tokens::Colors::tilo_blue();
+        Self::from_tokens("Tilo Blue", t)
     }
 
     pub fn dracula() -> Self {
@@ -573,8 +573,8 @@ impl Theme {
         )
     }
 
-    /// Reads `$XDG_CONFIG_HOME/qos/settings.json` (falling back to
-    /// `~/.config/qos/settings.json`), the shared preference Settings and
+    /// Reads `$XDG_CONFIG_HOME/tilo/settings.json` (falling back to
+    /// `~/.config/tilo/settings.json`), the shared preference Settings and
     /// Theme Studio update through their respective domain stores.
     /// Unreadable, absent and unrecognised all mean the dark default — a
     /// machine with no preference and one whose settings file is corrupt
@@ -659,7 +659,7 @@ impl Theme {
         Self::from_tokens("High Contrast", t)
     }
 
-    /// Every theme qOS ships, by the name [`Theme::named`] resolves.
+    /// Every theme Tilo ships, by the name [`Theme::named`] resolves.
     ///
     /// Exists so a check can be run against *all* of them rather than against
     /// whichever two someone remembered. A colour defect that only shows up in
@@ -670,7 +670,7 @@ impl Theme {
     pub const ALL: [&'static str; 14] = [
         "Dark",
         "Light",
-        "qOS Blue",
+        "Tilo Blue",
         "Catppuccin Mocha",
         "Catppuccin Latte",
         "Dracula",
@@ -696,9 +696,9 @@ impl Theme {
             .flat_map(char::to_lowercase)
             .collect();
         Some(match key.as_str() {
-            "dark" | "qosdark" => Self::dark(),
+            "dark" | "tilodark" => Self::dark(),
             "light" => Self::light(),
-            "qosblue" | "blue" | "midnight" => Self::qos_blue(),
+            "tiloblue" | "blue" | "midnight" => Self::tilo_blue(),
             "catppuccinmocha" | "mocha" => Self::catppuccin_mocha(),
             "catppuccinlatte" | "latte" => Self::catppuccin_latte(),
             "dracula" => Self::dracula(),
@@ -841,9 +841,9 @@ mod tests {
     }
 
     #[test]
-    fn qos_blue_preserves_the_indigo_concept_accent() {
-        let theme = Theme::qos_blue();
-        assert_eq!(theme.name, "qOS Blue");
+    fn tilo_blue_preserves_the_indigo_concept_accent() {
+        let theme = Theme::tilo_blue();
+        assert_eq!(theme.name, "Tilo Blue");
         assert_eq!(
             rgb(theme.accent_primary),
             [0x63, 0x66, 0xf1],
@@ -908,7 +908,7 @@ mod tests {
         for name in [
             "Dark",
             "Light",
-            "qOS Blue",
+            "Tilo Blue",
             "Catppuccin Mocha",
             "Catppuccin Latte",
             "Dracula",
@@ -1138,13 +1138,13 @@ mod tests {
     /// The window card and the app ground fill are the same colour family,
     /// so a window whose app painted nothing (like Notes, which shows the
     /// bare card) does not flip light/dark against a window beside it that
-    /// fills its own background. `qos_blue` is excluded deliberately: its
+    /// fills its own background. `tilo_blue` is excluded deliberately: its
     /// white card is preserved verbatim from the first design.
     #[test]
     fn window_card_shares_the_ground_s_colour_family() {
         use crate::a11y::contrast_ratio;
         for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-            if t.name == "qOS Blue" {
+            if t.name == "Tilo Blue" {
                 continue;
             }
             let card = t.tokens.colors.surfaces.window_card;
@@ -1404,11 +1404,11 @@ mod configured_theme {
     /// operator's.
     #[test]
     fn a_high_contrast_preference_on_disk_is_the_theme_that_starts() {
-        let dir = std::env::temp_dir().join(format!("qos-theme-{}", std::process::id()));
-        let qos = dir.join("qos");
-        std::fs::create_dir_all(&qos).expect("temp config dir");
+        let dir = std::env::temp_dir().join(format!("tilo-theme-{}", std::process::id()));
+        let tilo = dir.join("tilo");
+        std::fs::create_dir_all(&tilo).expect("temp config dir");
         std::fs::write(
-            qos.join("settings.json"),
+            tilo.join("settings.json"),
             r#"{"version":1,"appearance":{"theme":"high-contrast"}}"#,
         )
         .expect("write settings");
@@ -1434,7 +1434,7 @@ mod configured_theme {
     /// No preference is not an error, and must not stop a desktop starting.
     #[test]
     fn an_absent_settings_file_still_yields_a_usable_theme() {
-        let dir = std::env::temp_dir().join(format!("qos-theme-none-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tilo-theme-none-{}", std::process::id()));
         let prev = std::env::var_os("XDG_CONFIG_HOME");
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
         let picked = Theme::configured();

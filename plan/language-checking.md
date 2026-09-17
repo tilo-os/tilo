@@ -1,13 +1,11 @@
 # Spelling & grammar checking — findings + decision
 
-Text checking must live in the shared `ui` block/text editor (build once, every
-app gets it), not siloed in one app. Today only `word-processor` spell-checks
-(the in-tree English `crates/text/spellcheck`); notes/mail/chat/sheets get
-nothing, and there is no grammar checking anywhere.
+Text checking lives in the shared `ui` text input so applications do not need
+separate implementations. The in-tree `crates/text/spellcheck` provides the
+current spelling layer; grammar checking remains future work.
 
-We benchmarked the two Rust-native options by **actually executing them** on a
-labelled corpus (planted German + English errors), not by reading docs. Scratch
-crate: `.claude/experiments/grammar-bench/` (re-runnable).
+The two Rust-native options were benchmarked on a labelled corpus with planted
+German and English errors.
 
 ## The decisive fact: Harper is English-only
 
@@ -107,6 +105,6 @@ Grammar is the next layer, not part of synchronous editing:
 
 That engine boundary is the credible OSS unit: corpus + evaluator, typed protocol,
 Harper adapter, cancellation/staleness handling, and editor-agnostic diagnostics.
-It should not bundle qOS UI or CRDT types. Quality gates must be published per
+It should not bundle Tilo UI or CRDT types. Quality gates must be published per
 language; unsupported language is a normal capability result, never a silent
 English fallback.

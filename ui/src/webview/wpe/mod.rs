@@ -7,9 +7,8 @@
 //! channel drained by a GLib timeout source on the engine thread; navigation
 //! state flows back as [`WebViewEvent`]s from GObject signal handlers.
 //!
-//! The SHM path costs one CPU copy + BGRA→RGBA swizzle per frame — deliberate
-//! v1 simplicity; DMA-BUF → wgpu external-texture import slots in behind the
-//! same trait as the follow-up.
+//! The SHM path costs one CPU copy and a BGRA→RGBA swizzle per frame. The
+//! backend trait also permits a direct DMA-BUF import implementation.
 //!
 //! Requires the WPE stack built by `os/dev/build-wpe.sh` (Fedora ships no WPE
 //! packages); point `PKG_CONFIG_PATH`/`LD_LIBRARY_PATH` at the prefix.
@@ -181,7 +180,7 @@ struct EngineState {
     download_ids: std::collections::HashMap<usize, String>,
     cancelled_downloads: std::collections::HashSet<String>,
     download_progress_emitted_at: std::collections::HashMap<String, std::time::Instant>,
-    /// `Some` only on the zero-copy path (`QOS_WEBVIEW_DMABUF=1`); `None`
+    /// `Some` only on the zero-copy path (`TILO_WEBVIEW_DMABUF=1`); `None`
     /// uses the SHM copy path.
     egl: Option<egl::EglExport>,
 }
@@ -212,12 +211,12 @@ const MEDIA_ELEMENT_PROBE: &str = r#"(() => {
   }
   if (!best) return '';
   const v = best.video;
-  const ids = window.__qosPipElementIds || (window.__qosPipElementIds = new WeakMap());
-  const elements = window.__qosPipElements || (window.__qosPipElements = new Map());
+  const ids = window.__tiloPipElementIds || (window.__tiloPipElementIds = new WeakMap());
+  const elements = window.__tiloPipElements || (window.__tiloPipElements = new Map());
   let id = ids.get(v);
   if (!id) {
-    const next = (window.__qosPipElementSequence || 0) + 1;
-    window.__qosPipElementSequence = next;
+    const next = (window.__tiloPipElementSequence || 0) + 1;
+    window.__tiloPipElementSequence = next;
     id = `media:${next}`;
     ids.set(v, id);
   }
@@ -235,8 +234,8 @@ const MEDIA_ELEMENT_PROBE: &str = r#"(() => {
 })()"#;
 
 const MEDIA_ELEMENT_REFRESH_PROBE: &str = r#"(() => {
-  const id = __QOS_ELEMENT_ID__;
-  const v = window.__qosPipElements && window.__qosPipElements.get(id);
+  const id = __TILO_ELEMENT_ID__;
+  const v = window.__tiloPipElements && window.__tiloPipElements.get(id);
   if (!v || !v.isConnected) return '';
   const vw = Math.max(window.innerWidth, 1);
   const vh = Math.max(window.innerHeight, 1);
@@ -261,7 +260,7 @@ const MEDIA_ELEMENT_REFRESH_PROBE: &str = r#"(() => {
 
 fn media_element_refresh_probe(element_id: &str) -> Option<CString> {
     let encoded = serde_json::to_string(element_id).ok()?;
-    CString::new(MEDIA_ELEMENT_REFRESH_PROBE.replace("__QOS_ELEMENT_ID__", &encoded)).ok()
+    CString::new(MEDIA_ELEMENT_REFRESH_PROBE.replace("__TILO_ELEMENT_ID__", &encoded)).ok()
 }
 
 fn engine_thread(
@@ -288,7 +287,7 @@ fn engine_thread(
         }
         // Zero-copy dmabuf export is opt-in; if EGL setup fails we fall
         // back to the SHM copy path so the browser still runs.
-        let egl = if std::env::var_os("QOS_WEBVIEW_DMABUF").is_some() {
+        let egl = if std::env::var_os("TILO_WEBVIEW_DMABUF").is_some() {
             egl::EglExport::setup()
         } else {
             None
@@ -444,7 +443,7 @@ fn filter_store_dir() -> std::path::PathBuf {
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
         .unwrap_or_else(std::env::temp_dir);
-    base.join("qos-browser").join("filter-store")
+    base.join("tilo-browser").join("filter-store")
 }
 
 unsafe fn connect(
@@ -1147,7 +1146,7 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                 }
             }
             WebViewCommand::SetContentFilter(Some(json)) => {
-                let id = CString::new("qos-adblock").unwrap();
+                let id = CString::new("tilo-adblock").unwrap();
                 let bytes = ffi::g_bytes_new(json.as_ptr() as *const c_void, json.len());
                 ffi::webkit_user_content_filter_store_save(
                     state.filter_store,
@@ -1175,7 +1174,7 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                 let ucm = ffi::webkit_web_view_get_user_content_manager(state.view);
                 ffi::webkit_user_content_manager_remove_all_filters(ucm);
                 for (i, json) in chunks.iter().enumerate() {
-                    let Ok(id) = CString::new(format!("qos-adblock-{version:016x}-{i}")) else {
+                    let Ok(id) = CString::new(format!("tilo-adblock-{version:016x}-{i}")) else {
                         continue;
                     };
                     let bytes = ffi::g_bytes_new(json.as_ptr() as *const c_void, json.len());

@@ -1,13 +1,8 @@
 name: Release / OS
 
-# Builds the bootc OS container image (multi-stage, see os/Containerfile).
-# CADENCE: relevant image-input changes and a weekly backstop BUILD ONLY
-# (verify it builds + is reproducible — no registry churn or queue flooding).
-# Cargo changes are already compiled by check.yml and nightly.yml; rebuilding
-# the complete bootc image for every source-only commit duplicates that work.
-# The signed image is pushed to code.podesta.ai/qos/qos:latest ONLY on a
-# version tag (v*), an explicitly publishing manual run from main, or an opted-in
-# continuous release, so `bootc upgrade` tracks deliberate releases.
+# Builds the bootc OS container image for image-input changes and weekly
+# validation. Publishing is limited to version tags, an explicit main-branch
+# dispatch, or an opted-in continuous release.
 
 on:
   schedule:
@@ -54,19 +49,19 @@ on:
         required: false
         default: "1"
       app_collection_url:
-        description: "Pinned qos-apps-<arch>.tar.gz URL; empty uses vars.QOS_APP_COLLECTION_URL."
+        description: "Pinned tilo-apps-<arch>.tar.gz URL; empty uses vars.TILO_APP_COLLECTION_URL."
         required: false
         default: ""
       app_collection_sha256:
-        description: "SHA-256 of app_collection_url; empty uses vars.QOS_APP_COLLECTION_SHA256."
+        description: "SHA-256 of app_collection_url; empty uses vars.TILO_APP_COLLECTION_SHA256."
         required: false
         default: ""
       app_collection_publisher:
-        description: "Expected 64-hex Ed25519 publisher key; empty uses vars.QOS_APP_COLLECTION_PUBLISHER."
+        description: "Expected 64-hex Ed25519 publisher key; empty uses vars.TILO_APP_COLLECTION_PUBLISHER."
         required: false
         default: ""
       desktop_payload_url:
-        description: "Pinned qos-desktop-os-<arch>.tar.gz URL; empty uses the architecture channel variable."
+        description: "Pinned tilo-desktop-os-<arch>.tar.gz URL; empty uses the architecture channel variable."
         required: false
         default: ""
       desktop_payload_sha256:
@@ -79,12 +74,13 @@ concurrency:
   # from a tag, a manual main run, or an opted-in continuous main push, so every
   # invocation must share the lock: build-time event expressions cannot safely
   # predict the repository variable that enables the third publication path.
-  group: qos-os-image-series
+  group: tilo-os-image-series
   cancel-in-progress: false
 
 jobs:
   plan:
     runs-on: runner
+    timeout-minutes: 15
     outputs:
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
       publish: ${{ steps.matrix.outputs.publish }}
@@ -92,7 +88,7 @@ jobs:
       - name: Select validation or native publication lanes
         id: matrix
         env:
-          CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}
+          CONTINUOUS_RELEASE: ${{ vars.TILO_CONTINUOUS_OS_RELEASE }}
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
         run: |
           set -euo pipefail
@@ -118,6 +114,7 @@ jobs:
       fail-fast: true
       matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 600
     enable-openid-connect: true
     steps:
       - name: Checkout the monorepo
@@ -145,26 +142,25 @@ jobs:
           path: os/external-assets/cache
           key: github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
 
-      # Cheap fail-fast before the expensive podman build: no crate silently
-      # dropped from the workspace (that once orphaned 37 apps).
+      # Fail before the expensive image build if a crate is outside the workspace.
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
       - name: Materialize the pinned app collection
         env:
-          COLLECTION_AUDIENCE: ${{ vars.QOS_OS_APP_COLLECTION_AUDIENCE }}
+          COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
           COLLECTION_URL_INPUT: ${{ github.event.inputs.app_collection_url }}
           COLLECTION_SHA256_INPUT: ${{ github.event.inputs.app_collection_sha256 }}
-          COLLECTION_URL_DEFAULT: ${{ vars.QOS_APP_COLLECTION_URL }}
-          COLLECTION_SHA256_DEFAULT: ${{ vars.QOS_APP_COLLECTION_SHA256 }}
-          COLLECTION_URL_X86_64: ${{ vars.QOS_APP_COLLECTION_URL_X86_64 }}
-          COLLECTION_SHA256_X86_64: ${{ vars.QOS_APP_COLLECTION_SHA256_X86_64 }}
-          COLLECTION_URL_AARCH64: ${{ vars.QOS_APP_COLLECTION_URL_AARCH64 }}
-          COLLECTION_SHA256_AARCH64: ${{ vars.QOS_APP_COLLECTION_SHA256_AARCH64 }}
-          COLLECTION_PUBLISHER: ${{ github.event.inputs.app_collection_publisher || vars.QOS_APP_COLLECTION_PUBLISHER }}
+          COLLECTION_URL_DEFAULT: ${{ vars.TILO_APP_COLLECTION_URL }}
+          COLLECTION_SHA256_DEFAULT: ${{ vars.TILO_APP_COLLECTION_SHA256 }}
+          COLLECTION_URL_X86_64: ${{ vars.TILO_APP_COLLECTION_URL_X86_64 }}
+          COLLECTION_SHA256_X86_64: ${{ vars.TILO_APP_COLLECTION_SHA256_X86_64 }}
+          COLLECTION_URL_AARCH64: ${{ vars.TILO_APP_COLLECTION_URL_AARCH64 }}
+          COLLECTION_SHA256_AARCH64: ${{ vars.TILO_APP_COLLECTION_SHA256_AARCH64 }}
+          COLLECTION_PUBLISHER: ${{ github.event.inputs.app_collection_publisher || vars.TILO_APP_COLLECTION_PUBLISHER }}
         run: |
           set -euo pipefail
-          echo 'QOS_PREBUILT_APPS=0' >> "$GITHUB_ENV"
+          echo 'TILO_PREBUILT_APPS=0' >> "$GITHUB_ENV"
           # The Authorized Integration grants only short-lived package read to
           # this workflow. Pull requests therefore test the exact immutable
           # app/OS boundary without receiving a reusable registry credential.
@@ -206,7 +202,7 @@ jobs:
                 --header "Authorization: Bearer $jwt" \
                 "$COLLECTION_URL" -o "$work/apps.tar.gz"
               ;;
-            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)
+            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*)
               # The in-cluster Forgejo service is reached over the cluster's
               # private network. Do not follow redirects from this allowlisted
               # HTTP origin, and never permit arbitrary cleartext package URLs.
@@ -248,26 +244,26 @@ jobs:
           cp -a "$work"/runtime/. os/app-runtime/
           test -n "$(find os/app-artifacts -name '*.qpkg' -print -quit)"
           test -s os/app-runtime/runtime-bundle-publisher.hex
-          test -n "$(find os/app-runtime/qos-runtime -name bundle.toml -print -quit)"
-          echo 'QOS_PREBUILT_APPS=1' >> "$GITHUB_ENV"
-          echo "QOS_APP_COLLECTION_SHA256=${COLLECTION_SHA256,,}" >> "$GITHUB_ENV"
-          echo "QOS_APP_COLLECTION_PUBLISHER=${COLLECTION_PUBLISHER,,}" >> "$GITHUB_ENV"
+          test -n "$(find os/app-runtime/tilo-runtime -name bundle.toml -print -quit)"
+          echo 'TILO_PREBUILT_APPS=1' >> "$GITHUB_ENV"
+          echo "TILO_APP_COLLECTION_SHA256=${COLLECTION_SHA256,,}" >> "$GITHUB_ENV"
+          echo "TILO_APP_COLLECTION_PUBLISHER=${COLLECTION_PUBLISHER,,}" >> "$GITHUB_ENV"
           echo '::notice::using pinned prebuilt app collection'
 
       - name: Materialize the pinned desktop payload
         env:
-          PAYLOAD_AUDIENCE: ${{ vars.QOS_OS_APP_COLLECTION_AUDIENCE }}
+          PAYLOAD_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
           PAYLOAD_URL_INPUT: ${{ github.event.inputs.desktop_payload_url }}
           PAYLOAD_SHA256_INPUT: ${{ github.event.inputs.desktop_payload_sha256 }}
-          PAYLOAD_URL_DEFAULT: ${{ vars.QOS_DESKTOP_PAYLOAD_URL }}
-          PAYLOAD_SHA256_DEFAULT: ${{ vars.QOS_DESKTOP_PAYLOAD_SHA256 }}
-          PAYLOAD_URL_X86_64: ${{ vars.QOS_DESKTOP_PAYLOAD_URL_X86_64 }}
-          PAYLOAD_SHA256_X86_64: ${{ vars.QOS_DESKTOP_PAYLOAD_SHA256_X86_64 }}
-          PAYLOAD_URL_AARCH64: ${{ vars.QOS_DESKTOP_PAYLOAD_URL_AARCH64 }}
-          PAYLOAD_SHA256_AARCH64: ${{ vars.QOS_DESKTOP_PAYLOAD_SHA256_AARCH64 }}
+          PAYLOAD_URL_DEFAULT: ${{ vars.TILO_DESKTOP_PAYLOAD_URL }}
+          PAYLOAD_SHA256_DEFAULT: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256 }}
+          PAYLOAD_URL_X86_64: ${{ vars.TILO_DESKTOP_PAYLOAD_URL_X86_64 }}
+          PAYLOAD_SHA256_X86_64: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256_X86_64 }}
+          PAYLOAD_URL_AARCH64: ${{ vars.TILO_DESKTOP_PAYLOAD_URL_AARCH64 }}
+          PAYLOAD_SHA256_AARCH64: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256_AARCH64 }}
         run: |
           set -euo pipefail
-          echo 'QOS_PREBUILT_DESKTOP=0' >> "$GITHUB_ENV"
+          echo 'TILO_PREBUILT_DESKTOP=0' >> "$GITHUB_ENV"
           case "$(uname -m)" in
             x86_64)
               architecture=x86_64
@@ -297,7 +293,7 @@ jobs:
                 --header "Authorization: Bearer $jwt" "$PAYLOAD_URL" \
                 --output "$work/desktop.tar.gz"
               ;;
-            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*)
+            http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*)
               curl --proto '=http' --fail --retry 3 \
                 --header "Authorization: Bearer $jwt" "$PAYLOAD_URL" \
                 --output "$work/desktop.tar.gz"
@@ -309,7 +305,7 @@ jobs:
           esac
           printf '%s  %s\n' "$PAYLOAD_SHA256" "$work/desktop.tar.gz" \
             | sha256sum --check --strict
-          expected=$'SHA256SUMS\nmanifest.json\nqos-launcher\nqos-unlock-helper\nshell'
+          expected=$'SHA256SUMS\nmanifest.json\ntilo-launcher\ntilo-unlock-helper\nshell'
           actual=$(tar -tzf "$work/desktop.tar.gz" | LC_ALL=C sort)
           [[ $actual == "$expected" ]] || {
             printf 'unexpected desktop payload members:\n%s\n' "$actual" >&2
@@ -324,11 +320,11 @@ jobs:
           (cd "$work" && sha256sum --check --strict SHA256SUMS)
           [[ $(jq -er .architecture "$work/manifest.json") == "$architecture" ]]
           find os/desktop-artifacts -mindepth 1 ! -name .gitignore -delete
-          install -m 0755 "$work/shell" "$work/qos-launcher" \
-            "$work/qos-unlock-helper" os/desktop-artifacts/
+          install -m 0755 "$work/shell" "$work/tilo-launcher" \
+            "$work/tilo-unlock-helper" os/desktop-artifacts/
           cp "$work/manifest.json" os/desktop-artifacts/
-          echo 'QOS_PREBUILT_DESKTOP=1' >> "$GITHUB_ENV"
-          echo "QOS_DESKTOP_PAYLOAD_SHA256=${PAYLOAD_SHA256,,}" >> "$GITHUB_ENV"
+          echo 'TILO_PREBUILT_DESKTOP=1' >> "$GITHUB_ENV"
+          echo "TILO_DESKTOP_PAYLOAD_SHA256=${PAYLOAD_SHA256,,}" >> "$GITHUB_ENV"
           echo '::notice::using pinned prebuilt desktop payload'
 
       # Log in on EVERY build: the build installs from the private, digest-pinned
@@ -378,7 +374,7 @@ jobs:
               ;;
           esac
           [[ $with_browser == 0 || $with_browser == 1 ]]
-          echo "QOS_WITH_BROWSER=$with_browser" >> "$GITHUB_ENV"
+          echo "TILO_WITH_BROWSER=$with_browser" >> "$GITHUB_ENV"
           echo "::notice::OS validation profile: with_browser=$with_browser"
 
       - name: Verify frozen package snapshot matches every consumer
@@ -386,7 +382,7 @@ jobs:
 
       - name: Require the promoted native WPE buildroot
         env:
-          WITH_BROWSER: ${{ env.QOS_WITH_BROWSER }}
+          WITH_BROWSER: ${{ env.TILO_WITH_BROWSER }}
         run: |
           set -euo pipefail
           . os/wpe-buildroot-snapshot.env
@@ -396,7 +392,7 @@ jobs:
             *) printf 'unsupported WPE buildroot architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
           esac
           if [ "$WITH_BROWSER" = 1 ]; then
-            [[ "$ref" =~ ^code\.podesta\.ai/qos/qos-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] || {
+            [[ "$ref" =~ ^code\.podesta\.ai/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] || {
               printf 'no digest-pinned WPE buildroot for %s; run snapshot-wpe-buildroot\n' "$(uname -m)" >&2
               exit 1
             }
@@ -405,9 +401,9 @@ jobs:
           [ -n "$ref" ] || ref="$BASE_REF"
           echo "WPE_BUILDROOT_REF=$ref" >> "$GITHUB_ENV"
 
-      # Pin the qos-kernel image the build swaps into kernel-core.  Same
+      # Pin the tilo-kernel image the build swaps into kernel-core.  Same
       # digest-pinning + strip-comments-strategy as RPMS_REF.
-      - name: Load KERNEL_RPMS_REF (qos-kernel image)
+      - name: Load KERNEL_RPMS_REF (tilo-kernel image)
         run: grep '^KERNEL_RPMS_REF=' os/kernel-snapshot.env >> "$GITHUB_ENV"
 
       # Deterministic timestamp for reproducible builds: the HEAD commit time.
@@ -419,10 +415,10 @@ jobs:
       - name: Select build, validation, or publication mode
         id: release-mode
         env:
-          CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}
+          CONTINUOUS_RELEASE: ${{ vars.TILO_CONTINUOUS_OS_RELEASE }}
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
-          PROTECTED_PCR_PREDICTION_SIGNER: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.QOS_CONTINUOUS_OS_RELEASE == '1')) && vars.QOS_PCR_PREDICTION_SIGNER || '' }}
-          PROTECTED_EFI_SIGNING_CERT_SHA256: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.QOS_CONTINUOUS_OS_RELEASE == '1')) && vars.QOS_EFI_SIGNING_CERT_SHA256 || '' }}
+          PROTECTED_PCR_PREDICTION_SIGNER: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.TILO_CONTINUOUS_OS_RELEASE == '1')) && vars.TILO_PCR_PREDICTION_SIGNER || '' }}
+          PROTECTED_EFI_SIGNING_CERT_SHA256: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.TILO_CONTINUOUS_OS_RELEASE == '1')) && vars.TILO_EFI_SIGNING_CERT_SHA256 || '' }}
         run: |
           publish=false
           validate=false
@@ -440,18 +436,18 @@ jobs:
           echo "validate=$validate" >> "$GITHUB_OUTPUT"
           if [[ "$publish" == true ]]; then
             test -n "$PROTECTED_PCR_PREDICTION_SIGNER" || {
-              echo '::error::publishing requires QOS_PCR_PREDICTION_SIGNER'
+              echo '::error::publishing requires TILO_PCR_PREDICTION_SIGNER'
               exit 1
             }
             test -n "$PROTECTED_EFI_SIGNING_CERT_SHA256" || {
-              echo '::error::publishing requires QOS_EFI_SIGNING_CERT_SHA256'
+              echo '::error::publishing requires TILO_EFI_SIGNING_CERT_SHA256'
               exit 1
             }
-            echo 'QOS_REQUIRE_PCR_PREDICTION=1' >> "$GITHUB_ENV"
-            echo "QOS_PCR_PREDICTION_SIGNER=$PROTECTED_PCR_PREDICTION_SIGNER" >> "$GITHUB_ENV"
-            echo "QOS_EFI_SIGNING_CERT_SHA256=$PROTECTED_EFI_SIGNING_CERT_SHA256" >> "$GITHUB_ENV"
+            echo 'TILO_REQUIRE_PCR_PREDICTION=1' >> "$GITHUB_ENV"
+            echo "TILO_PCR_PREDICTION_SIGNER=$PROTECTED_PCR_PREDICTION_SIGNER" >> "$GITHUB_ENV"
+            echo "TILO_EFI_SIGNING_CERT_SHA256=$PROTECTED_EFI_SIGNING_CERT_SHA256" >> "$GITHUB_ENV"
           else
-            echo 'QOS_REQUIRE_PCR_PREDICTION=0' >> "$GITHUB_ENV"
+            echo 'TILO_REQUIRE_PCR_PREDICTION=0' >> "$GITHUB_ENV"
           fi
           echo "::notice::OS integration validation: $validate; publication: $publish"
 
@@ -459,11 +455,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          key='${{ vars.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}'
+          key='${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}'
           if [[ ! "$key" =~ ^[0-9a-fA-F]{64}$ \
                 || "$key" == 0000000000000000000000000000000000000000000000000000000000000000 ]]; then
             if [[ '${{ steps.release-mode.outputs.publish }}' == true ]]; then
-              echo '::error::publishing requires QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY'
+              echo '::error::publishing requires TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY'
               exit 1
             fi
             # RFC 8032 test-vector key: deliberately public/non-production and
@@ -473,12 +469,12 @@ jobs:
             key=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
             echo '::notice::using the non-production owner key for build validation only'
           fi
-          echo "QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${key,,}" >> "$GITHUB_ENV"
+          echo "TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${key,,}" >> "$GITHUB_ENV"
 
       # The generation number sealed into the UKI's command line, which bounded
       # rollback binds every unseal to. It has to advance by exactly one per
       # published image: the retention window is arithmetic on it, and the floor is
-      # a TPM NV counter that costs one write per step (qos-rollback refuses an
+      # a TPM NV counter that costs one write per step (tilo-rollback refuses an
       # advance of more than 64). So it is read from the published series — every
       # published image carries a `gen<N>` tag, and the next number is max + 1 —
       # rather than from a timestamp, a commit count, or a counter file that can
@@ -493,10 +489,10 @@ jobs:
           # behind: the runner writes a credsStore entry the file itself does not
           # carry, so a lookup finds a file with no credential in it and the read
           # fails as "authentication required".
-          QOS_REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
+          TILO_REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
         run: |
           gen="$(./os/dev/next-generation.sh)"
-          echo "QOS_GENERATION=$gen" >> "$GITHUB_ENV"
+          echo "TILO_GENERATION=$gen" >> "$GITHUB_ENV"
           echo "::notice::building generation $gen"
 
       # Set up buildx with the docker-container driver — the default `docker`
@@ -522,7 +518,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: code.podesta.ai/qos/qos
+          images: code.podesta.ai/qos/tilo
           tags: |
             type=raw,value=latest,enable=${{ steps.release-mode.outputs.publish == 'true' }}
             type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
@@ -537,13 +533,13 @@ jobs:
             # build reads these back to learn which numbers are taken. It is only
             # ever pushed on a run that publishes, so a number is consumed exactly
             # when an image carrying it becomes reachable.
-            type=raw,value=gen${{ env.QOS_GENERATION }}
+            type=raw,value=gen${{ env.TILO_GENERATION }}
 
       # Build the multi-stage bootc image. Publishing deliberately happens only
       # after the sealed image has been installed and booted below. On a release
       # run buildx writes an OCI archive for that gate; pull requests exercise
       # the complete build and registry cache without retaining output.
-      - name: Build the qOS image
+      - name: Build the Tilo image
         id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
@@ -554,10 +550,10 @@ jobs:
             github-assets=os/external-assets/cache
           file: os/Containerfile
           push: false
-          outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/qos-image.tar' || '' }}
+          outputs: ${{ steps.release-mode.outputs.validate == 'true' && 'type=oci,dest=/var/tmp/tilo-image.tar' || '' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # QOS_WITH_BROWSER: a manual run can omit the browser + its WPE WebKit
+          # TILO_WITH_BROWSER: a manual run can omit the browser + its WPE WebKit
           # engine stage, which is ~45 of the ~60 minutes a cold build takes.
           # Everything the boot chain needs is still built, so boot verification
           # doesn't have to wait on the engine. Pushes and PRs carry no inputs,
@@ -572,17 +568,17 @@ jobs:
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
-            QOS_WITH_BROWSER=${{ env.QOS_WITH_BROWSER }}
-            QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}
-            QOS_PREBUILT_DESKTOP=${{ env.QOS_PREBUILT_DESKTOP }}
-            QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
-            QOS_APP_COLLECTION_PUBLISHER=${{ env.QOS_APP_COLLECTION_PUBLISHER }}
-            QOS_GENERATION=${{ env.QOS_GENERATION }}
-            QOS_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
+            TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
+            TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
+            TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_GENERATION=${{ env.TILO_GENERATION }}
+            TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
             SCCACHE_BUCKET=sccache
             SCCACHE_ENDPOINT=http://forgejo-sccache-minio.forgejo.svc.cluster.local:9000
             SCCACHE_REGION=auto
-            SCCACHE_S3_KEY_PREFIX=quickdesktop/image/v1
+            SCCACHE_S3_KEY_PREFIX=tilo/image/v1
             SCCACHE_S3_USE_SSL=false
           # The runner injects these two environment variables from a
           # least-privilege Kubernetes Secret. BuildKit exposes them only to
@@ -600,8 +596,8 @@ jobs:
           # (~8 min). With it, only the layers past the fix rerun
           # (~1-2 min).  mode=max exports intermediate layer caches
           # too, not just the final image.
-          cache-from: type=registry,ref=code.podesta.ai/qos/qos-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=code.podesta.ai/qos/qos-buildcache:${{ matrix.arch }},mode=max
+          cache-from: type=registry,ref=code.podesta.ai/qos/tilo-buildcache:${{ matrix.arch }}
+          cache-to: type=registry,ref=code.podesta.ai/qos/tilo-buildcache:${{ matrix.arch }},mode=max
 
       # Reproducibility is a release gate, not a statement inferred from pinned
       # inputs. Rebuild without the first build's layer cache and compare the
@@ -617,25 +613,25 @@ jobs:
             github-assets=os/external-assets/cache
           file: os/Containerfile
           push: false
-          outputs: type=oci,dest=/var/tmp/qos-image-repro.tar
-          tags: code.podesta.ai/qos/qos:repro-${{ github.sha }}
+          outputs: type=oci,dest=/var/tmp/tilo-image-repro.tar
+          tags: code.podesta.ai/qos/tilo:repro-${{ github.sha }}
           build-args: |
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
-            QOS_WITH_BROWSER=${{ env.QOS_WITH_BROWSER }}
-            QOS_PREBUILT_APPS=${{ env.QOS_PREBUILT_APPS }}
-            QOS_PREBUILT_DESKTOP=${{ env.QOS_PREBUILT_DESKTOP }}
-            QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
-            QOS_APP_COLLECTION_PUBLISHER=${{ env.QOS_APP_COLLECTION_PUBLISHER }}
-            QOS_GENERATION=${{ env.QOS_GENERATION }}
-            QOS_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
+            TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
+            TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
+            TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_GENERATION=${{ env.TILO_GENERATION }}
+            TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
             SCCACHE_BUCKET=sccache
             SCCACHE_ENDPOINT=http://forgejo-sccache-minio.forgejo.svc.cluster.local:9000
             SCCACHE_REGION=auto
-            SCCACHE_S3_KEY_PREFIX=quickdesktop/image/v1
+            SCCACHE_S3_KEY_PREFIX=tilo/image/v1
             SCCACHE_S3_USE_SSL=false
           secret-envs: |
             aws_access_key_id=AWS_ACCESS_KEY_ID
@@ -648,21 +644,21 @@ jobs:
         if: steps.release-mode.outputs.validate == 'true'
         timeout-minutes: 60
         env:
-          QOS_IMAGE: localhost/qos:release-candidate
-          QOS_RUN: /var/tmp/qos-projection-vm-${{ matrix.arch }}
-          QOS_OUTPUT: /var/tmp/qos-projection-image-${{ matrix.arch }}
-          QOS_VM_ARCH: ${{ matrix.arch }}
-          QOS_USER: quickuser
-          QOS_PASS: quickdesktop
-          QOS_SKIP_BUILD: "1"
+          TILO_IMAGE: localhost/tilo:release-candidate
+          TILO_RUN: /var/tmp/tilo-projection-vm-${{ matrix.arch }}
+          TILO_OUTPUT: /var/tmp/tilo-projection-image-${{ matrix.arch }}
+          TILO_VM_ARCH: ${{ matrix.arch }}
+          TILO_USER: quickuser
+          TILO_PASS: tilo
+          TILO_SKIP_BUILD: "1"
           # TCG is substantially slower than KVM, so give the greeter up to 20
           # minutes on Kata runners. Developer hosts with /dev/kvm still use KVM.
-          QOS_BOOT_WAIT_ATTEMPTS: "600"
+          TILO_BOOT_WAIT_ATTEMPTS: "600"
           # CI has the tools directly in its job container; the developer
           # default enters a named distrobox that does not exist on runners.
-          QOS_DISTROBOX: ""
-          QOS_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-          QOS_RESEALED_DIGEST_FILE: /var/tmp/qos-resealed-composefs-digest
+          TILO_DISTROBOX: ""
+          TILO_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          TILO_RESEALED_DIGEST_FILE: /var/tmp/tilo-resealed-composefs-digest
         run: |
           set -euo pipefail
 
@@ -703,45 +699,45 @@ jobs:
           qemu_binary="qemu-system-${{ matrix.arch }}"
           command -v jq podman qemu-img "$qemu_binary" skopeo sshpass socat systemd-repart >/dev/null
 
-          first_manifest="$(skopeo inspect --raw oci-archive:/var/tmp/qos-image.tar | sha256sum | awk '{print $1}')"
-          second_manifest="$(skopeo inspect --raw oci-archive:/var/tmp/qos-image-repro.tar | sha256sum | awk '{print $1}')"
+          first_manifest="$(skopeo inspect --raw oci-archive:/var/tmp/tilo-image.tar | sha256sum | awk '{print $1}')"
+          second_manifest="$(skopeo inspect --raw oci-archive:/var/tmp/tilo-image-repro.tar | sha256sum | awk '{print $1}')"
           test -n "$first_manifest" && test "$first_manifest" = "$second_manifest" || {
             echo "::error::independent OS builds differ: $first_manifest != $second_manifest"
             exit 1
           }
           echo "::notice::independent OS builds reproduced manifest sha256:$first_manifest"
 
-          printf '%s' "$QOS_REGISTRY_TOKEN" | podman login code.podesta.ai \
+          printf '%s' "$TILO_REGISTRY_TOKEN" | podman login code.podesta.ai \
             --username "${{ github.actor }}" --password-stdin
-          podman load --input /var/tmp/qos-image.tar
+          podman load --input /var/tmp/tilo-image.tar
           first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
           test -n "$first_tag"
-          podman tag "$first_tag" "$QOS_IMAGE"
+          podman tag "$first_tag" "$TILO_IMAGE"
           # Keep the installed machine on the public release channel, not on
           # the temporary localhost tag used only for resealing.
-          export QOS_TARGET_IMGREF="$first_tag"
+          export TILO_TARGET_IMGREF="$first_tag"
 
           # bootc currently requires a stable two-pass composefs UKI seal. The
           # end-to-end helper performs that convergence and then creates qcow2;
           # calling disk-image.sh directly would only exercise the rejected
           # first pass and could never prove the published image bootable.
-          mkdir -p "$QOS_OUTPUT" "$QOS_RUN"
-          rm -f "$QOS_RESEALED_DIGEST_FILE"
+          mkdir -p "$TILO_OUTPUT" "$TILO_RUN"
+          rm -f "$TILO_RESEALED_DIGEST_FILE"
           ./os/dev/build-image.sh
 
           # build-image may add a deterministic /boot-only UKI reseal layer.
           # Reproduce that exact final layer on the independent image and gate
           # the artifact that will actually be published, not merely its base.
-          repro_image="code.podesta.ai/qos/qos:repro-${GITHUB_SHA}"
-          podman load --input /var/tmp/qos-image-repro.tar
-          if [[ -s "$QOS_RESEALED_DIGEST_FILE" ]]; then
-            resealed_digest="$(tr -d '\n\r' < "$QOS_RESEALED_DIGEST_FILE")"
+          repro_image="code.podesta.ai/qos/tilo:repro-${GITHUB_SHA}"
+          podman load --input /var/tmp/tilo-image-repro.tar
+          if [[ -s "$TILO_RESEALED_DIGEST_FILE" ]]; then
+            resealed_digest="$(tr -d '\n\r' < "$TILO_RESEALED_DIGEST_FILE")"
             ./os/dev/reseal-image.sh "$repro_image" "$resealed_digest"
           fi
-          if [[ -n "$QOS_PCR_PREDICTION_SIGNER" ]]; then
-            ./os/dev/sign-target-prediction.sh "$repro_image" "$QOS_PCR_PREDICTION_SIGNER"
+          if [[ -n "$TILO_PCR_PREDICTION_SIGNER" ]]; then
+            ./os/dev/sign-target-prediction.sh "$repro_image" "$TILO_PCR_PREDICTION_SIGNER"
           fi
-          final_manifest="$(skopeo inspect --raw "containers-storage:$QOS_IMAGE" | sha256sum | awk '{print $1}')"
+          final_manifest="$(skopeo inspect --raw "containers-storage:$TILO_IMAGE" | sha256sum | awk '{print $1}')"
           repro_manifest="$(skopeo inspect --raw "containers-storage:$repro_image" | sha256sum | awk '{print $1}')"
           test -n "$final_manifest" && test "$final_manifest" = "$repro_manifest" || {
             echo "::error::final sealed OS images differ: $final_manifest != $repro_manifest"
@@ -749,14 +745,14 @@ jobs:
           }
           echo "::notice::final sealed OS image reproduced manifest sha256:$final_manifest"
 
-          export QOS_DISK="$QOS_OUTPUT/qcow2/disk.qcow2"
+          export TILO_DISK="$TILO_OUTPUT/qcow2/disk.qcow2"
           trap './os/dev/vm.sh stop || true' EXIT
-          # The installed Files AT-SPI gate needs the real qOS compositor.
+          # The installed Files AT-SPI gate needs the real Tilo compositor.
           # vm.sh documents that its 2D mode may not start that compositor;
           # egl-headless + virgl is the release-test configuration that does.
           ./os/dev/vm.sh boot --gl
           ./os/dev/vm.sh wait
-          ./os/dev/vm.sh login "$QOS_USER" "$QOS_PASS"
+          ./os/dev/vm.sh login "$TILO_USER" "$TILO_PASS"
           for attempt in $(seq 1 60); do
             if ./os/dev/vm.sh ssh true >/dev/null 2>&1; then
               break
@@ -792,10 +788,10 @@ jobs:
           # the release gate that proves the compositor-owned first-use UI is
           # actually visible to an external AT-SPI consumer on the installed
           # graphical session.
-          ./os/dev/vm.sh ssh /usr/libexec/qos/native-atspi-smoke.sh oobe-actions
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-actions
           for attempt in $(seq 1 60); do
             if ./os/dev/vm.sh ssh \
-              "test -s \"\$HOME/.config/qos/identity/primary.json\" && test -s /var/lib/qos/device/cert.bin"; then
+              "test -s \"\$HOME/.config/tilo/identity/primary.json\" && test -s /var/lib/tilo/device/cert.bin"; then
               break
             fi
             if [[ "$attempt" == 60 ]]; then
@@ -807,16 +803,16 @@ jobs:
           done
           ./os/dev/vm.sh keys tab ret
 
-          ./os/dev/vm.sh ssh /usr/libexec/qos/projection-boot-check.sh
-          ./os/dev/vm.sh ssh /usr/libexec/qos/collaborative-files-image-contract.sh runtime
-          ./os/dev/vm.sh ssh /usr/libexec/qos/native-atspi-smoke.sh desktop
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/projection-boot-check.sh
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/collaborative-files-image-contract.sh runtime
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
 
           # Lock is compositor-owned too, and historically fell outside the
           # app-window AT-SPI path. Exercise the real Super+L route and require
           # its protected password field and instructions on the session bus.
           ./os/dev/vm.sh keys meta_l-l
-          ./os/dev/vm.sh ssh /usr/libexec/qos/native-atspi-smoke.sh lock
-          ./os/dev/vm.sh type "$QOS_PASS"
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh lock
+          ./os/dev/vm.sh type "$TILO_PASS"
           ./os/dev/vm.sh keys ret
 
           if [[ '${{ steps.release-mode.outputs.publish }}' == true ]]; then
@@ -824,9 +820,9 @@ jobs:
             # genN are promoted only after signature, SBOM and provenance
             # verification, so update clients cannot observe a half-published
             # release through a channel tag.
-            digest_file="$(mktemp /var/tmp/qos-push-digest.XXXXXX)"
-            candidate="code.podesta.ai/qos/qos:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ matrix.arch }}"
-            podman tag "$QOS_IMAGE" "$candidate"
+            digest_file="$(mktemp /var/tmp/tilo-push-digest.XXXXXX)"
+            candidate="code.podesta.ai/qos/tilo:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ matrix.arch }}"
+            podman tag "$TILO_IMAGE" "$candidate"
             podman push --digestfile "$digest_file" "$candidate"
             digest="$(tr -d '[:space:]' < "$digest_file")"
             test -n "$digest"
@@ -855,7 +851,7 @@ jobs:
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
           cosign sign --yes --key "$COSIGN_KEY_REF" \
-            "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
+            "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
 
       - name: Install checksum-pinned Syft from the persistent asset cache
         if: steps.release-mode.outputs.publish == 'true'
@@ -869,7 +865,7 @@ jobs:
         if: steps.release-mode.outputs.publish == 'true'
         run: |
           syft \
-            "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}" \
+            "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}" \
             --output spdx-json=sbom.spdx.json
 
       - name: Attest the SBOM to the image (signed)
@@ -880,7 +876,7 @@ jobs:
           cosign attest --yes \
             --predicate sbom.spdx.json --type spdxjson \
             --key "$COSIGN_KEY_REF" \
-            "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
+            "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
 
       - name: Generate and attest SLSA provenance
         if: steps.release-mode.outputs.publish == 'true'
@@ -892,7 +888,7 @@ jobs:
           cosign attest --yes \
             --predicate provenance.json --type slsaprovenance1 \
             --key "$COSIGN_KEY_REF" \
-            "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
+            "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
 
       # A short-lived, digest-bound statement makes release freshness an
       # authenticated value instead of an inference from mutable registry tags.
@@ -908,32 +904,32 @@ jobs:
         run: |
           ./os/dev/release-freshness.sh freshness.json
           cosign attest --yes \
-            --predicate freshness.json --type https://qos.dev/security/release-freshness/v1 \
+            --predicate freshness.json --type https://tilo.dev/security/release-freshness/v1 \
             --key "$COSIGN_KEY_REF" \
-            "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
+            "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
 
       - name: Verify and describe the native release child
         if: steps.release-mode.outputs.publish == 'true'
         run: |
           set -euo pipefail
-          image="code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
+          image="code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
           cosign verify --key keys/cosign.pub "$image" >/dev/null
           cosign verify-attestation --key keys/cosign.pub \
             --type spdxjson "$image" >/dev/null
           cosign verify-attestation --key keys/cosign.pub \
             --type slsaprovenance1 "$image" >/dev/null
           freshness="$(cosign verify-attestation --key keys/cosign.pub \
-            --type https://qos.dev/security/release-freshness/v1 "$image")"
+            --type https://tilo.dev/security/release-freshness/v1 "$image")"
           now="$(date -u +%s)"
           printf '%s' "$freshness" | jq -e \
             --arg digest '${{ steps.release.outputs.digest }}' \
             --arg source "$GITHUB_SHA" \
-            --argjson generation "$QOS_GENERATION" \
+            --argjson generation "$TILO_GENERATION" \
             --argjson now "$now" '
               [.[].payload | @base64d | fromjson | .predicate]
               | any(
-                  .schema == "https://qos.dev/security/release-freshness/v1"
-                  and .repository == "code.podesta.ai/qos/qos"
+                  .schema == "https://tilo.dev/security/release-freshness/v1"
+                  and .repository == "code.podesta.ai/qos/tilo"
                   and .digest == $digest
                   and .sourceRevision == $source
                   and .generation == $generation
@@ -958,16 +954,16 @@ jobs:
           jq -n \
             --arg arch '${{ matrix.arch }}' \
             --arg digest '${{ steps.release.outputs.digest }}' \
-            --argjson generation "$QOS_GENERATION" \
+            --argjson generation "$TILO_GENERATION" \
             --arg source "$GITHUB_SHA" \
             '{architecture:$arch,digest:$digest,generation:$generation,sourceRevision:$source}' \
             > "release-child/${{ matrix.arch }}.json"
-          echo "::notice::verified signed generation $QOS_GENERATION child $image"
+          echo "::notice::verified signed generation $TILO_GENERATION child $image"
 
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: steps.release-mode.outputs.publish == 'true'
         with:
-          name: qos-os-child-${{ matrix.arch }}
+          name: tilo-os-child-${{ matrix.arch }}
           path: release-child/${{ matrix.arch }}.json
           if-no-files-found: error
 
@@ -975,6 +971,7 @@ jobs:
     needs: [plan, build-and-push]
     if: needs.plan.outputs.publish == 'true'
     runs-on: runner
+    timeout-minutes: 120
     enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -1041,7 +1038,7 @@ jobs:
           child_dependencies='[]'
           for arch in x86_64 aarch64; do
             digest="$(jq -er --arg arch "$arch" '.[] | select(.architecture == $arch) | .digest' <<<"$children")"
-            image="code.podesta.ai/qos/qos@$digest"
+            image="code.podesta.ai/qos/tilo@$digest"
             case "$arch" in x86_64) expected_registry_arch=amd64 ;; aarch64) expected_registry_arch=arm64 ;; esac
             actual_registry_arch="$(skopeo inspect "docker://$image" | jq -er .Architecture)"
             [[ "$actual_registry_arch" == "$expected_registry_arch" ]] || {
@@ -1056,7 +1053,7 @@ jobs:
                 [.[].payload | @base64d | fromjson | .predicate]
                 | any(.buildDefinition.externalParameters.generation == $generation
                       and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
-                      and any(.buildDefinition.resolvedDependencies[]?; .uri == ("git+ssh://code.podesta.ai/qos/qos@" + $source)))
+                      and any(.buildDefinition.resolvedDependencies[]?; .uri == ("git+ssh://code.podesta.ai/qos/tilo@" + $source)))
               ' >/dev/null || {
                 echo "::error::$arch child provenance does not bind its digest, source, and generation"
                 exit 1
@@ -1065,18 +1062,18 @@ jobs:
               '. + [{architecture:$arch,digest:$digest}]' <<<"$child_dependencies")"
           done
 
-          candidate="code.podesta.ai/qos/qos:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
-          manifest="qos-release-index-${GITHUB_RUN_ID}"
+          candidate="code.podesta.ai/qos/tilo:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          manifest="tilo-release-index-${GITHUB_RUN_ID}"
           podman manifest create "$manifest"
           for arch in x86_64 aarch64; do
             digest="$(jq -er --arg arch "$arch" '.[] | select(.architecture == $arch) | .digest' <<<"$children")"
-            podman manifest add "$manifest" "docker://code.podesta.ai/qos/qos@$digest"
+            podman manifest add "$manifest" "docker://code.podesta.ai/qos/tilo@$digest"
           done
-          digest_file="$(mktemp /var/tmp/qos-index-digest.XXXXXX)"
+          digest_file="$(mktemp /var/tmp/tilo-index-digest.XXXXXX)"
           podman manifest push --all --digestfile "$digest_file" "$manifest" "docker://$candidate"
           index_digest="$(tr -d '[:space:]' < "$digest_file")"
           [[ "$index_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          index_image="code.podesta.ai/qos/qos@$index_digest"
+          index_image="code.podesta.ai/qos/tilo@$index_digest"
           expected_index="$(jq -c 'sort_by(.architecture)' <<<"$child_dependencies")"
           actual_index="$(skopeo inspect --raw "docker://$index_image" | jq -ce '
             [.manifests[] | {
@@ -1092,9 +1089,9 @@ jobs:
           }
 
           cosign sign --yes --key "$COSIGN_KEY_REF" "$index_image"
-          export RELEASE_DIGEST="$index_digest" QOS_GENERATION="$generation"
+          export RELEASE_DIGEST="$index_digest" TILO_GENERATION="$generation"
           export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
-          export QOS_RELEASE_CHILDREN_JSON="$child_dependencies"
+          export TILO_RELEASE_CHILDREN_JSON="$child_dependencies"
           source <(grep '^BASE_REF=' os/base-snapshot.env)
           source <(grep '^RPMS_REF=' os/rpms-snapshot.env)
           source <(grep '^KERNEL_RPMS_REF=' os/kernel-snapshot.env)
@@ -1104,7 +1101,7 @@ jobs:
             --key "$COSIGN_KEY_REF" "$index_image"
           FRESHNESS_TTL_SECONDS=86400 ./os/dev/release-freshness.sh index-freshness.json
           cosign attest --yes --predicate index-freshness.json \
-            --type https://qos.dev/security/release-freshness/v1 \
+            --type https://tilo.dev/security/release-freshness/v1 \
             --key "$COSIGN_KEY_REF" "$index_image"
 
           cosign verify --key keys/cosign.pub "$index_image" >/dev/null
@@ -1116,7 +1113,7 @@ jobs:
                     and .buildDefinition.externalParameters.children == $children)
             ' >/dev/null
           freshness="$(cosign verify-attestation --key keys/cosign.pub \
-            --type https://qos.dev/security/release-freshness/v1 "$index_image")"
+            --type https://tilo.dev/security/release-freshness/v1 "$index_image")"
           now="$(date -u +%s)"
           printf '%s' "$freshness" | jq -e --arg digest "$index_digest" \
             --arg source "$GITHUB_SHA" --argjson generation "$generation" --argjson now "$now" '
@@ -1130,17 +1127,17 @@ jobs:
           # with different bytes, tolerate an exact retry, and verify every
           # registry write. `latest` is the sole mutable commit point and moves
           # only after all durable names are present.
-          durable_tags=("code.podesta.ai/qos/qos:gen$generation")
+          durable_tags=("code.podesta.ai/qos/tilo:gen$generation")
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
             version="${GITHUB_REF_NAME#v}"
             [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
               echo '::error::OS release tag must be vMAJOR.MINOR.PATCH'
               exit 1
             }
-            durable_tags+=("code.podesta.ai/qos/qos:$version")
+            durable_tags+=("code.podesta.ai/qos/tilo:$version")
           fi
           if [[ $GITHUB_REF == refs/heads/main ]]; then
-            durable_tags+=("code.podesta.ai/qos/qos:main-${GITHUB_SHA:0:7}")
+            durable_tags+=("code.podesta.ai/qos/tilo:main-${GITHUB_SHA:0:7}")
           fi
 
           manifest_digest() {
@@ -1175,7 +1172,7 @@ jobs:
           for tag in "${durable_tags[@]}"; do
             promote_immutable "$tag"
           done
-          latest="code.podesta.ai/qos/qos:latest"
+          latest="code.podesta.ai/qos/tilo:latest"
           skopeo copy --all "docker://$index_image" "docker://$latest"
           [[ "$(manifest_digest "$latest")" == "$index_digest" ]] || {
             echo "::error::registry did not commit latest as $index_digest"
@@ -1184,11 +1181,11 @@ jobs:
           jq -n --arg image "$index_image" --argjson generation "$generation" \
             --argjson children "$child_dependencies" \
             '{image:$image,generation:$generation,children:$children}' \
-            > qos-os-release-index.json
+            > tilo-os-release-index.json
           echo "::notice::promoted signed, attested multi-architecture generation $generation ($index_digest)"
 
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
-          name: qos-os-release-index
-          path: qos-os-release-index.json
+          name: tilo-os-release-index
+          path: tilo-os-release-index.json
           if-no-files-found: error

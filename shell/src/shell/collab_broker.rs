@@ -556,11 +556,11 @@ impl AppActionBroker {
             .start_invocation(peer_id, resource, action, argument, actor)
     }
 
-    pub fn status(&self, id: u64) -> Option<qos_actions::InvocationUpdate> {
+    pub fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
         self.state.invocation_status(id)
     }
 
-    pub fn statuses(&self, actor: &str) -> Vec<(u64, qos_actions::InvocationUpdate)> {
+    pub fn statuses(&self, actor: &str) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
         self.state.invocation_statuses(actor)
     }
 
@@ -1221,7 +1221,7 @@ fn spawn_inner(
         };
         let quit = Arc::clone(&drain_quit);
         std::thread::Builder::new()
-            .name("qos-collab-broker-drain".into())
+            .name("tilo-collab-broker-drain".into())
             .spawn(move || {
                 // Name already announced per (peer, cluster) — said
                 // again only when it changes, not on every
@@ -1361,18 +1361,18 @@ mod tests {
 
     #[test]
     fn document_routes_stay_with_their_app_and_record() {
-        let document = CrdtRoute::record("dev.qos.notes", "room-1", "note-1");
+        let document = CrdtRoute::record("dev.tilo.notes", "room-1", "note-1");
 
         assert!(document.delivers_to(&document));
         assert!(document.delivers_to(&CrdtRoute::cluster("room-1")));
-        assert!(!document.delivers_to(&CrdtRoute::record("dev.qos.files", "room-1", "note-1",)));
-        assert!(!document.delivers_to(&CrdtRoute::record("dev.qos.notes", "room-1", "note-2",)));
-        assert!(!document.delivers_to(&CrdtRoute::record("dev.qos.notes", "room-2", "note-1",)));
+        assert!(!document.delivers_to(&CrdtRoute::record("dev.tilo.files", "room-1", "note-1",)));
+        assert!(!document.delivers_to(&CrdtRoute::record("dev.tilo.notes", "room-1", "note-2",)));
+        assert!(!document.delivers_to(&CrdtRoute::record("dev.tilo.notes", "room-2", "note-1",)));
     }
 
     #[test]
     fn remote_document_route_preserves_signed_kind_and_rejects_relabeling() {
-        let route = CrdtRoute::record("dev.qos.notes", "room-1", "record-1");
+        let route = CrdtRoute::record("dev.tilo.notes", "room-1", "record-1");
         let (signing, author) = collab_types::generate_keypair();
         let mut envelope = collab_types::SignedOp::new_unsigned(
             DocumentMutation::Snapshot(b"whole document".to_vec())
@@ -1394,7 +1394,7 @@ mod tests {
         ));
         assert_eq!(
             validate_document_route(
-                &CrdtRoute::record("dev.qos.notes", "room-1", "record-2"),
+                &CrdtRoute::record("dev.tilo.notes", "room-1", "record-2"),
                 &envelope,
             ),
             Err(ValidationError::DocumentRouteMismatch),
@@ -1409,7 +1409,7 @@ mod tests {
 
     #[test]
     fn remote_document_broker_routes_opaque_mls_only_for_bound_channel() {
-        let route = CrdtRoute::record("dev.qos.notes", "room-1", "record-1");
+        let route = CrdtRoute::record("dev.tilo.notes", "room-1", "record-1");
         let expected_channel =
             collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
         let (_, author) = collab_types::generate_keypair();

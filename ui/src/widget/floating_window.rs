@@ -80,6 +80,14 @@ pub struct FloatingWindow<C: Widget> {
     /// the window after the user has moved it.
     placed: bool,
     drag: Option<Drag>,
+    /// Finger which currently owns a move/resize gesture. Keeping this
+    /// separate from mouse capture prevents a second finger from stealing a
+    /// surface midway through a drag.
+    touch_drag_id: Option<u64>,
+    /// Close is activated on release-inside, matching ordinary touch buttons
+    /// and allowing a person to slide away to cancel an accidental press.
+    touch_close_id: Option<u64>,
+    focused: bool,
     last_cursor: Point,
     /// Retained so `handle_event` can forward events into the content
     /// with a live node.
@@ -135,6 +143,9 @@ impl<C: Widget> FloatingWindow<C> {
             bounds: Rect::ZERO,
             placed: false,
             drag: None,
+            touch_drag_id: None,
+            touch_close_id: None,
+            focused: false,
             last_cursor: Point::ZERO,
             content_taffy: None,
             content_node: None,
@@ -417,10 +428,14 @@ impl<C: Widget> FloatingWindow<C> {
     }
 
     fn resize_edge_at(&self, pt: Point) -> Option<Edge> {
+        self.resize_edge_at_with_grip(pt, RESIZE_GRIP)
+    }
+
+    fn resize_edge_at_with_grip(&self, pt: Point, grip: f64) -> Option<Edge> {
         let r = self.rect;
-        let near_r = (pt.x - r.x1).abs() <= RESIZE_GRIP;
-        let near_l = (pt.x - r.x0).abs() <= RESIZE_GRIP;
-        let near_b = (pt.y - r.y1).abs() <= RESIZE_GRIP;
+        let near_r = (pt.x - r.x1).abs() <= grip;
+        let near_l = (pt.x - r.x0).abs() <= grip;
+        let near_b = (pt.y - r.y1).abs() <= grip;
         match (near_l, near_r, near_b) {
             (_, true, true) => Some(Edge::BottomRight),
             (true, _, true) => Some(Edge::BottomLeft),
@@ -640,6 +655,109 @@ impl<C: Widget> FloatingWindow<C> {
             node,
             taffy,
         );
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "touch forwarding carries the same document, focus, and scale context as Widget::handle_event"
+    )]
+    fn handle_touch(
+        &mut self,
+        touch: &winit::event::Touch,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+    ) -> bool {
+        let pt = Point::new(
+            touch.location.x / scale_factor,
+            touch.location.y / scale_factor,
+        );
+        match touch.phase {
+            winit::event::TouchPhase::Started
+                if self.touch_drag_id.is_none() && self.touch_close_id.is_none() =>
+            {
+                self.update_pointer_position(pt);
+                if self.closable && self.close_rect().contains(pt) {
+                    self.touch_close_id = Some(touch.id);
+                } else if let Some(edge) = self.resize_edge_at_with_grip(pt, 22.0) {
+                    self.drag = Some(Drag::Resize {
+                        edge,
+                        start: self.rect,
+                        from: pt,
+                    });
+                    self.touch_drag_id = Some(touch.id);
+                } else if self.title_bar_rect().contains(pt) {
+                    self.drag = Some(Drag::Move {
+                        grab: Point::new(pt.x - self.rect.x0, pt.y - self.rect.y0),
+                    });
+                    self.touch_drag_id = Some(touch.id);
+                } else if self.rect.contains(pt) {
+                    self.forward_to_content(
+                        event,
+                        scale_factor,
+                        modifiers,
+                        state,
+                        path,
+                        focus_target,
+                    );
+                } else {
+                    return self.modal;
+                }
+                true
+            }
+            winit::event::TouchPhase::Moved if self.touch_drag_id == Some(touch.id) => {
+                if let Some(drag) = self.drag {
+                    self.apply_drag(drag, pt);
+                    self.last_cursor = pt;
+                    let theme = self.layout_theme.clone();
+                    self.place_content(&theme, &mut TextRenderer::new());
+                }
+                true
+            }
+            winit::event::TouchPhase::Moved if self.touch_close_id == Some(touch.id) => {
+                self.last_cursor = pt;
+                true
+            }
+            winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
+                if self.touch_drag_id == Some(touch.id) =>
+            {
+                self.touch_drag_id = None;
+                self.drag = None;
+                self.last_cursor = pt;
+                true
+            }
+            winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
+                if self.touch_close_id == Some(touch.id) =>
+            {
+                self.touch_close_id = None;
+                if touch.phase == winit::event::TouchPhase::Ended && self.close_rect().contains(pt)
+                {
+                    self.set_open(false);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn nudge_with_keyboard(&mut self, key: NamedKey, coarse: bool) -> bool {
+        let step = if coarse { 32.0 } else { 8.0 };
+        let mut origin = self.rect.origin();
+        match key {
+            NamedKey::ArrowLeft => origin.x -= step,
+            NamedKey::ArrowRight => origin.x += step,
+            NamedKey::ArrowUp => origin.y -= step,
+            NamedKey::ArrowDown => origin.y += step,
+            _ => return false,
+        }
+        self.rect = Rect::from_origin_size(origin, self.rect.size());
+        self.clamp_into_bounds();
+        let theme = self.layout_theme.clone();
+        self.place_content(&theme, &mut TextRenderer::new());
+        true
     }
 }
 
@@ -930,6 +1048,10 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the floating surface routes pointer, keyboard, and touch ownership in one event boundary"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -1014,6 +1136,17 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
                 *handled = true;
             }
+            WindowEvent::Touch(touch) => {
+                *handled = self.handle_touch(
+                    touch,
+                    event,
+                    scale_factor,
+                    *modifiers,
+                    state,
+                    path,
+                    focus_target,
+                );
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 ..
@@ -1035,6 +1168,17 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
             } => {
                 self.set_open(false);
                 *handled = true;
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(key),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.focused && modifiers.state().alt_key() => {
+                *handled = self.nudge_with_keyboard(*key, modifiers.state().shift_key());
             }
             WindowEvent::KeyboardInput { .. } => {
                 self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
@@ -1122,8 +1266,68 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         ]
     }
 
+    fn is_focusable(&self) -> bool {
+        self.open
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        if !self.open {
+            return None;
+        }
+        let role = if self.modal {
+            Role::Dialog
+        } else {
+            Role::Group
+        };
+        let mut children = Vec::new();
+        if self.closable {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(format!("Close {}", self.title))
+                    .with_action_target("floating-window.close")
+                    .with_bounds(self.close_rect()),
+            );
+        }
+        Some(
+            AccessNode::new(role)
+                .with_name(&self.title)
+                .with_description(
+                    "Movable window. Hold Alt and use the arrow keys to move; hold Shift for larger steps.",
+                )
+                .with_bounds(self.rect)
+                .with_state(AccessState::new().focusable(true).focused(self.focused))
+                .with_children(children),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if target == "floating-window.close"
+            && matches!(action, crate::a11y::Action::Activate)
+            && self.closable
+        {
+            self.set_open(false);
+            return true;
+        }
+        false
+    }
+
     fn wants_pointer_capture(&self) -> bool {
-        self.drag.is_some()
+        self.drag.is_some() || self.touch_close_id.is_some()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1394,6 +1598,15 @@ mod tests {
             button: MouseButton::Left,
         }
     }
+    fn touch(phase: winit::event::TouchPhase, id: u64, point: Point) -> WindowEvent {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: synth_device(),
+            phase,
+            location: winit::dpi::PhysicalPosition::new(point.x, point.y),
+            force: None,
+            id,
+        })
+    }
     fn dispatch(w: &mut FloatingWindow<Probe>, e: &WindowEvent) -> bool {
         let mut taffy = TaffyTree::<()>::new();
         let node = taffy.leaf_node(Style::default());
@@ -1449,6 +1662,150 @@ mod tests {
         );
         assert!(w.squish > 0.0, "drag velocity should deform the soft shell");
         assert!(w.last_motion_at.is_some(), "settle animation is armed");
+    }
+
+    #[test]
+    fn touch_title_drag_moves_window_and_keeps_gesture_ownership() {
+        let (mut w, _e) = laid_out(true);
+        let start = w.window_rect();
+        let grab = Point::new(start.x0 + 48.0, start.y0 + 18.0);
+        assert!(dispatch(
+            &mut w,
+            &touch(winit::event::TouchPhase::Started, 7, grab)
+        ));
+        // A second finger cannot steal or terminate the active gesture.
+        assert!(!dispatch(
+            &mut w,
+            &touch(
+                winit::event::TouchPhase::Moved,
+                8,
+                Point::new(grab.x - 200.0, grab.y)
+            )
+        ));
+        assert!(dispatch(
+            &mut w,
+            &touch(
+                winit::event::TouchPhase::Moved,
+                7,
+                Point::new(grab.x + 96.0, grab.y + 52.0)
+            )
+        ));
+        assert!(dispatch(
+            &mut w,
+            &touch(
+                winit::event::TouchPhase::Ended,
+                7,
+                Point::new(grab.x + 96.0, grab.y + 52.0)
+            )
+        ));
+        let moved = w.window_rect();
+        assert!((moved.x0 - start.x0 - 96.0).abs() < 2.0);
+        assert!((moved.y0 - start.y0 - 52.0).abs() < 2.0);
+        assert!(w.touch_drag_id.is_none());
+        assert!(w.drag.is_none());
+    }
+
+    #[test]
+    fn touch_close_activates_on_release_inside_and_can_be_cancelled() {
+        let (mut w, _e) = laid_out(true);
+        w.closable = true;
+        let close = w.close_rect().center();
+        assert!(dispatch(
+            &mut w,
+            &touch(winit::event::TouchPhase::Started, 3, close)
+        ));
+        let cancel_at = Point::new(w.rect.x0 + 100.0, w.rect.y1 - 40.0);
+        assert!(dispatch(
+            &mut w,
+            &touch(winit::event::TouchPhase::Ended, 3, cancel_at)
+        ));
+        assert!(w.is_open(), "sliding away cancels an accidental close");
+
+        assert!(dispatch(
+            &mut w,
+            &touch(winit::event::TouchPhase::Started, 4, close)
+        ));
+        assert!(dispatch(
+            &mut w,
+            &touch(winit::event::TouchPhase::Ended, 4, close)
+        ));
+        assert!(!w.is_open());
+    }
+
+    #[test]
+    fn touch_resize_uses_a_finger_sized_edge_target() {
+        let (mut w, _e) = laid_out(true);
+        let start = w.window_rect();
+        // Fourteen pixels inside the edge is deliberately outside the precise
+        // mouse grip but inside the forgiving touch target.
+        let grab = Point::new(start.x1 - 14.0, start.y1 - 14.0);
+        assert_eq!(w.resize_edge_at(grab), None);
+        assert!(dispatch(
+            &mut w,
+            &touch(winit::event::TouchPhase::Started, 5, grab)
+        ));
+        assert!(dispatch(
+            &mut w,
+            &touch(
+                winit::event::TouchPhase::Moved,
+                5,
+                Point::new(grab.x + 70.0, grab.y + 50.0)
+            )
+        ));
+        dispatch(
+            &mut w,
+            &touch(
+                winit::event::TouchPhase::Ended,
+                5,
+                Point::new(grab.x + 70.0, grab.y + 50.0),
+            ),
+        );
+        assert!(w.window_rect().width() > start.width() + 45.0);
+        assert!(w.window_rect().height() > start.height() + 25.0);
+    }
+
+    #[test]
+    fn keyboard_nudge_moves_in_precise_and_coarse_steps_and_clamps() {
+        let (mut w, _e) = laid_out(true);
+        let start = w.window_rect();
+        assert!(w.nudge_with_keyboard(NamedKey::ArrowRight, false));
+        assert!((w.window_rect().x0 - start.x0 - 8.0).abs() < 0.1);
+        assert!(w.nudge_with_keyboard(NamedKey::ArrowDown, true));
+        assert!((w.window_rect().y0 - start.y0 - 32.0).abs() < 0.1);
+        w.rect = Rect::from_origin_size(
+            Point::new(w.bounds.x0 + 1.0, w.bounds.y0 + 1.0),
+            w.rect.size(),
+        );
+        w.nudge_with_keyboard(NamedKey::ArrowLeft, true);
+        w.nudge_with_keyboard(NamedKey::ArrowUp, true);
+        assert!(w.window_rect().x0 >= w.bounds.x0);
+        assert!(w.window_rect().y0 >= w.bounds.y0);
+    }
+
+    #[test]
+    fn accessibility_exposes_surface_and_operable_close_button() {
+        use crate::a11y::{Action, Role};
+        let (mut w, _e) = laid_out(true);
+        w.closable = true;
+        Widget::set_focus(&mut w, true);
+        let node = Widget::accessibility(&w).expect("open surface has semantics");
+        assert_eq!(node.role, Role::Dialog);
+        assert_eq!(node.name.as_deref(), Some("Compose"));
+        assert!(node.state.focusable && node.state.focused);
+        assert_eq!(node.children.len(), 1);
+        assert_eq!(node.children[0].role, Role::Button);
+        assert_eq!(node.children[0].name.as_deref(), Some("Close Compose"));
+
+        let mut state = AutoCommit::new();
+        assert!(Widget::perform_semantic_action(
+            &mut w,
+            "floating-window.close",
+            &Action::Activate,
+            &mut state,
+            &automerge::ROOT,
+        ));
+        assert!(!w.is_open());
+        assert!(Widget::accessibility(&w).is_none());
     }
 
     #[test]

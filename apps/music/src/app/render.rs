@@ -588,15 +588,17 @@ impl Widget for MusicApp {
         self.drain_mpris(state);
         self.drain_cover_pick(state);
         self.drain_cover_embed(state);
+        self.apply_pending_media_handoff(state);
         self.publish_mpris();
+        self.publish_handoff();
     }
 
     /// Publish the open library + its playlists/tracks so the host's Ctrl+K action
     /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -626,7 +628,7 @@ impl Widget for MusicApp {
     )]
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
@@ -636,7 +638,10 @@ impl Widget for MusicApp {
             return Ok(false);
         };
         match (kind, operation) {
-            (qos_actions::OperationKind::View, crate::actions::MusicOperation::OpenView { id }) => {
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::MusicOperation::OpenView { id },
+            ) => {
                 // A forged operation must not acquire arbitrary local routing
                 // authority. Check the exported allowlist before converting it
                 // to the exact view this app implements.
@@ -649,7 +654,7 @@ impl Widget for MusicApp {
                 self.on_nav(view);
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MusicOperation::PlayTrack { .. },
             ) => {
                 return Err(
@@ -657,7 +662,7 @@ impl Widget for MusicApp {
                 );
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MusicOperation::SetPlayback { playback },
             ) => {
                 if playback.playing && self.pb.current != playback.current {
@@ -668,7 +673,7 @@ impl Widget for MusicApp {
                 let _ = self.apply_resource_playback(playback)?;
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MusicOperation::SetOffline { tracks, keep },
             ) => {
                 if tracks.iter().any(|id| !self.lib.tracks.contains_key(id)) {
@@ -699,7 +704,7 @@ impl Widget for MusicApp {
                 }
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MusicOperation::OpenAlbum { id },
             ) => {
                 if !self.lib.albums.contains_key(&id) {
@@ -708,7 +713,7 @@ impl Widget for MusicApp {
                 self.on_nav(View::Album(id));
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MusicOperation::OpenArtist { id },
             ) => {
                 if !self.lib.artists.contains_key(&id) {
@@ -717,7 +722,7 @@ impl Widget for MusicApp {
                 self.on_nav(View::Artist(id));
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MusicOperation::OpenPlaylist { id },
             ) => {
                 if self.lib.playlist(&id).is_none() {
@@ -726,7 +731,7 @@ impl Widget for MusicApp {
                 self.on_nav(View::Playlist(id));
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MusicOperation::OpenPlaylistMembership { playlist, track },
             ) => {
                 let Some(current_playlist) = self.lib.playlist(&playlist) else {
@@ -752,8 +757,8 @@ impl Widget for MusicApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -764,7 +769,7 @@ impl Widget for MusicApp {
         };
         match (kind, operation) {
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MusicOperation::SetOffline { tracks, keep: true },
             ) => {
                 if self.offline_invocation.is_some() {
@@ -784,7 +789,7 @@ impl Widget for MusicApp {
                 Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MusicOperation::PlayTrack { id },
             ) => {
                 if self.resource_stream_invocation.is_some() {
@@ -796,7 +801,7 @@ impl Widget for MusicApp {
                         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
                     }
                     None => Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                        qos_actions::ActionOutput {
+                        tilo_actions::ActionOutput {
                             value: Some(serde_json::json!({ "state": "playing" })),
                             resources: Vec::new(),
                         },
@@ -804,7 +809,7 @@ impl Widget for MusicApp {
                 }
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MusicOperation::SetPlayback { playback },
             ) if playback.playing && self.pb.current != playback.current => {
                 if self.resource_stream_invocation.is_some() {
@@ -816,7 +821,7 @@ impl Widget for MusicApp {
                         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
                     }
                     None => Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                        qos_actions::ActionOutput {
+                        tilo_actions::ActionOutput {
                             value: Some(serde_json::json!({ "state": "playing" })),
                             resources: Vec::new(),
                         },
@@ -828,7 +833,7 @@ impl Widget for MusicApp {
                 .map(|handled| {
                     handled.then(|| {
                         ui::widget::ResourceOperationStart::Completed(
-                            qos_actions::ActionOutput::default(),
+                            tilo_actions::ActionOutput::default(),
                         )
                     })
                 }),
@@ -837,11 +842,11 @@ impl Widget for MusicApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         self.expire_resource_stream_if_due(Instant::now());
         self.resource_stream_results
             .iter()
@@ -2272,6 +2277,10 @@ impl MusicApp {
 
     // ---- master frame -----------------------------------------------------
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the frame pipeline deliberately keeps its ordered worker, layout, overlay, and chrome passes together"
+    )]
     pub(super) fn render_frame(
         &mut self,
         scene: &mut Scene,
@@ -2281,6 +2290,7 @@ impl MusicApp {
     ) {
         self.hits.clear();
         self.row_menu_hits.clear();
+        self.sync_context_menu_geometry(theme);
         // Fold in any streaming-worker results (resolved stream URLs → audio
         // engine, real search hits → library), then keep live search results
         // visible after a `sync` reloaded the catalog from the document.

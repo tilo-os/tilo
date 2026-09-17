@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 use ui::webview::wpe::WpeEngine;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEngine};
 
-const OUT: &str = "/tmp/claude-1000/-var-home-quinten-Development-quickdesktop/4b954627-69cb-4365-8ed0-231ae0028e62/scratchpad/flicker";
+fn output_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("tilo-browser-flicker-{}", std::process::id()))
+}
 
 fn latest(engine: &dyn WebViewEngine) -> Option<(Arc<Vec<u8>>, u32, u32)> {
     engine
@@ -94,7 +96,7 @@ fn mean(rgba: &[u8]) -> (u8, u8, u8, u8) {
     ((r / n) as u8, (g / n) as u8, (b / n) as u8, (a / n) as u8)
 }
 
-fn save_png(path: &str, rgba: &[u8], w: u32, h: u32) {
+fn save_png(path: &std::path::Path, rgba: &[u8], w: u32, h: u32) {
     let file = std::fs::File::create(path).unwrap();
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
     enc.set_color(png::ColorType::Rgba);
@@ -106,8 +108,9 @@ fn main() {
     let url = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "https://duckduckgo.com".into());
-    let _ = std::fs::create_dir_all(OUT);
-    for e in std::fs::read_dir(OUT).into_iter().flatten().flatten() {
+    let output = output_dir();
+    let _ = std::fs::create_dir_all(&output);
+    for e in std::fs::read_dir(&output).into_iter().flatten().flatten() {
         let _ = std::fs::remove_file(e.path());
     }
 
@@ -170,7 +173,7 @@ fn main() {
                 } else {
                     "content (partial alpha)"
                 };
-                let path = format!("{OUT}/{saved:02}_t{ms:04}.png");
+                let path = output.join(format!("{saved:02}_t{ms:04}.png"));
                 save_png(&path, &rgba, w, h);
                 println!(
                     "  {saved:2}  {ms:5}   {u:5.1}%  ({mr:3},{mg:3},{mb:3})  a{ma:3}   {note}"
@@ -181,5 +184,5 @@ fn main() {
         }
         std::thread::sleep(Duration::from_millis(8));
     }
-    println!("\nsaved {saved} distinct frames to {OUT}");
+    println!("\nsaved {saved} distinct frames to {}", output.display());
 }

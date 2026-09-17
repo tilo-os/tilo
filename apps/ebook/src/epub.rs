@@ -61,7 +61,7 @@ type Archive<'a> = ZipArchive<Cursor<&'a [u8]>>;
 /// prefixed `book:`. Deriving identity from the bytes (not the file path or
 /// the publisher's optional `<identifier>`) is what lets reading progress,
 /// highlights and comments follow the book across folders, devices, and
-/// peers — the same content-addressing the qOS filesystem uses.
+/// peers — the same content-addressing the Tilo filesystem uses.
 pub fn content_id(bytes: &[u8]) -> String {
     // 128 bits of the digest is ample to avoid collision across a personal
     // library while keeping the id short enough to read in a CRDT key.

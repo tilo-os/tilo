@@ -18,9 +18,9 @@
 //! (roles/names/values/state, collapsing presentational widgets like the
 //! AccessKit bridge does) contributes generic verbs (focus, activate, …);
 //! the app's [`resources()`](crate::widget::Widget::resources) forest from
-//! the qOS [action model](qos_actions) contributes
+//! the Tilo [action model](tilo_actions) contributes
 //! [`SemanticActionKind::App`] affordances carrying the exact
-//! [`EncodedAction`](qos_actions::EncodedAction) a real click would send —
+//! [`EncodedAction`](tilo_actions::EncodedAction) a real click would send —
 //! so invoking one by name drives the same replayable action through the
 //! one audited dispatch path, letting an assistive client operate the tree,
 //! not just read it.
@@ -39,14 +39,14 @@ use crate::widget::Widget;
 
 type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
 type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
-use qos_actions::{ActionInput, ActionSpec, Collects, EncodedAction, OperationKind, Resource};
 use serde::{Deserialize, Serialize};
+use tilo_actions::{ActionInput, ActionSpec, Collects, EncodedAction, OperationKind, Resource};
 
 /// Operation type used when the retained semantic tree projects an ordinary
 /// UI affordance into the resource/action catalogue. This makes the same
 /// control addressable from Ctrl+K, the automation socket, and agents without
 /// inventing an app-specific command bus.
-pub(crate) const SEMANTIC_OPERATION_TYPE: &str = "qos.ui.semantic-action";
+pub(crate) const SEMANTIC_OPERATION_TYPE: &str = "tilo.ui.semantic-action";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct SemanticOperation {
@@ -66,7 +66,7 @@ pub(crate) struct SemanticOperation {
 /// * `"<parent>~<index>"` — a synthetic a11y child (a table row/cell) with no
 ///   widget of its own, keyed by its position under its parent.
 /// * `"r:<resource_id>"` — a resource from the app's action model, keyed by its
-///   already-stable [`ResourceId`](qos_actions::ResourceId).
+///   already-stable [`ResourceId`](tilo_actions::ResourceId).
 #[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct SemanticId(pub String);
 
@@ -101,7 +101,7 @@ pub enum SemanticActionKind {
     /// `App`'s generic focus/click fallback, exactly like an AccessKit
     /// `ActionRequest`.
     Verb(Action),
-    /// An app action from the qOS [action model](qos_actions), ready to fire.
+    /// An app action from the Tilo [action model](tilo_actions), ready to fire.
     /// `encoded` is the byte-identical [`EncodedAction`] the on-screen affordance
     /// and the Ctrl+K palette dispatch — invoking it replays the *same* action.
     App(EncodedAction),
@@ -228,7 +228,7 @@ impl SemanticTree {
                 id: root.clone(),
                 durable_identity: true,
                 role: Role::Window,
-                name: Some("qOS application window".into()),
+                name: Some("Tilo application window".into()),
                 value: None,
                 state: AccessState::default(),
                 bounds: None,
@@ -255,7 +255,7 @@ impl SemanticTree {
     /// into each node's [`AccessState::focused`]. `resources` is the focused
     /// app's open-resource forest
     /// ([`Widget::resources`](crate::widget::Widget::resources)); each
-    /// exported [`ActionSpec`](qos_actions::ActionSpec) becomes an invokable
+    /// exported [`ActionSpec`](tilo_actions::ActionSpec) becomes an invokable
     /// affordance.
     pub fn refresh(
         &mut self,
@@ -303,7 +303,7 @@ impl SemanticTree {
                 id: root_id.clone(),
                 durable_identity: true,
                 role: Role::Window,
-                name: Some("qOS application window".into()),
+                name: Some("Tilo application window".into()),
                 value: None,
                 state: AccessState::default(),
                 bounds: None,
@@ -379,12 +379,54 @@ impl SemanticTree {
         self.iter().find(|n| n.name.as_deref() == Some(name))
     }
 
+    /// Every live semantic path to a control binding id, shortest first.
+    /// Multiple buttons may intentionally bind the same domain action; this
+    /// gives agents and presence projection a deterministic way to prefer the
+    /// nearest currently rendered affordance without replacing direct action
+    /// invocation with simulated clicks.
+    pub fn control_paths(&self, control_id: &str) -> Vec<Vec<SemanticId>> {
+        if control_id.is_empty() {
+            return Vec::new();
+        }
+        let mut parents = HashMap::<SemanticId, SemanticId>::new();
+        for node in self.nodes.values() {
+            for child in &node.children {
+                parents.insert(child.clone(), node.id.clone());
+            }
+        }
+        let marker = format!("~k:{control_id}");
+        let mut paths = self
+            .iter()
+            .filter(|node| {
+                node.durable_identity
+                    && !node.id.0.starts_with("r:")
+                    && node.id.0.ends_with(&marker)
+            })
+            .filter_map(|node| {
+                let mut path = vec![node.id.clone()];
+                let mut cursor = node.id.clone();
+                while cursor != self.root {
+                    cursor = parents.get(&cursor)?.clone();
+                    path.push(cursor.clone());
+                }
+                path.reverse();
+                Some(path)
+            })
+            .collect::<Vec<_>>();
+        paths.sort_by(|left, right| {
+            left.len()
+                .cmp(&right.len())
+                .then_with(|| left.last().cmp(&right.last()))
+        });
+        paths
+    }
+
     pub fn action(&self, id: &SemanticId, name: &str) -> Option<&SemanticAction> {
         self.nodes.get(id).and_then(|n| n.action(name))
     }
 
     /// Project every currently operable accessibility node into the canonical
-    /// qOS resource/action surface. Bespoke app actions remain preferable for
+    /// Tilo resource/action surface. Bespoke app actions remain preferable for
     /// domain operations; this projection closes the driveability gap for
     /// ordinary controls such as buttons, fields, tabs, toggles, and sliders.
     pub(crate) fn action_resources(&self) -> Vec<Resource> {
@@ -417,7 +459,7 @@ impl SemanticTree {
                     .clone()
                     .unwrap_or_else(|| format!("{:?}", node.role));
                 let mut resource =
-                    Resource::new(format!("ui:{}", node.id.as_str()), "qos.ui.control", label);
+                    Resource::new(format!("ui:{}", node.id.as_str()), "tilo.ui.control", label);
                 for (action, verb) in verbs {
                     let operation = SemanticOperation {
                         node: node.id.0.clone(),
@@ -544,6 +586,13 @@ fn verbs_for(access: &AccessNode) -> Vec<SemanticAction> {
                         kind: SemanticActionKind::Verb(Action::Expand),
                     });
                 }
+            }
+            if matches!(access.role, Role::ComboBox) && !s.read_only && !s.disabled {
+                out.push(SemanticAction {
+                    name: "set-value".into(),
+                    label: "Set value".into(),
+                    kind: SemanticActionKind::Verb(Action::SetValue(String::new())),
+                });
             }
         }
         Role::TextInput | Role::MultilineTextInput if !s.read_only && !s.disabled => {
@@ -887,6 +936,40 @@ mod tests {
             ids_first, ids_second,
             "node identity + order survive a refresh"
         );
+    }
+
+    #[test]
+    fn duplicate_control_locations_choose_the_shortest_semantic_path() {
+        let mut tree = SemanticTree::new();
+        let group = SemanticId("root~k:advanced".into());
+        let deep = SemanticId("root~k:advanced~k:save".into());
+        let shallow = SemanticId("root~k:save".into());
+        let node = |id: SemanticId, children: Vec<SemanticId>| SemanticNode {
+            id,
+            durable_identity: true,
+            role: Role::Button,
+            name: Some("Save".into()),
+            value: None,
+            state: AccessState::default(),
+            bounds: Some(Rect::new(0.0, 0.0, 10.0, 10.0)),
+            actions: Vec::new(),
+            children,
+            widget_taffy_id: None,
+            semantic_target: None,
+        };
+        tree.nodes
+            .insert(group.clone(), node(group.clone(), vec![deep.clone()]));
+        tree.nodes
+            .insert(deep.clone(), node(deep.clone(), Vec::new()));
+        tree.nodes
+            .insert(shallow.clone(), node(shallow.clone(), Vec::new()));
+        tree.nodes.get_mut(&tree.root).unwrap().children = vec![group.clone(), shallow.clone()];
+        tree.order = vec![tree.root.clone(), group, deep.clone(), shallow.clone()];
+
+        let routes = tree.control_paths("save");
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0], vec![tree.root.clone(), shallow]);
+        assert_eq!(routes[1].last(), Some(&deep));
     }
 
     #[test]

@@ -3,8 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 
-static const char message_id[] = "qos.vulkan.callback";
-static const char message_text[] = "qOS Vulkan callback round trip";
+static const char message_id[] = "tilo.vulkan.callback";
+static const char message_text[] = "Tilo Vulkan callback round trip";
 static unsigned int callbacks;
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL callback(
@@ -68,6 +68,6 @@ int main(void) {
         fprintf(stderr, "Vulkan callback delivery failed: expected 1, received %u\n", callbacks);
         return 1;
     }
-    puts("QOS_VULKAN_CALLBACK_PASS");
+    puts("TILO_VULKAN_CALLBACK_PASS");
     return 0;
 }

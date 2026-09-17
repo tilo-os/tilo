@@ -24,7 +24,7 @@ NAMES = (
     "qcdxkmsuc8380.mbn", "qcvss8380.mbn", "qcadsp8380.mbn",
     "adsp_dtbs.elf", "qccdsp8380.mbn", "cdsp_dtbs.elf",
 )
-TARGET_REF = "code.podesta.ai/qos/qos:board-fixture"
+TARGET_REF = "code.podesta.ai/qos/tilo:board-fixture"
 
 
 class HardwareProfileTest(unittest.TestCase):
@@ -35,7 +35,7 @@ class HardwareProfileTest(unittest.TestCase):
         self.root = self.work / "root"
         self.firmware = self.work / "firmware"
         self.firmware.mkdir()
-        self.kver = "6.17.1-qos.aarch64"
+        self.kver = "6.17.1-tilo.aarch64"
         self.kernel = self.root / f"usr/lib/modules/{self.kver}"
         self.dtb = self.kernel / "dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb"
         self.dtb.parent.mkdir(parents=True)
@@ -87,7 +87,7 @@ class HardwareProfileTest(unittest.TestCase):
 
     def test_profile_firmware_and_dracut_payload(self):
         self.run_preparer()
-        profile_path = self.root / "usr/lib/qos/hardware-profile.json"
+        profile_path = self.root / "usr/lib/tilo/hardware-profile.json"
         self.assertEqual(json.loads(profile_path.read_text()), {
             "schema_version": 1,
             "id": "lenovo-83ed",
@@ -100,7 +100,7 @@ class HardwareProfileTest(unittest.TestCase):
         self.assertEqual({path.name for path in installed.iterdir()}, set(NAMES))
         for name in NAMES:
             self.assertEqual((installed / name).read_bytes(), (self.firmware / name).read_bytes())
-        dracut = self.root / "etc/dracut.conf.d/41-qos-hardware.conf"
+        dracut = self.root / "etc/dracut.conf.d/41-tilo-hardware.conf"
         install_line = dracut.read_text().splitlines()[1]
         self.assertEqual(install_line, 'install_items+=" ' + " ".join(
             f"/usr/lib/firmware/qcom/x1e80100/LENOVO/83ED/{name}" for name in NAMES
@@ -127,11 +127,11 @@ class HardwareProfileTest(unittest.TestCase):
         self.assertEqual(before, self.snapshot())
 
     def test_missing_or_untrusted_update_reference_fails_before_writes(self):
-        for value in (None, "", "registry.invalid/qos:fixture", "code.podesta.ai/qos/qos:",
-                      "code.podesta.ai/qos/qos@sha256:bad", TARGET_REF + "\n"):
+        for value in (None, "", "registry.invalid/tilo:fixture", "code.podesta.ai/qos/tilo:",
+                      "code.podesta.ai/qos/tilo@sha256:bad", TARGET_REF + "\n"):
             with self.subTest(value=value):
                 before = self.snapshot()
-                with self.assertRaisesRegex(ValueError, "QOS_TARGET_IMGREF"):
+                with self.assertRaisesRegex(ValueError, "TILO_TARGET_IMGREF"):
                     prepare.prepare_profile("lenovo-83ed", self.root, self.kver, self.firmware,
                                             target_update_ref=value)
                 self.assertEqual(before, self.snapshot())
@@ -163,7 +163,7 @@ class HardwareProfileTest(unittest.TestCase):
         prepare.prepare_profile("other-board", self.root, self.kver, self.firmware, definitions,
                                 target_update_ref=TARGET_REF)
         self.assertEqual((self.root / "usr/lib/firmware/vendor/radio/calibration.bin").read_bytes(), payload)
-        emitted = json.loads((self.root / "usr/lib/qos/hardware-profile.json").read_text())
+        emitted = json.loads((self.root / "usr/lib/tilo/hardware-profile.json").read_text())
         self.assertEqual(emitted["devicetree"], "/" + tree.relative_to(self.root).as_posix())
         self.assertEqual(json.loads((self.root / prepare.DEFINITION_PATH).read_text()), data)
 
@@ -175,7 +175,7 @@ class HardwareProfileTest(unittest.TestCase):
                 (self.kernel / "config").write_text(config + "\n")
                 prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent", definitions,
                                         target_update_ref=TARGET_REF)
-                emitted = json.loads((self.root / "usr/lib/qos/hardware-profile.json").read_text())
+                emitted = json.loads((self.root / "usr/lib/tilo/hardware-profile.json").read_text())
                 self.assertEqual(emitted["architecture"], architecture)
                 self.assertIsNone(emitted["devicetree"])
                 self.assertIsNone(emitted["devicetree_sha256"])
@@ -272,7 +272,7 @@ class HardwareProfileTest(unittest.TestCase):
         self.assertEqual(list(outside.iterdir()), [])
 
     def test_destination_file_dangling_symlink(self):
-        profile = self.root / "usr/lib/qos/hardware-profile.json"
+        profile = self.root / "usr/lib/tilo/hardware-profile.json"
         profile.parent.mkdir()
         outside = self.work / "outside-profile.json"
         profile.symlink_to(outside)
