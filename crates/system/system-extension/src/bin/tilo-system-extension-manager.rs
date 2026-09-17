@@ -367,7 +367,9 @@ fn verify_pci_catalog_against(
     }
     let public_key = decode_public_key(&document.public_key_hex)?;
     let payload = PciCatalogSigningPayload {
-        domain: "tilo.system-extension.pci-recommendations.v1",
+        // This is a signed wire-format identifier, independent of product branding.
+        // Changing it invalidates the already published v1 catalogue signature.
+        domain: "qos.system-extension.pci-recommendations.v1",
         schema_version: signed.schema_version,
         key_id: &signed.key_id,
         catalog: &signed.catalog,
@@ -693,6 +695,15 @@ mod tests {
         .unwrap();
         validate_pci_catalog(&signed).unwrap();
         verify_pci_catalog_against(&signed, &key).unwrap();
+
+        // Renaming the key in both documents cannot authorize unsigned changes.
+        let mut renamed = signed.clone();
+        renamed.key_id = "tilo-pci-catalog-v1".into();
+        let renamed_key = PublicKeyDocument {
+            key_id: renamed.key_id.clone(),
+            ..key
+        };
+        assert!(verify_pci_catalog_against(&renamed, &renamed_key).is_err());
     }
 
     #[test]
