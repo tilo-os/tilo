@@ -189,14 +189,6 @@ const SEARCH_MIN_W: f64 = 160.0;
 /// Preferred search-box width when there is room to spare (wide windows).
 const SEARCH_PREF_W: f64 = 320.0;
 
-// `ui::widget::ContextMenu` lays itself out with private constants; we mirror
-// them here so the app's hit-testing + on-screen-nudge match the primitive's
-// drawn geometry exactly. Keep in sync with `context_menu.rs`.
-const CONTEXT_MENU_W: f64 = 220.0;
-const CONTEXT_MENU_ROW_H: f64 = 28.0;
-const CONTEXT_MENU_SEP_H: f64 = 9.0;
-const CONTEXT_MENU_PAD: f64 = 6.0;
-
 /// How long the "PID copied" toast stays up after a Copy PID action before it
 /// expires on its own. The redraw loop keeps ticking (`needs_animation_frame`
 /// is always true), so the toast clears itself without any further input.
@@ -947,48 +939,16 @@ impl MonitorApp {
             set(ProcAction::Kill(pid)),
         ));
 
-        // Anchor so the menu stays on-screen: nudge left/up if it would spill
-        // past the app's right/bottom edge.
-        let mh = Self::context_menu_height(&menu);
-        let mw = CONTEXT_MENU_W;
-        let mut x = pos.x;
-        let mut y = pos.y;
-        if x + mw > self.rect.x1 {
-            x = (self.rect.x1 - mw).max(self.rect.x0);
-        }
-        if y + mh > self.rect.y1 {
-            y = (self.rect.y1 - mh).max(self.rect.y0);
-        }
-        menu.open_at([x as f32, y as f32]);
+        // The shared primitive owns the menu's geometry: it anchors the sheet
+        // at the pointer, keeps it inside this app's viewport (flipping above
+        // the anchor when it would spill past the bottom), and settles its
+        // measured row heights on the next draw. Hit-testing reads the same
+        // rectangles back through `item_rect`, so the app never mirrors the
+        // primitive's private constants.
+        menu.open_anchored(Rect::from_origin_size(pos, (0.0, 0.0)), self.rect);
         self.context = menu;
         self.context_pid = Some(pid);
         self.selected_pid = Some(pid);
-        self.layout_context_menu();
-    }
-
-    /// Run the `ContextMenu` primitive's own `build_layout`/`apply_layout`
-    /// passes against a throwaway one-node taffy tree so its internal `rect`
-    /// matches the anchored position. The menu is a hand-drawn child of this
-    /// app (it isn't in the host's widget tree), so we drive its layout
-    /// contract here — honoring the primitive rather than poking its private
-    /// rect — before drawing it or hit-testing its rows.
-    fn layout_context_menu(&mut self) {
-        use std::collections::HashMap;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = self
-            .context
-            .build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let _ = taffy.compute_layout(
-            node,
-            Size {
-                width: taffy::AvailableSpace::Definite(CONTEXT_MENU_W as f32),
-                height: taffy::AvailableSpace::MaxContent,
-            },
-        );
-        // `apply_layout` prefers the open menu's stored anchor over the taffy
-        // origin, so the origin we pass is irrelevant when open.
-        self.context.apply_layout(&taffy, node, Point::ZERO);
     }
 
     fn close_context_menu(&mut self) {
@@ -1110,39 +1070,17 @@ impl MonitorApp {
         }
     }
 
-    /// Per-item rects of the open context menu, mirroring the primitive's own
-    /// fixed geometry (`ROW_HEIGHT`/`SEPARATOR_HEIGHT`/`PADDING`) so a click
-    /// maps to the row under the cursor. Returns `(item_index, rect)` for
-    /// action rows only (separators aren't clickable).
+    /// Per-item rects of the open context menu, read back from the shared
+    /// primitive's own painted geometry so a click maps to the row under the
+    /// cursor. Returns `(item_index, rect)` for action rows only (separators
+    /// aren't clickable).
     fn context_menu_item_rects(&self) -> Vec<(usize, Rect)> {
-        let r = self.context.get_rect();
-        let mut out = Vec::new();
-        let mut y = r.y0 + CONTEXT_MENU_PAD;
-        for (idx, item) in self.context.items().iter().enumerate() {
-            match item {
-                MenuItem::Action { .. } => {
-                    out.push((idx, Rect::new(r.x0, y, r.x1, y + CONTEXT_MENU_ROW_H)));
-                    y += CONTEXT_MENU_ROW_H;
-                }
-                MenuItem::Separator => y += CONTEXT_MENU_SEP_H,
-            }
-        }
-        out
-    }
-
-    /// Total height the menu occupies — mirrors the primitive's `build_layout`
-    /// height math so the on-screen-nudge in `open_context_menu` is accurate.
-    fn context_menu_height(menu: &ContextMenu) -> f64 {
-        let items: f64 = menu
+        self.context
             .items()
             .iter()
-            .map(|i| match i {
-                MenuItem::Action { .. } => CONTEXT_MENU_ROW_H,
-                MenuItem::Separator => CONTEXT_MENU_SEP_H,
-            })
-            .sum::<f64>()
-            .max(CONTEXT_MENU_ROW_H);
-        CONTEXT_MENU_PAD * 2.0 + items
+            .enumerate()
+            .filter_map(|(idx, _)| self.context.item_rect(idx).map(|rect| (idx, rect)))
+            .collect()
     }
 
     // ---- text helpers ----------------------------------------------------
@@ -1755,16 +1693,19 @@ impl MonitorApp {
             // the table below never loses height; the cell instead adapts
             // horizontally — value beside the label when it fits, else stacked
             // beneath it — so a narrow cell never overlaps its own text.
+            let (lw, lh) = tr.measure(cell.label, xs, None);
+            let (vw, vh) = tr.measure_weighted(&cell.value, sm, None, TextWeight::Bold);
+            // The label and the (larger) value share one centre line, so the
+            // two sizes sit level rather than aligning their tops.
+            let line_c = inner.y0 + f64::from(lh.max(vh)) / 2.0;
             tr.draw_text(
                 scene,
                 cell.label,
                 xs,
                 c.text_dim,
-                t * Affine::translate((inner.x0, inner.y0)),
+                t * Affine::translate((inner.x0, line_c - f64::from(lh) / 2.0)),
                 None,
             );
-            let (lw, _) = tr.measure(cell.label, xs, None);
-            let (vw, _) = tr.measure_weighted(&cell.value, sm, None, TextWeight::Bold);
             let spark_top = if f64::from(lw) + 8.0 + f64::from(vw) <= inner.width() {
                 // Roomy: headline value right-aligned on the label's line.
                 tr.draw_text_weighted(
@@ -1772,7 +1713,7 @@ impl MonitorApp {
                     &cell.value,
                     sm,
                     cell.vcolor,
-                    t * Affine::translate((inner.x1 - f64::from(vw), inner.y0 - 1.0)),
+                    t * Affine::translate((inner.x1 - f64::from(vw), line_c - f64::from(vh) / 2.0)),
                     None,
                     TextWeight::Bold,
                 );
@@ -2253,10 +2194,18 @@ impl MonitorApp {
                 text.push(if self.sort_desc { '▼' } else { '▲' });
             }
             let (lw, lh) = tr.measure_weighted(&text, hfs, None, TextWeight::Semibold);
+            // Tree mode reserves a twisty gutter ahead of every NAME cell, so
+            // the header label shares the cells' text edge rather than sitting
+            // a gutter to their left.
+            let name_gutter = if col.key == SortKey::Name && self.tree_mode {
+                TWISTY_W
+            } else {
+                0.0
+            };
             let tx = if col.right {
                 x0 + col.w - f64::from(lw) - 6.0
             } else {
-                x0 + 2.0
+                x0 + 2.0 + name_gutter
             };
             tr.draw_text_weighted(
                 scene,
@@ -2419,6 +2368,14 @@ impl MonitorApp {
         rows.len()
     }
 
+    /// Top edge that centres one line of `size` text in `row`, measured with
+    /// the renderer that paints it (its line height, not the nominal font
+    /// size), so cells and their header share one centre line at every scale.
+    fn row_text_top(tr: &mut TextRenderer, row: Rect, size: f32) -> f64 {
+        let (_, line_h) = tr.measure("0", size, None);
+        row.center().y - f64::from(line_h) / 2.0
+    }
+
     /// Draw one process row: selection/zebra background, the NAME column's
     /// tree indent + twisty, and every other visible column's cell.
     #[allow(
@@ -2455,7 +2412,7 @@ impl MonitorApp {
         }
 
         let fs = theme.tokens.typography.scale.sm;
-        let ty = row.center().y - f64::from(fs) / 2.0 - 1.0;
+        let ty = Self::row_text_top(tr, row, fs);
         let txt = if selected { c.text_primary } else { c.text_dim };
 
         // Absolute x of a content-space column edge after the horizontal scroll.
@@ -2557,7 +2514,7 @@ impl MonitorApp {
         };
         let c = &theme.tokens.colors;
         let fs = theme.tokens.typography.scale.sm;
-        let ty = row.center().y - f64::from(fs) / 2.0 - 1.0;
+        let ty = Self::row_text_top(tr, row, fs);
         let col_abs = |x: f64| geom.cols_left + x - geom.sx;
         let indent = p.depth as f64 * TREE_INDENT;
         let name_x0 = col_abs(name_col.x0) + 2.0 + indent;
@@ -3141,7 +3098,7 @@ impl MonitorApp {
             .count();
         let shown = self.visible_rows().len();
         let count = format!("{shown} of {total} shown");
-        let (cw, _) = tr.measure(&count, fs, None);
+        let (cw, ch) = tr.measure(&count, fs, None);
         let cxx = f64::midpoint(search_r.x1, cluster_left) - f64::from(cw) / 2.0;
         if cluster_left - (search_r.x1 + 10.0) > f64::from(cw) + 8.0 {
             tr.draw_text(
@@ -3151,7 +3108,7 @@ impl MonitorApp {
                 c.text_dim,
                 t * Affine::translate((
                     cxx.max(search_r.x1 + 10.0),
-                    pills_row.center().y - f64::from(fs) / 2.0 - 1.0,
+                    pills_row.center().y - f64::from(ch) / 2.0,
                 )),
                 None,
             );
@@ -3244,12 +3201,15 @@ impl MonitorApp {
         self.hit.kill_btn = Rect::ZERO;
         self.hit.stop_btn = Rect::ZERO;
         let Some(p) = self.selected_process() else {
+            let hint = "Select a process to view details and actions.";
+            let sm = theme.tokens.typography.scale.sm;
+            let (_, hint_h) = tr.measure(hint, sm, None);
             tr.draw_text(
                 scene,
-                "Select a process to view details and actions.",
-                theme.tokens.typography.scale.sm,
+                hint,
+                sm,
                 c.text_dim,
-                t * Affine::translate((inner.x0, inner.center().y - 8.0)),
+                t * Affine::translate((inner.x0, inner.center().y - f64::from(hint_h) / 2.0)),
                 None,
             );
             return;
@@ -5562,8 +5522,13 @@ impl MonitorApp {
             .map(|(rp, rect)| (*rp, *rect));
         if let Some((pid, rect)) = target {
             let anchor = Point::new(rect.x0 + 60.0, rect.y0 + ROW_H);
-            self.last_cursor = Point::new(anchor.x + 20.0, anchor.y + CONTEXT_MENU_ROW_H * 3.5);
             self.open_context_menu(pid, anchor);
+            // Rest the pointer inside the last action row (Kill), near its
+            // leading edge so it stays within the row once the primitive has
+            // measured its labels and settled a narrower sheet.
+            if let Some((_, row)) = self.context_menu_item_rects().last() {
+                self.last_cursor = Point::new(row.x0 + 20.0, row.center().y);
+            }
         }
     }
 

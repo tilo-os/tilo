@@ -118,6 +118,11 @@ pub struct HexView {
     /// Rows currently fitting in the grid viewport — updated each draw,
     /// read by keyboard paging so PageUp/Down move a screenful.
     visible_rows: usize,
+    /// The monospace advance + line height measured from the renderer that
+    /// paints the grid, refreshed every draw. Layout, paint and hit-testing
+    /// all derive their pitches from this one measurement (see
+    /// [`CellMetrics`]), so a byte's painted cell is its click target.
+    cell_metrics: CellMetrics,
     /// Last pointer position in logical coords, tracked from `CursorMoved`
     /// so a left-click can hit-test the cell under the cursor.
     last_mouse: Point,
@@ -192,6 +197,7 @@ impl HexView {
                 .with_plain_chrome()
                 .with_mono(),
             visible_rows: 1,
+            cell_metrics: CellMetrics::FALLBACK,
             last_mouse: Point::ZERO,
             has_file: true,
             path: None,
@@ -517,6 +523,7 @@ impl HexView {
     /// sea of empty space). Snapped to a multiple of 8 and clamped to a sane
     /// range.
     fn fit_bytes_per_row(&self) -> usize {
+        let cell = self.cell_metrics;
         let inspector_reserve = if self.show_inspector() {
             GridMetrics::INSPECTOR_GAP + GridMetrics::INSPECTOR_MIN
         } else {
@@ -524,11 +531,11 @@ impl HexView {
         };
         let avail = self.rect.width()
             - GridMetrics::LEFT_PAD
-            - GridMetrics::GUTTER_W
+            - cell.gutter_w()
             - GridMetrics::GUTTER_GAP
             - GridMetrics::HEX_ASCII_GAP
             - inspector_reserve;
-        let per_byte = GridMetrics::HEX_COL_W + GridMetrics::CHAR_W;
+        let per_byte = cell.hex_col_w() + cell.char_w();
         if per_byte <= 0.0 {
             return 16;
         }
@@ -624,7 +631,7 @@ impl HexView {
 
     /// Metrics for the grid layout at the current width.
     fn metrics(&self) -> GridMetrics {
-        GridMetrics::new(self.rect, self.model.bytes_per_row())
+        GridMetrics::new(self.rect, self.model.bytes_per_row(), self.cell_metrics)
     }
 
     /// Map a mouse point to a byte offset + column, if it lands on a cell.
@@ -685,25 +692,29 @@ impl HexView {
         );
 
         let pad = f64::from(tokens.spacing.s4);
-        let cy = bar.y0 + (bar.height() - f64::from(tokens.typography.scale.lg)) / 2.0;
 
-        // File name (semibold) + byte count (dim).
+        // File name (semibold) + byte count (dim), each centred on its own
+        // measured line box so the two sizes share the bar's centre line.
+        let (name_w, name_h) = tr.measure_weighted(
+            &self.file_name,
+            tokens.typography.scale.lg,
+            None,
+            TextWeight::Semibold,
+        );
         tr.draw_text_weighted(
             scene,
             &self.file_name,
             tokens.typography.scale.lg,
             tokens.colors.text_primary,
-            t * Affine::translate((bar.x0 + pad, cy)),
-            None,
-            TextWeight::Semibold,
-        );
-        let (name_w, _) = tr.measure_weighted(
-            &self.file_name,
-            tokens.typography.scale.lg,
+            t * Affine::translate((
+                bar.x0 + pad,
+                bar.y0 + (bar.height() - f64::from(name_h)) / 2.0,
+            )),
             None,
             TextWeight::Semibold,
         );
         let meta = format!("{} bytes", self.model.len());
+        let (_, meta_h) = tr.measure(&meta, tokens.typography.scale.sm, None);
         tr.draw_text(
             scene,
             &meta,
@@ -711,7 +722,7 @@ impl HexView {
             tokens.colors.text_dim,
             t * Affine::translate((
                 bar.x0 + pad + f64::from(name_w) + 12.0,
-                bar.y0 + (bar.height() - f64::from(tokens.typography.scale.sm)) / 2.0,
+                bar.y0 + (bar.height() - f64::from(meta_h)) / 2.0,
             )),
             None,
         );
@@ -774,7 +785,7 @@ impl HexView {
         fill: Color,
     ) -> f64 {
         let size = theme.tokens.typography.scale.xs;
-        let (tw, _) = tr.measure_weighted(label, size, None, TextWeight::Bold);
+        let (tw, th) = tr.measure_weighted(label, size, None, TextWeight::Bold);
         let pad_x = 8.0;
         let w = f64::from(tw) + pad_x * 2.0;
         let h = 18.0;
@@ -782,12 +793,13 @@ impl HexView {
         let y0 = bar.y0 + (bar.height() - h) / 2.0;
         let shape = RoundedRect::new(x0, y0, right_x, y0 + h, 6.0);
         scene.fill(Fill::NonZero, t, fill, None, &shape);
+        // Centre the measured line box in the pill (no nudge on the font size).
         tr.draw_text_weighted(
             scene,
             label,
             size,
             contrast_on(fill),
-            t * Affine::translate((x0 + pad_x, y0 + (h - f64::from(size)) / 2.0 + 0.5)),
+            t * Affine::translate((x0 + pad_x, y0 + (h - f64::from(th)) / 2.0)),
             None,
             TextWeight::Bold,
         );
@@ -819,7 +831,8 @@ impl HexView {
                 break;
             }
             let y = m.grid_top + vr as f64 * m.row_h;
-            let text_y = y + (m.row_h - f64::from(m.cell_font)) / 2.0;
+            // Centre the measured line box in the row, not the nominal font size.
+            let text_y = y + (m.row_h - m.line_h) / 2.0;
 
             // Offset gutter.
             let gutter = format!("{row_off:08X}");
@@ -867,7 +880,7 @@ impl HexView {
         tr.draw_text_styled(
             scene,
             "Offset",
-            tokens.typography.scale.xs,
+            m.header_font,
             tokens.colors.text_dim,
             t * Affine::translate((m.gutter_x0, head_y)),
             None,
@@ -881,7 +894,7 @@ impl HexView {
             tr.draw_text_styled(
                 scene,
                 &label,
-                tokens.typography.scale.xs,
+                m.header_font,
                 tokens.colors.text_dim,
                 t * Affine::translate((x, head_y)),
                 None,
@@ -893,7 +906,7 @@ impl HexView {
         tr.draw_text_styled(
             scene,
             "ASCII",
-            tokens.typography.scale.xs,
+            m.header_font,
             tokens.colors.text_dim,
             t * Affine::translate((m.ascii_x0, head_y)),
             None,
@@ -1913,7 +1926,9 @@ impl Widget for HexView {
             return;
         }
 
-        // Reflow the byte grid to fill the current width before laying out.
+        // Measure the cell font with the renderer that paints it, then reflow
+        // the byte grid to fill the current width before laying out.
+        self.cell_metrics = CellMetrics::measure(text_renderer);
         let fit = self.fit_bytes_per_row();
         if fit != self.model.bytes_per_row() {
             self.model.set_bytes_per_row(fit);
@@ -2428,6 +2443,72 @@ struct CellGeom {
     ascii_x: f64,
 }
 
+/// The monospace metrics every grid pitch derives from — one glyph advance
+/// and one line height, measured with the exact style the cells are painted
+/// in. Layout (`fit_bytes_per_row`), paint (`draw_grid`) and hit-testing
+/// (`hit_test`) all build their [`GridMetrics`] from this, so a byte's
+/// painted cell is its click target at every text scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CellMetrics {
+    /// Advance of one monospace glyph at [`GridMetrics::CELL_FONT`].
+    glyph_w: f64,
+    /// Line height of one row of cell text.
+    line_h: f64,
+}
+
+impl CellMetrics {
+    /// Breathing room above and below a row's line box.
+    const ROW_PAD_Y: f64 = 1.0;
+    /// Metrics before the first draw has measured anything: the 0.6 em
+    /// advance and 1.25 line height the monospace face resolves to at 1×.
+    const FALLBACK: Self = Self {
+        glyph_w: GridMetrics::CELL_FONT as f64 * 0.6,
+        line_h: GridMetrics::CELL_FONT as f64 * 1.25,
+    };
+
+    /// Measure the cell font with the renderer that will paint it. Eight
+    /// glyphs — the offset gutter's width — so a fractional advance is read
+    /// at the precision the gutter needs.
+    fn measure(tr: &mut TextRenderer) -> Self {
+        let (w, h) = tr.measure_styled(
+            "00000000",
+            GridMetrics::CELL_FONT,
+            None,
+            TextWeight::Regular,
+            false,
+            true,
+        );
+        if w <= 0.0 || h <= 0.0 {
+            return Self::FALLBACK;
+        }
+        Self {
+            glyph_w: f64::from(w) / 8.0,
+            line_h: f64::from(h),
+        }
+    }
+
+    /// One ASCII glyph.
+    fn char_w(self) -> f64 {
+        self.glyph_w
+    }
+
+    /// Two hex digits plus the inter-byte gap — one byte column's pitch.
+    fn hex_col_w(self) -> f64 {
+        self.glyph_w * 2.55
+    }
+
+    /// Eight hex digits of offset.
+    fn gutter_w(self) -> f64 {
+        self.glyph_w * 8.0
+    }
+
+    /// Row pitch: the measured line box plus symmetric padding, rounded up so
+    /// rows land on whole pixels (20px at 1× for the 14px cell font).
+    fn row_h(self) -> f64 {
+        (self.line_h + 2.0 * Self::ROW_PAD_Y).ceil()
+    }
+}
+
 /// Computed layout metrics for one frame. All in logical px.
 struct GridMetrics {
     header_bottom: f64,
@@ -2435,7 +2516,12 @@ struct GridMetrics {
     grid_top: f64,
     grid_bottom: f64,
     row_h: f64,
+    /// Measured line height of the cell text, centred inside `row_h`.
+    line_h: f64,
     cell_font: f32,
+    /// Caption-size cell font for the Offset / column-index / ASCII header
+    /// labels, so they scale with the byte pitch they annotate.
+    header_font: f32,
     byte_w: f64,
     char_w: f64,
     hex_col_w: f64,
@@ -2449,16 +2535,15 @@ struct GridMetrics {
 }
 
 impl GridMetrics {
+    /// Base size of the cell font. A literal base size, not a theme token, so
+    /// the renderer's accessibility scale applies to it exactly once — and
+    /// [`CellMetrics::measure`] reads the scaled advance back from the same
+    /// renderer.
     const CELL_FONT: f32 = 14.0;
-    const ROW_H: f64 = 20.0;
-    /// Monospace pitch at [`Self::CELL_FONT`]: roughly 0.6em per glyph.
-    const GLYPH: f64 = Self::CELL_FONT as f64 * 0.6;
-    /// One ASCII glyph.
-    const CHAR_W: f64 = Self::GLYPH;
-    /// Two hex digits plus the inter-byte gap — one byte column's pitch.
-    const HEX_COL_W: f64 = Self::GLYPH * 2.0 + Self::GLYPH * 0.55;
-    /// Eight hex digits of offset.
-    const GUTTER_W: f64 = Self::GLYPH * 8.0;
+    /// The column header's caption size relative to the cell font (10px at
+    /// 1×, the `xs` step of the type scale) — a ratio rather than the token so
+    /// the header labels and the cells they annotate share one scale path.
+    const COL_HEADER_FONT_RATIO: f32 = 10.0 / 14.0;
     const LEFT_PAD: f64 = 16.0;
     /// Gap between the offset gutter and the hex columns.
     const GUTTER_GAP: f64 = 22.0;
@@ -2469,9 +2554,16 @@ impl GridMetrics {
     /// Smallest inspector width the fit calculation keeps room for.
     const INSPECTOR_MIN: f64 = 300.0;
 
-    fn new(rect: Rect, bpr: usize) -> Self {
+    fn new(rect: Rect, bpr: usize, cell: CellMetrics) -> Self {
         let header_bottom = rect.y0 + 44.0;
-        let col_header_h = 20.0;
+        // The column header is the cell font at caption size, so its offset
+        // labels stay on the byte pitch at every scale; its band grows with
+        // the measured line height (20px at 1×, as before).
+        let header_font = Self::CELL_FONT * Self::COL_HEADER_FONT_RATIO;
+        let col_header_h = (cell.line_h * f64::from(Self::COL_HEADER_FONT_RATIO)
+            + 2.0 * CellMetrics::ROW_PAD_Y)
+            .ceil()
+            .max(20.0);
         let col_header_y = header_bottom + 10.0;
         let grid_top = col_header_y + col_header_h;
         // No permanent status strip any more — the cursor read-out floats in a
@@ -2480,13 +2572,14 @@ impl GridMetrics {
         let grid_bottom = rect.y1 - 8.0;
 
         let cell_font = Self::CELL_FONT;
-        let row_h = Self::ROW_H;
-        let byte_w = Self::GLYPH * 2.0;
-        let char_w = Self::CHAR_W;
-        let hex_col_w = Self::HEX_COL_W;
+        let row_h = cell.row_h();
+        let line_h = cell.line_h;
+        let byte_w = cell.glyph_w * 2.0;
+        let char_w = cell.char_w();
+        let hex_col_w = cell.hex_col_w();
 
         let gutter_x0 = rect.x0 + Self::LEFT_PAD;
-        let hex_x0 = gutter_x0 + Self::GUTTER_W + Self::GUTTER_GAP;
+        let hex_x0 = gutter_x0 + cell.gutter_w() + Self::GUTTER_GAP;
         let hex_x1 = hex_x0 + bpr as f64 * hex_col_w;
         let ascii_x0 = hex_x1 + Self::HEX_ASCII_GAP;
         let ascii_x1 = ascii_x0 + bpr as f64 * char_w;
@@ -2508,7 +2601,9 @@ impl GridMetrics {
             grid_top,
             grid_bottom,
             row_h,
+            line_h,
             cell_font,
+            header_font,
             byte_w,
             char_w,
             hex_col_w,
@@ -2713,6 +2808,50 @@ mod tests {
         assert!(view.is_match_offset(0));
         assert!(view.is_match_offset(search::MAX_RETAINED_MATCHES - 1));
         assert!(view.is_match_offset(search::MAX_RETAINED_MATCHES));
+    }
+
+    /// The grid's pitches come from the renderer's measured monospace advance
+    /// and line height, so paint and hit-testing share one geometry at every
+    /// text scale: a painted cell's centre maps back to its own byte.
+    #[test]
+    fn grid_pitches_follow_the_measured_mono_metrics_and_hit_their_cells() {
+        let mut tr = TextRenderer::new();
+        let base = CellMetrics::measure(&mut tr);
+        assert!(base.glyph_w > 0.0 && base.line_h > 0.0, "measured: {base:?}");
+        assert_eq!(base.row_h(), 20.0, "1× keeps the 20px row density");
+        tr.set_text_scale(2.0);
+        let large = CellMetrics::measure(&mut tr);
+        assert!(
+            (large.glyph_w - base.glyph_w * 2.0).abs() < 0.05
+                && (large.line_h - base.line_h * 2.0).abs() < 0.05,
+            "pitches follow the renderer scale: {base:?} → {large:?}"
+        );
+
+        let mut view = HexView::new(vec![0xAB; 96], "scale.bin");
+        view.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        for cell in [base, large] {
+            view.cell_metrics = cell;
+            let m = view.metrics();
+            assert!((m.row_h - cell.row_h()).abs() < f64::EPSILON);
+            assert!((m.hex_col_w - cell.hex_col_w()).abs() < f64::EPSILON);
+            let bpr = view.model.bytes_per_row();
+            for off in [0usize, 1, bpr - 1, bpr, 2 * bpr + 3] {
+                let (row, col) = (off / bpr, off % bpr);
+                let y = m.grid_top + row as f64 * m.row_h + m.row_h / 2.0;
+                let hx = m.hex_x0 + col as f64 * m.hex_col_w + m.byte_w / 2.0;
+                assert_eq!(
+                    view.hit_test(Point::new(hx, y)),
+                    Some((off, Column::Hex)),
+                    "hex cell {off} hit-tests to itself ({cell:?})"
+                );
+                let ax = m.ascii_x0 + col as f64 * m.char_w + m.char_w / 2.0;
+                assert_eq!(
+                    view.hit_test(Point::new(ax, y)),
+                    Some((off, Column::Ascii)),
+                    "ascii cell {off} hit-tests to itself ({cell:?})"
+                );
+            }
+        }
     }
 
     #[test]
