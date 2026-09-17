@@ -66,6 +66,14 @@ class LayerAuditTests(unittest.TestCase):
         self.assertEqual(result['metadata_findings'], ['provided-private-material'])
         self.assertEqual(result['status'], 'rejected-private-material')
 
+    def test_scope_excludes_outer_archive_names_not_part_of_image_payload(self):
+        stream, image = docker([tar([('public', b'ok')])], extra=[(SECRET.decode(), b'')])
+        result = audit.audit_stream(io.BytesIO(stream), image, [SECRET])
+        self.assertEqual(result['status'], 'passed-scoped-scan')
+        self.assertEqual(result['scope'], 'all uncompressed layer bytes and archive metadata file contents: '
+                         'provided exact private bytes and private PEM envelopes only')
+        self.assertFalse(result['universal_secret_absence_proven'])
+
     def test_credential_file_newlines_do_not_hide_shell_exported_value(self):
         for content in (SECRET, SECRET + b'\r\n'):
             stream, image = docker([tar([('environment', content)])])
