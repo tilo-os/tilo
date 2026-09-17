@@ -142,7 +142,7 @@ impl CollaborationOverview {
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.surface_white_5,
+            theme.tokens.colors.lift(0.35),
             None,
             &RoundedRect::from_rect(rect, theme.radius_standard),
         );
@@ -294,7 +294,7 @@ impl CollaborationOverview {
                 if active {
                     theme.accent_primary
                 } else {
-                    theme.tokens.colors.surface_white_10
+                    theme.tokens.colors.lift(0.72)
                 },
                 None,
                 &RoundedRect::from_rect(chip, 8.0),
@@ -305,7 +305,14 @@ impl CollaborationOverview {
                 transform,
                 label,
                 11.0,
-                if active { Color::WHITE } else { theme.text_dim },
+                if active {
+                    theme
+                        .tokens
+                        .colors
+                        .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+                } else {
+                    theme.text_dim
+                },
                 chip.x0 + 8.0,
                 chip.y0 + 5.0,
                 TextWeight::Semibold,
