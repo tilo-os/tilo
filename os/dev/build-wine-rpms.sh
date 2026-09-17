@@ -16,10 +16,13 @@ if [[ "$WINE_TARGET" == i686 ]]; then
 else
     export CC='gcc -m64' CXX='g++ -m64'
 fi
-# Fedora's spec and staging patches remain byte-for-byte unchanged. Normal
+# Fedora's source and staging patches remain byte-for-byte unchanged. Normal
 # RPM dependency checks, scriptlets, docs, licenses and debuginfo stay enabled.
 rpm -i --define '_topdir /wine-build' /wine-source/wine-11.0-3.fc44.src.rpm
 python3 /tilo/wine_rpm_contract.py spec /wine-build/SPECS/wine.spec /tilo/wine-source.json
+mv /wine-build/SPECS/wine.spec /wine-output/provenance/upstream.spec
+python3 /tilo/wine_rpm_contract.py prepare-spec /wine-output/provenance/upstream.spec /tilo/wine-source.json /wine-build/SPECS/wine.spec
+cp /wine-build/SPECS/wine.spec /wine-output/provenance/wine.spec
 rpmbuild -ba /wine-build/SPECS/wine.spec \
     --target "$WINE_TARGET" --without new_wow64 \
     --define "dist $build_dist" \
