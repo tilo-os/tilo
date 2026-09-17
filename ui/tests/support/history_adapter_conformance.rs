@@ -245,6 +245,10 @@ fn normal_autosave_fresh_reopen_retains_graph_and_restored_content() {
             )
             .unwrap();
         } else {
+            let before = state.doc.base_heads();
+            test_root().sync(&mut state.doc, &state.root);
+            assert_eq!(state.doc.base_heads(), before, "fresh production startup retains the graph");
+            assert_eq!(state.doc.pending_ops(), 0, "fresh startup does not rewrite restored content");
             verify_restored(&state.doc);
             let selected =
                 std::fs::read_to_string(saver.document_path().with_extension("selected"))
@@ -274,7 +278,7 @@ fn normal_autosave_fresh_reopen_retains_graph_and_restored_content() {
         std::env::temp_dir().join(format!("qos-slice4-{}-{}", def.app_id, std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for stage in ["write", "read"] {
-        let result=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::normal_autosave_fresh_reopen_retains_graph_and_restored_content","--nocapture"]).env("QOS_SLICE4_STAGE",stage).env("XDG_DATA_HOME",&dir).env("QOS_PACKAGE_ID",def.app_id).output().unwrap();
+        let result=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::normal_autosave_fresh_reopen_retains_graph_and_restored_content","--nocapture"]).env("QOS_SLICE4_STAGE",stage).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).env("QOS_PACKAGE_ID",def.app_id).output().unwrap();
         assert!(
             result.status.success(),
             "{stage}: {} {}",

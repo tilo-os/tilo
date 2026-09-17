@@ -61,6 +61,18 @@ impl Default for SourceEditor {
 }
 
 impl SourceEditor {
+    #[cfg(test)]
+    pub(crate) fn history_test_caret_rect(&self, theme: &Theme, byte: usize) -> Rect { self.code.caret_rect(theme, byte) }
+
+    /// Unbound source presentation with no caret and persistent local scrolling.
+    pub(crate) fn snapshot(source: &str) -> Self {
+        let mut editor = Self::new();
+        editor.focused = false;
+        editor.code.inner_mut().set_preserve_unfocused_scroll(true);
+        editor.set_text(source);
+        editor
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
