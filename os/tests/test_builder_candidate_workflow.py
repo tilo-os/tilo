@@ -191,6 +191,15 @@ class CanaryIdentity(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 CANARY.select_receipt(self.root, 'x86_64', self.images['x86_64'], self.revision, '42')
 
+    def test_native_rebuild_can_supersede_old_cold_image_receipt(self):
+        self.cold('x86_64', 1)
+        self.images['x86_64'] = CANARY.REPOSITORY + '@sha256:' + 'e' * 64
+        with self.assertRaisesRegex(ValueError, 'latest cold receipt used a different'):
+            CANARY.select_receipt(self.root, 'x86_64', self.images['x86_64'], self.revision, '42')
+        current = self.cold('x86_64', 2)
+        self.assertEqual(CANARY.select_receipt(self.root, 'x86_64', self.images['x86_64'],
+                                             self.revision, '42'), current)
+
     def test_promotion_rejects_stale_green_warm_after_cold_retry(self):
         for arch in self.images:
             self.warm(arch, 1, self.cold(arch, 1))
