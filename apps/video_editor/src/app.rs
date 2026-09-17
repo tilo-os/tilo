@@ -75,7 +75,13 @@ const LANE_GAP: f64 = 4.0;
 const VIDEO_LANE_H: f64 = 62.0;
 const AUDIO_LANE_H: f64 = 46.0;
 const TRIM_HIT: f64 = 8.0;
-const PAD: f64 = 14.0;
+/// The side panes' content inset — the inspector's controls and both pane
+/// headings. The theme's `spacing.s3` step (its `padding_standard`), which is
+/// also `TOPBAR_EDGE` and the track heads' name inset, so the project
+/// button, "MEDIA BIN", "INSPECTOR", every inspector control and every lane
+/// name start the same distance from their pane's edge. It was 14, two
+/// pixels off every neighbour and off the spacing scale.
+const PAD: f64 = 12.0;
 /// Overlay-scrollbar geometry, matching [`ui::widget::DocumentViewport`] so
 /// the timeline's bar is the same object the rest of the fleet shows.
 const SCROLLBAR_THICKNESS: f64 = 8.0;
@@ -14815,7 +14821,7 @@ impl VideoEditorApp {
             "MEDIA BIN",
             11.0,
             c.text_dim,
-            r.bin.x0 + 14.0,
+            r.bin.x0 + PAD,
             heading_y,
             TextWeight::Semibold,
         );
@@ -14833,7 +14839,7 @@ impl VideoEditorApp {
         ui::widget::Button::paint(scene, tf, tr, theme, &add_face);
         let count = format!("{} clips", self.project.media.len());
         let (cw, _) = tr.measure(&count, 11.0, None);
-        let count_x = r.bin.x1 - 14.0 - cw as f64;
+        let count_x = r.bin.x1 - PAD - cw as f64;
         if count_x > add.x1 + 8.0 {
             text(
                 scene,
@@ -17621,6 +17627,36 @@ impl VideoEditorApp {
         }
         scene.pop_layer();
 
+        // Zoom readout, doubling as fit-to-window. Without it there was no way
+        // to tell how far in you were, and no way back out but wheeling.
+        //
+        // Under the playhead, not over it: the chip sits at the ruler's right
+        // edge, exactly where the playhead's time tag ends up on a narrow
+        // window or at a large text scale, and the tag is the reading the
+        // ruler exists to give. The chip keeps its hit rect and its keyboard
+        // route (Z, zoom to fit) while the tag is over it.
+        let chip = self.zoom_chip_rect(r);
+        let chip_hover = chip.contains(self.last_mouse);
+        fill_rrect(
+            scene,
+            tf,
+            if chip_hover {
+                c.overlay_medium
+            } else {
+                c.neutral[3]
+            },
+            chip,
+            5.0,
+        );
+        stroke_rrect(scene, tf, c.border_standard, chip, 5.0, 1.0);
+        let zl = if self.zoom >= 100.0 {
+            format!("{:.0} px/s", self.zoom)
+        } else {
+            format!("{:.1} px/s", self.zoom)
+        };
+        let at = text_centre(chip, &zl, 10.0, TextWeight::Regular, tr);
+        text(scene, tr, tf, &zl, 10.0, c.text_dim, at.x, at.y);
+
         // --- playhead ---
         let px = self.time_to_x(self.playhead, &r.lanes);
         if px >= r.lanes.x0 - 0.5 && px <= r.lanes.x1 + 0.5 {
@@ -17677,30 +17713,6 @@ impl VideoEditorApp {
             r.timeline.y1,
             |t| self.time_to_x(t, &r.lanes),
         );
-
-        // Zoom readout, doubling as fit-to-window. Without it there was no way
-        // to tell how far in you were, and no way back out but wheeling.
-        let chip = self.zoom_chip_rect(r);
-        let chip_hover = chip.contains(self.last_mouse);
-        fill_rrect(
-            scene,
-            tf,
-            if chip_hover {
-                c.overlay_medium
-            } else {
-                c.neutral[3]
-            },
-            chip,
-            5.0,
-        );
-        stroke_rrect(scene, tf, c.border_standard, chip, 5.0, 1.0);
-        let zl = if self.zoom >= 100.0 {
-            format!("{:.0} px/s", self.zoom)
-        } else {
-            format!("{:.1} px/s", self.zoom)
-        };
-        let at = text_centre(chip, &zl, 10.0, TextWeight::Regular, tr);
-        text(scene, tr, tf, &zl, 10.0, c.text_dim, at.x, at.y);
 
         // Empty timeline: say what to do, rather than showing bare lanes.
         // Through the same shared empty state the preview and the inspector
