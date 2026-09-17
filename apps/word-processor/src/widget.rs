@@ -521,6 +521,13 @@ struct ImageFlipRow {
     button_width: f64,
 }
 
+struct PanelButton<'a> {
+    rect: Rect,
+    label: &'a str,
+    active: bool,
+    centered: bool,
+}
+
 impl NumField {
     fn get(self, s: &crate::styles::StyleProps) -> f32 {
         match self {
@@ -4534,10 +4541,12 @@ impl WordProcessorWidget {
             transform,
             tr,
             &cc,
-            close,
-            &t("panel-close"),
-            false,
-            true,
+            PanelButton {
+                rect: close,
+                label: &t("panel-close"),
+                active: false,
+                centered: true,
+            },
         );
         self.panel_hits.push((close, PanelHit::Close));
         y += 30.0;
@@ -4608,10 +4617,12 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                r,
-                &t("panel-new-style"),
-                false,
-                true,
+                PanelButton {
+                    rect: r,
+                    label: &t("panel-new-style"),
+                    active: false,
+                    centered: true,
+                },
             );
             self.panel_hits.push((r, PanelHit::NewStyle));
         }
@@ -4708,10 +4719,12 @@ impl WordProcessorWidget {
                     ctx.transform,
                     ctx.tr,
                     &ctx.cc,
-                    r,
-                    label,
-                    cur == *val,
-                    true,
+                    PanelButton {
+                        rect: r,
+                        label,
+                        active: cur == *val,
+                        centered: true,
+                    },
                 );
                 self.panel_hits.push((r, PanelHit::ParaAlign(val)));
             }
@@ -4736,10 +4749,12 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                r,
-                &label,
-                false,
-                true,
+                PanelButton {
+                    rect: r,
+                    label: &label,
+                    active: false,
+                    centered: true,
+                },
             );
             self.panel_hits.push((r, PanelHit::ParaLineSpacing));
             y += 30.0;
@@ -4815,10 +4830,12 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                r,
-                &name,
-                id.as_str() == key,
-                false,
+                PanelButton {
+                    rect: r,
+                    label: &name,
+                    active: id.as_str() == key,
+                    centered: false,
+                },
             );
             self.panel_hits.push((r, PanelHit::Pick(id.clone())));
         }
@@ -4865,10 +4882,12 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                r,
-                &fl,
-                false,
-                true,
+                PanelButton {
+                    rect: r,
+                    label: &fl,
+                    active: false,
+                    centered: true,
+                },
             );
             self.panel_hits.push((r, PanelHit::CycleFont));
             y += 30.0;
@@ -4892,20 +4911,24 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                rb,
-                &t("panel-bold"),
-                st.bold,
-                true,
+                PanelButton {
+                    rect: rb,
+                    label: &t("panel-bold"),
+                    active: st.bold,
+                    centered: true,
+                },
             );
             draw_btn(
                 ctx.scene,
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                ri,
-                &t("panel-italic"),
-                st.italic,
-                true,
+                PanelButton {
+                    rect: ri,
+                    label: &t("panel-italic"),
+                    active: st.italic,
+                    centered: true,
+                },
             );
             self.panel_hits.push((rb, PanelHit::ToggleBold));
             self.panel_hits.push((ri, PanelHit::ToggleItalic));
@@ -4989,10 +5012,12 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                btn,
-                &t("panel-colour-custom"),
-                self.color_picker.is_open(),
-                true,
+                PanelButton {
+                    rect: btn,
+                    label: &t("panel-colour-custom"),
+                    active: self.color_picker.is_open(),
+                    centered: true,
+                },
             );
             self.panel_hits.push((btn, PanelHit::OpenColorPicker));
             self.panel_hits.push((chip, PanelHit::OpenColorPicker));
@@ -5070,20 +5095,24 @@ impl WordProcessorWidget {
             transform,
             tr,
             &cc,
-            rs,
-            &t("panel-image-smaller"),
-            false,
-            true,
+            PanelButton {
+                rect: rs,
+                label: &t("panel-image-smaller"),
+                active: false,
+                centered: true,
+            },
         );
         draw_btn(
             scene,
             transform,
             tr,
             &cc,
-            rl,
-            &t("panel-image-larger"),
-            false,
-            true,
+            PanelButton {
+                rect: rl,
+                label: &t("panel-image-larger"),
+                active: false,
+                centered: true,
+            },
         );
         self.panel_hits.push((rs, PanelHit::ImageScale(0.9)));
         self.panel_hits.push((rl, PanelHit::ImageScale(1.1)));
@@ -5120,20 +5149,24 @@ impl WordProcessorWidget {
             transform,
             tr,
             &cc,
-            crop,
-            &t("panel-image-crop-inset"),
-            false,
-            true,
+            PanelButton {
+                rect: crop,
+                label: &t("panel-image-crop-inset"),
+                active: false,
+                centered: true,
+            },
         );
         draw_btn(
             scene,
             transform,
             tr,
             &cc,
-            reset,
-            &t("panel-image-crop-reset"),
-            false,
-            true,
+            PanelButton {
+                rect: reset,
+                label: &t("panel-image-crop-reset"),
+                active: false,
+                centered: true,
+            },
         );
         self.panel_hits.push((crop, PanelHit::ImageCropInset));
         self.panel_hits.push((reset, PanelHit::ImageCropReset));
@@ -5167,30 +5200,36 @@ impl WordProcessorWidget {
             transform,
             tr,
             &cc,
-            free,
-            &t("panel-image-free"),
-            false,
-            true,
+            PanelButton {
+                rect: free,
+                label: &t("panel-image-free"),
+                active: false,
+                centered: true,
+            },
         );
         draw_btn(
             scene,
             transform,
             tr,
             &cc,
-            left,
-            &t("panel-image-wrap-left"),
-            false,
-            true,
+            PanelButton {
+                rect: left,
+                label: &t("panel-image-wrap-left"),
+                active: false,
+                centered: true,
+            },
         );
         draw_btn(
             scene,
             transform,
             tr,
             &cc,
-            right_wrap,
-            &t("panel-image-wrap-right"),
-            false,
-            true,
+            PanelButton {
+                rect: right_wrap,
+                label: &t("panel-image-wrap-right"),
+                active: false,
+                centered: true,
+            },
         );
         self.panel_hits.push((free, PanelHit::ImageFreePosition));
         self.panel_hits.push((left, PanelHit::ImageWrapLeft));
@@ -5237,20 +5276,24 @@ impl WordProcessorWidget {
             transform,
             tr,
             &cc,
-            rh,
-            &t("panel-image-flip-h"),
-            fh,
-            true,
+            PanelButton {
+                rect: rh,
+                label: &t("panel-image-flip-h"),
+                active: fh,
+                centered: true,
+            },
         );
         draw_btn(
             scene,
             transform,
             tr,
             &cc,
-            rv,
-            &t("panel-image-flip-v"),
-            fv,
-            true,
+            PanelButton {
+                rect: rv,
+                label: &t("panel-image-flip-v"),
+                active: fv,
+                centered: true,
+            },
         );
         self.panel_hits.push((rh, PanelHit::ImageFlipH));
         self.panel_hits.push((rv, PanelHit::ImageFlipV));
@@ -5282,8 +5325,30 @@ impl WordProcessorWidget {
         let plus = Rect::new(right - 24.0, y, right, y + 24.0);
         let vb = Rect::new(plus.x0 - 60.0, y, plus.x0 - 2.0, y + 24.0);
         let minus = Rect::new(vb.x0 - 26.0, y, vb.x0 - 2.0, y + 24.0);
-        draw_btn(scene, transform, tr, &cc, minus, "−", false, true);
-        draw_btn(scene, transform, tr, &cc, plus, "+", false, true);
+        draw_btn(
+            scene,
+            transform,
+            tr,
+            &cc,
+            PanelButton {
+                rect: minus,
+                label: "−",
+                active: false,
+                centered: true,
+            },
+        );
+        draw_btn(
+            scene,
+            transform,
+            tr,
+            &cc,
+            PanelButton {
+                rect: plus,
+                label: "+",
+                active: false,
+                centered: true,
+            },
+        );
         // Value box.
         let editing = self.editing_field == Some(field);
         let scrubbing = self.scrub.is_some_and(|s| s.field == field);
@@ -5472,17 +5537,19 @@ fn panel_divider(
 
 /// A panel chip / button: rounded rect + label. `center` centers the label
 /// (approximate), else left-pads it.
-#[allow(clippy::too_many_arguments)] // each param is a distinct draw input; no natural grouping
 fn draw_btn(
     scene: &mut Scene,
     transform: Affine,
     tr: &mut TextRenderer,
     cc: &ChromeColors,
-    r: Rect,
-    label: &str,
-    active: bool,
-    center: bool,
+    button: PanelButton<'_>,
 ) {
+    let PanelButton {
+        rect: r,
+        label,
+        active,
+        centered: center,
+    } = button;
     let bg = if active { cc.accent } else { cc.chip };
     let fg = if active { cc.on_accent } else { cc.text };
     scene.fill(
@@ -10340,20 +10407,24 @@ impl WordProcessorWidget {
             transform,
             tr,
             &cc,
-            self.thread_cancel,
-            &t("review-cancel-reply"),
-            false,
-            true,
+            PanelButton {
+                rect: self.thread_cancel,
+                label: &t("review-cancel-reply"),
+                active: false,
+                centered: true,
+            },
         );
         draw_btn(
             scene,
             transform,
             tr,
             &cc,
-            self.thread_submit,
-            &t("review-send-reply"),
-            true,
-            true,
+            PanelButton {
+                rect: self.thread_submit,
+                label: &t("review-send-reply"),
+                active: true,
+                centered: true,
+            },
         );
     }
 
