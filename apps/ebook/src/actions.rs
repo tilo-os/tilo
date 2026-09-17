@@ -67,6 +67,11 @@ pub enum EbookOperation {
     ShareBook {
         book_id: String,
     },
+    /// Hydrate a book that the collaborative library already advertises from
+    /// its deterministic workspace object, then open it locally.
+    HydrateSharedBook {
+        book_id: String,
+    },
 }
 
 pub fn operation_kind(operation: &EbookOperation) -> OperationKind {
@@ -77,7 +82,9 @@ pub fn operation_kind(operation: &EbookOperation) -> OperationKind {
         | EbookOperation::ToggleNotes
         | EbookOperation::OpenSettings
         | EbookOperation::Reveal { .. } => OperationKind::View,
-        EbookOperation::OpenBook | EbookOperation::ShareBook { .. } => OperationKind::Effect,
+        EbookOperation::OpenBook
+        | EbookOperation::ShareBook { .. }
+        | EbookOperation::HydrateSharedBook { .. } => OperationKind::Effect,
     }
 }
 
@@ -2365,9 +2372,21 @@ mod tests {
             &provider,
             &tilo_actions::ActionAddress::new("ebook.book:book:remote-only", "open"),
         );
-        assert!(
-            resource.is_none(),
-            "remote bytes have no local reveal capability"
+        let resource = resource.expect("remote bytes expose a typed hydrate capability");
+        let open = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("download and open");
+        assert_eq!(open.label, "Download and open");
+        let ActionInput::Immediate(operation) = &open.input else {
+            panic!("remote hydrate is replayable");
+        };
+        assert_eq!(
+            decode_operation(&operation.type_id, &operation.payload).unwrap(),
+            Some(EbookOperation::HydrateSharedBook {
+                book_id: "book:remote-only".into(),
+            })
         );
         let roots = provide_resources(&[], &doc);
         assert!(roots[0].children.is_empty());
