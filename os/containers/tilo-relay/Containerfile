@@ -15,7 +15,7 @@
 # Build from the repo root:
 #
 #     podman build -f os/containers/tilo-relay/Containerfile \
-#         -t code.sandbox.example/tilo/tilo-relay:latest .
+#         -t code.sandbox.example/qos/tilo-relay:latest .
 #
 # Publish via the existing forgejo CI workflow — see
 # `.forgejo/workflows/tilo-relay.yaml` (companion to the OS image job).

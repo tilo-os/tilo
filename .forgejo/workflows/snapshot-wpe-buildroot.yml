@@ -86,7 +86,7 @@ jobs:
           no-cache: true
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
-          tags: code.sandbox.example/tilo/tilo-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}
+          tags: code.sandbox.example/qos/tilo-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}
       - name: Revoke the base-image read lease
         run: docker logout code.sandbox.example || true
       - name: Acquire a fresh short-lived publish and signing lease
@@ -96,12 +96,12 @@ jobs:
       - name: Publish and audit the immutable buildroot
         run: |
           set -euo pipefail
-          tag="code.sandbox.example/tilo/tilo-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}"
+          tag="code.sandbox.example/qos/tilo-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}"
           docker push "$tag"
           digest_ref="$(docker image inspect --format '{{index .RepoDigests 0}}' "$tag")"
           DIGEST="${digest_ref##*@}"
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          ref="code.sandbox.example/tilo/tilo-wpe-buildroot@$DIGEST"
+          ref="code.sandbox.example/qos/tilo-wpe-buildroot@$DIGEST"
           actual_arch="$(docker run --rm --entrypoint cat "$ref" /usr/lib/tilo/wpe-buildroot-arch)"
           test "$actual_arch" = '${{ matrix.arch }}'
           docker run --rm --entrypoint sh "$ref" -c \

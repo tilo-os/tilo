@@ -38,20 +38,20 @@ else
   bad 'a registry cache workflow still uses the default docker driver'
 fi
 
-grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }},mode=min' "$workflows/build-kernel.yml" \
-  && ! grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }},mode=max' "$workflows/build-kernel.yml" \
+grep -Fq 'qos-kernel-buildcache:${{ matrix.arch }},mode=min' "$workflows/build-kernel.yml" \
+  && ! grep -Fq 'qos-kernel-buildcache:${{ matrix.arch }},mode=max' "$workflows/build-kernel.yml" \
   && ok 'kernel cache export excludes its multi-gigabyte intermediate build tree' \
   || bad 'kernel cache export can duplicate the intermediate build tree and exhaust the runner'
 
 if grep -Fq 'x86_64) ref="$KERNEL_RPMS_X86_64_REF"; expected_arch=amd64' "$os" \
    && grep -Fq 'aarch64) ref="$KERNEL_RPMS_AARCH64_REF"; expected_arch=arm64' "$os" \
-   && grep -Fq '[[ "$ref" =~ ^code\.podesta\.ai/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$os" \
+   && grep -Fq '[[ "$ref" =~ ^code\.podesta\.ai/qos/qos-kernel@sha256:[0-9a-f]{64}$ ]]' "$os" \
    && grep -Fq 'cosign verify --key keys/cosign.pub "$ref"' "$os" \
    && grep -Fq 'cosign verify-attestation --key keys/cosign.pub' "$os" \
    && grep -Fq 'https://tilo.dev/buildtypes/kernel-rpm/v1' "$os" \
    && grep -Fq 'actual_arch="$(skopeo inspect "docker://$ref" | jq -er .Architecture)"' "$os" \
    && grep -Fq 'echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"' "$os" \
-   && grep -Fq '[[ "$KERNEL_RPMS_REF" =~ ^code\.podesta\.ai/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh" \
+   && grep -Fq '[[ "$KERNEL_RPMS_REF" =~ ^code\.podesta\.ai/qos/qos-kernel@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh" \
    && grep -Fq 'cosign verify --key "$TILO_REPO/keys/cosign.pub" "$KERNEL_RPMS_REF"' "$repo/os/dev/build-image.sh" \
    && grep -Fq 'cosign verify-attestation' "$repo/os/dev/build-image.sh" \
    && grep -Fq 'https://tilo.dev/buildtypes/kernel-rpm/v1' "$repo/os/dev/build-image.sh"; then
@@ -64,7 +64,7 @@ kernel_workflow="$workflows/build-kernel.yml"
 if grep -Fq 'runner: imager-linux-x86_64' "$kernel_workflow" \
    && grep -Fq 'runner: imager-linux-aarch64' "$kernel_workflow" \
    && grep -Fq 'assert-native-arch.sh "${{ matrix.arch }}"' "$kernel_workflow" \
-   && grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }}' "$kernel_workflow" \
+   && grep -Fq 'qos-kernel-buildcache:${{ matrix.arch }}' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_${{ matrix.arch }}_REF' "$kernel_workflow" \
    && grep -Fq 'promote-native-kernels:' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_X86_64_REF=$KERNEL_RPMS_X86_64_REF' "$kernel_workflow" \
