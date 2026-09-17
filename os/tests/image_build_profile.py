@@ -258,6 +258,48 @@ print('sha256:' + '5' * 64)
         self.assertEqual(arguments.count('1700000000'), 2)
         self.assertNotIn('--cache-to', arguments)
 
+    def test_adopted_wpe_skips_unused_buildroot_and_preserves_release_epoch(self):
+        inputs = self.development_pipeline_inputs()
+        self.write('os/dev/build-wpe-buildroot.sh', '#!/bin/bash\nexit 85\n', executable=True)
+        self.write('os/dev/adopt-development-wpe.py', """import sys
+assert sys.argv[1] == 'import-adopted'
+args = dict(zip(sys.argv[2::2], sys.argv[3::2]))
+assert args['--architecture'] == 'aarch64'
+assert args['--receipt'] == '/private/adopted receipt.json'
+assert args['--receipt-sha256'] == 'a' * 64
+assert '--epoch' not in args
+print('sha256:' + '6' * 64)
+""")
+        self.commit_fixture()
+        result = self.run_builder(**(inputs | dict(TILO_WITH_BROWSER='1',
+            TILO_WPE_ADOPTION_RECEIPT='/private/adopted receipt.json', TILO_WPE_ADOPTION_SHA256='a' * 64)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = self.log.read_bytes().decode().split('\0')
+        self.assertEqual(arguments.count('wpe-builder=container-image://sha256:' + '6' * 64), 2)
+        self.assertEqual(arguments.count('1700000000'), 2)
+
+    def test_adoption_rejects_mixed_sources_and_missing_independent_pin(self):
+        inputs = self.development_pipeline_inputs() | dict(TILO_WITH_BROWSER='1',
+            TILO_WPE_ADOPTION_RECEIPT='/private/adopted.json', TILO_WPE_ADOPTION_SHA256='a' * 64)
+        for overrides, message in (
+            ({'TILO_WPE_ADOPTION_SHA256': ''}, 'independently pinned'),
+            ({'TILO_WPE_STAGE_RECEIPT': '/other.json'}, 'another WPE source'),
+            ({'TILO_WPE_BUILD_CACHE_REF': 'cache'}, 'another WPE source'),
+            ({'TILO_REQUIRE_WPE_SIGNATURE': '1'}, 'release buildroot verification'),
+            ({'TILO_WITH_BROWSER': '0'}, 'fresh full-browser development build')):
+            with self.subTest(overrides=overrides):
+                self.assert_rejected_before_build(self.run_builder(**(inputs | overrides)), message)
+
+    def test_adoption_failure_never_enters_os_compilation(self):
+        inputs = self.development_pipeline_inputs() | dict(TILO_WITH_BROWSER='1',
+            TILO_WPE_ADOPTION_RECEIPT='/private/adopted.json', TILO_WPE_ADOPTION_SHA256='a' * 64)
+        for source, status in (("raise SystemExit(82)\n", 82), ("print('mutable:tag')\n", 1)):
+            self.write('os/dev/adopt-development-wpe.py', source)
+            self.commit_fixture()
+            result = self.run_builder(**inputs)
+            self.assertEqual(result.returncode, status, result.stderr)
+            self.assertFalse(self.log.exists(), 'failed adoption reached OS compilation')
+
     def test_completed_wpe_import_failure_never_falls_back_to_compilation(self):
         inputs = self.development_pipeline_inputs()
         self.write('os/dev/prepare-wpe-stage.py', "raise AssertionError('must never compile WPE')\n")

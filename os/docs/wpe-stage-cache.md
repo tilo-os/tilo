@@ -55,3 +55,26 @@ incompatible or unavailable artifact aborts the build; it never falls back to
 compiling WPE. Without a receipt, existing cache and default build behavior are
 unchanged. The receipt must come from the reviewed development producer; it is
 not a production signature or installation authority.
+
+## Adopt a reviewed retained development build
+
+An older local engine may have usable compiled bytes without the current CI
+producer receipt. `adopt-development-wpe.py` handles that separate case. A
+reviewed, independently pinned audit binds the original engine and buildroot
+identities, old recipe, source archives, and compatible current consumer recipes.
+The helper verifies the native payload, projects only `/wpe` without executing
+image code, and publishes it to a dedicated development adoption repository.
+Its receipt preserves unknown original build epoch and source revision; the
+projection timestamp describes only the new packaging layer.
+
+For an independently reviewed adoption receipt, set
+`TILO_WPE_ADOPTION_RECEIPT` and `TILO_WPE_ADOPTION_SHA256`. The image consumer checks
+the receipt, embedded audit, current recipes and source archives, then verifies
+the immutable registry image and complete payload inventory. It imports the
+existing engine through the same named build context. The unused WPE compiler
+buildroot is not required. Adoption cannot be combined with another WPE source,
+production trust, or release buildroot-signature verification. Failure stops
+before the OS build; it never triggers a replacement WebKit compilation.
+
+This is development provenance and reuse, not a reproducible rebuild claim,
+production signature, runtime ABI test, or boot proof.

@@ -229,6 +229,18 @@ export TILO_GENERATION
 # Browser opt-out (see the header). Exported as a build-arg either way so the
 # value is explicit in the build log.
 : "${TILO_WITH_BROWSER:=1}"
+# Retained development payloads have their own provenance, including an unknown
+# original compilation epoch. Never present them as a current producer build.
+if [ -n "${TILO_WPE_ADOPTION_RECEIPT:-}" ]; then
+  [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] && [ "$TILO_WITH_BROWSER" = 1 ] \
+    && [ "$TILO_SKIP_BUILD" != 1 ] || die "WPE adoption requires a fresh full-browser development build"
+  [ -z "${TILO_WPE_STAGE_RECEIPT:-}${TILO_WPE_BUILD_CACHE_REF:-}" ] \
+    || die "WPE adoption cannot be combined with another WPE source"
+  [[ "${TILO_WPE_ADOPTION_SHA256:-}" =~ ^[0-9a-f]{64}$ ]] \
+    || die "WPE adoption requires an independently pinned receipt SHA256"
+  [ "${TILO_REQUIRE_WPE_SIGNATURE:-0}" != 1 ] \
+    || die "WPE adoption cannot replace release buildroot verification"
+fi
 # Select the promoted buildroot for this native architecture. Before the first
 # promotion a developer may opt into the clearly named live-repository
 # bootstrap; it is never enabled implicitly and release CI never passes it.
@@ -241,7 +253,8 @@ case "$(uname -m)" in
   aarch64) WPE_BUILDROOT_REF="${_tilo_wpe_ref_override:-${WPE_BUILDROOT_AARCH64_REF:-}}" ;;
   *) die "unsupported WPE buildroot architecture: $(uname -m)" ;;
 esac
-if [ "$TILO_SKIP_BUILD" != 1 ] && [ "$TILO_WITH_BROWSER" = 1 ] && [ -z "$WPE_BUILDROOT_REF" ]; then
+if [ "$TILO_SKIP_BUILD" != 1 ] && [ "$TILO_WITH_BROWSER" = 1 ] && [ -z "$WPE_BUILDROOT_REF" ] \
+    && [ -z "${TILO_WPE_ADOPTION_RECEIPT:-}" ]; then
   if [ "$TILO_WPE_BOOTSTRAP" = 1 ]; then
     WPE_BUILDROOT_REF="$("$TILO_OS_DIR/dev/build-wpe-buildroot.sh")"
   else
@@ -335,7 +348,13 @@ if [ "$TILO_SKIP_BUILD" = "1" ]; then
   msg "1/2 skipped (TILO_SKIP_BUILD=1): imaging the existing $TILO_IMAGE"
 else
   msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; generation=$TILO_GENERATION)"
-  if [ -n "${TILO_WPE_STAGE_RECEIPT:-}" ]; then
+  if [ -n "${TILO_WPE_ADOPTION_RECEIPT:-}" ]; then
+    _tilo_wpe_id=$(python3 "$TILO_OS_DIR/dev/adopt-development-wpe.py" import-adopted \
+      --receipt "$TILO_WPE_ADOPTION_RECEIPT" --receipt-sha256 "$TILO_WPE_ADOPTION_SHA256" \
+      --architecture "$TILO_WINDOWS_ARCH" --repo "$TILO_REPO" --assets "$TILO_REPO/os/external-assets/cache")
+    [[ "$_tilo_wpe_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "WPE adoption did not return an immutable image ID"
+    _tilo_wpe_args=(--build-context "wpe-builder=container-image://$_tilo_wpe_id")
+  elif [ -n "${TILO_WPE_STAGE_RECEIPT:-}" ]; then
     # A selected completed artifact is mandatory: never hide an invalid receipt
     # or unavailable artifact by compiling another stage in this OS build.
     _tilo_wpe_id=$(python3 "$TILO_OS_DIR/dev/wpe-stage-artifact.py" import \
