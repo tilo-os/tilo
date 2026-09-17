@@ -191,6 +191,13 @@ struct ReaderThreadLayout {
     head_has_html: bool,
 }
 
+struct LargeTextFlow {
+    bounds: Rect,
+    x: f64,
+    width: f32,
+    y: f64,
+}
+
 struct EventContext<'a> {
     scale_factor: f64,
     modifiers: winit::event::Modifiers,
@@ -1434,10 +1441,6 @@ impl Pane {
     /// Accessibility-scale reader presentation: a measured, single-column
     /// thread flow.  It intentionally favours message text over dense sender /
     /// recipient metadata, which is still available in the ordinary 1× cards.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the large-text reader is one linear measured flow; keeping its action bar, thread header, and message cards in one pass preserves a single vertical cursor"
-    )]
     fn draw_large_text_reader(
         &mut self,
         scene: &mut Scene,
@@ -1526,8 +1529,41 @@ impl Pane {
         );
         y += 38.0;
 
-        for message in msgs {
-            if y >= rr.y1 - 30.0 {
+        Self::draw_large_text_messages(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            &msgs,
+            LargeTextFlow {
+                bounds: rr,
+                x,
+                width,
+                y,
+            },
+        );
+    }
+
+    fn draw_large_text_messages(
+        ctx: &mut DrawContext<'_>,
+        messages: &[&Message],
+        flow: LargeTextFlow,
+    ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
+        let colors = &theme.tokens.colors;
+        let LargeTextFlow {
+            bounds,
+            x,
+            width,
+            mut y,
+        } = flow;
+        for message in messages {
+            if y >= bounds.y1 - 30.0 {
                 break;
             }
             let sender = message.from.display();
@@ -1535,7 +1571,7 @@ impl Pane {
                 scene,
                 &sender,
                 14.0,
-                c.text_primary,
+                colors.text_primary,
                 t * Affine::translate((x, y)),
                 Some(width),
                 TextWeight::Semibold,
@@ -1546,7 +1582,7 @@ impl Pane {
                 scene,
                 &when,
                 11.5,
-                c.text_dim,
+                colors.text_dim,
                 t * Affine::translate((x, y)),
                 Some(width),
             );
@@ -1556,7 +1592,7 @@ impl Pane {
                 scene,
                 &message.body,
                 13.5,
-                c.text_primary,
+                colors.text_primary,
                 t * Affine::translate((x, y)),
                 Some(width),
             );
@@ -1564,8 +1600,8 @@ impl Pane {
             fill_rect(
                 scene,
                 t,
-                Rect::new(x, y - 12.0, rr.x1 - 24.0, y - 11.0),
-                c.border_standard,
+                Rect::new(x, y - 12.0, bounds.x1 - 24.0, y - 11.0),
+                colors.border_standard,
             );
         }
     }
