@@ -407,7 +407,12 @@ impl Chip {
         // 0.18 fill / full-strength border the selected widget state uses,
         // so a rail of these reads identically to a row of real Chips.
         if !style.bare {
-            let quiet = (colors.surface_white_5, colors.border_standard);
+            // Quiet chip: the raised tier with an edge derived from it (HIG
+            // §9.5) — a white veneer over a light card was invisible.
+            let quiet = (
+                colors.surfaces.raised,
+                crate::surface::edge_on(colors.surfaces.raised),
+            );
             let (bg, border) = if style.ghost {
                 quiet
             } else if let Some(c) = style.resolved {
@@ -666,18 +671,33 @@ impl Widget for Chip {
         let selected = self.selectable && self.selected;
 
         let pill = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.full));
-        let bg = if selected {
-            accent.with_alpha_factor(0.18)
+        // Quiet chip: the raised tier with an edge derived from it (HIG
+        // §9.5); selected keeps its accent tint and accent edge.
+        let radius = f64::from(theme.tokens.radii.full);
+        if selected {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                accent.with_alpha_factor(0.18),
+                None,
+                &pill,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                accent,
+                None,
+                &crate::surface::edge_outline(self.rect, radius),
+            );
         } else {
-            theme.tokens.colors.surface_white_5
-        };
-        let border = if selected {
-            accent
-        } else {
-            theme.border_standard
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &pill);
-        scene.stroke(&Stroke::new(1.0), transform, border, None, &pill);
+            crate::surface::card(
+                scene,
+                transform,
+                self.rect,
+                radius,
+                theme.tokens.colors.surfaces.raised,
+            );
+        }
 
         let mut x = self.rect.x0 + PAD_X;
         let cy = self.rect.center().y;
