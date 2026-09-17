@@ -1160,10 +1160,13 @@ pub fn group_resource(name: &str) -> Resource {
 /// search provider retain complete reachability.
 pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut root = book_resource(ctx);
-    for group in &ctx.groups {
+    // Defend the catalogue boundary here as well as in `ContactsApp`: other
+    // hosts can construct this context directly, and resource discovery must
+    // stay bounded regardless of which adapter supplied it.
+    for group in ctx.groups.iter().take(MAX_CONTEXT_GROUP_RESOURCES) {
         root = root.with_child(group_resource(&group));
     }
-    for contact in &ctx.contacts {
+    for contact in ctx.contacts.iter().take(MAX_CONTEXT_CONTACT_RESOURCES) {
         root = root.with_child(contact_resource(contact));
     }
 
@@ -1179,6 +1182,17 @@ pub fn resolve_resource(ctx: &ContactsResourceCtx, id: &str) -> Option<Resource>
         return Some(book_resource(ctx));
     }
     if let Some(raw_name) = id.strip_prefix("contacts.group:") {
+        if let Some(name) = ctx
+            .groups
+            .iter()
+            .find(|name| normalize_text(name) == raw_name)
+        {
+            return Some(group_resource(name));
+        }
+        // Standalone action tests and integration adapters can supply a
+        // complete transient context. The real `ResourceProvider` prepares
+        // the addressed group above, so it never takes this compatibility
+        // fallback over a large book.
         return ordered_groups(&ctx.contacts)
             .into_iter()
             .find(|name| normalize_text(name) == raw_name)
