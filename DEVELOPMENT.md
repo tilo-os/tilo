@@ -62,7 +62,7 @@ pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
-Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks and Image Editor have been built and run on Windows. Other apps
+Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Image Editor and Photos have been built and run on Windows. Other apps
 are still being ported; a
 workspace-wide build currently includes Linux services and is not a Windows
 application build command.
@@ -204,6 +204,21 @@ that the project survives a new process. Its offscreen scenarios support
 ```powershell
 cargo test --locked -p image-editor --all-targets
 ./tools/install-windows-apps.ps1 -Apps image-editor
+```
+
+Photos uses the native file picker and keeps imported image bytes in the shared
+filesystem blob store. On Windows the default is `%LOCALAPPDATA%/tilo/blobs`,
+with `USERPROFILE/AppData/Local` as the native fallback; `TILO_BLOB_STORE` and
+`XDG_CACHE_HOME` retain their explicit override behavior. The document stores
+content hashes and edits, so both its document and this store must survive a
+restart. Live startup and headless automation install the durable store before
+opening images; screenshot fixtures stay in memory. Completed thumbnail jobs
+wake the host so the library finishes loading without pointer or keyboard input.
+
+```powershell
+cargo test --locked -p photos --all-targets
+cargo test --locked -p qdoc --lib blobstore::
+./tools/install-windows-apps.ps1 -Apps photos
 ```
 
 Clocks saves private device state under `%LOCALAPPDATA%/tilo/clocks.json` on

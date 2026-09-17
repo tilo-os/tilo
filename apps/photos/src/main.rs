@@ -15,6 +15,7 @@
 // unwrap_used, expect_used, panic — because a panicking app is a bad app
 // whoever wrote it. `shell`, `ui` and everything under `crates/` keep the
 // full set: a fault there takes the session, or every app with it.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
@@ -57,7 +58,7 @@ extern crate runtime_dylib;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new("dev.tilo.photos", photos::app_root)
+        &LaunchSpec::new("dev.tilo.photos", live_root)
             .open_state_with_args(open_state)
             .shot_handler(render_shot)
             .allowed_options(&["--size"])
@@ -74,7 +75,24 @@ fn requested_path(args: &LaunchArgs) -> Option<&str> {
         .or_else(|| args.positionals().first().map(String::as_str))
 }
 
+fn configure_blob_store() {
+    static INITIALIZED: std::sync::Once = std::sync::Once::new();
+    INITIALIZED.call_once(|| {
+        qdoc::blobstore::set_store(std::sync::Arc::new(qdoc::blobstore::FsBlobStore::new(
+            qdoc::blobstore::FsBlobStore::default_root(),
+        )));
+    });
+}
+
+fn live_root() -> Box<dyn Widget> {
+    // Headless automation restores the same content as a live process.
+    // Screenshot fixtures keep the default in-memory store instead.
+    configure_blob_store();
+    photos::app_root()
+}
+
 fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+    configure_blob_store();
     let (mut state, autosave) = ui::persist::open(app_id);
     if let Some(path) = requested_path(args) {
         let mut opener = photos::PhotosApp::new();
