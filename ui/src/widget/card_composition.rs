@@ -6,7 +6,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{auto, fr, length, min_content, minmax, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -151,20 +151,14 @@ impl Widget for ContentCard {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let shape = RoundedRect::from_rect(self.parts.rect, theme.radius_standard);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // The card's rest edge derives from its own fill (HIG §9.5); the
+        // header, body and footer inside get space, never a second edge.
+        crate::surface::card(
+            scene,
             transform,
+            self.parts.rect,
+            theme.radius_standard,
             theme.bg_primary,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &shape,
         );
         self.parts.draw(scene, transform, text, theme, presence);
     }

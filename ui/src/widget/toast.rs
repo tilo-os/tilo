@@ -455,28 +455,34 @@ pub fn paint_card(
     elev.color = elev.color.with_alpha_factor(a);
     crate::surface::shadow(scene, transform, rect, radius, &elev);
 
-    // Raised surface + hairline border.
+    // Panel role (HIG §9.1): panel ground + the derived panel edge as a
+    // crisp 1 px inset stroke, both fading with the card. The declared
+    // `border_standard` on `raised` was invisible on the dark preset.
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.surfaces.raised.with_alpha(a),
+        crate::chrome::panel_ground(theme).with_alpha(a),
         None,
         &shape,
     );
     scene.stroke(
         &Stroke::new(1.0),
         transform,
-        theme.tokens.colors.border_standard.with_alpha(a),
+        crate::chrome::panel_border(theme).with_alpha_factor(a),
         None,
-        &shape,
+        &crate::surface::edge_outline(rect, radius),
     );
 
     // Left severity accent stripe — the at-a-glance state form (HIG §7).
+    // Inset a token step from the 1 px edge so the two never touch, and
+    // `s2` from the top and bottom like the card's own vertical padding.
+    let bar_x0 = rect.x0 + 1.0 + f64::from(theme.tokens.spacing.s1);
+    let bar_inset_y = f64::from(theme.tokens.spacing.s2);
     let bar = Rect::new(
-        rect.x0 + 1.5,
-        rect.y0 + 8.0,
-        rect.x0 + 1.5 + CARD_ACCENT_BAR_W,
-        rect.y1 - 8.0,
+        bar_x0,
+        rect.y0 + bar_inset_y,
+        bar_x0 + CARD_ACCENT_BAR_W,
+        rect.y1 - bar_inset_y,
     );
     scene.fill(
         Fill::NonZero,

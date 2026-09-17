@@ -197,7 +197,7 @@ fn surface(child: Element) -> Element {
         Container::new()
             .with_no_padding()
             .filling()
-            .with_fill(Theme::dark().bg_app)
+            .with_fill(shot_theme().bg_app)
             .with_child(Box::new(Scrollable::new_vertical().with_child(child))),
     )
 }
@@ -265,6 +265,16 @@ fn manual_in_automatic() -> Element {
         .with_description(DESCRIPTION),
     )
 }
+/// `QOS_SHOTS_THEME=<preset>` (`light`, `high-contrast`, any `Theme::named`)
+/// renders every capture on that preset; PNGs are composited on the theme's
+/// own `bg_app`.
+fn shot_theme() -> Theme {
+    std::env::var("QOS_SHOTS_THEME")
+        .ok()
+        .and_then(|name| Theme::named(&name))
+        .unwrap_or_else(Theme::dark)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = std::env::args_os()
         .nth(1)
@@ -286,16 +296,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 State::new(),
                 root,
                 viewport,
-                Theme::dark().with_text_scale(scale),
+                shot_theme().with_text_scale(scale),
             );
-            harness.render_png(&output.join(format!("{mode}-{name}.png")));
+            harness.render_window_png(&output.join(format!("{mode}-{name}.png")));
             std::fs::write(
                 output.join(format!("{mode}-{name}.json")),
                 serde_json::to_vec_pretty(&harness.inspection())?,
             )?;
             harness.click_at(5.0, 5.0);
             harness.scroll(0.0, -10000.0);
-            harness.render_png(&output.join(format!("{mode}-{name}-end.png")));
+            harness.render_window_png(&output.join(format!("{mode}-{name}-end.png")));
             std::fs::write(
                 output.join(format!("{mode}-{name}-end.json")),
                 serde_json::to_vec_pretty(&harness.inspection())?,
@@ -309,9 +319,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => manual_account(1.0),
         };
         let mut resized =
-            FrameHarness::new_with_theme(State::new(), root, (1080, 800), Theme::dark());
+            FrameHarness::new_with_theme(State::new(), root, (1080, 800), shot_theme());
         resized.resize((340, 800))?;
-        resized.render_png(&output.join(format!("{mode}-resized-narrow.png")));
+        resized.render_window_png(&output.join(format!("{mode}-resized-narrow.png")));
         std::fs::write(
             output.join(format!("{mode}-resized-narrow.json")),
             resized.inspection_json()?,
