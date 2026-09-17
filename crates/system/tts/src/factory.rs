@@ -27,6 +27,7 @@ pub fn default_speaker() -> Box<dyn Speaker> {
 /// diagnostics/tests.
 pub fn select_speaker() -> (Box<dyn Speaker>, &'static str) {
     // 1. speech-dispatcher.
+    #[cfg(not(target_arch = "wasm32"))]
     match crate::speechd::SpeechDispatcherSpeaker::new() {
         Ok(s) => {
             log::info!("qos-tts: using speech-dispatcher backend");
@@ -36,6 +37,7 @@ pub fn select_speaker() -> (Box<dyn Speaker>, &'static str) {
     }
 
     // 2. espeak-ng subprocess.
+    #[cfg(not(target_arch = "wasm32"))]
     match crate::espeak::EspeakSpeaker::new() {
         Ok(s) => {
             log::info!("qos-tts: using espeak-ng subprocess backend");

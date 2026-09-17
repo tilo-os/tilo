@@ -1,6 +1,6 @@
 use crate::permissions::UserId;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 
 mod geom;
 mod interaction;
@@ -21,7 +21,7 @@ pub use render::{
 };
 
 /// How long a "just typed" highlight lingers before fading out.
-pub const TYPING_FADE: std::time::Duration = std::time::Duration::from_millis(2500);
+pub const TYPING_FADE: crate::clock::Duration = crate::clock::Duration::from_millis(2500);
 
 /// Longest forward caret jump still read as "this peer just wrote that"
 /// (see the `Caret` arm of [`PresenceCtx::apply_remote_presence`]).
@@ -33,7 +33,7 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 /// How long after a remote text edit an advancing caret may still be read as
 /// that peer having written what it crossed — one network hop, no more, or a
 /// real edit would license markers for every caret that moves afterward.
-const EDIT_PULSE_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
+const EDIT_PULSE_WINDOW: crate::clock::Duration = crate::clock::Duration::from_millis(1500);
 
 /// Stable RGB colour for a collaborator. `me`/`alice`/`bob`/`charlie` are
 /// pinned; everything else hashes onto [`PEER_PALETTE`]. A pure function of
@@ -1948,7 +1948,7 @@ mod string_id_wrapper_tests {
 
     #[test]
     fn typing_mark_fades_linearly_and_prunes() {
-        use std::time::Duration;
+        use crate::clock::Duration;
         let mut ctx = PresenceCtx::empty();
         let bob = UserId("bob".into());
         let key = PresenceKey::Widget {

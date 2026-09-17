@@ -28,6 +28,7 @@ pub fn sound_backend() -> SoundBackend {
     }
 }
 
+#[cfg(unix)]
 fn command_exists(name: &str) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::env::var_os("PATH").is_some_and(|paths| {
@@ -80,14 +81,14 @@ fn play_one(backend: SoundBackend) {
     // A broken audio route must not strand the session worker or make final
     // compositor shutdown wait forever. Five seconds is far beyond a desktop
     // cue, while still bounding a wedged helper.
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(5))
-        .unwrap_or_else(std::time::Instant::now);
+    let deadline = web_time::Instant::now()
+        .checked_add(web_time::Duration::from_secs(5))
+        .unwrap_or_else(web_time::Instant::now);
     loop {
         match child.try_wait() {
             Ok(Some(_)) | Err(_) => break,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(25));
+            Ok(None) if web_time::Instant::now() < deadline => {
+                std::thread::sleep(web_time::Duration::from_millis(25));
             }
             Ok(None) => {
                 let _ = child.kill();
@@ -177,3 +178,6 @@ mod tests {
         assert!(!player.available());
     }
 }
+
+#[cfg(not(unix))]
+fn command_exists(_: &str) -> bool { false }

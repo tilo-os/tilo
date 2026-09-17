@@ -6,7 +6,7 @@
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 use taffy::{Dimension, Display, FlexDirection, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -3276,7 +3276,7 @@ mod tests {
 
     #[test]
     fn group_pruned_after_close_fade_completes() {
-        use std::time::Instant;
+        use crate::clock::Instant;
         use winit::event::WindowEvent;
 
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
@@ -3319,7 +3319,7 @@ mod tests {
     /// Mirror of the prune test above.
     #[test]
     fn group_retained_during_close_fade() {
-        use std::time::Instant;
+        use crate::clock::Instant;
         use winit::event::WindowEvent;
 
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
@@ -3357,7 +3357,7 @@ mod tests {
 
     #[test]
     fn drop_onto_closing_group_creates_new_group_instead() {
-        use std::time::Instant;
+        use crate::clock::Instant;
         use winit::event::WindowEvent;
 
         // Two multi-tab groups so neither gets pruned by the
@@ -3531,7 +3531,7 @@ mod tests {
     /// means the tab stays in source.
     #[test]
     fn cross_group_drop_into_closing_content_area_keeps_tab_in_source() {
-        use std::time::Instant;
+        use crate::clock::Instant;
         use winit::event::WindowEvent;
 
         // B (index 1) is fresh-latched closing so the prune sweep won't
@@ -3639,7 +3639,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn group_prune_keeps_node_ids_aligned_in_debug() {
-        use std::time::Instant;
+        use crate::clock::Instant;
         use winit::event::WindowEvent;
 
         // Non-adjacent prune indices (0, 2) verify the

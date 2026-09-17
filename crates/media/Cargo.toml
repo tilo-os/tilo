@@ -23,6 +23,7 @@ decode = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 encode = ["dep:gstreamer"]
 
 [dependencies]
+web-time = { version = "1", features = ["serde"] }
 # Transport CRDT. A tiny automerge document carries follow-the-host playback
 # state (playing / position / rate / epoch) between peers so a joiner follows
 # the host with drift correction. Same pin as `ui` so a single copy resolves.

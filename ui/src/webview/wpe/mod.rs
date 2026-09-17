@@ -112,7 +112,7 @@ impl WpeEngine {
             .spawn(move || engine_thread(thread_shared, rx, init_tx))
             .map_err(|e| e.to_string())?;
 
-        match init_rx.recv_timeout(std::time::Duration::from_secs(15)) {
+        match init_rx.recv_timeout(crate::clock::Duration::from_secs(15)) {
             Ok(Ok(())) => Ok(Arc::new(Self { tx, shared })),
             Ok(Err(e)) => Err(e),
             Err(_) => Err("WPE engine initialisation timed out".into()),
@@ -167,7 +167,7 @@ struct EngineState {
     /// across the mobile breakpoint doesn't flash blank on every step.
     ua_reload_pending: bool,
     /// To debounce that reload.
-    last_resize: Option<std::time::Instant>,
+    last_resize: Option<crate::clock::Instant>,
     /// Until the first Resize, the real viewport (and correct UA) is
     /// unknown, so the initial navigation is held in `pending_nav` to avoid
     /// loading at the wrong size and reloading — the startup flicker.
@@ -176,7 +176,7 @@ struct EngineState {
     /// viewport is known. Also fired by `nav_deadline` as a fallback so a
     /// window that never resizes still loads.
     pending_nav: Option<String>,
-    nav_deadline: Option<std::time::Instant>,
+    nav_deadline: Option<crate::clock::Instant>,
     /// `Some` only on the zero-copy path (`QOS_WEBVIEW_DMABUF=1`); `None`
     /// uses the SHM copy path.
     egl: Option<egl::EglExport>,
@@ -546,7 +546,7 @@ extern "C" fn on_export_shm_buffer(
                 && height > 0
                 && matches!(format, WL_SHM_FORMAT_ARGB8888 | WL_SHM_FORMAT_XRGB8888)
             {
-                let swizzle_start = std::time::Instant::now();
+                let swizzle_start = crate::clock::Instant::now();
                 let opaque = format == WL_SHM_FORMAT_XRGB8888;
                 let w = width as usize;
                 let n = w * height as usize * 4;
@@ -792,7 +792,7 @@ extern "C" fn on_drain_commands(data: *mut c_void) -> ffi::gboolean {
     // the page isn't stuck blank.
     if state.pending_nav.is_some() {
         if let Some(deadline) = state.nav_deadline {
-            if std::time::Instant::now() >= deadline {
+            if crate::clock::Instant::now() >= deadline {
                 state.first_resize_seen = true;
                 if let Some(uri) = state.pending_nav.take() {
                     state.nav_deadline = None;
@@ -807,7 +807,7 @@ extern "C" fn on_drain_commands(data: *mut c_void) -> ffi::gboolean {
     // reload on every step.
     if state.ua_reload_pending {
         if let Some(t) = state.last_resize {
-            if t.elapsed() > std::time::Duration::from_millis(350) {
+            if t.elapsed() > crate::clock::Duration::from_millis(350) {
                 state.ua_reload_pending = false;
                 unsafe { ffi::webkit_web_view_reload(state.view) };
             }
@@ -826,7 +826,7 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                 if !state.first_resize_seen {
                     state.pending_nav = Some(uri);
                     state.nav_deadline =
-                        Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
+                        Some(crate::clock::Instant::now() + crate::clock::Duration::from_millis(250));
                 } else {
                     load_uri(state, &uri);
                 }
@@ -873,7 +873,7 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                         state.ua_reload_pending = true;
                     }
                 }
-                state.last_resize = Some(std::time::Instant::now());
+                state.last_resize = Some(crate::clock::Instant::now());
 
                 // First viewport known: fire the held initial navigation
                 // now that the size and UA are correct — one clean load.

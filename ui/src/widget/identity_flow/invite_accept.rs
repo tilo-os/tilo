@@ -14,7 +14,7 @@
 //! IME or set through an accessibility action.
 
 use std::collections::HashMap;
-use std::time::SystemTime;
+use crate::clock::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use collab_types::{ChannelEvent, Ed25519PublicKey};
@@ -399,12 +399,9 @@ impl InviteAcceptScreen {
             "{} invited you to #{} as {:?}",
             env.inviter_label, env.channel_name, env.role
         );
-        let when = chrono::DateTime::<chrono::Utc>::from(
-            SystemTime::UNIX_EPOCH
-                .checked_add(std::time::Duration::from_secs(env.expires_unix))
-                .unwrap_or(SystemTime::UNIX_EPOCH),
-        )
-        .to_rfc3339();
+        let when = chrono::DateTime::<chrono::Utc>::from_timestamp(
+            i64::try_from(env.expires_unix).unwrap_or(i64::MAX), 0,
+        ).unwrap_or_default().to_rfc3339();
         Some((banner, format!("Expires {when}")))
     }
 
@@ -661,7 +658,7 @@ impl Widget for InviteAcceptScreen {
 mod tests {
     use super::*;
     use collab_types::{ChannelId, Role as ChannelRole, generate_keypair};
-    use std::time::Duration;
+    use crate::clock::Duration;
 
     fn fixture_url(now: SystemTime) -> String {
         use crate::widget::identity_flow::mint_invite;

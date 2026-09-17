@@ -9,6 +9,7 @@ license.workspace = true
 description = "CRDT-native canonical document model and format-provider API for qOS"
 
 [dependencies]
+web-time = { version = "1", features = ["serde"] }
 automerge.workspace = true
 blake3.workspace = true
 pulldown-cmark = { version = "0.12", default-features = false }

@@ -2485,7 +2485,7 @@ fn authorize_legacy_owner(owner: &crate::history_mode::HistoryOwner, authority: 
     owner.validate().map_err(|error| error.to_string())?;
     let (store, checkout) = owner.store_checkout();
     let (_, app, _) = store.history_namespace(&checkout.id).map_err(|error| error.to_string())?;
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_| "execution time unavailable")?.as_secs();
+    let now = crate::clock::SystemTime::now().duration_since(crate::clock::UNIX_EPOCH).map_err(|_| "execution time unavailable")?.as_secs();
     let current = authority.clone().at_unix_time(now);
     let mapped = current.actor().principals.contains(&author.principal()) || current.actor().principals.contains(&Principal::Person(crate::permissions::LOCAL_USER.into()));
     if !mapped || app.is_empty() || current.decide(&ResourceRef::App(app.clone()), Verb::Write) != CapDecision::Allow {

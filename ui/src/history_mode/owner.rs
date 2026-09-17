@@ -135,7 +135,7 @@ impl HistoryOwner {
         Ok(HistoryResource::new(
             storage.map_or_else(
                 || format!("memory:{lifetime}"),
-                |path| path.to_string_lossy().into_owned(),
+                |identity| identity,
             ),
             if room.is_empty() {
                 format!("lifetime:{lifetime}")

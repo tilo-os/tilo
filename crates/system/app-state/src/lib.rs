@@ -510,8 +510,7 @@ impl DocStore {
         room: &str,
         record: &str,
     ) -> Result<PathBuf, StoreError> {
-        validate_package_id(package)?;
-        validate_record_key(room)?;
+        validate_record_namespace(package, room)?;
         validate_record_key(record)?;
         validate_absolute_directory(profile_root)?;
         Ok(profile_root
@@ -601,45 +600,7 @@ impl DocStore {
     /// Rejects legacy mode, malformed/conflicting schemas and newer schemas.
     pub fn validate_canonical_schema(&self, doc: &AutoCommit) -> Result<(), StoreError> {
         self.canonical_state()?;
-        let invalid = |reason| StoreError::InvalidSchema {
-            path: self.document.clone(),
-            reason,
-        };
-        let mut versions = Vec::new();
-        for (value, _) in doc
-            .get_all(ROOT, SCHEMA_VERSION_KEY)
-            .map_err(|e| self.automerge_error(e))?
-        {
-            let raw = match value {
-                automerge::Value::Scalar(value) => match value.as_ref() {
-                    automerge::ScalarValue::Uint(v) => *v,
-                    automerge::ScalarValue::Int(v) => {
-                        u64::try_from(*v).map_err(|_| invalid("negative schema version"))?
-                    }
-                    _ => return Err(invalid("schema version must be an integer")),
-                },
-                automerge::Value::Object(_) => {
-                    return Err(invalid("schema version must be a scalar"));
-                }
-            };
-            versions.push(u32::try_from(raw).map_err(|_| invalid("schema version exceeds u32"))?);
-        }
-        if let Some(found) = versions
-            .iter()
-            .copied()
-            .max()
-            .filter(|v| *v > SCHEMA_VERSION)
-        {
-            return Err(StoreError::NewerSchema {
-                path: self.document.clone(),
-                found,
-                understood: SCHEMA_VERSION,
-            });
-        }
-        if versions.iter().any(|v| Some(v) != versions.first()) {
-            return Err(invalid("conflicting schema versions"));
-        }
-        Ok(())
+        validate_document_schema(doc, &self.document)
     }
 
     /// Decode an existing file, retaining any repair privately for identity validation.
@@ -2518,4 +2479,53 @@ mod tests {
             ),
         }
     }
+}
+
+/// Validate portable or filesystem document schema assignments without mutating bytes.
+pub fn validate_document_schema(doc: &AutoCommit, path: &Path) -> Result<(), StoreError> {
+        let invalid = |reason| StoreError::InvalidSchema {
+            path: path.to_path_buf(),
+            reason,
+        };
+        let mut versions = Vec::new();
+        for (value, _) in doc
+            .get_all(ROOT, SCHEMA_VERSION_KEY)
+            .map_err(|e| StoreError::Automerge { path: path.to_path_buf(), source: Box::new(e) })?
+        {
+            let raw = match value {
+                automerge::Value::Scalar(value) => match value.as_ref() {
+                    automerge::ScalarValue::Uint(v) => *v,
+                    automerge::ScalarValue::Int(v) => {
+                        u64::try_from(*v).map_err(|_| invalid("negative schema version"))?
+                    }
+                    _ => return Err(invalid("schema version must be an integer")),
+                },
+                automerge::Value::Object(_) => {
+                    return Err(invalid("schema version must be a scalar"));
+                }
+            };
+            versions.push(u32::try_from(raw).map_err(|_| invalid("schema version exceeds u32"))?);
+        }
+        if let Some(found) = versions
+            .iter()
+            .copied()
+            .max()
+            .filter(|v| *v > SCHEMA_VERSION)
+        {
+            return Err(StoreError::NewerSchema {
+                path: path.to_path_buf(),
+                found,
+                understood: SCHEMA_VERSION,
+            });
+        }
+        if versions.iter().any(|v| Some(v) != versions.first()) {
+            return Err(invalid("conflicting schema versions"));
+        }
+        Ok(())
+}
+
+/// Validate a canonical package/workspace identity independently of its storage adapter.
+pub fn validate_record_namespace(package: &str, workspace: &str) -> Result<(), StoreError> {
+    validate_package_id(package)?;
+    validate_record_key(workspace)
 }

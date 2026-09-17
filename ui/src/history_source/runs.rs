@@ -18,7 +18,7 @@
 //! thing two writers race to create — losing that race discards every
 //! record inside it.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::clock::{Duration, SystemTime, UNIX_EPOCH};
 
 use automerge::transaction::Transactable;
 use automerge::{

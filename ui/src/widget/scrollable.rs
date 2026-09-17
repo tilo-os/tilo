@@ -1,6 +1,6 @@
 use std::cell::Cell;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;

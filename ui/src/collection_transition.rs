@@ -4,7 +4,7 @@
 //! then animates surviving keys between geometries, fades arriving keys in,
 //! and retains the old payload for departing-row paint ghosts.
 
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 
 use crate::animation::Curve;
 

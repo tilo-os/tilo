@@ -15,7 +15,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::Instant;
+use crate::clock::Instant;
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -401,7 +401,7 @@ pub struct DataTable<Row> {
     on_header_click: Option<Box<dyn FnMut(usize)>>,
     /// For internal double-click detection (used only when `on_activate` is
     /// set and the table is long-lived).
-    last_click_row: Option<(usize, std::time::Instant)>,
+    last_click_row: Option<(usize, crate::clock::Instant)>,
     /// Active only in internal-virtualization mode (host called
     /// `set_viewport` and rows overflow it); dormant when wrapped in an
     /// outer [`crate::widget::Scrollable`], to avoid a double bar.
@@ -1573,7 +1573,7 @@ impl<Row> DataTable<Row> {
                 cb(ri, ctrl, shift);
             }
             // Internal double-click → activate (long-lived hosts).
-            let now = std::time::Instant::now();
+            let now = crate::clock::Instant::now();
             let is_double = matches!(
                 self.last_click_row,
                 Some((pri, t)) if pri == ri && now.duration_since(t) < crate::gesture::multi_click_interval()
@@ -1870,7 +1870,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         let elapsed = self
             .last_tick
             .replace(now)
-            .map_or(std::time::Duration::ZERO, |last| {
+            .map_or(crate::clock::Duration::ZERO, |last| {
                 now.saturating_duration_since(last)
             });
         let mut children_changed = false;
@@ -2507,7 +2507,7 @@ mod tests {
     use crate::widget::Button;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    use std::time::Duration;
+    use crate::clock::Duration;
 
     #[derive(Clone)]
     struct R {
@@ -3665,7 +3665,7 @@ mod tests {
         assert!(table.needs_animation_frame());
         table.last_tick = Some(
             Instant::now()
-                .checked_sub(std::time::Duration::from_millis(16))
+                .checked_sub(crate::clock::Duration::from_millis(16))
                 .expect("a 16 ms earlier instant is representable"),
         );
         assert!(Widget::update(

@@ -16,7 +16,7 @@
 //! the reader.
 
 use std::collections::{HashMap, HashSet};
-use std::time::SystemTime;
+use crate::clock::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -3554,7 +3554,7 @@ mod tests {
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::time::Duration;
+    use crate::clock::Duration;
     use winit::event::Modifiers;
 
     fn entry(op: OpClass, author: &str, ts: u64, id: u8) -> HistoryEntry {
@@ -4206,7 +4206,7 @@ mod group_tests {
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::time::Duration;
+    use crate::clock::Duration;
     use winit::event::Modifiers;
 
     const NOW: u64 = 2_000_000;

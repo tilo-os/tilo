@@ -16,13 +16,13 @@
 //! first [`TRACE_FRAMES`] frames and draws are logged individually — the
 //! fast path to diagnosing a visual glitch.
 //!
-//! All timing uses `std::time::Instant`; the whole module is a no-op
+//! All timing uses `crate::clock::Instant`; the whole module is a no-op
 //! (one relaxed atomic load) when disabled.
 
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 
 /// Frames between periodic stderr summaries.
 const SUMMARY_EVERY: u64 = 120;

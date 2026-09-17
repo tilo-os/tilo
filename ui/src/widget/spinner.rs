@@ -5,7 +5,7 @@
 //! the widget is cheap to keep alive. Opts into [`Widget::needs_animation_frame`]
 //! permanently so the host keeps redrawing while any spinner is visible.
 
-use std::time::Instant;
+use crate::clock::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -323,7 +323,7 @@ mod tests {
     /// the reduced-motion path, not a no-op).
     #[test]
     fn reduce_motion_freezes_the_orbit_at_phase_zero() {
-        use std::time::Duration;
+        use crate::clock::Duration;
         let half_period = Duration::from_secs_f64(ROTATION_PERIOD_MS / 1000.0 / 2.0);
         // `half_period` is ~750ms, so this can only underflow on a machine
         // whose monotonic clock started under a second ago; fall back to

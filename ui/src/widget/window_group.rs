@@ -9,7 +9,7 @@ use crate::widget::tabs::CLOSE_FADE_MS;
 use crate::widget::{TabBar, TabDescriptor, TileContent, TileHost, Widget};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;

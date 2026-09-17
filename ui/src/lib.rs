@@ -52,10 +52,12 @@ extern crate self as ui;
 #[path = "../tests/support/application.rs"]
 pub(crate) mod application_test_support;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod app;
 pub mod caps_lock;
 pub mod chrome;
 pub mod clipboard;
+pub mod clock;
 pub mod collaboration;
 pub mod collection_transition;
 pub mod color_compat;
@@ -84,6 +86,7 @@ pub mod history_source;
 pub mod i18n;
 pub mod icons;
 pub mod image_store;
+pub mod ime;
 pub mod input;
 pub mod interaction;
 pub mod launch;
@@ -92,11 +95,13 @@ pub mod math;
 pub mod mpris;
 pub mod nav_stack;
 pub mod num;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod offscreen;
 pub mod overlay;
 pub mod paragraph;
 pub mod permissions;
 pub mod persist;
+pub mod portable_storage;
 pub mod platform;
 pub mod portal;
 pub mod presence;
@@ -109,6 +114,7 @@ pub mod text_break;
 pub use text_break::{LineBreakKind, line_break_opportunities};
 pub mod reader_hud;
 pub mod record;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod render_thread;
 pub mod reorder;
 pub mod richtext;
@@ -132,6 +138,7 @@ pub mod uri;
 pub mod view;
 pub mod virtual_viewport;
 pub mod wake;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod warmup;
 pub mod webview;
 pub mod widget;
@@ -149,7 +156,9 @@ pub use vello;
 pub use vello::{kurbo, peniko};
 pub use winit;
 
-pub use app::{App, local_surface_id};
+#[cfg(not(target_arch = "wasm32"))]
+pub use app::App;
+pub use surface::local_surface_id;
 pub use caps_lock::CapsLockEstimate;
 pub use collection_transition::{
     KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, TransitionVisual,
@@ -320,9 +329,13 @@ pub use permissions::{
 
 pub mod application;
 pub mod application_view;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native_scenario;
 pub mod synthetic_input;
 
 pub mod bound_dispatch;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod presentation_feedback;
+
+mod focus_navigation;

@@ -550,7 +550,7 @@ mod tests {
             &id,
             "Ada",
             [1, 2, 3],
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::clock::SystemTime::UNIX_EPOCH,
         )
         .unwrap();
         let mut screen = RecoveryShareScreen::new();

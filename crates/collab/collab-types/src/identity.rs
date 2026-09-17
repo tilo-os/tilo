@@ -25,7 +25,7 @@
 //! making a security decision.
 
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
+use web_time::SystemTime;
 use uuid::Uuid;
 
 use crate::canonical::{CanonicalError, canonical_bytes};

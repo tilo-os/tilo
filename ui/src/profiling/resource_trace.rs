@@ -10,7 +10,7 @@
 //! clock and serialize nothing. Diagnostic I/O can perturb subsequent timing.
 
 use std::sync::OnceLock;
-use std::time::Instant;
+use crate::clock::Instant;
 
 use serde::Serialize;
 

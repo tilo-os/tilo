@@ -14,7 +14,7 @@
 //! event surface.
 
 use std::collections::HashMap;
-use std::time::SystemTime;
+use crate::clock::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use collab_types::{ChannelId, Ed25519PublicKey, Role as ChannelRole};
@@ -655,7 +655,7 @@ impl Widget for InviteMintScreen {
 mod tests {
     use super::*;
     use collab_types::generate_keypair;
-    use std::time::Duration;
+    use crate::clock::Duration;
 
     #[test]
     fn mint_now_produces_url_and_envelope() {

@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
 use std::ops::Range;
-use std::time::Instant;
+use crate::clock::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
@@ -1093,7 +1093,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         let elapsed = self
             .last_tick
             .replace(now)
-            .map_or(std::time::Duration::ZERO, |last| {
+            .map_or(crate::clock::Duration::ZERO, |last| {
                 now.saturating_duration_since(last)
             });
         let legacy_wakeup = self.model.poll_changed();
@@ -1658,7 +1658,7 @@ mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    use std::time::Duration;
+    use crate::clock::Duration;
 
     use taffy::AvailableSpace;
     use winit::dpi::PhysicalPosition;

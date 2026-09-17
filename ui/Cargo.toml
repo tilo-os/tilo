@@ -57,7 +57,6 @@ atomic-file = { path = "../crates/system/atomic-file" }
 # Shared appearance path used for startup theme resolution and live reload.
 settings-store = { path = "../crates/system/settings-store" }
 # XDG Desktop Portal client for `portal` (feature `portal`).
-ashpd = { workspace = true, optional = true }
 # Parses the portal's returned file URIs. Non-optional:
 # `portal::to_local_path` is the file-access rule — a URI naming a remote
 # host must not resolve to a local path — and must be testable in every
@@ -96,7 +95,6 @@ tracing.workspace = true
 # Standard app startup installs the workspace's logging subscriber once.
 tracing-subscriber.workspace = true
 zeroize.workspace = true
-rustls.workspace = true
 chacha20poly1305.workspace = true
 cosmic-text = { version = "0.19.0", default-features = false, features = ["fontconfig", "peniko", "swash", "std"] }
 # Keep this aligned with cosmic-text: text painting needs the font's complete
@@ -110,7 +108,7 @@ rustc-hash.workspace = true
 # handles passed through `create_texture_from_hal` are ABI-identical.
 ash = { version = "0.38", optional = true }
 taffy = { workspace = true, features = ["content_size"] }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 vello.workspace = true
 libc.workspace = true
 wgpu.workspace = true
@@ -153,7 +151,6 @@ chrono = { workspace = true, features = ["clock", "std"] }
 # `source` feature compiles the pure-C reference implementation so we don't
 # rely on a runtime-installed `libopenh264.so` — same pin as `shell`'s
 # screencast pipeline.
-openh264.workspace = true
 # Shared qOS media layer. The `VideoPlayer` widget owns a `media::MediaEngine`
 # and pulls frames from it; `media`'s default (no `decode`) build carries no
 # gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
@@ -163,19 +160,16 @@ media = { path = "../crates/media" }
 # feature). Pinned to 4.4 with `p2p` to match `apps/music` + `apps/chat`, so the
 # workspace resolves a single zbus 4.4 copy (the hermetic p2p round-trip test
 # also uses the `p2p` transport).
-zbus = { workspace = true, optional = true, features = ["p2p"], default-features = true }
 # System clipboard access for TextInput's Ctrl+C / Ctrl+V / Ctrl+X.
 # Wayland uses `wl_data_device`; X11 uses the selection protocol —
 # `arboard` wraps both. The "wayland-data-control" feature lets us
 # talk to the data-control compositor extension when available
 # (kanshi / GNOME / KDE), falling back to the seat-driven protocol
 # otherwise.
-arboard = { workspace = true, features = ["image-data"] }
 # The `Link` widget hands its URL to the OS's registered handler (xdg-open /
 # the desktop portal on Linux) when activated. Same crate + pin the file
 # explorer already uses to open files with the desktop default; already
 # resolved in the workspace lockfile, so this adds no registry fetch.
-open.workspace = true
 # Shared collaboration-types crate. Phase 1 widgets
 # (`widget::activity_timeline`, `widget::history_scrubber`,
 # `widget::conflict_picker`, `widget::channel_browser`) read `OpClass`
@@ -248,7 +242,6 @@ rand_core = { workspace = true, features = ["getrandom"] }
 # `ui/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
 # adapter wiring in `ui/src/app.rs`.
 accesskit = "0.25.0"
-accesskit_winit = "0.34.0"
 # Accessibility: the built-in screen reader (`ui::screen_reader`) speaks
 # focus / value / live-region narration through the offline qOS TTS engine.
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
@@ -343,3 +336,20 @@ path = "examples/manual_composition_shots.rs"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu-hal = { version = "29", default-features = false, features = ["metal", "qos-presentation-feedback"], optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ashpd = { workspace = true, optional = true }
+zbus = { workspace = true, optional = true, features = ["p2p"], default-features = true }
+open.workspace = true
+rustls.workspace = true
+arboard = { workspace = true, features = ["image-data"] }
+openh264.workspace = true
+accesskit_winit = "0.34.0"
+tokio = { workspace = true, features = ["full"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["js"] }
+uuid = { workspace = true, features = ["js"] }
+web-time = "1"
+getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }

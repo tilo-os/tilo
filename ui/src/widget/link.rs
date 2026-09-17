@@ -22,6 +22,9 @@ use crate::widget::Widget;
 
 /// Best-effort — a launch failure is logged, not surfaced.
 fn os_open(url: &str) {
+    #[cfg(target_arch = "wasm32")]
+    tracing::warn!(%url, "opening links unavailable without a host Link::on_open handler");
+    #[cfg(not(target_arch = "wasm32"))]
     if let Err(e) = open::that(url) {
         tracing::warn!("Link: failed to open {url:?}: {e}");
     }

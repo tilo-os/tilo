@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use crate::clock::{Duration, SystemTime};
 
 use crate::widget::TaffyTreeExt;
 use automerge::{AutoCommit, ObjId};
@@ -137,7 +137,7 @@ impl IdentityRecord {
         created_at: SystemTime,
     ) -> Result<Self, IdentityFlowError> {
         let serialisable = SerializableIdentity::from_identity(identity)?;
-        let ts = chrono::DateTime::<chrono::Utc>::from(created_at).to_rfc3339();
+        let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(i64::try_from(created_at.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs())).unwrap_or(i64::MAX), 0).unwrap_or_default().to_rfc3339();
         Ok(Self {
             display_name: display_name.into(),
             avatar_color,
@@ -660,6 +660,7 @@ impl PairingHandshake {
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn remote_call(
         endpoint: &str,
         certificate: &[u8],
@@ -705,6 +706,12 @@ impl PairingHandshake {
         postcard::from_bytes(&response).ok()
     }
 
+    /// Native TLS sockets are unavailable in a browser; a host transport must be injected.
+    #[cfg(target_arch = "wasm32")]
+    pub fn remote_call(_: &str, _: &[u8], _: &PairingBrokerRequest) -> Option<PairingBrokerResponse> {
+        None
+    }
+
     /// Open a restart-safe broker spool owned by the shell/runtime. `root`
     /// must already be a private directory; this constructor creates it as
     /// `0700` when absent and rejects symlinks or permissive directories.
@@ -717,6 +724,11 @@ impl PairingHandshake {
         root: impl Into<PathBuf>,
         expires_at: SystemTime,
     ) -> Result<Self, IdentityFlowError> {
+        #[cfg(not(unix))]
+        { Err(IdentityFlowError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, "native identity storage is unavailable on this platform"))) }
+        #[cfg(unix)]
+        {
+
         use std::os::unix::fs::PermissionsExt;
         let root = root.into();
         std::fs::create_dir_all(&root)?;
@@ -759,6 +771,7 @@ impl PairingHandshake {
                 expires_unix,
             })),
         })
+        }
     }
 
     fn durable_path(backend: &DurablePairingBackend, nonce: &[u8; 16]) -> PathBuf {
@@ -789,6 +802,11 @@ impl PairingHandshake {
         nonce: &[u8; 16],
         update: impl FnOnce(&mut PairingChannelState),
     ) -> bool {
+        #[cfg(not(unix))]
+        { false }
+        #[cfg(unix)]
+        {
+
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let now = SystemTime::now()
@@ -854,6 +872,7 @@ impl PairingHandshake {
         let _ = std::fs::remove_file(&tmp);
         let _ = std::fs::remove_file(&lock);
         written
+        }
     }
 
     /// Permanently cancel this durable ceremony. Memory test channels simply
@@ -865,6 +884,8 @@ impl PairingHandshake {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clear(),
             PairingBackend::Durable(backend) => {
+                #[cfg(unix)]
+                {
                 use std::os::unix::fs::OpenOptionsExt;
                 if let Ok(file) = std::fs::OpenOptions::new()
                     .write(true)
@@ -878,6 +899,7 @@ impl PairingHandshake {
                         .read(true)
                         .open(&backend.root)
                         .and_then(|directory| directory.sync_all());
+                }
                 }
             }
             PairingBackend::Remote { .. } => {}
@@ -1166,12 +1188,14 @@ impl PairingHandshake {
 /// certificate as a root would also trust a child certificate it signs; exact
 /// comparison keeps the pin's meaning narrow while the provider still checks
 /// the handshake signature against the pinned certificate's public key.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 struct ExactCertificateVerifier {
     expected: Arc<[u8]>,
     provider: Arc<rustls::crypto::CryptoProvider>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl rustls::client::danger::ServerCertVerifier for ExactCertificateVerifier {
     fn verify_server_cert(
         &self,
@@ -1473,6 +1497,11 @@ impl InviteRedemptionAuthority {
     /// Returns an error if the root cannot be created as a private,
     /// user-owned real directory.
     pub fn at(root: impl Into<PathBuf>) -> Result<Self, IdentityFlowError> {
+        #[cfg(not(unix))]
+        { Err(IdentityFlowError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, "native identity storage is unavailable on this platform"))) }
+        #[cfg(unix)]
+        {
+
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let root = root.into();
         std::fs::create_dir_all(&root)?;
@@ -1485,6 +1514,7 @@ impl InviteRedemptionAuthority {
         }
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
         Ok(Self { root })
+        }
     }
 
     fn path(&self, capability: &[u8; 32]) -> PathBuf {
@@ -1492,6 +1522,11 @@ impl InviteRedemptionAuthority {
     }
 
     fn issue_lock(&self) -> Result<std::fs::File, IdentityFlowError> {
+        #[cfg(not(unix))]
+        { Err(IdentityFlowError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, "native identity storage is unavailable on this platform"))) }
+        #[cfg(unix)]
+        {
+
         use std::os::unix::fs::OpenOptionsExt;
         let file = std::fs::OpenOptions::new()
             .read(true)
@@ -1513,9 +1548,15 @@ impl InviteRedemptionAuthority {
             std::io::ErrorKind::WouldBlock,
             "invite authority is busy",
         )))
+        }
     }
 
     fn master_key(&self) -> Result<zeroize::Zeroizing<[u8; 32]>, IdentityFlowError> {
+        #[cfg(not(unix))]
+        { Err(IdentityFlowError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, "native identity storage is unavailable on this platform"))) }
+        #[cfg(unix)]
+        {
+
         use std::io::{Read, Write};
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
         let path = self.root.join("authority-key");
@@ -1584,6 +1625,7 @@ impl InviteRedemptionAuthority {
             IdentityFlowError::DecodeFailed("invite authority key is corrupt".into())
         })?;
         Ok(zeroize::Zeroizing::new(key))
+        }
     }
 
     /// Encrypt and durably publish one bounded bearer-capability record.
@@ -1598,6 +1640,11 @@ impl InviteRedemptionAuthority {
         secret: [u8; 32],
         expires_unix: u64,
     ) -> Result<(), IdentityFlowError> {
+        #[cfg(not(unix))]
+        { Err(IdentityFlowError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, "native identity storage is unavailable on this platform"))) }
+        #[cfg(unix)]
+        {
+
         use chacha20poly1305::aead::{Aead, KeyInit, Payload};
         use std::io::{Read, Write};
         use std::os::unix::fs::OpenOptionsExt;
@@ -1686,6 +1733,7 @@ impl InviteRedemptionAuthority {
             .open(&self.root)?
             .sync_all()?;
         Ok(())
+        }
     }
 
     /// Atomically and durably consume a capability before releasing its secret.
@@ -1699,6 +1747,11 @@ impl InviteRedemptionAuthority {
         capability: &[u8],
         now_unix: u64,
     ) -> Result<zeroize::Zeroizing<Vec<u8>>, IdentityFlowError> {
+        #[cfg(not(unix))]
+        { Err(IdentityFlowError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, "native identity storage is unavailable on this platform"))) }
+        #[cfg(unix)]
+        {
+
         use chacha20poly1305::aead::{Aead, KeyInit, Payload};
         use std::io::Read;
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -1785,6 +1838,7 @@ impl InviteRedemptionAuthority {
                 IdentityFlowError::DecodeFailed("redemption record authentication failed".into())
             })?;
         Ok(zeroize::Zeroizing::new(plaintext))
+        }
     }
 }
 

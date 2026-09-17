@@ -26,7 +26,7 @@ capnpc.workspace = true
 runtime-portal = { path = "../runtime-portal" }
 capnp.workspace = true
 capnp-rpc.workspace = true
-tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync"] }
+tokio = { workspace = true, features = ["rt", "io-util", "macros", "sync"] }
 tokio-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -41,3 +41,6 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["net"] }

@@ -20,6 +20,7 @@ path = "src/lib.rs"
 # `2026-06-29-spaces-channels-and-cryptographic-roles.md` spec.
 
 [dependencies]
+web-time = { version = "1", features = ["serde"] }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 rand.workspace = true
 serde.workspace = true

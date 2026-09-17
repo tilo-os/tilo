@@ -75,7 +75,7 @@ pub enum Action {
     /// and asynchronous model delegates without timing sleeps.
     WaitForNamed {
         target: String,
-        timeout: std::time::Duration,
+        timeout: crate::clock::Duration,
     },
     /// Require semantic output or state at this exact point in a scenario.
     Expect(SemanticExpectation),
@@ -141,7 +141,7 @@ fn semantic_action_name(action: &crate::a11y::Action) -> &'static str {
 pub struct SemanticExpectation {
     pub target: String,
     pub semantic_target: Option<String>,
-    pub timeout: Option<std::time::Duration>,
+    pub timeout: Option<crate::clock::Duration>,
     pub role: Option<String>,
     pub name: Option<String>,
     pub name_contains: Option<String>,
@@ -176,7 +176,7 @@ impl SemanticExpectation {
     /// Drive live-equivalent frames until this assertion matches or the
     /// explicit bound expires. Without this, assertions are immediate.
     #[must_use]
-    pub fn within(mut self, timeout: std::time::Duration) -> Self {
+    pub fn within(mut self, timeout: crate::clock::Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
@@ -404,6 +404,17 @@ use crate::history_mode::frame::FrameworkInputFrame;
 /// they cannot drift into subtly different sync/layout/draw implementations.
 /// Live [`crate::App`] additionally owns the window and event loop, but follows
 /// the same pass ordering documented by [`Self::relayout`].
+/// Borrowed renderer input plus semantic output from the same real widget frame.
+pub struct FrameOutput<'a> {
+    pub scene: &'a Scene,
+    pub background: vello::peniko::Color,
+    pub logical_size: (u32, u32),
+    pub device_size: (u32, u32),
+    pub semantics: InspectionSnapshot,
+    pub needs_redraw: bool,
+    pub ime: Option<crate::ime::ImeWindowState>,
+}
+
 pub struct FrameHarness {
     component_wake: Option<ComponentRunnerWakeState>,
     state: State,
@@ -468,9 +479,21 @@ impl FrameHarness {
     /// # Errors
     /// Refuses exhausted mount generations or remounts, retaining original recovery.
     pub fn from_component(
+        component: crate::application::AppComponent,
+        viewport: (u32, u32),
+        inputs: crate::application::ComponentRunnerInputs,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_with_wake_notifier(component, viewport, inputs, || {})
+    }
+
+    /// Mount with a lightweight scheduling signal. The callback captures a host
+    /// task identifier/proxy, never a GPU, widget tree, or owning host reference.
+    /// Browser hosts can dispatch that identifier to their local animation-frame queue.
+    pub fn from_component_with_wake_notifier(
         mut component: crate::application::AppComponent,
         viewport: (u32, u32),
         inputs: crate::application::ComponentRunnerInputs,
+        notify: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, crate::launch::LaunchError> {
         static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let Ok(generation) = NEXT_GENERATION.fetch_update(
@@ -491,7 +514,7 @@ impl FrameHarness {
             dirty: std::cell::Cell::new(false),
         };
         if let Err(error) = component.mount(move |event| {
-            let _ = sender.send((generation, event));
+            if sender.send((generation, event)).is_ok() { notify(); }
         }) {
             return Err(component.setup_error(error));
         }
@@ -817,6 +840,16 @@ impl FrameHarness {
 
     /// Register replayable document action decoders for a driven app.
     /// Mirrors [`crate::App::action_registry_mut`].
+    /// Install an authenticated peer's action transport before dispatching actions.
+    /// Existing authority/owner/admission checks still run in the bound dispatcher.
+    pub fn set_action_transport(&mut self, transport: Box<dyn qos_actions::ActionTransport>) -> Result<(), String> {
+        if !self.bound_invocations.is_empty() || !self.pending_control_invocations.is_empty() {
+            return Err("cannot replace transport while actions are pending".into());
+        }
+        self.action_transport = transport;
+        Ok(())
+    }
+
     pub fn action_registry_mut(&mut self) -> &mut qos_actions::ActionRegistry {
         self.pump_component_wakes();
         &mut self.action_registry
@@ -1023,20 +1056,46 @@ impl FrameHarness {
         self.platform
     }
 
+    /// Inspect a completed frame without creating a GPU, worker, or window.
+    pub fn frame_output(&self) -> FrameOutput<'_> {
+        self.drain_component_wakes();
+        FrameOutput {
+            scene: &self.scene, background: self.theme.bg_app,
+            logical_size: self.viewport,
+            device_size: ((f64::from(self.viewport.0) * self.input_scale).ceil() as u32,
+                          (f64::from(self.viewport.1) * self.input_scale).ceil() as u32),
+            semantics: self.inspection(),
+            ime: self.focused.and_then(|id| self.inspect_node(id, crate::ime::ImeWindowState::from_widget).ok().flatten()),
+            needs_redraw: self.root.needs_redraw() || !self.bound_invocations.is_empty() || !self.pending_control_invocations.is_empty() || self.component_wake.as_ref().is_some_and(|wake| wake.dirty.get()),
+        }
+    }
+
+    /// Pump component wakes and animate using the production update/layout/draw passes.
+    /// Returns whether a new scene was produced. The host schedules this on its frame clock.
+    pub fn poll_frame(&mut self) -> Result<bool, crate::widget::WidgetLayoutError> {
+        if !self.frame_output().needs_redraw { return Ok(false); }
+        self.host_tick();
+        self.try_relayout()?;
+        Ok(true)
+    }
+
     /// Rasterise the most recently laid-out frame to a PNG.
     ///
     /// `new`, input delivery, and `set_theme` all finish with `relayout`, so
     /// this never runs a separate screenshot-only widget pipeline.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_png(&self, out: &std::path::Path) {
         self.render_png_on(out, vello::peniko::Color::TRANSPARENT);
     }
 
     /// Capture the composited native-window appearance, including its theme
     /// background. Use this for rendered contrast measurements.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_window_png(&self, out: &std::path::Path) {
         self.render_png_on(out, self.theme.bg_app);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn render_png_on(&self, out: &std::path::Path, background: vello::peniko::Color) {
         self.drain_component_wakes();
         if let Some(parent) = out.parent() {
@@ -1158,7 +1217,7 @@ impl FrameHarness {
         // Match the live redraw path: asynchronous models drain their change
         // queues here before sync mounts or refreshes visible delegates.
         self.root.update(&mut self.state.doc, &self.state.root);
-        let t_sync = self.profiler.as_ref().map(|_| std::time::Instant::now());
+        let t_sync = self.profiler.as_ref().map(|_| crate::clock::Instant::now());
         self.root.sync(&mut self.state.doc, &self.state.root);
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, t_sync);
@@ -1176,7 +1235,7 @@ impl FrameHarness {
         let view = self.root.view_state();
         let mut first = true;
         settle_widget_composition(viewport_changed, |rebuild| {
-            let t_build = self.profiler.as_ref().map(|_| std::time::Instant::now());
+            let t_build = self.profiler.as_ref().map(|_| crate::clock::Instant::now());
             // Preserve the existing action-driven relayout contract; additional
             // refreshes occur only for viewport or explicit structure changes.
             if first || rebuild {
@@ -1247,7 +1306,7 @@ impl FrameHarness {
             if let Some(profiler) = self.profiler.as_mut() {
                 profiler.record_since(crate::profiling::Pass::BuildLayout, t_build);
             }
-            let t_apply = self.profiler.as_ref().map(|_| std::time::Instant::now());
+            let t_apply = self.profiler.as_ref().map(|_| crate::clock::Instant::now());
             if let Some(history) = &mut self.history {
                 history.apply_composition(self.root.as_mut(), &self.taffy, self.child_node, Point::ORIGIN);
             } else {
@@ -1285,7 +1344,7 @@ impl FrameHarness {
         // enabled state the user would see.
         self.publish_undo_status();
 
-        let t_draw = self.profiler.as_ref().map(|_| std::time::Instant::now());
+        let t_draw = self.profiler.as_ref().map(|_| crate::clock::Instant::now());
         self.scene.reset();
         if let Some(history) = &mut self.history {
             history.draw(&mut self.scene, Affine::IDENTITY, &mut self.text, &self.theme, &self.presence);
@@ -1336,25 +1395,30 @@ impl FrameHarness {
     /// millisecond-scale tests.
     pub fn wait_until(
         &mut self,
-        timeout: std::time::Duration,
+        timeout: crate::clock::Duration,
         mut condition: impl FnMut(&Self) -> bool,
     ) -> bool {
         self.pump_component_wakes();
         if condition(self) {
             return true;
         }
-        let Some(deadline) = std::time::Instant::now().checked_add(timeout) else {
+        #[cfg(target_arch = "wasm32")]
+        { let _ = timeout; tracing::warn!("blocking frame wait unavailable in browser; schedule poll_frame asynchronously"); false }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+        let Some(deadline) = crate::clock::Instant::now().checked_add(timeout) else {
             return false;
         };
-        while std::time::Instant::now() < deadline {
+        while crate::clock::Instant::now() < deadline {
             self.poll_control_invocations();
             self.relayout();
             if condition(self) {
                 return true;
             }
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(crate::clock::Duration::from_millis(1));
         }
         false
+        }
     }
 
     /// Wait until a retained widget with `name` is present in the live layout.
@@ -1365,7 +1429,7 @@ impl FrameHarness {
     pub fn wait_for_named(
         &mut self,
         name: &str,
-        timeout: std::time::Duration,
+        timeout: crate::clock::Duration,
     ) -> Result<(), String> {
         self.pump_component_wakes();
         if self.wait_until(timeout, |driver| driver.targets().contains_key(name)) {
@@ -2148,8 +2212,57 @@ impl FrameHarness {
         &mut self.state
     }
 
+    /// Deliver platform input including host keyboard policy. Browser/native adapters
+    /// forward real events here; synthetic helpers use the same path.
+    pub fn send_host_event(&mut self, event: &WindowEvent) {
+        if let WindowEvent::ModifiersChanged(modifiers) = event {
+            self.modifiers = *modifiers;
+        }
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == ElementState::Pressed {
+            if key.logical_key == Key::Named(winit::keyboard::NamedKey::Tab)
+                && !self.focused_widget_wants_tab_input() {
+                self.tab(self.modifiers.state().shift_key());
+                self.relayout();
+                return;
+            }
+            if self.modifiers.state().alt_key()
+                && let Key::Named(named) = key.logical_key
+                && let Some(direction) = crate::focus_navigation::Direction::from_key(named) {
+                let order = self.focus_order();
+                let next = match self.focused {
+                    Some(current) => self.inspect_node(current, |widget| widget.get_rect()).ok().and_then(|rect| {
+                        crate::focus_navigation::next((current, rect), order.iter().filter_map(|&id| self.inspect_node(id, |widget| widget.get_rect()).ok().map(|rect| (id, rect))), direction)
+                    }),
+                    None => order.first().copied(),
+                };
+                if let Some(next) = next { self.set_focused(Some(next)); self.relayout(); }
+                return;
+            }
+            if let Key::Character(character) = &key.logical_key {
+                let mods = self.modifiers.state();
+                if let Some(request) = crate::undo::shortcut(character,
+                    self.platform.command_modifier_down(mods), mods.shift_key()) {
+                    let framework = self.framework_input.get()
+                        || crate::history_mode::embedded::keyboard_captured(self.root.as_ref(), self.focused, &self.taffy)
+                        || self.history.as_ref().is_some_and(|history| history.captures_input()
+                            || self.focused.is_some_and(|node| history.owns_node(node, &self.taffy)));
+                    if framework { return; }
+                    if self.root.handle_local_undo_request(request) { self.relayout(); }
+                    else { match request {
+                        crate::undo::UndoRequest::Undo => { self.perform_undo(); },
+                        crate::undo::UndoRequest::Redo => { self.perform_redo(); },
+                    } }
+                    return;
+                }
+            }
+        }
+        self.send(event);
+    }
+
     /// Deliver one event through the production dispatch path.
     pub fn send(&mut self, event: &WindowEvent) {
+        if let WindowEvent::ModifiersChanged(modifiers) = event { self.modifiers = *modifiers; }
         // This guard includes modality-driven relayout before dispatch, and
         // remains set through the frame that closes History.
         let embedded = crate::history_mode::embedded::observe_event(self.root.as_mut(), event, self.input_scale, self.focused, &self.taffy);
@@ -2217,7 +2330,7 @@ impl FrameHarness {
         }
         let mut handled = false;
         let mut focus_target: Option<NodeId> = None;
-        let t_event = self.profiler.as_ref().map(|_| std::time::Instant::now());
+        let t_event = self.profiler.as_ref().map(|_| crate::clock::Instant::now());
         if let Some(history) = &mut self.history {
             history.route_event(self.root.as_mut(), event, self.input_scale, &self.modifiers,
                 &mut self.state.doc, &self.state.root, &mut handled, &mut focus_target, &self.taffy);
@@ -2655,29 +2768,9 @@ impl FrameHarness {
             || self.focused.is_some_and(|node| history.owns_node(node, &self.taffy)));
         let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
         self.pump_component_wakes();
-        if spec == "Tab" && !self.focused_widget_wants_tab_input() {
-            self.tab(self.modifiers.state().shift_key());
-            return;
-        }
-        // History bindings are the host's, not the focused widget's — resolved
-        // through `undo::shortcut`, the one table the live host reads.
-        let mods = self.modifiers.state();
-        if framework
-            && crate::undo::shortcut(spec, mods.control_key(), mods.shift_key()).is_some() { return; }
-        if let Some(req) = crate::undo::shortcut(spec, mods.control_key(), mods.shift_key()) {
-            if self.root.handle_local_undo_request(req) {
-                self.relayout();
-            } else {
-                match req {
-                    crate::undo::UndoRequest::Undo => self.perform_undo(),
-                    crate::undo::UndoRequest::Redo => self.perform_redo(),
-                };
-            }
-            return;
-        }
         let key = parse_key(spec);
         for state in [ElementState::Pressed, ElementState::Released] {
-            self.send(&key_event(&key, state));
+            self.send_host_event(&key_event(&key, state));
         }
     }
 
@@ -3429,12 +3522,12 @@ fn action_from_wire(action: qos_headless_schema::Action) -> Action {
         Wire::Modifiers(modifiers) => Action::Modifiers(modifiers),
         Wire::WaitForNamed { target, timeout_ms } => Action::WaitForNamed {
             target,
-            timeout: std::time::Duration::from_millis(timeout_ms),
+            timeout: crate::clock::Duration::from_millis(timeout_ms),
         },
         Wire::Expect(expected) => Action::Expect(SemanticExpectation {
             target: expected.target,
             semantic_target: expected.semantic_target,
-            timeout: expected.timeout_ms.map(std::time::Duration::from_millis),
+            timeout: expected.timeout_ms.map(crate::clock::Duration::from_millis),
             role: expected.role,
             name: expected.name,
             name_contains: expected.name_contains,
@@ -3685,6 +3778,68 @@ fn write_headless_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn portable_host_events_preserve_modifiers_tab_and_command_undo() {
+        let input = crate::widget::TextInput::local().with_id("name").with_initial_value("hello");
+        let mut frame = FrameHarness::new_with_controlled_inputs(State::new(),
+            Box::new(crate::widget::Column::new().push(Box::new(input)).push(Box::new(crate::widget::Button::new("done", "Done", None)))),
+            (320, 180), Theme::dark(), crate::font_catalog::fixture_renderer(), crate::permissions::UserId("fixture".into()));
+        frame.set_platform_conventions(crate::platform::PlatformConventions::new(crate::platform::Platform::MacOs));
+        frame.perform_named("name", &crate::a11y::Action::Focus).unwrap();
+        frame.send_host_event(&WindowEvent::ModifiersChanged(winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER)));
+        frame.send_host_event(&key_event(&Key::Character("a".into()), ElementState::Pressed));
+        frame.send_host_event(&WindowEvent::ModifiersChanged(winit::event::Modifiers::default()));
+        frame.send_host_event(&key_event(&Key::Character("x".into()), ElementState::Pressed));
+        assert_eq!(frame.access_node_named("name", None).unwrap().value.as_deref(), Some("x"));
+        frame.send_host_event(&WindowEvent::ModifiersChanged(winit::event::Modifiers::default()));
+        frame.send_host_event(&key_event(&Key::Named(winit::keyboard::NamedKey::Tab), ElementState::Pressed));
+        assert!(frame.access_node_named("done", None).unwrap().state.focused);
+        frame.send_host_event(&WindowEvent::ModifiersChanged(winit::event::Modifiers::from(winit::keyboard::ModifiersState::ALT)));
+        frame.send_host_event(&key_event(&Key::Named(winit::keyboard::NamedKey::ArrowUp), ElementState::Pressed));
+        assert!(frame.access_node_named("name", None).unwrap().state.focused);
+        let mut document = super::dispatched_action_driver_tests::action_driver();
+        document.set_platform_conventions(crate::platform::PlatformConventions::new(crate::platform::Platform::MacOs));
+        document.send_host_event(&key_event(&Key::Character("a".into()), ElementState::Pressed));
+        assert_eq!(super::dispatched_action_driver_tests::body(&mut document), "a");
+        document.send_host_event(&WindowEvent::ModifiersChanged(winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER)));
+        document.send_host_event(&key_event(&Key::Character("z".into()), ElementState::Pressed));
+        assert_eq!(super::dispatched_action_driver_tests::body(&mut document), "");
+    }
+
+    #[test]
+    fn portable_frame_exposes_focused_text_input_ime_and_hides_it_on_button_focus() {
+        let input = crate::widget::TextInput::local().with_id("name").with_initial_value("hello");
+        let mut frame = FrameHarness::new_with_controlled_inputs(State::new(), Box::new(crate::widget::Column::new().push(Box::new(input)).push(Box::new(crate::widget::Button::new("done", "Done", None)))),
+            (320, 180), Theme::dark(), crate::font_catalog::fixture_renderer(), crate::permissions::UserId("fixture".into()));
+        frame.perform_named("name", &crate::a11y::Action::Focus).unwrap();
+        let ime = frame.frame_output().ime.unwrap();
+        assert!(ime.width > 0 && ime.height > 0);
+        frame.send(&WindowEvent::Ime(winit::event::Ime::Commit("é".into())));
+        assert!(frame.access_node_named("name", None).unwrap().value.unwrap().contains('é'));
+        frame.perform_named("done", &crate::a11y::Action::Focus).unwrap();
+        assert!(frame.frame_output().ime.is_none());
+    }
+
+    #[test]
+    fn portable_frame_exports_real_scene_size_and_input_result() {
+        use automerge::ReadDoc;
+        let mut frame = FrameHarness::new_with_controlled_inputs(
+            State::new(), Box::new(crate::widget::Checkbox::new("remember", "remember").with_id("remember")),
+            (320, 180), Theme::dark(), crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()),
+        );
+        frame.set_input_scale(2.0).unwrap();
+        let output = frame.frame_output();
+        assert_eq!(output.logical_size, (320, 180));
+        assert_eq!(output.device_size, (640, 360));
+        assert!(!output.scene.encoding().draw_tags.is_empty());
+        frame.tap_named("remember").unwrap();
+        assert_eq!(frame.state_mut().doc.get(automerge::ROOT, "remember").unwrap().unwrap().0.to_bool(), Some(true));
+        frame.resize((480, 240)).unwrap();
+        assert_eq!(frame.frame_output().logical_size, (480, 240));
+        assert!(frame.frame_output().semantics.root.semantics.is_some());
+    }
+
     #[test]
     fn anonymous_headless_focus_survives_rebuild_without_state_transfer() {
         let mut driver = Driver::new_with_controlled_inputs(State::new(), Box::new(crate::widget::layout::AnonymousFocusProbe::new("own selection")), (600, 400), Theme::dark(), crate::font_catalog::fixture_renderer(), crate::permissions::UserId("anonymous-test".into()));
@@ -4049,13 +4204,13 @@ mod tests {
         assert!(matches!(
             &spec.actions[8],
             Action::WaitForNamed { target, timeout }
-                if target == "result" && *timeout == std::time::Duration::from_millis(750)
+                if target == "result" && *timeout == crate::clock::Duration::from_millis(750)
         ));
         assert!(matches!(
             &spec.actions[9],
             Action::Expect(SemanticExpectation { target, role: Some(role), busy: Some(false), timeout: Some(timeout), .. })
                 if target == "result" && role == "static_text"
-                    && *timeout == std::time::Duration::from_secs(1)
+                    && *timeout == crate::clock::Duration::from_secs(1)
         ));
         assert!(matches!(
             &spec.actions[10],
@@ -4190,14 +4345,14 @@ mod tests {
         driver
             .perform(&Action::WaitForNamed {
                 target: "ready".into(),
-                timeout: std::time::Duration::from_millis(10),
+                timeout: crate::clock::Duration::from_millis(10),
             })
             .expect("an already-present target succeeds immediately");
 
         let error = driver
             .perform(&Action::WaitForNamed {
                 target: "never-appears".into(),
-                timeout: std::time::Duration::from_millis(1),
+                timeout: crate::clock::Duration::from_millis(1),
             })
             .unwrap_err();
         assert!(error.contains("1 ms"), "{error}");
@@ -4242,7 +4397,7 @@ mod tests {
                 &SemanticExpectation::named("items-tree")
                     .semantic_target("node:2")
                     .name("Still wrong")
-                    .within(std::time::Duration::from_millis(2)),
+                    .within(crate::clock::Duration::from_millis(2)),
             )
             .unwrap_err();
         assert!(timeout.contains("timed out after 2 ms"), "{timeout}");
@@ -5148,6 +5303,7 @@ mod undo_driver_tests {
 
         let mut via_key = undo_driver();
         type_action(&mut via_key, "hello");
+        via_key.set_platform_conventions(crate::PlatformConventions::new(crate::Platform::Linux));
         via_key.set_modifiers(&["ctrl".to_string()]);
         via_key.key("z");
         assert_eq!(
@@ -5428,7 +5584,7 @@ mod dispatched_action_driver_tests {
     }
 
     /// The editor plus the history controls an app would put in its toolbar.
-    fn action_driver() -> Driver {
+    pub(super) fn action_driver() -> Driver {
         let row = crate::widget::Row::new()
             .push(Box::new(ActionEditor::new()))
             .push(Box::new(crate::widget::UndoButton::undo()))
@@ -5443,7 +5599,7 @@ mod dispatched_action_driver_tests {
         )
     }
 
-    fn body(d: &mut Driver) -> String {
+    pub(super) fn body(d: &mut Driver) -> String {
         use automerge::ReadDoc;
         let state = d.state_mut();
         match state.doc.get(&automerge::ROOT, "body") {
@@ -5526,6 +5682,7 @@ mod dispatched_action_driver_tests {
     fn ctrl_z_and_the_control_undo_the_same_dispatched_action() {
         let mut via_key = action_driver();
         via_key.type_text("a");
+        via_key.set_platform_conventions(crate::PlatformConventions::new(crate::Platform::Linux));
         via_key.set_modifiers(&["ctrl".to_string()]);
         via_key.key("z");
 

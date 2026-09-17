@@ -79,19 +79,23 @@
 )]
 
 mod error;
+#[cfg(not(target_arch = "wasm32"))]
 mod espeak;
 mod factory;
 mod null;
 mod queue;
 mod speaker;
+#[cfg(not(target_arch = "wasm32"))]
 mod speechd;
 
 pub use error::TtsError;
+#[cfg(not(target_arch = "wasm32"))]
 pub use espeak::EspeakSpeaker;
 pub use factory::{default_speaker, select_speaker};
 pub use null::NullSpeaker;
 pub use queue::SpeechQueue;
 pub use speaker::{Priority, Speaker, Utterance};
+#[cfg(not(target_arch = "wasm32"))]
 pub use speechd::SpeechDispatcherSpeaker;
 
 #[cfg(test)]

@@ -99,7 +99,7 @@ impl HistorySelectionDetail {
 
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
+    use crate::clock::SystemTime;
 
     use collab_types::{ArtifactKind, OpClass};
     use qos_actions::{ActionContext, ActionFacet};

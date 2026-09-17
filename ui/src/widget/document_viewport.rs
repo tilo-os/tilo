@@ -12,7 +12,7 @@
 //! exactly by [`ViewportState::content_to_screen`] /
 //! [`ViewportState::screen_to_content`].
 
-use std::time::Instant;
+use crate::clock::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -1599,7 +1599,7 @@ mod tests {
     fn frame_dt_first_call_is_zero_then_positive() {
         let mut v = kernel();
         assert_eq!(v.frame_dt(), 0.0, "first frame has no delta");
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        std::thread::sleep(crate::clock::Duration::from_millis(2));
         assert!(v.frame_dt() > 0.0, "subsequent frame has a positive delta");
     }
 

@@ -10,7 +10,7 @@ use crate::widget::app_widget::AppWidget;
 use automerge::{AutoCommit, ObjId, ROOT};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -1935,7 +1935,7 @@ fn draw_card_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use crate::clock::Duration;
 
     fn sprite_alpha_at(sprite: &Image, x: u32, y: u32) -> u8 {
         let bytes: &[u8] = sprite.data.data();

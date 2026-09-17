@@ -373,13 +373,7 @@ fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceInte
     found
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Direction {
-    Up,
-    Down,
-    Left,
-    Right,
-}
+use crate::focus_navigation::Direction;
 
 /// Fans cursor moves out to Iroh peers too, alongside the Unix-socket
 /// send. Invoked after the throttle gate.
@@ -5701,36 +5695,7 @@ impl App {
     /// [`Widget::ime_purpose`]; buttons and other focusable controls therefore
     /// never activate `text-input-v3` accidentally.
     fn ime_window_state(&self) -> Option<ImeWindowState> {
-        let id = self.focused_node?;
-        let purpose = self
-            .inspect_node(id, |widget| widget.ime_purpose())
-            .ok()
-            .flatten()?;
-        let rect = self
-            .inspect_node(id, |widget| widget.ime_cursor_rect())
-            .ok()
-            .flatten()?;
-        let bounded = |v: f64| {
-            if v.is_finite() {
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "value is clamped to [0.0, u32::MAX] on the line above, so the cast is exact"
-                )]
-                {
-                    v.max(0.0).min(f64::from(u32::MAX)).round() as u32
-                }
-            } else {
-                0
-            }
-        };
-        Some(ImeWindowState {
-            purpose,
-            x: bounded(rect.x0),
-            y: bounded(rect.y0),
-            width: bounded(rect.width()).max(1),
-            height: bounded(rect.height()).max(1),
-        })
+        self.inspect_node(self.focused_node?, ImeWindowState::from_widget).ok().flatten()
     }
 
     fn focused_state_snapshot(&self) -> Option<(NodeId, String)> {
@@ -5886,35 +5851,11 @@ impl App {
         let Ok(current_rect) = self.inspect_node(current_id, |widget| widget.get_rect()) else {
             return;
         };
-        let current_center = current_rect.center();
-        let mut best_candidate = None;
-        let mut best_score = f64::MAX;
-        for &candidate_id in &self.focusable_order {
-            if candidate_id == current_id {
-                continue;
-            }
-            if let Ok(candidate_rect) = self.inspect_node(candidate_id, |widget| widget.get_rect())
-            {
-                let candidate_center = candidate_rect.center();
-                let vector = vello::kurbo::Vec2::new(
-                    candidate_center.x - current_center.x,
-                    candidate_center.y - current_center.y,
-                );
-                let (primary_dist, secondary_dist, in_direction) = match direction {
-                    Direction::Up => (-vector.y, vector.x.abs(), vector.y < -1.0),
-                    Direction::Down => (vector.y, vector.x.abs(), vector.y > 1.0),
-                    Direction::Left => (-vector.x, vector.y.abs(), vector.x < -1.0),
-                    Direction::Right => (vector.x, vector.y.abs(), vector.x > 1.0),
-                };
-                if in_direction {
-                    let score = primary_dist + (secondary_dist * 2.0);
-                    if score < best_score {
-                        best_score = score;
-                        best_candidate = Some(candidate_id);
-                    }
-                }
-            }
-        }
+        let best_candidate = crate::focus_navigation::next(
+            (current_id, current_rect),
+            self.focusable_order.iter().filter_map(|&id| self.inspect_node(id, |widget| widget.get_rect()).ok().map(|rect| (id, rect))),
+            direction,
+        );
         if let Some(new_id) = best_candidate {
             self.set_focused_node(Some(new_id));
         }
@@ -6977,30 +6918,9 @@ fn resolve_window_title(explicit: Option<&str>) -> String {
 /// surface's content coordinates is scoped to
 /// ([`crate::presence::PointerSpace::Surface`]) — both ends must spell the
 /// surface the same way by calling this same function.
-pub fn local_surface_id() -> String {
-    let package_id = std::env::var("QOS_PACKAGE_ID").ok();
-    let binary = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
-    resolve_app_id(package_id.as_deref(), binary.as_deref())
-}
-
-/// A shared generic id would collapse every id-keyed compositor lookup (tab
-/// label, launch placement, "is this document already open") onto every
-/// other app; it's a last resort for no-package, no-binary-name.
-fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String {
-    let non_blank = |s: &str| {
-        let t = s.trim();
-        (!t.is_empty()).then(|| t.to_string())
-    };
-    if let Some(id) = package_id.and_then(non_blank) {
-        return id;
-    }
-    if let Some(bin) = binary.and_then(non_blank) {
-        return bin;
-    }
-    "org.qos.app".to_string()
-}
+pub use crate::surface::local_surface_id;
+#[cfg(any(target_os = "linux", test))]
+use crate::surface::resolve_app_id;
 
 /// Pure, so the precedence is unit-testable without touching the process
 /// environment. First non-blank candidate wins.
@@ -7158,14 +7078,7 @@ struct NativeFloatingWindow {
     suspended: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ImeWindowState {
-    purpose: winit::window::ImePurpose,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
+use crate::ime::ImeWindowState;
 
 /// Snapshot widget damage while its draw-updated geometry still describes the
 /// scene being submitted. Callers deliberately clear dirty flags afterwards.

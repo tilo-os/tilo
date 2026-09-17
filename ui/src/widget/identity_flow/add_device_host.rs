@@ -678,7 +678,7 @@ mod tests {
                 completed = true;
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            std::thread::sleep(crate::clock::Duration::from_millis(2));
         }
         assert!(completed);
         let host_identity = host.take_completed_identity().unwrap();

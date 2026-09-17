@@ -24,9 +24,11 @@ path = "src/lib.rs"
 # Pure-Rust speech-dispatcher SSIP client. MIT OR Apache-2.0 — no C
 # linkage, no GPL propagation (speech-dispatcher sits behind the socket).
 # 0.10.2 is the current release on crates.io as of 2026-06-30.
-ssip-client = "0.10"
 thiserror.workspace = true
 log = "0.4"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ssip-client = "0.10"

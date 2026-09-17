@@ -7,7 +7,7 @@
 //! counts.
 
 use std::collections::HashSet;
-use std::time::SystemTime;
+use crate::clock::SystemTime;
 
 use crate::history_source::seen::HistorySeenFrontier;
 use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
@@ -176,7 +176,7 @@ impl ActivityDigest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use crate::clock::Duration;
 
     use collab_types::{ArtifactKind, OpClass};
     use qos_actions::ActionContext;

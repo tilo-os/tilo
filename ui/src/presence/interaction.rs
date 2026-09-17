@@ -15,7 +15,7 @@ use crate::permissions::UserId;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use qos_actions::{InteractionActorKind, InteractionPhase, InvocationId, SemanticInteraction};
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 use vello::{
     Scene,
     kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke},

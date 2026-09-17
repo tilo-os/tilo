@@ -10,7 +10,7 @@
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::time::Instant;
+use crate::clock::Instant;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Cap, Join, Line, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -1781,7 +1781,7 @@ mod tests {
 
     #[test]
     fn opaque_hold_deadline_reaches_host_through_modal_nav_shell() {
-        let deadline = Instant::now() + std::time::Duration::from_millis(900);
+        let deadline = Instant::now() + crate::clock::Duration::from_millis(900);
         let mut content = EventProbe::new("content", Default::default());
         content.deadline = Some(deadline);
         let mut ns = NavShell::sidebar_over_content(Box::new(Text::new("places")), Box::new(content));
@@ -2456,7 +2456,7 @@ mod tests {
         draw_frame(&mut ns); // establishes the clock; dt == 0, no jump
         assert_eq!(ns.push.reveal(), 0.0, "first frame must not jump the slide");
 
-        std::thread::sleep(std::time::Duration::from_millis(16));
+        std::thread::sleep(crate::clock::Duration::from_millis(16));
         draw_frame(&mut ns);
         let r = ns.push.reveal();
         assert!(r > 0.0 && r < 1.0, "mid-slide after one frame (reveal {r})");
@@ -2466,7 +2466,7 @@ mod tests {
         );
 
         for _ in 0..240 {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(crate::clock::Duration::from_millis(1));
             draw_frame(&mut ns);
             if !ns.push.is_animating(SplitLayout::Docked) {
                 break;
@@ -2514,7 +2514,7 @@ mod tests {
         ns.show_detail();
         ns.snap();
         assert_eq!(ns.push.reveal(), 1.0, "snap jumps straight to detail");
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(crate::clock::Duration::from_millis(20));
         draw_frame(&mut ns);
         assert_eq!(
             ns.push.reveal(),

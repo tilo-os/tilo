@@ -421,7 +421,10 @@ pub struct MediaElementInfo {
 /// buffer has 2 planes (pixels + compression metadata); a linear one, 1.
 #[derive(Debug)]
 pub struct DmabufPlane {
+    #[cfg(unix)]
     pub fd: std::os::fd::OwnedFd,
+    #[cfg(not(unix))]
+    pub fd: media::dmabuf::OwnedFd,
     pub stride: u32,
     pub offset: u32,
 }

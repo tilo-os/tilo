@@ -14,7 +14,12 @@
 //! long as the GPU still reads from it, and no longer. An importer that hands
 //! the fd to Vulkan must `dup` it: Vulkan takes ownership of what it is given.
 
+#[cfg(unix)]
 use std::os::fd::OwnedFd;
+/// Unix DMA-BUF descriptors cannot be constructed on this target.
+#[cfg(not(unix))]
+#[derive(Debug)]
+pub enum OwnedFd {}
 
 /// Linear (untiled) layout — the only modifier a plain
 /// `VK_EXT_external_memory_dma_buf` import can interpret.
@@ -190,6 +195,7 @@ impl DmabufImage {
 
 /// Whether two planes' fds refer to the same underlying file description.
 /// dmabufs are anonymous, so device+inode is the only identity available.
+#[cfg(unix)]
 fn same_file(a: &DmabufPlane, b: &DmabufPlane) -> bool {
     use std::os::fd::AsRawFd;
     let stat = |fd: i32| -> Option<(u64, u64)> {
@@ -231,6 +237,7 @@ unsafe extern "C" {
 /// implement seek precisely so an importer can size the allocation it needs
 /// when the producer only described plane offsets. `None` when the fd does
 /// not support seeking.
+#[cfg(unix)]
 pub fn dmabuf_size(fd: &OwnedFd) -> Option<u64> {
     use std::os::fd::AsRawFd;
     // Safety: `fd` is a live owned descriptor; `lseek` on it has no effect on
@@ -376,3 +383,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+#[cfg(not(unix))]
+fn same_file(a: &DmabufPlane, _: &DmabufPlane) -> bool { match a.fd {} }
+#[cfg(not(unix))]
+pub fn dmabuf_size(fd: &OwnedFd) -> Option<u64> { match *fd {} }

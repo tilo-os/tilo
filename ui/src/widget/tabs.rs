@@ -11,7 +11,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};

@@ -172,9 +172,9 @@ impl HistoryHost {
                         ),
                         op_class: collab_types::OpClass::Compaction,
                         artifact_kind: collab_types::ArtifactKind::File,
-                        timestamp: std::time::UNIX_EPOCH
-                            .checked_add(std::time::Duration::from_millis(version.timestamp_ms))
-                            .unwrap_or(std::time::UNIX_EPOCH),
+                        timestamp: crate::clock::UNIX_EPOCH
+                            .checked_add(crate::clock::Duration::from_millis(version.timestamp_ms))
+                            .unwrap_or(crate::clock::UNIX_EPOCH),
                         summary: format!(
                             "{} · {}",
                             version_label(&version.provenance),
@@ -451,7 +451,7 @@ mod tests {
                     author: crate::HistoryAuthor::new("Unknown author", 0.0, "unknown"),
                     op_class: collab_types::OpClass::Compaction,
                     artifact_kind: collab_types::ArtifactKind::File,
-                    timestamp: std::time::UNIX_EPOCH,
+                    timestamp: crate::clock::UNIX_EPOCH,
                     summary: "File revision".into(),
                     text_delta: None,
                     diff_payload: None,
@@ -688,10 +688,10 @@ mod tests {
             }
         }
         fn settle(host: &mut HistoryHost) {
-            let end = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while !host.file_target_resolved && std::time::Instant::now() < end {
+            let end = crate::clock::Instant::now() + crate::clock::Duration::from_secs(2);
+            while !host.file_target_resolved && crate::clock::Instant::now() < end {
                 host.refresh(&AutoCommit::new());
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                std::thread::sleep(crate::clock::Duration::from_millis(1));
             }
             assert!(host.file_target_resolved);
         }
@@ -785,9 +785,9 @@ mod tests {
         assert_eq!(files.restore.request, Some(request));
         assert!(files.restore.prepare(review, request.operation).is_err());
         files.check_result();
-        let end = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while original.results.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < end {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+        let end = crate::clock::Instant::now() + crate::clock::Duration::from_secs(2);
+        while original.results.load(Ordering::SeqCst) == 0 && crate::clock::Instant::now() < end {
+            std::thread::sleep(crate::clock::Duration::from_millis(1));
         }
         assert_eq!(original.results.load(Ordering::SeqCst), 1);
         assert_eq!(fresh.results.load(Ordering::SeqCst), 0);

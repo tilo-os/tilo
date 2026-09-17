@@ -392,6 +392,7 @@ fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
 /// then reach outside the directory the user actually browsed. So we also
 /// require that the decoded path has exactly as many components as the URI had
 /// segments, and that none of them is `..` or `.`.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
     use std::path::Component;
 
@@ -564,7 +565,7 @@ impl PortalOutcome {
 // The ashpd round-trip.
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "portal")]
+#[cfg(all(feature = "portal", not(target_arch = "wasm32")))]
 fn single(req: PickRequest) -> PortalOutcome {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -578,7 +579,7 @@ fn single(req: PickRequest) -> PortalOutcome {
     })
 }
 
-#[cfg(feature = "portal")]
+#[cfg(all(feature = "portal", not(target_arch = "wasm32")))]
 fn single_open_file(req: PickRequest) -> OpenFileOutcome {
     if !matches!(req.kind, PickKind::Open { multiple: false }) {
         return OpenFileOutcome::Failed(
@@ -600,7 +601,7 @@ fn single_open_file(req: PickRequest) -> OpenFileOutcome {
     })
 }
 
-#[cfg(feature = "portal")]
+#[cfg(all(feature = "portal", not(target_arch = "wasm32")))]
 fn multiple(req: PickRequest) -> MultiOutcome {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -615,7 +616,7 @@ fn multiple(req: PickRequest) -> MultiOutcome {
 }
 
 /// A portal round-trip that did not return URIs.
-#[cfg(feature = "portal")]
+#[cfg(all(feature = "portal", not(target_arch = "wasm32")))]
 enum PortalFailure {
     /// The user dismissed the picker. Surfaces from ashpd as a "cancelled"
     /// response error, not a bug.
@@ -623,7 +624,7 @@ enum PortalFailure {
     Failed(String),
 }
 
-#[cfg(feature = "portal")]
+#[cfg(all(feature = "portal", not(target_arch = "wasm32")))]
 impl PortalFailure {
     fn into_single(self) -> PortalOutcome {
         match self {
@@ -645,7 +646,7 @@ impl PortalFailure {
     }
 }
 
-#[cfg(feature = "portal")]
+#[cfg(all(feature = "portal", not(target_arch = "wasm32")))]
 async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
     use ashpd::desktop::file_chooser::SelectedFiles;
 
@@ -703,22 +704,22 @@ async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
 /// Without the `portal` feature there is no picker: report a failure so the
 /// caller still gets exactly one drained outcome and never hangs waiting for a
 /// picker that cannot open.
-#[cfg(not(feature = "portal"))]
+#[cfg(any(not(feature = "portal"), target_arch = "wasm32"))]
 fn single(_req: PickRequest) -> PortalOutcome {
     PortalOutcome::Failed(NO_PORTAL.to_string())
 }
 
-#[cfg(not(feature = "portal"))]
+#[cfg(any(not(feature = "portal"), target_arch = "wasm32"))]
 fn single_open_file(_req: PickRequest) -> OpenFileOutcome {
     OpenFileOutcome::Failed(NO_PORTAL.to_string())
 }
 
-#[cfg(not(feature = "portal"))]
+#[cfg(any(not(feature = "portal"), target_arch = "wasm32"))]
 fn multiple(_req: PickRequest) -> MultiOutcome {
     MultiOutcome::Failed(NO_PORTAL.to_string())
 }
 
-#[cfg(not(feature = "portal"))]
+#[cfg(any(not(feature = "portal"), target_arch = "wasm32"))]
 const NO_PORTAL: &str = "the file picker needs the real-desktop build (`--features portal`)";
 
 #[cfg(test)]
@@ -1085,7 +1086,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "portal"))]
+    #[cfg(any(not(feature = "portal"), target_arch = "wasm32"))]
     #[test]
     #[serial_test::serial(portal_suppression)]
     fn without_the_feature_a_request_fails_rather_than_hanging() {
@@ -1097,3 +1098,6 @@ mod tests {
         assert!(matches!(rx.recv(), Ok(OpenFileOutcome::Failed(_))));
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+pub fn to_local_path(_: &url::Url) -> Option<PathBuf> { None }

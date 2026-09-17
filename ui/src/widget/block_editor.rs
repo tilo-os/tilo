@@ -4453,7 +4453,7 @@ impl BlockEditor {
         }
         // A peer's recently-inserted run glows and decays over
         // TYPING_FADE. Drawn over authorship, under caret/selection.
-        let now = std::time::Instant::now();
+        let now = crate::clock::Instant::now();
         for (user, range, alpha) in ctx.presence.typing_marks_for_key(&key, now) {
             if self.local_author.as_deref() == Some(user.0.as_str()) {
                 continue;

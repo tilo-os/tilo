@@ -9,7 +9,7 @@
 //! [`activity_timeline`]: crate::widget::activity_timeline
 //! [`history_scrubber`]: crate::widget::history_scrubber
 
-use std::time::SystemTime;
+use crate::clock::SystemTime;
 
 use collab_types::{ArtifactKind, OpClass};
 use qos_actions::{ActionContext, ActionFacet};
@@ -427,7 +427,7 @@ pub fn hue_to_rgb(hue_deg: f32) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use crate::clock::Duration;
 
     fn entry(op: OpClass, author: &str, ts_offset_secs: u64) -> HistoryEntry {
         HistoryEntry {

@@ -5,7 +5,7 @@
 //! the real `State::restore_to_heads`. Nothing is stubbed — a bug in any of
 //! those links fails a test here.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::clock::{Duration, SystemTime, UNIX_EPOCH};
 
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, AutoCommit, ObjType, ROOT};

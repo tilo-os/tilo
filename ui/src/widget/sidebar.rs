@@ -25,7 +25,7 @@
 //! The eased reveal reuses the [`FlapState`] kernel from weather / chat /
 //! `NavSplit`, so the slide feels identical across the OS.
 
-use std::time::Instant;
+use crate::clock::Instant;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -749,7 +749,7 @@ mod tests {
         d.tick(false);
         assert_eq!(d.reveal(), 0.0, "first tick must not teleport the slide");
 
-        std::thread::sleep(std::time::Duration::from_millis(16));
+        std::thread::sleep(crate::clock::Duration::from_millis(16));
         d.tick(false);
         let r = d.reveal();
         assert!(
@@ -762,7 +762,7 @@ mod tests {
         );
 
         for _ in 0..300 {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(crate::clock::Duration::from_millis(1));
             d.tick(false);
             if !d.is_animating() {
                 break;

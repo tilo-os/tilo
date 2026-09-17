@@ -37,7 +37,7 @@
 //! the accessibility tree and the headless driver all reach it by name.
 
 use std::collections::HashMap;
-use std::time::SystemTime;
+use crate::clock::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use rand_core::OsRng;

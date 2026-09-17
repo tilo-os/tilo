@@ -16,6 +16,7 @@ path = "src/lib.rs"
 # so both the toolkit and any app can build on it. See `src/lib.rs`.
 
 [dependencies]
+web-time = { version = "1", features = ["serde"] }
 automerge = "0.8.0"
 chrono = { workspace = true, features = ["std"] }
 serde = { version = "1.0", features = ["derive"] }

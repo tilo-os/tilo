@@ -18,6 +18,8 @@
 //! in each frame. Not all app state is a record — a theme or account stays
 //! in the package-level document ([`crate::persist`]) instead.
 
+use crate::portable_storage::{PortableStorage, ProfileNamespace, StorageKey};
+mod portable;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -561,13 +563,15 @@ pub struct RecordSet {
     /// a test drives the same checkout path without touching the disk.
     persistent: bool,
     canonical_root: Option<PathBuf>,
+    portable: Option<PortableStorage>,
     pending: HashMap<RecordId, Reserved>,
     next_reservation: u64,
 }
 
 struct Reserved {
     generation: u64,
-    store: std::sync::Arc<app_state::DocStore>,
+    store: Option<std::sync::Arc<app_state::DocStore>>,
+    actor: Option<automerge::ActorId>,
 }
 
 impl RecordSet {
@@ -599,6 +603,7 @@ impl RecordSet {
             active: None,
             persistent: true,
             canonical_root: None,
+            portable: None,
             pending: HashMap::new(),
             next_reservation: 0,
         }
@@ -619,6 +624,7 @@ impl RecordSet {
             active: None,
             persistent: false,
             canonical_root: None,
+            portable: None,
             pending: HashMap::new(),
             next_reservation: 0,
         }
@@ -670,7 +676,7 @@ impl RecordSet {
         room: Option<&mut AutoCommit>,
         want: &RecordCheckout,
     ) -> bool {
-        if self.canonical_root.is_some() {
+        if self.canonical_root.is_some() || self.portable.is_some() {
             return false;
         }
         if self.active.as_ref() == Some(&want.id) {
@@ -877,7 +883,7 @@ impl RecordSet {
     /// its own file and bringing it into `room`'s index. Returns whether
     /// this opened it.
     pub fn open_record(&mut self, want: &RecordCheckout, room: Option<&mut AutoCommit>) -> bool {
-        if self.canonical_root.is_some() {
+        if self.canonical_root.is_some() || self.portable.is_some() {
             return matches!(self.try_open_record(want), Ok(RecordOpenOutcome::Loaded));
         }
         let fresh = !self.open.contains_key(&want.id);
@@ -944,6 +950,7 @@ impl RecordSet {
         want: &RecordCheckout,
         recover_partial: bool,
     ) -> Result<RecordOpenOutcome, RecordOpenError> {
+        if self.portable.is_some() { return self.open_portable(want); }
         let directory = self.canonical_directory(want)?;
         if self.pending.contains_key(&want.id) {
             return Err(RecordOpenError::Busy);
@@ -1020,6 +1027,7 @@ impl RecordSet {
     /// multi-record twin of [`Self::tick`], for a host with no single live
     /// document to hand in.
     pub fn tick_open(&mut self) {
+        if self.portable.is_some() { let _ = self.flush_portable(None); return; }
         for slot in self.open.values_mut() {
             if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut()) {
                 slot.action_state.commit_for_save(doc);
@@ -1031,6 +1039,7 @@ impl RecordSet {
     /// Write out every open record and wait for it to land. The
     /// multi-record twin of [`Self::flush`].
     pub fn flush_open(&mut self) {
+        if self.portable.is_some() { let _ = self.flush_portable(None); return; }
         for slot in self.open.values_mut() {
             if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut()) {
                 slot.action_state.commit_for_save(doc);
@@ -1082,6 +1091,7 @@ pub struct RecordStore(std::rc::Rc<std::cell::RefCell<RecordSet>>);
 /// Explicit profile-scoped owner registry. Weak entries never keep a closed writer alive.
 pub struct RecordOwners {
     root: PathBuf,
+    portable: Option<PortableStorage>,
     owners: HashMap<(String, String), std::rc::Weak<std::cell::RefCell<RecordSet>>>,
 }
 
@@ -1089,6 +1099,7 @@ impl RecordOwners {
     pub fn new(profile_state_root: PathBuf) -> Self {
         Self {
             root: profile_state_root,
+            portable: None,
             owners: HashMap::new(),
         }
     }
@@ -1102,12 +1113,21 @@ impl RecordOwners {
         package_id: &str,
         workspace_id: &str,
     ) -> Result<RecordStore, RecordOpenError> {
+        if self.portable.is_some() {
+            app_state::validate_record_namespace(package_id, workspace_id)?;
+        } else {
         app_state::DocStore::room_record_dir_at(
             &self.root,
             package_id,
             workspace_id,
             "validation",
         )?;
+        }
+
+        if let Some(cache) = &self.portable
+            && let Some(owner) = cache.record_owner(package_id, workspace_id) {
+            return Ok(RecordStore(owner));
+        }
         let key = (package_id.to_owned(), workspace_id.to_owned());
         if let Some(owner) = self.owners.get(&key).and_then(std::rc::Weak::upgrade) {
             return Ok(RecordStore(owner));
@@ -1118,10 +1138,12 @@ impl RecordOwners {
             open: HashMap::new(),
             active: None,
             persistent: true,
-            canonical_root: Some(self.root.clone()),
+            canonical_root: self.portable.is_none().then(|| self.root.clone()),
+            portable: self.portable.clone(),
             pending: HashMap::new(),
             next_reservation: 0,
         });
+        if let Some(cache) = &self.portable { cache.register_record_owner(package_id, workspace_id, &store.0); }
         self.owners.insert(key, std::rc::Rc::downgrade(&store.0));
         Ok(store)
     }
@@ -1192,6 +1214,7 @@ impl RecordReservation {
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<(), RecordOpenError> {
+        if self.store.0.borrow().portable.is_some() { return self.initialize_portable(initialize); }
         self.initialize_with_spawn(initialize, |owner| {
             app_state::Autosave::try_spawn_canonical(owner, app_state::DEFAULT_DEBOUNCE)
         })
@@ -1211,7 +1234,7 @@ impl RecordReservation {
                 .get(&self.checkout.id)
                 .filter(|p| p.generation == self.generation)
                 .ok_or(RecordOpenError::Busy)?;
-            (std::sync::Arc::clone(&pending.store), set.home.clone())
+            (std::sync::Arc::clone(pending.store.as_ref().ok_or(RecordOpenError::IdentityMismatch)?), set.home.clone())
         };
         let mut doc = owner.new_canonical_document()?;
         if !init_scoped(
@@ -1275,6 +1298,10 @@ impl RecordStore {
     /// Do not sweep or close unrelated owners' unfinished edits.
     pub(crate) fn schedule_committed_history(&self, id: &RecordId) {
         let Ok(mut set) = self.0.try_borrow_mut() else { return; };
+        if set.portable.is_some() {
+            if set.open.get(id).and_then(|slot| slot.doc.as_ref()).is_some_and(|doc| doc.pending_ops() == 0) { let _ = set.flush_portable(Some(id)); }
+            return;
+        }
         let Some(slot) = set.open.get_mut(id) else { return; };
         if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut())
             && doc.pending_ops() == 0 {
@@ -1283,18 +1310,20 @@ impl RecordStore {
     }
 
     /// Captured storage identity for History; never samples ambient launch scope.
-    pub(crate) fn history_namespace(&self, id: &RecordId) -> Result<(Option<PathBuf>, String, String), RecordOpenError> {
+    pub(crate) fn history_namespace(&self, id: &RecordId) -> Result<(Option<String>, String, String), RecordOpenError> {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
         let parked = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
         let storage = set.canonical_root.clone().or_else(|| parked.autosave.as_ref()
             .map(|save| save.document_path().to_path_buf()));
+        let storage = set.portable.as_ref().map(|cache| format!("portable:{:?}", cache.namespace()))
+            .or_else(|| storage.map(|path| path.to_string_lossy().into_owned()));
         Ok((storage, set.package_id.clone(), set.home.clone()))
     }
     /// Explicit immutable identity only; legacy and memory stores have no canonical namespace.
-    pub(crate) fn canonical_namespace(&self) -> Option<(PathBuf, String, String)> {
+    pub(crate) fn canonical_namespace(&self) -> Option<(ProfileNamespace, String, String)> {
         let set = self.0.borrow();
         Some((
-            set.canonical_root.clone()?,
+            set.portable.as_ref().map(|cache| cache.namespace().clone()).or_else(|| set.canonical_root.clone().map(ProfileNamespace::Native))?,
             set.package_id.clone(),
             set.home.clone(),
         ))
@@ -1320,11 +1349,12 @@ impl RecordStore {
         want: &RecordCheckout,
     ) -> Result<RecordReservation, RecordOpenError> {
         let mut set = self.0.borrow_mut();
+        if set.portable.is_some() { return self.reserve_portable(&mut set, want); }
         let directory = set.canonical_directory(want)?;
         if set.pending.contains_key(&want.id) || set.open.contains_key(&want.id) {
             return Err(RecordOpenError::Busy);
         }
-        let mut owner = app_state::DocStore::open_canonical_at(&set.package_id, &directory)?;
+        let owner = app_state::DocStore::open_canonical_at(&set.package_id, &directory)?;
         if owner.load_canonical()?.is_some() {
             return Err(RecordOpenError::Busy);
         }
@@ -1337,7 +1367,8 @@ impl RecordStore {
             want.id.clone(),
             Reserved {
                 generation,
-                store: std::sync::Arc::new(owner),
+                store: Some(std::sync::Arc::new(owner)),
+                actor: None,
             },
         );
         Ok(RecordReservation {
@@ -1362,6 +1393,7 @@ impl RecordStore {
         }
         let slot = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
         let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
+        if let Some(cache) = &set.portable { return Ok(portable::save_status(cache, &set.package_id, &set.home, id, doc)); }
         if let Some(saver) = &slot.autosave {
             let snapshot = saver.durability_snapshot();
             if let Some(error) = snapshot.error {
@@ -1385,6 +1417,9 @@ impl RecordStore {
     }
 
     pub fn durability_error(&self, id: &RecordId) -> Option<String> {
+        if self.0.borrow().portable.is_some() {
+            return match self.save_status(id) { Ok(RecordSaveStatus::Failed(error)) => Some(error), _ => None };
+        }
         self.0
             .borrow()
             .open
@@ -1396,6 +1431,7 @@ impl RecordStore {
     /// Close/retry one actual owner without settling another record's edit.
     pub(crate) fn try_flush_record(&self, id: &RecordId) -> Result<(), String> {
         let mut set = self.0.try_borrow_mut().map_err(|_| "record store is busy".to_string())?;
+        if set.portable.is_some() { return set.flush_portable(Some(id)); }
         let canonical = set.canonical_root.is_some();
         let slot = set.open.get_mut(id).ok_or_else(|| format!("{id}: record is not open"))?;
         let doc = slot.doc.as_mut().ok_or_else(|| format!("{id}: record is busy"))?;
@@ -1417,6 +1453,7 @@ impl RecordStore {
     /// Returns record-specific storage failures; a subsequent explicit retry sends a full checkpoint.
     pub fn try_flush(&self) -> Result<(), String> {
         let mut set = self.0.borrow_mut();
+        if set.portable.is_some() { return set.flush_portable(None); }
         let canonical = set.canonical_root.is_some();
         let mut errors = Vec::new();
         for (id, slot) in &mut set.open {
@@ -1471,12 +1508,10 @@ impl RecordStore {
     /// # Errors
     /// Refuses existing identities, unavailable persistence, and invalid scope.
     pub fn create_record(&self, want: &RecordCheckout) -> Result<(), RecordOpenError> {
-        let canonical = self
-            .0
-            .try_borrow_mut()
-            .map_err(|_| RecordOpenError::Busy)?
-            .canonical_root
-            .is_some();
+        let canonical = {
+            let set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
+            set.canonical_root.is_some() || set.portable.is_some()
+        };
         if canonical {
             return self
                 .reserve_record(want)
@@ -1569,7 +1604,7 @@ impl RecordStore {
     /// legacy stores retain the existing open/create behavior.
     pub(crate) fn open_record_checked(&self, want: &RecordCheckout) -> Result<(), RecordOpenError> {
         let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
-        if set.canonical_root.is_some() {
+        if set.canonical_root.is_some() || set.portable.is_some() {
             return set.try_open_record_with_recovery(want, false).map(|_| ());
         }
         set.open_record(want, None);
@@ -1583,7 +1618,7 @@ impl RecordStore {
     /// existing explicit one-room migration claim and their original history.
     pub(crate) fn open_existing_record_checked(&self, want: &RecordCheckout) -> Result<(), RecordOpenError> {
         let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
-        if set.canonical_root.is_some() {
+        if set.canonical_root.is_some() || set.portable.is_some() {
             return set.try_open_record_with_recovery(want, false).map(|_| ());
         }
         if !set.open.contains_key(&want.id) {
@@ -1887,7 +1922,7 @@ mod tests {
             .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap();
         assert!(pending.1 > 0);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = crate::clock::Instant::now() + crate::clock::Duration::from_secs(3);
         loop {
             let acknowledged = store.0.borrow().open[&checkout.id]
                 .autosave
@@ -1900,10 +1935,10 @@ mod tests {
                 break;
             }
             assert!(
-                std::time::Instant::now() < deadline,
+                crate::clock::Instant::now() < deadline,
                 "older writer acknowledgement missing"
             );
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(crate::clock::Duration::from_millis(10));
         }
         assert_eq!(
             store.save_status(&checkout.id).unwrap(),
@@ -1953,7 +1988,7 @@ mod tests {
         let want = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
         let mut token = store.reserve_record(&want).unwrap();
         let generation = token.generation;
-        let owner = store.0.borrow().pending[&want.id].store.clone();
+        let owner = store.0.borrow().pending[&want.id].store.clone().unwrap();
         let failure = token.initialize_with_spawn(
             |doc| {
                 put_text(doc, "discard", "private");
@@ -1973,7 +2008,7 @@ mod tests {
             let set = store.0.borrow();
             let reserved = &set.pending[&want.id];
             assert_eq!(reserved.generation, generation);
-            assert!(std::sync::Arc::ptr_eq(&owner, &reserved.store));
+            assert!(std::sync::Arc::ptr_eq(&owner, reserved.store.as_ref().unwrap()));
         }
         assert!(app_state::DocStore::open_canonical_at("dev.qos.test", owner.dir()).is_err());
         token
@@ -2686,5 +2721,46 @@ mod tests {
         let found = room::referencing(&room_doc, &set, &file, "marks-up");
         assert_eq!(found.len(), 1, "exactly the markup for this file");
         assert_eq!(found[0].id, markup.id);
+    }
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use super::*;
+    #[test]
+    fn portable_owner_preserves_reservation_identity_actor_and_durability() {
+        let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+        let mut owners = RecordOwners::portable(cache.clone());
+        let store = owners.open("dev.qos.test", "room").unwrap();
+        let again = owners.open("dev.qos.test", "room").unwrap();
+        assert!(store.same_owner(&again));
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let mut reservation = store.reserve_record(&checkout).unwrap();
+        assert!(again.reserve_record(&checkout).is_err());
+        assert!(!store.is_ready(&checkout.id));
+        reservation.initialize(|doc| { doc.put(automerge::ROOT, "title", "Hello").unwrap(); Ok(()) }).unwrap();
+        let actor = store.read(&checkout.id, |doc| doc.get_actor().clone()).unwrap();
+        assert!(store.try_flush().is_err());
+        for write in cache.pending_writes() { cache.acknowledge(&write, Ok(())).unwrap(); }
+        assert!(store.try_flush().is_ok());
+        assert_eq!(store.save_status(&checkout.id).unwrap(), RecordSaveStatus::Saved);
+        drop(reservation); drop(again); drop(store);
+        let reopened = owners.open("dev.qos.test", "room").unwrap();
+        reopened.try_open_record(&checkout).unwrap();
+        assert_eq!(reopened.read(&checkout.id, |doc| doc.get_actor().clone()).unwrap(), actor);
+        let wrong_kind = RecordCheckout::new(checkout.id.clone(), RecordKind::new("other"));
+        assert!(matches!(reopened.try_open_record(&wrong_kind), Err(RecordOpenError::IdentityMismatch)));
+    }
+    #[test]
+    fn portable_failed_initializer_keeps_reservation_until_drop() {
+        let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+        let store = RecordOwners::portable(cache.clone()).open("dev.qos.test", "room").unwrap();
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let mut reservation = store.reserve_record(&checkout).unwrap();
+        assert!(reservation.initialize(|_| Err("failed".into())).is_err());
+        assert!(store.reserve_record(&checkout).is_err());
+        assert!(cache.pending_writes().is_empty());
+        drop(reservation);
+        assert!(store.reserve_record(&checkout).is_ok());
     }
 }

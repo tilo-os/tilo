@@ -12,6 +12,9 @@
 //! spawned.
 //!
 
+mod peer;
+pub use peer::PeerTransport;
+
 use uuid::Uuid;
 
 /// Hard fail-closed timeout for an RPC request waiting to be handled on the
@@ -38,7 +41,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use crate::clock::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::task::LocalSet;
 
@@ -615,7 +618,7 @@ impl SigningIdentity {
         artifact: collab_types::ArtifactId,
         op_class: collab_types::OpClass,
     ) -> Result<collab_types::SignedOp, SignedSendError> {
-        let timestamp = std::time::SystemTime::now();
+        let timestamp = crate::clock::SystemTime::now();
         let sequence = self
             .seq
             .checked_add(1)
@@ -647,6 +650,7 @@ enum Backend {
     /// the SDK client + subscriptions; winit-side send / poll bridge
     /// through bounded mpsc pairs.
     Sdk(SdkChannel),
+    Peer(Box<dyn PeerTransport>),
 }
 
 /// Owned mpsc pair + shovel-thread handle for SDK mode. Both directions are
@@ -1501,6 +1505,20 @@ pub struct CollaborationManager {
 }
 
 impl CollaborationManager {
+    /// Inject a host-owned ordinary authenticated peer transport. Joins remain
+    /// pending until the adapter supplies the broker's matching acknowledgement.
+    pub fn with_peer_transport(transport: impl PeerTransport + 'static) -> Self {
+        Self { backend: Backend::Peer(Box::new(transport)), primary_route: Default::default(), identity: None }
+    }
+
+    fn peer_result(&mut self, result: Result<(), String>) {
+        if let Err(error) = result {
+            tracing::warn!(%error, "collaboration peer transport unavailable");
+            self.backend = Backend::Disabled;
+            self.primary_route.accepted = None;
+        }
+    }
+
     /// Connect to the launcher-inherited typed collaboration service and
     /// announce an explicit route. Headless participants use this instead of
     /// relying on process-wide `QUICK_APP_ID` / `QOS_WORKSPACE_ID` variables.
@@ -1886,6 +1904,7 @@ impl CollaborationManager {
     /// The result surfaces via [`InitStatus`] on a one-shot mpsc so the
     /// caller picks Disabled vs Sdk before returning, instead of an app
     /// that only ever `poll`s silently running against a dead broker.
+    #[cfg(not(target_arch = "wasm32"))]
     fn spawn_sdk(
         source: SdkConnectSource,
         identity: SdkJoinIdentity,
@@ -1960,6 +1979,11 @@ impl CollaborationManager {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn spawn_sdk(_: SdkConnectSource, _: SdkJoinIdentity) -> Result<SdkChannel, runtime_portal::NotAvailable> {
+        Err(runtime_portal::NotAvailable::ServiceFdMissing)
+    }
+
     /// True when connected to a live broker — used by the
     /// event loop to keep ticking so the stream drains promptly.
     pub(crate) fn primary_route(&self) -> Option<&PrimaryRouteWitness> {
@@ -1967,7 +1991,7 @@ impl CollaborationManager {
     }
 
     pub fn is_connected(&self) -> bool {
-        matches!(&self.backend, Backend::Sdk(channel) if channel.state.is_healthy())
+        match &self.backend { Backend::Disabled => false, Backend::Sdk(channel) => channel.state.is_healthy(), Backend::Peer(peer) => peer.is_connected() }
     }
 
     /// Bind a signing identity, builder-style for chaining at boot.
@@ -2032,7 +2056,10 @@ impl CollaborationManager {
                 channel.action_directory_published = false;
             }
         }
-        if let Backend::Sdk(ch) = &self.backend {
+        if let Backend::Peer(peer) = &mut self.backend {
+            let result = peer.send(req);
+            self.peer_result(result);
+        } else if let Backend::Sdk(ch) = &self.backend {
             let _ = enqueue_sdk_command(&ch.outbound_tx, SdkCommand::Primary(req), &ch.state);
         }
     }
@@ -2041,6 +2068,11 @@ impl CollaborationManager {
     /// Re-registering is harmless: the broker atomically replaces the old
     /// capability for this live connection.
     pub fn publish_action_directory(&mut self, app_id: impl Into<String>) {
+        if let Backend::Peer(peer) = &mut self.backend {
+            let result = peer.publish_action_directory(app_id.into());
+            self.peer_result(result);
+            return;
+        }
         if let Backend::Sdk(ch) = &mut self.backend {
             if ch.action_directory_published {
                 return;
@@ -2061,6 +2093,7 @@ impl CollaborationManager {
     /// Drain requests issued by the shovel-side `ActionDirectory` server. This
     /// must be called by [`crate::app::App`] on its owner thread.
     pub(crate) fn take_action_directory_requests(&mut self) -> Vec<ActionDirectoryRequest> {
+        if let Backend::Peer(peer) = &mut self.backend { return peer.take_action_directory_requests(); }
         let Backend::Sdk(ch) = &mut self.backend else {
             return Vec::new();
         };
@@ -2074,6 +2107,11 @@ impl CollaborationManager {
     /// Join and subscribe to an additional route without publishing traffic.
     /// Repeated joins of the same route are idempotent.
     pub fn join_route(&mut self, route: RouteSpec) {
+        if let Backend::Peer(peer) = &mut self.backend {
+            let result = peer.join_route(route);
+            self.peer_result(result);
+            return;
+        }
         if let Backend::Sdk(ch) = &mut self.backend {
             let _ = enqueue_sdk_command(&ch.outbound_tx, SdkCommand::Join(route), &ch.state);
         }
@@ -2104,6 +2142,7 @@ impl CollaborationManager {
         if group.channel_id() != expected {
             return Err("MLS group does not belong to the requested document route".into());
         }
+        if let Backend::Peer(peer) = &mut self.backend { return peer.install_document_encryption(route, group); }
         let Backend::Sdk(ch) = &mut self.backend else {
             return Err("collaboration broker is unavailable".into());
         };
@@ -2132,16 +2171,24 @@ impl CollaborationManager {
             tracing::warn!("collab: send_to_route ignores Hello; use join_route");
             return;
         }
-        if let Backend::Sdk(ch) = &mut self.backend {
-            let _ =
-                enqueue_sdk_command(&ch.outbound_tx, SdkCommand::ToRoute(route, req), &ch.state);
+        if let Backend::Peer(peer) = &mut self.backend {
+            let result = peer.send_to_route(route, req);
+            self.peer_result(result);
+        } else if let Backend::Sdk(ch) = &mut self.backend {
+            let _ = enqueue_sdk_command(&ch.outbound_tx, SdkCommand::ToRoute(route, req), &ch.state);
         }
     }
 
     /// Drain every event pending on the current backend. Non-blocking.
     pub fn poll(&mut self) -> Vec<CollabEvent> {
+        if let Backend::Peer(peer) = &mut self.backend
+            && let Some(result) = peer.take_primary_route_result()
+            && let Err(error) = self.primary_route.accept(result) {
+            self.peer_result(Err(error));
+        }
         match &mut self.backend {
             Backend::Disabled => Vec::new(),
+            Backend::Peer(peer) => peer.poll(),
             Backend::Sdk(ch) => {
                 ch.state.begin_poll();
                 let mut events = Vec::new();
@@ -2863,7 +2910,7 @@ async fn spawn_invocation_stream(
                 let channel = cancellation_channel.clone();
                 tokio::task::spawn_local(async move {
                     loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        tokio::time::sleep(crate::clock::Duration::from_millis(100)).await;
                         match channel.invocation_cancellation(id).await {
                             Ok(false) => {}
                             Ok(true) => {
@@ -2997,11 +3044,11 @@ async fn spawn_presence_stream(
 static LAST_CERTIFIED_DOCUMENT_SEQ: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-fn next_certified_document_seq(now: std::time::SystemTime) -> u64 {
+fn next_certified_document_seq(now: crate::clock::SystemTime) -> u64 {
     use std::sync::atomic::Ordering;
 
     let wall = now
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .duration_since(crate::clock::SystemTime::UNIX_EPOCH)
         .map_or(0, |duration| {
             u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
         });
@@ -3046,7 +3093,7 @@ async fn send_document_mutation(
     else {
         return;
     };
-    let now = std::time::SystemTime::now();
+    let now = crate::clock::SystemTime::now();
     let author = match signer {
         #[cfg(unix)]
         SdkDocumentSigner::Certified(identity) => identity.signing_public_key(),
@@ -3907,7 +3954,7 @@ mod tests {
     use std::cell::RefCell;
     use std::os::fd::IntoRawFd;
     use std::rc::Rc;
-    use std::time::{Duration, Instant};
+    use crate::clock::{Duration, Instant};
 
     use capnp::capability::Promise;
     use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
@@ -4845,7 +4892,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([1u8; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::clock::SystemTime::UNIX_EPOCH,
             1,
         );
         op.signature = collab_types::Signature::from_bytes([0u8; 64]);
@@ -5045,7 +5092,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([2u8; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::clock::SystemTime::UNIX_EPOCH,
             42,
         );
         op.signature = collab_types::Signature::from_bytes([0u8; 64]);
@@ -5092,7 +5139,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([3_u8; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::clock::SystemTime::UNIX_EPOCH,
             43,
         );
         let event = signed_document_event(
@@ -5135,7 +5182,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([9; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::clock::SystemTime::UNIX_EPOCH,
             1,
             metadata,
         );
@@ -5151,7 +5198,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([9; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::clock::SystemTime::UNIX_EPOCH,
             2,
         );
         assert!(
@@ -5315,7 +5362,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([3u8; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::clock::SystemTime::UNIX_EPOCH,
             5,
         );
         op.signature = collab_types::Signature::from_bytes([0u8; 64]);
@@ -5423,5 +5470,24 @@ mod tests {
         assert_eq!(parse_invocation_context(7, &json), Some(context));
         assert_eq!(parse_invocation_context(8, "  "), None);
         assert_eq!(parse_invocation_context(9, "{not-json"), None);
+    }
+}
+
+#[cfg(test)]
+mod portable_transport_tests {
+    use super::*;
+    struct ClosedPeer;
+    impl PeerTransport for ClosedPeer {
+        fn is_connected(&self) -> bool { true }
+        fn send(&mut self, _: CollabRequest) -> Result<(), String> { Err("peer disconnected".into()) }
+        fn poll(&mut self) -> Vec<CollabEvent> { vec![] }
+    }
+    #[test]
+    fn peer_enqueue_failure_disconnects_the_real_manager() {
+        let mut manager = CollaborationManager::with_peer_transport(ClosedPeer);
+        assert!(manager.is_connected());
+        manager.send(CollabRequest::DocumentSnapshot { data: vec![1] });
+        assert!(!manager.is_connected());
+        assert!(manager.poll().is_empty());
     }
 }

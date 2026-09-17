@@ -20,8 +20,8 @@ pub(super) struct ReviewPanel {
     token: Option<crate::history_mode::RestoreReview>,
 }
 pub(super) fn unix_now() -> Option<u64> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::clock::SystemTime::now()
+        .duration_since(crate::clock::UNIX_EPOCH)
         .ok()
         .map(|time| time.as_secs())
 }

@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::{PathSegment, PresenceKey};
@@ -4348,7 +4348,7 @@ impl Widget for TextInput {
             // re-derived approximation. `transform` maps the local rect to the scene.
 
             // Fading "just typed" highlighter under the caret/selection.
-            let now = std::time::Instant::now();
+            let now = crate::clock::Instant::now();
             for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
                 let rect = self.selection_rect(theme, range.start, range.end);
                 // `Affine * Point` is a geometric transform over f64 coordinates,

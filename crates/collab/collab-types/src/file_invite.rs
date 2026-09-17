@@ -4,7 +4,7 @@
 //! stores only its domain-separated hash. Redemption limits are enforced by an
 //! online authority, never by this self-contained token.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};

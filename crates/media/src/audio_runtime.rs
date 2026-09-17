@@ -10,7 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[allow(

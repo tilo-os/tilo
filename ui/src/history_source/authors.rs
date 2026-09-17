@@ -422,9 +422,9 @@ mod tests {
             &identity,
             display_name,
             avatar_color,
-            std::time::SystemTime::UNIX_EPOCH
-                .checked_add(std::time::Duration::from_secs(1_785_000_000))
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+            crate::clock::SystemTime::UNIX_EPOCH
+                .checked_add(crate::clock::Duration::from_secs(1_785_000_000))
+                .unwrap_or(crate::clock::SystemTime::UNIX_EPOCH),
         )
         .expect("a single-device identity is persistable");
         let bytes = record.to_json_bytes().expect("record encodes to JSON");
