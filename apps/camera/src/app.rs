@@ -582,7 +582,7 @@ impl CameraApp {
 
         let resource = Self::media_handoff_resource(app_id, label);
         let spec = resource.actions.first()?;
-        ActionBinding::new(&resource, &spec, |content_hash| {
+        ActionBinding::new(&resource, spec, |content_hash| {
             let mut arguments = serde_json::Map::new();
             arguments.insert(
                 "content_hash".into(),
@@ -2051,7 +2051,7 @@ impl CameraApp {
                     self.settings.photo_format.extension()
                 );
                 let cap = Capture {
-                    id: id.clone(),
+                    id,
                     kind: CaptureKind::Photo,
                     ts: now_secs(),
                     w: self.settings.resolution.dims().0,
@@ -3328,17 +3328,16 @@ impl Widget for CameraApp {
                             *handled = true;
                         }
                     }
-                    TouchPhase::Cancelled => {
+                    TouchPhase::Cancelled
                         if self
                             .active_touch
                             .as_ref()
-                            .is_some_and(|target| target.id == touch.id)
-                        {
-                            self.active_touch = None;
-                            *handled = true;
-                        }
+                            .is_some_and(|target| target.id == touch.id) =>
+                    {
+                        self.active_touch = None;
+                        *handled = true;
                     }
-                    _ => {}
+                    TouchPhase::Cancelled | TouchPhase::Started => {}
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -3347,13 +3346,10 @@ impl Widget for CameraApp {
                     MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
                 };
                 // Wheel up (dy > 0) scrolls toward the top of the content.
-                match self.screen {
-                    Screen::Settings => {
-                        self.settings_scroll = (self.settings_scroll - dy).max(0.0);
-                        self.dirty = true;
-                        *handled = true;
-                    }
-                    _ => {}
+                if self.screen == Screen::Settings {
+                    self.settings_scroll = (self.settings_scroll - dy).max(0.0);
+                    self.dirty = true;
+                    *handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -4953,6 +4949,10 @@ impl CameraApp {
 // ====================================================================
 
 impl CameraApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the document workspace is one coordinated custom-painted semantic layout"
+    )]
     fn draw_document_scanner(
         &mut self,
         scene: &mut Scene,
@@ -5024,7 +5024,12 @@ impl CameraApp {
             controls.x1 - 18.0,
             controls.y0 + 56.0,
         );
-        self.document_choice_anchors[DocumentChoice::Scanner.index()] = scanner_rect;
+        if let Some(anchor) = self
+            .document_choice_anchors
+            .get_mut(DocumentChoice::Scanner.index())
+        {
+            *anchor = scanner_rect;
+        }
         Button::paint(
             scene,
             t,
@@ -5376,14 +5381,14 @@ impl CameraApp {
                 specs
             };
             let gap = 8.0;
-            let action_width = (actions.width()
+            let slot_width = (actions.width()
                 - gap * (action_specs.len().saturating_sub(1)) as f64)
                 / action_specs.len() as f64;
             for (index, (label, icon, action, danger)) in action_specs.into_iter().enumerate() {
                 let rect = Rect::new(
-                    actions.x0 + index as f64 * (action_width + gap),
+                    actions.x0 + index as f64 * (slot_width + gap),
                     actions.y0,
-                    actions.x0 + index as f64 * (action_width + gap) + action_width,
+                    actions.x0 + index as f64 * (slot_width + gap) + slot_width,
                     actions.y1,
                 );
                 let mut face = ButtonFace::new(rect, label)
@@ -5497,6 +5502,10 @@ impl CameraApp {
 
     /// A compact floating glass header (title + subtitle) used as an overlay
     /// label on the scanner's edge-to-edge feed.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "paint helpers receive the shared scene, text, theme, geometry, and copy explicitly"
+    )]
     fn draw_glass_header(
         scene: &mut Scene,
         t: Affine,
@@ -5774,7 +5783,7 @@ impl CameraApp {
             12.5,
             p::alpha(white(), 0.68),
         );
-        let button_width = (content.width() - 24.0).min(240.0).max(160.0);
+        let button_width = (content.width() - 24.0).clamp(160.0, 240.0);
         let button = Rect::new(
             cx - button_width / 2.0,
             cy + 48.0,
@@ -5799,6 +5808,10 @@ impl CameraApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the scan result card is one responsive custom-painted semantic component"
+    )]
     fn draw_scan_card(
         &mut self,
         scene: &mut Scene,
@@ -5819,7 +5832,7 @@ impl CameraApp {
         let button_font = if large_type { 11.0 } else { 13.0 };
         let button_padding = if large_type { 42.0 } else { 30.0 };
         let button_height = if large_type { 48.0 } else { 30.0 };
-        let button_gap = if large_type { 10.0 } else { 10.0 };
+        let button_gap = 10.0;
         let widths: Vec<f64> = actions
             .iter()
             .map(|label| f64::from(p::text_w(tr, label, button_font)) + button_padding)
