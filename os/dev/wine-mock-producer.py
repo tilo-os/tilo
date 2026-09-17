@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -21,6 +22,7 @@ import tempfile
 import wine_rpm_contract as contract
 
 MOCK_COMMIT = '3b308660a12fb59886f438a59561f023d01586d8'
+PROVENANCE_PACKAGES = ('gcc', 'gcc-c++', 'rpm-build')
 
 
 def digest(path):
@@ -129,6 +131,29 @@ def validate_lock(lock, target):
         raise ValueError('lock lacks bootstrap image digest')
     if not lock.get('buildroot', {}).get('rpms'):
         raise ValueError('lock lacks resolved RPM inventory')
+    native_packages = {package.get('name') for package in lock['buildroot']['rpms']
+                       if package.get('arch') == target}
+    missing = set(PROVENANCE_PACKAGES) - native_packages
+    if missing:
+        raise ValueError('lock lacks native provenance tools: ' + ', '.join(sorted(missing)))
+
+
+def prepare_mock_config(source, destination, name):
+    """Resolve provenance tools together with Wine's dependencies, before freezing."""
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', name):
+        raise ValueError('invalid Mock configuration name')
+    selected = source / (name + '.cfg')
+    if not selected.is_file():
+        raise ValueError('selected Mock configuration does not exist')
+    shutil.copytree(source, destination, symlinks=False)
+    # Mock's --additional-package only supports rebuild, not calculatedeps.
+    # more_buildreqs is honored during dependency resolution; hermetic Mock
+    # later installs every RPM from the resulting lock/repository offline.
+    with (destination / selected.name).open('a') as config:
+        config.write("\n# Tilo's post-build compiler provenance requirements.\n"
+                     "config_opts['more_buildreqs']['wine'] = "
+                     "list(config_opts['more_buildreqs'].get('wine', [])) + "
+                     f"{list(PROVENANCE_PACKAGES)!r}\n")
 
 
 def build_command(bundle, root, result, options, filename):
@@ -191,14 +216,14 @@ def resolve(args, pin):
         verify_i686_execution(destination)
     contract.source(args.source, pin)
     shutil.copytree(args.source, destination / 'source')
-    shutil.copytree(args.config_dir, destination / 'mock-config', symlinks=False)
+    prepare_mock_config(args.config_dir, destination / 'mock-config', args.config)
     write_json(destination / 'wine-source.json', pin)
     options = flags(args.target, pin, args.jobs)
     prepare_source(destination / 'source', destination / 'build-source', pin, options)
     result = destination / 'resolution'
     result.mkdir()
     os.chown(result, int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID']))
-    command = ['mock', '--configdir', str(args.config_dir), '-r', args.config,
+    command = ['mock', '--configdir', str(destination / 'mock-config'), '-r', args.config,
                '--resultdir', str(result), *options]
     run([*command, '--debug-config-expanded'], destination / 'resolved-config.log')
     run([*command, '--calculate-build-dependencies',
