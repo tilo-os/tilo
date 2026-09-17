@@ -31,12 +31,13 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::Widget;
 use ui::color_compat::ColorCompat;
+use ui::icons::Icon;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::TextInput;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::drag::{DragController, ListMetrics};
+use ui::widget::{Chip, ChipLead, ChipStyle, TextInput};
 
 use crate::model::{PageId, Workspace};
 use crate::num;
@@ -72,6 +73,19 @@ const DOUBLE_CLICK_INTERVAL_MS: u128 = 400;
 const DOUBLE_CLICK_RADIUS_PX: f64 = 4.0;
 /// Default text size for tree row labels.
 const ROW_TEXT_SIZE: f32 = 14.0;
+
+/// Height of one line of `size`-pt text at `text_scale` — the value the
+/// renderer measures for a single line — so labels centre on their line box
+/// without measuring each row's own title (a fixed probe, once per row
+/// height). The crate's one copy of the line formula.
+fn line_h(size: f32, text_scale: f64) -> f64 {
+    let scale = if text_scale.is_finite() {
+        num::f32_of_f64(text_scale.clamp(0.5, 4.0))
+    } else {
+        1.0
+    };
+    f64::from(ui::text_render::TextStyle::new(size * scale).line_height_px())
+}
 
 /// Outbound commands from the sidebar to the parent `NotesApp`. The
 /// parent owns the workspace model and storage — the sidebar can only
@@ -1030,8 +1044,11 @@ impl NoteTreeView {
         theme: &Theme,
     ) {
         let tokens = &theme.tokens;
-        let header_text_y = self.rect.y0
-            + (self.header_height() - f64::from(ROW_TEXT_SIZE) * self.text_scale) / 2.0;
+        // Centre the label on the line the renderer measures for it, not on
+        // the font size: a line is `size × 1.25` tall, so centring on the bare
+        // size sat the label 1.75px low at 1× and further at larger scales.
+        let label_h = line_h(ROW_TEXT_SIZE, self.text_scale);
+        let header_text_y = self.rect.y0 + (self.header_height() - label_h) / 2.0;
         text_renderer.draw_text(
             scene,
             "Pages",
@@ -1046,30 +1063,24 @@ impl NoteTreeView {
                 .max(0.0),
             )),
         );
-        // Button chip — brighter when hovered so it reads as clickable.
-        let btn_bg = if self.new_page_btn_hover {
-            theme.accent_primary.with_alpha_factor(0.28)
+        // The new-page control is the shared icon chip — a glyph lead with no
+        // label, painted into exactly the rect `apply_layout` hit-tests — so
+        // it carries the toolkit's states and theming instead of a local
+        // square with a typeset "+". Hover takes the accent tint.
+        let style = if self.new_page_btn_hover {
+            ChipStyle::tinted(theme.accent_primary)
         } else {
-            tokens.colors.lift(0.72)
+            ChipStyle::quiet()
         };
-        let btn = vello::kurbo::RoundedRect::from_rect(
-            self.new_page_btn_rect,
-            f64::from(tokens.radii.sm),
-        );
-        scene.fill(vello::peniko::Fill::NonZero, transform, btn_bg, None, &btn);
-        // "+" glyph, centred in the button.
-        let plus_size = ROW_TEXT_SIZE + 2.0;
-        let (plus_w, _) = text_renderer.measure("+", plus_size, None);
-        let plus_x = self.new_page_btn_rect.center().x - f64::from(plus_w) / 2.0;
-        let plus_y =
-            self.new_page_btn_rect.center().y - f64::from(plus_size) * self.text_scale / 2.0;
-        text_renderer.draw_text(
+        Chip::draw_at(
             scene,
-            "+",
-            plus_size,
-            tokens.colors.text_primary,
-            transform * Affine::translate((plus_x, plus_y)),
-            None,
+            transform,
+            self.new_page_btn_rect,
+            "",
+            ChipLead::Glyph(Icon::Plus),
+            style,
+            theme,
+            text_renderer,
         );
     }
 
@@ -1183,8 +1194,9 @@ impl NoteTreeView {
         let glyph_x =
             row_rect.x0 + self.scaled(ROW_INSET_X) + (row.depth as f64) * self.scaled(INDENT_PX);
         let label_x = glyph_x + self.scaled(GLYPH_WIDTH);
+        // Centre on the measured line box, not the font size (see `draw_header`).
         let text_y =
-            row_rect.y0 + (self.row_height() - f64::from(ROW_TEXT_SIZE) * self.text_scale) / 2.0;
+            row_rect.y0 + (self.row_height() - line_h(ROW_TEXT_SIZE, self.text_scale)) / 2.0;
 
         // Nesting guides: a faint vertical rail at each ancestor depth
         // so the tree structure reads at a glance — this is what makes
@@ -1341,7 +1353,7 @@ impl NoteTreeView {
             );
             let label_x = ghost.x0 + self.scaled(ROW_INSET_X) + self.scaled(GLYPH_WIDTH);
             let text_y =
-                ghost.y0 + (self.row_height() - f64::from(ROW_TEXT_SIZE) * self.text_scale) / 2.0;
+                ghost.y0 + (self.row_height() - line_h(ROW_TEXT_SIZE, self.text_scale)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &row.title,

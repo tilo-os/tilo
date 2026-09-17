@@ -20,8 +20,8 @@ apps/calculator/src/graph3d.rs pixel_const 8
 apps/calculator/src/keypad.rs pixel_const 4
 apps/calculator/src/mathfield/mod.rs pixel_const 3
 apps/calculator/src/zoom.rs pixel_const 1
-apps/calendar/src/agenda.rs pixel_const 14
-apps/calendar/src/app.rs pixel_const 19
+apps/calendar/src/agenda.rs pixel_const 12
+apps/calendar/src/app.rs pixel_const 18
 apps/calendar/src/mini_month.rs pixel_const 9
 apps/calendar/src/sidebar.rs pixel_const 3
 apps/calendar/src/timeline_viewport.rs pixel_const 12
@@ -144,7 +144,7 @@ apps/video_editor/src/presence.rs pixel_const 2
 apps/video_editor/src/probe.rs pixel_const 1
 apps/vpn/src/app.rs pixel_const 5
 apps/weather/src/app.rs pixel_const 2
-apps/weather/src/core.rs pixel_const 21
+apps/weather/src/core.rs pixel_const 13
 apps/weather/src/interaction.rs pixel_const 2
 apps/windows/src/app.rs pixel_const 4
 apps/word-processor/src/compact_swatch_palette.rs pixel_const 3
