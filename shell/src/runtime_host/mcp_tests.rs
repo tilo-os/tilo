@@ -1,0 +1,368 @@
+use super::*;
+use crate::shell::collab_broker_capnp::tests::{
+    DirectoryResolveMode, drain_directory_bridge, local_directory_fixture_with_membership,
+};
+use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+
+fn fixture() -> (
+    crate::shell::collab_broker_capnp::tests::LocalDirectoryFixture,
+    String,
+    String,
+) {
+    let mut tree = WorkspaceTree::default();
+    let mut workspace = Workspace::test_default(WorkspaceId(71), "MCP");
+    let room = workspace.room.to_string();
+    let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
+    workspace.owner = Some(actor.clone());
+    tree.workspaces.push(workspace);
+    tree.set_active(WorkspaceId(71));
+    (
+        local_directory_fixture_with_membership(tree.shared()),
+        room,
+        actor,
+    )
+}
+fn request(method: &str, params: Value) -> Value {
+    json!({"jsonrpc":"2.0", "id":1,"method":method,"params":params})
+}
+fn call(name: &str, args: Value) -> Value {
+    request("tools/call", json!({"name":name,"arguments":args}))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_and_argument_boundaries() {
+    let (fixture, room, actor) = fixture();
+    let mut server = McpServer::new(fixture.broker.clone(), room, actor);
+    let init = server.handle(request("initialize",json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}))).await.unwrap();
+    assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
+    assert!(
+        init["result"]["capabilities"]["tools"]
+            .get("listChanged")
+            .is_none()
+    );
+    assert!(
+        server
+            .handle(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+            .await
+            .is_none()
+    );
+    assert_eq!(
+        server.handle(request("ping", json!({}))).await.unwrap()["result"],
+        json!({})
+    );
+    assert_eq!(
+        server
+            .handle(json!({"id":1,"method":"ping"}))
+            .await
+            .unwrap()["error"]["code"],
+        -32600
+    );
+    assert_eq!(
+        server.handle(request("missing", json!({}))).await.unwrap()["error"]["code"],
+        -32601
+    );
+    let tools = server
+        .handle(request("tools/list", json!({})))
+        .await
+        .unwrap();
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 6);
+    for args in [
+        json!({"actor":"other"}),
+        json!({"workspace":"other"}),
+        json!({"confirmed":true}),
+        json!([]),
+    ] {
+        assert_eq!(
+            server.handle(call("qos_list_apps", args)).await.unwrap()["result"]["isError"],
+            true
+        );
+    }
+    assert_eq!(
+        server
+            .handle(call("qos_status", json!({"invocation_id":999})))
+            .await
+            .unwrap()["result"]["isError"],
+        true
+    );
+    assert_eq!(
+        server
+            .handle(call("qos_cancel", json!({"invocation_id":999})))
+            .await
+            .unwrap()["result"]["isError"],
+        true
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn actual_broker_query_resolve_and_stale_invocation() {
+    tokio::task::LocalSet::new().run_until(async {
+        let (fixture, room, actor) = fixture();
+        let mut server = McpServer::new(fixture.broker.clone(),room,actor);
+        let roots=server.handle(call("qos_list_apps",json!({}))).await.unwrap();
+        assert_eq!(roots["result"]["structuredContent"]["apps"][0]["peer_id"],71);
+        let query=server.handle(call("qos_query",json!({"peer_id":71})));
+        let (reply,())=tokio::join!(query, async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
+        let reply=reply.unwrap();
+        assert_eq!(reply["result"]["structuredContent"]["revision"],"directory-r1");
+        assert!(reply["result"]["structuredContent"]["rows"][0]["descriptor"]["params"].is_array());
+        fixture.set_resolve_mode(DirectoryResolveMode::Stale);
+        let invoke=server.handle(call("qos_invoke",json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}})));
+        let (reply,())=tokio::join!(invoke, async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
+        assert_eq!(reply.unwrap()["result"]["isError"],true);
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resources_are_live_room_scoped_and_reads_use_authority() {
+    tokio::task::LocalSet::new().run_until(async {
+        let (fixture, room, actor) = fixture();
+        let mut server=McpServer::new(fixture.broker.clone(),room.clone(),actor);
+        let resources=server.handle(request("resources/list",json!({}))).await.unwrap();
+        assert_eq!(resources["result"]["resources"][0]["uri"],"qos://apps/71");
+        let read=server.handle(request("resources/read",json!({"uri":"qos://apps/71"})));
+        let (reply,())=tokio::join!(read,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
+        assert!(reply.unwrap()["result"]["contents"][0]["text"].as_str().unwrap().contains("directory-r1"));
+        let mut other=McpServer::new(fixture.broker.clone(),"different-room".into(),"outsider".into());
+        assert_eq!(other.handle(request("resources/list",json!({}))).await.unwrap()["result"]["resources"],json!([]));
+        assert!(other.handle(request("resources/read",json!({"uri":"qos://apps/71"}))).await.unwrap().get("error").is_some());
+        let mut denied=McpServer::new(fixture.broker.clone(),room,"outsider".into());
+        let call=denied.handle(call("qos_invoke",json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}})));
+        let (reply,())=tokio::join!(call,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
+        assert_eq!(reply.unwrap()["result"]["isError"],true);
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn root_identity_pagination_and_disconnect_are_exact() {
+    use crate::shell::collab_broker_capnp::ActionDirectoryRoot;
+    let (fixture, room, actor) = fixture();
+    fixture.broker.replace_action_directory_roots_for_test(
+        (1..=130)
+            .map(|peer_id| ActionDirectoryRoot {
+                peer_id,
+                app_id: "same.app".into(),
+                cluster_id: room.clone(),
+                record_id: format!("auxiliary/{peer_id}"),
+            })
+            .collect(),
+    );
+    let mut server = McpServer::new(fixture.broker.clone(), room, actor);
+    let first = server
+        .handle(call("qos_list_apps", json!({"max_results":500})))
+        .await
+        .unwrap();
+    assert_eq!(
+        first["result"]["structuredContent"]["apps"]
+            .as_array()
+            .unwrap()
+            .len(),
+        128
+    );
+    assert_eq!(first["result"]["structuredContent"]["next_after_peer"], 128);
+    let last = server
+        .handle(call("qos_list_apps", json!({"after_peer":128})))
+        .await
+        .unwrap();
+    assert_eq!(
+        last["result"]["structuredContent"]["apps"][0]["record_id"],
+        "auxiliary/129"
+    );
+    assert_eq!(
+        last["result"]["structuredContent"]["apps"][1]["uri"],
+        "qos://apps/130"
+    );
+    fixture
+        .broker
+        .replace_action_directory_roots_for_test(vec![]);
+    assert_eq!(
+        server
+            .handle(call("qos_query", json!({"peer_id":129})))
+            .await
+            .unwrap()["result"]["isError"],
+        true
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn accepted_invocation_preserves_actor_and_cancellation_ownership() {
+    tokio::task::LocalSet::new().run_until(async {
+        let (mut fixture,room,actor)=fixture();
+        let mut server=McpServer::new(fixture.broker.clone(),room.clone(),actor.clone());
+        let invoke=server.handle(call("qos_invoke",json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}})));
+        let (reply,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
+        let reply=reply.unwrap();
+        assert_eq!(reply["result"]["isError"],false,"{reply}");
+        let id=reply["result"]["structuredContent"]["invocation_id"].as_u64().unwrap();
+        assert_eq!(reply["result"]["structuredContent"]["update"]["state"],"accepted");
+        assert_eq!(fixture.take_invocation_actor(),Some(actor));
+        assert_eq!(fixture.resolve_count(),1);
+        let mut foreign=McpServer::new(fixture.broker.clone(),room,"foreign".into());
+        for tool in ["qos_status","qos_cancel"] {
+            assert_eq!(foreign.handle(call(tool,json!({"invocation_id":id}))).await.unwrap()["result"]["isError"],true);
+        }
+        let status=server.handle(call("qos_status",json!({"invocation_id":id}))).await.unwrap();
+        assert_eq!(status["result"]["structuredContent"]["invocation_id"],id);
+        assert_ne!(status["result"]["structuredContent"]["update"]["state"],"succeeded");
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bridge_errors_and_terminal_content_are_not_fabricated() {
+    use crate::shell::collab_broker_capnp::{
+        ActionDirectoryBridgeError as Error, StartedDirectoryAction,
+    };
+    for failure in [
+        Error::Busy,
+        Error::TimedOut,
+        Error::Unavailable,
+        Error::ConfirmationRequired,
+        Error::NotFound,
+        Error::StaleRevision,
+    ] {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tx.send(Err(failure)).unwrap();
+        assert_eq!(bridge_reply(rx).await.unwrap_err(), format!("{failure:?}"));
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    drop(tx);
+    assert_eq!(bridge_reply(rx).await.unwrap_err(), "Unavailable");
+    let update = qos_actions::InvocationUpdate::Succeeded {
+        invocation: qos_actions::InvocationId::new(),
+        output: qos_actions::ActionOutput {
+            value: Some(json!({"content":"sha256:123","width":200})),
+            resources: vec!["content:sha256:123".into()],
+        },
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tx.send(Ok(Reply::StartedDirectoryAction(StartedDirectoryAction {
+        invocation_id: 42,
+        initial_update: update.clone(),
+    })))
+    .unwrap();
+    assert_eq!(
+        bridge_reply(rx).await.unwrap(),
+        json!({"invocation_id":42,"update":update})
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn targets_require_a_nonempty_revision_before_enqueueing() {
+    let (fixture, room, actor) = fixture();
+    let mut server = McpServer::new(fixture.broker.clone(), room, actor);
+    for name in ["qos_resolve", "qos_invoke"] {
+        let mut args =
+            json!({"peer_id":71,"revision":"","resource":"workspace:atlas","action":"open"});
+        if name == "qos_invoke" {
+            args["arguments"] = json!({});
+        }
+        let reply = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            server.handle(call(name, args)),
+        )
+        .await
+        .expect("invalid revision must be rejected without waiting for broker")
+        .unwrap();
+        assert_eq!(reply["result"]["isError"], true);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn actual_queue_backpressure_timeout_and_disconnect_are_tool_errors() {
+    let (fixture, room, actor) = fixture();
+    let mut server = McpServer::new(fixture.broker.clone(), room.clone(), actor.clone());
+    let mut pending = Vec::new();
+    for _ in 0..64 {
+        pending.push(
+            fixture
+                .broker
+                .action_directory_request_queue()
+                .try_query(
+                    BrokerActor::person(&actor),
+                    &room,
+                    runtime_collab::ActionDirectoryQuery {
+                        peer_id: 71,
+                        revision: String::new(),
+                        cursor: vec![],
+                        parent_resource: String::new(),
+                        needle: String::new(),
+                        max_results: 1,
+                        max_bytes: 1024,
+                        max_work: 1,
+                        max_depth: 1,
+                    },
+                )
+                .unwrap(),
+        );
+    }
+    let busy = server
+        .handle(call("qos_query", json!({"peer_id":71})))
+        .await
+        .unwrap();
+    assert_eq!(busy["result"]["isError"], true);
+    assert_eq!(busy["result"]["content"][0]["text"], "Busy");
+    drop(fixture);
+    let disconnected = server
+        .handle(call("qos_query", json!({"peer_id":71})))
+        .await
+        .unwrap();
+    assert_eq!(disconnected["result"]["content"][0]["text"], "Unavailable");
+    let (fixture, room, actor) = self::fixture();
+    let mut server = McpServer::new(fixture.broker.clone(), room, actor);
+    let timeout = server
+        .handle(call("qos_query", json!({"peer_id":71})))
+        .await
+        .unwrap();
+    assert_eq!(timeout["result"]["isError"], true);
+    assert!(
+        timeout["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("TimedOut")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn confirmation_is_not_invented_and_terminal_content_survives_the_broker() {
+    tokio::task::LocalSet::new().run_until(async {
+        let (fixture,room,actor)=fixture();
+        let mut server=McpServer::new(fixture.broker.clone(),room.clone(),actor);
+        fixture.set_confirmation_required(true);
+        let args=json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}});
+        let invoke=server.handle(call("qos_invoke",args.clone()));
+        let (reply,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
+        assert_eq!(reply.unwrap()["result"]["content"][0]["text"],"ConfirmationRequired");
+        fixture.set_confirmation_required(false);
+        fixture.set_result_spec(qos_actions::ResultSpec::Json {schema:json!({"type":"object"})});
+        let invoke=server.handle(call("qos_invoke",args));
+        let (reply,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
+        let reply=reply.unwrap();
+        let id=reply["result"]["structuredContent"]["invocation_id"].as_u64().unwrap();
+        let invocation=serde_json::from_value(reply["result"]["structuredContent"]["update"]["invocation"].clone()).unwrap();
+        let update=qos_actions::InvocationUpdate::Succeeded {invocation,output:qos_actions::ActionOutput {value:Some(json!({"content":"sha256:123","width":200})),resources:vec!["content:sha256:123".into()]}};
+        fixture.complete_invocation(id,&update).await.unwrap();
+        let status=server.handle(call("qos_status",json!({"invocation_id":id}))).await.unwrap();
+        assert_eq!(status["result"]["structuredContent"],json!({"invocation_id":id,"update":update}));
+        let mut other=McpServer::new(fixture.broker.clone(),room,"foreign".into());
+        assert_eq!(other.handle(call("qos_status",json!({"invocation_id":id}))).await.unwrap()["result"]["isError"],true);
+    }).await;
+}
+
+#[test]
+fn container_rows_preserve_their_canonical_visibility_contract() {
+    let contract = serde_json::to_value(qos_actions::ActionContract::view()).unwrap();
+    let row = runtime_collab::ActionDirectoryRow {
+        parent_resource: "root".into(),
+        resource: "aux:document".into(),
+        resource_kind: "document".into(),
+        resource_label: "A decorative label".into(),
+        action: None,
+        descriptor: None,
+        has_children: true,
+        visibility_action: Some("read".into()),
+        visibility_contract_json: contract.to_string(),
+    };
+    let value = row_json(&row).unwrap();
+    assert_eq!(value["resource"], "aux:document");
+    assert_eq!(value["visibility_action"], "read");
+    assert_eq!(value["visibility_contract"], contract);
+}

@@ -6616,6 +6616,7 @@ pub(crate) mod tests {
     pub(crate) struct TestActionDirectory {
         revision: String,
         pub(crate) resolve_mode: DirectoryResolveMode,
+        result: qos_actions::ResultSpec,
         confirmation_required: bool,
         query_count: usize,
         resolve_count: usize,
@@ -6624,6 +6625,7 @@ pub(crate) mod tests {
     impl TestActionDirectory {
         fn contract_json(&self) -> String {
             let mut contract = qos_actions::ActionContract::view();
+            contract.result = self.result.clone();
             if self.confirmation_required {
                 contract.confirmation = qos_actions::ConfirmationPolicy::Confirm;
             }
@@ -6720,6 +6722,45 @@ pub(crate) mod tests {
     }
 
     impl LocalDirectoryFixture {
+        pub(crate) fn set_confirmation_required(&self, required: bool) {
+            self.directory_state.borrow_mut().confirmation_required = required;
+        }
+
+        pub(crate) fn set_result_spec(&self, result: qos_actions::ResultSpec) {
+            self.directory_state.borrow_mut().result = result;
+        }
+
+        /// Exercise the production peer-bound update RPC, including result-contract validation.
+        pub(crate) async fn complete_invocation(
+            &self,
+            id: u64,
+            update: &qos_actions::InvocationUpdate,
+        ) -> Result<(), capnp::Error> {
+            let client: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+                state: Arc::clone(&self.state),
+                directories: Rc::clone(&self.directories),
+                channel_id: self.route.channel_key(),
+                peer_id: self.peer_id,
+                verified_identity: AdmittedJoinIdentity {
+                    verified: VerifiedJoinIdentity {
+                        user_public_key: [0; 32],
+                        device_public_key: [0; 32],
+                    },
+                    principal_id: "fixture-application".into(),
+                    display_handle: None,
+                    role: CapRole::Editor,
+                    agent_id: None,
+                },
+            });
+            let mut request = client.update_invocation_request();
+            request.get().set_id(id);
+            request
+                .get()
+                .set_update_json(&serde_json::to_string(update).expect("canonical update"));
+            request.send().promise.await?;
+            Ok(())
+        }
+
         pub(crate) fn set_resolve_mode(&self, mode: DirectoryResolveMode) {
             self.directory_state.borrow_mut().resolve_mode = mode;
         }
@@ -6771,6 +6812,7 @@ pub(crate) mod tests {
         let directory_state = Rc::new(RefCell::new(TestActionDirectory {
             revision: "directory-r1".into(),
             resolve_mode: DirectoryResolveMode::Found,
+            result: qos_actions::ResultSpec::None,
             confirmation_required: false,
             query_count: 0,
             resolve_count: 0,
