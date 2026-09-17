@@ -2648,6 +2648,13 @@ impl ShellOverlayHost {
         self.onboarding_focus_reset = false;
     }
 
+    #[cfg(test)]
+    pub(crate) fn enable_test_onboarding(&mut self, view: crate::onboarding_view::OnboardingView) {
+        self.onboarding = Some(view);
+        self.onboarding_released = false;
+        self.onboarding_focus_reset = false;
+    }
+
     /// Activate recovery-only identity chrome. Existing identity metadata is
     /// authoritative when its Secret Service item is unavailable, so this
     /// surface offers unlock/retry and restore but never replacement minting.
