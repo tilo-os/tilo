@@ -125,12 +125,28 @@ export SOURCE_DATE_EPOCH
 # Resolve Windows providers before downloading assets or starting compilation.
 # No ARM payload pins are fabricated: supply published, validated digest refs.
 TILO_WINDOWS_ARCH="$(uname -m)"
-if [ "${TILO_SKIP_BUILD:-0}" != 1 ]; then
+case "${TILO_NATIVE_BUILDER_ONLY:-0}" in
+  0) ;;
+  1)
+    [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] \
+      && [ "${TILO_SKIP_BUILD:-0}" = 0 ] \
+      && [ "$TILO_HARDWARE_PROFILE" = generic ] \
+      || die "native payload mode requires a fresh generic development build"
+    ;;
+  *) die "TILO_NATIVE_BUILDER_ONLY must be 0 or 1" ;;
+esac
+if [ "${TILO_SKIP_BUILD:-0}" != 1 ] && [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 0 ]; then
   python3 "$TILO_OS_DIR/dev/windows_provider.py" inputs --arch "$TILO_WINDOWS_ARCH" \
     --fex-ref "${FEX_PAYLOAD_REF:-}" --guest-ref "${WINDOWS_GUEST_REF:-}" >/dev/null \
     || die "Windows provider inputs are incomplete; see os/docs/windows-provider-packaging.md"
 fi
-"$TILO_OS_DIR/dev/cache-github-assets.sh"
+if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
+  mapfile -t _tilo_native_assets < <(sed -nE 's/^(LIBWPE|FDO|WPEWK)=([A-Za-z0-9._-]+)$/\2/p' "$TILO_OS_DIR/dev/build-wpe.sh")
+  [ "${#_tilo_native_assets[@]}" -eq 3 ] || die "expected exactly three pinned WPE source archives"
+  "$TILO_OS_DIR/dev/cache-github-assets.sh" "${_tilo_native_assets[@]}"
+else
+  "$TILO_OS_DIR/dev/cache-github-assets.sh"
+fi
 # The digest-pinned base the build starts FROM — our own mirror of the Fedora
 # bootc image, because upstream deletes the manifest a digest points at within
 # about a day (see os/base-snapshot.env). Written by the mirror-base CI job.
@@ -312,6 +328,7 @@ build_image() {
     --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
     "${_tilo_build_args[@]}" \
     "${_tilo_wpe_args[@]}" \
+    "${_tilo_native_builder_args[@]}" \
     "${_tilo_trust_args[@]}" \
     --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
     --build-arg "BASE_REF=$BASE_REF" \
@@ -340,6 +357,13 @@ reseal_uki() {
   "$TILO_OS_DIR/dev/reseal-image.sh" "$TILO_IMAGE" "$1"
 }
 
+_tilo_native_builder_args=()
+if [ -n "${TILO_NATIVE_BUILDER_IMAGE_ID:-}" ]; then
+  [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] || die "native builder reuse requires development mode"
+  [[ "$TILO_NATIVE_BUILDER_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]] || die "native builder must be a verified immutable local image ID"
+  [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 0 ] || die "cannot compile and import a native builder together"
+  _tilo_native_builder_args=(--build-context "builder=container-image://$TILO_NATIVE_BUILDER_IMAGE_ID")
+fi
 if [ "$TILO_SKIP_BUILD" = "1" ]; then
   podman image exists "$TILO_IMAGE" || die "TILO_SKIP_BUILD=1, but $TILO_IMAGE is not in local
   storage, so there is nothing to image. Pull the published image and tag it:
@@ -371,6 +395,15 @@ else
       --base "$BASE_REF" --rpms "$RPMS_REF" --kernel "$KERNEL_RPMS_REF" --wpe "$WPE_BUILDROOT_REF")
     [[ "$_tilo_wpe_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "WPE stage did not return an immutable image ID"
     _tilo_wpe_args=(--build-context "wpe-builder=container-image://$_tilo_wpe_id")
+  fi
+  if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
+    [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] || die "native payload compilation requires development mode"
+    [ -n "${TILO_NATIVE_BUILDER_IIDFILE:-}" ] || die "native payload compilation requires an output iidfile"
+    [ ! -e "$TILO_NATIVE_BUILDER_IIDFILE" ] && [ ! -L "$TILO_NATIVE_BUILDER_IIDFILE" ] || die "native builder iidfile already exists"
+    build_image "$TILO_PROVISIONAL_CFS_DIGEST" "" --target native-builder-payload \
+      --skip-unused-stages=true --iidfile "$TILO_NATIVE_BUILDER_IIDFILE"
+    msg "Native application payload compiled; no rootfs, UKI or disk assembled."
+    exit 0
   fi
   if [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ]; then
     # The signed loader changes /usr, so install it into an immutable rootfs
