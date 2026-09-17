@@ -23,7 +23,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
@@ -67,6 +67,132 @@ const MAX_COLLAB_LAUNCH_HANDOFF_BYTES: usize = 1024;
 const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
 const LAUNCH_RECORD_RACE_DELAY: Duration = Duration::from_millis(10);
 const MAX_LAUNCH_CONTENT_BYTES: usize = 64 * 1024 * 1024;
+const NEARBY_TARGET_HANDLE_TTL: Duration = Duration::from_secs(30);
+const FILES_APP_ID: &str = "dev.tilo.file-explorer";
+
+#[derive(Clone)]
+struct NearbyTargetBinding {
+    peer_id: u64,
+    route: String,
+    target: crate::shell::personal_continuity::DeviceId,
+    expires_at: Instant,
+}
+
+#[derive(Default)]
+struct NearbyTargetRegistry {
+    bindings: HashMap<runtime_collab::NearbyTargetHandle, NearbyTargetBinding>,
+}
+
+impl NearbyTargetRegistry {
+    fn begin_snapshot(
+        &mut self,
+        peer_id: u64,
+        route: &CrdtRoute,
+        targets: &[crate::shell::personal_continuity::DeviceId],
+        now: Instant,
+    ) {
+        let route = route.channel_key();
+        self.bindings.retain(|_, binding| {
+            binding.expires_at > now
+                && (binding.peer_id != peer_id
+                    || binding.route != route
+                    || targets.contains(&binding.target))
+        });
+    }
+
+    fn issue(
+        &mut self,
+        peer_id: u64,
+        route: &CrdtRoute,
+        target: crate::shell::personal_continuity::DeviceId,
+        now: Instant,
+    ) -> runtime_collab::NearbyTargetHandle {
+        self.bindings.retain(|_, binding| binding.expires_at > now);
+        let channel = route.channel_key();
+        if let Some((handle, binding)) = self.bindings.iter_mut().find(|(_, binding)| {
+            binding.peer_id == peer_id && binding.route == channel && binding.target == target
+        }) {
+            binding.expires_at = now + NEARBY_TARGET_HANDLE_TTL;
+            return *handle;
+        }
+        loop {
+            let mut bytes = [0_u8; 16];
+            OsRng.fill_bytes(&mut bytes);
+            let handle = runtime_collab::NearbyTargetHandle::from_issued_bytes(bytes);
+            if handle.valid() && !self.bindings.contains_key(&handle) {
+                self.bindings.insert(
+                    handle,
+                    NearbyTargetBinding {
+                        peer_id,
+                        route: route.channel_key(),
+                        target,
+                        expires_at: now + NEARBY_TARGET_HANDLE_TTL,
+                    },
+                );
+                return handle;
+            }
+        }
+    }
+
+    fn consume(
+        &mut self,
+        handle: runtime_collab::NearbyTargetHandle,
+        peer_id: u64,
+        route: &CrdtRoute,
+        now: Instant,
+    ) -> Option<crate::shell::personal_continuity::DeviceId> {
+        self.bindings.retain(|_, binding| binding.expires_at > now);
+        let binding = self.bindings.get(&handle)?;
+        if binding.peer_id != peer_id || binding.route != route.channel_key() {
+            return None;
+        }
+        self.bindings.remove(&handle).map(|binding| binding.target)
+    }
+
+    fn remove_peer(&mut self, peer_id: u64) {
+        self.bindings
+            .retain(|_, binding| binding.peer_id != peer_id);
+    }
+}
+
+fn nearby_source_from_grants(raw_path: &[u8], grants: &[Capability]) -> Result<PathBuf, String> {
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let source = PathBuf::from(std::ffi::OsString::from_vec(raw_path.to_vec()));
+    if !source.is_absolute() {
+        return Err("Nearby Send source must be an absolute Files grant path".into());
+    }
+    let metadata = std::fs::symlink_metadata(&source)
+        .map_err(|_| "Nearby Send source is unavailable".to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err("Nearby Send refuses symbolic-link sources".into());
+    }
+    let canonical_source = std::fs::canonicalize(&source)
+        .map_err(|_| "Nearby Send source is unavailable".to_string())?;
+    let authorized = grants.iter().any(|grant| {
+        let Capability::Filesystem { path, .. } = grant else {
+            return false;
+        };
+        let Ok(canonical_grant) = std::fs::canonicalize(path) else {
+            return false;
+        };
+        if canonical_grant == canonical_source {
+            return true;
+        }
+        std::fs::metadata(&canonical_grant).is_ok_and(|metadata| {
+            metadata.is_dir() && canonical_source.starts_with(&canonical_grant)
+        })
+    });
+    authorized
+        .then_some(canonical_source)
+        .ok_or_else(|| "Nearby Send source is outside this Files instance's grants".into())
+}
+
+fn nearby_policy_enabled(
+    policy: crate::shell::continuity_policy::ContinuityPolicySnapshot,
+) -> bool {
+    policy.permits(crate::shell::continuity_policy::ContinuityCapability::FileTransfer)
+}
 
 fn stage_launch_content(
     app_id: &str,
@@ -1308,6 +1434,7 @@ pub struct CapnpBrokerState {
     task_run_id: AtomicU64,
     invocation_id: AtomicU64,
     realtime: Mutex<RealtimeBridge>,
+    nearby_targets: Mutex<NearbyTargetRegistry>,
     workspace_control_network: Mutex<Option<std::sync::Weak<crate::shell::network::ShellNetwork>>>,
 }
 
@@ -2052,6 +2179,7 @@ impl CapnpBrokerState {
                 task_run_id: AtomicU64::new(1),
                 invocation_id: AtomicU64::new(1),
                 realtime: Mutex::new(RealtimeBridge::default()),
+                nearby_targets: Mutex::new(NearbyTargetRegistry::default()),
                 workspace_control_network: Mutex::new(None),
             }),
             bridge_rx,
@@ -3826,6 +3954,9 @@ impl CapnpBrokerState {
         if let Ok(mut subscribers) = self.task_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
+        if let Ok(mut targets) = self.nearby_targets.lock() {
+            targets.remove_peer(peer_id);
+        }
         if let Ok(mut realtime) = self.realtime.lock() {
             realtime.subscribers.remove(&peer_id);
             let target_sessions = realtime
@@ -4556,6 +4687,68 @@ impl CapnpChannelHandle {
             })?;
         Ok((app, local))
     }
+
+    fn nearby_registration(
+        &self,
+    ) -> Result<
+        (
+            CrdtRoute,
+            Arc<crate::shell::network::ShellNetwork>,
+            Vec<Capability>,
+        ),
+        capnp::Error,
+    > {
+        let route = self.route();
+        self.state
+            .revalidate_admission(&route, &self.verified_identity)?;
+        if route.app_id != FILES_APP_ID || route.cluster_id.is_empty() {
+            return Err(capnp::Error::failed(
+                "Nearby Send requires the certified Files application route".into(),
+            ));
+        }
+        if !nearby_policy_enabled(crate::shell::continuity_policy::ContinuityPolicySnapshot::load())
+        {
+            return Err(capnp::Error::failed(
+                "Nearby Send is disabled by continuity privacy settings".into(),
+            ));
+        }
+        let network = self.state.workspace_control_network().ok_or_else(|| {
+            capnp::Error::failed("Nearby Send requires the certified device fabric".into())
+        })?;
+        let membership = self.state.membership.as_ref().ok_or_else(|| {
+            capnp::Error::failed("Nearby Send lost its workspace grant authority".into())
+        })?;
+        let grants = membership
+            .read()
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == route.cluster_id)
+            .and_then(|workspace| workspace.app_grants_snapshot().remove(FILES_APP_ID))
+            .unwrap_or_default();
+        Ok((route, network, grants))
+    }
+}
+
+fn nearby_transfer_reply(
+    results: &mut channel_handle::NearbyTransferCommandResults,
+    reply: runtime_collab::NearbyTransferReply,
+) -> Promise<(), capnp::Error> {
+    if !reply.valid() {
+        return Promise::err(capnp::Error::failed(
+            "Nearby Send produced an invalid bounded reply".into(),
+        ));
+    }
+    let bytes = match serde_json::to_vec(&reply) {
+        Ok(bytes) if bytes.len() <= runtime_collab::MAX_NEARBY_TRANSFER_WIRE_BYTES => bytes,
+        Ok(_) => {
+            return Promise::err(capnp::Error::failed(
+                "Nearby Send reply exceeds the local protocol bound".into(),
+            ));
+        }
+        Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+    };
+    results.get().set_reply_json(&bytes);
+    Promise::ok(())
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
@@ -4574,6 +4767,162 @@ impl channel_handle::Server for CapnpChannelHandle {
             .state
             .request_document_snapshot(&self.channel_id, self.peer_id);
         Promise::ok(())
+    }
+
+    fn nearby_transfer_command(
+        self: Rc<Self>,
+        params: channel_handle::NearbyTransferCommandParams,
+        mut results: channel_handle::NearbyTransferCommandResults,
+    ) -> Promise<(), capnp::Error> {
+        let (route, network, grants) = match self.nearby_registration() {
+            Ok(binding) => binding,
+            Err(error) => return Promise::err(error),
+        };
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let claimed_app = match request.get_app_id().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value,
+            Err(error) => return Promise::err(error),
+        };
+        if claimed_app != route.app_id {
+            return Promise::err(capnp::Error::failed(
+                "Nearby Send app id must match the certified connection route".into(),
+            ));
+        }
+        let command_bytes = match request.get_command_json() {
+            Ok(bytes) if bytes.len() <= runtime_collab::MAX_NEARBY_TRANSFER_WIRE_BYTES => bytes,
+            Ok(_) => {
+                return Promise::err(capnp::Error::failed(
+                    "Nearby Send command exceeds the local protocol bound".into(),
+                ));
+            }
+            Err(error) => return Promise::err(error),
+        };
+        let command: runtime_collab::NearbyTransferCommand =
+            match serde_json::from_slice(command_bytes) {
+                Ok(command) => command,
+                Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+            };
+        if !command.valid() {
+            return Promise::err(capnp::Error::failed(
+                "Nearby Send command is structurally invalid".into(),
+            ));
+        }
+        let reply = match command {
+            runtime_collab::NearbyTransferCommand::Snapshot => {
+                let local = network
+                    .local_device_fabric_identity()
+                    .map(|(device, _)| device);
+                let targets = network
+                    .device_fabric()
+                    .snapshots()
+                    .values()
+                    .filter(|snapshot| {
+                        snapshot.presence.online && local.as_ref() != Some(&snapshot.owner)
+                    })
+                    .take(runtime_collab::MAX_NEARBY_TRANSFER_TARGETS)
+                    .map(|snapshot| (snapshot.owner.clone(), snapshot.presence.label.clone()))
+                    .collect::<Vec<_>>();
+                let Ok(mut registry) = self.state.nearby_targets.lock() else {
+                    return Promise::err(capnp::Error::failed(
+                        "Nearby Send target authority is unavailable".into(),
+                    ));
+                };
+                let now = Instant::now();
+                let device_ids = targets
+                    .iter()
+                    .map(|(device, _)| device.clone())
+                    .collect::<Vec<_>>();
+                registry.begin_snapshot(self.peer_id, &route, &device_ids, now);
+                let transfers =
+                    crate::shell::device_fabric_runtime::nearby_transfer_statuses(&network);
+                runtime_collab::NearbyTransferReply::Snapshot {
+                    snapshot: runtime_collab::NearbyTransferSnapshot {
+                        targets: targets
+                            .into_iter()
+                            .map(|(device, label)| runtime_collab::NearbyTransferTarget {
+                                handle: registry.issue(self.peer_id, &route, device, now),
+                                label,
+                                online: true,
+                            })
+                            .collect(),
+                        transfers,
+                    },
+                }
+            }
+            runtime_collab::NearbyTransferCommand::Send {
+                target,
+                source_path,
+            } => {
+                let source = match nearby_source_from_grants(&source_path, &grants) {
+                    Ok(source) => source,
+                    Err(reason) => {
+                        return nearby_transfer_reply(
+                            &mut results,
+                            runtime_collab::NearbyTransferReply::Rejected { reason },
+                        );
+                    }
+                };
+                let target = self
+                    .state
+                    .nearby_targets
+                    .lock()
+                    .ok()
+                    .and_then(|mut registry| {
+                        registry.consume(target, self.peer_id, &route, Instant::now())
+                    });
+                let Some(target) = target else {
+                    return nearby_transfer_reply(
+                        &mut results,
+                        runtime_collab::NearbyTransferReply::Rejected {
+                            reason: "Nearby Send target expired; reopen the device picker".into(),
+                        },
+                    );
+                };
+                match crate::shell::device_fabric_runtime::request_nearby_drop(
+                    &network, &target, &source,
+                ) {
+                    Ok(transfer_id) => runtime_collab::NearbyTransferReply::Queued { transfer_id },
+                    Err(reason) => runtime_collab::NearbyTransferReply::Rejected { reason },
+                }
+            }
+            runtime_collab::NearbyTransferCommand::Cancel { transfer_id } => {
+                match crate::shell::device_fabric_runtime::cancel_nearby_transfer(
+                    &network,
+                    transfer_id,
+                ) {
+                    Ok(()) => runtime_collab::NearbyTransferReply::Accepted,
+                    Err(reason) => runtime_collab::NearbyTransferReply::Rejected { reason },
+                }
+            }
+            runtime_collab::NearbyTransferCommand::Decide {
+                transfer_id,
+                accept,
+            } => match crate::shell::device_fabric_runtime::decide_nearby_transfer(
+                &network,
+                transfer_id,
+                accept,
+            ) {
+                Ok(()) => runtime_collab::NearbyTransferReply::Accepted,
+                Err(reason) => runtime_collab::NearbyTransferReply::Rejected { reason },
+            },
+            runtime_collab::NearbyTransferCommand::Retry { transfer_id } => {
+                match crate::shell::device_fabric_runtime::retry_nearby_transfer(
+                    &network,
+                    transfer_id,
+                ) {
+                    Ok(()) => runtime_collab::NearbyTransferReply::Accepted,
+                    Err(reason) => runtime_collab::NearbyTransferReply::Rejected { reason },
+                }
+            }
+        };
+        nearby_transfer_reply(&mut results, reply)
     }
 
     #[allow(
@@ -10636,5 +10985,91 @@ mod tests {
             41
         );
         assert_eq!(invocation_target_peer(7, 41), 7);
+    }
+
+    #[test]
+    fn nearby_target_handles_reject_spoofed_routes_and_expiry() {
+        let route = CrdtRoute::app(FILES_APP_ID, "room-a");
+        let other_route = CrdtRoute::app(FILES_APP_ID, "room-b");
+        let target = crate::shell::personal_continuity::DeviceId::new("certified-device")
+            .expect("valid device");
+        let now = Instant::now();
+        let mut registry = NearbyTargetRegistry::default();
+        let handle = registry.issue(41, &route, target.clone(), now);
+
+        assert!(registry.consume(handle, 42, &route, now).is_none());
+        assert!(registry.consume(handle, 41, &other_route, now).is_none());
+        assert_eq!(registry.consume(handle, 41, &route, now), Some(target));
+        assert!(registry.consume(handle, 41, &route, now).is_none());
+
+        let stale = registry.issue(
+            41,
+            &route,
+            crate::shell::personal_continuity::DeviceId::new("stale-device").expect("valid device"),
+            now,
+        );
+        assert!(
+            registry
+                .consume(
+                    stale,
+                    41,
+                    &route,
+                    now + NEARBY_TARGET_HANDLE_TTL + Duration::from_millis(1),
+                )
+                .is_none()
+        );
+
+        let retained_target = crate::shell::personal_continuity::DeviceId::new("retained-device")
+            .expect("valid device");
+        let retained = registry.issue(41, &route, retained_target.clone(), now);
+        registry.begin_snapshot(41, &route, std::slice::from_ref(&retained_target), now);
+        let refreshed = registry.issue(41, &route, retained_target, now);
+        assert_eq!(retained, refreshed);
+        assert_eq!(registry.bindings.len(), 1);
+        registry.begin_snapshot(41, &route, &[], now);
+        assert!(registry.consume(retained, 41, &route, now).is_none());
+        assert!(registry.bindings.is_empty());
+    }
+
+    #[test]
+    fn nearby_source_is_canonical_and_confined_to_live_files_grants() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temp grant root");
+        let source = root.path().join("report.txt");
+        std::fs::write(&source, b"report").expect("write source");
+        let grants = vec![Capability::Filesystem {
+            path: root.path().to_path_buf(),
+            mode: FsMode::Read,
+            scope: GRANT_SESSION,
+        }];
+        assert_eq!(
+            nearby_source_from_grants(source.as_os_str().as_encoded_bytes(), &grants)
+                .expect("granted source"),
+            std::fs::canonicalize(&source).expect("canonical source")
+        );
+        assert!(nearby_source_from_grants(b"/etc/passwd", &grants).is_err());
+
+        let escape = root.path().join("escape");
+        symlink("/etc/passwd", &escape).expect("create escape symlink");
+        assert!(nearby_source_from_grants(escape.as_os_str().as_encoded_bytes(), &grants).is_err());
+    }
+
+    #[test]
+    fn nearby_rpc_policy_requires_master_and_file_transfer_switches() {
+        let policy = |enabled, file_transfer| {
+            let document = serde_json::json!({
+                "continuity": {
+                    "enabled": enabled,
+                    "file_transfer": file_transfer,
+                }
+            });
+            crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
+                document.as_object().expect("policy object"),
+            )
+        };
+        assert!(!nearby_policy_enabled(policy(false, true)));
+        assert!(!nearby_policy_enabled(policy(true, false)));
+        assert!(nearby_policy_enabled(policy(true, true)));
     }
 }

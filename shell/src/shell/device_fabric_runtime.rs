@@ -50,6 +50,8 @@ const DISPLAY_OFFER_RETRY: Duration = Duration::from_secs(2);
 const DISPLAY_KEEPALIVE: Duration = Duration::from_secs(5);
 const DISPLAY_SESSION_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_GAMEPAD_FORWARDINGS: usize = 8;
+const MAX_PENDING_NEARBY_CONSENTS: usize = 64;
+const NEARBY_CONSENT_TIMEOUT: Duration = Duration::from_secs(120);
 
 struct InboundGamepadForwarding {
     source: crate::shell::personal_continuity::DeviceId,
@@ -296,6 +298,39 @@ struct NearbyDropState {
         ),
     >,
     last_offer: BTreeMap<[u8; 16], Instant>,
+    incoming: BTreeMap<[u8; 16], PendingNearbyConsent>,
+}
+
+enum PendingNearbyPayload {
+    Inline {
+        bytes: Vec<u8>,
+        content_hash: [u8; 32],
+    },
+    Durable {
+        kind: crate::shell::nearby_transfer::TransferKind,
+        content_hash: [u8; 32],
+    },
+}
+
+struct PendingNearbyConsent {
+    source: crate::shell::personal_continuity::DeviceId,
+    request_id: [u8; 16],
+    name: String,
+    total_bytes: u64,
+    received: Instant,
+    payload: PendingNearbyPayload,
+}
+
+impl NearbyDropState {
+    fn insert_consent(&mut self, transfer_id: [u8; 16], offer: PendingNearbyConsent) -> bool {
+        if self.incoming.contains_key(&transfer_id)
+            || self.incoming.len() >= MAX_PENDING_NEARBY_CONSENTS
+        {
+            return false;
+        }
+        self.incoming.insert(transfer_id, offer);
+        true
+    }
 }
 
 fn nearby_drop_state() -> &'static Mutex<NearbyDropState> {
@@ -353,6 +388,26 @@ fn try_outbox_entries() -> Vec<crate::shell::nearby_transfer::OutboxEntry> {
     guard
         .as_ref()
         .map_or_else(Vec::new, |store| store.outbox().to_vec())
+}
+
+fn try_inbox_entries() -> Vec<crate::shell::nearby_transfer::InboxEntry> {
+    let Ok(mut guard) = nearby_store_cell().try_lock() else {
+        return Vec::new();
+    };
+    if guard.is_none() {
+        let Some(root) = nearby_transfer_root() else {
+            return Vec::new();
+        };
+        let Ok(store) =
+            crate::shell::nearby_transfer::NearbyTransferStore::open(root, unix_millis())
+        else {
+            return Vec::new();
+        };
+        *guard = Some(store);
+    }
+    guard
+        .as_ref()
+        .map_or_else(Vec::new, |store| store.inbox().to_vec())
 }
 
 fn unix_millis() -> u64 {
@@ -1750,7 +1805,40 @@ impl DeviceFabricRuntime {
     }
 }
 
+fn expire_nearby_consents(network: &ShellNetwork) {
+    let expired = nearby_drop_state().lock().map_or_else(
+        |_| Vec::new(),
+        |mut state| {
+            let ids = state
+                .incoming
+                .iter()
+                .filter(|(_, pending)| pending.received.elapsed() >= NEARBY_CONSENT_TIMEOUT)
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>();
+            ids.into_iter()
+                .filter_map(|id| state.incoming.remove(&id).map(|pending| (id, pending)))
+                .collect::<Vec<_>>()
+        },
+    );
+    for (transfer_id, pending) in expired {
+        let action = match pending.payload {
+            PendingNearbyPayload::Inline { .. } => PersonalFabricAction::NearbyDropResult {
+                request_id: pending.request_id,
+                file_name: pending.name,
+                accepted: false,
+            },
+            PendingNearbyPayload::Durable { .. } => PersonalFabricAction::NearbyTransferResult {
+                request_id: pending.request_id,
+                transfer_id,
+                accepted: false,
+            },
+        };
+        let _ = network.send_personal_fabric_action(&pending.source, action);
+    }
+}
+
 fn resume_nearby_transfers(network: &ShellNetwork) {
+    expire_nearby_consents(network);
     if let Ok(receiver) = nearby_staging_queue().1.lock() {
         while let Ok(staged) = receiver.try_recv() {
             if staged.result.is_err()
@@ -1871,23 +1959,31 @@ fn handle_nearby_drop_action(
             content_hash,
             bytes,
         } => {
-            let accepted = install_nearby_drop(&file_name, &bytes, content_hash).ok();
-            if let Some(path) = accepted.as_ref()
-                && let Ok(mut state) = nearby_drop_state().lock()
-            {
-                state.events.push_back(NearbyDropEvent::Received {
-                    path: path.clone(),
-                    peer: source.clone(),
-                });
-            }
-            let _ = network.send_personal_fabric_action(
-                &source,
-                PersonalFabricAction::NearbyDropResult {
-                    request_id: envelope_request_id,
-                    file_name,
-                    accepted: accepted.is_some(),
+            let total_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            let pending = PendingNearbyConsent {
+                source: source.clone(),
+                request_id: envelope_request_id,
+                name: file_name.clone(),
+                total_bytes,
+                received: Instant::now(),
+                payload: PendingNearbyPayload::Inline {
+                    bytes,
+                    content_hash,
                 },
-            );
+            };
+            let queued = nearby_drop_state()
+                .lock()
+                .is_ok_and(|mut state| state.insert_consent(envelope_request_id, pending));
+            if !queued {
+                let _ = network.send_personal_fabric_action(
+                    &source,
+                    PersonalFabricAction::NearbyDropResult {
+                        request_id: envelope_request_id,
+                        file_name,
+                        accepted: false,
+                    },
+                );
+            }
         }
         PersonalFabricAction::NearbyDropResult {
             request_id,
@@ -1917,40 +2013,26 @@ fn handle_nearby_drop_action(
             total_bytes,
             content_hash,
         } => {
-            let ready = with_nearby_transfer_store(|store| {
-                store.begin_incoming(
-                    transfer_id,
-                    source.as_str().to_string(),
-                    envelope_request_id,
-                    name,
-                    kind,
-                    total_bytes,
-                    content_hash,
-                    unix_millis(),
-                )
-            });
-            match ready {
-                Ok((committed_offset, prefix_hash)) => {
-                    let _ = network.send_personal_fabric_action(
-                        &source,
-                        PersonalFabricAction::NearbyTransferReady {
-                            request_id: envelope_request_id,
-                            transfer_id,
-                            committed_offset,
-                            prefix_hash,
-                        },
-                    );
-                }
-                Err(_) => {
-                    let _ = network.send_personal_fabric_action(
-                        &source,
-                        PersonalFabricAction::NearbyTransferResult {
-                            request_id: envelope_request_id,
-                            transfer_id,
-                            accepted: false,
-                        },
-                    );
-                }
+            let pending = PendingNearbyConsent {
+                source: source.clone(),
+                request_id: envelope_request_id,
+                name,
+                total_bytes,
+                received: Instant::now(),
+                payload: PendingNearbyPayload::Durable { kind, content_hash },
+            };
+            let queued = nearby_drop_state()
+                .lock()
+                .is_ok_and(|mut state| state.insert_consent(transfer_id, pending));
+            if !queued {
+                let _ = network.send_personal_fabric_action(
+                    &source,
+                    PersonalFabricAction::NearbyTransferResult {
+                        request_id: envelope_request_id,
+                        transfer_id,
+                        accepted: false,
+                    },
+                );
             }
         }
         PersonalFabricAction::NearbyTransferReady {
@@ -2034,6 +2116,13 @@ fn handle_nearby_drop_action(
             request_id,
             transfer_id,
         } => {
+            if let Ok(mut state) = nearby_drop_state().lock()
+                && state.incoming.get(&transfer_id).is_some_and(|pending| {
+                    pending.source == source && pending.request_id == request_id
+                })
+            {
+                state.incoming.remove(&transfer_id);
+            }
             let incoming = with_nearby_transfer_store(|store| {
                 Ok(store.inbox().iter().any(|entry| {
                     entry.id == transfer_id
@@ -2997,6 +3086,7 @@ pub fn request_nearby_drop(
 /// Returns an error when the transfer is not active, its exact peer cannot be
 /// reached, or durable local cleanup fails.
 pub fn cancel_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> Result<(), String> {
+    require_continuity(ContinuityCapability::FileTransfer)?;
     let pending = nearby_drop_state()
         .lock()
         .map_err(|_| "nearby transfer state is unavailable")?
@@ -3018,6 +3108,206 @@ pub fn cancel_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> 
         state.progress.remove(&transfer_id);
     }
     Ok(())
+}
+
+/// Resolve one receiver-side offer after explicit Files UI consent.
+///
+/// # Errors
+///
+/// Returns an error for an unknown/expired offer or when durable receive state
+/// cannot be created.
+pub fn decide_nearby_transfer(
+    network: &ShellNetwork,
+    transfer_id: [u8; 16],
+    accept: bool,
+) -> Result<(), String> {
+    require_continuity(ContinuityCapability::FileTransfer)?;
+    let pending = nearby_drop_state()
+        .lock()
+        .map_err(|_| "nearby transfer state is unavailable".to_string())?
+        .incoming
+        .remove(&transfer_id)
+        .ok_or_else(|| "nearby transfer consent expired".to_string())?;
+    match pending.payload {
+        PendingNearbyPayload::Inline {
+            bytes,
+            content_hash,
+        } => {
+            let install_result =
+                accept.then(|| install_nearby_drop(&pending.name, &bytes, content_hash));
+            let accepted = install_result.as_ref().is_some_and(Result::is_ok);
+            if let Some(Ok(path)) = install_result.as_ref()
+                && let Ok(mut state) = nearby_drop_state().lock()
+            {
+                state.events.push_back(NearbyDropEvent::Received {
+                    path: path.clone(),
+                    peer: pending.source.clone(),
+                });
+            }
+            network.send_personal_fabric_action(
+                &pending.source,
+                PersonalFabricAction::NearbyDropResult {
+                    request_id: pending.request_id,
+                    file_name: pending.name,
+                    accepted,
+                },
+            )?;
+            if let Some(Err(error)) = install_result {
+                return Err(error);
+            }
+        }
+        PendingNearbyPayload::Durable { kind, content_hash } => {
+            if !accept {
+                network.send_personal_fabric_action(
+                    &pending.source,
+                    PersonalFabricAction::NearbyTransferResult {
+                        request_id: pending.request_id,
+                        transfer_id,
+                        accepted: false,
+                    },
+                )?;
+                return Ok(());
+            }
+            let (committed_offset, prefix_hash) = with_nearby_transfer_store(|store| {
+                store.begin_incoming(
+                    transfer_id,
+                    pending.source.as_str().to_string(),
+                    pending.request_id,
+                    pending.name,
+                    kind,
+                    pending.total_bytes,
+                    content_hash,
+                    unix_millis(),
+                )
+            })?;
+            network.send_personal_fabric_action(
+                &pending.source,
+                PersonalFabricAction::NearbyTransferReady {
+                    request_id: pending.request_id,
+                    transfer_id,
+                    committed_offset,
+                    prefix_hash,
+                },
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Make one durable failed/queued send eligible for immediate re-offer.
+///
+/// # Errors
+///
+/// Returns an error when the transfer no longer exists in the durable outbox.
+pub fn retry_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> Result<(), String> {
+    require_continuity(ContinuityCapability::FileTransfer)?;
+    let exists = try_outbox_entries()
+        .iter()
+        .any(|entry| entry.id == transfer_id);
+    if !exists {
+        return Err("nearby transfer is no longer retryable".into());
+    }
+    if let Ok(mut state) = nearby_drop_state().lock() {
+        state.large_offers.remove(&transfer_id);
+        state.progress.remove(&transfer_id);
+        state.last_offer.remove(&transfer_id);
+    }
+    resume_nearby_transfers(network);
+    Ok(())
+}
+
+/// Project path-free, identity-redacted transfer state for Files.
+pub fn nearby_transfer_statuses(
+    network: &ShellNetwork,
+) -> Vec<runtime_collab::NearbyTransferStatus> {
+    if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::FileTransfer) {
+        return Vec::new();
+    }
+    expire_nearby_consents(network);
+    let fabric = network.device_fabric();
+    let label = |device: &crate::shell::personal_continuity::DeviceId| {
+        fabric.snapshots().get(device).map_or_else(
+            || "Nearby device".to_string(),
+            |snapshot| snapshot.presence.label.clone(),
+        )
+    };
+    let Ok(state) = nearby_drop_state().lock() else {
+        return Vec::new();
+    };
+    let mut statuses = state
+        .incoming
+        .iter()
+        .map(
+            |(transfer_id, pending)| runtime_collab::NearbyTransferStatus {
+                transfer_id: *transfer_id,
+                name: pending.name.clone(),
+                device_label: label(&pending.source),
+                direction: runtime_collab::NearbyTransferDirection::Receiving,
+                phase: runtime_collab::NearbyTransferPhase::AwaitingConsent,
+                transferred_bytes: 0,
+                total_bytes: pending.total_bytes,
+            },
+        )
+        .collect::<Vec<_>>();
+    for entry in try_inbox_entries() {
+        if statuses.len() >= runtime_collab::MAX_NEARBY_TRANSFER_STATUSES {
+            break;
+        }
+        let Ok(source) = crate::shell::personal_continuity::DeviceId::new(entry.source) else {
+            continue;
+        };
+        statuses.push(runtime_collab::NearbyTransferStatus {
+            transfer_id: entry.id,
+            name: entry.name,
+            device_label: label(&source),
+            direction: runtime_collab::NearbyTransferDirection::Receiving,
+            phase: runtime_collab::NearbyTransferPhase::Transferring,
+            transferred_bytes: entry.committed_offset.min(entry.total_bytes),
+            total_bytes: entry.total_bytes,
+        });
+    }
+    let outbox = try_outbox_entries();
+    for entry in outbox {
+        if statuses.len() >= runtime_collab::MAX_NEARBY_TRANSFER_STATUSES {
+            break;
+        }
+        let Ok(target) = crate::shell::personal_continuity::DeviceId::new(entry.target) else {
+            continue;
+        };
+        let (sent, total, phase) = state.progress.get(&entry.id).map_or(
+            (
+                0,
+                entry.total_bytes,
+                runtime_collab::NearbyTransferPhase::Queued,
+            ),
+            |(_, sent, total, status)| {
+                let phase = match status {
+                    PersonalMediaTransferStatus::Started
+                    | PersonalMediaTransferStatus::Progress => {
+                        runtime_collab::NearbyTransferPhase::Transferring
+                    }
+                    PersonalMediaTransferStatus::Completed => {
+                        runtime_collab::NearbyTransferPhase::Completed
+                    }
+                    PersonalMediaTransferStatus::Failed => {
+                        runtime_collab::NearbyTransferPhase::Failed
+                    }
+                };
+                (*sent, *total, phase)
+            },
+        );
+        statuses.push(runtime_collab::NearbyTransferStatus {
+            transfer_id: entry.id,
+            name: entry.name,
+            device_label: label(&target),
+            direction: runtime_collab::NearbyTransferDirection::Sending,
+            phase,
+            transferred_bytes: sent.min(total),
+            total_bytes: total,
+        });
+    }
+    statuses.truncate(runtime_collab::MAX_NEARBY_TRANSFER_STATUSES);
+    statuses
 }
 
 fn install_nearby_drop(
@@ -4582,6 +4872,29 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
             },
         );
     }
+    let incoming = nearby_drop_state().lock().map_or_else(
+        |_| Vec::new(),
+        |mut state| {
+            std::mem::take(&mut state.incoming)
+                .into_iter()
+                .collect::<Vec<_>>()
+        },
+    );
+    for (transfer_id, pending) in incoming {
+        let action = match pending.payload {
+            PendingNearbyPayload::Inline { .. } => PersonalFabricAction::NearbyDropResult {
+                request_id: pending.request_id,
+                file_name: pending.name,
+                accepted: false,
+            },
+            PendingNearbyPayload::Durable { .. } => PersonalFabricAction::NearbyTransferResult {
+                request_id: pending.request_id,
+                transfer_id,
+                accepted: false,
+            },
+        };
+        let _ = network.send_personal_fabric_action(&pending.source, action);
+    }
     let _ = with_nearby_transfer_store(|store| {
         let incoming = store
             .inbox()
@@ -4601,6 +4914,7 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
         state.large_offers.clear();
         state.progress.clear();
         state.last_offer.clear();
+        state.incoming.clear();
     }
 }
 
@@ -4616,6 +4930,71 @@ fn unix_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::shell::personal_continuity::DeviceId;
+
+    #[test]
+    fn nearby_consent_queue_is_bounded_and_requires_explicit_resolution() {
+        let source = DeviceId::new("source-device").expect("valid device");
+        let mut state = NearbyDropState::default();
+        for index in 1..=MAX_PENDING_NEARBY_CONSENTS {
+            let mut id = [0_u8; 16];
+            id[..8].copy_from_slice(&u64::try_from(index).expect("bounded index").to_le_bytes());
+            assert!(state.insert_consent(
+                id,
+                PendingNearbyConsent {
+                    source: source.clone(),
+                    request_id: id,
+                    name: format!("file-{index}"),
+                    total_bytes: 1,
+                    received: Instant::now(),
+                    payload: PendingNearbyPayload::Inline {
+                        bytes: vec![1],
+                        content_hash: *blake3::hash(&[1]).as_bytes(),
+                    },
+                },
+            ));
+        }
+        let first_id = 1_u64.to_le_bytes();
+        let mut duplicate_id = [0_u8; 16];
+        duplicate_id[..8].copy_from_slice(&first_id);
+        let colliding_source = DeviceId::new("colliding-device").expect("valid device");
+        assert!(!state.insert_consent(
+            duplicate_id,
+            PendingNearbyConsent {
+                source: colliding_source,
+                request_id: [0xaa; 16],
+                name: "collision".into(),
+                total_bytes: 1,
+                received: Instant::now(),
+                payload: PendingNearbyPayload::Inline {
+                    bytes: vec![2],
+                    content_hash: *blake3::hash(&[2]).as_bytes(),
+                },
+            },
+        ));
+        assert_eq!(
+            state
+                .incoming
+                .get(&duplicate_id)
+                .map(|pending| pending.source.as_str()),
+            Some("source-device")
+        );
+        assert_eq!(state.incoming.len(), MAX_PENDING_NEARBY_CONSENTS);
+        assert!(!state.insert_consent(
+            [0xff; 16],
+            PendingNearbyConsent {
+                source,
+                request_id: [0xff; 16],
+                name: "overflow".into(),
+                total_bytes: 1,
+                received: Instant::now(),
+                payload: PendingNearbyPayload::Inline {
+                    bytes: vec![1],
+                    content_hash: *blake3::hash(&[1]).as_bytes(),
+                },
+            },
+        ));
+        assert!(state.events.is_empty());
+    }
 
     #[test]
     fn master_kill_switch_removes_runtime_advertised_capabilities() {
