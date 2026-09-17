@@ -74,9 +74,9 @@ const NAV_BREAKPOINT: f64 = 760.0;
 /// caller can smuggle malformed pixels into an `Image`.
 const MAX_FRAME_PIXELS: u64 = 8_847_360; // 4096 × 2160
 const MAX_FRAME_BYTES: usize = 48 * 1024 * 1024;
-/// Capture thumbnails are decoded lazily, but must not accumulate without bound
-/// while someone scrolls a large camera roll.
-const MAX_THUMB_CACHE: usize = 48;
+/// Keep only the current and immediately superseded thumbnail while an async
+/// recent-capture handoff changes; Camera never owns a browsing cache.
+const MAX_THUMB_CACHE: usize = 2;
 fn white() -> Color {
     Color::from_rgb8(255, 255, 255)
 }
@@ -806,7 +806,9 @@ impl CameraApp {
         #[cfg(feature = "live-capture")]
         {
             if matches!(self.storage, Storage::Disk(_)) {
-                return crate::capture::list_devices();
+                let mut devices = crate::capture::list_devices();
+                devices.truncate(crate::actions::MAX_PUBLISHED_CAMERA_DEVICES);
+                return devices;
             }
         }
         Vec::new()
@@ -6562,7 +6564,6 @@ impl CameraApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::transaction::Transactable;
 
     fn sample_app() -> (CameraApp, AutoCommit, ObjId) {
         let mut app = CameraApp::sample();

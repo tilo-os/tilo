@@ -1,6 +1,5 @@
 //! Bounded file encoding and image decoding for Camera effects.
 //!
-//! Captures are ordinary files in a directory — the file system is the
 //! On a Tilo install captured bytes may be projected into the user's Pictures
 //! directory, while ownership and collection management remain with Photos or
 //! Video Player.
@@ -8,7 +7,7 @@
 //! Responsibilities kept here (pure IO, no rendering / no CRDT):
 //!   * [`resolve_dir`]   — where captures live (overridable for tests).
 //!   * [`write_photo`]   — encode an RGBA frame to a timestamped JPEG/PNG.
-//!   * [`load_thumb`]    — decode + downscale a file for the recent-capture peek.
+//!   * [`load_thumb`]    — decode + downscale the recent-capture peek.
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
