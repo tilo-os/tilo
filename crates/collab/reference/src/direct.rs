@@ -20,8 +20,9 @@ use crate::delivery::Id;
 
 /// Domain separation for the room-id derivation. Any change here re-points every
 /// existing conversation at a room nobody is in, hence the version in the string:
-/// a future scheme bumps it instead.
-const ROOM_ID_DOMAIN: &[u8] = b"tilo.direct-room.v1";
+/// a future scheme bumps it instead. The historical `qos` bytes are wire ABI,
+/// independent of the product's display name.
+const ROOM_ID_DOMAIN: &[u8] = b"qos.direct-room.v1";
 
 /// A room with exactly two members — the room a direct message is held in.
 ///
