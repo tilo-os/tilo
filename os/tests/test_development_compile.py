@@ -25,6 +25,70 @@ CACHE = driver.cache_configuration(CACHE_ENV)
 
 
 class CompileBoundaries(unittest.TestCase):
+    def test_hardware_profile_selection_rejects_mismatch_and_ignores_inherited_value(self):
+        with patch.dict(os.environ, {'TILO_HARDWARE_PROFILE': 'untrusted'}):
+            generic = driver.build_environment(WPE, '7', REVISION, 'c' * 64, '/signer', CACHE)
+            board = driver.build_environment(WPE, '7', REVISION, 'c' * 64, '/signer', CACHE,
+                architecture='aarch64', hardware_profile='lenovo-83ed')
+        self.assertEqual(generic['TILO_HARDWARE_PROFILE'], 'generic')
+        self.assertEqual(board['TILO_HARDWARE_PROFILE'], 'lenovo-83ed')
+        for profile, architecture in (('lenovo-83ed', 'x86_64'), ('../lenovo-83ed', 'aarch64'),
+                                      ('unknown-board', 'aarch64')):
+            with self.subTest(profile=profile, architecture=architecture), self.assertRaises(ValueError):
+                driver.validate_inputs('', '', REVISION, 'refs/heads/codex/test', mode='cache-only',
+                                       architecture=architecture, hardware_profile=profile)
+
+    def test_local_firmware_preflight_checks_all_bytes_and_manifest_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            for relative in ('os/dev/hardware_profile.py', 'os/hardware/profiles/lenovo-83ed.json'):
+                destination = repo / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((ROOT / relative).read_bytes())
+            directory = repo / 'os/hardware/firmware/lenovo-83ed'
+            directory.mkdir(parents=True)
+            definition = json.loads((ROOT / 'os/hardware/profiles/lenovo-83ed.json').read_text())
+            hashes = {}
+            for name in definition['firmware']:
+                payload = ('firmware fixture ' + name).encode()
+                (directory / name).write_bytes(payload)
+                hashes[name] = hashlib.sha256(payload).hexdigest()
+            manifest = {'schema_version': 1, 'profile': 'lenovo-83ed', 'files': hashes}
+            manifest_path = directory / 'manifest.json'
+            with patch.object(driver, 'REPO', repo):
+                self.assertEqual(driver.local_hardware_inputs('generic', 'aarch64'), {})
+                with self.assertRaisesRegex(ValueError, 'stage'):
+                    driver.local_hardware_inputs('lenovo-83ed', 'aarch64')
+                manifest_path.write_text(json.dumps(manifest))
+                self.assertEqual(driver.local_hardware_inputs('lenovo-83ed', 'aarch64'), hashes)
+                for change in ({'profile': 'another-board'}, {'schema_version': True},
+                               {'files': {}}, {'files': hashes | {'unexpected': 'a' * 64}}):
+                    manifest_path.write_text(json.dumps(manifest | change))
+                    with self.subTest(change=change), self.assertRaises(ValueError):
+                        driver.local_hardware_inputs('lenovo-83ed', 'aarch64')
+                manifest_path.write_text(json.dumps(manifest))
+                (directory / next(iter(hashes))).write_bytes(b'corruption')
+                with self.assertRaisesRegex(ValueError, 'SHA256 mismatch'):
+                    driver.local_hardware_inputs('lenovo-83ed', 'aarch64')
+
+    def test_hardware_failure_stops_before_cache_signing_or_build(self):
+        with patch.object(driver.os, 'getuid', return_value=0, create=True), \
+             patch.object(driver.platform, 'machine', return_value='aarch64'), \
+             patch.object(driver, 'run', side_effect=[REVISION, '']) as command, \
+             patch.object(driver, 'local_hardware_inputs', side_effect=ValueError('missing firmware')) as hardware, \
+             patch.object(driver, 'verify_remote_cache') as cache, \
+             patch.object(driver, 'compile_with_capacity_watchdog') as build:
+            with self.assertRaisesRegex(ValueError, 'missing firmware'):
+                driver.main(['--mode', 'full-build', '--architecture', 'aarch64',
+                    '--hardware-profile', 'lenovo-83ed', '--kernel-candidate', WPE,
+                    '--fex-payload-candidate', WPE, '--windows-guest-candidate', WPE,
+                    '--wpe', WPE, '--generation', '7', '--revision', REVISION,
+                    '--branch', 'refs/heads/codex/test'])
+            hardware.assert_called_once_with('lenovo-83ed', 'aarch64')
+            self.assertEqual(command.call_count, 2)  # Only read-only Git checks.
+            cache.assert_not_called()
+            build.assert_not_called()
+
     def test_adoption_excludes_current_producer_and_requires_pin(self):
         inputs = dict(wpe='', generation='7', revision=REVISION, branch='refs/heads/codex/test',
                       wpe_adoption_receipt='/work/adoption.json', wpe_adoption_sha256='d' * 64)
