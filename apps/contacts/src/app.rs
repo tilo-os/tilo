@@ -38,7 +38,10 @@ use ui::portal::{
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::Metrics;
 use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
+use ui::tokens::spacing::Spacing;
+use ui::tokens::typography::TypeScale;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Avatar, Button, ButtonFace, ButtonStyle, Checkbox, CheckboxFace, Chip, ChipLead, ChipStyle,
@@ -83,27 +86,33 @@ fn contacts_export_request(current_name: &str) -> PickRequest {
         )
 }
 
-const TOOLBAR_H: f64 = 48.0;
-/// Base sizes of the toolbar's people-count and button labels, and the
-/// authored 1× button height; the bar and its buttons grow with these lines.
-const TOOLBAR_TEXT: f32 = 14.0;
+/// Base size of the toolbar button labels (13pt sits between the type
+/// scale's `sm` and `base`, so it is named here); the people-count reads
+/// `base`. The bar is an `s12` strip and its buttons the theme's minimum
+/// pointer target, both grown with these lines (see `toolbar_h`).
 const TOOLBAR_BUTTON_TEXT: f32 = 13.0;
-const TOOLBAR_BUTTON_H: f64 = 32.0;
+/// Authored 1× widths of the toolbar faces: the primary New button and the
+/// two file buttons (Import / Export). Grown by the measured label growth.
+const TOOLBAR_NEW_W: f64 = 104.0;
+const TOOLBAR_FILE_W: f64 = 86.0;
+/// The toolbar labels, shared by the painter and the width measurement so
+/// the face is always sized for the text it actually shows.
+const TOOLBAR_IMPORT_LABEL: &str = "Import";
+const TOOLBAR_EXPORT_LABEL: &str = "Export";
+const TOOLBAR_NEW_LABEL: &str = "+ New";
 /// Authored 1× list row height; rows grow past it only when the measured
 /// name + subtitle lines need more (see [`ContactRowMetrics`]).
 const ROW_H: f64 = 62.0;
-/// Base text sizes of a list row's name and subtitle lines.
+/// Base text size of a list row's name line (15pt sits between the type
+/// scale's `base` and `lg`); the subtitle reads the scale's `sm`.
 const ROW_NAME_TEXT: f32 = 15.0;
-const ROW_SUB_TEXT: f32 = 12.0;
-/// Authored 1× avatar diameter in a list row.
+/// Authored 1× avatar diameter, in a list row and in the edit form's
+/// identity row alike.
 const ROW_AVATAR: f64 = 40.0;
-/// Vertical padding above and below a row's text block (the spacing scale's
-/// `s3`; literal because rows are solved in a renderer-less layout pass).
-const ROW_TEXT_PAD: f64 = 12.0;
-
 /// Height of one line of `size`-pt text at `text_scale` — the same value
 /// `TextRenderer::measure` reports for a single line, so the renderer-less
-/// layout pass and the painter agree on every row.
+/// layout pass and the painter agree on every row. The crate's one copy of
+/// the line-height formula.
 fn line_h(size: f32, text_scale: f32) -> f64 {
     let scale = if text_scale.is_finite() {
         text_scale.clamp(0.5, 4.0)
@@ -111,6 +120,29 @@ fn line_h(size: f32, text_scale: f32) -> f64 {
         1.0
     };
     f64::from(ui::text_render::TextStyle::new(size * scale).line_height_px())
+}
+
+/// The authored (or token) 1× minimum, or the measured line plus its theme
+/// pad rounded up to a whole pixel once scaled type needs more. Reserve
+/// (layout) and paint read the same tokens, so a row is never a fraction
+/// short of the text plus the gap the painter leaves, and every height is a
+/// whole pixel at every scale.
+fn at_least_whole(minimum: f64, measured: f64) -> f64 {
+    measured.ceil().max(minimum)
+}
+
+/// Base (unscaled) text sizes handed to the legacy renderer, read from the
+/// default type scale so the app states no sizes of its own; the renderer
+/// applies the accessibility scale. Sizes off the scale (11, 13, 15pt) are
+/// named constants beside the surfaces that use them.
+fn text_sm() -> f32 {
+    TypeScale::default().sm
+}
+fn text_base() -> f32 {
+    TypeScale::default().base
+}
+fn text_xl() -> f32 {
+    TypeScale::default().xl
 }
 
 /// List-row geometry for the current text scale. Built once per layout /
@@ -128,12 +160,13 @@ struct ContactRowMetrics {
 }
 
 impl ContactRowMetrics {
-    fn new(text_scale: f32) -> Self {
+    fn new(spacing: &Spacing, text_scale: f32) -> Self {
         let name_h = line_h(ROW_NAME_TEXT, text_scale);
-        let sub_h = line_h(ROW_SUB_TEXT, text_scale);
-        // An `s3` of breathing room above and below the text block: at 1× that
-        // is 33.75 + 24 < 62, so the authored row wins; at 2× it is 91.5.
-        let row_h = (name_h + sub_h + 2.0 * ROW_TEXT_PAD).max(ROW_H);
+        let sub_h = line_h(text_sm(), text_scale);
+        // The authored 62px row at 1× (33.75 + 24 sits inside it), or the two
+        // lines plus the `s3` the painter leaves above and below them, rounded
+        // up — always a whole pixel (92 at 2×).
+        let row_h = at_least_whole(ROW_H, name_h + sub_h + 2.0 * f64::from(spacing.s3));
         let avatar = (name_h + sub_h).max(ROW_AVATAR);
         Self {
             row_h,
@@ -175,12 +208,169 @@ const MAX_IMPORT_CONFLICTS: usize = 64;
 /// holds the Favorite pill and the Save/Cancel buttons. `layout_form` and
 /// `draw_form` both derive their offsets from these so the hit rects and the
 /// painted content stay aligned.
-const FORM_TITLE_TOP: f64 = 16.0; // identity row top, relative to detail pane top
-const FORM_TITLE_H: f64 = 44.0; // identity row height (fits the avatar chip)
-const FORM_ROW_GAP: f64 = 12.0; // vertical gap between header rows / before body
+/// The identity row is one theme panel row (`metrics.panel_row_height`)
+/// under an `s4` top inset, the actions row the theme's minimum pointer
+/// target, the gaps between them `s3`; see `FormMetrics`.
+///
+/// Authored 1× widths of the edit form's text faces (grown by their labels'
+/// measured growth) and the deliberately off-scale label band: an 11pt
+/// section label plus a 3px gap, which no spacing step matches.
+const FORM_LABEL_H: f64 = 18.0; // section label band above a field group
+const FORM_TYPE_W: f64 = 78.0; // phone / email / address type face
+const FORM_REMOVE_W: f64 = 30.0; // the "−" remove button
+const FORM_ADD_W: f64 = 130.0; // "+ Add phone" / "+ Add email"
+const FORM_ADD_ADDRESS_W: f64 = 150.0; // "+ Add address"
+const FORM_FAV_W: f64 = 120.0;
+const FORM_SAVE_W: f64 = 96.0;
+const FORM_CANCEL_W: f64 = 88.0;
+/// Base size of a section label (11pt sits between the type scale's `xs`
+/// and `sm`); the heading, fields and small faces read `xl`, `base`, `sm`.
+const FORM_LABEL_TEXT: f32 = 11.0;
+const FORM_ADD_PHONE_LABEL: &str = "+ Add phone";
+const FORM_ADD_EMAIL_LABEL: &str = "+ Add email";
+const FORM_ADD_ADDRESS_LABEL: &str = "+ Add address";
+const FORM_FAVORITED_LABEL: &str = "Favorited";
+const FORM_FAVORITE_LABEL: &str = "Favorite";
+const FORM_SAVE_LABEL: &str = "Save";
+const FORM_CANCEL_LABEL: &str = "Cancel";
 
-/// Avatar chip diameter in the edit-form identity row.
-const FORM_AVATAR: f64 = 40.0;
+/// How much wider each text-face label measures at the renderer's scale than
+/// at 1×. Captured in `render` (the only pass with a renderer) and fed to the
+/// layout, so a face keeps its authored 1× width and grows by exactly what
+/// its scaled label needs — never by a blanket `× scale`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct LabelGrowth {
+    import: f64,
+    export: f64,
+    new: f64,
+    add_phone: f64,
+    add_email: f64,
+    add_address: f64,
+    favorite: f64,
+    save: f64,
+    cancel: f64,
+}
+
+impl LabelGrowth {
+    fn measure(tr: &mut TextRenderer) -> Self {
+        let scale = tr.text_scale();
+        let mut growth = |label: &str, size: f32, weight: TextWeight| -> f64 {
+            if scale <= 1.0 {
+                return 0.0;
+            }
+            let scaled = tr.measure_weighted(label, size, None, weight).0;
+            // The renderer multiplies every size by its scale, so measuring at
+            // `size / scale` yields the label's 1× width on the same renderer.
+            let one_x = tr.measure_weighted(label, size / scale, None, weight).0;
+            f64::from(scaled - one_x).max(0.0)
+        };
+        Self {
+            import: growth(
+                TOOLBAR_IMPORT_LABEL,
+                TOOLBAR_BUTTON_TEXT,
+                TextWeight::Medium,
+            ),
+            export: growth(
+                TOOLBAR_EXPORT_LABEL,
+                TOOLBAR_BUTTON_TEXT,
+                TextWeight::Medium,
+            ),
+            new: growth(TOOLBAR_NEW_LABEL, TOOLBAR_BUTTON_TEXT, TextWeight::Medium),
+            add_phone: growth(FORM_ADD_PHONE_LABEL, text_sm(), TextWeight::Medium),
+            add_email: growth(FORM_ADD_EMAIL_LABEL, text_sm(), TextWeight::Medium),
+            add_address: growth(FORM_ADD_ADDRESS_LABEL, text_sm(), TextWeight::Medium),
+            favorite: growth(FORM_FAVORITED_LABEL, text_sm(), TextWeight::Regular),
+            save: growth(FORM_SAVE_LABEL, TOOLBAR_BUTTON_TEXT, TextWeight::Medium),
+            cancel: growth(FORM_CANCEL_LABEL, TOOLBAR_BUTTON_TEXT, TextWeight::Medium),
+        }
+    }
+
+    /// Equal to within half a pixel — the threshold below which re-running
+    /// layout would move nothing the eye or the pointer can tell apart.
+    fn approx_eq(&self, other: &Self) -> bool {
+        let pairs = [
+            (self.import, other.import),
+            (self.export, other.export),
+            (self.new, other.new),
+            (self.add_phone, other.add_phone),
+            (self.add_email, other.add_email),
+            (self.add_address, other.add_address),
+            (self.favorite, other.favorite),
+            (self.save, other.save),
+            (self.cancel, other.cancel),
+        ];
+        pairs.iter().all(|(a, b)| (a - b).abs() <= 0.5)
+    }
+}
+
+/// Edit-form geometry for the current text scale: every row is its authored
+/// 1× height grown by the line it carries (whole pixels, see `authored_h`),
+/// and every text face keeps its authored width plus its label's measured
+/// growth. `layout_form`, the form painters and the ensure-visible scroll all
+/// read this one description, so hit rects and painted faces cannot drift.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FormMetrics {
+    /// Identity row (avatar + heading) and the Favorite / Save / Cancel row.
+    title_h: f64,
+    action_h: f64,
+    /// Section label band above a field group: the label line plus its gap.
+    label_h: f64,
+    /// A text field; the type face beside a value keeps its authored
+    /// height (the shared `Chip` sizes its label from the pill height) and
+    /// centres in the row, the remove button grows with the field.
+    field_h: f64,
+    type_w: f64,
+    type_h: f64,
+    remove_w: f64,
+    /// The "+ Add …" faces.
+    add_h: f64,
+    add_w: f64,
+    add_address_w: f64,
+    /// Header controls.
+    fav_w: f64,
+    save_w: f64,
+    cancel_w: f64,
+}
+
+impl FormMetrics {
+    /// Every row is the theme's token for that control (panel row, minimum
+    /// pointer target, selector height) or its authored 1× value, or the
+    /// measured line plus the same theme pad the painter leaves, rounded up
+    /// (`at_least_whole`) — so reserve and paint read one set of tokens.
+    fn new(spacing: &Spacing, metrics: &Metrics, text_scale: f32, growth: &LabelGrowth) -> Self {
+        let (s1, s2, s3) = (
+            f64::from(spacing.s1),
+            f64::from(spacing.s2),
+            f64::from(spacing.s3),
+        );
+        let field_h = at_least_whole(FIELD_H, line_h(text_base(), text_scale) + 2.0 * s2);
+        let face = |authored: f64, growth: f64| (authored + growth).ceil();
+        Self {
+            title_h: at_least_whole(
+                f64::from(metrics.panel_row_height),
+                line_h(text_xl(), text_scale) + s2,
+            ),
+            action_h: at_least_whole(
+                f64::from(metrics.min_pointer_target),
+                line_h(TOOLBAR_BUTTON_TEXT, text_scale) + s3,
+            ),
+            label_h: at_least_whole(FORM_LABEL_H, line_h(FORM_LABEL_TEXT, text_scale) + s1),
+            field_h,
+            type_w: FORM_TYPE_W,
+            type_h: FIELD_H,
+            remove_w: face(FORM_REMOVE_W, field_h - FIELD_H),
+            add_h: at_least_whole(
+                f64::from(metrics.selector_height),
+                line_h(text_sm(), text_scale) + s3,
+            ),
+            add_w: face(FORM_ADD_W, growth.add_phone.max(growth.add_email)),
+            add_address_w: face(FORM_ADD_ADDRESS_W, growth.add_address),
+            fav_w: face(FORM_FAV_W, growth.favorite),
+            save_w: face(FORM_SAVE_W, growth.save),
+            cancel_w: face(FORM_CANCEL_W, growth.cancel),
+        }
+    }
+}
 
 /// Type labels offered in the phone/email/address chip menu.
 const TYPE_OPTIONS: &[&str] = &["home", "work", "mobile", "main", "other"];
@@ -845,6 +1035,19 @@ pub struct ContactsApp {
     /// The theme's text scale, cached during layout so row heights, the
     /// push breakpoint and header stacking follow the type they carry.
     text_scale: f32,
+    /// How much wider each text-face label (toolbar buttons, form actions,
+    /// "+ Add …" buttons) measures at the renderer's scale than at 1×,
+    /// captured at the top of each paint; the layout grows the authored face
+    /// widths by exactly this, so a scaled label never truncates and the 1×
+    /// design is untouched.
+    label_growth: LabelGrowth,
+    /// The theme's spacing and density metrics, cached in `build_layout` so
+    /// the renderer-less layout pass reads the same tokens the painters do.
+    spacing: Spacing,
+    metrics: Metrics,
+    /// The edit form's row grid, solved once per `layout_form` and read by
+    /// every form painter and the ensure-visible scroll.
+    form_m: FormMetrics,
 
     last_mouse: Point,
     dirty: bool,
@@ -966,6 +1169,15 @@ impl ContactsApp {
             push: PushNav::default(),
             narrow: false,
             text_scale: 1.0,
+            label_growth: LabelGrowth::default(),
+            spacing: Spacing::default(),
+            metrics: Metrics::BASE,
+            form_m: FormMetrics::new(
+                &Spacing::default(),
+                &Metrics::BASE,
+                1.0,
+                &LabelGrowth::default(),
+            ),
             last_mouse: Point::ZERO,
             dirty: true,
             relayout: true,
@@ -2043,7 +2255,12 @@ impl ContactsApp {
         // List header: search + filter row. Control heights follow the text
         // they carry, so a 2× placeholder or filter label is never clipped by
         // a 1× field; at 1× the authored heights win.
-        let search_h = (line_h(14.0, self.text_scale) + 2.0 * ROW_TEXT_PAD).max(FIELD_H);
+        // The authored 38px field (17.5 + 16 sits inside it), or the
+        // placeholder line plus an `s2` above and below, rounded up.
+        let search_h = at_least_whole(
+            FIELD_H,
+            line_h(text_base(), self.text_scale) + 2.0 * f64::from(self.spacing.s2),
+        );
         // The filter pills keep their authored height: the shared `Chip`
         // derives its label size from the pill height, so growing the pill
         // here would only enlarge a label the toolkit already double-scales
@@ -2142,39 +2359,88 @@ impl ContactsApp {
     /// List-row geometry at the current text scale — one description shared
     /// by the virtualised row rects, scroll extent, ensure-visible and paint.
     fn row_metrics(&self) -> ContactRowMetrics {
-        ContactRowMetrics::new(self.text_scale)
+        ContactRowMetrics::new(&self.spacing, self.text_scale)
     }
 
-    /// Toolbar height: the authored 48px, or the people-count line plus its
-    /// padding once the type has grown past that. Layout and paint share it.
+    /// Toolbar height: the theme's `s12` strip (48px at 1×), or the
+    /// people-count line plus an `s3` above and below once the type has grown
+    /// past that. Layout and paint share it.
     fn toolbar_h(&self) -> f64 {
-        (line_h(TOOLBAR_TEXT, self.text_scale) + 2.0 * ROW_TEXT_PAD).max(TOOLBAR_H)
+        at_least_whole(
+            f64::from(self.spacing.s12),
+            line_h(text_base(), self.text_scale) + 2.0 * f64::from(self.spacing.s3),
+        )
     }
 
-    /// Toolbar button height: the authored 32px, or the 13pt label line plus
-    /// a small pad, so a scaled "Import" never spills out of its face.
+    /// Toolbar button height: the theme's minimum pointer target (32px at
+    /// 1×), or the 13pt label line plus an `s2`, so a scaled "Import" never
+    /// spills out of its face.
     fn toolbar_button_h(&self) -> f64 {
-        (line_h(TOOLBAR_BUTTON_TEXT, self.text_scale) + 8.0).max(TOOLBAR_BUTTON_H)
+        at_least_whole(
+            f64::from(self.metrics.min_pointer_target),
+            line_h(TOOLBAR_BUTTON_TEXT, self.text_scale) + f64::from(self.spacing.s2),
+        )
     }
 
-    /// Toolbar buttons (right-aligned), centred on the bar. Their labels are
-    /// text, so the authored widths grow with the text scale; the compact
-    /// icon-only faces stay square to the button height.
+    /// Toolbar buttons (right-aligned), centred on the bar. Each face keeps
+    /// its authored 1× width and grows by exactly how much wider its measured
+    /// label is at the current scale (`toolbar_label_growth`, captured in
+    /// `render`); the compact icon-only faces stay square to the button height.
     fn layout_toolbar_buttons(&mut self, r: Rect, toolbar_h: f64) {
         let btn_h = self.toolbar_button_h();
         let btn_y = r.y0 + (toolbar_h - btn_h) / 2.0;
         let compact_toolbar = self.toolbar_is_compact();
-        let grow = f64::from(self.text_scale.max(1.0));
+        let g = self.label_growth;
         let mut x = r.x1 - PAD;
         let compact_w = 40.0_f64.max(btn_h);
-        let new_w = if compact_toolbar { compact_w } else { 104.0 * grow };
+        let face_w = |authored: f64, growth: f64| {
+            if compact_toolbar {
+                compact_w
+            } else {
+                (authored + growth).ceil()
+            }
+        };
+        let new_w = face_w(TOOLBAR_NEW_W, g.new);
         self.hit.new = Rect::new(x - new_w, btn_y, x, btn_y + btn_h);
         x -= new_w + if compact_toolbar { 6.0 } else { 10.0 };
-        let exp_w = if compact_toolbar { compact_w } else { 86.0 * grow };
+        let exp_w = face_w(TOOLBAR_FILE_W, g.export);
         self.hit.export = Rect::new(x - exp_w, btn_y, x, btn_y + btn_h);
         x -= exp_w + if compact_toolbar { 6.0 } else { 10.0 };
-        let imp_w = if compact_toolbar { compact_w } else { 86.0 * grow };
+        let imp_w = face_w(TOOLBAR_FILE_W, g.import);
         self.hit.import = Rect::new(x - imp_w, btn_y, x, btn_y + btn_h);
+    }
+
+    /// Measure how much wider each text-face label is at the renderer's
+    /// scale than at 1× and, when that changed, request a relayout so the
+    /// next frame's layout pass sizes the faces (and their hit rects) for it.
+    /// Runs at the top of `render` — paint never re-runs layout itself; at 1×
+    /// every growth is zero and nothing happens.
+    fn refresh_label_growth(&mut self, tr: &mut TextRenderer) {
+        let next = LabelGrowth::measure(tr);
+        if !next.approx_eq(&self.label_growth) {
+            self.label_growth = next;
+            self.relayout = true;
+            self.dirty = true;
+        }
+    }
+
+    /// The edit form's row grid, as solved by the last `layout_form`.
+    fn form_metrics(&self) -> FormMetrics {
+        self.form_m
+    }
+
+    /// Top of the form's scrollable body: directly under the identity row
+    /// and the actions row (the first field row sits one `s3` below). One
+    /// derivation for `layout_form`, the body clip in `draw_form` and the
+    /// ensure-visible scroll, so none of them can disagree.
+    fn form_body_top(&self) -> f64 {
+        let m = self.form_metrics();
+        self.detail_rect.y0
+            + f64::from(self.spacing.s4)
+            + m.title_h
+            + f64::from(self.spacing.s3)
+            + m.action_h
+            + self.detail_top_offset()
     }
 
     fn empty_list_action_for(&self, is_empty: bool) -> EmptyListAction {
@@ -2232,23 +2498,32 @@ impl ContactsApp {
         // Action order matches this app's dialogs (delete-confirm, unsaved
         // guard, export): the primary action sits at the far right and the
         // secondary just left of it — one convention everywhere.
-        let title_y = area.y0 + FORM_TITLE_TOP + off;
-        let by = title_y + FORM_TITLE_H + FORM_ROW_GAP; // controls row top
-        let top = by + 32.0 + FORM_ROW_GAP; // first field row top
+        // Solve the row grid once per layout; painters read the cached copy.
+        self.form_m = FormMetrics::new(
+            &self.spacing,
+            &self.metrics,
+            self.text_scale,
+            &self.label_growth,
+        );
+        let m = self.form_m;
+        let (s3, s4) = (f64::from(self.spacing.s3), f64::from(self.spacing.s4));
+        let title_y = area.y0 + s4 + off;
+        let by = title_y + m.title_h + s3; // controls row top
+        let top = self.form_body_top() + s3; // first field row top
         let mut y = top - self.detail_scroll;
 
-        self.hit.save = Rect::new(x1 - 96.0, by, x1, by + 32.0);
+        self.hit.save = Rect::new(x1 - m.save_w, by, x1, by + m.action_h);
         self.hit.cancel = Rect::new(
-            self.hit.save.x0 - 8.0 - 88.0,
+            self.hit.save.x0 - 8.0 - m.cancel_w,
             by,
             self.hit.save.x0 - 8.0,
-            by + 32.0,
+            by + m.action_h,
         );
-        self.hit.fav_toggle = Rect::new(x0, by, x0 + 120.0, by + 32.0);
+        self.hit.fav_toggle = Rect::new(x0, by, x0 + m.fav_w, by + m.action_h);
 
-        let label_h = 18.0;
+        let label_h = m.label_h;
         let gap = 12.0;
-        let nh = FIELD_H;
+        let nh = m.field_h;
         let half = (w - 10.0) / 2.0;
 
         let (n_phones, n_emails, n_addr) = {
@@ -2317,13 +2592,15 @@ impl ContactsApp {
         y: &mut f64,
         plan: &mut Vec<(Slot, Rect)>,
     ) {
-        let label_h = 18.0;
-        let gap = 12.0;
-        let nh = FIELD_H;
+        let m = self.form_metrics();
+        let (label_h, gap, nh) = (m.label_h, 12.0, m.field_h);
         *y += label_h;
         for i in 0..n {
-            let chip = Rect::new(x0, *y, x0 + 78.0, *y + nh);
-            let rm = Rect::new(x1 - 30.0, *y, x1, *y + nh);
+            // The type face keeps its authored height and centres in the
+            // (possibly taller) row; see `FormMetrics::type_h`.
+            let chip_y = *y + (nh - m.type_h) / 2.0;
+            let chip = Rect::new(x0, chip_y, x0 + m.type_w, chip_y + m.type_h);
+            let rm = Rect::new(x1 - m.remove_w, *y, x1, *y + nh);
             plan.push((
                 Slot::Phone(i),
                 Rect::new(chip.x1 + 8.0, *y, rm.x0 - 8.0, *y + nh),
@@ -2332,8 +2609,8 @@ impl ContactsApp {
             self.hit.remove_btns.push((TypeTarget::Phone(i), rm));
             *y += nh + 8.0;
         }
-        self.hit.add_phone = Rect::new(x0, *y, x0 + 130.0, *y + 28.0);
-        *y += 28.0 + gap;
+        self.hit.add_phone = Rect::new(x0, *y, x0 + m.add_w, *y + m.add_h);
+        *y += m.add_h + gap;
     }
 
     /// Email rows: `[chip][value][remove]` per email, then the "+ Add
@@ -2346,13 +2623,15 @@ impl ContactsApp {
         y: &mut f64,
         plan: &mut Vec<(Slot, Rect)>,
     ) {
-        let label_h = 18.0;
-        let gap = 12.0;
-        let nh = FIELD_H;
+        let m = self.form_metrics();
+        let (label_h, gap, nh) = (m.label_h, 12.0, m.field_h);
         *y += label_h;
         for i in 0..n {
-            let chip = Rect::new(x0, *y, x0 + 78.0, *y + nh);
-            let rm = Rect::new(x1 - 30.0, *y, x1, *y + nh);
+            // The type face keeps its authored height and centres in the
+            // (possibly taller) row; see `FormMetrics::type_h`.
+            let chip_y = *y + (nh - m.type_h) / 2.0;
+            let chip = Rect::new(x0, chip_y, x0 + m.type_w, chip_y + m.type_h);
+            let rm = Rect::new(x1 - m.remove_w, *y, x1, *y + nh);
             plan.push((
                 Slot::Email(i),
                 Rect::new(chip.x1 + 8.0, *y, rm.x0 - 8.0, *y + nh),
@@ -2361,8 +2640,8 @@ impl ContactsApp {
             self.hit.remove_btns.push((TypeTarget::Email(i), rm));
             *y += nh + 8.0;
         }
-        self.hit.add_email = Rect::new(x0, *y, x0 + 130.0, *y + 28.0);
-        *y += 28.0 + gap;
+        self.hit.add_email = Rect::new(x0, *y, x0 + m.add_w, *y + m.add_h);
+        *y += m.add_h + gap;
     }
 
     /// Address rows: chip + street, then city/region, then postal/country,
@@ -2377,13 +2656,15 @@ impl ContactsApp {
         y: &mut f64,
         plan: &mut Vec<(Slot, Rect)>,
     ) {
-        let label_h = 18.0;
-        let gap = 12.0;
-        let nh = FIELD_H;
+        let m = self.form_metrics();
+        let (label_h, gap, nh) = (m.label_h, 12.0, m.field_h);
         *y += label_h;
         for i in 0..n {
-            let chip = Rect::new(x0, *y, x0 + 78.0, *y + nh);
-            let rm = Rect::new(x1 - 30.0, *y, x1, *y + nh);
+            // The type face keeps its authored height and centres in the
+            // (possibly taller) row; see `FormMetrics::type_h`.
+            let chip_y = *y + (nh - m.type_h) / 2.0;
+            let chip = Rect::new(x0, chip_y, x0 + m.type_w, chip_y + m.type_h);
+            let rm = Rect::new(x1 - m.remove_w, *y, x1, *y + nh);
             plan.push((
                 Slot::AddrStreet(i),
                 Rect::new(chip.x1 + 8.0, *y, rm.x0 - 8.0, *y + nh),
@@ -2404,8 +2685,8 @@ impl ContactsApp {
             ));
             *y += nh + 12.0;
         }
-        self.hit.add_address = Rect::new(x0, *y, x0 + 150.0, *y + 28.0);
-        *y += 28.0 + gap;
+        self.hit.add_address = Rect::new(x0, *y, x0 + m.add_address_w, *y + m.add_h);
+        *y += m.add_h + gap;
     }
 }
 
@@ -2504,6 +2785,7 @@ impl ContactsApp {
             self.layout_detail_actions();
             self.dirty = true;
         }
+        self.refresh_label_growth(tr);
 
         // Expire a stale toast. `render` runs every animation frame while a
         // toast is up (see `needs_animation_frame`), so this fires promptly
@@ -2734,12 +3016,12 @@ impl ContactsApp {
         // under the Import button.
         let count_x = self.rect.x0 + PAD;
         let (count_w, count_h) =
-            tr.measure_weighted(&count, TOOLBAR_TEXT, None, TextWeight::Semibold);
+            tr.measure_weighted(&count, text_base(), None, TextWeight::Semibold);
         if count_x + f64::from(count_w) < self.hit.import.x0 - 12.0 {
             tr.draw_text_weighted(
                 scene,
                 &count,
-                TOOLBAR_TEXT,
+                text_base(),
                 c.text_primary,
                 t * Affine::translate((
                     count_x,
@@ -2757,7 +3039,7 @@ impl ContactsApp {
             tr,
             theme,
             self.hit.import,
-            if compact { "↓" } else { "Import" },
+            if compact { "↓" } else { TOOLBAR_IMPORT_LABEL },
             false,
             hov(self.hit.import),
             false,
@@ -2772,7 +3054,7 @@ impl ContactsApp {
                 tr,
                 theme,
                 self.hit.export,
-                if compact { "↑" } else { "Export" },
+                if compact { "↑" } else { TOOLBAR_EXPORT_LABEL },
                 false,
                 hov(self.hit.export),
                 false,
@@ -2783,7 +3065,7 @@ impl ContactsApp {
                 tr,
                 theme,
                 self.hit.new,
-                if compact { "+" } else { "+ New" },
+                if compact { "+" } else { TOOLBAR_NEW_LABEL },
                 true,
                 hov(self.hit.new),
                 false,
@@ -2954,11 +3236,11 @@ impl ContactsApp {
         );
         let sub = contact.subtitle();
         if !sub.is_empty() {
-            let sub = tr.elide_to_width(&sub, ROW_SUB_TEXT, avail);
+            let sub = tr.elide_to_width(&sub, text_sm(), avail);
             tr.draw_text(
                 scene,
                 &sub,
-                ROW_SUB_TEXT,
+                text_sm(),
                 c.text_dim,
                 t * Affine::translate((tx, name_y + m.name_h)),
                 None,
@@ -3391,7 +3673,6 @@ impl ContactsApp {
         presence: &PresenceCtx,
     ) {
         let area = self.detail_rect;
-        let off = self.detail_top_offset();
 
         // Header band (not scrolled), two stacked rows. Row 1 is the identity
         // anchor: a compact avatar chip + the record's name, the same shape the
@@ -3404,7 +3685,7 @@ impl ContactsApp {
         // Scrollable body, clipped below the two-row header band (title row +
         // controls row). Derived from the same constants as `layout_form` so
         // the clip starts exactly under the Favorite/Save/Cancel row.
-        let body_top = area.y0 + FORM_TITLE_TOP + FORM_TITLE_H + FORM_ROW_GAP + 32.0 + off;
+        let body_top = self.form_body_top();
         let body = Rect::new(area.x0, body_top, area.x1, area.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &body);
 
@@ -3451,10 +3732,10 @@ impl ContactsApp {
                 d.first.trim().is_empty() && d.last.trim().is_empty() && d.org.trim().is_empty();
             (f.is_new && blank, d.display_name(), d.initials())
         };
-        let title_y = area.y0 + FORM_TITLE_TOP + off;
+        let title_y = area.y0 + f64::from(self.spacing.s4) + off;
         // Avatar chip, vertically centred in the identity row.
-        let av_y = title_y + (FORM_TITLE_H - FORM_AVATAR) / 2.0;
-        let av = Rect::new(x0, av_y, x0 + FORM_AVATAR, av_y + FORM_AVATAR);
+        let av_y = title_y + (self.form_metrics().title_h - ROW_AVATAR) / 2.0;
+        let av = Rect::new(x0, av_y, x0 + ROW_AVATAR, av_y + ROW_AVATAR);
         draw_avatar(scene, t, tr, theme, av, &initials);
         // Heading: the forming name, or a clear "New Contact" while it is blank
         // so a fresh record never reads as the "No Name" placeholder.
@@ -3472,13 +3753,15 @@ impl ContactsApp {
             self.hit.cancel.x0 - 12.0
         };
         let head_avail = (heading_right - (av.x1 + 12.0)).max(40.0) as f32;
-        let heading = tr.elide_to_width_weighted(&heading, 20.0, head_avail, TextWeight::Bold);
+        let heading = tr.elide_to_width_weighted(&heading, text_xl(), head_avail, TextWeight::Bold);
+        // Centred on the measured heading line, on the avatar's axis.
+        let (_, heading_h) = tr.measure_weighted(&heading, text_xl(), None, TextWeight::Bold);
         tr.draw_text_weighted(
             scene,
             &heading,
-            20.0,
+            text_xl(),
             c.text_primary,
-            t * Affine::translate((av.x1 + 12.0, av.center().y - 13.0)),
+            t * Affine::translate((av.x1 + 12.0, av.center().y - f64::from(heading_h) / 2.0)),
             None,
             TextWeight::Bold,
         );
@@ -3505,16 +3788,22 @@ impl ContactsApp {
                 theme.accent_primary,
                 fav,
             );
+            let fav_label = if fav {
+                FORM_FAVORITED_LABEL
+            } else {
+                FORM_FAVORITE_LABEL
+            };
+            let (_, fav_h) = tr.measure(fav_label, text_sm(), None);
             tr.draw_text(
                 scene,
-                if fav { "Favorited" } else { "Favorite" },
-                12.0,
+                fav_label,
+                text_sm(),
                 if fav {
                     theme.accent_primary
                 } else {
                     c.text_dim
                 },
-                t * Affine::translate((r.x0 + 30.0, r.center().y - 7.0)),
+                t * Affine::translate((r.x0 + 30.0, r.center().y - f64::from(fav_h) / 2.0)),
                 None,
             );
         }
@@ -3555,13 +3844,17 @@ impl ContactsApp {
     ) {
         let c = &theme.tokens.colors;
         let x0 = self.detail_rect.x0 + PAD;
+        // The label sits in the band `layout_form` reserved above its group
+        // (`FormMetrics::label_h`), so a scaled label never overprints the
+        // field below or the row above.
+        let label_h = self.form_metrics().label_h;
         let label = |scene: &mut Scene, tr: &mut TextRenderer, text: &str, rect: Rect| {
             tr.draw_text_weighted(
                 scene,
                 text,
-                11.0,
+                FORM_LABEL_TEXT,
                 c.text_dim,
-                t * Affine::translate((rect.x0, rect.y0 - 18.0)),
+                t * Affine::translate((rect.x0, rect.y0 - label_h)),
                 None,
                 TextWeight::Semibold,
             );
@@ -3642,12 +3935,17 @@ impl ContactsApp {
                 if r.width() > 0.0 {
                     let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
                     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &shape);
+                    let hint = placeholder_for(f.slot);
+                    let (_, hint_h) = tr.measure(hint, text_base(), None);
                     tr.draw_text(
                         scene,
-                        placeholder_for(f.slot),
-                        14.0,
+                        hint,
+                        text_base(),
                         c.text_dim,
-                        t * Affine::translate((r.x0 + 12.0, r.center().y - 9.0)),
+                        t * Affine::translate((
+                            r.x0 + 12.0,
+                            r.center().y - f64::from(hint_h) / 2.0,
+                        )),
                         Some((r.width() - 20.0) as f32),
                     );
                     scene.pop_layer();
@@ -4187,29 +4485,26 @@ fn detail_field(
     // The label column is sized from the widest label the app can show, so
     // every value in a card starts on one edge and a scaled label never runs
     // under its value. At 1× the authored 78px column still wins.
-    let widest = f64::from(
-        tr.measure(DETAIL_WIDEST_LABEL, DETAIL_LABEL_TEXT, None)
-            .0,
-    );
+    let widest = f64::from(tr.measure(DETAIL_WIDEST_LABEL, text_sm(), None).0);
     let label_col = (widest + f64::from(sp.s4)).max(DETAIL_LABEL_COL);
-    let (_, label_h) = tr.measure(label, DETAIL_LABEL_TEXT, None);
-    let (_, value_line_h) = tr.measure("Ag", DETAIL_VALUE_TEXT, None);
+    let (_, label_h) = tr.measure(label, text_sm(), None);
+    let (_, value_line_h) = tr.measure("Ag", text_base(), None);
     // Label and the value's first line share a centre.
     let label_y = *y + (f64::from(value_line_h) - f64::from(label_h)) / 2.0;
     tr.draw_text(
         scene,
         label,
-        DETAIL_LABEL_TEXT,
+        text_sm(),
         c.text_dim,
         t * Affine::translate((x0, label_y)),
         Some((label_col - f64::from(sp.s2)) as f32),
     );
     let vw = (x1 - x0 - label_col).max(40.0);
-    let h = f64::from(tr.measure(value, DETAIL_VALUE_TEXT, Some(vw as f32)).1);
+    let h = f64::from(tr.measure(value, text_base(), Some(vw as f32)).1);
     tr.draw_text(
         scene,
         value,
-        DETAIL_VALUE_TEXT,
+        text_base(),
         c.text_primary,
         t * Affine::translate((x0 + label_col, *y)),
         Some(vw as f32),
@@ -4217,9 +4512,6 @@ fn detail_field(
     *y += h.max(20.0) + f64::from(sp.s2);
 }
 
-/// Base sizes of a detail card's field label and value.
-const DETAIL_LABEL_TEXT: f32 = 12.0;
-const DETAIL_VALUE_TEXT: f32 = 14.0;
 /// Authored 1× width of the detail label column.
 const DETAIL_LABEL_COL: f64 = 78.0;
 /// The widest label a detail card can show (see `TYPE_OPTIONS`, "date",
@@ -4291,22 +4583,21 @@ fn add_button(
     rect: Rect,
     label: &str,
 ) {
-    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
-    scene.stroke(
-        &Stroke::new(1.0),
-        t,
-        theme.accent_primary.with_alpha_factor(0.6),
-        None,
-        &shape,
-    );
-    tr.draw_text_weighted(
+    // The shared button face: it centres its label on the measured line and
+    // carries hover/press/theming, where the previous local stroke-and-text
+    // sat the label on the font size (1.5px low) and had no states at all.
+    // Neutral matches the type buttons beside each row, so the add action
+    // reads as one more bounded control in the same family.
+    Button::paint(
         scene,
-        label,
-        12.0,
-        theme.accent_primary,
-        t * Affine::translate((rect.x0 + 10.0, rect.center().y - 7.0)),
-        None,
-        TextWeight::Medium,
+        t,
+        tr,
+        theme,
+        &ButtonFace::new(rect, label)
+            .style(ButtonStyle::Neutral)
+            .radius(f64::from(theme.tokens.radii.md))
+            .text_size(12.0)
+            .weight(TextWeight::Medium),
     );
 }
 
@@ -4954,6 +5245,8 @@ impl Widget for ContactsApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = theme.text_scale;
+        self.spacing = theme.tokens.spacing;
+        self.metrics = theme.tokens.metrics;
         // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
         // cannot actually return `Err` for a fresh leaf (see the
         // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
@@ -6775,9 +7068,7 @@ impl ContactsApp {
         if self.mode != Mode::Edit {
             return;
         }
-        let off = self.detail_top_offset();
-        let body_top =
-            self.detail_rect.y0 + FORM_TITLE_TOP + FORM_TITLE_H + FORM_ROW_GAP + 32.0 + off;
+        let body_top = self.form_body_top();
         let body_bot = self.detail_rect.y1;
         // The focused field's last-laid-out rect (reflecting the current
         // scroll). `Rect` is `Copy`, so the borrow of `self.form` ends here.
@@ -7846,25 +8137,213 @@ mod tests {
     /// the 2× name/subtitle collision and the clipped people-count are gone.
     #[test]
     fn row_and_toolbar_metrics_follow_the_text_scale() {
-        let one = ContactRowMetrics::new(1.0);
+        let sp = Spacing::default();
+        let one = ContactRowMetrics::new(&sp, 1.0);
         assert_eq!(one.row_h, ROW_H);
         assert_eq!(one.avatar, ROW_AVATAR);
 
-        let two = ContactRowMetrics::new(2.0);
-        assert!(two.row_h >= two.name_h + two.sub_h + 2.0 * ROW_TEXT_PAD);
+        let two = ContactRowMetrics::new(&sp, 2.0);
+        // The 2× row holds both scaled lines with the `s3` the painter leaves
+        // above and below them, and lands on a whole pixel.
+        assert!(two.row_h >= two.name_h + two.sub_h + 2.0 * f64::from(sp.s3));
+        assert_eq!(two.row_h.fract(), 0.0);
         assert!(two.row_h > one.row_h);
         assert!(two.avatar >= ROW_AVATAR && two.avatar <= two.row_h);
 
         let mut app = ContactsApp::new();
-        assert_eq!(app.toolbar_h(), TOOLBAR_H);
-        assert_eq!(app.toolbar_button_h(), TOOLBAR_BUTTON_H);
+        let (s2, s3) = (f64::from(app.spacing.s2), f64::from(app.spacing.s3));
+        assert_eq!(app.toolbar_h(), f64::from(app.spacing.s12));
+        assert_eq!(
+            app.toolbar_button_h(),
+            f64::from(app.metrics.min_pointer_target)
+        );
+        assert_eq!(
+            at_least_whole(FIELD_H, line_h(text_base(), 1.0) + 2.0 * s2),
+            FIELD_H,
+            "1× search field is the authored 38"
+        );
         app.text_scale = 2.0;
-        assert!(app.toolbar_h() >= line_h(TOOLBAR_TEXT, 2.0) + 2.0 * ROW_TEXT_PAD);
-        assert!(app.toolbar_button_h() >= line_h(TOOLBAR_BUTTON_TEXT, 2.0));
+        assert!(app.toolbar_h() >= line_h(text_base(), 2.0) + 2.0 * s3);
+        assert!(app.toolbar_button_h() >= line_h(TOOLBAR_BUTTON_TEXT, 2.0) + s2);
         assert!(app.toolbar_button_h() < app.toolbar_h());
+        for value in [
+            app.toolbar_h(),
+            app.toolbar_button_h(),
+            at_least_whole(FIELD_H, line_h(text_base(), 2.0) + 2.0 * s2),
+        ] {
+            assert_eq!(
+                value.fract(),
+                0.0,
+                "scaled toolbar metrics land on whole pixels"
+            );
+        }
         // The scaled row grid is what the virtualised rows and the
         // ensure-visible path read, so they agree with the painter.
         assert_eq!(app.row_metrics(), two);
+    }
+
+    /// Toolbar faces keep their authored 1× widths and grow by exactly how
+    /// much wider their measured labels are at the renderer's scale — never
+    /// by a blanket `× scale` — and the hit rects follow in the same frame.
+    #[test]
+    fn toolbar_faces_grow_by_their_measured_labels() {
+        let mut app = ContactsApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        app.layout();
+        assert_eq!(app.hit.new.width(), TOOLBAR_NEW_W);
+        assert_eq!(app.hit.import.width(), TOOLBAR_FILE_W);
+        assert_eq!(app.hit.export.width(), TOOLBAR_FILE_W);
+
+        let mut tr = TextRenderer::new();
+        app.refresh_label_growth(&mut tr);
+        assert_eq!(
+            app.label_growth,
+            LabelGrowth::default(),
+            "1× labels grow nothing"
+        );
+        assert_eq!(app.hit.new.width(), TOOLBAR_NEW_W);
+
+        tr.set_text_scale(2.0);
+        app.text_scale = 2.0;
+        app.refresh_label_growth(&mut tr);
+        // Paint only requests the relayout; the host's next layout pass
+        // applies the measured growth. Run it here as the host would.
+        assert!(
+            app.is_layout_dirty(),
+            "a changed label growth requests a relayout"
+        );
+        app.layout();
+        let scaled = f64::from(
+            tr.measure_weighted(
+                TOOLBAR_NEW_LABEL,
+                TOOLBAR_BUTTON_TEXT,
+                None,
+                TextWeight::Medium,
+            )
+            .0,
+        );
+        let one_x = f64::from(
+            tr.measure_weighted(
+                TOOLBAR_NEW_LABEL,
+                TOOLBAR_BUTTON_TEXT / 2.0,
+                None,
+                TextWeight::Medium,
+            )
+            .0,
+        );
+        assert!(scaled > one_x);
+        assert!(
+            app.hit.new.width() >= TOOLBAR_NEW_W + (scaled - one_x) - 1.0,
+            "the New face grew by its label's measured growth"
+        );
+        assert!(
+            app.hit.new.width() < TOOLBAR_NEW_W * 2.0,
+            "not a blanket 2× face"
+        );
+        for r in [app.hit.new, app.hit.export, app.hit.import] {
+            assert_eq!(r.width().fract(), 0.0, "face widths are whole pixels");
+            assert_eq!(r.y0, app.hit.new.y0, "faces share one baseline row");
+        }
+        assert!(app.hit.export.x1 < app.hit.new.x0 && app.hit.import.x1 < app.hit.export.x0);
+    }
+
+    /// The edit form's rows are the authored 1× design exactly and, at 2×,
+    /// grow by their lines (whole pixels) so section labels, fields, type
+    /// faces and the add / action buttons never overprint one another.
+    #[test]
+    fn edit_form_rows_are_authored_at_one_x_and_hold_scaled_text() {
+        let (sp, mx) = (Spacing::default(), Metrics::BASE);
+        let one = FormMetrics::new(&sp, &mx, 1.0, &LabelGrowth::default());
+        assert_eq!(one.title_h, f64::from(mx.panel_row_height));
+        assert_eq!(one.action_h, f64::from(mx.min_pointer_target));
+        assert_eq!(one.label_h, FORM_LABEL_H);
+        assert_eq!((one.field_h, one.type_h), (FIELD_H, FIELD_H));
+        assert_eq!((one.type_w, one.remove_w), (FORM_TYPE_W, FORM_REMOVE_W));
+        assert_eq!(
+            (one.add_w, one.add_address_w, one.add_h),
+            (
+                FORM_ADD_W,
+                FORM_ADD_ADDRESS_W,
+                f64::from(mx.selector_height)
+            )
+        );
+        assert_eq!(
+            (one.fav_w, one.save_w, one.cancel_w),
+            (FORM_FAV_W, FORM_SAVE_W, FORM_CANCEL_W)
+        );
+
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let growth = LabelGrowth::measure(&mut tr);
+        assert!(growth.add_phone > 0.0 && growth.save > 0.0 && growth.favorite > 0.0);
+        let two = FormMetrics::new(&sp, &mx, 2.0, &growth);
+        for value in [
+            two.title_h,
+            two.action_h,
+            two.label_h,
+            two.field_h,
+            two.type_w,
+            two.remove_w,
+            two.add_h,
+            two.add_w,
+            two.add_address_w,
+            two.fav_w,
+            two.save_w,
+            two.cancel_w,
+        ] {
+            assert_eq!(value.fract(), 0.0, "{value} is not a whole pixel");
+        }
+        assert!(two.label_h >= line_h(FORM_LABEL_TEXT, 2.0));
+        assert!(two.field_h >= line_h(text_base(), 2.0));
+        assert!(two.add_h >= line_h(text_sm(), 2.0));
+        assert!(
+            two.add_w > one.add_w && two.add_w < one.add_w * 2.0,
+            "measured, not a blanket 2×"
+        );
+
+        // Laid out at 2×, no field, face or button overlaps another, every
+        // row has the metrics' height, and the first group's label band
+        // clears the header band.
+        let mut app = ContactsApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1200.0, 900.0);
+        app.text_scale = 2.0;
+        app.label_growth = growth;
+        app.begin_edit(Contact::new(), true);
+        app.layout();
+        let form = app.form.as_ref().expect("edit mode has a form");
+        let mut rects: Vec<Rect> = form.inputs.iter().map(|f| f.ti_rect()).collect();
+        rects.extend([
+            app.hit.save,
+            app.hit.cancel,
+            app.hit.fav_toggle,
+            app.hit.add_phone,
+            app.hit.add_email,
+            app.hit.add_address,
+            app.hit.cal_btn,
+        ]);
+        rects.extend(app.hit.type_chips.iter().map(|(_, r)| *r));
+        rects.extend(app.hit.remove_btns.iter().map(|(_, r)| *r));
+        for (i, a) in rects.iter().enumerate() {
+            assert!(a.width() > 0.0 && a.height() > 0.0, "{a:?} is empty");
+            for b in &rects[i + 1..] {
+                assert!(a.intersect(*b).area() <= 0.0, "{a:?} overlaps {b:?}");
+            }
+        }
+        assert_eq!(app.hit.save.height(), two.action_h);
+        assert_eq!(app.hit.add_phone.height(), two.add_h);
+        assert!(
+            form.inputs
+                .iter()
+                .all(|f| (f.ti_rect().height() - two.field_h).abs() < 0.01),
+            "every field is one scaled row tall"
+        );
+        let first = form
+            .inputs
+            .iter()
+            .find(|f| f.slot == Slot::First)
+            .map(|f| f.ti_rect())
+            .expect("first-name field");
+        assert!(first.y0 >= app.form_body_top() + f64::from(app.spacing.s3) + two.label_h - 0.01);
     }
 
     #[test]
@@ -8883,12 +9362,7 @@ mod tests {
         h.press_named(NamedKey::Tab);
         assert_eq!(h.focused_slot(), Some(Slot::First));
         h.relayout();
-        let body_top = h.app.detail_rect.y0
-            + FORM_TITLE_TOP
-            + FORM_TITLE_H
-            + FORM_ROW_GAP
-            + 32.0
-            + h.app.detail_top_offset();
+        let body_top = h.app.form_body_top();
         assert!(
             rect_of(&h, Slot::First).y0 >= body_top - 24.0,
             "wrapping to the first field scrolled back to the top",
@@ -11164,7 +11638,7 @@ mod tests {
         assert!(app.empty_action_rect.width() >= 44.0);
         let first_run_area = Rect::new(
             app.rect.x0,
-            app.rect.y0 + TOOLBAR_H,
+            app.rect.y0 + f64::from(app.spacing.s12),
             app.rect.x1,
             app.rect.y1,
         );
