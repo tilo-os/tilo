@@ -6612,17 +6612,15 @@ impl Widget for CalendarApp {
         // pushed detail).
         let detail_drawn = self.detail_open && self.detail_rect.area() > 0.0;
         if self.content_rect.area() > 0.0 {
+            let mut topbar_paint = PaintContext {
+                scene,
+                transform: t,
+                text: text_renderer,
+                theme,
+            };
             hits.extend(
                 self.topbar
-                    .draw(
-                        scene,
-                        t,
-                        text_renderer,
-                        theme,
-                        self.view,
-                        self.anchor,
-                        self.last_mouse,
-                    )
+                    .draw(&mut topbar_paint, self.view, self.anchor, self.last_mouse)
                     .iter()
                     .map(|(rect, action)| {
                         let action = match action {
