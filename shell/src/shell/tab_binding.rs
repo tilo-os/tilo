@@ -313,8 +313,8 @@ pub fn rename_tab_for_app_id_with_title(
                     } = &mut tab.tile
                         && *s == surface_id
                     {
-                        *app_id = new_app_id;
-                        tab.title = new_title;
+                        *app_id = new_app_id.clone();
+                        tab.title = new_title.clone();
                         true
                     } else {
                         false
@@ -436,7 +436,7 @@ pub fn rename_tab_for_title(tree: &mut WorkspaceTree, surface_id: u64, title: St
                         TileContent::Foreign { surface_id: id, .. } if *id == surface_id
                     )
                 }) {
-                    tab.title = title;
+                    tab.title = title.clone();
                     true
                 } else {
                     false
