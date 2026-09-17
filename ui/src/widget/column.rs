@@ -255,9 +255,7 @@ impl Widget for Column {
                 // Column taller than its content. Pack implicit Grid rows at
                 // the start so surplus block space does not inflate the
                 // requested gap between them.
-                align_content: self
-                    .intrinsic_height
-                    .then_some(taffy::AlignContent::Start),
+                align_content: self.intrinsic_height.then_some(taffy::AlignContent::Start),
                 flex_shrink: 0.0, // Prevent vertical squashing
                 gap: taffy::Size {
                     width: length(0.0_f32),

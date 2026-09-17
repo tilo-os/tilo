@@ -46,8 +46,8 @@ fn shoot(theme: &Theme, out: &Path, scale: f64) {
         clippy::expect_used,
         reason = "gallery shots require the checked-in typography fixture"
     )]
-    let mut tr = TextRenderer::with_font_catalog(&catalog)
-        .expect("checked-in typography font catalog");
+    let mut tr =
+        TextRenderer::with_font_catalog(&catalog).expect("checked-in typography font catalog");
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 

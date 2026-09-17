@@ -14841,7 +14841,11 @@ mod bound_component_tests {
                 ),
             ]
         }
-        fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        fn resource(
+            &self,
+            doc: &automerge::AutoCommit,
+            id: &str,
+        ) -> Option<tilo_actions::Resource> {
             self.resources(doc)
                 .into_iter()
                 .find(|resource| resource.id.as_str() == id)

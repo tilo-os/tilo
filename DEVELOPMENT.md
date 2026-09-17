@@ -39,6 +39,24 @@ The last two are test *subjects*: those suites fail rather than skip without
 them, which is deliberate. They belong wherever `cargo` runs — inside the
 container if you build in one, since that is the `/usr` the sandbox binds.
 
+### Video editor on macOS
+
+Install the native media dependencies with Homebrew, then launch from the
+workspace root:
+
+```bash
+brew install pkgconf gstreamer
+cargo run -p video_editor
+```
+
+The editor enables GStreamer playback and export by default. Homebrew's
+`gstreamer` formula supplies the plugins and GLib dependency as well. Check
+that Cargo can discover the libraries with:
+
+```bash
+pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
+```
+
 ### If you build in a container (optional)
 
 For image-based hosts (Silverblue, Bazzite) where `/usr` is read-only and the

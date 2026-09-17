@@ -444,7 +444,8 @@ pub struct FrameHarness {
     action_registry: tilo_actions::ActionRegistry,
     action_transport: Box<dyn tilo_actions::ActionTransport>,
     pending_control_invocations: HashSet<tilo_actions::InvocationId>,
-    bound_invocations: HashMap<tilo_actions::InvocationId, crate::bound_dispatch::BoundActionTarget>,
+    bound_invocations:
+        HashMap<tilo_actions::InvocationId, crate::bound_dispatch::BoundActionTarget>,
     /// Per-pass frame profiler, installed by the perf harness via
     /// [`Driver::begin_profiling`]. `None` on a normal (persistence) run, so
     /// [`Driver::relayout`] and [`Driver::send`] pay nothing. When set, each
