@@ -53,24 +53,14 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
             ("--dir", "CAMERA_DIR"),
             ("--scroll", "CAMERA_SCROLL"),
             ("--hover", "CAMERA_SHOT_HOVER"),
-            ("--library-loading", "CAMERA_SHOT_LIBRARY_LOADING"),
             ("--mode", "CAMERA_SHOT_MODE"),
         ] {
             if let Some(value) = args.value(option) {
                 std::env::set_var(variable, value);
             }
         }
-        if args.has("--select") {
-            std::env::set_var("CAMERA_SELECT", "1");
-        }
         if args.has("--scan-first") {
             std::env::set_var("CAMERA_SCAN_FIRST", "1");
-        }
-        if args.has("--confirm-delete") {
-            std::env::set_var("CAMERA_CONFIRM_DELETE", "1");
-        }
-        if args.has("--library-loading") {
-            std::env::set_var("CAMERA_SHOT_LIBRARY_LOADING", "1");
         }
         if args.has("--drawer") {
             std::env::set_var("CAMERA_SHOT_DRAWER", "1");
@@ -137,11 +127,8 @@ pub fn main() {
         &LaunchSpec::new("dev.tilo.camera", camera::app_root)
             .shot_handler(render_shot)
             .allowed_flags(&[
-                "--select",
                 "--scan-first",
-                "--confirm-delete",
                 "--disk",
-                "--library-loading",
                 "--crop",
                 "--drawer",
                 "--timer-running",

@@ -19,7 +19,12 @@ pub enum Screen {
 }
 
 impl Screen {
-    pub const ALL: [Screen; 3] = [Screen::Camera, Screen::Scanner, Screen::Settings];
+    pub const ALL: [Screen; 4] = [
+        Screen::Camera,
+        Screen::Scanner,
+        Screen::Document,
+        Screen::Settings,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -44,9 +49,6 @@ impl Screen {
             "camera" => Some(Screen::Camera),
             "scanner" => Some(Screen::Scanner),
             "document" | "documents" => Some(Screen::Document),
-            // A persisted pre-Photos destination resolves safely to Camera;
-            // Camera no longer owns a library screen.
-            "gallery" => Some(Screen::Camera),
             "settings" => Some(Screen::Settings),
             _ => None,
         }
@@ -304,7 +306,7 @@ impl CaptureKind {
     }
 }
 
-/// One item in the library.
+/// Camera's single recent capture handoff.
 ///
 /// A capture may have a local projection (`path`) and/or a verified portable
 /// media identity (`media_id`). Peers materialize the latter via qdoc's blob
@@ -321,7 +323,6 @@ pub struct Capture {
     /// Video duration in milliseconds (0 for photos / unknown).
     pub dur_ms: i64,
     pub label: String,
-    pub favorite: bool,
     pub facing: Facing,
     /// Procedural scene seed for the sample/hermetic path only.
     pub scene: u8,
