@@ -1,0 +1,178 @@
+/* Uninstalled mutation tool. Only fresh regular fixtures supplied by builder
+ * script. */
+#include "attrib.h"
+#include "bootsect.h"
+#include "config.h"
+#include "dir.h"
+#include "inode.h"
+#include "unistr.h"
+#include "security.h"
+#include "volume.h"
+#include <fcntl.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  if (argc != 3)
+    return 2;
+  struct stat st;
+  if (lstat(argv[1], &st) || !S_ISREG(st.st_mode) || st.st_nlink != 1)
+    return 3;
+  ntfs_volume *v = ntfs_mount(argv[1], 0);
+  if (!v) {
+    perror("fixture mount");
+    return 4;
+  }
+  int rc = 0;
+  if (!strcmp(argv[2], "dirty")) {
+    rc = ntfs_volume_write_flags(v, cpu_to_le16(1));
+  } else if (!strcmp(argv[2], "badlog")) {
+    ntfs_inode *ni = ntfs_inode_open(v, FILE_LogFile);
+    ntfs_attr *a = ni ? ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0) : NULL;
+    char b[8192];
+    memset(b, 0x37, sizeof b);
+    rc = !a || ntfs_attr_pwrite(a, 0, sizeof b, b) != sizeof b;
+    if (a)
+      ntfs_attr_close(a);
+    if (ni)
+      ntfs_inode_close(ni);
+  } else if (!strcmp(argv[2], "generation")) {
+    ntfs_inode *ni = ntfs_inode_open(v, FILE_root);
+    if (!ni)
+      return 5;
+    ni->mrec->sequence_number = cpu_to_le16(42);
+    ntfs_inode_mark_dirty(ni);
+    rc = ntfs_inode_close(ni);
+  } else if (!strcmp(argv[2], "metadata")) {
+    ntfs_inode *ni = ntfs_inode_open(v, FILE_root);
+    ntfschar ads[] = {cpu_to_le16('d'), cpu_to_le16('i'), cpu_to_le16('r')};
+    char payload[] = "directory stream";
+    rc = !ni ||
+         ntfs_attr_add(ni, AT_DATA, ads, 3, (u8 *)payload, sizeof payload - 1);
+    ntfschar name[] = {cpu_to_le16('l'), cpu_to_le16('i'), cpu_to_le16('n'),
+                       cpu_to_le16('k')};
+    ntfschar target[] = {cpu_to_le16('h'), cpu_to_le16('e'), cpu_to_le16('l'),
+                         cpu_to_le16('l'), cpu_to_le16('o'), cpu_to_le16('.'),
+                         cpu_to_le16('t'), cpu_to_le16('x'), cpu_to_le16('t')};
+    ntfs_inode *link =
+        ni ? ntfs_create(ni, const_cpu_to_le32(0), name, 4, S_IFREG) : NULL;
+    struct __attribute__((packed)) {
+      le32 tag;
+      le16 length, reserved, sub_offset, sub_length, print_offset, print_length;
+      le32 flags;
+      ntfschar path[9];
+    } reparse = {
+        cpu_to_le32(0xa000000c), cpu_to_le16(30), 0,  0, cpu_to_le16(18), 0,
+        cpu_to_le16(18),         cpu_to_le32(1),  {0}};
+    memcpy(reparse.path, target, sizeof target);
+    if (link) {
+      if (ntfs_attr_add(link, AT_REPARSE_POINT, AT_UNNAMED, 0, (u8 *)&reparse,
+                        sizeof reparse))
+        rc = 1;
+      link->flags |= FILE_ATTR_REPARSE_POINT;
+      ntfs_inode_mark_dirty(link);
+    }
+    if (!link)
+      rc = 1;
+    else if (ntfs_inode_close(link))
+      rc = 1;
+    if (ni && ntfs_inode_close(ni))
+      rc = 1;
+  } else if (!strcmp(argv[2], "upcase")) {
+    ntfs_inode *ni = ntfs_inode_open(v, FILE_UpCase);
+    ntfs_attr *a = ni ? ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0) : NULL;
+    ntfs_inode *root = ntfs_inode_open(v, FILE_root);
+    ntfschar fname[] = {cpu_to_le16(0xe4), cpu_to_le16('.'), cpu_to_le16('t'),
+                        cpu_to_le16('x'), cpu_to_le16('t')};
+    ntfs_inode *file =
+        root ? ntfs_create(root, const_cpu_to_le32(0), fname, 5, S_IFREG)
+             : NULL;
+    if (!file)
+      return 9;
+    ntfs_inode_close(file);
+    ntfs_inode_close(root);
+    ntfschar replacement = cpu_to_le16(0xd6);
+    rc = !a || ntfs_attr_pwrite(a, 2 * 0xe4, 2, &replacement) != 2;
+    if (a)
+      ntfs_attr_close(a);
+    if (ni)
+      ntfs_inode_close(ni);
+  } else if (!strcmp(argv[2], "oversize")) {
+    ntfs_inode *ni = ntfs_pathname_to_inode(v, NULL, "/hello.txt");
+    ntfs_attr *a = ni ? ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0) : NULL;
+    rc = !a || ntfs_attr_truncate(a, 1048577);
+    if (a)
+      ntfs_attr_close(a);
+    if (ni)
+      ntfs_inode_close(ni);
+  } else if (!strcmp(argv[2], "hiber-io")) {
+    ntfs_inode *ni = ntfs_pathname_to_inode(v, NULL, "/hiberfil.sys");
+    ntfs_attr_search_ctx *ctx = ni ? ntfs_attr_get_search_ctx(ni, NULL) : NULL;
+    if (!ctx ||
+        ntfs_attr_lookup(AT_DATA, AT_UNNAMED, 0, CASE_SENSITIVE, 0, NULL, 0,
+                         ctx) ||
+        !ctx->attr->non_resident)
+      return 10;
+    unsigned char bad[] = {0x41, 1, 0xf0, 0xff, 0xff, 0x7f, 0};
+    uint16_t offset = le16_to_cpu(ctx->attr->mapping_pairs_offset);
+    if (offset + sizeof bad > le32_to_cpu(ctx->attr->length))
+      return 11;
+    memcpy((char *)ctx->attr + offset, bad, sizeof bad);
+    ntfs_attr_put_search_ctx(ctx);
+    ntfs_inode_mark_dirty(ni);
+    rc = ntfs_inode_close(ni);
+  } else if (!strcmp(argv[2], "attrlist-cycle")) {
+    ntfs_inode *ni = ntfs_pathname_to_inode(v, NULL, "/hello.txt");
+    unsigned char payload[32] = {0};
+    ATTR_LIST_ENTRY *entry = (ATTR_LIST_ENTRY *)payload;
+    entry->type = AT_ATTRIBUTE_LIST;
+    entry->length = cpu_to_le16(32);
+    entry->name_offset = 26;
+    entry->mft_reference = cpu_to_le64(
+        ni->mft_no | ((uint64_t)le16_to_cpu(ni->mrec->sequence_number) << 48));
+    if (ntfs_attr_add(ni, AT_LOGGED_UTILITY_STREAM, AT_UNNAMED, 0, payload,
+                      sizeof payload))
+      return 12;
+    ntfs_attr_search_ctx *ctx = ntfs_attr_get_search_ctx(ni, NULL);
+    if (!ctx || ntfs_attr_lookup(AT_LOGGED_UTILITY_STREAM, AT_UNNAMED, 0,
+                                 CASE_SENSITIVE, 0, NULL, 0, ctx))
+      return 13;
+    ctx->attr->type = AT_ATTRIBUTE_LIST;
+    ATTR_LIST_ENTRY *stored =
+        (ATTR_LIST_ENTRY *)((char *)ctx->attr +
+                            le16_to_cpu(ctx->attr->value_offset));
+    stored->instance = ctx->attr->instance;
+    ntfs_attr_put_search_ctx(ctx);
+    ntfs_inode_mark_dirty(ni);
+    rc = ntfs_inode_close(ni);
+  } else if (!strcmp(argv[2],"acl")) {
+    ntfs_inode *ni=ntfs_pathname_to_inode(v,NULL,"/hello.txt");s64 length=0;
+    void *sd=ntfs_attr_readall(ni,AT_SECURITY_DESCRIPTOR,AT_UNNAMED,0,&length);
+    struct SECURITY_CONTEXT context={.vol=v};
+    if(!sd||length<0||ntfs_set_ntfs_acl(&context,ni,sd,(size_t)length,0))return 14;
+    free(sd);rc=ntfs_inode_close(ni);
+  } else if (!strcmp(argv[2],"hardlink")) {
+    ntfs_inode *ni=ntfs_pathname_to_inode(v,NULL,"/hello.txt");ntfs_inode *root=ntfs_inode_open(v,FILE_root);
+    ntfschar name[]={cpu_to_le16('s'),cpu_to_le16('e'),cpu_to_le16('c'),cpu_to_le16('o'),cpu_to_le16('n'),cpu_to_le16('d')};
+    rc=ntfs_link(ni,root,name,6);if(ntfs_inode_close(ni)||ntfs_inode_close(root))rc=1;
+  } else if (strcmp(argv[2], "serial"))
+    rc = 1;
+  if (ntfs_umount(v, 0))
+    rc = 1;
+  if (!strcmp(argv[2], "serial")) {
+    int fd = open(argv[1], O_RDWR | O_NOFOLLOW);
+    NTFS_BOOT_SECTOR bs;
+    if (fd < 0 || pread(fd, &bs, sizeof bs, 0) != sizeof bs)
+      return 6;
+    bs.volume_serial_number = cpu_to_le64(0x1122334455667788ULL);
+    if (pwrite(fd, &bs, sizeof bs, 0) != sizeof bs ||
+        pwrite(fd, &bs, sizeof bs, st.st_size - sizeof bs) != sizeof bs ||
+        fsync(fd))
+      rc = 1;
+    close(fd);
+  }
+  return rc != 0;
+}
