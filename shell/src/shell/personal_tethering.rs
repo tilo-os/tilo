@@ -129,6 +129,105 @@ impl std::fmt::Debug for TetheringSignal {
     }
 }
 
+impl TetheringSignal {
+    /// Validate the immutable transport-visible contract. Stateful replay and
+    /// grant checks remain the responsibility of [`PersonalTethering`].
+    pub fn validate_transport(
+        &self,
+        authenticated_source: &DeviceId,
+        local_target: &DeviceId,
+        now_unix_ms: u64,
+    ) -> Result<(), TetheringError> {
+        match self {
+            Self::Request {
+                protocol_version,
+                request_id,
+                requester,
+                provider,
+                requester_label,
+                issued_unix_ms,
+                expires_unix_ms,
+            } => {
+                if *protocol_version != TETHERING_PROTOCOL_VERSION
+                    || requester != authenticated_source
+                    || provider != local_target
+                    || requester == provider
+                    || !valid_id(*request_id)
+                    || !valid_label(requester_label)
+                    || *issued_unix_ms > now_unix_ms
+                    || *expires_unix_ms <= now_unix_ms
+                    || expires_unix_ms.saturating_sub(*issued_unix_ms) > REQUEST_TTL_MS
+                {
+                    return Err(TetheringError::InvalidRequest);
+                }
+            }
+            Self::Decision {
+                protocol_version,
+                request_id,
+                requester,
+                provider,
+                accepted,
+                grant_nonce,
+                expires_unix_ms,
+            } => {
+                if *protocol_version != TETHERING_PROTOCOL_VERSION
+                    || provider != authenticated_source
+                    || requester != local_target
+                    || requester == provider
+                    || !valid_id(*request_id)
+                    || (*accepted
+                        && (grant_nonce.is_none_or(|nonce| !valid_id(nonce))
+                            || *expires_unix_ms <= now_unix_ms
+                            || expires_unix_ms.saturating_sub(now_unix_ms) > GRANT_TTL_MS))
+                    || (!*accepted && grant_nonce.is_some())
+                {
+                    return Err(TetheringError::InvalidDecision);
+                }
+            }
+            Self::Credential {
+                protocol_version,
+                request_id,
+                requester,
+                provider,
+                grant_nonce,
+                expires_unix_ms,
+                credential,
+            } => {
+                if *protocol_version != TETHERING_PROTOCOL_VERSION
+                    || provider != authenticated_source
+                    || requester != local_target
+                    || requester == provider
+                    || !valid_id(*request_id)
+                    || !valid_id(*grant_nonce)
+                    || *expires_unix_ms <= now_unix_ms
+                    || expires_unix_ms.saturating_sub(now_unix_ms) > GRANT_TTL_MS
+                {
+                    return Err(TetheringError::InvalidCredential);
+                }
+                validate_credential(credential, provider, requester)?;
+            }
+            Self::Stop {
+                protocol_version,
+                request_id,
+                requester,
+                provider,
+                grant_nonce,
+            } => {
+                if *protocol_version != TETHERING_PROTOCOL_VERSION
+                    || provider != authenticated_source
+                    || requester != local_target
+                    || requester == provider
+                    || !valid_id(*request_id)
+                    || !valid_id(*grant_nonce)
+                {
+                    return Err(TetheringError::InvalidDecision);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TetheringEvent {
     ConsentRequired {

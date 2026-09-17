@@ -989,6 +989,7 @@ pub struct DeviceFabricRuntime {
     realtime_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
     remote_capture: Option<crate::shell::remote_capture_runtime::RemoteCaptureFabricRuntime>,
     remote_capture_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
+    tethering: crate::shell::personal_tethering_runtime::PersonalTetheringRuntime,
     gamepad_broker: ProductionGamepadBroker,
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
     local_gamepad_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
@@ -1014,6 +1015,7 @@ impl DeviceFabricRuntime {
             realtime_online_peers: BTreeSet::new(),
             remote_capture: None,
             remote_capture_online_peers: BTreeSet::new(),
+            tethering: Default::default(),
             gamepad_broker: os_actions::ForwardedPeripheralBroker::new(
                 os_actions::LinuxVirtualGamepadFactory::new(
                     os_actions::UinputGamepadDeviceProvider,
@@ -1062,6 +1064,11 @@ impl DeviceFabricRuntime {
         }
         self.maintain_gamepad_forwarding(network, policy);
         self.handle_fabric_actions(network, policy);
+        self.tethering.pump(
+            network,
+            policy.permits(ContinuityCapability::WifiSettings),
+            unix_ms(),
+        );
         pump_device_health(network, policy);
         self.pump_remote_capture_peers(network, policy);
         crate::shell::remote_audio::pump(
@@ -1303,6 +1310,9 @@ impl DeviceFabricRuntime {
                 continue;
             }
             if handle_device_health_action(network, &envelope) {
+                continue;
+            }
+            if self.tethering.handle_action(network, &envelope, unix_ms()) {
                 continue;
             }
             if self
@@ -2682,6 +2692,7 @@ fn handle_spatial_action(
         | PersonalFabricAction::RemoteCaptureChunk { .. }
         | PersonalFabricAction::DeviceHealthProbe { .. }
         | PersonalFabricAction::DeviceHealthReport { .. }
+        | PersonalFabricAction::Tethering { .. }
         | PersonalFabricAction::BluetoothHandoffPrepare { .. }
         | PersonalFabricAction::BluetoothHandoffPrepared { .. }
         | PersonalFabricAction::BluetoothHandoffCommit { .. }
