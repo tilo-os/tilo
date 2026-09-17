@@ -103,7 +103,9 @@ jobs:
           if [[ $publish == true ]]; then
             matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}'
           else
-            matrix='{"include":[{"arch":"x86_64","runner":"runner"}]}'
+            # BuildKit layers and OCI export coexist; ordinary 50 GiB runners
+            # filled during export in run #6815. Opt in only this build lane.
+            matrix='{"include":[{"arch":"x86_64","runner":"runner-disk-100g"}]}'
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "build-matrix=$matrix" >> "$GITHUB_OUTPUT"
@@ -502,6 +504,7 @@ jobs:
       # driver doesn't support cache export (the registry-backed cache we
       # need to survive across ephemeral runners).
       - name: Set up buildx (docker-container driver for cache export)
+        id: buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: docker-container
@@ -642,6 +645,20 @@ jobs:
           provenance: false
           no-cache: true
 
+      - name: Release build cache before image installation
+        if: steps.release-mode.outputs.validate == 'true'
+        env:
+          BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+        run: |
+          set -euo pipefail
+          test -n "$BUILDER_NAME"
+          # Both OCI archives are complete and the first build exported its
+          # registry cache. Free only this job's builder before Podman imports
+          # the images and creates the installed disk.
+          df -h /var/tmp
+          docker buildx prune --builder "$BUILDER_NAME" --all --force
+          df -h /var/tmp
+
       - name: Reseal, install, boot, and stage the verified image
         id: release
         if: steps.release-mode.outputs.validate == 'true'
@@ -716,6 +733,9 @@ jobs:
           first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
           test -n "$first_tag"
           podman tag "$first_tag" "$TILO_IMAGE"
+          # The manifest was verified above and the image is now in Podman's
+          # store; retaining its archive would duplicate it during resealing.
+          rm -f /var/tmp/tilo-image.tar
           # Keep the installed machine on the public release channel, not on
           # the temporary localhost tag used only for resealing.
           export TILO_TARGET_IMGREF="$first_tag"
@@ -733,6 +753,7 @@ jobs:
           # the artifact that will actually be published, not merely its base.
           repro_image="code.sandbox.example/qos/tilo:repro-${GITHUB_SHA}"
           podman load --input /var/tmp/tilo-image-repro.tar
+          rm -f /var/tmp/tilo-image-repro.tar
           if [[ -s "$TILO_RESEALED_DIGEST_FILE" ]]; then
             resealed_digest="$(tr -d '\n\r' < "$TILO_RESEALED_DIGEST_FILE")"
             ./os/dev/reseal-image.sh "$repro_image" "$resealed_digest"
