@@ -209,6 +209,8 @@ impl Widget for Badge {
                 width: Dimension::length(width as f32),
                 height: Dimension::length(height as f32),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));

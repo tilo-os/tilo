@@ -125,6 +125,8 @@ impl Widget for ShortcutRecorder {
                 width: Dimension::length(230.0),
                 height: Dimension::length(crate::num::f32_of_f64(HEIGHT)),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
