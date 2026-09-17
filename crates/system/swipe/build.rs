@@ -4,7 +4,7 @@
 //! The FUTO swipe-library is built out-of-tree via its own `make host`
 //! (clones `ExecuTorch` as a submodule). Point this build at that tree with:
 //!
-//!     QOS_SWIPE_LIB=/path/to/swipe-library   # contains build/ + third_party/executorch/cmake-out-host/ + include/
+//!     TILO_SWIPE_LIB=/path/to/swipe-library   # contains build/ + third_party/executorch/cmake-out-host/ + include/
 //!
 //! When the env var is unset or the libs are missing, the crate compiles
 //! WITHOUT FUTO support (`cfg(futo)` off) so downstream code (the OSK) can
@@ -18,13 +18,13 @@ fn main() {
     // before any statement in this block, not just before its first use.
     type Lib<'a> = (&'a str, PathBuf, bool);
 
-    println!("cargo:rerun-if-env-changed=QOS_SWIPE_LIB");
+    println!("cargo:rerun-if-env-changed=TILO_SWIPE_LIB");
     println!("cargo:rerun-if-changed=csrc/swipe_ffi.cpp");
     // Declare the custom cfg so rustc's unexpected_cfgs lint stays quiet.
     println!("cargo:rustc-check-cfg=cfg(futo)");
 
-    let Some(root) = std::env::var_os("QOS_SWIPE_LIB").map(PathBuf::from) else {
-        eprintln!("qos-swipe: QOS_SWIPE_LIB unset — building stub (FUTO swipe disabled)");
+    let Some(root) = std::env::var_os("TILO_SWIPE_LIB").map(PathBuf::from) else {
+        eprintln!("tilo-swipe: TILO_SWIPE_LIB unset — building stub (FUTO swipe disabled)");
         return;
     };
     let build_dir = root.join("build");
@@ -32,7 +32,7 @@ fn main() {
     let swipe_lib = build_dir.join("libswipe_decoder.a");
     if !swipe_lib.exists() || !et.join("libexecutorch.a").exists() {
         eprintln!(
-            "qos-swipe: libs not found under {} — building stub (FUTO swipe disabled)",
+            "tilo-swipe: libs not found under {} — building stub (FUTO swipe disabled)",
             root.display()
         );
         return;
@@ -51,7 +51,7 @@ fn main() {
         .include(etr.join("backends/xnnpack/third-party/cpuinfo/include"))
         .include(etr.join("backends/xnnpack/third-party/pthreadpool/include"))
         .warnings(false);
-    cc.compile("qos_swipe_shim");
+    cc.compile("tilo_swipe_shim");
 
     // --- link the prebuilt static libraries ---
     // We use cargo:rustc-link-lib / link-search (NOT rustc-link-arg) because

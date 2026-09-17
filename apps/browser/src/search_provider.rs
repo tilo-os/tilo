@@ -7,7 +7,7 @@
 //! against the current index, which refuses an address that went stale after
 //! the result was rendered.
 
-use qos_actions::{
+use tilo_actions::{
     ActionAddress, ActionContract, ActionSpec, ExecutionMode, OperationKind, Resource, ResultSpec,
     RetryPolicy,
 };
@@ -393,11 +393,11 @@ mod tests {
         assert!(downloads.requested(
             "stable-download".into(),
             "https://example.test/sdk".into(),
-            "qOS-SDK.tar.zst",
+            "Tilo-SDK.tar.zst",
         ));
         downloads.finished(
             "stable-download",
-            "/home/alex/Downloads/qOS-SDK.tar.zst".into(),
+            "/home/alex/Downloads/Tilo-SDK.tar.zst".into(),
         );
         let index = BrowserSearchIndex::default();
         index.sync_all(
@@ -406,7 +406,7 @@ mod tests {
             &downloads,
         );
         let provider = index.provider();
-        let hit = provider.search_limited("qOS-SDK", 1).pop().unwrap();
+        let hit = provider.search_limited("Tilo-SDK", 1).pop().unwrap();
         let address = hit.action_address().unwrap();
         assert_eq!(address.resource, "browser.download.stable-download");
         assert_eq!(address.action, "show");

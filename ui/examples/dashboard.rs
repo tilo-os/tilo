@@ -85,9 +85,11 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
 }
 
 pub fn run(_args: &[String]) {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     I18nManager::init("en-US");
     let mut ftl = String::new();
-    ftl.push_str("dash_title = QuickDesktop Dashboard\n");
+    ftl.push_str("dash_title = Tilo Desktop Dashboard\n");
     for i in 0..8 {
         let _ = writeln!(ftl, "dash_p{i} = Panel {i}");
     }
@@ -155,6 +157,6 @@ pub fn run(_args: &[String]) {
         )),
     );
 
-    let app = App::new(state, root);
+    let app = App::from_scoped_parts(wake_scope, state, root);
     app.run();
 }

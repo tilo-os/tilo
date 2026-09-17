@@ -3,7 +3,7 @@
 //! ## Install contract (the backend ships separately, in `os/`)
 //!
 //! ```text
-//! /usr/libexec/qos-install \
+//! /usr/libexec/tilo-install \
 //!     --disk <dev> --confirm-erase <dev> --user <name> \
 //!     --filesystem <btrfs|ext4|xfs> \
 //!     --hostname <name> [--timezone <tz>] \
@@ -11,7 +11,7 @@
 //!     --encrypt --pin [--fido2] --yes
 //! ```
 //!
-//! Native qOS always uses full-disk encryption. The backend builds the LUKS2
+//! Native Tilo always uses full-disk encryption. The backend builds the LUKS2
 //! layout itself and installs `bootc ... to-filesystem` into the opened
 //! mapping, because `--block-setup tpm2-luks` can only produce a volume whose
 //! single keyslot is sealed to a TPM:
@@ -21,7 +21,7 @@
 //!   is layered on top of it;
 //! * with `--pin` (a legacy transport flag name), the strong secret on the
 //!   **second stdin line** becomes an ordinary LUKS passphrase keyslot. TPM
-//!   unlock remains disabled until it is bound to signed, measured qOS boot
+//!   unlock remains disabled until it is bound to signed, measured Tilo boot
 //!   artifacts;
 //! * with `--fido2`, a **FIDO2 security key** is enrolled if a token is
 //!   present (its absence does not abort the install).
@@ -49,7 +49,7 @@
 //! The Finish screen's Reboot / Power-off buttons shell out to:
 //!
 //! ```text
-//! /usr/libexec/qos-power [--reboot|--poweroff]
+//! /usr/libexec/tilo-power [--reboot|--poweroff]
 //! ```
 //!
 //! a tiny self-escalating script allowed by the same live-medium sudoers
@@ -72,9 +72,9 @@ use zeroize::Zeroizing;
 use crate::disks::PartitionExtent;
 
 /// Path to the privileged install backend installed on the live medium.
-pub const INSTALL_BIN: &str = "/usr/libexec/qos-install";
+pub const INSTALL_BIN: &str = "/usr/libexec/tilo-install";
 /// Path to the privileged power backend (reboot / poweroff).
-pub const POWER_BIN: &str = "/usr/libexec/qos-power";
+pub const POWER_BIN: &str = "/usr/libexec/tilo-power";
 
 /// User-selected install options threaded through to the backend.
 #[derive(Clone, PartialEq, Eq)]
@@ -87,7 +87,7 @@ pub struct InstallOptions {
     pub disk_wwn: String,
     pub disk_serial: String,
     /// Empty for a whole-disk erase. Otherwise the pre-created, empty Linux
-    /// partition that becomes the qOS root while every sibling partition is
+    /// partition that becomes the Tilo root while every sibling partition is
     /// preserved.
     pub alongside_root: String,
     pub alongside_root_partuuid: String,
@@ -164,7 +164,7 @@ impl Default for InstallOptions {
             guided_root_partuuid: String::new(),
             expected_partitions: Vec::new(),
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             full_name: String::new(),
             locale: String::new(),
             timezone: String::new(),
@@ -288,7 +288,7 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
             cmd.arg("--keyvariant").arg(opts.keyvariant.trim());
         }
     }
-    // Encryption is a native-qOS invariant, not a user option. Keep the flag
+    // Encryption is a native-Tilo invariant, not a user option. Keep the flag
     // explicit as defense in depth even though the backend defaults to LUKS.
     cmd.arg("--encrypt");
     if !opts.pin.is_empty() {
@@ -459,7 +459,7 @@ pub fn stream_command<F: FnMut(String)>(
     Ok(status.success())
 }
 
-/// Run the real `qos-install` backend for `disk` + `user` + `opts`, feeding
+/// Run the real `tilo-install` backend for `disk` + `user` + `opts`, feeding
 /// `password` (and, when a disk passphrase is set, that secret as a second
 /// stdin line) and relaying every output line to `on_line`.
 ///
@@ -509,7 +509,7 @@ mod tests {
             disk_size_bytes: 500_000_000_000,
             disk_major_minor: "259:0".into(),
             disk_wwn: "eui.0011223344556677".into(),
-            disk_serial: "QOS-NVME".into(),
+            disk_serial: "TILO-NVME".into(),
             alongside_root: "/dev/nvme0n1p3".into(),
             alongside_root_partuuid: "00000000-0000-0000-0000-000000000003".into(),
             alongside_root_size_bytes: 64_000_000_000,
@@ -528,7 +528,7 @@ mod tests {
             "/dev/nvme0n1",
             "259:0",
             "eui.0011223344556677",
-            "QOS-NVME",
+            "TILO-NVME",
             "/dev/nvme0n1p3",
             "00000000-0000-0000-0000-000000000003",
             "/dev/nvme0n1p4",
@@ -591,7 +591,7 @@ mod tests {
         // Dvorak = xkb layout "us" + variant "dvorak".
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: "dvorak".to_string(),
@@ -611,7 +611,7 @@ mod tests {
                 "--filesystem",
                 "btrfs",
                 "--hostname",
-                "qos",
+                "tilo",
                 "--confirm-erase",
                 "/dev/vda",
                 "--keymap",
@@ -630,7 +630,7 @@ mod tests {
             disk_size_bytes: 1_000_000_000_000,
             disk_major_minor: "259:0".into(),
             disk_wwn: "eui.0011223344556677".into(),
-            disk_serial: "QOS-NVME".into(),
+            disk_serial: "TILO-NVME".into(),
             alongside_root: "/dev/nvme0n1p4".into(),
             alongside_root_partuuid: "00000000-0000-0000-0000-000000000004".into(),
             alongside_root_size_bytes: 68_719_476_736,
@@ -654,7 +654,7 @@ mod tests {
             ["--expect-disk-size-bytes", "1000000000000"],
             ["--expect-disk-devnum", "259:0"],
             ["--expect-disk-wwn", "eui.0011223344556677"],
-            ["--expect-disk-serial", "QOS-NVME"],
+            ["--expect-disk-serial", "TILO-NVME"],
             [
                 "--expect-root-partuuid",
                 "00000000-0000-0000-0000-000000000004",
@@ -683,7 +683,7 @@ mod tests {
         let opts = InstallOptions {
             disk_size_bytes: 200 * 1024 * 1024 * 1024,
             disk_major_minor: "259:0".into(),
-            disk_serial: "QOS-NVME".into(),
+            disk_serial: "TILO-NVME".into(),
             guided_free_start_bytes: 100 * 1024 * 1024 * 1024,
             guided_free_size_bytes: 100 * 1024 * 1024 * 1024 - 1024 * 1024,
             guided_efi_start_bytes: 100 * 1024 * 1024 * 1024,
@@ -749,7 +749,7 @@ mod tests {
     fn install_command_omits_empty_timezone_and_keymap() {
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             timezone: String::new(),
             keymap: String::new(),
             keyvariant: String::new(),
@@ -769,7 +769,7 @@ mod tests {
                 "--filesystem",
                 "btrfs",
                 "--hostname",
-                "qos",
+                "tilo",
                 "--confirm-erase",
                 "/dev/vda",
                 "--encrypt",
@@ -786,7 +786,7 @@ mod tests {
         // A stray variant without a layout must not be emitted alone.
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             timezone: String::new(),
             keymap: String::new(),
             keyvariant: "dvorak".to_string(),
@@ -804,7 +804,7 @@ mod tests {
     fn install_command_always_appends_encrypt() {
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
@@ -824,7 +824,7 @@ mod tests {
                 "--filesystem",
                 "btrfs",
                 "--hostname",
-                "qos",
+                "tilo",
                 "--confirm-erase",
                 "/dev/vda",
                 "--keymap",
@@ -850,7 +850,7 @@ mod tests {
         // `run_install_sends_pin_on_second_stdin_line`).
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
@@ -870,7 +870,7 @@ mod tests {
                 "--filesystem",
                 "btrfs",
                 "--hostname",
-                "qos",
+                "tilo",
                 "--confirm-erase",
                 "/dev/vda",
                 "--keymap",
@@ -892,7 +892,7 @@ mod tests {
     fn install_command_keeps_encryption_with_additional_factors() {
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
@@ -912,7 +912,7 @@ mod tests {
         // Encryption + FIDO2 but no PIN: `--fido2` is present, `--pin` is not.
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
-            hostname: "qos".to_string(),
+            hostname: "tilo".to_string(),
             timezone: String::new(),
             keymap: "us".to_string(),
             keyvariant: String::new(),
@@ -936,10 +936,10 @@ mod tests {
     }
 
     #[test]
-    fn default_options_are_btrfs_qos_us() {
+    fn default_options_are_btrfs_tilo_us() {
         let o = InstallOptions::default();
         assert_eq!(o.filesystem, "btrfs");
-        assert_eq!(o.hostname, "qos");
+        assert_eq!(o.hostname, "tilo");
         assert!(o.timezone.is_empty());
         assert_eq!(o.keymap, "us");
         assert!(o.keyvariant.is_empty());

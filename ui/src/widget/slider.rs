@@ -120,7 +120,7 @@ impl Slider {
 
     /// Route all pointer and accessibility value changes through an action.
     #[must_use]
-    pub fn on_action(mut self, binding: qos_actions::ActionBinding<f64>) -> Self {
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<f64>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
         self.on_change = None;
         self
@@ -697,13 +697,13 @@ impl Widget for Slider {
         self.permission_scope.clone()
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
 
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         if let Some(action) = &mut self.action {
             action.refresh_availability(allowed);
@@ -1080,7 +1080,7 @@ mod tests {
         assert!(!Widget::is_enabled(&slider));
         Widget::refresh_control_action_availability(
             &mut slider,
-            &std::collections::HashSet::from([qos_actions::ActionAddress::new(
+            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                 "test:control",
                 "set",
             )]),

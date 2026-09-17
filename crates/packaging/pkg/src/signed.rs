@@ -4,7 +4,7 @@
 //! Layout:
 //!
 //! ```text
-//! MAGIC  "QOSPKG\0\0"   (8 bytes)
+//! MAGIC  "TLOPKG\0\0"   (8 bytes)
 //! u32 LE format_version = 1
 //! [u8; 32] manifest_hash       (BLAKE3 of the manifest TOML bytes)
 //! [u8; 32] payload_root_hash   (BLAKE3 of the encoded Collection)
@@ -39,7 +39,7 @@ use thiserror::Error;
 
 use crate::blobs::BlobHash;
 
-const MAGIC: &[u8; 8] = b"QOSPKG\0\0";
+const MAGIC: &[u8; 8] = b"TLOPKG\0\0";
 const FORMAT_VERSION: u32 = 1;
 
 pub const SIGNED_ROOT_LEN: usize = 8 + 4 + 32 + 32 + 1 + 32 + 64;
@@ -51,7 +51,7 @@ pub struct SignedRoot {
     pub manifest_hash: BlobHash,
     pub payload_root_hash: BlobHash,
     pub publisher_identity: [u8; 32],
-    /// `None` until `qos-pkg sign` runs.
+    /// `None` until `tilo-pkg sign` runs.
     pub signature: Option<[u8; 64]>,
 }
 

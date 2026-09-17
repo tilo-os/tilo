@@ -15,7 +15,7 @@
 //!
 //! Assertions are on rasterised pixels and the size the compositor would
 //! put in an `xdg_toplevel.configure`, not intermediate bookkeeping.
-//! Set `QOS_SHOT_DIR` to also drop PNGs of every rendered frame.
+//! Set `TILO_SHOT_DIR` to also drop PNGs of every rendered frame.
 
 #![allow(
     clippy::unwrap_used,
@@ -62,7 +62,7 @@ fn as_i32(v: f64) -> i32 {
 /// test picks its own to stay independent under parallel execution.
 fn shot(name: &str, renderer: &mut OffscreenRenderer, scene: &vello::Scene) -> Vec<u8> {
     let rgba = renderer.render(scene, Color::BLACK);
-    if let Ok(dir) = std::env::var("QOS_SHOT_DIR") {
+    if let Ok(dir) = std::env::var("TILO_SHOT_DIR") {
         let path = std::path::Path::new(&dir).join(format!("{name}.png"));
         renderer.render_png(scene, Color::BLACK, &path);
         eprintln!("wrote {}", path.display());
@@ -79,6 +79,19 @@ fn frame(fb: &mut FrameBuilder) -> vello::Scene {
     let mut doc = automerge::AutoCommit::new();
     let root = automerge::ROOT;
     fb.pump_apps(&mut doc, &root);
+    assert_eq!(
+        fb.chrome().overlays,
+        shell::shell::chrome_state::OverlayFlags::default(),
+        "the compositing fixture must not obscure the client with a shell overlay"
+    );
+    assert!(
+        !fb.host().palette_visible() && !fb.host().onboarding_active(),
+        "the compositing fixture must not obscure the client with a palette or onboarding"
+    );
+    assert!(
+        !shell::shell::input_policy::chrome_captures_input(fb),
+        "the compositing fixture must leave the client interactive"
+    );
     fb.paint_settled()
 }
 

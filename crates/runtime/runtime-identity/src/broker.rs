@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{NotAvailable, SigningIdentity, SigningSource};
 
-pub const BROKER_ENV_VAR: &str = "QOS_IDENTITY_BROKER_FD";
+pub const BROKER_ENV_VAR: &str = "TILO_IDENTITY_BROKER_FD";
 pub const BROKER_CHILD_FD: RawFd = 15;
 const MAX_MESSAGE: usize = 4 * 1024 * 1024;
 const OP_METADATA: u8 = 1;
@@ -139,7 +139,7 @@ pub(crate) fn connect_from_env() -> Result<SigningIdentity, NotAvailable> {
                 "identity broker fd has already been claimed by this process",
             ))
         })?;
-    // SAFETY: qOS launcher transfers sole ownership of this inherited fd to
+    // SAFETY: Tilo launcher transfers sole ownership of this inherited fd to
     // the app. load() consumes it once, matching runtime-portal's contract.
     let mut stream = unsafe { UnixStream::from_raw_fd(raw) };
     write_frame(&mut stream, OP_METADATA, &[]).map_err(NotAvailable::ConnectionFailed)?;

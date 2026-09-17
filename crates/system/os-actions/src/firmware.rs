@@ -68,7 +68,7 @@ pub fn refresh_firmware_metadata() -> Result<(), String> {
 }
 
 /// Read fwupd's own transaction history. This is authoritative lifecycle
-/// state, not a qOS-maintained success counter.
+/// state, not a Tilo-maintained success counter.
 ///
 /// # Errors
 ///
@@ -80,7 +80,7 @@ pub fn get_firmware_history() -> Result<Vec<FirmwareHistoryEntry>, String> {
 }
 
 /// Start a long-running fwupd transaction without blocking the compositor or
-/// Settings event loop. fwupd remains the verifier and policy authority; qOS
+/// Settings event loop. fwupd remains the verifier and policy authority; Tilo
 /// only reports its lifecycle and never passes force/downgrade flags.
 ///
 /// # Errors
@@ -112,7 +112,7 @@ pub fn start_firmware_install(
     let total = device_ids.len();
     let (tx, rx) = mpsc::channel();
     std::thread::Builder::new()
-        .name("qos-fwupd".into())
+        .name("tilo-fwupd".into())
         .spawn(move || {
             let _ = tx.send(FirmwareEvent::Started { total });
             let mut needs_reboot = false;

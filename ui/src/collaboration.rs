@@ -72,10 +72,10 @@ pub struct ContinuationMetadata {
 }
 
 /// Decode the launcher-only resume payload. Invalid input is ignored so an
-/// app outside qOS or an older sender opens normally.
+/// app outside Tilo or an older sender opens normally.
 pub fn continuation_restore_env() -> Option<ContinuationMetadata> {
-    let bytes = hex::decode(std::env::var("QOS_CONTINUITY_RESUME_HEX").ok()?).ok()?;
-    let schema_version = std::env::var("QOS_CONTINUITY_RESUME_SCHEMA")
+    let bytes = hex::decode(std::env::var("TILO_CONTINUITY_RESUME_HEX").ok()?).ok()?;
+    let schema_version = std::env::var("TILO_CONTINUITY_RESUME_SCHEMA")
         .ok()?
         .parse()
         .ok()?;
@@ -189,12 +189,12 @@ pub enum CollabRequest {
     },
     UpdateInvocation {
         id: u64,
-        update: qos_actions::InvocationUpdate,
+        update: tilo_actions::InvocationUpdate,
     },
     /// Terminal receipt for an Effect initiated by this app's local UI.
     RecordLocalEffect {
-        address: qos_actions::ActionAddress,
-        update: qos_actions::InvocationUpdate,
+        address: tilo_actions::ActionAddress,
+        update: tilo_actions::InvocationUpdate,
     },
     InvokePublishedAction {
         request_id: u64,
@@ -318,9 +318,9 @@ pub struct BrokerActionDescriptor {
     pub resource_label: String,
     pub action_label: String,
     pub description: Option<String>,
-    pub operation_kind: qos_actions::OperationKind,
-    pub params: Vec<qos_actions::ActionParam>,
-    pub contract: qos_actions::ActionContract,
+    pub operation_kind: tilo_actions::OperationKind,
+    pub params: Vec<tilo_actions::ActionParam>,
+    pub contract: tilo_actions::ActionContract,
     pub input: BrokerActionInput,
 }
 
@@ -416,7 +416,7 @@ pub enum CollabEvent {
     },
     /// A typed action another app in this room published, delivered to every
     /// connection. A receiver decodes it via its own
-    /// [`ActionRegistry`](qos_actions::ActionRegistry); an action for a
+    /// [`ActionRegistry`](tilo_actions::ActionRegistry); an action for a
     /// different app decodes to nothing, making room-wide fan-out safe.
     ///
     /// `from_user_id` is who *sent* the frame, not necessarily who the
@@ -468,7 +468,7 @@ pub enum CollabEvent {
         /// Broker-owned task/session provenance. The concrete application
         /// resource and action remain authoritative; this only supplies the
         /// surrounding purpose and work-group for durable history.
-        context: Option<Box<qos_actions::ActionContext>>,
+        context: Option<Box<tilo_actions::ActionContext>>,
     },
     /// The invocation owner requested cooperative cancellation. Delivered at
     /// most once; the app-side job decides the next safe stopping boundary.
@@ -480,14 +480,14 @@ pub enum CollabEvent {
     },
     PublishedInvocationResult {
         request_id: u64,
-        result: Result<(u64, qos_actions::InvocationUpdate), String>,
+        result: Result<(u64, tilo_actions::InvocationUpdate), String>,
     },
     /// A run addressed to this admitted agent. The envelope is broker-minted
     /// and contains a lease, not a caller-selected authority token.
     TaskRun(runtime_collab::TaskRunEnvelope),
     TaskActionInvocationResult {
         request_id: u64,
-        result: Result<(u64, qos_actions::InvocationUpdate), String>,
+        result: Result<(u64, tilo_actions::InvocationUpdate), String>,
     },
     TaskRunCancellation {
         request_id: u64,
@@ -557,7 +557,13 @@ pub enum PresencePayload {
     /// Truthful action/resource activity. Identity is supplied by the
     /// authenticated event envelope; this payload never describes a mouse or
     /// keyboard gesture and therefore cannot create a synthetic cursor.
-    Interaction(Box<qos_actions::SemanticInteraction>),
+    Interaction(Box<tilo_actions::SemanticInteraction>),
+    /// Short room-scoped intention. `automatic` distinguishes a local-model
+    /// suggestion from participant-authored words; empty text clears it.
+    Status {
+        text: String,
+        automatic: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -713,7 +719,7 @@ enum SdkCommand {
     Primary(CollabRequest),
     Join(RouteSpec),
     ToRoute(RouteSpec, CollabRequest),
-    PrimaryReady(mpsc::SyncSender<Result<(), String>>),
+    PrimaryReady(mpsc::SyncSender<Result<RouteSpec, String>>),
     InstallEncryption {
         spec: RouteSpec,
         group: Box<channel_crypto::ChannelGroup>,
@@ -796,7 +802,7 @@ fn json_map_bytes(values: &serde_json::Map<String, serde_json::Value>, meter: &m
 /// Count a serializable opaque nested value without constructing a second
 /// payload copy. Direct `String`/`Vec` owners still use capacities above;
 /// this covers nested action/context representations whose concrete shape is
-/// intentionally owned by `qos-actions`.
+/// intentionally owned by `tilo-actions`.
 fn serialized_bytes<T: serde::Serialize>(value: &T, meter: &mut ByteMeter) {
     struct Counter(usize);
     impl std::io::Write for Counter {
@@ -1011,6 +1017,9 @@ fn presence_payload_bytes(payload: &PresencePayload, meter: &mut ByteMeter) {
     if let PresencePayload::Interaction(update) = payload {
         serialized_bytes(update.as_ref(), meter);
     }
+    if let PresencePayload::Status { text, .. } = payload {
+        meter.string_capacity(text);
+    }
 }
 
 fn workspace_control_event_bytes(
@@ -1041,7 +1050,7 @@ fn broker_action_bytes(action: &BrokerActionDescriptor, meter: &mut ByteMeter) {
     }
     meter.add_product(
         action.params.capacity(),
-        std::mem::size_of::<qos_actions::ActionParam>(),
+        std::mem::size_of::<tilo_actions::ActionParam>(),
     );
     for param in &action.params {
         serialized_bytes(param, meter);
@@ -1404,7 +1413,7 @@ impl InboundBridge {
 }
 
 /// How the shovel thread reaches the broker. `Env` is production: the
-/// launcher passed `QOS_SVC_COLLAB_FD`. `Fd` is an already-connected typed
+/// launcher passed `TILO_SVC_COLLAB_FD`. `Fd` is an already-connected typed
 /// endpoint, used by tests and headless diagnostics without environment races.
 enum SdkConnectSource {
     Env,
@@ -1524,8 +1533,43 @@ fn sdk_join_identity(_cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_porta
     Err(runtime_portal::NotAvailable::ServiceFdMissing)
 }
 
+/// Successful primary-route metadata; an epoch invalidates cursors even when
+/// the same route is re-announced. This is not an application-mintable credential.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PrimaryRouteWitness {
+    pub(crate) route: RouteSpec,
+    pub(crate) epoch: Uuid,
+}
+#[derive(Default)]
+struct PrimaryRouteState {
+    requested: Option<RouteSpec>,
+    accepted: Option<PrimaryRouteWitness>,
+}
+impl PrimaryRouteState {
+    fn announce(&mut self, route: RouteSpec) {
+        self.accepted = None;
+        self.requested = Some(route);
+    }
+    fn accept(&mut self, result: Result<RouteSpec, String>) -> Result<(), String> {
+        self.accepted = None;
+        let route = result?;
+        if self.requested.as_ref() != Some(&route) {
+            return Err("primary route acknowledgement differs from the latest Hello".into());
+        }
+        self.accepted = Some(PrimaryRouteWitness {
+            route,
+            epoch: Uuid::new_v4(),
+        });
+        Ok(())
+    }
+    fn current(&self, healthy: bool) -> Option<&PrimaryRouteWitness> {
+        healthy.then_some(self.accepted.as_ref()).flatten()
+    }
+}
+
 pub struct CollaborationManager {
     backend: Backend,
+    primary_route: PrimaryRouteState,
     /// When `Some`, [`Self::send_signed_op`] mints a signed envelope and
     /// dispatches [`CollabRequest::SignedOperation`]. This explicit
     /// policy-envelope API is separate from document mutations, which the SDK
@@ -1536,7 +1580,7 @@ pub struct CollaborationManager {
 impl CollaborationManager {
     /// Connect to the launcher-inherited typed collaboration service and
     /// announce an explicit route. Headless participants use this instead of
-    /// relying on process-wide `QUICK_APP_ID` / `QOS_WORKSPACE_ID` variables.
+    /// relying on process-wide `QUICK_APP_ID` / `TILO_WORKSPACE_ID` variables.
     ///
     /// # Errors
     ///
@@ -1637,6 +1681,7 @@ impl CollaborationManager {
         identity.participant_kind = participant_kind;
         let sdk = Self::spawn_sdk(source, identity)?;
         let mut manager = Self {
+            primary_route: PrimaryRouteState::default(),
             backend: Backend::Sdk(sdk),
             identity: None,
         };
@@ -1655,6 +1700,7 @@ impl CollaborationManager {
     /// this barrier a caller can publish transient presence immediately after
     /// construction, before the broker knows where to deliver it.
     fn await_primary_route(&mut self) -> Result<(), runtime_portal::NotAvailable> {
+        self.primary_route.accepted = None;
         let Backend::Sdk(channel) = &mut self.backend else {
             return Err(runtime_portal::NotAvailable::ServiceFdMissing);
         };
@@ -1672,10 +1718,12 @@ impl CollaborationManager {
             ));
         }
         match ready_rx.recv_timeout(SHOVEL_INIT_TIMEOUT) {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(runtime_portal::NotAvailable::ConnectionFailed(
-                std::io::Error::new(std::io::ErrorKind::ConnectionRefused, error),
-            )),
+            Ok(result) => self.primary_route.accept(result).map_err(|error| {
+                runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    error,
+                ))
+            }),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(
                 runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
@@ -1790,7 +1838,7 @@ impl CollaborationManager {
 /// broker can retain multiple Browser windows in one workspace without
 /// conflating their continuation metadata.
 fn continuation_instance_env() -> Option<String> {
-    let value = std::env::var("QOS_CONTINUITY_INSTANCE").ok()?;
+    let value = std::env::var("TILO_CONTINUITY_INSTANCE").ok()?;
     let value = value.trim();
     (!value.is_empty() && value.len() <= 256 && !value.contains(['/', '\\']))
         .then(|| value.to_owned())
@@ -1812,6 +1860,15 @@ impl CollaborationManager {
         Self::new_scoped(Some(record.as_str().to_string()))
     }
 
+    /// Explicitly disconnected construction: no identity, service or worker discovery.
+    pub(crate) fn disabled() -> Self {
+        Self {
+            backend: Backend::Disabled,
+            primary_route: PrimaryRouteState::default(),
+            identity: None,
+        }
+    }
+
     fn new_scoped(record: Option<String>) -> Self {
         let (app_id, cluster_id) = auto_hello_env();
         let identity = match sdk_join_identity(cluster_id) {
@@ -1821,16 +1878,14 @@ impl CollaborationManager {
                     ?error,
                     "collab: workspace join identity unavailable; disabling SDK collaboration"
                 );
-                return Self {
-                    backend: Backend::Disabled,
-                    identity: None,
-                };
+                return Self::disabled();
             }
         };
 
         match Self::spawn_sdk(SdkConnectSource::Env, identity) {
             Ok(sdk) => {
                 let mut manager = Self {
+                    primary_route: PrimaryRouteState::default(),
                     backend: Backend::Sdk(sdk),
                     identity: None,
                 };
@@ -1845,23 +1900,17 @@ impl CollaborationManager {
                         ?error,
                         "collab: primary route unavailable; disabling SDK collaboration"
                     );
-                    return Self {
-                        backend: Backend::Disabled,
-                        identity: None,
-                    };
+                    return Self::disabled();
                 }
                 manager
             }
-            Err(_) => Self {
-                backend: Backend::Disabled,
-                identity: None,
-            },
+            Err(_) => Self::disabled(),
         }
     }
 
     /// Test-only: build a manager talking to an SDK broker on the given
     /// already-connected client fd, bypassing env-var lookup so two
-    /// tests in one process don't race on `QOS_SVC_COLLAB_FD`.
+    /// tests in one process don't race on `TILO_SVC_COLLAB_FD`.
     #[cfg(test)]
     fn from_sdk_fd_for_test(fd: RawFd, app_id: &str, cluster_id: Uuid) -> Self {
         Self::from_sdk_fd_for_test_with_identity(fd, app_id, cluster_id, Vec::new())
@@ -1886,6 +1935,7 @@ impl CollaborationManager {
         )
         .expect("spawn_sdk from Fd source must succeed in tests");
         let mut manager = Self {
+            primary_route: PrimaryRouteState::default(),
             backend: Backend::Sdk(sdk),
             identity: None,
         };
@@ -1983,6 +2033,10 @@ impl CollaborationManager {
 
     /// True when connected to a live broker — used by the
     /// event loop to keep ticking so the stream drains promptly.
+    pub(crate) fn primary_route(&self) -> Option<&PrimaryRouteWitness> {
+        self.primary_route.current(self.is_connected())
+    }
+
     pub fn is_connected(&self) -> bool {
         matches!(&self.backend, Backend::Sdk(channel) if channel.state.is_healthy())
     }
@@ -2033,6 +2087,22 @@ impl CollaborationManager {
     /// shed under saturation; any durable enqueue failure visibly disconnects
     /// the manager, so callers never continue under the illusion it was sent.
     pub fn send(&mut self, req: CollabRequest) -> bool {
+        if let CollabRequest::Hello {
+            app_id,
+            cluster_id,
+            record,
+            ..
+        } = &req
+        {
+            self.primary_route.announce(RouteSpec {
+                app_id: app_id.clone(),
+                cluster_id: *cluster_id,
+                record: record.clone(),
+            });
+            if let Backend::Sdk(channel) = &mut self.backend {
+                channel.action_directory_published = false;
+            }
+        }
         if let Backend::Sdk(ch) = &self.backend {
             return enqueue_sdk_command(&ch.outbound_tx, SdkCommand::Primary(req), &ch.state);
         }
@@ -2155,10 +2225,10 @@ impl CollaborationManager {
     }
 }
 
-/// The presence handle announced on `Hello`. `QOS_PRESENCE_HANDLE` wins,
-/// then `QOS_USER_ID`; absent both, the broker's synthetic name.
+/// The presence handle announced on `Hello`. `TILO_PRESENCE_HANDLE` wins,
+/// then `TILO_USER_ID`; absent both, the broker's synthetic name.
 pub fn presence_handle_env() -> Option<String> {
-    ["QOS_PRESENCE_HANDLE", "QOS_USER_ID"]
+    ["TILO_PRESENCE_HANDLE", "TILO_USER_ID"]
         .iter()
         .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))
 }
@@ -2270,16 +2340,16 @@ pub mod channel_key {
 ///
 /// # Precedence (each half resolves independently)
 ///
-/// 1. `QOS_PACKAGE_ID` / `QOS_WORKSPACE_ID` — launcher-set for every
+/// 1. `TILO_PACKAGE_ID` / `TILO_WORKSPACE_ID` — launcher-set for every
 ///    compositor-started app (reverse-DNS app id, opened workspace).
 /// 2. `QUICK_APP_ID` / `QUICK_CLUSTER_ID` — standalone-dev override,
-///    ranked below `QOS_PACKAGE_ID` so a dev identity never fragments
+///    ranked below `TILO_PACKAGE_ID` so a dev identity never fragments
 ///    routing under a real session.
 /// 3. A fresh random app id + the nil cluster — fails closed: nothing
 ///    else announces the same id, so nothing is ever delivered here.
 ///
-/// `QOS_WORKSPACE_ID` counts as the cluster only when it parses as a
-/// uuid — it's also read elsewhere as a bare "am I on qOS?" flag, so an
+/// `TILO_WORKSPACE_ID` counts as the cluster only when it parses as a
+/// uuid — it's also read elsewhere as a bare "am I on Tilo?" flag, so an
 /// unroutable value falls through instead of being rejected.
 fn auto_hello_env() -> (String, Uuid) {
     auto_hello_env_uncached()
@@ -2295,13 +2365,13 @@ fn auto_hello_env() -> (String, Uuid) {
 /// sandboxed-app rung) so a compositor-granted capability and an
 /// app-stamped undo entry always name the same subject:
 ///
-/// 1. `QOS_USER_ID` — explicit override; the shell reads it first too.
-/// 2. The launcher-bound runtime identity (`QOS_USER_IDENTITY`) — the
-///    rung a packaged app actually lands on, since `/var/lib/qos` is
+/// 1. `TILO_USER_ID` — explicit override; the shell reads it first too.
+/// 2. The launcher-bound runtime identity (`TILO_USER_IDENTITY`) — the
+///    rung a packaged app actually lands on, since `/var/lib/tilo` is
 ///    outside its sandbox.
-/// 3. `$XDG_CONFIG_HOME/qos/identity/primary.json`, for the shell's
+/// 3. `$XDG_CONFIG_HOME/tilo/identity/primary.json`, for the shell's
 ///    own unsandboxed in-process apps.
-/// 4. `/var/lib/qos/user-identity/pubkey.bin`.
+/// 4. `/var/lib/tilo/user-identity/pubkey.bin`.
 /// 5. The OS account name, then a constant.
 ///
 /// Not memoised — see [`auto_hello_env_uncached`]: a process hosting
@@ -2311,7 +2381,7 @@ pub fn local_user_id() -> crate::permissions::UserId {
 }
 
 fn resolve_local_user_id() -> String {
-    if let Some(v) = non_empty_env("QOS_USER_ID") {
+    if let Some(v) = non_empty_env("TILO_USER_ID") {
         return v;
     }
     #[cfg(unix)]
@@ -2322,7 +2392,7 @@ fn resolve_local_user_id() -> String {
             return person_id_from_key(id.group_public_key());
         }
     }
-    if let Ok(bytes) = std::fs::read("/var/lib/qos/user-identity/pubkey.bin")
+    if let Ok(bytes) = std::fs::read("/var/lib/tilo/user-identity/pubkey.bin")
         && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice())
     {
         return person_id_from_key(key);
@@ -2330,14 +2400,14 @@ fn resolve_local_user_id() -> String {
     non_empty_env("USER").unwrap_or_else(|| "local".to_string())
 }
 
-/// `$XDG_CONFIG_HOME/qos/identity/primary.json`, else
-/// `$HOME/.config/qos/identity/primary.json`.
+/// `$XDG_CONFIG_HOME/tilo/identity/primary.json`, else
+/// `$HOME/.config/tilo/identity/primary.json`.
 fn config_identity_path() -> Option<std::path::PathBuf> {
     let base = match non_empty_env("XDG_CONFIG_HOME") {
         Some(v) => std::path::PathBuf::from(v),
         None => std::path::PathBuf::from(non_empty_env("HOME")?).join(".config"),
     };
-    let p = base.join("qos").join("identity").join("primary.json");
+    let p = base.join("tilo").join("identity").join("primary.json");
     p.is_file().then_some(p)
 }
 
@@ -2363,7 +2433,7 @@ fn person_id_from_key(key: [u8; 32]) -> String {
     }
 }
 
-/// The application this process is, per `QOS_PACKAGE_ID` (falling back
+/// The application this process is, per `TILO_PACKAGE_ID` (falling back
 /// to `QUICK_APP_ID` for dev). Read from the same place the channel key
 /// is built, so what an app publishes can't disagree with its connection.
 pub fn local_app_id() -> String {
@@ -2388,7 +2458,7 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
     // collaboration test does this).
     static FALLBACK_APP_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-    let app_id = non_empty_env("QOS_PACKAGE_ID")
+    let app_id = non_empty_env("TILO_PACKAGE_ID")
         .or_else(|| non_empty_env("QUICK_APP_ID"))
         .unwrap_or_else(|| {
             FALLBACK_APP_ID
@@ -2396,13 +2466,13 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
                 .clone()
         });
 
-    let cluster_id = non_empty_env("QOS_WORKSPACE_ID")
+    let cluster_id = non_empty_env("TILO_WORKSPACE_ID")
         .and_then(|s| {
             if let Ok(id) = Uuid::parse_str(&s) {
                 Some(id)
             } else {
                 tracing::debug!(
-                    "QOS_WORKSPACE_ID={s:?} is not a uuid; \
+                    "TILO_WORKSPACE_ID={s:?} is not a uuid; \
                  falling back to QUICK_CLUSTER_ID for collaboration routing"
                 );
                 None
@@ -2527,7 +2597,8 @@ async fn drive_shovel(
                     &mut routes,
                     &spec,
                 )
-                .await;
+                .await
+                .map(|()| spec);
                 primary = primary_result.is_ok().then_some(key);
             }
             SdkCommand::Primary(request) => {
@@ -2928,7 +2999,7 @@ async fn spawn_realtime_stream(
     }
 }
 
-fn parse_invocation_context(id: u64, json: &str) -> Option<qos_actions::ActionContext> {
+fn parse_invocation_context(id: u64, json: &str) -> Option<tilo_actions::ActionContext> {
     if json.trim().is_empty() {
         return None;
     }
@@ -3473,6 +3544,9 @@ async fn dispatch_sdk_request(
                         let _ = presence.publish_interaction(&key_bytes, &json).await;
                     }
                 }
+                PresencePayload::Status { text, automatic } => {
+                    let _ = presence.publish_status(&key_bytes, &text, automatic).await;
+                }
             }
         }
         CollabRequest::FetchScrollback {
@@ -3683,7 +3757,7 @@ async fn dispatch_sdk_request(
         } => {
             let argument = format!(
                 "{}{}",
-                qos_actions::ARGUMENTS_JSON_PREFIX,
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
                 serde_json::Value::Object(arguments)
             );
             let confirmation = confirmation.to_string();
@@ -3773,7 +3847,7 @@ async fn dispatch_sdk_request(
         } => {
             let argument = format!(
                 "{}{}",
-                qos_actions::ARGUMENTS_JSON_PREFIX,
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
                 serde_json::Value::Object(arguments)
             );
             let result = route
@@ -3911,10 +3985,13 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
                     PresencePayload::Following { target }
                 }
                 runtime_collab::PresencePayload::InteractionJson(json) => {
-                    let update: qos_actions::SemanticInteraction =
+                    let update: tilo_actions::SemanticInteraction =
                         serde_json::from_str(&json).ok()?;
                     update.validate().ok()?;
                     PresencePayload::Interaction(Box::new(update))
+                }
+                runtime_collab::PresencePayload::Status { text, automatic } => {
+                    PresencePayload::Status { text, automatic }
                 }
                 runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
                 // `Cursor` is fully handled and returned by the outer match, so
@@ -3934,6 +4011,34 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
                 payload,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod task4_route_tests {
+    use super::{PrimaryRouteState, RouteSpec};
+    #[test]
+    fn task4_primary_witness_requires_latest_success_and_current_health() {
+        let a = RouteSpec::record("a", uuid::Uuid::nil(), "record-a");
+        let b = RouteSpec::record("b", uuid::Uuid::nil(), "record-b");
+        let mut state = PrimaryRouteState::default();
+        assert!(state.current(true).is_none());
+        state.announce(a.clone());
+        state.accept(Ok(a.clone())).unwrap();
+        let first = state.current(true).unwrap().clone();
+        assert_eq!(first.route, a);
+        assert!(state.current(false).is_none());
+        state.announce(a.clone());
+        assert!(state.current(true).is_none());
+        state.accept(Ok(a.clone())).unwrap();
+        assert_ne!(state.current(true).unwrap().epoch, first.epoch);
+        state.announce(b.clone());
+        assert!(state.accept(Ok(a)).is_err());
+        assert!(state.current(true).is_none());
+        assert!(state.accept(Err("refused".into())).is_err());
+        assert!(state.current(true).is_none());
+        state.accept(Ok(b)).unwrap();
+        assert!(state.current(true).is_some());
     }
 }
 
@@ -4708,7 +4813,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(qos_svc_collab_fd)]
+    #[serial_test::serial(tilo_svc_collab_fd)]
     fn a_broker_that_is_not_there_does_not_hold_the_app_up() {
         // A connected socket whose far end is gone — a broker that died
         // between the launcher's connect and the app's first call. `new()`
@@ -4716,10 +4821,10 @@ mod tests {
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("socketpair");
         drop(theirs);
         let fd = ours.into_raw_fd();
-        // SAFETY: serialised on `qos_svc_collab_fd` against every other
+        // SAFETY: serialised on `tilo_svc_collab_fd` against every other
         // test that reads or writes these two variables.
         unsafe {
-            std::env::set_var("QOS_SVC_COLLAB_FD", fd.to_string());
+            std::env::set_var("TILO_SVC_COLLAB_FD", fd.to_string());
         }
 
         let started = Instant::now();
@@ -4727,7 +4832,7 @@ mod tests {
         let took = started.elapsed();
 
         // SAFETY: as above.
-        unsafe { std::env::remove_var("QOS_SVC_COLLAB_FD") };
+        unsafe { std::env::remove_var("TILO_SVC_COLLAB_FD") };
 
         assert!(
             took < SHOVEL_INIT_TIMEOUT * 2,
@@ -4742,12 +4847,12 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(qos_svc_collab_fd)]
+    #[serial_test::serial(tilo_svc_collab_fd)]
     fn disconnected_manager_is_a_no_op() {
         // No SDK, no legacy socket set — falls through to `Backend::Disabled`.
         // SAFETY: the crate is single-threaded per-test module here.
         unsafe {
-            std::env::remove_var("QOS_SVC_COLLAB_FD");
+            std::env::remove_var("TILO_SVC_COLLAB_FD");
         }
         let mut mgr = CollaborationManager::new();
         assert!(!mgr.is_connected(), "no service = not connected");
@@ -5355,7 +5460,7 @@ mod tests {
 
     #[test]
     fn invocation_context_json_is_optional_and_fail_closed() {
-        let context = qos_actions::ActionContext::default()
+        let context = tilo_actions::ActionContext::default()
             .with_purpose("Review the proposal")
             .with_group("task:review", "Review", "task");
         let json = serde_json::to_string(&context).unwrap();

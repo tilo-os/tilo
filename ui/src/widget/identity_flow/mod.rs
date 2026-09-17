@@ -147,7 +147,7 @@ impl IdentityRecord {
         })
     }
 
-    /// Persisted under `~/.config/qos/identity/primary.json`.
+    /// Persisted under `~/.config/tilo/identity/primary.json`.
     ///
     /// # Errors
     ///
@@ -290,7 +290,7 @@ impl PairingPayload {
         let round1_bytes = postcard::to_allocvec(round1)
             .map_err(|e| IdentityFlowError::EncodeFailed(e.to_string()))?;
         Ok(Self {
-            ty: "qos-pairing".to_string(),
+            ty: "tilo-pairing".to_string(),
             channel: hex::encode(nonce),
             initiator_pk: hex::encode(initiator_pk.as_bytes()),
             initiator_dkg_round1: hex::encode(round1_bytes),
@@ -352,7 +352,7 @@ impl PairingPayload {
     ///
     /// Returns [`IdentityFlowError::DecodeFailed`] if `bytes` isn't valid
     /// JSON for this type, or if the decoded payload's type tag isn't
-    /// `"qos-pairing"`.
+    /// `"tilo-pairing"`.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, IdentityFlowError> {
         if bytes.len() > 256 * 1024 {
             return Err(IdentityFlowError::DecodeFailed(
@@ -361,7 +361,7 @@ impl PairingPayload {
         }
         let p: Self = serde_json::from_slice(bytes)
             .map_err(|e| IdentityFlowError::DecodeFailed(e.to_string()))?;
-        if p.ty != "qos-pairing" {
+        if p.ty != "tilo-pairing" {
             return Err(IdentityFlowError::DecodeFailed(format!(
                 "unexpected type tag: {}",
                 p.ty
@@ -420,13 +420,13 @@ impl PairingPayload {
     }
 }
 
-/// `SHA512("qos-pair-code-v1" || nonce)` truncated mod `1_000_000`.
+/// `SHA512("tilo-pair-code-v1" || nonce)` truncated mod `1_000_000`.
 /// ~16M collision space is fine for a short-lived pairing window: the
 /// code is the seed, not the authentication — a wrong code just fails
 /// the downstream MAC check.
 pub fn derive_pairing_code(nonce: &[u8; 16]) -> u32 {
     let mut hasher = Sha512::new();
-    hasher.update(b"qos-pair-code-v1");
+    hasher.update(b"tilo-pair-code-v1");
     hasher.update(nonce);
     let digest = hasher.finalize();
     // `digest` is a 64-byte SHA-512 output, so the first 4 bytes always
@@ -441,11 +441,11 @@ pub fn format_pairing_code(code: u32) -> String {
     format!("{code:06}")
 }
 
-/// `SHA-512("qos-pair-mac-v1" || nonce)` truncated to 32 bytes — the
+/// `SHA-512("tilo-pair-mac-v1" || nonce)` truncated to 32 bytes — the
 /// MAC key for the pairer's round-2 reply.
 pub fn derive_pairing_mac_key(nonce: &[u8; 16]) -> [u8; 32] {
     let mut hasher = Sha512::new();
-    hasher.update(b"qos-pair-mac-v1");
+    hasher.update(b"tilo-pair-mac-v1");
     hasher.update(nonce);
     let digest = hasher.finalize();
     // `digest` is a 64-byte SHA-512 output, so the first 32 bytes always
@@ -518,7 +518,7 @@ pub fn pairing_transcript_mac(
         round2: &'a EnrolmentRound2,
     }
     let bytes = postcard::to_allocvec(&Transcript {
-        domain: "qos-pairing-transcript-v1",
+        domain: "tilo-pairing-transcript-v1",
         direction,
         channel: &payload.channel,
         initiator_pk: &payload.initiator_pk,
@@ -687,7 +687,7 @@ impl PairingHandshake {
                 provider,
             }))
             .with_no_client_auth();
-        let name = rustls::pki_types::ServerName::try_from("qos-pairing.invalid").ok()?;
+        let name = rustls::pki_types::ServerName::try_from("tilo-pairing.invalid").ok()?;
         let connection = rustls::ClientConnection::new(Arc::new(config), name).ok()?;
         let mut stream = rustls::StreamOwned::new(connection, tcp);
         let frame_len = u32::try_from(bytes.len()).ok()?;
@@ -1089,7 +1089,14 @@ impl PairingHandshake {
         }
     }
 
-    pub fn publish_host_round2(&self, nonce: &[u8; 16], reply: EnrolmentRound2, mac: [u8; 64]) {
+    /// Publish the host contribution, returning whether the broker persisted it.
+    /// A contended durable mailbox must be retried before reporting completion.
+    pub fn publish_host_round2(
+        &self,
+        nonce: &[u8; 16],
+        reply: EnrolmentRound2,
+        mac: [u8; 64],
+    ) -> bool {
         let key = hex::encode(nonce);
         match &self.backend {
             PairingBackend::Memory(inner) => {
@@ -1099,27 +1106,29 @@ impl PairingHandshake {
                     .entry(key)
                     .or_default()
                     .host_round2 = Some((reply, PairingMac::from_bytes(mac)));
+                true
             }
-            PairingBackend::Durable(backend) => {
-                let _ = Self::durable_update(backend, nonce, |state| {
-                    if state.host_round2.is_none() {
-                        state.host_round2 = Some((reply, PairingMac::from_bytes(mac)));
-                    }
-                });
-            }
+            PairingBackend::Durable(backend) => Self::durable_update(backend, nonce, |state| {
+                if state.host_round2.is_none() {
+                    state.host_round2 = Some((reply, PairingMac::from_bytes(mac)));
+                }
+            }),
             PairingBackend::Remote {
                 endpoint,
                 certificate,
             } => {
-                let _ = Self::remote_call(
-                    endpoint,
-                    certificate,
-                    &PairingBrokerRequest::PutHostRound2(
-                        *nonce,
-                        reply,
-                        PairingMac::from_bytes(mac),
+                matches!(
+                    Self::remote_call(
+                        endpoint,
+                        certificate,
+                        &PairingBrokerRequest::PutHostRound2(
+                            *nonce,
+                            reply,
+                            PairingMac::from_bytes(mac),
+                        ),
                     ),
-                );
+                    Some(PairingBrokerResponse::Ok)
+                )
             }
         }
     }
@@ -1260,7 +1269,7 @@ impl InviteExpiry {
     }
 }
 
-/// Channel-invite envelope encoded into a `qos://invite/<base32>` URL.
+/// Channel-invite envelope encoded into a `tilo://invite/<base32>` URL.
 ///
 /// Bearer invite containing only an opaque redemption capability and sealed
 /// delegation material. Raw Ed25519 secret bytes never appear in a URL.
@@ -1346,18 +1355,18 @@ impl InviteEnvelope {
         let bytes = postcard::to_allocvec(self)
             .map_err(|e| IdentityFlowError::EncodeFailed(e.to_string()))?;
         let encoded = base32::encode(base32::Alphabet::Rfc4648 { padding: false }, &bytes);
-        Ok(format!("qos://invite/{encoded}"))
+        Ok(format!("tilo://invite/{encoded}"))
     }
 
     /// # Errors
     ///
     /// Returns [`IdentityFlowError::DecodeFailed`] if `url` is missing
-    /// the `qos://invite/` prefix, isn't valid base32, or doesn't decode
+    /// the `tilo://invite/` prefix, isn't valid base32, or doesn't decode
     /// to a valid envelope.
     pub fn from_url(url: &str) -> Result<Self, IdentityFlowError> {
-        let prefix = "qos://invite/";
+        let prefix = "tilo://invite/";
         let suffix = url.strip_prefix(prefix).ok_or_else(|| {
-            IdentityFlowError::DecodeFailed("missing qos://invite/ prefix".into())
+            IdentityFlowError::DecodeFailed("missing tilo://invite/ prefix".into())
         })?;
         if suffix.len() > 16 * 1024 {
             return Err(IdentityFlowError::DecodeFailed(
@@ -1452,8 +1461,8 @@ impl InviteRedemptionAuthority {
         }
         #[cfg(test)]
         {
-            let base = std::env::var_os("QOS_IDENTITY_ROOT").map_or_else(
-                || std::env::temp_dir().join(format!("qos-ui-test-{}", std::process::id())),
+            let base = std::env::var_os("TILO_IDENTITY_ROOT").map_or_else(
+                || std::env::temp_dir().join(format!("tilo-ui-test-{}", std::process::id())),
                 PathBuf::from,
             );
             Self::at(base.join("invite-redemption-authority"))
@@ -2974,7 +2983,7 @@ mod tests {
         )
         .unwrap();
         let url = env.to_url().unwrap();
-        assert!(url.starts_with("qos://invite/"));
+        assert!(url.starts_with("tilo://invite/"));
         let back = InviteEnvelope::from_url(&url).unwrap();
         assert_eq!(env, back);
         back.verify_signature()
@@ -3200,7 +3209,7 @@ mod tests {
 
     #[test]
     fn oversized_invite_is_rejected_before_decode() {
-        let url = format!("qos://invite/{}", "A".repeat(16 * 1024 + 1));
+        let url = format!("tilo://invite/{}", "A".repeat(16 * 1024 + 1));
         assert!(InviteEnvelope::from_url(&url).is_err());
     }
 

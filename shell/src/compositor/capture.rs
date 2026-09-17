@@ -31,7 +31,9 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, Size, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 
 use crate::compositor::frame::FrameBuilder;
-use crate::shell::overlay_host::CaptureMirrorHandoffLayer;
+use crate::shell::capture_surface::{
+    CaptureMirrorHandoffLayer, CaptureSurfaceKind, CaptureSurfaceRequest,
+};
 
 const MAX_CAPTURE_EDGE: f64 = 8_192.0;
 const GRID_GAP: f64 = 16.0;
@@ -1203,15 +1205,17 @@ impl CaptureExecutor {
         let id = format!("pinned-capture:{}", self.sequence);
         self.sequence = self.sequence.saturating_add(1);
         let title = format!("Screenshot · {width} × {height}");
-        frame_builder.host_mut().insert_pinned_capture(
-            &id,
-            &title,
-            std::sync::Arc::from(rgba),
-            width,
-            height,
-            region_bounds(spawn_regions),
-            preview,
-        );
+        frame_builder
+            .host_mut()
+            .upsert_capture_surface(CaptureSurfaceRequest {
+                id: &id,
+                title: &title,
+                rgba: std::sync::Arc::from(rgba),
+                width,
+                height,
+                spawn_from: region_bounds(spawn_regions),
+                kind: CaptureSurfaceKind::Pinned { preview },
+            });
         Ok(CaptureOutcome::Pinned { id })
     }
 
@@ -1317,16 +1321,20 @@ fn refresh_mirror(
         .as_mut()
         .map(|renderer| render_capture_rgba(renderer, &composed))
         .ok_or_else(|| "live mirror renderer disappeared".to_string())?;
-    frame_builder.host_mut().upsert_capture_mirror(
-        &mirror.id,
-        &mirror.title,
-        std::sync::Arc::from(rgba),
-        width,
-        height,
-        mirror.preferred_size,
-        mirror.spawn_from.take(),
-        handoff_layers,
-    );
+    frame_builder
+        .host_mut()
+        .upsert_capture_surface(CaptureSurfaceRequest {
+            id: &mirror.id,
+            title: &mirror.title,
+            rgba: std::sync::Arc::from(rgba),
+            width,
+            height,
+            spawn_from: mirror.spawn_from.take(),
+            kind: CaptureSurfaceKind::Live {
+                preferred_size: mirror.preferred_size,
+                handoff_layers,
+            },
+        });
     Ok(())
 }
 
@@ -1532,7 +1540,7 @@ fn record_replay_frame(
             .encode(&rgba)
             .map_err(|error| format!("encode recent frame: {error}"))?;
         if !access_unit.is_empty() {
-            let keyframe = qos_callstream::session::is_h264_keyframe(&access_unit);
+            let keyframe = tilo_callstream::session::is_h264_keyframe(&access_unit);
             replay.video_bytes = replay.video_bytes.saturating_add(access_unit.len());
             replay.frames.push_back(BufferedReplayFrame {
                 access_unit,
@@ -1882,7 +1890,7 @@ fn next_screenshot_path(sequence: u64) -> PathBuf {
     } else {
         format!("-{sequence}")
     };
-    root.join(format!("qOS Screenshot {stamp}{suffix}.png"))
+    root.join(format!("Tilo Screenshot {stamp}{suffix}.png"))
 }
 
 fn next_recording_path(sequence: u64, include_audio: bool) -> PathBuf {
@@ -1898,7 +1906,7 @@ fn next_recording_path(sequence: u64, include_audio: bool) -> PathBuf {
         let _ = include_audio;
         "h264"
     };
-    root.join(format!("qOS Recording {stamp}-{sequence}.{extension}"))
+    root.join(format!("Tilo Recording {stamp}-{sequence}.{extension}"))
 }
 
 fn next_replay_path(sequence: u64, include_audio: bool) -> PathBuf {
@@ -1914,7 +1922,7 @@ fn next_replay_path(sequence: u64, include_audio: bool) -> PathBuf {
         let _ = include_audio;
         "h264"
     };
-    root.join(format!("qOS Recent {stamp}-{sequence}.{extension}"))
+    root.join(format!("Tilo Recent {stamp}-{sequence}.{extension}"))
 }
 
 // The fixed 4x4 preview sampler uses bounded dimensions and checked slice
@@ -2335,7 +2343,7 @@ mod tests {
             targets: vec![ui::widget::CaptureTarget {
                 id: format!("group:{target_group}:tab:{target_tab}"),
                 title: "Notes".into(),
-                app_id: "dev.qos.notes".into(),
+                app_id: "dev.tilo.notes".into(),
                 visible_rect: Rect::ZERO,
                 // Deliberately stale: the live draw must win over picker-time
                 // geometry after strip motion.
@@ -2391,7 +2399,7 @@ mod tests {
             targets: vec![ui::widget::CaptureTarget {
                 id: "group:999999:tab:999999".into(),
                 title: "Gone".into(),
-                app_id: "dev.qos.gone".into(),
+                app_id: "dev.tilo.gone".into(),
                 visible_rect: Rect::ZERO,
                 virtual_rect: Rect::new(1_000.0, 100.0, 1_800.0, 700.0),
                 complete_rect: None,
@@ -2435,7 +2443,7 @@ mod tests {
             targets: vec![ui::widget::CaptureTarget {
                 id: "notes".into(),
                 title: "Notes".into(),
-                app_id: "dev.qos.notes".into(),
+                app_id: "dev.tilo.notes".into(),
                 visible_rect: Rect::ZERO,
                 virtual_rect,
                 complete_rect: Some(Rect::new(-1_300.0, 120.0, 10.0, 1_308.0)),
@@ -2451,17 +2459,17 @@ mod tests {
     fn semantic_region_update_preserves_element_identity() {
         let updated = updated_local_tracking_source(
             Some(FloatingSource::AppElement {
-                app_id: "dev.qos.browser".into(),
+                app_id: "dev.tilo.browser".into(),
                 element_id: "media:7".into(),
                 region: Rect::new(10.0, 20.0, 410.0, 245.0),
             }),
-            "dev.qos.browser".into(),
+            "dev.tilo.browser".into(),
             Rect::new(24.0, 36.0, 624.0, 374.0),
         );
         assert_eq!(
             updated,
             FloatingSource::AppElement {
-                app_id: "dev.qos.browser".into(),
+                app_id: "dev.tilo.browser".into(),
                 element_id: "media:7".into(),
                 region: Rect::new(24.0, 36.0, 624.0, 374.0),
             }

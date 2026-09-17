@@ -11,6 +11,7 @@ use vello::peniko::{Color, Fill};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::shell::state::WorkspaceTree;
 
@@ -19,6 +20,10 @@ const WARNING_H: f64 = 24.0;
 const ACTIONS_H: f64 = 40.0;
 const INVITED_TAG: &str = "invited";
 const INVITED_ROW_ALPHA: f32 = 0.55;
+const ROW_H: f64 = 64.0;
+const MY_STATUS_H: f64 = 92.0;
+const ROSTER_PAGE_SIZE: usize = 3;
+const ROSTER_PAGER_H: f64 = 36.0;
 
 /// A compact arrow with an explicit head. Used where a relationship must
 /// remain directional without turning a presence treatment into a label.
@@ -80,8 +85,12 @@ pub enum CollaboratorsHit {
     Invite,
     Join,
     RoomActivity,
+    EditStatus,
+    SetStatusSharing(ui::StatusSharing),
     /// Toggle follow for the row at this index.
     ToggleFollow(usize),
+    PreviousPeople,
+    NextPeople,
     /// Inside the card, but not on an action.
     Absorb,
     /// Outside the card; the host should close it.
@@ -101,19 +110,37 @@ pub struct RosterRow {
     pub invited: bool,
     /// Ephemeral current location, never a history summary.
     pub activity: Option<String>,
+    /// Short participant intention. `automatic` is rendered with a sparkle so
+    /// model-suggested words cannot be mistaken for a direct quote.
+    pub status: Option<RosterStatus>,
     pub followable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RosterStatus {
+    pub text: String,
+    pub automatic: bool,
 }
 
 /// Immutable data and policy decisions needed to paint one frame.
 pub struct CollaboratorsModel<'a> {
     pub host: Rect,
     pub rows: &'a [RosterRow],
+    pub own_initial: char,
+    pub own_color: Color,
     pub unavailable: Option<&'a str>,
     pub may_invite: bool,
     pub followed_id: Option<&'a str>,
     /// Ephemeral room-local attachments, expressed using roster ids.  The
     /// People surface can therefore show them when cursors are off-screen.
     pub following_pairs: &'a [(String, String)],
+    pub own_status: Option<&'a str>,
+    /// Local participant's ephemeral semantic action, shown separately from
+    /// their longer-lived intent/status so the two cannot be conflated.
+    pub own_activity: Option<&'a str>,
+    pub own_status_automatic: bool,
+    pub status_sharing: ui::StatusSharing,
+    pub status_editing: bool,
 }
 
 /// Direction of a transient attachment relative to one roster row.
@@ -154,6 +181,20 @@ pub struct CollaboratorsOverlay {
     join: Rect,
     activity: Rect,
     row_actions: Vec<Rect>,
+    status: Rect,
+    status_modes: Vec<(ui::StatusSharing, Rect)>,
+    row_rects: Vec<Rect>,
+    roster_offset: usize,
+    roster_range: std::ops::Range<usize>,
+    previous_people: Rect,
+    next_people: Rect,
+    keyboard_focus: Option<CollaboratorsHit>,
+    accessibility_rows: Vec<RosterRow>,
+    accessibility_status: Option<String>,
+    accessibility_own_activity: Option<String>,
+    accessibility_status_automatic: bool,
+    accessibility_sharing: ui::StatusSharing,
+    accessibility_editing: bool,
 }
 
 impl CollaboratorsOverlay {
@@ -172,6 +213,13 @@ impl CollaboratorsOverlay {
             model.unavailable.is_some(),
             model.may_invite,
         );
+        self.accessibility_rows.clear();
+        self.accessibility_rows.extend_from_slice(model.rows);
+        self.accessibility_status = model.own_status.map(str::to_string);
+        self.accessibility_own_activity = model.own_activity.map(str::to_string);
+        self.accessibility_status_automatic = model.own_status_automatic;
+        self.accessibility_sharing = model.status_sharing;
+        self.accessibility_editing = model.status_editing;
         for (target, row) in self.row_actions.iter_mut().zip(model.rows) {
             if !row.followable || target.y1 > self.activity.y0 - 4.0 {
                 *target = Rect::ZERO;
@@ -203,6 +251,34 @@ impl CollaboratorsOverlay {
             transform.pre_translate((rect.x0 + 16.0, rect.y0 + 16.0).into()),
             None,
         );
+        let live_rows = model
+            .rows
+            .iter()
+            .filter(|row| !row.invited)
+            .collect::<Vec<_>>();
+        let here_count = live_rows.len().saturating_add(1);
+        let here = format!("{here_count} here now");
+        let (here_width, _) = text_renderer.measure(&here, tokens.typography.scale.xs, None);
+        let here_x = rect.x1 - 14.0 - f64::from(here_width);
+        text_renderer.draw_text(
+            scene,
+            &here,
+            tokens.typography.scale.xs,
+            colors.text_dim,
+            transform.pre_translate((here_x, rect.y0 + 20.0).into()),
+            None,
+        );
+        let dot_colors = std::iter::once(model.own_color)
+            .chain(live_rows.iter().map(|row| row.color))
+            .take(4)
+            .collect::<Vec<_>>();
+        let dots_x = here_x - 8.0 - row_count_as_f64(dot_colors.len()) * 7.0;
+        for (index, color) in dot_colors.into_iter().enumerate() {
+            let x = dots_x + row_count_as_f64(index) * 7.0;
+            let dot = vello::kurbo::Circle::new(Point::new(x + 3.0, rect.y0 + 25.0), 3.0);
+            scene.fill(Fill::NonZero, transform, color, None, &dot);
+        }
+        self.draw_own_status(scene, transform, text_renderer, theme, model, cursor);
 
         if let Some(reason) = model.unavailable {
             text_renderer.draw_text(
@@ -226,11 +302,12 @@ impl CollaboratorsOverlay {
         }
 
         let list_top = if model.unavailable.is_some() {
-            rect.y0 + 48.0 + WARNING_H
+            rect.y0 + 48.0 + WARNING_H + MY_STATUS_H
         } else {
-            rect.y0 + 48.0
+            rect.y0 + 48.0 + MY_STATUS_H
         };
-        for (index, row) in model.rows.iter().enumerate() {
+        for (visible_index, index) in self.roster_range.clone().enumerate() {
+            let row = &model.rows[index];
             let relationship = model.relationship_for(&row.id);
             let relationship_partner = relationship.as_ref().and_then(|relationship| {
                 let partner_id = match relationship {
@@ -249,7 +326,7 @@ impl CollaboratorsOverlay {
                 theme,
                 &RowFrame {
                     row,
-                    y: list_top + row_count_as_f64(index) * 48.0,
+                    y: list_top + row_count_as_f64(visible_index) * ROW_H,
                     followed: model.followed_id == Some(row.id.as_str()),
                     relationship,
                     relationship_partner,
@@ -257,7 +334,24 @@ impl CollaboratorsOverlay {
                 },
             );
         }
+        self.draw_roster_pager(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            model.rows.len(),
+            cursor,
+        );
         self.draw_footer(scene, transform, text_renderer, theme, cursor);
+        if let Some(rect) = self.focused_rect() {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(2.0),
+                transform,
+                theme.tokens.colors.accent[4],
+                None,
+                &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm)),
+            );
+        }
     }
 
     pub fn clear(&mut self) {
@@ -293,12 +387,24 @@ impl CollaboratorsOverlay {
             CollaboratorsHit::Join
         } else if self.activity.area() > 0.0 && self.activity.contains(point) {
             CollaboratorsHit::RoomActivity
+        } else if self.status.area() > 0.0 && self.status.contains(point) {
+            CollaboratorsHit::EditStatus
+        } else if let Some((mode, _)) = self
+            .status_modes
+            .iter()
+            .find(|(_, rect)| rect.contains(point))
+        {
+            CollaboratorsHit::SetStatusSharing(*mode)
         } else if let Some(index) = self
             .row_actions
             .iter()
             .position(|rect| rect.area() > 0.0 && rect.contains(point))
         {
             CollaboratorsHit::ToggleFollow(index)
+        } else if self.previous_people.area() > 0.0 && self.previous_people.contains(point) {
+            CollaboratorsHit::PreviousPeople
+        } else if self.next_people.area() > 0.0 && self.next_people.contains(point) {
+            CollaboratorsHit::NextPeople
         } else if self.contains(point) {
             CollaboratorsHit::Absorb
         } else {
@@ -306,23 +412,308 @@ impl CollaboratorsOverlay {
         }
     }
 
+    fn focus_order(&self) -> Vec<CollaboratorsHit> {
+        let mut order = Vec::new();
+        if self.status.area() > 0.0 {
+            order.push(CollaboratorsHit::EditStatus);
+        }
+        order.extend(
+            self.status_modes
+                .iter()
+                .map(|(mode, _)| CollaboratorsHit::SetStatusSharing(*mode)),
+        );
+        order.extend(
+            self.row_actions
+                .iter()
+                .enumerate()
+                .filter(|(_, rect)| rect.area() > 0.0)
+                .map(|(index, _)| CollaboratorsHit::ToggleFollow(index)),
+        );
+        if self.previous_people.area() > 0.0 {
+            order.push(CollaboratorsHit::PreviousPeople);
+        }
+        if self.next_people.area() > 0.0 {
+            order.push(CollaboratorsHit::NextPeople);
+        }
+        if self.invite.area() > 0.0 {
+            order.extend([CollaboratorsHit::Invite, CollaboratorsHit::Join]);
+        }
+        if self.activity.area() > 0.0 {
+            order.push(CollaboratorsHit::RoomActivity);
+        }
+        order
+    }
+
+    fn rect_for_hit(&self, hit: CollaboratorsHit) -> Option<Rect> {
+        match hit {
+            CollaboratorsHit::Invite => Some(self.invite),
+            CollaboratorsHit::Join => Some(self.join),
+            CollaboratorsHit::RoomActivity => Some(self.activity),
+            CollaboratorsHit::EditStatus => Some(self.status),
+            CollaboratorsHit::SetStatusSharing(mode) => self
+                .status_modes
+                .iter()
+                .find_map(|(candidate, rect)| (*candidate == mode).then_some(*rect)),
+            CollaboratorsHit::ToggleFollow(index) => self.row_actions.get(index).copied(),
+            CollaboratorsHit::PreviousPeople => Some(self.previous_people),
+            CollaboratorsHit::NextPeople => Some(self.next_people),
+            CollaboratorsHit::Absorb | CollaboratorsHit::Dismiss => None,
+        }
+        .filter(|rect| rect.area() > 0.0)
+    }
+
+    fn focused_rect(&self) -> Option<Rect> {
+        self.keyboard_focus
+            .and_then(|focus| self.rect_for_hit(focus))
+    }
+
+    pub fn key(&mut self, key: &Key, backwards: bool) -> Option<CollaboratorsHit> {
+        if matches!(key, Key::Named(NamedKey::Escape)) {
+            self.keyboard_focus = None;
+            return Some(CollaboratorsHit::Dismiss);
+        }
+        if matches!(key, Key::Named(NamedKey::Enter | NamedKey::Space)) {
+            return self.keyboard_focus;
+        }
+        let reverse = matches!(key, Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp))
+            || (backwards && matches!(key, Key::Named(NamedKey::Tab)));
+        if !matches!(
+            key,
+            Key::Named(
+                NamedKey::Tab
+                    | NamedKey::ArrowLeft
+                    | NamedKey::ArrowRight
+                    | NamedKey::ArrowUp
+                    | NamedKey::ArrowDown
+                    | NamedKey::Home
+                    | NamedKey::End
+            )
+        ) {
+            return None;
+        }
+        let order = self.focus_order();
+        if order.is_empty() {
+            return None;
+        }
+        let current = self
+            .keyboard_focus
+            .and_then(|focus| order.iter().position(|candidate| *candidate == focus));
+        let last = order.len().saturating_sub(1);
+        let next = if matches!(key, Key::Named(NamedKey::Home)) {
+            0
+        } else if matches!(key, Key::Named(NamedKey::End)) {
+            last
+        } else if reverse {
+            current
+                .and_then(|index| index.checked_sub(1))
+                .unwrap_or(last)
+        } else {
+            current
+                .and_then(|index| index.checked_add(1))
+                .filter(|index| *index < order.len())
+                .unwrap_or(0)
+        };
+        self.keyboard_focus = order.get(next).copied();
+        None
+    }
+
+    pub fn accessibility_snapshot(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let people = self
+            .accessibility_rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let mut details = Vec::new();
+                if row.is_agent {
+                    details.push("Agent".to_string());
+                }
+                if row.invited {
+                    details.push("Invited, not currently present".to_string());
+                } else {
+                    details.push("Present now".to_string());
+                }
+                if let Some(activity) = &row.activity {
+                    details.push(format!("Now: {activity}"));
+                }
+                if let Some(status) = &row.status {
+                    details.push(format!(
+                        "Intent{}: {}",
+                        if status.automatic { ", inferred" } else { "" },
+                        status.text
+                    ));
+                }
+                AccessNode::new(Role::ListItem)
+                    .with_name(row.label.clone())
+                    .with_description(details.join("; "))
+                    .with_position(index.saturating_add(1), self.accessibility_rows.len())
+            })
+            .collect();
+        let mut children = vec![
+            AccessNode::new(Role::List)
+                .with_name("People here now")
+                .with_children(people),
+        ];
+        for hit in self.focus_order() {
+            let focused = self.keyboard_focus == Some(hit);
+            let (role, name, description, checked) = match hit {
+                CollaboratorsHit::EditStatus => {
+                    let mut description = if self.accessibility_status_automatic {
+                        "Inferred on this device from recent semantic actions".to_string()
+                    } else {
+                        "Set what you are trying to accomplish".to_string()
+                    };
+                    if let Some(activity) = &self.accessibility_own_activity {
+                        description.push_str("; Now: ");
+                        description.push_str(activity);
+                    }
+                    (
+                        if self.accessibility_editing {
+                            Role::TextInput
+                        } else {
+                            Role::Button
+                        },
+                        "Your collaboration status".to_string(),
+                        description,
+                        None,
+                    )
+                }
+                CollaboratorsHit::SetStatusSharing(mode) => (
+                    Role::RadioButton,
+                    match mode {
+                        ui::StatusSharing::Automatic => "Automatic status",
+                        ui::StatusSharing::ManualOnly => "Manual status only",
+                        ui::StatusSharing::Off => "Hide status",
+                    }
+                    .to_string(),
+                    match mode {
+                        ui::StatusSharing::Automatic => {
+                            "Infer a short status locally from recent workspace actions"
+                        }
+                        ui::StatusSharing::ManualOnly => "Share only text you enter yourself",
+                        ui::StatusSharing::Off => "Publish no status to this workspace",
+                    }
+                    .to_string(),
+                    Some(self.accessibility_sharing == mode),
+                ),
+                CollaboratorsHit::ToggleFollow(index) => {
+                    let row = self.accessibility_rows.get(index);
+                    (
+                        Role::Button,
+                        row.map_or_else(
+                            || "Follow collaborator".to_string(),
+                            |row| format!("Follow {}", row.label),
+                        ),
+                        "Mirror this participant's live workspace view".to_string(),
+                        None,
+                    )
+                }
+                CollaboratorsHit::PreviousPeople => (
+                    Role::Button,
+                    "Previous people".to_string(),
+                    "Show the previous people in this workspace".to_string(),
+                    None,
+                ),
+                CollaboratorsHit::NextPeople => (
+                    Role::Button,
+                    "Next people".to_string(),
+                    "Show the next people in this workspace".to_string(),
+                    None,
+                ),
+                CollaboratorsHit::Invite => (
+                    Role::Button,
+                    "Invite people".to_string(),
+                    "Create an authenticated workspace invitation".to_string(),
+                    None,
+                ),
+                CollaboratorsHit::Join => (
+                    Role::Button,
+                    "Join workspace".to_string(),
+                    "Connect using an authenticated invitation".to_string(),
+                    None,
+                ),
+                CollaboratorsHit::RoomActivity => (
+                    Role::Button,
+                    "Workspace activity".to_string(),
+                    "Review grouped outcomes and what happened while you were away".to_string(),
+                    None,
+                ),
+                CollaboratorsHit::Absorb | CollaboratorsHit::Dismiss => continue,
+            };
+            let mut state = AccessState::new().focusable(true).focused(focused);
+            if let Some(checked) = checked {
+                state = state.checked(checked);
+            }
+            let mut node = AccessNode::new(role)
+                .with_name(name)
+                .with_description(description)
+                .with_state(state);
+            if hit == CollaboratorsHit::EditStatus
+                && let Some(value) = self.accessibility_status.as_ref()
+            {
+                node = node.with_value(value.clone());
+            }
+            children.push(node);
+        }
+        AccessNode::new(Role::Dialog)
+            .with_name("People")
+            .with_description(
+                "Live workspace presence, current activity, intent, and status privacy controls",
+            )
+            .with_children(children)
+    }
+
+    pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
+        match path {
+            [] => Some(self.panel),
+            [0] => Some(self.panel),
+            [0, row] => self.row_rects.get(*row).copied(),
+            [control] if *control > 0 => self
+                .focus_order()
+                .get(control.saturating_sub(1))
+                .and_then(|hit| self.rect_for_hit(*hit)),
+            _ => None,
+        }
+    }
+
+    pub fn focus_accessibility_path(&mut self, path: &[usize]) -> bool {
+        let [control] = path else {
+            return false;
+        };
+        if *control == 0 {
+            return false;
+        }
+        let Some(hit) = self.focus_order().get(control.saturating_sub(1)).copied() else {
+            return false;
+        };
+        self.keyboard_focus = Some(hit);
+        true
+    }
+
     fn layout(&mut self, host: Rect, member_count: usize, unavailable: bool, may_invite: bool) {
-        let rows = row_count_as_f64(member_count.max(1));
+        if self.roster_offset >= member_count {
+            self.roster_offset = 0;
+        }
+        let paged = member_count > ROSTER_PAGE_SIZE;
+        let end = self
+            .roster_offset
+            .saturating_add(ROSTER_PAGE_SIZE)
+            .min(member_count);
+        self.roster_range = self.roster_offset..end;
+        let rows = row_count_as_f64(self.roster_range.len().max(1));
         let warning_h = if unavailable && member_count > 0 {
             WARNING_H
         } else {
             0.0
         };
         let actions_h = if may_invite { ACTIONS_H } else { 0.0 };
-        let height = 48.0 + warning_h + rows * 48.0 + 16.0 + actions_h + FOOTER_H;
+        let pager_h = if paged { ROSTER_PAGER_H } else { 0.0 };
+        let height =
+            48.0 + MY_STATUS_H + warning_h + rows * ROW_H + pager_h + 16.0 + actions_h + FOOTER_H;
         let x1 = host.x1 - 16.0;
         let y0 = host.y0 + 48.0;
-        self.panel = Rect::new(
-            x1 - 320.0,
-            y0,
-            x1,
-            y0 + height.min(420.0 + actions_h + FOOTER_H),
-        );
+        self.panel = Rect::new(x1 - 320.0, y0, x1, y0 + height);
         self.activity = Rect::new(
             self.panel.x0 + 8.0,
             self.panel.y1 - FOOTER_H + 4.0,
@@ -331,15 +722,68 @@ impl CollaboratorsOverlay {
         );
         self.row_actions = (0..member_count)
             .map(|index| {
-                let y = self.panel.y0 + 48.0 + warning_h + row_count_as_f64(index) * 48.0;
+                let Some(visible_index) = index.checked_sub(self.roster_offset) else {
+                    return Rect::ZERO;
+                };
+                if visible_index >= self.roster_range.len() {
+                    return Rect::ZERO;
+                }
+                let y = self.panel.y0
+                    + 48.0
+                    + MY_STATUS_H
+                    + warning_h
+                    + row_count_as_f64(visible_index) * ROW_H;
                 Rect::new(
                     self.panel.x1 - 88.0,
-                    y + 8.0,
+                    y + 16.0,
                     self.panel.x1 - 12.0,
-                    y + 36.0,
+                    y + 44.0,
                 )
             })
             .collect();
+        self.row_rects = (0..member_count)
+            .map(|index| {
+                let Some(visible_index) = index.checked_sub(self.roster_offset) else {
+                    return Rect::ZERO;
+                };
+                if visible_index >= self.roster_range.len() {
+                    return Rect::ZERO;
+                }
+                let y = self.panel.y0
+                    + 48.0
+                    + MY_STATUS_H
+                    + warning_h
+                    + row_count_as_f64(visible_index) * ROW_H;
+                Rect::new(self.panel.x0 + 8.0, y, self.panel.x1 - 8.0, y + ROW_H)
+            })
+            .collect();
+        if paged {
+            let pager_y = self.panel.y0 + 48.0 + MY_STATUS_H + warning_h + rows * ROW_H;
+            let center = self.panel.x0 + self.panel.width() / 2.0;
+            self.previous_people = (self.roster_offset > 0)
+                .then(|| {
+                    Rect::new(
+                        self.panel.x0 + 12.0,
+                        pager_y + 4.0,
+                        center - 38.0,
+                        pager_y + 32.0,
+                    )
+                })
+                .unwrap_or(Rect::ZERO);
+            self.next_people = (end < member_count)
+                .then(|| {
+                    Rect::new(
+                        center + 38.0,
+                        pager_y + 4.0,
+                        self.panel.x1 - 12.0,
+                        pager_y + 32.0,
+                    )
+                })
+                .unwrap_or(Rect::ZERO);
+        } else {
+            self.previous_people = Rect::ZERO;
+            self.next_people = Rect::ZERO;
+        }
         if may_invite {
             let y0 = self.panel.y1 - FOOTER_H - ACTIONS_H + 6.0;
             let gap = 8.0;
@@ -354,6 +798,266 @@ impl CollaboratorsOverlay {
         } else {
             self.invite = Rect::ZERO;
             self.join = Rect::ZERO;
+        }
+        self.status = Rect::new(
+            self.panel.x0 + 44.0,
+            self.panel.y0 + 50.0,
+            self.panel.x1 - 12.0,
+            self.panel.y0 + 78.0,
+        );
+        let mode_top = self.panel.y0 + 82.0;
+        let mode_width = (self.panel.width() - 32.0) / 3.0;
+        self.status_modes = [
+            ui::StatusSharing::Automatic,
+            ui::StatusSharing::ManualOnly,
+            ui::StatusSharing::Off,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, mode)| {
+            let index = row_count_as_f64(index);
+            (
+                mode,
+                Rect::new(
+                    self.panel.x0 + 12.0 + index * mode_width,
+                    mode_top,
+                    self.panel.x0 + 8.0 + (index + 1.0) * mode_width,
+                    mode_top + 24.0,
+                ),
+            )
+        })
+        .collect();
+    }
+
+    pub fn change_people_page(&mut self, forward: bool, member_count: usize) {
+        if forward {
+            if self.roster_offset.saturating_add(ROSTER_PAGE_SIZE) < member_count {
+                self.roster_offset = self.roster_offset.saturating_add(ROSTER_PAGE_SIZE);
+            }
+        } else {
+            self.roster_offset = self.roster_offset.saturating_sub(ROSTER_PAGE_SIZE);
+        }
+        self.keyboard_focus = None;
+    }
+
+    fn draw_roster_pager(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        member_count: usize,
+        cursor: Option<Point>,
+    ) {
+        if member_count <= ROSTER_PAGE_SIZE {
+            return;
+        }
+        let label = format!(
+            "{}–{} of {member_count}",
+            self.roster_range.start.saturating_add(1),
+            self.roster_range.end
+        );
+        let (width, _) = text_renderer.measure(&label, theme.tokens.typography.scale.xs, None);
+        let y = self.previous_people.y0.max(self.next_people.y0);
+        text_renderer.draw_text(
+            scene,
+            &label,
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate(
+                (
+                    self.panel.x0 + self.panel.width() / 2.0 - f64::from(width) / 2.0,
+                    y + 7.0,
+                )
+                    .into(),
+            ),
+            None,
+        );
+        for (rect, glyph) in [(self.previous_people, "‹"), (self.next_people, "›")] {
+            if rect.area() <= 0.0 {
+                continue;
+            }
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(rect, glyph)
+                    .radius(f64::from(theme.tokens.radii.sm))
+                    .hovered(cursor.is_some_and(|point| rect.contains(point))),
+            );
+        }
+    }
+
+    fn draw_own_status(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        model: &CollaboratorsModel<'_>,
+        cursor: Option<Point>,
+    ) {
+        let colors = &theme.tokens.colors;
+        let label = if model.status_editing {
+            model
+                .own_status
+                .filter(|status| !status.is_empty())
+                .unwrap_or("Type a status, then press Enter")
+        } else {
+            model
+                .own_status
+                .unwrap_or("Set what you're working toward…")
+        };
+        let avatar = Rect::new(
+            self.panel.x0 + 12.0,
+            self.status.y0 + 1.0,
+            self.panel.x0 + 38.0,
+            self.status.y0 + 27.0,
+        );
+        ui::widget::Avatar::draw_at(
+            scene,
+            transform,
+            avatar,
+            &model.own_initial.to_string(),
+            model.own_color,
+            theme,
+            text_renderer,
+        );
+        let spark = vello::kurbo::Circle::new(Point::new(avatar.x1 - 2.0, avatar.y1 - 2.0), 3.5);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(2.0),
+            transform,
+            ui::chrome::shell::panel_ground(theme),
+            None,
+            &spark,
+        );
+        scene.fill(Fill::NonZero, transform, model.own_color, None, &spark);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            if cursor.is_some_and(|point| self.status.contains(point)) || model.status_editing {
+                colors.lift(0.10)
+            } else {
+                colors.lift(0.05)
+            },
+            None,
+            &RoundedRect::from_rect(self.status, f64::from(theme.tokens.radii.sm)),
+        );
+        if model.status_editing {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.5),
+                transform,
+                colors.accent[4],
+                None,
+                &RoundedRect::from_rect(self.status, f64::from(theme.tokens.radii.sm)),
+            );
+        }
+        let label = format!("You · {label}");
+        let trailing_room = if model.status_editing { 48.0 } else { 28.0 };
+        let shown = text_renderer.elide_to_width(
+            &label,
+            theme.tokens.typography.scale.xs,
+            (self.status.width() - trailing_room).max(0.0) as f32,
+        );
+        text_renderer.draw_text(
+            scene,
+            &shown,
+            theme.tokens.typography.scale.xs,
+            if model.own_status.is_some() {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            },
+            transform.pre_translate((self.status.x0 + 24.0, self.status.y0 + 6.0).into()),
+            None,
+        );
+        if model.status_editing {
+            let (shown_width, _) =
+                text_renderer.measure(&shown, theme.tokens.typography.scale.xs, None);
+            let caret_x =
+                (self.status.x0 + 25.0 + f64::from(shown_width)).min(self.status.x1 - 28.0);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.25),
+                transform,
+                colors.accent[4],
+                None,
+                &vello::kurbo::Line::new(
+                    (caret_x, self.status.y0 + 6.0),
+                    (caret_x, self.status.y0 + 19.0),
+                ),
+            );
+            text_renderer.draw_text(
+                scene,
+                "↵",
+                theme.tokens.typography.scale.xs,
+                colors.accent[4],
+                transform.pre_translate((self.status.x1 - 20.0, self.status.y0 + 5.0).into()),
+                None,
+            );
+        }
+        text_renderer.draw_text(
+            scene,
+            if model.own_status_automatic {
+                "✦"
+            } else {
+                "○"
+            },
+            theme.tokens.typography.scale.xs,
+            colors.accent[5],
+            transform.pre_translate((self.status.x0 + 8.0, self.status.y0 + 6.0).into()),
+            None,
+        );
+        for (mode, rect) in &self.status_modes {
+            let active = *mode == model.status_sharing;
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if active {
+                    colors.accent[5]
+                } else {
+                    colors.lift(0.05)
+                },
+                None,
+                &RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm)),
+            );
+            let text = match mode {
+                ui::StatusSharing::Automatic => "✦ Auto",
+                ui::StatusSharing::ManualOnly => "Manual",
+                ui::StatusSharing::Off => "Hidden",
+            };
+            text_renderer.draw_text(
+                scene,
+                text,
+                theme.tokens.typography.scale.xs,
+                if active {
+                    colors.ink_on_any(&[colors.accent[5]], colors.text_primary, 4.5)
+                } else {
+                    colors.text_dim
+                },
+                transform.pre_translate((rect.x0 + 8.0, rect.y0 + 5.0).into()),
+                None,
+            );
+        }
+        if let Some(activity) = model.own_activity {
+            let dot = vello::kurbo::Circle::new(
+                Point::new(self.status.x0 + 8.0, self.panel.y0 + 118.0),
+                3.0,
+            );
+            scene.fill(Fill::NonZero, transform, model.own_color, None, &dot);
+            let activity = text_renderer.elide_to_width(
+                activity,
+                theme.tokens.typography.scale.xs,
+                (self.status.width() - 20.0).max(0.0) as f32,
+            );
+            text_renderer.draw_text(
+                scene,
+                &activity,
+                theme.tokens.typography.scale.xs,
+                colors.text_dim,
+                transform.pre_translate((self.status.x0 + 16.0, self.panel.y0 + 112.0).into()),
+                None,
+            );
         }
     }
 
@@ -371,7 +1075,7 @@ impl CollaboratorsOverlay {
                 self.panel.x0 + 8.0,
                 frame.y + 3.0,
                 self.panel.x1 - 8.0,
-                frame.y + 45.0,
+                frame.y + ROW_H - 3.0,
                 f64::from(tokens.radii.md),
             );
             scene.fill(
@@ -390,7 +1094,7 @@ impl CollaboratorsOverlay {
                     self.panel.x0 + 8.0,
                     frame.y + 11.0,
                     self.panel.x0 + 11.0,
-                    frame.y + 37.0,
+                    frame.y + ROW_H - 11.0,
                     1.5,
                 ),
             );
@@ -410,7 +1114,7 @@ impl CollaboratorsOverlay {
     ) {
         let row = frame.row;
         let colors = &theme.tokens.colors;
-        let center = Point::new(self.panel.x0 + 28.0, frame.y + 24.0);
+        let center = Point::new(self.panel.x0 + 28.0, frame.y + 29.0);
         let avatar_rect = Rect::new(
             center.x - 11.0,
             center.y - 11.0,
@@ -537,6 +1241,12 @@ impl CollaboratorsOverlay {
             tokens.typography.scale.sm,
             (label_x1 - text_x).max(0.0) as f32,
         );
+        let has_activity = row.invited || followed || row.activity.is_some() || row.role.is_some();
+        let label_y = if has_activity || row.status.is_some() {
+            row_y + 8.0
+        } else {
+            row_y + 22.0
+        };
         text_renderer.draw_text(
             scene,
             &shown_label,
@@ -546,7 +1256,7 @@ impl CollaboratorsOverlay {
             } else {
                 colors.text_primary
             },
-            transform.pre_translate((text_x, row_y + 8.0).into()),
+            transform.pre_translate((text_x, label_y).into()),
             None,
         );
         if row.is_agent && !row.label.eq_ignore_ascii_case("agent") {
@@ -595,12 +1305,39 @@ impl CollaboratorsOverlay {
                 None,
             );
         }
+        if let Some(status) = &row.status {
+            let status_x1 = if row.followable {
+                self.panel.x1 - 96.0
+            } else {
+                self.panel.x1 - 12.0
+            };
+            let prefix = if status.automatic { "✦  " } else { "↳  " };
+            let line = format!("{prefix}{}", status.text);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "the collaborator popover is only a few hundred logical pixels wide"
+            )]
+            let shown = text_renderer.elide_to_width(
+                &line,
+                tokens.typography.scale.xs,
+                (status_x1 - text_x).max(0.0) as f32,
+            );
+            text_renderer.draw_text(
+                scene,
+                &shown,
+                tokens.typography.scale.xs,
+                colors.accent[5],
+                transform
+                    .pre_translate((text_x, row_y + if has_activity { 45.0 } else { 29.0 }).into()),
+                None,
+            );
+        }
         if row.followable {
             let action = Rect::new(
                 self.panel.x1 - 88.0,
-                row_y + 8.0,
+                row_y + 16.0,
                 self.panel.x1 - 12.0,
-                row_y + 36.0,
+                row_y + 44.0,
             );
             let face = ButtonFace::new(action, if followed { "Stop" } else { "Follow" })
                 .radius(f64::from(tokens.radii.sm))
@@ -695,11 +1432,19 @@ impl CollaboratorsOverlay {
 
 /// Rows the dropdown and compositor presence publisher agree are in the room.
 pub fn collaborator_roster_rows(tree: &WorkspaceTree) -> Vec<RosterRow> {
+    collaborator_roster_rows_with_local_user(tree, &crate::shell::state::local_user_id())
+}
+
+/// Builds the same presence rows using an explicitly supplied local principal.
+pub(crate) fn collaborator_roster_rows_with_local_user(
+    tree: &WorkspaceTree,
+    local_user: &str,
+) -> Vec<RosterRow> {
     let roster: &[crate::shell::state::Collaborator] = match tree.active_workspace() {
         Some(workspace) if !workspace.collaborators.is_empty() => &workspace.collaborators,
         _ => &tree.collaborators,
     };
-    let colors = crate::shell::state::roster_colors(roster);
+    let colors = crate::shell::state::roster_colors_with_local_user(roster, local_user);
     let agent_members = tree
         .active_workspace()
         .map_or_else(Vec::new, crate::shell::state::Workspace::agent_members);
@@ -729,11 +1474,8 @@ pub fn collaborator_roster_rows(tree: &WorkspaceTree) -> Vec<RosterRow> {
                 activity: participant
                     .active_tab
                     .and_then(|tab| active_tab_title(tree, tab))
-                    .map(|title| format!("Viewing {title}"))
-                    .or_else(|| {
-                        (!participant.invited)
-                            .then(|| if is_agent { "Connected" } else { "Here now" }.to_string())
-                    }),
+                    .map(|title| format!("Viewing {title}")),
+                status: None,
                 // A headless agent has no pointer/viewport to follow merely
                 // because its session is connected. Follow becomes available
                 // only when it has published a real view; semantic action
@@ -805,6 +1547,56 @@ mod tests {
     }
 
     #[test]
+    fn crowded_rosters_page_without_putting_rows_under_the_footer() {
+        let mut overlay = CollaboratorsOverlay::default();
+        let host = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        overlay.layout(host, 8, false, true);
+
+        assert_eq!(
+            overlay
+                .row_action_rects()
+                .iter()
+                .filter(|rect| rect.area() > 0.0)
+                .count(),
+            ROSTER_PAGE_SIZE
+        );
+        assert!(overlay.next_people.area() > 0.0);
+        assert_eq!(
+            overlay.hit_test(overlay.next_people.center()),
+            CollaboratorsHit::NextPeople
+        );
+        assert!(
+            overlay
+                .row_rects
+                .iter()
+                .filter(|rect| rect.area() > 0.0)
+                .all(|rect| rect.y1 < overlay.activity.y0)
+        );
+
+        overlay.change_people_page(true, 8);
+        overlay.layout(host, 8, false, true);
+        assert_eq!(overlay.roster_range, 3..6);
+        assert!(overlay.previous_people.area() > 0.0);
+        assert_eq!(
+            overlay.hit_test(overlay.row_action_rects()[3].center()),
+            CollaboratorsHit::ToggleFollow(3)
+        );
+
+        overlay.change_people_page(true, 8);
+        overlay.layout(host, 8, false, true);
+        assert_eq!(overlay.roster_range, 6..8);
+        assert_eq!(
+            overlay
+                .row_action_rects()
+                .iter()
+                .filter(|rect| rect.area() > 0.0)
+                .count(),
+            2
+        );
+        assert_eq!(overlay.next_people, Rect::ZERO);
+    }
+
+    #[test]
     fn clearing_drops_every_invisible_hit_target() {
         let mut overlay = CollaboratorsOverlay::default();
         overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, true);
@@ -813,6 +1605,93 @@ mod tests {
         assert_eq!(overlay.action_rects(), (Rect::ZERO, Rect::ZERO));
         assert_eq!(overlay.activity_rect(), Rect::ZERO);
         assert!(overlay.row_action_rects().is_empty());
+    }
+
+    #[test]
+    fn own_status_and_privacy_modes_are_first_class_hit_targets() {
+        let mut overlay = CollaboratorsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 2, false, true);
+        assert_eq!(
+            overlay.hit_test(overlay.status.center()),
+            CollaboratorsHit::EditStatus
+        );
+        for (mode, rect) in &overlay.status_modes {
+            assert_eq!(
+                overlay.hit_test(rect.center()),
+                CollaboratorsHit::SetStatusSharing(*mode)
+            );
+        }
+    }
+
+    #[test]
+    fn keyboard_reaches_status_privacy_follow_and_activity_without_pointer_input() {
+        let mut overlay = CollaboratorsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, true);
+
+        assert_eq!(overlay.key(&Key::Named(NamedKey::Home), false), None);
+        assert_eq!(
+            overlay.key(&Key::Named(NamedKey::Enter), false),
+            Some(CollaboratorsHit::EditStatus)
+        );
+        assert_eq!(overlay.key(&Key::Named(NamedKey::End), false), None);
+        assert_eq!(
+            overlay.key(&Key::Named(NamedKey::Space), false),
+            Some(CollaboratorsHit::RoomActivity)
+        );
+        assert_eq!(
+            overlay.key(&Key::Named(NamedKey::Escape), false),
+            Some(CollaboratorsHit::Dismiss)
+        );
+    }
+
+    #[test]
+    fn accessibility_distinguishes_live_action_from_inferred_intent() {
+        let mut overlay = CollaboratorsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 1, false, false);
+        overlay.accessibility_rows = vec![RosterRow {
+            id: "ada".into(),
+            label: "Ada".into(),
+            initial: 'A',
+            color: Color::from_rgb8(1, 2, 3),
+            is_agent: false,
+            role: None,
+            invited: false,
+            activity: Some("Editing · Q2 finance report".into()),
+            status: Some(RosterStatus {
+                text: "Preparing the board review".into(),
+                automatic: true,
+            }),
+            followable: true,
+        }];
+        let snapshot = overlay.accessibility_snapshot();
+        let person = snapshot
+            .children
+            .first()
+            .and_then(|list| list.children.first())
+            .expect("the live roster is exposed as a list");
+        let description = person.description.as_deref().unwrap_or_default();
+        assert!(description.contains("Now: Editing · Q2 finance report"));
+        assert!(description.contains("Intent, inferred: Preparing the board review"));
+    }
+
+    #[test]
+    fn accessibility_keeps_own_live_action_separate_from_own_intent() {
+        let mut overlay = CollaboratorsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 0, false, false);
+        overlay.accessibility_status = Some("Closing the Q3 forecast".into());
+        overlay.accessibility_own_activity = Some("Reconciling · Q3 forecast".into());
+        let snapshot = overlay.accessibility_snapshot();
+        let status = snapshot
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Your collaboration status"))
+            .expect("the self status control is exposed");
+        assert!(
+            status
+                .description
+                .as_deref()
+                .is_some_and(|description| description.contains("Now: Reconciling · Q3 forecast"))
+        );
     }
 
     #[test]
@@ -827,6 +1706,7 @@ mod tests {
                 role: None,
                 invited: false,
                 activity: None,
+                status: None,
                 followable: true,
             },
             RosterRow {
@@ -838,6 +1718,7 @@ mod tests {
                 role: None,
                 invited: false,
                 activity: None,
+                status: None,
                 followable: true,
             },
         ];
@@ -845,10 +1726,17 @@ mod tests {
         let model = CollaboratorsModel {
             host: Rect::ZERO,
             rows: &rows,
+            own_initial: 'Q',
+            own_color: Color::from_rgb8(7, 8, 9),
             unavailable: None,
             may_invite: false,
             followed_id: None,
             following_pairs: &pairs,
+            own_status: None,
+            own_activity: None,
+            own_status_automatic: false,
+            status_sharing: ui::StatusSharing::Automatic,
+            status_editing: false,
         };
         assert_eq!(
             model.relationship_for("ada"),

@@ -17,7 +17,7 @@
 //! mount topology never changes, only the contents, edited from outside
 //! and visible inside immediately. This is how `xdg-document-portal` solves the same problem.
 //!
-//! The bind is unconditional: every sandbox gets `/run/qos/documents`
+//! The bind is unconditional: every sandbox gets `/run/tilo/documents`
 //! whether or not a file has been picked yet, empty at launch — no
 //! ambient authority. An app can't enumerate another app's documents
 //! (the bind is of its own subtree, not the store root), can't guess its
@@ -40,10 +40,10 @@ use super::PortalCaller;
 use crate::shell::state::FsMode;
 
 /// Where the store appears inside a sandbox.
-pub const SANDBOX_DOC_DIR: &str = "/run/qos/documents";
+pub const SANDBOX_DOC_DIR: &str = "/run/tilo/documents";
 
 /// Env var naming [`SANDBOX_DOC_DIR`] inside the sandbox.
-pub const DOC_DIR_ENV: &str = "QOS_DOC_DIR";
+pub const DOC_DIR_ENV: &str = "TILO_DOC_DIR";
 
 /// The projected workspace tree — not part of the store, named here because the picker's default scope reaches it.
 pub const WORKSPACE_ROOT: &str = "/var/workspace";
@@ -206,7 +206,7 @@ mod tests {
     use std::path::Component;
 
     fn caller() -> PortalCaller {
-        PortalCaller::new(WorkspaceId(7), "dev.qos.notes")
+        PortalCaller::new(WorkspaceId(7), "dev.tilo.notes")
     }
 
     #[test]
@@ -271,7 +271,7 @@ mod tests {
                  ({components:?})"
             );
             // The composed path must also stay under the root it's joined to — what the components check is a proxy for.
-            let root = Path::new("/run/qos/documents");
+            let root = Path::new("/run/tilo/documents");
             assert!(
                 root.join(&slug).starts_with(root),
                 "{hostile:?} escaped the store root: {slug}"

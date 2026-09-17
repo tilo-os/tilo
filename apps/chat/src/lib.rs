@@ -1,4 +1,4 @@
-//! Chat — qOS native app (CRDT-native, built on the `ui` toolkit).
+//! Chat — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A bespoke collaborative chat + calls surface tied to workspaces. The
 //! convergent state — workspaces, categories, channels, messages, reactions,

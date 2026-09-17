@@ -51,7 +51,7 @@ use zbus::zvariant::{ObjectPath, OwnedValue};
 use zbus::{Connection, Proxy};
 
 const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
-const APP: &str = "dev.qos.camera";
+const APP: &str = "dev.tilo.camera";
 
 fn host_with_portal(
     prompts: PromptQueueHandle,
@@ -66,8 +66,7 @@ fn host_with_portal(
         let owner = shell::shell::state::local_user_id();
         t.adopt_ownerless_workspaces(&owner);
     }
-    let (host, _chrome) =
-        shell::shell::build_nirios_overlay_host_with_handle(handle.clone(), false);
+    let (host, _chrome) = shell::shell::build_tilo_overlay_host_with_handle(handle.clone(), false);
     let mut host = host;
     host.set_portal_queues(prompts, FilePickerQueue::new());
     (host, GrantStoreHandle::new(handle), id)
@@ -86,7 +85,7 @@ async fn access_proxy(ctx: PortalContext) -> (Connection, Connection, Proxy<'sta
         .expect("p2p connection pair");
     let proxy = Proxy::new(
         &client,
-        "org.freedesktop.impl.portal.desktop.qos",
+        "org.freedesktop.impl.portal.desktop.tilo",
         OBJECT_PATH,
         "org.freedesktop.impl.portal.Access",
     )

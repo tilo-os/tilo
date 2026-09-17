@@ -1,6 +1,6 @@
 //! Agent Models — device-local model lifecycle and provider profiles.
 //!
-//! qOS owns the user-facing lifecycle, while a small adapter speaks to the
+//! Tilo owns the user-facing lifecycle, while a small adapter speaks to the
 //! privileged model manager that pins Hugging Face snapshots and supervises
 //! vLLM. Settings never downloads model bytes or starts a server itself.
 
@@ -168,7 +168,7 @@ pub struct LocalModelSnapshot {
     pub accelerator_setup: Option<AcceleratorSetup>,
 }
 
-/// Boundary implemented by qOS' model service. The production adapter is a
+/// Boundary implemented by Tilo' model service. The production adapter is a
 /// deliberately tiny JSON CLI seam so Settings does not acquire downloader,
 /// container-runtime, GPU-driver, or privilege-management dependencies.
 #[allow(
@@ -188,7 +188,7 @@ pub struct ModelManagerCli;
 
 impl ModelManagerCli {
     fn command(verb: &str, id: &str) -> Result<(), String> {
-        let status = Command::new("qos-model-manager")
+        let status = Command::new("tilo-model-manager")
             .args([verb, "--model", id])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -203,7 +203,7 @@ impl ModelManagerCli {
 
 impl LocalModelControl for ModelManagerCli {
     fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
-        let output = Command::new("qos-model-manager")
+        let output = Command::new("tilo-model-manager")
             .args(["snapshot", "--format", "json"])
             .stdin(Stdio::null())
             .stderr(Stdio::piped())
@@ -217,7 +217,7 @@ impl LocalModelControl for ModelManagerCli {
     }
 
     fn install(&self, model: &LocalModelPackage) -> Result<(), String> {
-        let status = Command::new("qos-model-manager")
+        let status = Command::new("tilo-model-manager")
             .args([
                 "install",
                 "--model",
@@ -246,7 +246,7 @@ impl LocalModelControl for ModelManagerCli {
         Self::command("remove", id)
     }
     fn stage_accelerator(&self) -> Result<(), String> {
-        let status = Command::new("qos-model-manager")
+        let status = Command::new("tilo-model-manager")
             .arg("stage-accelerator")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -531,7 +531,7 @@ impl AgentModelsPane {
                 fallback_snapshot(),
                 false,
                 Some(format!(
-                    "The local model service is unavailable ({error}). Install or start qos-model-manager to inspect hardware, install models, or manage local model lifecycle."
+                    "The local model service is unavailable ({error}). Install or start tilo-model-manager to inspect hardware, install models, or manage local model lifecycle."
                 )),
             ),
         };
@@ -623,7 +623,7 @@ impl AgentModelsPane {
         let status = match &setup.status {
             AcceleratorSetupState::Available => {
                 body.push(caption(
-                    "qOS found a signed accelerator stack matched to this device. Setup stages a new immutable system image; it does not install a driver into the running system.",
+                    "Tilo found a signed accelerator stack matched to this device. Setup stages a new immutable system image; it does not install a driver into the running system.",
                 ));
                 body.push(Box::new(
                     Row::new()
@@ -641,7 +641,7 @@ impl AgentModelsPane {
                     ProgressBar::indeterminate().with_label("Preparing accelerator support"),
                 ));
                 body.push(caption(
-                    "The request is queued. You can leave Settings while qOS verifies and stages the signed system image.",
+                    "The request is queued. You can leave Settings while Tilo verifies and stages the signed system image.",
                 ));
                 "Queued"
             }
@@ -650,13 +650,13 @@ impl AgentModelsPane {
                     ProgressBar::indeterminate().with_label("Staging accelerator support"),
                 ));
                 body.push(caption(
-                    "qOS is building the next boot deployment. The current desktop keeps running normally.",
+                    "Tilo is building the next boot deployment. The current desktop keeps running normally.",
                 ));
                 "Staging"
             }
             AcceleratorSetupState::RestartRequired => {
                 body.push(caption(
-                    "Accelerator support is ready for the next boot. Restart from the system power menu when convenient; qOS will verify the booted deployment before calling it active.",
+                    "Accelerator support is ready for the next boot. Restart from the system power menu when convenient; Tilo will verify the booted deployment before calling it active.",
                 ));
                 "Restart required"
             }
@@ -738,7 +738,7 @@ impl AgentModelsPane {
                 value_row("Pinned revision", &package.revision),
                 value_row("License", &package.license),
                 caption(&format!(
-                    "By continuing, you accept the model license at {}. qOS downloads the pinned snapshot once and keeps inference on this device.",
+                    "By continuing, you accept the model license at {}. Tilo downloads the pinned snapshot once and keeps inference on this device.",
                     package.license_url
                 )),
                 Box::new(
@@ -823,7 +823,7 @@ impl AgentModelsPane {
                 ));
             }
             LocalModelPhase::Ready { running: true, .. } => body.push(caption(
-                "Available to agents through the local qOS gateway. Workspace permissions still apply to every task.",
+                "Available to agents through the local Tilo gateway. Workspace permissions still apply to every task.",
             )),
             LocalModelPhase::Ready { running: false, .. } => body.push(caption(
                 "Installed and verified. Start it when you want agents to use it; stopped models consume no accelerator memory.",
@@ -1063,7 +1063,7 @@ impl AgentModelsPane {
                             let mut config = ProviderConfig::load();
                             config.remove(&remove_profile_id);
                             let _ = config.save();
-                            let _ = qos_model_gateway::remove_api_key(&remove_profile_id);
+                            let _ = tilo_model_gateway::remove_api_key(&remove_profile_id);
                         }),
                     ))
                     .push(Box::new(Spacer::new())),
@@ -1074,7 +1074,7 @@ impl AgentModelsPane {
             let set_id = profile_id.clone();
             let set_buffer = Arc::clone(&buffer);
             let remove_id = profile_id.clone();
-            let configured = qos_model_gateway::secret_configured(&profile_id).unwrap_or(false);
+            let configured = tilo_model_gateway::secret_configured(&profile_id).unwrap_or(false);
             body.push(Box::new(
                 Row::new()
                     .push(Box::new(
@@ -1083,7 +1083,7 @@ impl AgentModelsPane {
                             .with_external_buffer(buffer)
                             .with_initial_value(&initial)
                             .with_secret(true)
-                            .with_placeholder("API key (stored in qOS vault)"),
+                            .with_placeholder("API key (stored in Tilo vault)"),
                     ))
                     .push(hgap(8.0))
                     .push(Box::new(
@@ -1101,7 +1101,7 @@ impl AgentModelsPane {
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
                             let value = std::mem::take(&mut *key);
-                            let _ = qos_model_gateway::set_api_key(&set_id, value);
+                            let _ = tilo_model_gateway::set_api_key(&set_id, value);
                             key.zeroize();
                         }),
                     ))
@@ -1113,13 +1113,13 @@ impl AgentModelsPane {
                             None,
                         )
                         .on_effect(move || {
-                            let _ = qos_model_gateway::remove_api_key(&remove_id);
+                            let _ = tilo_model_gateway::remove_api_key(&remove_id);
                         }),
                     ))
                     .push(Box::new(Spacer::new())),
             ));
             body.push(caption(if configured {
-                "API key is stored in the qOS vault."
+                "API key is stored in the Tilo vault."
             } else {
                 "No API key stored."
             }));
@@ -1155,7 +1155,7 @@ impl AgentModelsPane {
                 caption(
                     "Models configured here supply inference only. They do not grant an agent access to a workspace, app, file, message, or device.",
                 ),
-                value_row("Local inference", "Loopback-only qOS model gateway"),
+                value_row("Local inference", "Loopback-only Tilo model gateway"),
                 value_row("Downloads", "Explicit, pinned, and visible here"),
             ]),
         )];
@@ -1163,7 +1163,7 @@ impl AgentModelsPane {
             cards.push(card(
                 "Local model service unavailable",
                 caption(
-                    "Install or start qos-model-manager to inspect hardware, install models, or manage local model lifecycle. Existing hosted providers remain available below.",
+                    "Install or start tilo-model-manager to inspect hardware, install models, or manage local model lifecycle. Existing hosted providers remain available below.",
                 ),
             ));
             cards.push(self.hosted_profiles());

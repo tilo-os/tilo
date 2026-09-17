@@ -1,4 +1,4 @@
-//! Thin binary entry point for the qOS on-screen keyboard.
+//! Thin binary entry point for the Tilo on-screen keyboard.
 //!
 //! Two modes, mirroring the other `ui` apps (e.g. file-explorer):
 //!   * default — build an [`OskWidget`], hand it to `ui::App`, run the live
@@ -7,7 +7,7 @@
 //!     `<PATH>` and exit. No window, no event loop. Used for headless
 //!     screenshot tests and CI snapshots.
 //!
-//! ## qOS integration
+//! ## Tilo integration
 //!
 //! The session compositor supervises this signed service when the persisted
 //! accessibility preference is enabled. It gives the service a dedicated,
@@ -27,7 +27,7 @@
 //! narrowly gated virtual keyboard handles Backspace because winit's current
 //! `text-input-v3` client does not consume `delete_surrounding_text`. On other
 //! compositors, the binary may use its standalone virtual-keyboard fallback;
-//! qOS never advertises that privileged global on its public display.
+//! Tilo never advertises that privileged global on its public display.
 //!
 //! Swipe decoding and prediction are live: the real FUTO model is selected
 //! when its runtime assets are available, otherwise the in-tree geometric
@@ -88,7 +88,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.qos.osk", shot_root)
+        &LaunchSpec::new_with_args("dev.tilo.osk", shot_root)
             .shot_root(shot_root)
             .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
             .allowed_live_flags(&["--input-method", "--no-input-method"])
@@ -150,6 +150,8 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
 /// app via `virtual-keyboard-v1` (or a no-op when that protocol is absent). This
 /// is the path when there is no input method to drive auto-show.
 fn run_always_visible(purpose: Option<InputPurpose>) {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     let mut injector = default_injector();
     tracing::info!("osk: text-injection backend = {}", injector.backend_name());
     let mut widget = OskWidget::new().on_key(move |action| {
@@ -168,8 +170,8 @@ fn run_always_visible(purpose: Option<InputPurpose>) {
     // focus in the live session — driving it from a test harness would inject
     // keystrokes into the user's desktop.
 
-    let (state, autosave) = ui::persist::open("dev.qos.osk");
-    let app = ui::App::new(state, Box::new(widget))
+    let (state, autosave) = ui::persist::open("dev.tilo.osk");
+    let app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
         .with_autosave(autosave)
         .with_window_app_id(osk::KEYBOARD_APP_ID);
     app.run();
@@ -185,6 +187,8 @@ fn run_always_visible(purpose: Option<InputPurpose>) {
 /// Typed/swiped text is committed back to the focused app via the same input
 /// method (`commit_string`).
 fn run_auto_show(im: InputMethodClient, purpose: Option<InputPurpose>) {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     // The IM client is shared: the winit thread's `on_key` callback commits
     // typed text through it, while the background thread reads focus events.
     let im = Arc::new(Mutex::new(im));
@@ -221,7 +225,8 @@ fn run_auto_show(im: InputMethodClient, purpose: Option<InputPurpose>) {
     }
 
     let state = ui::State::new();
-    let app = ui::App::new(state, Box::new(widget)).with_window_app_id(osk::KEYBOARD_APP_ID);
+    let app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
+        .with_window_app_id(osk::KEYBOARD_APP_ID);
 
     // Spawn the input-method reader once the event loop proxy exists, so it can
     // push show/hide/purpose commands into the loop.

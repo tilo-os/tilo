@@ -1,0 +1,63 @@
+# Containers — Tilo application manifest.
+#
+# Talks to rootless podman over its user socket and execs the podman
+# and distrobox CLIs on a repeating background probe. Egress is
+# podman's, not the app's: `off`.
+#
+# Beyond the system read profile it needs, as consented capabilities:
+# read+exec on the host bin dirs, and podman's user socket under
+# `$XDG_RUNTIME_DIR`.
+#
+
+
+[package]
+id       = "dev.tilo.containers"
+name     = "Containers"
+category = "Development"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/containers"
+type            = "gui"
+splash-segments = ["bin/containers[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []

@@ -1,6 +1,6 @@
 @0xd833c1f47930d736;
 
-# qOS workspace filesystem — public Cap'n Proto contract.
+# Tilo workspace filesystem — public Cap'n Proto contract.
 #
 # The FUSE driver in `fs/` mounts a projected filesystem at
 # /var/workspace. Apps running inside a launcher-managed sandbox may

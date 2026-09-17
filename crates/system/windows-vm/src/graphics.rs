@@ -2,7 +2,7 @@
 //!
 //! The probe deliberately never creates SR-IOV virtual functions, creates an
 //! mdev, unbinds a host driver, or assigns a device to the appliance.  Those
-//! operations can take the active compositor GPU away from qOS and need a
+//! operations can take the active compositor GPU away from Tilo and need a
 //! separately reviewed, owner-authorised lifecycle.  This module reports the
 //! kernel's existing sysfs capabilities so that lifecycle can make an honest
 //! decision instead of guessing from a PCI vendor or model name.
@@ -23,7 +23,7 @@ pub enum GraphicsRecommendation {
     /// The kernel driver exposes a partitioning interface, but no assignable
     /// partition has been prepared.
     PartitionCapableNotConfigured,
-    /// No safe partition interface is visible. Keep the qOS GPU on the host.
+    /// No safe partition interface is visible. Keep the Tilo GPU on the host.
     Paravirtual2d,
 }
 
@@ -54,7 +54,7 @@ pub struct SriovCapability {
     pub configured_vfs: u32,
     /// Configured display VFs which are the sole member of their IOMMU group,
     /// are not boot VGA, and are already bound to vfio-pci. The probe still
-    /// does not claim they are assigned to qOS.
+    /// does not claim they are assigned to Tilo.
     pub vfio_ready_vfs: Vec<String>,
 }
 
@@ -330,7 +330,7 @@ fn probe_mediated_types(path: &Path) -> Vec<MediatedTypeCapability> {
         let Some(device_api) = read_trimmed(type_path.join("device_api")) else {
             continue;
         };
-        // qOS only reports mediated PCI display candidates usable through
+        // Tilo only reports mediated PCI display candidates usable through
         // VFIO; platform/AP mdev types cannot accelerate this Windows guest.
         if device_api != "vfio-pci" {
             continue;
@@ -462,7 +462,7 @@ mod tests {
         assert!(xml.contains("managed='no'"));
         assert!(probe.sriov_assignment("0000:03:00.0").is_none());
 
-        // Presence of an IOMMU group alone is insufficient: qOS never offers
+        // Presence of an IOMMU group alone is insufficient: Tilo never offers
         // a VF whose group also contains a host device it would strand.
         fs::create_dir_all(group.join("devices/0000:00:1f.0")).unwrap();
         let shared_group_probe = GraphicsCapabilities::probe_sysfs(sysfs.path()).unwrap();

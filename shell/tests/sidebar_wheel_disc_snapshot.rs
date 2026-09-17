@@ -94,7 +94,7 @@ fn screenshots_dir() -> PathBuf {
         },
         PathBuf::from,
     );
-    root.join("nirios-screenshots")
+    root.join("tilo-screenshots")
 }
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {

@@ -17,9 +17,9 @@
 //!
 //! ## Client registration
 //! A working OAuth flow needs a **registered OAuth client id** for the
-//! provider (Google Cloud Console / Azure AD). qOS ships without one baked in
+//! provider (Google Cloud Console / Azure AD). Tilo ships without one baked in
 //! (it would be a shared secret), so the id is read from the environment at
-//! runtime — `QOS_MAIL_GOOGLE_CLIENT_ID` / `QOS_MAIL_MICROSOFT_CLIENT_ID`.
+//! runtime — `TILO_MAIL_GOOGLE_CLIENT_ID` / `TILO_MAIL_MICROSOFT_CLIENT_ID`.
 //! Without it the setup UI still constructs the (correct) authorization URL but
 //! notes that a client id is required to complete sign-in.
 
@@ -81,8 +81,8 @@ impl OAuthProvider {
     /// Environment variable that carries the registered OAuth client id.
     pub fn client_id_env(self) -> &'static str {
         match self {
-            OAuthProvider::Google => "QOS_MAIL_GOOGLE_CLIENT_ID",
-            OAuthProvider::Microsoft => "QOS_MAIL_MICROSOFT_CLIENT_ID",
+            OAuthProvider::Google => "TILO_MAIL_GOOGLE_CLIENT_ID",
+            OAuthProvider::Microsoft => "TILO_MAIL_MICROSOFT_CLIENT_ID",
         }
     }
 
@@ -465,7 +465,7 @@ impl LoopbackServer {
 fn write_http_response(stream: &mut std::net::TcpStream, body: &str) -> std::io::Result<()> {
     use std::io::Write;
     let page = format!(
-        "<!doctype html><html><head><meta charset=utf-8><title>qOS Mail</title></head>\
+        "<!doctype html><html><head><meta charset=utf-8><title>Tilo Mail</title></head>\
          <body style=\"font-family:system-ui;padding:3rem;text-align:center\">{body}</body></html>"
     );
     let resp = format!(

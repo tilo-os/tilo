@@ -23,8 +23,8 @@ use zeroize::Zeroizing;
 
 use crate::{AccountId, Secret, SecretVault};
 
-const ITEM_PREFIX: &str = "qos-secret-item:";
-const GRANT_PREFIX: &str = "qos-secret-grant:";
+const ITEM_PREFIX: &str = "tilo-secret-item:";
+const GRANT_PREFIX: &str = "tilo-secret-grant:";
 const MAX_APP_ID_BYTES: usize = 255;
 const MAX_PURPOSE_BYTES: usize = 160;
 const MAX_ORIGIN_BYTES: usize = 2_048;
@@ -351,7 +351,7 @@ pub struct CredentialBroker {
 }
 
 /// A short-lived clipboard ownership lease. Callers clear the clipboard only
-/// when `should_clear` says it still contains the value qOS wrote, avoiding
+/// when `should_clear` says it still contains the value Tilo wrote, avoiding
 /// destruction of something the user copied afterward.
 pub struct ClipboardLease {
     value: Zeroizing<String>,
@@ -602,7 +602,7 @@ fn validate_purpose(purpose: &str) -> Result<(), BrokerError> {
 mod tests {
     use super::*;
     fn root() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("qos-secret-store-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("tilo-secret-store-{}", uuid::Uuid::new_v4()))
     }
 
     #[test]
@@ -681,7 +681,7 @@ mod tests {
         item.add_origin("https://accounts.bank.example").unwrap();
         store.put(&mut item).unwrap();
         let bank = AccessRequest {
-            app_id: "org.qos.Browser".into(),
+            app_id: "org.tilo.Browser".into(),
             item_id: item.id.clone(),
             purpose: "Sign in".into(),
             origin: Some("https://bank.example/login".into()),
@@ -726,7 +726,7 @@ mod tests {
         item.add_origin("https://bank.example").unwrap();
         store.put(&mut item).unwrap();
         let request = AccessRequest {
-            app_id: "org.qos.Browser".into(),
+            app_id: "org.tilo.Browser".into(),
             item_id: item.id.clone(),
             purpose: "Sign in".into(),
             origin: Some("https://bank.example".into()),
@@ -736,14 +736,14 @@ mod tests {
             .request(&request, |_, _| AccessDecision::AllowAlways)
             .unwrap();
         let grant = broker.persistent_grants().pop().unwrap();
-        assert_eq!(grant.app_id, "org.qos.Browser");
+        assert_eq!(grant.app_id, "org.tilo.Browser");
         assert_eq!(grant.origin.as_deref(), Some("https://bank.example"));
         assert!(broker.revoke_grant(&grant).unwrap());
 
         broker
             .request(&request, |_, _| AccessDecision::AllowAlways)
             .unwrap();
-        assert_eq!(broker.revoke_app("org.qos.Browser").unwrap(), 1);
+        assert_eq!(broker.revoke_app("org.tilo.Browser").unwrap(), 1);
         assert!(broker.persistent_grants().is_empty());
 
         broker
@@ -824,7 +824,7 @@ mod tests {
         let mut broker = CredentialBroker::new(store);
         let mut prompted = false;
         let invalid_app = AccessRequest {
-            app_id: "org.qos.Browser\nFake".into(),
+            app_id: "org.tilo.Browser\nFake".into(),
             item_id: item.id.clone(),
             purpose: "Sign in".into(),
             origin: None,
@@ -839,7 +839,7 @@ mod tests {
         assert!(!prompted);
 
         let invalid_purpose = AccessRequest {
-            app_id: "org.qos.Browser".into(),
+            app_id: "org.tilo.Browser".into(),
             purpose: "Sign in\nApprove something else".into(),
             ..invalid_app
         };

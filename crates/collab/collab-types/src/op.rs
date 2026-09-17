@@ -23,16 +23,19 @@ use crate::crypto::{Ed25519PublicKey, Signature};
 use crate::identity::AttestationId;
 use crate::role::OpClass;
 
-const DOCUMENT_MUTATION_PREFIX: &[u8] = b"qos-document-mutation-v1\0";
+const DOCUMENT_MUTATION_V1_PREFIX: &[u8] = b"tilo-document-mutation-v1\0";
+const DOCUMENT_MUTATION_V2_PREFIX: &[u8] = b"tilo-document-mutation-v2\0";
+const DOCUMENT_SNAPSHOT_TAG: u8 = 1;
+const DOCUMENT_INCREMENTAL_TAG: u8 = 2;
 /// Maximum Automerge bytes carried by one snapshot or incremental mutation.
 /// This leaves headroom for signing, encryption and queue metadata below the
 /// UI bridge's 4 MiB retained-allocation ceiling.
 pub const MAX_DOCUMENT_MUTATION_BYTES: usize = 3 * 1024 * 1024;
 const MAX_ENCODED_DOCUMENT_MUTATION_BYTES: usize =
-    DOCUMENT_MUTATION_PREFIX.len() + MAX_DOCUMENT_MUTATION_BYTES + 16;
-const DOCUMENT_ARTIFACT_DOMAIN: &[u8] = b"qos-document-artifact-v1\0";
-const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"qos-document-attestation-v1\0";
-const DOCUMENT_CHANNEL_DOMAIN: &[u8] = b"qos-document-channel-v1\0";
+    DOCUMENT_MUTATION_V2_PREFIX.len() + MAX_DOCUMENT_MUTATION_BYTES + 16;
+const DOCUMENT_ARTIFACT_DOMAIN: &[u8] = b"tilo-document-artifact-v1\0";
+const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"tilo-document-attestation-v1\0";
+const DOCUMENT_CHANNEL_DOMAIN: &[u8] = b"tilo-document-channel-v1\0";
 
 /// Meaning of a signed document payload. Keeping this tag inside
 /// [`SignedOp::payload`] makes snapshot-vs-incremental part of the bytes the
@@ -56,6 +59,12 @@ pub enum DocumentMutationError {
     /// Payload predates the typed document-mutation envelope.
     #[error("signed payload is not a typed document mutation")]
     MissingPrefix,
+    /// A versioned envelope used a mutation kind this build does not know.
+    #[error("typed document mutation has unknown kind tag {0}")]
+    UnknownKind(u8),
+    /// A v2 envelope ended before its required kind tag.
+    #[error("typed document mutation is truncated")]
+    Truncated,
     /// The payload exceeds the collaboration transport's per-mutation budget.
     #[error("document mutation is {actual} bytes; maximum is {max}")]
     TooLarge { actual: usize, max: usize },
@@ -69,8 +78,6 @@ pub enum DocumentMutationError {
 pub enum DocumentMutationEncodeError {
     #[error("document mutation is {actual} bytes; maximum is {max}")]
     TooLarge { actual: usize, max: usize },
-    #[error("typed document mutation could not be serialized: {0}")]
-    Serialization(postcard::Error),
 }
 
 impl DocumentMutation {
@@ -79,8 +86,8 @@ impl DocumentMutation {
     ///
     /// # Errors
     ///
-    /// Returns postcard's serialisation error if the mutation cannot be
-    /// encoded.
+    /// Returns [`DocumentMutationEncodeError::TooLarge`] when the Automerge
+    /// bytes exceed [`MAX_DOCUMENT_MUTATION_BYTES`].
     pub fn encode(&self) -> Result<Vec<u8>, DocumentMutationEncodeError> {
         let actual = self.data().len();
         if actual > MAX_DOCUMENT_MUTATION_BYTES {
@@ -89,12 +96,18 @@ impl DocumentMutation {
                 max: MAX_DOCUMENT_MUTATION_BYTES,
             });
         }
-        let body =
-            postcard::to_allocvec(self).map_err(DocumentMutationEncodeError::Serialization)?;
-        let mut encoded =
-            Vec::with_capacity(DOCUMENT_MUTATION_PREFIX.len().saturating_add(body.len()));
-        encoded.extend_from_slice(DOCUMENT_MUTATION_PREFIX);
-        encoded.extend_from_slice(&body);
+        let mut encoded = Vec::with_capacity(
+            DOCUMENT_MUTATION_V2_PREFIX
+                .len()
+                .saturating_add(1)
+                .saturating_add(actual),
+        );
+        encoded.extend_from_slice(DOCUMENT_MUTATION_V2_PREFIX);
+        encoded.push(match self {
+            Self::Snapshot(_) => DOCUMENT_SNAPSHOT_TAG,
+            Self::Incremental(_) => DOCUMENT_INCREMENTAL_TAG,
+        });
+        encoded.extend_from_slice(self.data());
         Ok(encoded)
     }
 
@@ -112,11 +125,18 @@ impl DocumentMutation {
                 max: MAX_ENCODED_DOCUMENT_MUTATION_BYTES,
             });
         }
-        let body = payload
-            .strip_prefix(DOCUMENT_MUTATION_PREFIX)
-            .ok_or(DocumentMutationError::MissingPrefix)?;
-        let mutation: Self =
-            postcard::from_bytes(body).map_err(DocumentMutationError::Malformed)?;
+        let mutation = if let Some(body) = payload.strip_prefix(DOCUMENT_MUTATION_V2_PREFIX) {
+            let (&kind, data) = body.split_first().ok_or(DocumentMutationError::Truncated)?;
+            match kind {
+                DOCUMENT_SNAPSHOT_TAG => Self::Snapshot(data.to_vec()),
+                DOCUMENT_INCREMENTAL_TAG => Self::Incremental(data.to_vec()),
+                other => return Err(DocumentMutationError::UnknownKind(other)),
+            }
+        } else if let Some(body) = payload.strip_prefix(DOCUMENT_MUTATION_V1_PREFIX) {
+            postcard::from_bytes(body).map_err(DocumentMutationError::Malformed)?
+        } else {
+            return Err(DocumentMutationError::MissingPrefix);
+        };
         let actual = mutation.data().len();
         if actual > MAX_DOCUMENT_MUTATION_BYTES {
             return Err(DocumentMutationError::TooLarge {
@@ -520,6 +540,22 @@ mod tests {
             DocumentMutation::decode(b"raw legacy automerge bytes"),
             Err(DocumentMutationError::MissingPrefix)
         );
+
+        let encoded = DocumentMutation::Snapshot(vec![7, 8]).encode().unwrap();
+        assert_eq!(
+            &encoded[..DOCUMENT_MUTATION_V2_PREFIX.len()],
+            DOCUMENT_MUTATION_V2_PREFIX
+        );
+        assert_eq!(
+            encoded[DOCUMENT_MUTATION_V2_PREFIX.len()],
+            DOCUMENT_SNAPSHOT_TAG,
+            "the signed wire kind is explicit rather than serde enum order"
+        );
+
+        let legacy = DocumentMutation::Incremental(vec![9, 10]);
+        let mut legacy_wire = DOCUMENT_MUTATION_V1_PREFIX.to_vec();
+        legacy_wire.extend(postcard::to_allocvec(&legacy).unwrap());
+        assert_eq!(DocumentMutation::decode(&legacy_wire).unwrap(), legacy);
     }
 
     #[test]
@@ -543,23 +579,23 @@ mod tests {
 
     #[test]
     fn document_route_ids_are_stable_and_unambiguous() {
-        let first = document_artifact_id("dev.qos.notes", "room-a", "record-b");
+        let first = document_artifact_id("dev.tilo.notes", "room-a", "record-b");
         assert_eq!(
             first,
-            document_artifact_id("dev.qos.notes", "room-a", "record-b")
+            document_artifact_id("dev.tilo.notes", "room-a", "record-b")
         );
         assert_ne!(
             first,
-            document_artifact_id("dev.qos.notes", "room-ar", "ecord-b")
+            document_artifact_id("dev.tilo.notes", "room-ar", "ecord-b")
         );
         assert_ne!(
             first.0,
-            document_attestation_id("dev.qos.notes", "room-a", "record-b").0,
+            document_attestation_id("dev.tilo.notes", "room-a", "record-b").0,
             "artifact and attestation domains must not alias"
         );
         assert_ne!(
             first.0,
-            document_channel_id("dev.qos.notes", "room-a", "record-b").0,
+            document_channel_id("dev.tilo.notes", "room-a", "record-b").0,
             "artifact and MLS channel domains must not alias"
         );
         assert_eq!(first.0.get_version_num(), 8);

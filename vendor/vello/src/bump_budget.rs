@@ -40,7 +40,7 @@
 //! readiness is not bounded to one frame. The asynchronous path does wait
 //! for its mapping. If a budget is too small, that render can omit work;
 //! later renders grow from the counters that were reached before failure.
-//! This is therefore appropriate for qOS only because its first-render
+//! This is therefore appropriate for Tilo only because its first-render
 //! floors cover measured application and compositor scenes. A one-shot
 //! renderer should not rely on adaptation to repair its only output.
 
@@ -49,6 +49,7 @@ use std::sync::{Arc, Mutex};
 use vello_encoding::{BumpAllocators, BumpBudget};
 use wgpu::{Buffer, Device};
 
+use crate::BumpBudgetError;
 use crate::recording::BufferProxy;
 use crate::wgpu_engine::WgpuEngine;
 
@@ -82,6 +83,9 @@ struct Pending {
 pub(crate) struct BudgetTracker {
     budget: BumpBudget,
     pending: Option<Pending>,
+    /// A failed observation cannot be repaired by later successful frames.
+    /// Legacy collection leaves this intact for checked settlement.
+    error: Option<BumpBudgetError>,
     log: bool,
     /// Hold the policy budget at upstream's constants.
     pinned: bool,
@@ -132,6 +136,7 @@ impl BudgetTracker {
         Self {
             budget,
             pending: None,
+            error: None,
             log: std::env::var_os(LOG_ENV).is_some_and(|v| !v.is_empty()),
             pinned,
             n_tiles: 0,
@@ -186,6 +191,12 @@ impl BudgetTracker {
         self.pending.is_some()
     }
 
+    /// Errors remain visible until this tracker is replaced, including when
+    /// an ordinary render collected the failed readback first.
+    pub(crate) fn check_readback(&self) -> Result<(), BumpBudgetError> {
+        self.error.clone().map_or(Ok(()), Err)
+    }
+
     pub(crate) fn effective_size_in_bytes(&self) -> u64 {
         self.effective().size_in_bytes()
     }
@@ -196,18 +207,37 @@ impl BudgetTracker {
     /// Returns `(changed, overflowed)`: `changed` tells the caller to drop
     /// pooled buffers at obsolete sizes, while `overflowed` lets a one-shot
     /// renderer reject the incomplete pixels and immediately submit again.
+    pub(crate) fn collect(&mut self, device: &Device, engine: &mut WgpuEngine) -> (bool, bool) {
+        self.collect_with_poll(engine, || device.poll(wgpu::PollType::Poll))
+    }
+
     #[allow(
         clippy::print_stderr,
-        reason = "qOS applications do not install a log-to-tracing bridge"
+        reason = "Tilo applications do not install a log-to-tracing bridge"
     )]
-    pub(crate) fn collect(&mut self, device: &Device, engine: &mut WgpuEngine) -> (bool, bool) {
+    fn collect_with_poll(
+        &mut self,
+        engine: &mut WgpuEngine,
+        poll: impl FnOnce() -> Result<wgpu::PollStatus, wgpu::PollError>,
+    ) -> (bool, bool) {
         let Some(pending) = self.pending.take() else {
             return (false, false);
         };
         // Non-blocking: this only gives already-finished callbacks a
         // chance to run. wgpu also runs them on submit, so by the top of
         // the next frame the usual case is that this has nothing to do.
-        let _ = device.poll(wgpu::PollType::Poll);
+        if let Err(error) = poll() {
+            self.error
+                .get_or_insert_with(|| BumpBudgetError::Poll(error.to_string()));
+            // Poll failure leaves mapping readiness unknown. Do not put this
+            // allocation through the pool's known-unmapped reuse path.
+            engine.free_download(pending.proxy);
+            return (false, false);
+        }
+        let Some(buf) = engine.get_download(pending.proxy) else {
+            self.error.get_or_insert(BumpBudgetError::MissingDownload);
+            return (false, false);
+        };
         let ready = pending
             .done
             .lock()
@@ -218,47 +248,46 @@ impl BudgetTracker {
             self.pending = Some(pending);
             return (false, false);
         };
-        let before = self.effective();
-        let mut changed = false;
-        let mut overflowed = false;
-        let mut mapped_and_unmapped = false;
-        if ok && let Some(buf) = engine.get_download(pending.proxy) {
-            let used: BumpAllocators = {
-                let view = buf.slice(..).get_mapped_range();
-                bytemuck::pod_read_unaligned(&view)
-            };
-            overflowed = used.failed != 0;
-            buf.unmap();
-            mapped_and_unmapped = true;
-            let in_effect = self.effective();
-            let budget_changed = !self.pinned && self.budget.observe(&used);
-            changed = before != self.effective();
-            if self.log {
-                self.report(&used, &in_effect, budget_changed);
-            } else if used.failed != 0 {
-                // `eprintln!`, matching `report` below, and deliberately
-                // not `log::warn!`: nothing in this workspace installs a
-                // `log` subscriber or a log-to-tracing bridge, and
-                // applications built on the toolkit never initialise
-                // tracing at all -- so the record went nowhere, in
-                // exactly the processes most likely to overflow. An
-                // overflow drops geometry with no other symptom, so a
-                // warning that cannot be read is the same as no warning.
-                eprintln!(
-                    "vello: a frame overflowed its bump buffers (failed={:#x}); \
-                     growing the reservation to {} KB. Set {LOG_ENV}=1 for detail.",
-                    used.failed,
-                    self.budget.size_in_bytes() / 1024,
-                );
-            }
-        }
-        if mapped_and_unmapped {
-            engine.recycle_bump_download(pending.proxy);
-        } else {
-            // A failed map was never mapped, so it must be dropped rather
-            // than passed to the pool's known-unmapped recycling path.
+        if !ok {
+            self.error.get_or_insert(BumpBudgetError::MapFailed);
+            // A failed map is not a known-unmapped reusable allocation.
             engine.free_download(pending.proxy);
+            return (false, false);
         }
+        let used = {
+            let view = buf.slice(..).get_mapped_range();
+            bytemuck::try_pod_read_unaligned::<BumpAllocators>(&view)
+        };
+        buf.unmap();
+        let Ok(used) = used else {
+            self.error.get_or_insert(BumpBudgetError::InvalidDownload);
+            engine.free_download(pending.proxy);
+            return (false, false);
+        };
+        let before = self.effective();
+        let overflowed = used.failed != 0;
+        let in_effect = self.effective();
+        let budget_changed = !self.pinned && self.budget.observe(&used);
+        let changed = before != self.effective();
+        if self.log {
+            self.report(&used, &in_effect, budget_changed);
+        } else if used.failed != 0 {
+            // `eprintln!`, matching `report` below, and deliberately
+            // not `log::warn!`: nothing in this workspace installs a
+            // `log` subscriber or a log-to-tracing bridge, and
+            // applications built on the toolkit never initialise
+            // tracing at all -- so the record went nowhere, in
+            // exactly the processes most likely to overflow. An
+            // overflow drops geometry with no other symptom, so a
+            // warning that cannot be read is the same as no warning.
+            eprintln!(
+                "vello: a frame overflowed its bump buffers (failed={:#x}); \
+                 growing the reservation to {} KB. Set {LOG_ENV}=1 for detail.",
+                used.failed,
+                self.budget.size_in_bytes() / 1024,
+            );
+        }
+        engine.recycle_bump_download(pending.proxy);
         (changed, overflowed)
     }
 
@@ -279,6 +308,7 @@ impl BudgetTracker {
     /// Start a readback of the bump counters written by this frame.
     pub(crate) fn begin_readback(&mut self, engine: &WgpuEngine, proxy: BufferProxy) {
         let Some(buf) = engine.get_download(proxy) else {
+            self.error.get_or_insert(BumpBudgetError::MissingDownload);
             return;
         };
         let done = Arc::new(Mutex::new(None));
@@ -329,4 +359,35 @@ fn map_read(buf: &Buffer, f: impl FnOnce(bool) + Send + 'static) {
     buf.slice(..).map_async(wgpu::MapMode::Read, move |res| {
         f(res.is_ok());
     });
+}
+
+#[cfg(test)]
+pub(crate) mod test_helpers {
+    use super::*;
+
+    pub(crate) fn pending_proxy(tracker: &BudgetTracker) -> BufferProxy {
+        tracker
+            .pending
+            .as_ref()
+            .expect("actual pending readback")
+            .proxy
+    }
+
+    // Replaces only the external callback's result slot. The real GPU buffer
+    // must already have completed mapping before readiness is held this way.
+    pub(crate) fn set_ready(tracker: &mut BudgetTracker, ready: Option<bool>) {
+        tracker
+            .pending
+            .as_mut()
+            .expect("actual pending readback")
+            .done = Arc::new(Mutex::new(ready));
+    }
+
+    pub(crate) fn fail_poll(tracker: &mut BudgetTracker, engine: &mut WgpuEngine) {
+        tracker.collect_with_poll(engine, || Err(wgpu::PollError::Timeout));
+    }
+
+    pub(crate) fn disable_measurement(tracker: &mut BudgetTracker) {
+        tracker.pinned = true;
+    }
 }

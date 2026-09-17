@@ -19,7 +19,8 @@ use crate::shell::state::{CapRole, UserId, WorkspaceTree};
 use crate::shell::workspace_settings::{
     DefaultAppsCtx, agents_add_rect, agents_pane_rows, default_app_rows, draw_agents_pane,
     draw_default_apps_pane, draw_members_pane, draw_permissions_pane, members_pane_rows,
-    ownership_action_rect, ownership_transfer_resource, permissions_pane_layout,
+    ownership_action_rect, ownership_transfer_resource, permission_profiles_rect,
+    permissions_pane_layout,
 };
 
 /// Duration shared by the workspace-settings lens and the global-search
@@ -45,6 +46,8 @@ pub enum EventOutcome {
     ComposerCapability,
     ComposerExpiry(usize),
     ComposerSubmit,
+    /// Opens the canonical reusable-role actions in global search.
+    ManagePermissionProfiles,
     MemberRole(UserId),
     RemoveMember(UserId),
     /// Opens the canonical, resource-addressed ownership actions.
@@ -105,11 +108,14 @@ pub struct DrawPlan {
 /// workspace-settings lens.
 pub struct WorkspaceSettingsOverlay {
     viewport: Rect,
+    general_scroll_y: f64,
+    general_text_scale: f64,
     transition: ui::Transition,
     tab_pill_rects: [Rect; 5],
     default_app_rects: Vec<(desktop_policy::ResourceKind, Rect, Rect)>,
     revoke_rects: Vec<(String, Rect)>,
     grant_composer_rects: Option<GrantComposerRects>,
+    permission_profiles_rect: Rect,
     member_control_rects: Vec<(UserId, Rect, Rect)>,
     ownership_action_rect: Rect,
     agent_add_rect: Rect,
@@ -123,11 +129,14 @@ impl Default for WorkspaceSettingsOverlay {
     fn default() -> Self {
         Self {
             viewport: Rect::ZERO,
+            general_scroll_y: 0.0,
+            general_text_scale: 1.0,
             transition: ui::Transition::closed(),
             tab_pill_rects: [Rect::ZERO; 5],
             default_app_rects: Vec::new(),
             revoke_rects: Vec::new(),
             grant_composer_rects: None,
+            permission_profiles_rect: Rect::ZERO,
             member_control_rects: Vec::new(),
             ownership_action_rect: Rect::ZERO,
             agent_add_rect: Rect::ZERO,
@@ -204,8 +213,39 @@ impl WorkspaceSettingsOverlay {
         );
     }
 
+    pub fn general_body_rect(&self) -> Rect {
+        Self::body_rect_for(self.rect())
+    }
+
+    pub fn general_summary_rect(&self) -> Rect {
+        let body = self.general_body_rect();
+        Rect::new(
+            body.x0,
+            body.y0 + 268.0 * self.general_text_scale - self.general_scroll_y,
+            body.x1,
+            body.y0 + 374.0 * self.general_text_scale - self.general_scroll_y,
+        )
+    }
+
+    /// Scroll only General's body; headers, tabs and footer remain anchored.
+    pub fn scroll_general(&mut self, delta: f64) -> bool {
+        if !delta.is_finite() || self.member_sheet.is_some() {
+            return false;
+        }
+        let max = (382.0 * self.general_text_scale - self.general_body_rect().height()).max(0.0);
+        let old = self.general_scroll_y;
+        self.general_scroll_y = (old + delta).clamp(0.0, max);
+        (old - self.general_scroll_y).abs() > f64::EPSILON
+    }
+
     pub fn name_rect(&self) -> Rect {
-        Self::name_rect_for(self.rect())
+        let body = self.general_body_rect();
+        Rect::new(
+            body.x0 + 16.0,
+            body.y0 + 62.0 * self.general_text_scale - self.general_scroll_y,
+            body.x1 - 16.0,
+            body.y0 + 96.0 * self.general_text_scale - self.general_scroll_y,
+        )
     }
 
     pub fn name_rect_for(card: Rect) -> Rect {
@@ -232,7 +272,14 @@ impl WorkspaceSettingsOverlay {
     }
 
     pub fn invite_rect(&self) -> Rect {
-        Self::invite_rect_for(self.rect())
+        let body = self.general_body_rect();
+        let y = body.y0 + 202.0 * self.general_text_scale - self.general_scroll_y;
+        Rect::new(
+            body.x1 - 16.0 - 72.0 * self.general_text_scale,
+            y,
+            body.x1 - 16.0,
+            y + 34.0 * self.general_text_scale,
+        )
     }
 
     pub fn invite_rect_for(card: Rect) -> Rect {
@@ -369,6 +416,7 @@ impl WorkspaceSettingsOverlay {
         self.default_app_rects.clear();
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
+        self.permission_profiles_rect = Rect::ZERO;
         self.member_control_rects.clear();
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
@@ -387,6 +435,7 @@ impl WorkspaceSettingsOverlay {
         anchor: Option<Rect>,
     ) -> Option<DrawPlan> {
         if !open {
+            self.general_scroll_y = 0.0;
             self.clear_hits();
             self.dismiss_member_sheet();
         }
@@ -524,6 +573,12 @@ impl WorkspaceSettingsOverlay {
                 }
             }
         }
+        if matches!(active_tab, WsTab::Permissions)
+            && self.permission_profiles_rect.area() > 0.0
+            && self.permission_profiles_rect.contains(point)
+        {
+            return EventOutcome::ManagePermissionProfiles;
+        }
         for (user, role, remove) in &self.member_control_rects {
             if role.area() > 0.0 && role.contains(point) {
                 return EventOutcome::MemberRole(user.clone());
@@ -561,6 +616,9 @@ impl WorkspaceSettingsOverlay {
             {
                 return EventOutcome::SelectTab(*tab);
             }
+        }
+        if matches!(active_tab, WsTab::General) && !self.general_body_rect().contains(point) {
+            return EventOutcome::CommitName;
         }
         if matches!(active_tab, WsTab::General) && self.invite_rect().contains(point) {
             return EventOutcome::CreateInvite;
@@ -642,13 +700,29 @@ impl WorkspaceSettingsOverlay {
             return;
         }
 
+        self.general_text_scale = f64::from(theme.text_scale);
+        self.scroll_general(0.0);
+        let body_clip = self.general_body_rect();
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &body_clip,
+        );
+        let content_rect = Rect::new(
+            rect.x0,
+            rect.y0 - self.general_scroll_y,
+            rect.x1,
+            rect.y1 - self.general_scroll_y,
+        );
         let body_y = rect.y0 + 168.0;
         let editing = self.draw_ws_settings_name_input(
             scene,
             transform,
             text_renderer,
             theme,
-            rect,
+            content_rect,
             &state,
             active_name.as_str(),
             body_y,
@@ -661,7 +735,7 @@ impl WorkspaceSettingsOverlay {
             transform,
             text_renderer,
             theme,
-            rect,
+            content_rect,
             can_invite,
             body_y,
         );
@@ -671,10 +745,12 @@ impl WorkspaceSettingsOverlay {
             transform,
             text_renderer,
             theme,
-            rect,
+            content_rect,
             &tree,
             collab_y,
         );
+
+        scene.pop_layer();
 
         let hint = if editing {
             "Enter to save · Esc to cancel"
@@ -946,6 +1022,41 @@ impl WorkspaceSettingsOverlay {
         let colors = &tokens.colors;
         let (identity, close) =
             self.draw_ws_settings_identity_card_chrome(scene, transform, theme, rect);
+        if theme.text_scale > 1.0 {
+            let name = tree
+                .active_workspace()
+                .map_or("Workspace", |workspace| workspace.name.as_str());
+            let role = tree
+                .active_workspace()
+                .and_then(|workspace| workspace.role_of(&state.local_user_id))
+                .map_or("Guest", crate::shell::workspace_settings::role_label);
+            let width = f64_to_f32_lossy(close.x0 - identity.x0 - 88.0);
+            let caption = text_renderer.elide_to_width(
+                &format!("Workspace · {role}"),
+                tokens.typography.scale.xs,
+                width,
+            );
+            let name = text_renderer.elide_to_width(name, tokens.typography.scale.base, width);
+            text_renderer.draw_text(
+                scene,
+                &caption,
+                tokens.typography.scale.xs,
+                colors.accent[4],
+                transform.pre_translate((identity.x0 + 76.0, identity.y0 + 8.0).into()),
+                None,
+            );
+            text_renderer.draw_text(
+                scene,
+                &name,
+                tokens.typography.scale.base,
+                colors.text_primary,
+                transform.pre_translate((identity.x0 + 76.0, identity.y0 + 38.0).into()),
+                None,
+            );
+            return tree
+                .active_workspace()
+                .map_or_else(|| "Workspace".into(), |workspace| workspace.name.clone());
+        }
         text_renderer.draw_text(
             scene,
             "CURRENT WORKSPACE",
@@ -975,7 +1086,11 @@ impl WorkspaceSettingsOverlay {
             .active_workspace()
             .and_then(|workspace| workspace.role_of(&state.local_user_id))
             .map_or("Guest", crate::shell::workspace_settings::role_label);
-        let label = format!("{active_role} · Settings and policy stay with this workspace");
+        let label = text_renderer.elide_to_width(
+            &format!("{active_role} · Settings and policy stay with this workspace"),
+            tokens.typography.scale.sm,
+            f64_to_f32_lossy(identity.x1 - identity.x0 - 92.0),
+        );
         text_renderer.draw_text(
             scene,
             &label,
@@ -1072,6 +1187,10 @@ impl WorkspaceSettingsOverlay {
 
     /// Tab strip. Every pill is a real destination: a host who has
     /// granted nothing yet still needs to reach the tab that grants.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered paint pass keeps responsive label bounds aligned with tab hit targets"
+    )]
     fn draw_ws_settings_tab_strip(
         &mut self,
         scene: &mut Scene,
@@ -1111,7 +1230,7 @@ impl WorkspaceSettingsOverlay {
             } else {
                 tab.label()
             };
-            let (w, h) = text_renderer.measure(label, lsize, None);
+
             let ix = usize_to_f64_lossy(i);
             let pill_rect = Rect::new(
                 nav.x0 + segment_w * ix + 3.0,
@@ -1151,30 +1270,41 @@ impl WorkspaceSettingsOverlay {
                 WsTab::Permissions => ui::icons::Icon::Shield,
                 WsTab::Apps => ui::icons::Icon::LayoutGrid,
             };
-            let icon_size = 15.0;
-            let content_w = icon_size + 7.0 + f64::from(w);
-            let content_x = pill_rect.center().x - content_w / 2.0;
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                Rect::new(
-                    content_x,
-                    pill_rect.center().y - icon_size / 2.0,
-                    content_x + icon_size,
-                    pill_rect.center().y + icon_size / 2.0,
-                ),
-                icon,
-                if active { colors.accent[4] } else { color },
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            let show_icon =
+                f64::from(text_renderer.measure(label, lsize, None).0) + 30.0 <= pill_rect.width();
+            let icon_size = if show_icon { 15.0 } else { 0.0 };
+            let icon_gap = if show_icon { 7.0 } else { 0.0 };
+            let label = text_renderer.elide_to_width(
+                label,
+                lsize,
+                f64_to_f32_lossy(pill_rect.width() - icon_size - icon_gap - 8.0),
             );
+            let (w, h) = text_renderer.measure(&label, lsize, None);
+            let content_w = icon_size + icon_gap + f64::from(w);
+            let content_x = pill_rect.center().x - content_w / 2.0;
+            if show_icon {
+                ui::icons::draw_icon(
+                    scene,
+                    transform,
+                    Rect::new(
+                        content_x,
+                        pill_rect.center().y - icon_size / 2.0,
+                        content_x + icon_size,
+                        pill_rect.center().y + icon_size / 2.0,
+                    ),
+                    icon,
+                    if active { colors.accent[4] } else { color },
+                    ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+            }
             text_renderer.draw_text(
                 scene,
-                label,
+                &label,
                 lsize,
                 color,
                 transform.pre_translate(
                     (
-                        content_x + icon_size + 7.0,
+                        content_x + icon_size + icon_gap,
                         pill_rect.center().y - f64::from(h) / 2.0,
                     )
                         .into(),
@@ -1287,6 +1417,7 @@ impl WorkspaceSettingsOverlay {
     ) {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
+        self.permission_profiles_rect = Rect::ZERO;
         self.member_control_rects.clear();
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
@@ -1384,10 +1515,14 @@ impl WorkspaceSettingsOverlay {
         let draft = state.ws_grant_draft;
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
+        self.permission_profiles_rect = Rect::ZERO;
         self.member_control_rects.clear();
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
         if let Some(ws) = tree.active_workspace() {
+            if is_owner {
+                self.permission_profiles_rect = permission_profiles_rect(body_rect);
+            }
             let layout = permissions_pane_layout(ws, body_rect);
             for row in &layout.rows {
                 self.revoke_rects
@@ -1481,7 +1616,12 @@ impl WorkspaceSettingsOverlay {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let body = Self::body_rect(rect);
-        let identity_card = Rect::new(body.x0, body.y0 + 8.0, body.x1, body.y0 + 112.0);
+        let identity_card = Rect::new(
+            body.x0,
+            body.y0 + 8.0 * f64::from(theme.text_scale),
+            body.x1,
+            body.y0 + 112.0 * f64::from(theme.text_scale),
+        );
         let identity_rr = RoundedRect::from_rect(identity_card, f64::from(tokens.radii.lg));
         scene.fill(
             Fill::NonZero,
@@ -1502,15 +1642,32 @@ impl WorkspaceSettingsOverlay {
             "Workspace identity",
             tokens.typography.scale.base,
             colors.text_primary,
-            transform.pre_translate((identity_card.x0 + 16.0, identity_card.y0 + 13.0).into()),
+            transform.pre_translate(
+                (
+                    identity_card.x0 + 16.0,
+                    identity_card.y0 + 13.0 * f64::from(theme.text_scale),
+                )
+                    .into(),
+            ),
             None,
+        );
+        let description = text_renderer.elide_to_width(
+            "This name appears in the top bar, invites, and shared activity.",
+            tokens.typography.scale.xs,
+            f64_to_f32_lossy(identity_card.width() - 32.0),
         );
         text_renderer.draw_text(
             scene,
-            "This name appears in the top bar, invites, and shared activity.",
+            &description,
             tokens.typography.scale.xs,
             colors.text_dim,
-            transform.pre_translate((identity_card.x0 + 16.0, identity_card.y0 + 36.0).into()),
+            transform.pre_translate(
+                (
+                    identity_card.x0 + 16.0,
+                    identity_card.y0 + 36.0 * f64::from(theme.text_scale),
+                )
+                    .into(),
+            ),
             None,
         );
         let input_rect = self.name_rect();
@@ -1578,12 +1735,12 @@ impl WorkspaceSettingsOverlay {
         let body = Self::body_rect(rect);
         let sharing_card =
             Self::draw_ws_settings_invite_link_card(scene, transform, theme, text_renderer, body);
-        let invite_y = body.y0 + 202.0;
+        let invite_y = body.y0 + 202.0 * f64::from(theme.text_scale);
         let url_pill = Rect::new(
             sharing_card.x0 + 16.0,
             invite_y,
-            sharing_card.x1 - 16.0 - 80.0,
-            invite_y + 34.0,
+            sharing_card.x1 - 24.0 - 72.0 * f64::from(theme.text_scale),
+            invite_y + 34.0 * f64::from(theme.text_scale),
         );
         scene.fill(
             Fill::NonZero,
@@ -1600,13 +1757,18 @@ impl WorkspaceSettingsOverlay {
             &RoundedRect::from_rect(url_pill, f64::from(tokens.radii.sm)),
         );
         let invite_url = if can_invite {
-            "Choose a person and role; qOS signs a one-hour invite."
+            "Choose a person and role; Tilo signs a one-hour invite."
         } else {
             "Only a governing administrator can create workspace invites."
         };
+        let invite_url = text_renderer.elide_to_width(
+            invite_url,
+            tokens.typography.scale.sm,
+            f64_to_f32_lossy(url_pill.width() - 24.0),
+        );
         text_renderer.draw_text(
             scene,
-            invite_url,
+            &invite_url,
             tokens.typography.scale.sm,
             colors.text_primary,
             transform.pre_translate((url_pill.x0 + 12.0, url_pill.y0 + 9.0).into()),
@@ -1663,7 +1825,12 @@ impl WorkspaceSettingsOverlay {
     ) -> Rect {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let sharing_card = Rect::new(body.x0, body.y0 + 128.0, body.x1, body.y0 + 252.0);
+        let sharing_card = Rect::new(
+            body.x0,
+            body.y0 + 128.0 * f64::from(theme.text_scale),
+            body.x1,
+            body.y0 + 252.0 * f64::from(theme.text_scale),
+        );
         let sharing_rr = RoundedRect::from_rect(sharing_card, f64::from(tokens.radii.lg));
         scene.fill(
             Fill::NonZero,
@@ -1681,9 +1848,9 @@ impl WorkspaceSettingsOverlay {
         );
         let share_icon = Rect::new(
             sharing_card.x0 + 16.0,
-            sharing_card.y0 + 14.0,
+            sharing_card.y0 + 14.0 * f64::from(theme.text_scale),
             sharing_card.x0 + 48.0,
-            sharing_card.y0 + 46.0,
+            sharing_card.y0 + 46.0 * f64::from(theme.text_scale),
         );
         scene.fill(
             Fill::NonZero,
@@ -1705,15 +1872,32 @@ impl WorkspaceSettingsOverlay {
             "Invite people",
             tokens.typography.scale.base,
             colors.text_primary,
-            transform.pre_translate((sharing_card.x0 + 60.0, sharing_card.y0 + 13.0).into()),
+            transform.pre_translate(
+                (
+                    sharing_card.x0 + 60.0,
+                    sharing_card.y0 + 13.0 * f64::from(theme.text_scale),
+                )
+                    .into(),
+            ),
             None,
+        );
+        let description = text_renderer.elide_to_width(
+            "Invites bind the workspace, recipient role, expiry and this device's identity.",
+            tokens.typography.scale.xs,
+            f64_to_f32_lossy(sharing_card.width() - 76.0),
         );
         text_renderer.draw_text(
             scene,
-            "Invites bind the workspace, recipient role, expiry and this device's identity.",
+            &description,
             tokens.typography.scale.xs,
             colors.text_dim,
-            transform.pre_translate((sharing_card.x0 + 60.0, sharing_card.y0 + 36.0).into()),
+            transform.pre_translate(
+                (
+                    sharing_card.x0 + 60.0,
+                    sharing_card.y0 + 36.0 * f64::from(theme.text_scale),
+                )
+                    .into(),
+            ),
             None,
         );
         sharing_card
@@ -1739,7 +1923,12 @@ impl WorkspaceSettingsOverlay {
             rect.x1 - 16.0,
             rect.y1 - 16.0,
         );
-        let summary_card = Rect::new(body.x0, body.y0 + 268.0, body.x1, body.y0 + 374.0);
+        let summary_card = Rect::new(
+            body.x0,
+            body.y0 + 268.0 * f64::from(theme.text_scale),
+            body.x1,
+            body.y0 + 374.0 * f64::from(theme.text_scale),
+        );
         let summary_rr = RoundedRect::from_rect(summary_card, f64::from(tokens.radii.lg));
         scene.fill(
             Fill::NonZero,
@@ -1760,7 +1949,13 @@ impl WorkspaceSettingsOverlay {
             "At a glance",
             tokens.typography.scale.base,
             colors.text_primary,
-            transform.pre_translate((summary_card.x0 + 16.0, summary_card.y0 + 13.0).into()),
+            transform.pre_translate(
+                (
+                    summary_card.x0 + 16.0,
+                    summary_card.y0 + 13.0 * f64::from(theme.text_scale),
+                )
+                    .into(),
+            ),
             None,
         );
         let (members, grants, app_rules) = tree.active_workspace().map_or((0, 0, 0), |ws| {
@@ -1780,11 +1975,16 @@ impl WorkspaceSettingsOverlay {
             (app_rules.to_string(), "app rules"),
         ];
         let stat_gap = 8.0;
-        let stat_y0 = summary_card.y0 + 44.0;
+        let stat_y0 = summary_card.y0 + 44.0 * f64::from(theme.text_scale);
         let stat_w = (summary_card.width() - 32.0 - stat_gap * 2.0) / 3.0;
         for (i, (value, label)) in stats.iter().enumerate() {
             let x0 = summary_card.x0 + 16.0 + usize_to_f64_lossy(i) * (stat_w + stat_gap);
-            let stat = Rect::new(x0, stat_y0, x0 + stat_w, summary_card.y1 - 14.0);
+            let stat = Rect::new(
+                x0,
+                stat_y0,
+                x0 + stat_w,
+                summary_card.y1 - 14.0 * f64::from(theme.text_scale),
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -1797,7 +1997,9 @@ impl WorkspaceSettingsOverlay {
                 value,
                 tokens.typography.scale.lg,
                 colors.text_primary,
-                transform.pre_translate((stat.x0 + 12.0, stat.y0 + 8.0).into()),
+                transform.pre_translate(
+                    (stat.x0 + 12.0, stat.y0 + 8.0 * f64::from(theme.text_scale)).into(),
+                ),
                 None,
             );
             text_renderer.draw_text(
@@ -1805,7 +2007,9 @@ impl WorkspaceSettingsOverlay {
                 label,
                 tokens.typography.scale.xs,
                 colors.text_dim,
-                transform.pre_translate((stat.x0 + 12.0, stat.y0 + 33.0).into()),
+                transform.pre_translate(
+                    (stat.x0 + 12.0, stat.y0 + 33.0 * f64::from(theme.text_scale)).into(),
+                ),
                 None,
             );
         }
@@ -1941,6 +2145,22 @@ mod tests {
     }
 
     #[test]
+    fn permission_roles_entry_point_opens_the_canonical_role_actions() {
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        let action = Rect::new(900.0, 220.0, 1_020.0, 244.0);
+        overlay.permission_profiles_rect = action;
+        assert_eq!(
+            overlay.hit_test(action.center(), WsTab::Permissions),
+            EventOutcome::ManagePermissionProfiles
+        );
+        assert_eq!(
+            overlay.hit_test(action.center(), WsTab::Members),
+            EventOutcome::CommitName,
+            "a retained Permissions hit cannot leak into another tab"
+        );
+    }
+
+    #[test]
     fn role_sheet_keyboard_selects_an_explicit_role_without_cycling() {
         let mut overlay = WorkspaceSettingsOverlay::default();
         overlay.open_member_role_sheet("ada".into(), CapRole::Viewer);
@@ -1995,5 +2215,27 @@ mod tests {
             overlay.handle_member_sheet_key(MemberSheetKey::Activate),
             Some(EventOutcome::ConfirmRevoke("cap-camera".into()))
         );
+    }
+}
+
+#[cfg(test)]
+mod general_scroll_tests {
+    use super::*;
+    #[test]
+    fn compact_general_body_scroll_reaches_summary_and_keeps_hit_tests_in_clip() {
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 960.0, 540.0));
+        let name = overlay.name_rect();
+        assert!(overlay.general_body_rect().contains(name.center()));
+        assert!(overlay.scroll_general(1000.0));
+        let summary = overlay.general_summary_rect();
+        assert!(summary.y1 <= overlay.general_body_rect().y1);
+        assert!(summary.y0 >= overlay.general_body_rect().y0);
+        assert_eq!(
+            overlay.hit_test(name.center(), WsTab::General),
+            EventOutcome::CommitName
+        );
+        assert!(overlay.scroll_general(-1000.0));
+        assert_eq!(overlay.name_rect(), name);
     }
 }

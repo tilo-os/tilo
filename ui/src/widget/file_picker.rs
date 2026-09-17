@@ -2215,7 +2215,7 @@ mod tests {
         symlink(outside.path(), &escape).unwrap();
         let mut picker = FilePicker::new("Save", &root, vec![root.clone()])
             .with_mode(FilePickerMode::Save)
-            .with_filename("identity.qos");
+            .with_filename("identity.tilo");
         // Navigation is lexically within `root`; commit must catch where it
         // actually resolves before returning a privileged save target.
         picker.navigate_to(&escape);
@@ -2336,12 +2336,12 @@ mod tests {
     /// ignored so ordinary unit runs remain hermetic; run with
     /// `cargo test -p ui file_picker_visual_audit -- --ignored --nocapture`.
     #[test]
-    #[ignore = "developer visual audit writes /tmp/qos-file-picker-focus"]
+    #[ignore = "developer visual audit writes /tmp/tilo-file-picker-focus"]
     fn file_picker_visual_audit() {
         use vello::peniko::Color;
 
         let (_guard, root) = temp_tree();
-        let output = Path::new("/tmp/qos-file-picker-focus");
+        let output = Path::new("/tmp/tilo-file-picker-focus");
         fs::create_dir_all(output).expect("visual-audit output directory");
         for (name, width, height, mode, theme) in [
             (

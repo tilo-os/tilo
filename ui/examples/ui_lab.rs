@@ -9,6 +9,7 @@ registry::scenario_modules! {
     Lab;
     activity_timeline, "activity_timeline.rs", "collaborative history timeline";
     channel_browser, "channel_browser.rs", "channel and participant browser";
+    collaboration_overview, "collaboration_overview.rs", "live presence and away recap";
     conflict_picker, "conflict_picker.rs", "conflict resolution picker";
     dashboard, "dashboard.rs", "dashboard composition";
     gallery, "gallery.rs", "complete interactive component gallery";

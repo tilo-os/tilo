@@ -45,8 +45,8 @@ Everything it needs is built by:
 ## What is real and what is staged
 
 Real: the `.qpkg` is packed and signed by `pkg`, served over a live HTTP
-socket, fetched by `qos-catalogue`, verified fail-closed and unpacked by
-`qos-install`, then started by `qos-launcher` inside bwrap. The compositor
+socket, fetched by `tilo-catalogue`, verified fail-closed and unpacked by
+`tilo-install`, then started by `tilo-launcher` inside bwrap. The compositor
 is a test-enabled build of the shipping compositor/layout/paint code on its
 headless backend; release builds omit the control socket, not those paint
 passes.
@@ -96,7 +96,7 @@ def _load_demo_home():
 
 stage_home = _load_demo_home().stage
 
-PACKAGE_ID = "dev.qos.notes"
+PACKAGE_ID = "dev.tilo.notes"
 DISPLAY_NAME = "Notes"
 # What the operator types. It is sent as individual text events on camera,
 # rather than appearing as an already-complete fixture query.
@@ -291,7 +291,7 @@ class Registry:
 
 class Compositor:
     def __init__(self, binaries, env_extra, logpath, startup_timeout, backend):
-        self.sock = f"/tmp/qos-install-on-open-{os.getpid()}.sock"
+        self.sock = f"/tmp/tilo-install-on-open-{os.getpid()}.sock"
         self.binaries = binaries
         self.backend = backend
         self.env_extra = env_extra
@@ -305,7 +305,7 @@ class Compositor:
             os.unlink(self.sock)
         except FileNotFoundError:
             pass
-        env = {**os.environ, "QOS_TEST_CONTROL": self.sock, "RUST_LOG": "info"}
+        env = {**os.environ, "TILO_TEST_CONTROL": self.sock, "RUST_LOG": "info"}
         for k in SCRUB:
             env.pop(k, None)
         env.update(self.env_extra)
@@ -403,7 +403,7 @@ class Compositor:
         front of you. `--chord ctrl-k` exists so that difference can be
         measured rather than argued about.
 
-        `Alt+Space` is the one to reach for when qOS is running as a
+        `Alt+Space` is the one to reach for when Tilo is running as a
         Wayland client inside another desktop: the host swallows Super
         before the compositor sees it.
         """
@@ -711,11 +711,11 @@ def main() -> int:
         "shell": target / "shell",
         # The package on camera should be the binary a user would fetch, not a
         # 300+ MB debug executable.  Keep the compositor debug-built because
-        # QOS_TEST_CONTROL is deliberately absent from shipped release builds.
+        # TILO_TEST_CONTROL is deliberately absent from shipped release builds.
         "notes": release_notes,
-        "qos-install": target / "qos-install",
-        "qos-launcher": target / "qos-launcher",
-        "qos-catalogue": target / "qos-catalogue",
+        "tilo-install": target / "tilo-install",
+        "tilo-launcher": target / "tilo-launcher",
+        "tilo-catalogue": target / "tilo-catalogue",
         "serve-test-registry": target / "examples" / "serve-test-registry",
     }
     missing = [f"{k} ({v})" for k, v in binaries.items() if not v.exists()]
@@ -730,9 +730,9 @@ def main() -> int:
     scratch = args.out / "scratch"
     if scratch.exists():
         shutil.rmtree(scratch)
-    apps_dir = scratch / "qos-apps"
-    store_config = scratch / "qos-store"
-    store_cache = scratch / "qos-store-cache"
+    apps_dir = scratch / "tilo-apps"
+    store_config = scratch / "tilo-store"
+    store_cache = scratch / "tilo-store-cache"
     for d in (apps_dir, store_config, store_cache):
         d.mkdir(parents=True, exist_ok=True)
 
@@ -744,9 +744,9 @@ def main() -> int:
     # One workspace, one strip, nothing in it. The compositor's default
     # bootstrap seeds demo tabs, and a capture of those plus Notes is
     # half somebody else's app.
-    qos_dir = pathlib.Path(home_env["XDG_CONFIG_HOME"]) / "qos"
-    qos_dir.mkdir(parents=True, exist_ok=True)
-    (qos_dir / "state.json").write_text(json.dumps({
+    tilo_dir = pathlib.Path(home_env["XDG_CONFIG_HOME"]) / "tilo"
+    tilo_dir.mkdir(parents=True, exist_ok=True)
+    (tilo_dir / "state.json").write_text(json.dumps({
         "workspaces": [{
             "id": 1,
             "room": "00000000-0000-4000-8000-000000000001",
@@ -768,13 +768,13 @@ def main() -> int:
         **home_env,
         # The install root. Empty, which is what makes "this machine
         # does not have Notes" true rather than asserted.
-        "QOS_APPS_DATA_DIR": str(apps_dir),
-        "QOS_STORE_CONFIG_DIR": str(store_config),
-        "QOS_STORE_CACHE_DIR": str(store_cache),
-        "QOS_CATALOGUE_BIN": str(binaries["qos-catalogue"]),
-        "QOS_INSTALL_BIN": str(binaries["qos-install"]),
-        "QOS_LAUNCHER_BIN": str(binaries["qos-launcher"]),
-        "NIRIOS_HEADLESS_SIZE": f"{args.size[0]}x{args.size[1]}",
+        "TILO_APPS_DATA_DIR": str(apps_dir),
+        "TILO_STORE_CONFIG_DIR": str(store_config),
+        "TILO_STORE_CACHE_DIR": str(store_cache),
+        "TILO_CATALOGUE_BIN": str(binaries["tilo-catalogue"]),
+        "TILO_INSTALL_BIN": str(binaries["tilo-install"]),
+        "TILO_LAUNCHER_BIN": str(binaries["tilo-launcher"]),
+        "TILO_HEADLESS_SIZE": f"{args.size[0]}x{args.size[1]}",
     }
 
     shell_log = args.out / "compositor.log"
@@ -795,7 +795,7 @@ def main() -> int:
         # --- 1. offered, and not here ---------------------------------
         probe_env = {**os.environ, **env_extra}
         listing = json.loads(subprocess.run(
-            [str(binaries["qos-catalogue"]), "list", "--json"],
+            [str(binaries["tilo-catalogue"]), "list", "--json"],
             env=probe_env, capture_output=True, text=True, check=True).stdout)
         try:
             check(not listing.get("unreachable"),

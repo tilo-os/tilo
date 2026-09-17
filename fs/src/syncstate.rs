@@ -1,10 +1,10 @@
 //! Per-entry sync/hydration state, exposed to apps through the
-//! `user.qos.sync` extended attribute.
+//! `user.tilo.sync` extended attribute.
 //!
 //! The FS projects remote metadata immediately but only hydrates content on
 //! first read, so an app needs a way to tell local from remote from
-//! mid-download. `getxattr(path, "user.qos.sync")` returns `local` /
-//! `projected` / `downloading` — rides the existing mount, no qOS-specific
+//! mid-download. `getxattr(path, "user.tilo.sync")` returns `local` /
+//! `projected` / `downloading` — rides the existing mount, no Tilo-specific
 //! client needed, and is sandbox-safe: any process that can `stat` the file can read it, nothing more.
 
 use collab_types::{FileRecordId, FileVersionId};
@@ -15,25 +15,25 @@ use crate::availability::{
     AvailabilityPolicy, RecordAvailability, Residency, TransferPhase, TransferProgress,
 };
 
-/// The xattr name the driver answers with an entry's sync state (`getxattr(path, "user.qos.sync")`).
-pub const SYNC_XATTR: &str = "user.qos.sync";
+/// The xattr name the driver answers with an entry's sync state (`getxattr(path, "user.tilo.sync")`).
+pub const SYNC_XATTR: &str = "user.tilo.sync";
 
 /// The xattr name for a file's thumbnail preview. `ENODATA` when not previewable, not locally generatable, and not gossiped yet.
-pub const THUMB_XATTR: &str = "user.qos.thumb";
+pub const THUMB_XATTR: &str = "user.tilo.thumb";
 
 /// Raw 32-byte BLAKE3 manifest hash for a file's current content. Clients use
 /// this stable content identity for metadata/thumbnail caches, so identical
 /// bytes deduplicate across paths and a rename does not invalidate a preview.
 /// Absent for directories, empty files, and CRDT documents without an opaque
 /// content manifest.
-pub const CONTENT_HASH_XATTR: &str = "user.qos.content-hash";
+pub const CONTENT_HASH_XATTR: &str = "user.tilo.content-hash";
 
 /// Raw 16-byte UUID for the stable collaborative file record. Unlike a path,
 /// this identity survives rename and move and is the scope used by sharing.
-pub const RECORD_ID_XATTR: &str = "user.qos.record-id";
+pub const RECORD_ID_XATTR: &str = "user.tilo.record-id";
 
 /// Bounded rich metadata copied from the signed replicated record.
-pub const METADATA_XATTR: &str = "user.qos.metadata";
+pub const METADATA_XATTR: &str = "user.tilo.metadata";
 pub const METADATA_PROJECTION_VERSION: u16 = 1;
 pub const MAX_METADATA_XATTR_BYTES: usize = 2_048;
 
@@ -64,7 +64,7 @@ impl MetadataProjectionV1 {
 /// Bounded workspace-root catalog of every record visible through this mount.
 /// Paths are mutable provenance; consumers activate by stable `record_id` and
 /// resolve the latest path from a fresh projection.
-pub const RECORD_INDEX_XATTR: &str = "user.qos.record-index";
+pub const RECORD_INDEX_XATTR: &str = "user.tilo.record-index";
 pub const RECORD_INDEX_PROJECTION_VERSION: u16 = 1;
 pub const MAX_RECORD_INDEX_ENTRIES: usize = 256;
 /// Stay below Linux's usual 64 KiB xattr ceiling, including filesystem framing.
@@ -72,13 +72,13 @@ pub const MAX_RECORD_INDEX_XATTR_BYTES: usize = 60 * 1024;
 
 /// Revisioned, pageable successor to [`RECORD_INDEX_XATTR`]. The manifest is
 /// deliberately tiny; pages are requested as
-/// `user.qos.record-index.v2.<revision>.<offset>`.  A stale revision is absent
+/// `user.tilo.record-index.v2.<revision>.<offset>`.  A stale revision is absent
 /// rather than silently serving a different ordering.
-pub const RECORD_INDEX_V2_XATTR: &str = "user.qos.record-index.v2";
-pub const RECORD_INDEX_V3_XATTR: &str = "user.qos.record-index.v3";
+pub const RECORD_INDEX_V2_XATTR: &str = "user.tilo.record-index.v2";
+pub const RECORD_INDEX_V3_XATTR: &str = "user.tilo.record-index.v3";
 /// Exact record resolution is separate from pagination so a late resource can
 /// be reopened without materialising a mount catalogue.
-pub const RECORD_INDEX_BY_ID_XATTR_PREFIX: &str = "user.qos.record-index.by-id.";
+pub const RECORD_INDEX_BY_ID_XATTR_PREFIX: &str = "user.tilo.record-index.by-id.";
 pub const RECORD_INDEX_V2_VERSION: u16 = 2;
 /// Keep a worst-case ordinary page within a single Linux filesystem xattr
 /// block. Some supported hosts (including ext4-backed containers) reject
@@ -296,20 +296,20 @@ impl RecordIndexProjectionV1 {
 
 /// Versioned availability snapshot for Files. Unlike [`SYNC_XATTR`], this
 /// distinguishes transfer, retention policy, replica evidence, and freshness.
-pub const AVAILABILITY_XATTR: &str = "user.qos.availability";
+pub const AVAILABILITY_XATTR: &str = "user.tilo.availability";
 /// Writable local-retention policy: `pinned` or `automatic`.
-pub const PIN_XATTR: &str = "user.qos.pin";
+pub const PIN_XATTR: &str = "user.tilo.pin";
 /// Write-only availability action. The only currently accepted value is
 /// `retry`, which schedules a bounded background hydration of the current
 /// content. No bearer, peer address, or path is carried in this control.
-pub const AVAILABILITY_CONTROL_XATTR: &str = "user.qos.availability-control";
+pub const AVAILABILITY_CONTROL_XATTR: &str = "user.tilo.availability-control";
 
 /// Versioned, redacted record-sharing state sourced from [`crate::ShareAuthority`].
-pub const SHARE_XATTR: &str = "user.qos.share";
+pub const SHARE_XATTR: &str = "user.tilo.share";
 
 /// Absolute owner-only Unix socket used by Files for response-bearing share
 /// creation/revocation. This is only a locator, never a bearer credential.
-pub const SHARE_CONTROL_XATTR: &str = "user.qos.share-control";
+pub const SHARE_CONTROL_XATTR: &str = "user.tilo.share-control";
 
 /// Version of the JSON value carried by [`AVAILABILITY_XATTR`].
 pub const AVAILABILITY_PROJECTION_VERSION: u16 = 1;
@@ -548,7 +548,7 @@ pub enum SyncState {
 }
 
 impl SyncState {
-    /// The stable wire string carried in the `user.qos.sync` xattr.
+    /// The stable wire string carried in the `user.tilo.sync` xattr.
     pub fn as_str(self) -> &'static str {
         match self {
             SyncState::Local => "local",
@@ -645,8 +645,8 @@ mod tests {
         }
         assert_eq!(SyncState::parse("bogus"), None);
         // The xattr name is the documented, stable contract with the app.
-        assert_eq!(SYNC_XATTR, "user.qos.sync");
-        assert_eq!(SHARE_XATTR, "user.qos.share");
+        assert_eq!(SYNC_XATTR, "user.tilo.sync");
+        assert_eq!(SHARE_XATTR, "user.tilo.share");
     }
 
     #[test]
@@ -674,7 +674,7 @@ mod tests {
             }
         );
         assert_eq!(projection.freshness.replicas_observed_at_ms, Some(7_900));
-        assert_eq!(AVAILABILITY_XATTR, "user.qos.availability");
+        assert_eq!(AVAILABILITY_XATTR, "user.tilo.availability");
     }
 
     #[test]

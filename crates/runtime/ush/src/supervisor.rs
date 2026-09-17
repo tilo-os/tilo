@@ -11,7 +11,7 @@
 //!  ├─ start the broker on a socket in the session dir      (crate::broker)
 //!  ├─ exec bwrap ─┬─ unshare, mount the overlays, pivot
 //!  │              ├─ install the seccomp filter        ← the boundary
-//!  │              └─ exec qos-ush guest-init ─┬─ install Landlock
+//!  │              └─ exec tilo-ush guest-init ─┬─ install Landlock
 //!  │                                          └─ exec the shell
 //!  ├─ wait
 //!  └─ undo one-time installs, burn if asked, restart if asked
@@ -19,10 +19,10 @@
 //!
 //! # `serve` — how an app reaches a guest
 //!
-//! A qOS app cannot build a namespace (its seccomp filter denies the
+//! A Tilo app cannot build a namespace (its seccomp filter denies the
 //! syscalls and its sandbox has no path to this binary), so `apps/terminal`
-//! asks for a guest instead of starting one: `qos-ush serve` listens on a
-//! socket `qos-launcher` passes every app as a connected descriptor, and one
+//! asks for a guest instead of starting one: `tilo-ush serve` listens on a
+//! socket `tilo-launcher` passes every app as a connected descriptor, and one
 //! line of JSON gets back a pty master over `SCM_RIGHTS` — a terminal, never
 //! a namespace, a capability, or a `dsh` session
 //! ([`crate::profile::Profile::reachable_from_app_launch`] gates every request).
@@ -73,10 +73,10 @@ impl Default for SessionOptions {
 ///
 /// # Errors
 ///
-/// Returns an error if `QOS_USH_BIN` is unset and
+/// Returns an error if `TILO_USH_BIN` is unset and
 /// [`std::env::current_exe`] cannot resolve the running binary's path.
 pub fn runtime_binary() -> std::io::Result<PathBuf> {
-    if let Some(explicit) = std::env::var_os("QOS_USH_BIN") {
+    if let Some(explicit) = std::env::var_os("TILO_USH_BIN") {
         return Ok(PathBuf::from(explicit));
     }
     std::env::current_exe()
@@ -257,7 +257,7 @@ impl Session {
         let shell = plan.shell.clone();
         let user_command = std::mem::take(&mut plan.command);
         let mut command = vec![
-            format!("{}/qos-ush", crate::GUEST_BIN_DIR),
+            format!("{}/tilo-ush", crate::GUEST_BIN_DIR),
             "guest-init".into(),
             "--".into(),
         ];
@@ -342,7 +342,7 @@ fn seed_guest_home(home: &Path) -> std::io::Result<()> {
         &bashrc,
         "# ush guest shell\n\
          [ -f /etc/bashrc ] && . /etc/bashrc\n\
-         PS1='[\\[\\e[36m\\]${QOS_USH_PROFILE:-ush}\\[\\e[0m\\] \\W]\\$ '\n\
+         PS1='[\\[\\e[36m\\]${TILO_USH_PROFILE:-ush}\\[\\e[0m\\] \\W]\\$ '\n\
          alias ls='ls --color=auto'\n",
     )
 }
@@ -531,7 +531,7 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
     Ok(())
 }
 
-/// Start `qos-ush run` with `slave` as its stdio, in its own session, with the
+/// Start `tilo-ush run` with `slave` as its stdio, in its own session, with the
 /// pty as its controlling terminal.
 fn spawn_attached(
     session: &Session,
@@ -546,7 +546,7 @@ fn spawn_attached(
     cmd.arg("run");
     cmd.env(crate::store::STORE_ENV, session.store.root());
     cmd.env("TERM", &session.opts.term);
-    cmd.env("QOS_USH_BASE", &session.opts.base);
+    cmd.env("TILO_USH_BASE", &session.opts.base);
     cmd.stdin(Stdio::from(slave.try_clone()?));
     cmd.stdout(Stdio::from(slave.try_clone()?));
     cmd.stderr(Stdio::from(slave.try_clone()?));
@@ -623,88 +623,7 @@ fn reply(
 }
 
 /// `sendmsg` with a single-descriptor `SCM_RIGHTS` control message.
-fn send_with_fd(sock: RawFd, payload: &[u8], fd: RawFd) -> std::io::Result<()> {
-    let mut iov = libc::iovec {
-        iov_base: payload.as_ptr().cast_mut().cast::<libc::c_void>(),
-        iov_len: payload.len(),
-    };
-    // CMSG_SPACE for one int.
-    let mut control = [0u8; 32];
-    // `size_of::<RawFd>()` is a small compile-time constant (4 bytes on
-    // every target qOS builds for), always far under u32::MAX.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "size_of::<RawFd>() is a small compile-time constant"
-    )]
-    let fd_size = std::mem::size_of::<RawFd>() as u32;
-    // SAFETY: `msghdr` is zeroed and then fully initialised below; every
-    // pointer it holds refers to a local that outlives the `sendmsg` call.
-    unsafe {
-        let mut msg: libc::msghdr = std::mem::zeroed();
-        msg.msg_iov = &raw mut iov;
-        msg.msg_iovlen = 1;
-        msg.msg_control = control.as_mut_ptr().cast::<libc::c_void>();
-        msg.msg_controllen = libc::CMSG_SPACE(fd_size) as _;
-
-        let cmsg = libc::CMSG_FIRSTHDR(&raw const msg);
-        (*cmsg).cmsg_level = libc::SOL_SOCKET;
-        (*cmsg).cmsg_type = libc::SCM_RIGHTS;
-        (*cmsg).cmsg_len = libc::CMSG_LEN(fd_size) as _;
-        std::ptr::copy_nonoverlapping(&raw const fd, libc::CMSG_DATA(cmsg).cast::<RawFd>(), 1);
-
-        if libc::sendmsg(sock, &raw const msg, 0) < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-    }
-    Ok(())
-}
-
-/// Receive a reply that carries one descriptor. The app side of
-/// [`send_with_fd`].
-///
-/// # Errors
-///
-/// Returns an error if `recvmsg` fails, or if it reports more bytes
-/// received than the internal buffer holds.
-pub fn recv_with_fd(sock: RawFd) -> std::io::Result<(Vec<u8>, Option<RawFd>)> {
-    let mut buf = [0u8; 4096];
-    let mut iov = libc::iovec {
-        iov_base: buf.as_mut_ptr().cast::<libc::c_void>(),
-        iov_len: buf.len(),
-    };
-    let mut control = [0u8; 32];
-    // SAFETY: as in `send_with_fd`; all pointers refer to locals that outlive
-    // the call, and the control buffer is large enough for one `SCM_RIGHTS`.
-    unsafe {
-        let mut msg: libc::msghdr = std::mem::zeroed();
-        msg.msg_iov = &raw mut iov;
-        msg.msg_iovlen = 1;
-        msg.msg_control = control.as_mut_ptr().cast::<libc::c_void>();
-        msg.msg_controllen = control.len() as _;
-
-        let n = libc::recvmsg(sock, &raw mut msg, 0);
-        if n < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let mut fd = None;
-        let cmsg = libc::CMSG_FIRSTHDR(&raw const msg);
-        if !cmsg.is_null()
-            && (*cmsg).cmsg_level == libc::SOL_SOCKET
-            && (*cmsg).cmsg_type == libc::SCM_RIGHTS
-        {
-            let mut got: RawFd = -1;
-            std::ptr::copy_nonoverlapping(libc::CMSG_DATA(cmsg).cast::<RawFd>(), &raw mut got, 1);
-            fd = Some(got);
-        }
-        // `n < 0` returned above, so the cast below cannot lose the sign.
-        #[allow(clippy::cast_sign_loss, reason = "n < 0 already returned early above")]
-        let n = n as usize;
-        let received = buf.get(..n).map(<[u8]>::to_vec).ok_or_else(|| {
-            std::io::Error::other("recvmsg reported more bytes than the buffer holds")
-        })?;
-        Ok((received, fd))
-    }
-}
+pub use runtime_portal::fd_transport::{recv_with_fd, send_with_fd};
 
 #[cfg(test)]
 mod tests {

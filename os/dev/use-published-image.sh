@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# Verify and load one immutable, already-published qOS release as QOS_IMAGE.
+# Verify and load one immutable, already-published Tilo release as TILO_IMAGE.
 # The release Imager uses this instead of allocating a generation for an OS
 # image it will never publish.  stdout is the verified embedded generation.
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-[ "$#" -eq 1 ] || die "usage: $0 code.sandbox.example/qos/qos@sha256:<digest>"
+[ "$#" -eq 1 ] || die "usage: $0 code.sandbox.example/qos/tilo@sha256:<digest>"
 image="$1"
 case "$image" in
-  code.sandbox.example/qos/qos@sha256:*) ;;
-  *) die "published qOS image must be an immutable code.sandbox.example/qos/qos digest" ;;
+  code.sandbox.example/qos/tilo@sha256:*) ;;
+  *) die "published Tilo image must be an immutable code.sandbox.example/qos/tilo digest" ;;
 esac
-digest="${image#code.sandbox.example/qos/qos@sha256:}"
+digest="${image#code.sandbox.example/qos/tilo@sha256:}"
 [[ "$digest" =~ ^[0-9a-f]{64}$ ]] \
-  || die "published qOS image digest must be 64 lowercase hex characters"
+  || die "published Tilo image digest must be 64 lowercase hex characters"
 
 for tool in cosign jq podman; do
-  command -v "$tool" >/dev/null || die "$tool is required to consume a published qOS image"
+  command -v "$tool" >/dev/null || die "$tool is required to consume a published Tilo image"
 done
-verify_key="$QOS_REPO/keys/cosign.pub"
-[ -s "$verify_key" ] || die "qOS release verification key is missing: $verify_key"
+verify_key="$TILO_REPO/keys/cosign.pub"
+[ -s "$verify_key" ] || die "Tilo release verification key is missing: $verify_key"
 
 # Podman accepts an explicit containers-auth file, while cosign reads Docker's
 # config directory.  Give both clients the same short-lived registry identity;
@@ -45,25 +45,25 @@ if [ -n "${REGISTRY_AUTH_FILE:-}" ]; then
 fi
 
 signatures="$(cosign verify --key "$verify_key" "$image")" \
-  || die "published qOS image has no valid transparency-logged release signature"
+  || die "published Tilo image has no valid transparency-logged release signature"
 signed_digest="$(printf '%s' "$signatures" | jq -er \
   'if type == "array" then .[] else . end
    | .critical.image["docker-manifest-digest"]
    | select(type == "string")' | sort -u)" \
-  || die "published qOS signature does not bind an image digest"
+  || die "published Tilo signature does not bind an image digest"
 [ "$signed_digest" = "sha256:$digest" ] \
-  || die "published qOS signature binds $signed_digest, not sha256:$digest"
+  || die "published Tilo signature binds $signed_digest, not sha256:$digest"
 
 provenance="$(cosign verify-attestation --key "$verify_key" \
   --type slsaprovenance1 "$image")" \
-  || die "published qOS image has no valid transparency-logged SLSA provenance"
+  || die "published Tilo image has no valid transparency-logged SLSA provenance"
 
 # A release input is the signed OCI index, not either independently signed
 # candidate child.  The index itself cryptographically binds these descriptors;
 # provenance must name the same pair so release metadata cannot describe a
 # different architecture set from the object clients actually pull.
 raw_index="$(podman manifest inspect "${manifest_args[@]}" "$image")" \
-  || die "published qOS image is not a readable multi-architecture index"
+  || die "published Tilo image is not a readable multi-architecture index"
 children="$(printf '%s' "$raw_index" | jq -ce '
   if (.manifests | type) != "array" or (.manifests | length) != 2 then
     error("expected exactly two manifests")
@@ -83,14 +83,14 @@ children="$(printf '%s' "$raw_index" | jq -ce '
          and all(.[]; .digest | test("^sha256:[0-9a-f]{64}$"))
       then . else error("invalid native manifest set") end
   end
-')" || die "published qOS image is not the exact Linux x86-64/ARM64 release index"
+')" || die "published Tilo image is not the exact Linux x86-64/ARM64 release index"
 
-expected_source="${QOS_EXPECTED_OS_SOURCE_REVISION:-}"
+expected_source="${TILO_EXPECTED_OS_SOURCE_REVISION:-}"
 expected_source_uri=""
 if [ -n "$expected_source" ]; then
   [[ "$expected_source" =~ ^[0-9a-f]{40}$ ]] \
-    || die "QOS_EXPECTED_OS_SOURCE_REVISION must be a full lowercase Git commit"
-  expected_source_uri="git+ssh://code.sandbox.example/qos/qos@$expected_source"
+    || die "TILO_EXPECTED_OS_SOURCE_REVISION must be a full lowercase Git commit"
+  expected_source_uri="git+ssh://code.sandbox.example/qos/tilo@$expected_source"
 fi
 generation="$(printf '%s' "$provenance" | jq -er \
   --arg digest "sha256:$digest" --argjson children "$children" \
@@ -106,12 +106,12 @@ generation="$(printf '%s' "$provenance" | jq -er \
     | select(type == "number" and floor == . and . >= 1)]
   | unique
   | if length == 1 then .[0] else error("ambiguous generation") end
-')" || die "published qOS provenance does not bind its digest, platforms, source, and exactly one positive generation"
+')" || die "published Tilo provenance does not bind its digest, platforms, source, and exactly one positive generation"
 
 # Signing a candidate does not publish it.  The immutable generation tag is the
 # dense series' commit record, so require that signed tag to resolve to this
 # exact index before installer media can consume it.
-generation_image="code.sandbox.example/qos/qos:gen$generation"
+generation_image="code.sandbox.example/qos/tilo:gen$generation"
 generation_signatures="$(cosign verify --key "$verify_key" "$generation_image")" \
   || die "published generation tag gen$generation has no valid release signature"
 generation_digest="$(printf '%s' "$generation_signatures" | jq -er '
@@ -125,11 +125,11 @@ generation_digest="$(printf '%s' "$generation_signatures" | jq -er '
   || die "published generation tag gen$generation binds $generation_digest, not sha256:$digest"
 
 podman pull "${pull_args[@]}" "$image" >/dev/null \
-  || die "could not pull the verified published qOS image"
-podman tag "$image" "$QOS_IMAGE"
-embedded="$(podman run --rm --entrypoint cat "$QOS_IMAGE" \
-  /usr/lib/qos/generation 2>/dev/null | tr -d '[:space:]')"
+  || die "could not pull the verified published Tilo image"
+podman tag "$image" "$TILO_IMAGE"
+embedded="$(podman run --rm --entrypoint cat "$TILO_IMAGE" \
+  /usr/lib/tilo/generation 2>/dev/null | tr -d '[:space:]')"
 [ "$embedded" = "$generation" ] \
-  || die "published qOS image embeds generation '$embedded', but provenance binds '$generation'"
+  || die "published Tilo image embeds generation '$embedded', but provenance binds '$generation'"
 
 printf '%s\n' "$generation"

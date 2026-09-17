@@ -68,7 +68,7 @@ pub const DRAG_START_THRESHOLD_PX: f64 = 4.0;
 // like the clipboard, because it needs the process's own Wayland connection.
 // `App` publishes its window here at startup so any widget can drag.
 //
-// A receiving qOS app is confined to its own mount namespace and `HOME`, so
+// A receiving Tilo app is confined to its own mount namespace and `HOME`, so
 // handing it a path (`/home/you/photo.png`) would not resolve there — the
 // same reason the file-chooser portal exists rather than one that returns
 // paths. So a drag carries **content**: the compositor brokers a pipe, this

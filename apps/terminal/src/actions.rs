@@ -1,8 +1,8 @@
 //! Resource + action-model status for the terminal.
 //!
-//! The qOS action-model recipe (`docs/action-model-recipe.md`) splits every
+//! The Tilo action-model recipe (`docs/action-model-recipe.md`) splits every
 //! interaction into exactly one of two buckets: a *document-mutating* operation
-//! becomes an `Action` (`qos_actions::Action`) — a serializable value that
+//! becomes an `Action` (`tilo_actions::Action`) — a serializable value that
 //! deterministically changes the shared Automerge document, so undo and
 //! multi-peer replay come for free — while presentation / view state stays plain
 //! app code. PTY input is therefore exported as an effect on the live terminal
@@ -392,7 +392,7 @@ mod tests {
             terminal
                 .actions
                 .iter()
-                .all(|action| action.kind == ui::qos_actions::OperationKind::Effect)
+                .all(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
         );
         assert!(
             widget.take_committed_action().is_none(),
@@ -402,12 +402,14 @@ mod tests {
             terminal.actions.iter().all(|action| {
                 matches!(
                     action.contract.confirmation,
-                    ui::qos_actions::ConfirmationPolicy::Confirm
-                ) && matches!(action.contract.risk, ui::qos_actions::RiskLevel::Privileged)
-                    && matches!(
-                        action.contract.retry,
-                        ui::qos_actions::RetryPolicy::AtMostOnce
-                    )
+                    ui::tilo_actions::ConfirmationPolicy::Confirm
+                ) && matches!(
+                    action.contract.risk,
+                    ui::tilo_actions::RiskLevel::Privileged
+                ) && matches!(
+                    action.contract.retry,
+                    ui::tilo_actions::RetryPolicy::AtMostOnce
+                )
             }),
             "palette and agents must explicitly confirm every operation that can affect a live shell"
         );
@@ -434,7 +436,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.run",
                 &payload,
                 &doc,
@@ -448,7 +450,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.run",
                 &blank,
                 &doc,
@@ -465,7 +467,7 @@ mod tests {
             assert!(
                 Widget::invoke_resource_operation(
                     &mut widget,
-                    ui::qos_actions::OperationKind::Effect,
+                    ui::tilo_actions::OperationKind::Effect,
                     "terminal.run",
                     &payload,
                     &doc,
@@ -490,7 +492,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.send",
                 &empty,
                 &doc,
@@ -503,7 +505,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.send",
                 &too_large,
                 &doc,
@@ -521,7 +523,7 @@ mod tests {
             assert!(
                 Widget::invoke_resource_operation(
                     &mut widget,
-                    ui::qos_actions::OperationKind::Effect,
+                    ui::tilo_actions::OperationKind::Effect,
                     "terminal.send",
                     &payload,
                     &doc,
@@ -555,7 +557,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.send",
                 &payload,
                 &doc,
@@ -576,7 +578,7 @@ mod tests {
                     resource.actions.iter().all(|action| {
                         matches!(
                             action.contract.availability,
-                            ui::qos_actions::Availability::Unavailable { .. }
+                            ui::tilo_actions::Availability::Unavailable { .. }
                         )
                     })
                 })
@@ -600,7 +602,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.control",
                 &payload,
                 &doc,
@@ -621,7 +623,7 @@ mod tests {
             &ROOT,
             b"\x1b]8;;file:///home/me/.ssh/id_ed25519\x1b\\local\x1b]8;;\x1b\\ \
               \x1b]8;;https://token@example.test/private\x1b\\credential\x1b]8;;\x1b\\ \
-              \x1b]8;;https://qos.example/docs\x1b\\public\x1b]8;;\x1b\\",
+              \x1b]8;;https://tilo.example/docs\x1b\\public\x1b]8;;\x1b\\",
         );
         widget.sync(&mut doc, &ROOT);
 
@@ -638,11 +640,11 @@ mod tests {
             1,
             "local and credential-bearing process links are not agent resources"
         );
-        assert_eq!(transcript.children[0].label, "https://qos.example/docs");
+        assert_eq!(transcript.children[0].label, "https://tilo.example/docs");
         assert!(
             !crate::inner::is_public_web_link("file:///home/me/.ssh/id_ed25519")
                 && !crate::inner::is_public_web_link("https://token@example.test/private")
-                && !crate::inner::is_public_web_link("https://qos.example/?access_token=no"),
+                && !crate::inner::is_public_web_link("https://tilo.example/?access_token=no"),
             "the directory rejects local paths, credentials, and query-bearing targets"
         );
     }

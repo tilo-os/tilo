@@ -2,12 +2,12 @@
 use crate::{Alarm, ClockState, DueEvent, ShellSnapshot, Timer, WeekdayKey, WorldClock};
 use automerge::{AutoCommit, ObjId};
 use chrono::{NaiveTime, Utc};
-use qos_actions::ResourceProvider;
 use std::{
     collections::{BTreeSet, HashMap},
     time::Duration,
 };
 use taffy::{NodeId, TaffyTree};
+use tilo_actions::ResourceProvider;
 use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
@@ -318,7 +318,11 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
                                 .with_kind(TextInputKind::Name)
                                 .with_placeholder("What is this alarm for?"),
                         ))
-                        .push(Box::new(TimePicker::from_state(&draft)))
+                        .push(Box::new(
+                            TimePicker::from_state(&draft)
+                                .with_id("clocks.alarm.time")
+                                .with_accessible_name("Alarm time"),
+                        ))
                         .push(Box::new(Text::new("Repeat").with_heading_level(3)))
                         .push(Box::new(ModelView::from_state(
                             &draft_repeat,
@@ -539,7 +543,11 @@ fn timers_screen(state: &ui::LocalState<ClockState>) -> Element {
                                 .with_placeholder("What is this timer for?"),
                         ))
                         .push(Box::new(Text::new("Hours, minutes, seconds").dimmed()))
-                        .push(Box::new(TimePicker::from_state(&custom)))
+                        .push(Box::new(
+                            TimePicker::from_state(&custom)
+                                .with_id("clocks.timer.custom.duration")
+                                .with_accessible_name("Timer duration"),
+                        ))
                         .push(primary_button(
                             "clocks.timer.custom.add",
                             "Start timer",
@@ -797,7 +805,7 @@ impl Widget for ClocksApp {
     }
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         ty: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -850,7 +858,7 @@ impl Widget for ClocksApp {
         };
         Ok(true)
     }
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         crate::actions::ClockResources.resources(doc)
     }
     fn sync(&mut self, d: &mut AutoCommit, p: &ObjId) {

@@ -2,7 +2,7 @@
 //!
 //! Shared by the `serve-test-registry` example and the test that holds
 //! it to its contract. Lives under `examples/support/` (a dev-only
-//! dependency set) so the packer doesn't ship inside `qos-catalogue`.
+//! dependency set) so the packer doesn't ship inside `tilo-catalogue`.
 //!
 //! The manifest decides real launch behaviour — `[sandbox.services]`
 //! (which service descriptors the launcher hands the app; no `collab`
@@ -14,7 +14,7 @@
 //!
 //! So the rule: **publish the manifest the payload was built with**
 //! (a payload root with `manifest.toml` beside `bin/`, as
-//! `qos-install` writes). Synthesising a minimal manifest is the
+//! `tilo-install` writes). Synthesising a minimal manifest is the
 //! fallback for a payload with none at all, not the default.
 
 use std::path::{Path, PathBuf};
@@ -75,7 +75,7 @@ pub enum AuthorError {
 
 /// The `manifest.toml` belonging to `payload_bin`, if part of an installed package.
 ///
-/// `qos-install` unpacks as `<payload-root>/manifest.toml` beside
+/// `tilo-install` unpacks as `<payload-root>/manifest.toml` beside
 /// `<payload-root>/bin/<binary>`, so the manifest is the binary's
 /// grandparent's `manifest.toml`; two levels up is also checked, for
 /// a nested entrypoint like `libexec/helpers/thing`.
@@ -218,7 +218,7 @@ signature = ""
 
 [sandbox]
 namespaces = ["user"]
-seccomp = "qos-default"
+seccomp = "tilo-default"
 landlock = "strict"
 
 [sandbox.net]

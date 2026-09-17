@@ -19,9 +19,9 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
-use qos_actions::EncodedAction;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_actions::EncodedAction;
 use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -132,8 +132,8 @@ pub struct ThemesApp {
     /// Theme id accepted through the canonical external-operation route. It is
     /// drained by `sync`, where mutable document access is available, so the
     /// store write and active-id action remain one semantic transaction.
-    pending_apply: Option<(String, qos_actions::InvocationId)>,
-    completed_apply: Option<qos_actions::InvocationUpdate>,
+    pending_apply: Option<(String, tilo_actions::InvocationId)>,
+    completed_apply: Option<tilo_actions::InvocationUpdate>,
     pending_new: bool,
 
     /// Vertical scroll of the collapsed (narrow) preview+customizer stack.
@@ -401,7 +401,7 @@ impl ThemesApp {
 
     /// Dispatch one [`ThemesAction`](crate::actions::ThemesAction) — the single
     /// CRDT-mutation path shared with the Ctrl+K palette. The action is applied
-    /// through the qOS action executor (a pinned actor + committed change, so it
+    /// through the Tilo action executor (a pinned actor + committed change, so it
     /// replays byte-identically on peers), exactly as the palette does. The
     /// document heads captured just before the first action of the batch are
     /// stashed so the host records **one** undo boundary bracketing it
@@ -411,7 +411,7 @@ impl ThemesApp {
             state,
             crate::actions::THEMES_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Themes", "Themes", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Themes", "Themes", action),
         );
     }
 
@@ -726,7 +726,7 @@ impl ThemesApp {
             .flat_map(|library| library.children)
             .find(|resource| resource.id.as_str() == format!("themes.theme:{selected}"))
         {
-            let binding = |id| qos_actions::ActionBinding::unit_for(&theme_resource, id).ok();
+            let binding = |id| tilo_actions::ActionBinding::unit_for(&theme_resource, id).ok();
             if let Some(duplicate) = binding("duplicate") {
                 self.customizer.bind_actions(
                     selected,
@@ -1287,21 +1287,21 @@ impl Widget for ThemesApp {
 
     /// Publish the open theme library + its themes so the host's Ctrl+K action
     /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != qos_actions::OperationKind::Effect {
+        if kind != tilo_actions::OperationKind::Effect {
             return Ok(false);
         }
         if type_id == "themes.new" {
@@ -1331,14 +1331,14 @@ impl Widget for ThemesApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != qos_actions::OperationKind::Effect || type_id != "themes.apply" {
+        if kind != tilo_actions::OperationKind::Effect || type_id != "themes.apply" {
             return Ok(None);
         }
         if self.pending_apply.is_some() {
@@ -1360,11 +1360,11 @@ impl Widget for ThemesApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested
             && self
                 .pending_apply
@@ -1372,7 +1372,7 @@ impl Widget for ThemesApp {
                 .is_some_and(|(_, pending)| *pending == invocation)
         {
             self.pending_apply = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("cancelled before the theme store was changed".into()),
             });
@@ -1404,13 +1404,13 @@ impl Widget for ThemesApp {
 
         if let Some((id, invocation)) = self.pending_apply.take() {
             self.completed_apply = Some(match self.apply_theme(&id, state) {
-                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
-                Err(message) => qos_actions::InvocationUpdate::Failed {
+                Err(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "themes.apply_failed".into(),
                         message,
                         details: None,
@@ -1778,13 +1778,13 @@ mod tests {
 
     /// Point the shared theme store at a throwaway config dir once for the
     /// whole test binary, so Apply never writes the developer's real
-    /// `~/.config/qos/settings.json`. `Once` serialises the single env write
+    /// `~/.config/tilo/settings.json`. `Once` serialises the single env write
     /// before any concurrent test reads it.
     fn isolate_config() {
         use std::sync::Once;
         static ONCE: Once = Once::new();
         ONCE.call_once(|| {
-            let dir = std::env::temp_dir().join(format!("qos-themes-test-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("tilo-themes-test-{}", std::process::id()));
             let _ = std::fs::create_dir_all(&dir);
             // SAFETY: performed exactly once, guarded by `Once`, before the
             // seed path (the only env reader) runs in any test.
@@ -1827,12 +1827,12 @@ mod tests {
     fn duplicate_command_adds_editable_copy_and_selects_it() {
         let (mut app, mut st) = seeded();
         let before = catalog(&st).len();
-        run(&mut app, &mut st, "duplicate:qos-blue");
+        run(&mut app, &mut st, "duplicate:tilo-blue");
         let cat = catalog(&st);
         assert_eq!(cat.len(), before + 1, "one theme added");
         let copy = cat
             .iter()
-            .find(|s| s.name == "qOS Blue copy")
+            .find(|s| s.name == "Tilo Blue copy")
             .expect("named copy exists");
         assert!(!copy.builtin, "the copy is editable");
         assert_eq!(selected(&app), copy.id, "the copy becomes the selection");
@@ -1878,9 +1878,9 @@ mod tests {
     fn delete_command_refuses_builtin_presets() {
         let (mut app, mut st) = seeded();
         let before = catalog(&st).len();
-        run(&mut app, &mut st, "delete:qos-blue");
+        run(&mut app, &mut st, "delete:tilo-blue");
         assert_eq!(catalog(&st).len(), before, "a builtin preset is protected");
-        assert!(catalog(&st).iter().any(|s| s.id == "qos-blue"));
+        assert!(catalog(&st).iter().any(|s| s.id == "tilo-blue"));
     }
 
     #[test]
@@ -1916,7 +1916,7 @@ mod tests {
         // Selection, token navigation, and opening the inline name editor are
         // all per-window presentation. None is a catalog mutation or an undo
         // boundary, and none may replay stale editor values over the peer edit.
-        run(&mut app, &mut state, "select:qos-blue");
+        run(&mut app, &mut state, "select:tilo-blue");
         run(&mut app, &mut state, "edittoken:border");
         run(&mut app, &mut state, "rename:sunset");
 
@@ -1941,7 +1941,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 "themes.export",
                 &serde_json::to_vec(&()).unwrap(),
                 &state.doc,
@@ -1979,7 +1979,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 "themes.new",
                 &serde_json::to_vec(&()).unwrap(),
                 &state.doc,
@@ -2000,7 +2000,7 @@ mod tests {
                 .actions
                 .iter()
                 .any(|action| {
-                    action.id == "new" && action.kind == qos_actions::OperationKind::Effect
+                    action.id == "new" && action.kind == tilo_actions::OperationKind::Effect
                 })
         );
     }
@@ -2015,7 +2015,7 @@ mod tests {
             .unwrap()
             .id
             .clone();
-        run(&mut app, &mut st, "select:qos-blue");
+        run(&mut app, &mut st, "select:tilo-blue");
         run(&mut app, &mut st, &format!("rename:{copy_id}"));
         assert_eq!(
             selected(&app),
@@ -2028,12 +2028,12 @@ mod tests {
     fn selected_apply_operation_writes_the_active_theme_to_the_shared_store() {
         let (mut app, mut st) = seeded();
         run(&mut app, &mut st, "select:dracula");
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         assert_eq!(
             Widget::start_resource_operation(
                 &mut app,
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 "themes.apply",
                 &serde_json::to_vec(&()).unwrap(),
                 &st.doc,
@@ -2062,7 +2062,7 @@ mod tests {
     /// Ctrl+K "Delete theme" [`ActionSpec`] exports.
     #[test]
     fn affordance_dispatches_the_same_encoded_action_as_the_palette_spec() {
-        use qos_actions::{ActionInput, ResourceProvider};
+        use tilo_actions::{ActionInput, ResourceProvider};
         let (mut app, mut st) = seeded_demo();
         assert_eq!(selected(&app), "sunset");
 
@@ -2166,11 +2166,11 @@ mod tests {
     fn exported_apply_uses_cancellable_background_lifecycle() {
         let (mut app, st) = seeded();
         let theme_id = catalog(&st)[0].id.clone();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let started = app
             .start_resource_operation(
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 "themes.apply",
                 &serde_json::to_vec(&theme_id).unwrap(),
                 &st.doc,
@@ -2180,7 +2180,7 @@ mod tests {
         assert_eq!(started, Some(ui::widget::ResourceOperationStart::Accepted));
         assert!(matches!(
             app.poll_resource_operation(invocation, true, &st.doc, &st.root),
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
 
         let apply = Widget::resources(&app, &st.doc)
@@ -2191,9 +2191,9 @@ mod tests {
             .unwrap();
         assert!(matches!(
             apply.contract.execution,
-            qos_actions::ExecutionMode::Background { cancellable: true }
+            tilo_actions::ExecutionMode::Background { cancellable: true }
         ));
-        assert_eq!(apply.contract.result, qos_actions::ResultSpec::Job);
+        assert_eq!(apply.contract.result, tilo_actions::ResultSpec::Job);
     }
 
     #[test]

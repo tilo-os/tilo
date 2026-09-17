@@ -3595,17 +3595,17 @@ mod tests {
 
     #[test]
     fn provenance_breadcrumbs_and_collapsed_mixed_scope_survive_hidden_rows() {
-        use qos_actions::ActionContext;
+        use tilo_actions::ActionContext;
         let mut files = entry(OpClass::Splice, "Alice", 10, 1);
         files.context = Some(
             ActionContext::for_resource("Rename", "files:brief", "files.entry", "brief.md")
-                .with_app("org.qos.Files", "Files")
+                .with_app("org.tilo.Files", "Files")
                 .with_group("workspace:a", "Alpha", "workspace"),
         );
         let mut notes = entry(OpClass::Splice, "Alice", 11, 2);
         notes.context = Some(
             ActionContext::for_resource("Edit", "notes:plan", "notes.document", "plan")
-                .with_app("org.qos.Notes", "Notes")
+                .with_app("org.tilo.Notes", "Notes")
                 .with_group("workspace:a", "Beta", "workspace"),
         );
         let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), vec![files, notes]);
@@ -4394,7 +4394,7 @@ mod group_tests {
             .on_name_group(move |r| c.borrow_mut().push(r.clone()));
         t.set_rect(Rect::new(0.0, 0.0, 520.0, 500.0));
         t.set_named_ranges(vec![NamedRange {
-            id: "qos:group:rec".into(),
+            id: "tilo:group:rec".into(),
             label: "Intro rewrite".into(),
             start: entries[0].id,
             end: Some(entries[19].id),
@@ -4420,7 +4420,7 @@ mod group_tests {
         assert_eq!(reqs[0].label, "", "an empty label is 'remove the name'");
         assert_eq!(
             reqs[0].record_id.as_deref(),
-            Some("qos:group:rec"),
+            Some("tilo:group:rec"),
             "and it addresses the record that already exists"
         );
     }
@@ -4456,7 +4456,7 @@ mod group_tests {
         let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries.clone())
             .on_undo_band(move |r| c.borrow_mut().push(r.clone()));
         t.set_named_ranges(vec![NamedRange {
-            id: "qos:group:rec".into(),
+            id: "tilo:group:rec".into(),
             label: "The agent's pass".into(),
             start: entries[0].id,
             end: Some(entries[19].id),
@@ -4538,7 +4538,7 @@ mod group_tests {
         let entries = typing_run(20);
         let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries.clone());
         t.set_named_ranges(vec![NamedRange {
-            id: "qos:group:rec".into(),
+            id: "tilo:group:rec".into(),
             label: "Ada's pass".into(),
             start: entries[0].id,
             end: Some(entries[19].id),
@@ -4652,7 +4652,7 @@ mod group_tests {
         let ids = (entries[0].id, entries[9].id);
         let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries);
         t.set_named_ranges(vec![NamedRange {
-            id: "qos:group:rec".into(),
+            id: "tilo:group:rec".into(),
             label: "Morning".into(),
             start: ids.0,
             end: Some(ids.1),
@@ -4679,7 +4679,7 @@ mod group_tests {
         let entries = typing_run(20);
         let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 500.0), entries.clone());
         t.set_named_ranges(vec![NamedRange {
-            id: "qos:group:rec".into(),
+            id: "tilo:group:rec".into(),
             label: "Working".into(),
             start: entries[0].id,
             end: None,
@@ -4777,7 +4777,7 @@ mod group_tests {
             .to_string();
         let mut t = timeline_at(Rect::new(0.0, 0.0, 520.0, 500.0), entries.clone());
         t.set_named_ranges(vec![NamedRange {
-            id: "qos:group:rec".into(),
+            id: "tilo:group:rec".into(),
             label: long.clone(),
             start: entries[0].id,
             end: Some(entries[19].id),
@@ -4825,7 +4825,7 @@ mod group_tests {
         let entries = typing_run(20);
         t.set_named_ranges(vec![
             NamedRange {
-                id: "qos:group:outer".into(),
+                id: "tilo:group:outer".into(),
                 label: "Outer".into(),
                 start: entries[0].id,
                 end: Some(entries[19].id),
@@ -4833,7 +4833,7 @@ mod group_tests {
                 created: SystemTime::UNIX_EPOCH,
             },
             NamedRange {
-                id: "qos:group:inner".into(),
+                id: "tilo:group:inner".into(),
                 label: "Inner".into(),
                 start: entries[5].id,
                 end: Some(entries[9].id),
@@ -4861,7 +4861,7 @@ mod group_tests {
         let mut t = timeline_at(Rect::new(0.0, 0.0, 620.0, 900.0), entries.clone());
         t.set_named_ranges(vec![
             NamedRange {
-                id: "qos:group:outer".into(),
+                id: "tilo:group:outer".into(),
                 label: "Q3 release".into(),
                 start: entries[0].id,
                 end: Some(entries[19].id),
@@ -4869,7 +4869,7 @@ mod group_tests {
                 created: SystemTime::UNIX_EPOCH,
             },
             NamedRange {
-                id: "qos:group:inner".into(),
+                id: "tilo:group:inner".into(),
                 label: "Intro rewrite".into(),
                 start: entries[4].id,
                 end: Some(entries[8].id),

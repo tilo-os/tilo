@@ -15,8 +15,8 @@
 set -euo pipefail
 
 # Leave empty to run QEMU and its tools on the host. Set this when the tools
-# live in a development distrobox, for example `QOS_DISTROBOX=qos-dev`.
-DISTROBOX="${QOS_DISTROBOX:-}"
+# live in a development distrobox, for example `TILO_DISTROBOX=tilo-dev`.
+DISTROBOX="${TILO_DISTROBOX:-}"
 run_in_env() {
     if [ -n "$DISTROBOX" ]; then
         distrobox enter "$DISTROBOX" -- "$@"
@@ -29,7 +29,7 @@ QCOW="${1:-}"
 LABEL="${2:-run}"
 [ -f "$QCOW" ] || { echo "usage: $0 <qcow2> <label>" >&2; exit 2; }
 
-OUT_DIR="${QOS_PERF_OUT:-$PWD/target/perf}"
+OUT_DIR="${TILO_PERF_OUT:-$PWD/target/perf}"
 mkdir -p "$OUT_DIR"
 SNAP="$OUT_DIR/$LABEL.snapshot.qcow2"
 CONSOLE="$OUT_DIR/$LABEL.console.log"

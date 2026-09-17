@@ -16,13 +16,13 @@ line_of() { grep -nF -- "$2" "$1" | head -n 1 | cut -d: -f1; }
 safe_line="$(line_of "$script" '$SafeMetadata = @($UuidItem.FullName, $TokenItem.FullName)')"
 try_line="$(line_of "$script" 'try {')"
 url_line="$(line_of "$script" 'if ($Server -notin @("https://code.sandbox.example", "https://code.sandbox.example/"))')"
-runner_line="$(line_of "$script" '$TrustedRunner = Assert-qOSTrustedRunner $Runner')"
+runner_line="$(line_of "$script" '$TrustedRunner = Assert-TiloTrustedRunner $Runner')"
 start_line="$(line_of "$script" '$Process = Start-Process')"
 finally_line="$(line_of "$script" '} finally {')"
 remove_line="$(line_of "$script" 'Remove-Item -LiteralPath $Path -Force')"
 finally_kill_line="$(grep -nF -- 'taskkill.exe" /PID $Process.Id /T /F' "$script" | tail -n 1 | cut -d: -f1)"
-has "$script" 'Assert-qOSPrivateMetadataFile $UuidFile' \
-  && has "$script" 'Assert-qOSPrivateMetadataFile $TokenFile' \
+has "$script" 'Assert-TiloPrivateMetadataFile $UuidFile' \
+  && has "$script" 'Assert-TiloPrivateMetadataFile $TokenFile' \
   && has "$script" '$SafeMetadata = @($UuidItem.FullName, $TokenItem.FullName)' \
   && has "$script" 'if ($Server -notin @("https://code.sandbox.example", "https://code.sandbox.example/"))' \
   && has "$script" '$Label -cne "imager-windows-x86_64"' \

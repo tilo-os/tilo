@@ -64,17 +64,17 @@ const HOUR_MIN: i64 = 60;
 /// Build the bundled mailbox. The account is a plausible self-host config so
 /// the account-setup screen has real values to display.
 pub fn sample_mailbox() -> Mailbox {
-    let me = Addr::new("You", "you@qos.example");
+    let me = Addr::new("You", "you@tilo.example");
     let account = AccountConfig {
         display_name: "You".into(),
-        email: "you@qos.example".into(),
-        imap_host: "imap.qos.example".into(),
+        email: "you@tilo.example".into(),
+        imap_host: "imap.tilo.example".into(),
         imap_port: 993,
         imap_tls: true,
-        smtp_host: "smtp.qos.example".into(),
+        smtp_host: "smtp.tilo.example".into(),
         smtp_port: 465,
         smtp_tls: true,
-        username: "you@qos.example".into(),
+        username: "you@tilo.example".into(),
         auth: crate::model::AuthMethod::Password,
         password: "********".into(),
     };
@@ -85,8 +85,8 @@ pub fn sample_mailbox() -> Mailbox {
     let alan = Addr::new("Alan Turing", "alan@bletchley.example");
     let katherine = Addr::new("Katherine Johnson", "katherine@nasa.example");
     let linus = Addr::new("Linus Torvalds", "linus@kernel.example");
-    let ci = Addr::new("qOS CI", "ci@qos.example");
-    let calendar = Addr::new("Calendar", "noreply@cal.qos.example");
+    let ci = Addr::new("Tilo CI", "ci@tilo.example");
+    let calendar = Addr::new("Calendar", "noreply@cal.tilo.example");
 
     insert_launch_plan_thread(&mut mb, &me, &ada, &grace);
     insert_standalone_inbox_items(&mut mb, &me, ci, &katherine, alan, linus, calendar);
@@ -125,7 +125,7 @@ pub fn sample_mailbox() -> Mailbox {
 /// the list's threading and unread-head rendering have something to group.
 fn insert_launch_plan_thread(mb: &mut Mailbox, me: &Addr, ada: &Addr, grace: &Addr) {
     // ---- Thread 1: "Launch plan for the spatial shell" (3 msgs, unread head)
-    let root_id = "sample-launch-plan-root@qos.example";
+    let root_id = "sample-launch-plan-root@tilo.example";
     let mut root = message(
         ada.clone(),
         vec![me.clone()],
@@ -154,7 +154,7 @@ the bubblewrap policy is solid.\n\nGrace",
         Folder::Inbox,
         vec![],
     );
-    reply.rfc_message_id = Some("sample-launch-plan-reply@qos.example".into());
+    reply.rfc_message_id = Some("sample-launch-plan-reply@tilo.example".into());
     reply.in_reply_to = Some(root_id.into());
     mb.insert(reply);
     let mut latest = message(
@@ -169,7 +169,7 @@ revised gantt. Can you review the collaboration section before Friday?",
         Folder::Inbox,
         vec![att("rollout-gantt.pdf", "application/pdf", 184_320)],
     );
-    latest.rfc_message_id = Some("sample-launch-plan-latest@qos.example".into());
+    latest.rfc_message_id = Some("sample-launch-plan-latest@tilo.example".into());
     latest.in_reply_to = Some(root_id.into());
     mb.insert(latest);
 }
@@ -194,7 +194,7 @@ fn insert_standalone_inbox_items(
         ci,
         vec![me.clone()],
         "Build #4821 failed on shell --lib",
-        "Pipeline qos/qos run #4821 FAILED.\n\nstage: cargo test -p shell --lib\n\
+        "Pipeline tilo/tilo run #4821 FAILED.\n\nstage: cargo test -p shell --lib\n\
 error: process didn't exit successfully: SIGSEGV (parallel wgpu instance \
 contention?)\n\nFull log attached. Re-run threshold was 4 OK / 8 SIGSEGV.",
         14,
@@ -235,7 +235,7 @@ I have thoughts on the focus model.",
     // ---- Thread 5: Linus, mailing-list style (read, long)
     mb.insert(message(
         linus,
-        vec![Addr::bare("qos-dev@lists.qos.example")],
+        vec![Addr::bare("tilo-dev@lists.tilo.example")],
         "Re: [PATCH] fuse: hydrate-on-read for projected blobs",
         "On Tue, the patch looks mostly fine, but the readahead window is \
 hard-coded to 1MB. Make it a mount option. Also your error path leaks the \
@@ -333,14 +333,14 @@ is definitely not a scam.",
 pub fn sample_account_store() -> AccountStore {
     let personal = AccountConfig {
         display_name: "You".into(),
-        email: "you@qos.example".into(),
-        imap_host: "imap.qos.example".into(),
+        email: "you@tilo.example".into(),
+        imap_host: "imap.tilo.example".into(),
         imap_port: 993,
         imap_tls: true,
-        smtp_host: "smtp.qos.example".into(),
+        smtp_host: "smtp.tilo.example".into(),
         smtp_port: 465,
         smtp_tls: true,
-        username: "you@qos.example".into(),
+        username: "you@tilo.example".into(),
         auth: crate::model::AuthMethod::Password,
         password: "********".into(),
     };
@@ -370,7 +370,7 @@ pub fn sample_account_store() -> AccountStore {
 
 /// A plain text/plain message, parsed live by mail-parser.
 const RAW_PLAIN: &str = "From: Margaret Hamilton <margaret@apollo.example>\r\n\
-To: you@qos.example\r\n\
+To: you@tilo.example\r\n\
 Subject: Priority display + error detection\r\n\
 Message-ID: <apollo-2026@apollo.example>\r\n\
 Date: Tue, 30 Jun 2026 08:30:00 +0000\r\n\
@@ -383,56 +383,56 @@ rather than queueing them. Happy to pair on it.\r\n";
 
 /// A multipart/mixed message with a PDF attachment, parsed live.
 const RAW_WITH_PDF: &str = "From: Radia Perlman <radia@spanning.example>\r\n\
-To: you@qos.example\r\n\
+To: you@tilo.example\r\n\
 Subject: Spanning-tree notes for the gossip mesh\r\n\
 Message-ID: <stp-2026@spanning.example>\r\n\
 Date: Tue, 30 Jun 2026 07:05:00 +0000\r\n\
 MIME-Version: 1.0\r\n\
-Content-Type: multipart/mixed; boundary=\"=_qos_boundary_=\"\r\n\
+Content-Type: multipart/mixed; boundary=\"=_tilo_boundary_=\"\r\n\
 \r\n\
---=_qos_boundary_=\r\n\
+--=_tilo_boundary_=\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 \r\n\
 Your direct + hosted gossip topology can loop if two clusters bridge the same \
 peer. A spanning-tree pass keeps the collaboration buffer from echoing. \
 Diagram attached.\r\n\
---=_qos_boundary_=\r\n\
+--=_tilo_boundary_=\r\n\
 Content-Type: application/pdf\r\n\
 Content-Disposition: attachment; filename=\"spanning-tree.pdf\"\r\n\
 Content-Transfer-Encoding: base64\r\n\
 \r\n\
 JVBERi0xLjQgZmFrZSBwZGYgYm9keSBmb3IgdGhlIHNhbXBsZSBtYWlsYm94Lg==\r\n\
---=_qos_boundary_=--\r\n";
+--=_tilo_boundary_=--\r\n";
 
 /// A multipart/alternative message with a plain-text part and a rich HTML part
 /// (including a **remote** image the reader must block by default), parsed live.
-const RAW_HTML: &str = "From: qOS Weekly <news@weekly.qos.example>\r\n\
-To: you@qos.example\r\n\
-Subject: This week in qOS — spatial shells & collab buffers\r\n\
-Message-ID: <weekly-2026-27@weekly.qos.example>\r\n\
+const RAW_HTML: &str = "From: Tilo Weekly <news@weekly.tilo.example>\r\n\
+To: you@tilo.example\r\n\
+Subject: This week in Tilo — spatial shells & collab buffers\r\n\
+Message-ID: <weekly-2026-27@weekly.tilo.example>\r\n\
 Date: Tue, 30 Jun 2026 13:13:00 +0000\r\n\
 MIME-Version: 1.0\r\n\
-Content-Type: multipart/alternative; boundary=\"=_qos_alt_=\"\r\n\
+Content-Type: multipart/alternative; boundary=\"=_tilo_alt_=\"\r\n\
 \r\n\
---=_qos_alt_=\r\n\
+--=_tilo_alt_=\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 \r\n\
 This week: the scrollable-strip shell landed, and collaboration buffers now \
 stream over gossip. Read on.\r\n\
---=_qos_alt_=\r\n\
+--=_tilo_alt_=\r\n\
 Content-Type: text/html; charset=utf-8\r\n\
 \r\n\
 <html><body style=\"font-family:sans-serif\">\
-<h1 style=\"color:#4f7cff\">This week in qOS</h1>\
-<img src=\"https://track.weekly.qos.example/open.gif?u=you\" width=\"1\" height=\"1\">\
+<h1 style=\"color:#4f7cff\">This week in Tilo</h1>\
+<img src=\"https://track.weekly.tilo.example/open.gif?u=you\" width=\"1\" height=\"1\">\
 <p>The <strong>scrollable-strip shell</strong> landed, and collaboration \
 buffers now stream over gossip.</p>\
 <ul><li>Spatial window model</li><li>Per-workspace sandboxing</li>\
 <li>Live collab presence</li></ul>\
 <blockquote>\u{201c}It feels like one shared desktop.\u{201d}</blockquote>\
-<p><a href=\"https://qos.example/weekly/27\">Read the full issue \u{2192}</a></p>\
+<p><a href=\"https://tilo.example/weekly/27\">Read the full issue \u{2192}</a></p>\
 </body></html>\r\n\
---=_qos_alt_=--\r\n";
+--=_tilo_alt_=--\r\n";
 
 #[cfg(test)]
 mod tests {

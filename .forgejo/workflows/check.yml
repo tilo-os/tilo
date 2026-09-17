@@ -110,7 +110,7 @@ jobs:
           bash os/tests/release_freshness_security.sh
           bash os/tests/installer_target_invariants.sh
           bash os/tests/rollback-initrd-hook.sh
-          bash os/tests/qos_root_discovery.sh
+          bash os/tests/tilo_root_discovery.sh
           bash os/tests/authenticode_envelope.sh
           bash os/tests/installer_guided_alongside.sh
           bash os/tests/installer_boot_menu.sh
@@ -143,7 +143,8 @@ jobs:
           elif [ -z "$base" ] || [ "$base" = "null" ]; then
             base='${{ github.event.before }}'
           fi
-          if [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          if [ -z "$base" ] \
+              || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             base=HEAD^
           fi
           echo "base=$(git rev-parse "$base^{commit}")" >> "$GITHUB_OUTPUT"
@@ -190,8 +191,8 @@ jobs:
       - name: Prepare headless runtime and compiler cache
         run: |
           test -r "$VK_DRIVER_FILES"
-          mkdir -p /tmp/qos-xdg-runtime
-          chmod 700 /tmp/qos-xdg-runtime
+          mkdir -p /tmp/tilo-xdg-runtime
+          chmod 700 /tmp/tilo-xdg-runtime
           bash tools/ci-sccache.sh prepare
 
       # Build and run tests first. The resulting rlibs/rmeta are then reusable
@@ -203,13 +204,13 @@ jobs:
       - name: Build installer used by app-catalogue integration tests
         if: contains(matrix.packages, '-p app-catalogue')
         run: >-
-          bash tools/ci-measure.sh "build qos-install test fixture" --
-          bash scripts/ci-run.sh "cargo build (qos-install test fixture)" --
+          bash tools/ci-measure.sh "build tilo-install test fixture" --
+          bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" --
           cargo build --locked -p install
 
       - name: Test shard ${{ matrix.shard }}
         env:
-          XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
+          XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
         run: >-
           bash tools/ci-measure.sh "test shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
@@ -218,7 +219,7 @@ jobs:
 
       - name: Check all targets in shard ${{ matrix.shard }}
         env:
-          XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
+          XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
         run: >-
           bash tools/ci-measure.sh "check shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo check (affected shard ${{ matrix.shard }})" --
@@ -235,7 +236,7 @@ jobs:
       # authoritative, base-aware lint gate.
       - name: Clippy shard ${{ matrix.shard }}
         env:
-          XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime
+          XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
         run: >-
           bash tools/ci-measure.sh "clippy shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "Clippy diagnostic diff (affected shard ${{ matrix.shard }})" --
@@ -279,10 +280,10 @@ jobs:
           fetch-depth: 0
       - name: Record an observable CI receipt without touching a branch
         run: |
-          git config user.name 'qOS Forgejo CI'
-          git config user.email 'qos@noreply.code.sandbox.example'
-          git fetch origin refs/notes/qos-check-ci:refs/notes/qos-check-ci || true
-          git notes --ref=qos-check-ci add -f \
+          git config user.name 'Tilo Forgejo CI'
+          git config user.email 'tilo@noreply.code.sandbox.example'
+          git fetch origin refs/notes/tilo-check-ci:refs/notes/tilo-check-ci || true
+          git notes --ref=tilo-check-ci add -f \
             -m "select=$SELECT_RESULT affected=$AFFECTED_RESULT run=$GITHUB_RUN_ID sha=$GITHUB_SHA" \
             "$GITHUB_SHA"
-          git push origin refs/notes/qos-check-ci
+          git push origin refs/notes/tilo-check-ci

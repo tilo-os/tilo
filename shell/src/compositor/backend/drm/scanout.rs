@@ -22,9 +22,8 @@ use drm_re::control::{
     framebuffer,
 };
 
-use super::paint::{
-    BridgeError, SceneDamage, VelloDrmBridge, XrgbHistoryCommit, XrgbTargetHistory,
-};
+use super::paint::{BridgeError, SceneDamage, VelloDrmBridge};
+use super::xrgb_history::{XrgbHistoryCommit, XrgbTargetHistory};
 use crate::compositor::backend::OutputId;
 use vello::{FineDamageRect, Scene};
 
@@ -1005,7 +1004,7 @@ impl DrmScanout {
             xrgb_history: XrgbTargetHistory::new(2),
             xrgb_scanout_epoch: Some(1),
             xrgb_software_cursor: [None, None],
-            xrgb_damage_requested: std::env::var("QOS_DRM_XRGB_DAMAGE")
+            xrgb_damage_requested: std::env::var("TILO_DRM_XRGB_DAMAGE")
                 .is_ok_and(|value| value == "1"),
         })
     }

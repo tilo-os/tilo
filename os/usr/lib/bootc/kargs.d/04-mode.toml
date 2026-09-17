@@ -1,11 +1,11 @@
 # Which mode this kernel image boots into.
 #
-# `qos.mode=normal` is the ordinary desktop session. `qos.mode=repair` boots the
-# same rootfs to the repair console instead — see /usr/share/doc/qos/repair-mode.md.
+# `tilo.mode=normal` is the ordinary desktop session. `tilo.mode=repair` boots the
+# same rootfs to the repair console instead — see /usr/share/doc/tilo/repair-mode.md.
 #
 # `bootc container ukify` seals this mode into the UKI command line and PCR 11;
 # an editable file beside the kernel could bypass the locked mode.
 #
-# Keep both values the same length: qos-deployment rewrites the selected value
+# Keep both values the same length: tilo-deployment rewrites the selected value
 # in place, preserving following PE section offsets.
-kargs = ["qos.mode=normal"]
+kargs = ["tilo.mode=normal"]

@@ -4,14 +4,14 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-use qos_user_identity::{
+use rand_core::{OsRng, RngCore};
+use serde::{Deserialize, Serialize};
+use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, EnrollmentToken, IdentityPaths, RevocationEntry,
     RevocationReason, decode_enrollment_token, encode_enrollment_token, mint_enrollment_token,
     revocation_signing_digest, verify_device_cert, verify_enrollment_token,
     verify_revocation_entry,
 };
-use rand_core::{OsRng, RngCore};
-use serde::{Deserialize, Serialize};
 
 const FLEET_SCHEMA_VERSION: u32 = 1;
 
@@ -114,7 +114,7 @@ impl DeviceFleetStore {
             if let Ok(metadata) = fs::metadata(&registry)
                 && metadata.len() <= 1024 * 1024
             {
-                let registrations: Vec<qos_relay::HomePeerRegistration> =
+                let registrations: Vec<tilo_relay::HomePeerRegistration> =
                     serde_json::from_slice(&fs::read(&registry)?)
                         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
                 let identity = decode_hex_32(identity_id)?;
@@ -149,7 +149,7 @@ impl DeviceFleetStore {
         let cert_path = self
             .identity_paths
             .device_cert_for_user(&profile.user_public_key);
-        let cert = qos_user_identity::persist::read_device_cert(&cert_path)
+        let cert = tilo_user_identity::persist::read_device_cert(&cert_path)
             .map_err(|error| io::Error::other(error.to_string()))?;
         self.insert_certificate(identity_id, cert)
     }
@@ -169,12 +169,12 @@ impl DeviceFleetStore {
     ) -> io::Result<String> {
         let (_, profile) = self.identity(identity_id)?;
         let device =
-            qos_user_identity::persist::read_device_key(&self.identity_paths.device_privkey)
+            tilo_user_identity::persist::read_device_key(&self.identity_paths.device_privkey)
                 .map_err(|error| io::Error::other(error.to_string()))?;
         let cert_path = self
             .identity_paths
             .device_cert_for_user(&profile.user_public_key);
-        let cert = qos_user_identity::persist::read_device_cert(&cert_path)
+        let cert = tilo_user_identity::persist::read_device_cert(&cert_path)
             .map_err(|error| io::Error::other(error.to_string()))?;
         verify_device_cert(&cert).map_err(|error| io::Error::other(error.to_string()))?;
         if cert.device_public_key != device.verifying_key().to_bytes()
@@ -229,7 +229,7 @@ impl DeviceFleetStore {
             expires_at_ns: None,
             signature: [0; 64],
         };
-        let digest = qos_user_identity::device_cert_signing_digest(&cert)
+        let digest = tilo_user_identity::device_cert_signing_digest(&cert)
             .map_err(|error| io::Error::other(error.to_string()))?;
         cert.signature = root
             .sign(&digest)

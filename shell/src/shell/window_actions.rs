@@ -12,9 +12,9 @@
 //! and so placement stays a single decision made by
 //! [`crate::shell::placement`].
 
-use crate::compositor::tab_binding::{self, Placement};
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::state::{AppKind, GroupId, TabId, TileContent};
+use crate::shell::tab_binding::{self, Placement};
 
 /// Where a newly-created window should go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -76,7 +76,7 @@ pub struct GuestLaunch {
     pub presentation: ApplicationPresentation,
 }
 
-/// Authenticated bridge to the qOS guest service. Implementations are expected
+/// Authenticated bridge to the Tilo guest service. Implementations are expected
 /// to use `AF_VSOCK` or an equivalently host-confined transport; the public RDP
 /// service is never trusted to publish the catalogue.
 pub trait GuestAgent: Send + Sync {

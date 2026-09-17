@@ -1,4 +1,4 @@
-//! Standard command-line lifecycle for qOS applications.
+//! Standard command-line lifecycle for Tilo applications.
 //!
 //! Ordinary apps provide their live and screenshot roots; this module owns
 //! common argument validation, persistence, headless driving, offscreen
@@ -13,6 +13,13 @@ use crate::widget::Widget;
 use crate::{App, State, Theme};
 
 pub const DEFAULT_VIEWPORT: (u32, u32) = headless::DEFAULT_VIEWPORT;
+
+/// Explicit runner authority/presentation preparation; application metadata is never authority.
+pub type ComponentHostPreparer =
+    fn(
+        &crate::application::ApplicationDefinition,
+        &LaunchArgs,
+    ) -> Result<crate::application::PreparedComponentInputs, LaunchError>;
 
 type RootFactory = fn() -> Box<dyn Widget>;
 type ArgsRootFactory = fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>;
@@ -34,7 +41,7 @@ pub struct LaunchArgs {
     pub viewport: Option<(u32, u32)>,
     pub scenario: Option<String>,
     pub headless: Option<headless::Spec>,
-    /// Lay out the production root and print its qOS-native certification.
+    /// Lay out the production root and print its Tilo-native certification.
     pub native_audit: bool,
     pub pseudo_locale: bool,
     pub text_scale: Option<f32>,
@@ -65,6 +72,9 @@ impl LaunchArgs {
 
 /// Configuration for an app using the standard lifecycle.
 pub struct LaunchSpec {
+    definition: Option<&'static crate::application::ApplicationDefinition>,
+    component_host: Option<ComponentHostPreparer>,
+    legacy_setup_override: bool,
     app_id: &'static str,
     live_root: Option<RootFactory>,
     live_root_with_args: Option<ArgsRootFactory>,
@@ -88,8 +98,47 @@ pub struct LaunchSpec {
 }
 
 impl LaunchSpec {
+    /// Adapt one common application definition. A runner must install an explicit host.
+    pub fn from_definition(definition: &'static crate::application::ApplicationDefinition) -> Self {
+        let mut spec = Self::new_with_args(definition.app_id, |_| {
+            Err(LaunchError::MissingComponentHost)
+        });
+        spec.definition = Some(definition);
+        spec.live_root_with_args = None;
+        spec
+    }
+
+    #[must_use]
+    pub fn component_host(mut self, prepare: ComponentHostPreparer) -> Self {
+        self.component_host = Some(prepare);
+        self
+    }
+
+    /// Prepare this definition using already authenticated host inputs.
+    /// # Errors
+    /// Returns argument, capability, binding, factory, or restoration failures.
+    pub fn prepare_component(
+        &self,
+        args: &LaunchArgs,
+        context: crate::application::HostContext,
+        target: crate::application::LaunchTarget,
+        restore: crate::application::RestoreInput,
+    ) -> Result<crate::application::AppComponent, LaunchError> {
+        validate_spec_args(args, self)?;
+        if self.legacy_setup_override {
+            return Err(LaunchError::IncompatibleComponentSetup);
+        }
+        let definition = self
+            .definition
+            .ok_or(LaunchError::IncompatibleComponentSetup)?;
+        definition.instantiate(context, target, restore)
+    }
+
     pub fn new(app_id: &'static str, live_root: RootFactory) -> Self {
         Self {
+            definition: None,
+            component_host: None,
+            legacy_setup_override: false,
             app_id,
             live_root: Some(live_root),
             live_root_with_args: None,
@@ -115,6 +164,9 @@ impl LaunchSpec {
     /// depends on validated arguments.
     pub fn new_with_args(app_id: &'static str, live_root: ArgsRootFactory) -> Self {
         Self {
+            definition: None,
+            component_host: None,
+            legacy_setup_override: false,
             app_id,
             live_root: None,
             live_root_with_args: Some(live_root),
@@ -141,12 +193,14 @@ impl LaunchSpec {
     /// initialization inside normal CLI error reporting.
     #[must_use]
     pub fn live_root_with_args(mut self, factory: ArgsRootFactory) -> Self {
+        self.legacy_setup_override = true;
         self.live_root_with_args = Some(factory);
         self
     }
 
     #[must_use]
     pub fn shot_root(mut self, factory: ShotFactory) -> Self {
+        self.legacy_setup_override = true;
         self.shot_root = Some(factory);
         self
     }
@@ -156,6 +210,7 @@ impl LaunchSpec {
     /// driving, persistence and live startup.
     #[must_use]
     pub fn shot_handler(mut self, handler: ShotHandler) -> Self {
+        self.legacy_setup_override = true;
         self.shot_handler = Some(handler);
         self
     }
@@ -170,6 +225,7 @@ impl LaunchSpec {
 
     #[must_use]
     pub fn configure_app(mut self, configure: ConfigureApp) -> Self {
+        self.legacy_setup_override = true;
         self.configure_app = Some(configure);
         self
     }
@@ -181,6 +237,7 @@ impl LaunchSpec {
     /// when ordinary `App::run` is sufficient.
     #[must_use]
     pub fn live_handler(mut self, handler: LiveHandler) -> Self {
+        self.legacy_setup_override = true;
         self.live_handler = Some(handler);
         self
     }
@@ -193,6 +250,7 @@ impl LaunchSpec {
     /// screenshot or live-window lifecycle.
     #[must_use]
     pub fn command_handler(mut self, handler: CommandHandler) -> Self {
+        self.legacy_setup_override = true;
         self.command_handler = Some(handler);
         self
     }
@@ -212,6 +270,7 @@ impl LaunchSpec {
     /// the live event loop.
     #[must_use]
     pub fn open_state(mut self, open: OpenState) -> Self {
+        self.legacy_setup_override = true;
         self.open_state = open;
         self.open_state_with_args = None;
         self
@@ -221,6 +280,7 @@ impl LaunchSpec {
     /// document must seed the persisted CRDT before the root's first sync.
     #[must_use]
     pub fn open_state_with_args(mut self, open: OpenStateWithArgs) -> Self {
+        self.legacy_setup_override = true;
         self.open_state_with_args = Some(open);
         self
     }
@@ -291,8 +351,22 @@ impl LaunchSpec {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchError {
+    Record(crate::record::RecordOpenError),
+    Restore(crate::view::ThawError),
+    DuplicateApplication(String),
+    UnknownApplication(String),
+    CapabilityDenied(crate::permissions::PermissionScope),
+    BindingMismatch,
+    MissingComponentHost,
+    IncompatibleComponentSetup,
+    RecoveryRequired,
+    ComponentSetup {
+        source: Box<LaunchError>,
+        record: crate::record::RecordCheckout,
+        records: crate::record::RecordStore,
+        reports: Vec<crate::application::ComponentCloseReport>,
+    },
     MissingValue(String),
     Duplicate(String),
     InvalidViewport(String),
@@ -309,6 +383,20 @@ pub enum LaunchError {
 impl fmt::Display for LaunchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Record(error) => write!(f, "record open failed: {error}"),
+            Self::Restore(error) => write!(f, "view restore failed: {error}"),
+            Self::DuplicateApplication(id) => write!(f, "application {id:?} is already registered"),
+            Self::UnknownApplication(id) => write!(f, "application {id:?} is not available"),
+            Self::CapabilityDenied(scope) => write!(f, "required capability denied: {scope:?}"),
+            Self::MissingComponentHost => {
+                f.write_str("application definition requires an explicit component host")
+            }
+            Self::IncompatibleComponentSetup => {
+                f.write_str("application definition cannot use legacy setup overrides")
+            }
+            Self::BindingMismatch => f.write_str("application binding does not match"),
+            Self::RecoveryRequired => f.write_str("legacy state requires explicit recovery"),
+            Self::ComponentSetup { source, .. } => write!(f, "application setup failed: {source}"),
             Self::MissingValue(flag) => write!(f, "{flag} requires a value"),
             Self::Duplicate(flag) => write!(f, "{flag} was supplied more than once"),
             Self::InvalidViewport(value) => write!(
@@ -339,11 +427,81 @@ impl fmt::Display for LaunchError {
     }
 }
 
-impl std::error::Error for LaunchError {}
+impl fmt::Debug for LaunchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Record(error) => f.debug_tuple("Record").field(error).finish(),
+            Self::Restore(error) => f.debug_tuple("Restore").field(error).finish(),
+            Self::CapabilityDenied(scope) => {
+                f.debug_tuple("CapabilityDenied").field(scope).finish()
+            }
+            Self::ComponentSetup {
+                source,
+                record,
+                reports,
+                ..
+            } => f
+                .debug_struct("ComponentSetup")
+                .field("source", source)
+                .field("record", record)
+                .field("close_report_count", &reports.len())
+                .finish_non_exhaustive(),
+            Self::MissingValue(value) => f.debug_tuple("MissingValue").field(value).finish(),
+            Self::Duplicate(value) => f.debug_tuple("Duplicate").field(value).finish(),
+            Self::InvalidViewport(value) => f.debug_tuple("InvalidViewport").field(value).finish(),
+            Self::InvalidTextScale(value) => {
+                f.debug_tuple("InvalidTextScale").field(value).finish()
+            }
+            Self::UnknownArgument(value) => f.debug_tuple("UnknownArgument").field(value).finish(),
+            Self::ShotsOnly(value) => f.debug_tuple("ShotsOnly").field(value).finish(),
+            Self::Scenario(value) => f.debug_tuple("Scenario").field(value).finish(),
+            Self::Operation(value) => f.debug_tuple("Operation").field(value).finish(),
+            Self::DuplicateApplication(value) => {
+                f.debug_tuple("DuplicateApplication").field(value).finish()
+            }
+            Self::UnknownApplication(value) => {
+                f.debug_tuple("UnknownApplication").field(value).finish()
+            }
+            Self::ConflictingModes => f.write_str("ConflictingModes"),
+            Self::ShotsUnsupported => f.write_str("ShotsUnsupported"),
+            Self::HeadlessUnsupported => f.write_str("HeadlessUnsupported"),
+            Self::MissingComponentHost => {
+                f.write_str("application definition requires an explicit component host")
+            }
+            Self::IncompatibleComponentSetup => {
+                f.write_str("application definition cannot use legacy setup overrides")
+            }
+            Self::BindingMismatch => f.write_str("BindingMismatch"),
+            Self::RecoveryRequired => f.write_str("RecoveryRequired"),
+        }
+    }
+}
+
+impl std::error::Error for LaunchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Record(error) => Some(error),
+            Self::Restore(error) => Some(error),
+            Self::ComponentSetup { source, .. } => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 impl LaunchError {
     fn exit_code(&self) -> i32 {
-        if matches!(self, Self::Operation(_)) {
+        if matches!(
+            self,
+            Self::Operation(_)
+                | Self::Record(_)
+                | Self::Restore(_)
+                | Self::ComponentSetup { .. }
+                | Self::CapabilityDenied(_)
+                | Self::BindingMismatch
+                | Self::MissingComponentHost
+                | Self::IncompatibleComponentSetup
+                | Self::RecoveryRequired
+        ) {
             1
         } else {
             2
@@ -389,7 +547,12 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
               reports success by returning Ok — there is no caller to \
               hand a status back to"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered dispatch preserves legacy and prepared mode delivery"
+)]
 fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchError> {
+    let _detached = crate::wake::WakeScope::enter_detached();
     let args = parse_args_extended(
         raw_args,
         spec.allowed_flags,
@@ -404,6 +567,29 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     } else {
         crate::i18n::PseudoLocale::Off
     });
+
+    if spec.definition.is_some() {
+        match dispatch_definition(spec, &args)? {
+            DefinitionDispatch::Native(app) => (*app).run(),
+            DefinitionDispatch::Headless(status) => std::process::exit(status),
+            DefinitionDispatch::Rendered(mut driver) => {
+                if let Some(out) = &args.shots {
+                    driver.prepare_component_output();
+                    driver.render_png(out);
+                } else if let Some(directory) = &args.responsive_matrix {
+                    for (name, viewport) in RESPONSIVE_VIEWPORTS {
+                        driver.resize_component_capture(viewport);
+                        driver.render_png(&directory.join(format!("{}-{name}.png", spec.app_id)));
+                    }
+                }
+                close_component_capture(&mut driver)?;
+            }
+            DefinitionDispatch::Audit(mut driver) => {
+                finish_component_audit(&mut driver, spec.app_id)?;
+            }
+        }
+        return Ok(());
+    }
 
     if let Some(handler) = spec.command_handler
         && handler(&args)?
@@ -477,7 +663,7 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
         println!("{report}");
         if !audit.is_certified() {
             return Err(LaunchError::Operation(format!(
-                "{} does not satisfy the qOS-native application contract",
+                "{} does not satisfy the Tilo-native application contract",
                 spec.app_id
             )));
         }
@@ -491,19 +677,126 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     run_native_app(spec, &args)
 }
 
-fn run_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchError> {
+fn close_component_capture(driver: &mut FrameHarness) -> Result<(), LaunchError> {
+    driver.close_components();
+    if driver.component_close_reports().iter().any(|report| {
+        report.view_error.is_some()
+            || report.record_error.is_some()
+            || report.teardown_error.is_some()
+    }) {
+        return Err(LaunchError::Operation(
+            "component capture close failed".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn finish_component_audit(driver: &mut FrameHarness, app_id: &str) -> Result<(), LaunchError> {
+    driver.prepare_component_output();
+    let audit = driver.native_app_audit();
+    let report = serde_json::to_string_pretty(&audit)
+        .map_err(|error| LaunchError::Operation(error.to_string()));
+    if let Ok(report) = &report {
+        println!("{report}");
+    }
+    close_component_capture(driver)?;
+    report?;
+    if !audit.is_certified() {
+        return Err(LaunchError::Operation(format!(
+            "{app_id} does not satisfy the Tilo-native application contract"
+        )));
+    }
+    Ok(())
+}
+
+enum DefinitionDispatch {
+    Native(Box<App>),
+    Headless(i32),
+    Rendered(Box<FrameHarness>),
+    Audit(Box<FrameHarness>),
+}
+
+/// Construction/selection is testable without a process exit, native loop, or GPU.
+fn dispatch_definition(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+) -> Result<DefinitionDispatch, LaunchError> {
+    validate_spec_args(args, spec)?;
+    if spec.legacy_setup_override {
+        return Err(LaunchError::IncompatibleComponentSetup);
+    }
+    let definition = spec
+        .definition
+        .ok_or(LaunchError::IncompatibleComponentSetup)?;
+    let prepare = spec
+        .component_host
+        .ok_or(LaunchError::MissingComponentHost)?;
+    let mut prepared = match prepare(definition, args) {
+        Ok(prepared) => prepared,
+        Err(LaunchError::Record(error)) if args.headless.is_some() => {
+            eprintln!("headless: state open failed: {error}");
+            return Ok(DefinitionDispatch::Headless(3));
+        }
+        Err(error) => return Err(error),
+    };
+    if let Some(scale) = args.text_scale {
+        prepared.runner_inputs.text_renderer.set_text_scale(scale);
+    }
+    let component =
+        spec.prepare_component(args, prepared.context, prepared.target, prepared.restore)?;
+    if let Some(headless) = &args.headless {
+        return Ok(DefinitionDispatch::Headless(headless::run_component(
+            headless,
+            component,
+            prepared.runner_inputs,
+        )));
+    }
+    if args.shots.is_some() || args.responsive_matrix.is_some() || args.native_audit {
+        let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(args));
+        let driver = Box::new(FrameHarness::from_component(
+            component,
+            viewport,
+            prepared.runner_inputs,
+        )?);
+        return Ok(if args.native_audit {
+            DefinitionDispatch::Audit(driver)
+        } else {
+            DefinitionDispatch::Rendered(driver)
+        });
+    }
+    let app = App::from_component(component, prepared.runner_inputs)?;
+    Ok(DefinitionDispatch::Native(Box::new(app)))
+}
+
+fn build_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<App, LaunchError> {
+    build_native_app_with_constructor(spec, args, App::from_scoped_parts)
+}
+
+fn build_native_app_with_constructor(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    construct: impl FnOnce(crate::wake::WakeScope, State, Box<dyn Widget>) -> App,
+) -> Result<App, LaunchError> {
+    let scope = crate::wake::WakeScope::new();
+    let _entry = scope.enter();
     let (state, autosave) = spec.open_state_with_args.map_or_else(
         || (spec.open_state)(spec.app_id),
         |open| open(spec.app_id, args),
     );
-    let mut app = App::new(state, spec.live_root(args)?).with_autosave(autosave);
+    let root = spec.live_root(args)?;
+    let mut app = construct(scope, state, root).with_autosave(autosave);
     if let Some(text_scale) = args.text_scale {
         app.set_text_scale(text_scale);
     }
     if let Some(configure) = spec.configure_app {
+        let _configure_entry = app.enter_wake_scope();
         configure(&mut app);
     }
-    app.run();
+    Ok(app)
+}
+
+fn run_native_app(spec: &LaunchSpec, args: &LaunchArgs) -> Result<(), LaunchError> {
+    build_native_app(spec, args)?.run();
     Ok(())
 }
 
@@ -527,7 +820,7 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
 }
 
 fn shot_theme(args: &LaunchArgs) -> Theme {
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
@@ -549,7 +842,7 @@ fn shot_theme(args: &LaunchArgs) -> Theme {
 /// image should not claim reduced-motion support while a launched app animates
 /// (or vice versa).
 fn shot_motion_reduced() -> bool {
-    ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+    ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
         .into_iter()
         .filter_map(|key| std::env::var(key).ok())
         .any(|value| motion_env_value_enabled(&value))
@@ -759,6 +1052,32 @@ mod tests {
     static CUSTOM_LIVE_RAN: AtomicBool = AtomicBool::new(false);
     static CUSTOM_COMMAND_RAN: AtomicBool = AtomicBool::new(false);
 
+    thread_local! {
+        static LAUNCH_WAKE_CAPTURES: std::cell::RefCell<Vec<crate::WakeHandle>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn capture_launch_wake() {
+        LAUNCH_WAKE_CAPTURES.with(|captures| captures.borrow_mut().push(crate::WakeHandle::new()));
+    }
+
+    fn scoped_open_state(_: &'static str) -> (State, crate::persist::Autosave) {
+        capture_launch_wake();
+        (
+            State::new(),
+            crate::persist::Autosave::disabled("wake routing test"),
+        )
+    }
+
+    fn scoped_root() -> Box<dyn Widget> {
+        capture_launch_wake();
+        Box::new(crate::widget::Text::new("scope test"))
+    }
+
+    fn scoped_configure(_: &mut App) {
+        capture_launch_wake();
+    }
+
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
     }
@@ -872,15 +1191,14 @@ mod tests {
         assert_eq!(parsed.text_scale, Some(2.0));
         assert!(parsed.pseudo_locale);
 
-        assert_eq!(
+        assert!(matches!(
             parse_args(
                 &strings(&["app", "--native-audit", "--headless-drive", "{}"]),
                 &[],
-                &[],
-            )
-            .unwrap_err(),
-            LaunchError::ConflictingModes
-        );
+                &[]
+            ),
+            Err(LaunchError::ConflictingModes)
+        ));
         assert!(matches!(
             parse_args(
                 &strings(&["app", "--native-audit", "--native-audit"]),
@@ -894,10 +1212,10 @@ mod tests {
     #[test]
     fn rejects_conflicting_modes_and_shot_options_in_live_mode() {
         let both = strings(&["app", "--shots", "/tmp/a.png", "--headless-drive", "{}"]);
-        assert_eq!(
-            parse_args(&both, &[], &[]).unwrap_err(),
-            LaunchError::ConflictingModes
-        );
+        assert!(matches!(
+            parse_args(&both, &[], &[]),
+            Err(LaunchError::ConflictingModes)
+        ));
         let matrix_and_shot = strings(&[
             "app",
             "--shots",
@@ -905,10 +1223,10 @@ mod tests {
             "--responsive-matrix",
             "/tmp/matrix",
         ]);
-        assert_eq!(
-            parse_args(&matrix_and_shot, &[], &[]).unwrap_err(),
-            LaunchError::ConflictingModes
-        );
+        assert!(matches!(
+            parse_args(&matrix_and_shot, &[], &[]),
+            Err(LaunchError::ConflictingModes)
+        ));
 
         for option in [
             strings(&["app", "--viewport=800x600"]),
@@ -938,7 +1256,7 @@ mod tests {
     #[test]
     fn app_command_can_finish_before_window_startup() {
         CUSTOM_COMMAND_RAN.store(false, Ordering::SeqCst);
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root)
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root)
             .allowed_live_flags(&["--utility"])
             .command_handler(custom_command);
         run_with_args(&spec, &strings(&["app", "--utility"])).unwrap();
@@ -946,10 +1264,60 @@ mod tests {
     }
 
     #[test]
+    fn standard_live_factory_and_configuration_capture_the_same_app_lifetime() {
+        LAUNCH_WAKE_CAPTURES.with(|captures| captures.borrow_mut().clear());
+        let spec = LaunchSpec::new("dev.tilo.wake-test", scoped_root)
+            .open_state(scoped_open_state)
+            .configure_app(scoped_configure);
+        let args = parse_args_extended(&strings(&["app"]), &[], &[], &[], &[], 0).unwrap();
+        let mut outer = crate::WakeScope::new();
+        let _outer = outer.enter();
+        let app = build_native_app_with_constructor(
+            &spec,
+            &args,
+            App::from_scoped_parts_with_controlled_inputs,
+        )
+        .unwrap();
+        let captured =
+            LAUNCH_WAKE_CAPTURES.with(|captures| std::mem::take(&mut *captures.borrow_mut()));
+        assert_eq!(captured.len(), 3);
+        assert!(captured.iter().all(crate::WakeHandle::is_active));
+        // Closing the parent must not close any child construction capture.
+        outer.close();
+        assert!(captured.iter().all(crate::WakeHandle::is_active));
+        drop(app);
+        assert!(captured.iter().all(|handle| !handle.is_active()));
+    }
+
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "signature is fixed by LaunchSpec::command_handler"
+    )]
+    fn capture_command_wake(_: &LaunchArgs) -> Result<bool, LaunchError> {
+        capture_launch_wake();
+        Ok(true)
+    }
+
+    #[test]
+    fn cli_utility_capture_stays_detached_under_a_host_callback() {
+        LAUNCH_WAKE_CAPTURES.with(|captures| captures.borrow_mut().clear());
+        let mut outer = crate::WakeScope::new();
+        let _outer = outer.enter();
+        let spec = LaunchSpec::new("dev.tilo.wake-utility", dummy_root)
+            .command_handler(capture_command_wake);
+        run_with_args(&spec, &strings(&["app"])).unwrap();
+        outer.close();
+        let captures =
+            LAUNCH_WAKE_CAPTURES.with(|captures| std::mem::take(&mut *captures.borrow_mut()));
+        assert_eq!(captures.len(), 1);
+        assert!(captures.iter().all(crate::WakeHandle::is_active));
+    }
+
+    #[test]
     fn privileged_app_can_reject_headless_driving() {
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root).disable_headless();
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root).disable_headless();
         let result = run_with_args(&spec, &strings(&["app", "--headless-drive", "{}"]));
-        assert_eq!(result, Err(LaunchError::HeadlessUnsupported));
+        assert!(matches!(result, Err(LaunchError::HeadlessUnsupported)));
     }
 
     #[test]
@@ -960,19 +1328,19 @@ mod tests {
             &[],
         )
         .unwrap();
-        let undeclared = LaunchSpec::new("dev.qos.test", dummy_root);
+        let undeclared = LaunchSpec::new("dev.tilo.test", dummy_root);
         assert!(matches!(
             validate_spec_args(&args, &undeclared),
             Err(LaunchError::Scenario(_))
         ));
-        let declared = LaunchSpec::new("dev.qos.test", dummy_root).scenarios(&["wide"]);
+        let declared = LaunchSpec::new("dev.tilo.test", dummy_root).scenarios(&["wide"]);
         validate_spec_args(&args, &declared).unwrap();
     }
 
     #[test]
     fn ordinary_launch_spec_reuses_live_root_for_screenshots() {
         let args = parse_args(&strings(&["app", "--shots=/tmp/ordinary.png"]), &[], &[]).unwrap();
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root);
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root);
         let root = spec
             .screenshot_root(&args)
             .expect("default screenshot root");
@@ -1049,13 +1417,12 @@ mod tests {
     fn argument_aware_root_propagates_initialization_failure() {
         let args =
             parse_args_extended(&strings(&["app", "broken.qdoc"]), &[], &[], &[], &[], 1).unwrap();
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root)
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root)
             .live_root_with_args(fallible_root)
             .max_positionals(1);
         match spec.live_root(&args) {
-            Err(error) => assert_eq!(
-                error,
-                LaunchError::Operation("cannot open broken.qdoc".into())
+            Err(error) => assert!(
+                matches!(error, LaunchError::Operation(message) if message == "cannot open broken.qdoc")
             ),
             Ok(_) => panic!("fallible root unexpectedly succeeded"),
         }
@@ -1072,7 +1439,7 @@ mod tests {
     #[test]
     fn custom_shot_pipeline_uses_standard_mode_dispatch() {
         CUSTOM_SHOT_RAN.store(false, Ordering::SeqCst);
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root)
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root)
             .shot_handler(custom_shot)
             .live_handler(unexpected_live);
         run_with_args(&spec, &strings(&["app", "--shots", "/tmp/custom.png"])).unwrap();
@@ -1096,7 +1463,7 @@ mod tests {
     #[test]
     fn custom_live_pipeline_runs_after_standard_mode_dispatch() {
         CUSTOM_LIVE_RAN.store(false, Ordering::SeqCst);
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root).live_handler(custom_live);
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root).live_handler(custom_live);
         run_with_args(&spec, &strings(&["app"])).unwrap();
         assert!(CUSTOM_LIVE_RAN.load(Ordering::SeqCst));
     }
@@ -1107,7 +1474,7 @@ mod tests {
 
     #[test]
     fn app_can_replace_only_the_persistence_loader() {
-        let spec = LaunchSpec::new("dev.qos.test", dummy_root).open_state(custom_open_state);
+        let spec = LaunchSpec::new("dev.tilo.test", dummy_root).open_state(custom_open_state);
         assert!(std::ptr::fn_addr_eq(
             spec.open_state,
             custom_open_state as OpenState
@@ -1138,5 +1505,465 @@ mod tests {
                 "{value:?} enables reduced motion"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod prepared_launch_tests {
+    use super::*;
+    use crate::application::{HostContext, LaunchTarget, PreparedComponentInputs, RestoreInput};
+    use crate::application_test_support::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+    thread_local! { static PREPARES: Cell<usize> = const { Cell::new(0) }; }
+
+    fn prepare(
+        definition: &crate::application::ApplicationDefinition,
+        args: &LaunchArgs,
+    ) -> Result<PreparedComponentInputs, LaunchError> {
+        prepare_target(definition, args, LaunchTarget::New, runner_permissions())
+    }
+    fn prepare_target(
+        definition: &crate::application::ApplicationDefinition,
+        args: &LaunchArgs,
+        target: LaunchTarget,
+        authority: Rc<std::cell::RefCell<crate::permissions::PermissionContext>>,
+    ) -> Result<PreparedComponentInputs, LaunchError> {
+        PREPARES.set(PREPARES.get().saturating_add(1));
+        let root = PathBuf::from(args.value("--fixture-root").expect("explicit test root"));
+        let mut owners = crate::record::RecordOwners::new(root.clone());
+        let records = owners.open(APP, ROOM).map_err(LaunchError::Record)?;
+        let views = Rc::new(
+            crate::application_view::InstanceViewStore::new(root, DEVICE, ROOM)
+                .map_err(LaunchError::Restore)?,
+        );
+        let context = HostContext::prepare(
+            definition,
+            records,
+            views,
+            DEVICE.into(),
+            11,
+            authority,
+            author(),
+            provenance(),
+            &target,
+        )?;
+        Ok(PreparedComponentInputs {
+            context,
+            target,
+            restore: RestoreInput::None,
+            runner_inputs: runner_inputs(),
+        })
+    }
+    fn parsed(spec: &LaunchSpec, values: &[String]) -> LaunchArgs {
+        let args = parse_args_extended(
+            values,
+            spec.allowed_flags,
+            spec.allowed_options,
+            spec.allowed_live_flags,
+            spec.allowed_live_options,
+            spec.max_positionals,
+        )
+        .unwrap();
+        validate_spec_args(&args, spec).unwrap();
+        args
+    }
+
+    fn prepare_presentation(
+        definition: &crate::application::ApplicationDefinition,
+        args: &LaunchArgs,
+    ) -> Result<PreparedComponentInputs, LaunchError> {
+        let mut prepared = prepare(definition, args)?;
+        prepared.runner_inputs = configure_presentation(prepared.runner_inputs, 2.0);
+        Ok(prepared)
+    }
+
+    #[test]
+    fn definition_final_audit_and_shot_preparation_resolve_queued_component_wakes() {
+        for mode in ["audit", "shots"] {
+            let temp = tempfile::tempdir().unwrap();
+            let spec = LaunchSpec::from_definition(runner_probe_definition())
+                .component_host(prepare)
+                .allowed_live_options(&["--fixture-root"]);
+            let mut values = vec![
+                "app".into(),
+                "--fixture-root".into(),
+                temp.path().join("state").to_string_lossy().into_owned(),
+            ];
+            if mode == "audit" {
+                values.push("--native-audit".into());
+            } else {
+                values.extend([
+                    "--shots".into(),
+                    temp.path().join("shot.png").to_string_lossy().into_owned(),
+                ]);
+            }
+            let observed = observe_presentation();
+            let args = parsed(&spec, &values);
+            let (DefinitionDispatch::Audit(mut driver) | DefinitionDispatch::Rendered(mut driver)) =
+                dispatch_definition(&spec, &args).unwrap()
+            else {
+                panic!("expected prepared output driver");
+            };
+            let description = |driver: &FrameHarness| {
+                tilo_actions::flatten(&driver.resources())
+                    .into_iter()
+                    .find(|action| action.action.id == "edit")
+                    .unwrap()
+                    .action
+                    .description
+                    .clone()
+                    .unwrap()
+            };
+            assert_eq!(description(&driver), "construction wake");
+            let draws = observed.borrow().local_draws.len();
+            assert!(draws > 0);
+            local_state().writer().set("queued final output".into());
+            let _ = driver.native_app_audit();
+            assert_eq!(
+                description(&driver),
+                "construction wake",
+                "read-only inspection remains a snapshot"
+            );
+            assert_eq!(observed.borrow().local_draws.len(), draws);
+            if mode == "audit" {
+                observed.borrow_mut().local_resource_reads.clear();
+                let error = finish_component_audit(&mut driver, APP).unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    format!("{APP} does not satisfy the Tilo-native application contract")
+                );
+                let observation = observed.borrow();
+                assert!(!observation.local_resource_reads.is_empty());
+                assert!(
+                    observation
+                        .local_resource_reads
+                        .iter()
+                        .all(|value| value == "queued final output"),
+                    "final audit read a stale resource snapshot: {:?}",
+                    observation.local_resource_reads
+                );
+            } else {
+                driver.prepare_component_output();
+                assert_eq!(description(&driver), "queued final output");
+                close_component_capture(&mut driver).unwrap();
+            }
+            let observation = observed.borrow();
+            assert!(
+                observation.local_draws.len() > draws,
+                "final output requires a resolved frame"
+            );
+            assert_eq!(
+                observation.local_draws.last().unwrap(),
+                "queued final output"
+            );
+            assert!(!temp.path().join("shot.png").exists());
+            assert_eq!(driver.component_close_reports().len(), 1);
+        }
+    }
+
+    #[test]
+    fn definition_text_scale_overrides_before_all_runner_layouts() {
+        for mode in ["native", "headless", "shots", "matrix", "audit"] {
+            for cli_scale in [None, Some("0.75")] {
+                let temp = tempfile::tempdir().unwrap();
+                let spec = LaunchSpec::from_definition(runner_probe_definition())
+                    .component_host(prepare_presentation)
+                    .allowed_live_options(&["--fixture-root"]);
+                let mut values = vec![
+                    "app".into(),
+                    "--fixture-root".into(),
+                    temp.path().join("state").to_string_lossy().into_owned(),
+                ];
+                match mode {
+                    "headless" => values.extend(["--headless-drive".into(), "{}".into()]),
+                    "shots" => values.extend([
+                        "--shots".into(),
+                        temp.path().join("shot.png").to_string_lossy().into_owned(),
+                    ]),
+                    "matrix" => values.extend([
+                        "--responsive-matrix".into(),
+                        temp.path().join("matrix").to_string_lossy().into_owned(),
+                    ]),
+                    "audit" => values.push("--native-audit".into()),
+                    _ => {}
+                }
+                if let Some(scale) = cli_scale {
+                    values.extend(["--text-scale".into(), scale.into()]);
+                }
+                let args = parsed(&spec, &values);
+                let observed = observe_presentation();
+                let expected_scale = if cli_scale.is_some() { 0.75 } else { 1.5 };
+                match dispatch_definition(&spec, &args).unwrap() {
+                    DefinitionDispatch::Native(mut app) => {
+                        assert_eq!(app.text_scale(), expected_scale);
+                        crate::app::draw_prepared_component_test_frame(&mut app);
+                        app.close_components();
+                    }
+                    DefinitionDispatch::Headless(status) => assert_eq!(status, 0),
+                    DefinitionDispatch::Rendered(mut driver)
+                    | DefinitionDispatch::Audit(mut driver) => driver.close_components(),
+                }
+                let observation = observed.borrow();
+                assert!(!observation.layouts.is_empty());
+                assert!(!observation.draws.is_empty());
+                for theme in &observation.layouts {
+                    assert_presentation(theme, expected_scale, 1.25);
+                }
+                for (theme, renderer_scale) in &observation.draws {
+                    assert_presentation(theme, expected_scale, 1.25);
+                    assert_eq!(*renderer_scale, expected_scale);
+                }
+                assert!(!observation.motion.is_empty());
+                assert!(observation.motion.iter().all(|value| *value));
+                assert!(!temp.path().join("shot.png").exists());
+                assert!(!temp.path().join("matrix").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn definition_missing_host_fails_before_factory() {
+        let before = calls();
+        let spec = LaunchSpec::from_definition(runner_probe_definition());
+        let args = parsed(&spec, &["app".into()]);
+        assert!(matches!(
+            dispatch_definition(&spec, &args),
+            Err(LaunchError::MissingComponentHost)
+        ));
+        assert_eq!(calls(), before);
+    }
+
+    #[test]
+    fn definition_native_headless_and_render_selection_prepare_once() {
+        for mode in ["native", "headless", "shots", "matrix", "audit"] {
+            let temp = tempfile::tempdir().unwrap();
+            let spec = LaunchSpec::from_definition(runner_probe_definition())
+                .component_host(prepare)
+                .allowed_live_options(&["--fixture-root"]);
+            let mut values = vec![
+                "app".into(),
+                "--fixture-root".into(),
+                temp.path().join("state").to_string_lossy().into_owned(),
+            ];
+            match mode {
+                "headless" => values.extend(["--headless-drive".into(), "{}".into()]),
+                "audit" => values.push("--native-audit".into()),
+                "shots" => values.extend([
+                    "--shots".into(),
+                    temp.path().join("shot.png").to_string_lossy().into_owned(),
+                ]),
+                "matrix" => values.extend([
+                    "--responsive-matrix".into(),
+                    temp.path().join("matrix").to_string_lossy().into_owned(),
+                ]),
+                _ => {}
+            }
+            let before = calls();
+            PREPARES.set(0);
+            let args = parsed(&spec, &values);
+            let prepared = dispatch_definition(&spec, &args).unwrap();
+            assert_eq!(PREPARES.get(), 1);
+            assert_eq!(calls(), before.saturating_add(1));
+            assert!(matches!(
+                (mode, &prepared),
+                ("native", DefinitionDispatch::Native(_))
+                    | ("headless", DefinitionDispatch::Headless(0))
+                    | ("shots" | "matrix", DefinitionDispatch::Rendered(_))
+                    | ("audit", DefinitionDispatch::Audit(_))
+            ));
+            assert!(!temp.path().join("shot.png").exists());
+            assert!(!temp.path().join("matrix").exists());
+        }
+    }
+
+    #[test]
+    fn definition_rejects_legacy_setup_overrides_before_preparation() {
+        for spec in [
+            LaunchSpec::from_definition(runner_probe_definition())
+                .configure_app(|_| panic!("legacy configure")),
+            LaunchSpec::from_definition(runner_probe_definition())
+                .open_state(|_| panic!("legacy state")),
+            LaunchSpec::from_definition(runner_probe_definition())
+                .live_root_with_args(|_| panic!("legacy root")),
+        ] {
+            let before = calls();
+            let args = parse_args(&["app".into()], &[], &[]).unwrap();
+            assert!(matches!(
+                dispatch_definition(&spec, &args),
+                Err(LaunchError::IncompatibleComponentSetup)
+            ));
+            assert_eq!(calls(), before);
+        }
+    }
+    fn invalid_preparer(
+        definition: &crate::application::ApplicationDefinition,
+        args: &LaunchArgs,
+    ) -> Result<PreparedComponentInputs, LaunchError> {
+        let mut prepared = prepare(definition, args)?;
+        prepared.target = existing(&crate::record::RecordCheckout::new(
+            crate::record::RecordId::minted(),
+            definition.record_kind.clone(),
+        ));
+        Ok(prepared)
+    }
+    fn denied_preparer(
+        definition: &crate::application::ApplicationDefinition,
+        args: &LaunchArgs,
+    ) -> Result<PreparedComponentInputs, LaunchError> {
+        prepare_target(definition, args, LaunchTarget::New, permissions())
+    }
+    fn corrupt_checkout() -> crate::record::RecordCheckout {
+        crate::record::RecordCheckout::new(
+            crate::record::RecordId::for_file("/explicit-test-record"),
+            crate::record::RecordKind::new("probe"),
+        )
+    }
+    fn existing_preparer(
+        definition: &crate::application::ApplicationDefinition,
+        args: &LaunchArgs,
+    ) -> Result<PreparedComponentInputs, LaunchError> {
+        prepare_target(
+            definition,
+            args,
+            existing(&corrupt_checkout()),
+            runner_permissions(),
+        )
+    }
+    #[test]
+    fn definition_denied_and_invalid_preparation_preserve_typed_errors() {
+        static DENIED: std::sync::OnceLock<crate::application::ApplicationDefinition> =
+            std::sync::OnceLock::new();
+        let denied = DENIED.get_or_init(|| {
+            let mut value = definition(action_probe_factory);
+            value.required.push(denied_scope());
+            value
+        });
+        for (definition, preparer, expect_denied) in [
+            (denied, denied_preparer as ComponentHostPreparer, true),
+            (
+                runner_probe_definition(),
+                invalid_preparer as ComponentHostPreparer,
+                false,
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let spec = LaunchSpec::from_definition(definition)
+                .component_host(preparer)
+                .allowed_live_options(&["--fixture-root"]);
+            for mode in ["native", "headless"] {
+                let mut values = vec![
+                    "app".into(),
+                    "--fixture-root".into(),
+                    temp.path().join(mode).to_string_lossy().into_owned(),
+                ];
+                if mode == "headless" {
+                    values.extend(["--headless-drive".into(), "{}".into()]);
+                }
+                let args = parsed(&spec, &values);
+                let before = calls();
+                let result = dispatch_definition(&spec, &args);
+                assert_eq!(
+                    matches!(result, Err(LaunchError::CapabilityDenied(_))),
+                    expect_denied
+                );
+                assert!(expect_denied || matches!(result, Err(LaunchError::BindingMismatch)));
+                assert_eq!(calls(), before);
+            }
+        }
+    }
+    #[test]
+    fn definition_headless_state_open_failure_is_durability_exit_with_original_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("state");
+        let path = app_state::DocStore::room_record_dir_at(
+            &root,
+            APP,
+            ROOM,
+            &corrupt_checkout().id.storage_key(),
+        )
+        .unwrap()
+        .join(app_state::DOCUMENT_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = b"corrupt explicit existing record";
+        std::fs::write(&path, original).unwrap();
+        let spec = LaunchSpec::from_definition(runner_probe_definition())
+            .component_host(existing_preparer)
+            .allowed_live_options(&["--fixture-root"]);
+        let args = parsed(
+            &spec,
+            &[
+                "app".into(),
+                "--fixture-root".into(),
+                root.to_string_lossy().into_owned(),
+                "--headless-drive".into(),
+                "{}".into(),
+            ],
+        );
+        let before = calls();
+        assert!(matches!(
+            dispatch_definition(&spec, &args),
+            Ok(DefinitionDispatch::Headless(3))
+        ));
+        assert_eq!(calls(), before);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let native = parsed(
+            &spec,
+            &[
+                "app".into(),
+                "--fixture-root".into(),
+                root.to_string_lossy().into_owned(),
+            ],
+        );
+        assert!(matches!(
+            dispatch_definition(&spec, &native),
+            Err(LaunchError::Record(_))
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn definition_audit_close_failure_is_operational_and_retains_original_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("state");
+        let spec = LaunchSpec::from_definition(runner_probe_definition())
+            .component_host(prepare)
+            .allowed_live_options(&["--fixture-root"]);
+        let args = parsed(
+            &spec,
+            &[
+                "app".into(),
+                "--fixture-root".into(),
+                root.to_string_lossy().into_owned(),
+                "--native-audit".into(),
+            ],
+        );
+        let DefinitionDispatch::Audit(mut driver) = dispatch_definition(&spec, &args).unwrap()
+        else {
+            panic!("expected prepared audit driver");
+        };
+        let path = root.join("instance-views/44/41/11.postcard");
+        std::fs::create_dir_all(&path).unwrap();
+        let writer = local_state().writer();
+        let error = finish_component_audit(&mut driver, APP).unwrap_err();
+        assert_eq!(error.to_string(), "component capture close failed");
+        assert_eq!(error.exit_code(), 1);
+        assert!(!writer.try_set("stale audit result".into()));
+        let mut reports = driver.take_component_close_reports();
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].view_error.is_some());
+        let saved = reports[0].recovery.clone().unwrap();
+        assert_eq!(saved.app_id, APP);
+        assert_eq!(saved.instance_id, 11);
+        assert_eq!(saved.device_id, DEVICE);
+        assert_eq!(saved.workspace_id, ROOM);
+        drop(driver);
+        std::fs::remove_dir(&path).unwrap();
+        reports[0].retry_view().unwrap();
+        assert!(reports[0].view_retry.is_none());
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            postcard::to_allocvec(&saved).unwrap()
+        );
     }
 }

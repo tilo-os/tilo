@@ -1,5 +1,5 @@
 //! Shell-side host for the identity ceremony: persistence
-//! (`~/.config/qos/identity/primary.json`, `0600`), the first-run
+//! (`~/.config/tilo/identity/primary.json`, `0600`), the first-run
 //! trigger, invite-URL parsing, and the session pairing-broker boundary.
 //!
 //! New ceremonies emit schema-1 JSON matching
@@ -74,7 +74,7 @@ impl PairingBrokerServer {
         nonce: [u8; 16],
         bind: std::net::SocketAddr,
     ) -> io::Result<Self> {
-        let certified = rcgen::generate_simple_self_signed(vec!["qos-pairing.invalid".into()])
+        let certified = rcgen::generate_simple_self_signed(vec!["tilo-pairing.invalid".into()])
             .map_err(io::Error::other)?;
         let certificate = certified.cert.der().to_vec();
         let key = certified.signing_key.serialize_der();
@@ -96,7 +96,7 @@ impl PairingBrokerServer {
         authority: SharedPairingChannel,
         invite_authority_root: impl Into<PathBuf>,
     ) -> io::Result<Self> {
-        let certified = rcgen::generate_simple_self_signed(vec!["qos-pairing.invalid".into()])
+        let certified = rcgen::generate_simple_self_signed(vec!["tilo-pairing.invalid".into()])
             .map_err(io::Error::other)?;
         Self::start_with_material(
             authority,
@@ -207,6 +207,12 @@ impl PairingBrokerServer {
                 let active = Arc::clone(&active_connections);
                 std::thread::spawn(move || {
                     let _guard = ActiveConnectionGuard(active);
+                    // Accepted sockets inherit O_NONBLOCK on Darwin. The TLS
+                    // worker is synchronous and retains its existing deadlines.
+                    if let Err(error) = tcp.set_nonblocking(false) {
+                        tracing::warn!(%error, "cannot configure blocking pairing connection");
+                        return;
+                    }
                     let _ = tcp.set_read_timeout(Some(Duration::from_secs(2)));
                     let _ = tcp.set_write_timeout(Some(Duration::from_secs(2)));
                     let Ok(connection) = rustls::ServerConnection::new(tls) else {
@@ -344,7 +350,7 @@ fn create_broker_identity(
     identity_path: &Path,
 ) -> io::Result<StoredBrokerIdentity> {
     use std::os::unix::fs::OpenOptionsExt;
-    let certified = rcgen::generate_simple_self_signed(vec!["qos-pairing.invalid".into()])
+    let certified = rcgen::generate_simple_self_signed(vec!["tilo-pairing.invalid".into()])
         .map_err(io::Error::other)?;
     let identity = StoredBrokerIdentity {
         version: 1,
@@ -447,8 +453,11 @@ fn serve_pairing_request(
             let Some(mac) = mac.into_bytes() else {
                 return PairingBrokerResponse::Denied;
             };
-            authority.publish_host_round2(&n, value, mac);
-            PairingBrokerResponse::Ok
+            if authority.publish_host_round2(&n, value, mac) {
+                PairingBrokerResponse::Ok
+            } else {
+                PairingBrokerResponse::Denied
+            }
         }
         PairingBrokerRequest::TakeHostRound2(n) if matches!(purpose, BrokerPurpose::Pairing(allowed) if n == *allowed) => {
             PairingBrokerResponse::HostRound2(
@@ -478,7 +487,7 @@ fn serve_pairing_request(
     }
 }
 
-/// Resolve the user-owned device-identity root used by a qOS desktop session
+/// Resolve the user-owned device-identity root used by a Tilo Desktop session
 /// installed on another Linux distribution.
 ///
 /// XDG's data directory is the portable contract across Ubuntu, Fedora, Arch
@@ -511,7 +520,7 @@ pub fn host_identity_root(
             "the host session data directory must be absolute",
         ));
     }
-    Ok(base.join("qos"))
+    Ok(base.join("tilo"))
 }
 
 /// Select the per-user identity tree for a host-installed desktop session.
@@ -526,25 +535,25 @@ pub fn host_identity_root(
 /// Returns an error if the configured identity root is relative or its
 /// user-private directory tree cannot be safely prepared.
 pub fn configure_host_identity_root() -> io::Result<PathBuf> {
-    let root = match std::env::var_os("QOS_IDENTITY_ROOT").filter(|value| !value.is_empty()) {
+    let root = match std::env::var_os("TILO_IDENTITY_ROOT").filter(|value| !value.is_empty()) {
         Some(root) => PathBuf::from(root),
         None => host_identity_root(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))?,
     };
     if !root.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "QOS_IDENTITY_ROOT must be absolute",
+            "TILO_IDENTITY_ROOT must be absolute",
         ));
     }
     prepare_private_host_identity_tree(&root)?;
     // SAFETY: `main` calls this before it starts the warm-up thread or any
     // compositor/runtime worker. No other thread can read the environment.
-    unsafe { std::env::set_var("QOS_IDENTITY_ROOT", &root) };
+    unsafe { std::env::set_var("TILO_IDENTITY_ROOT", &root) };
     Ok(root)
 }
 
 /// Create the host-session identity tree as a user-private trust boundary.
-/// The full qOS image intentionally shares its device key with a dedicated
+/// The full Tilo image intentionally shares its device key with a dedicated
 /// system group; a distro session has no such group and must not inherit a
 /// host's broad primary-group membership instead.
 #[cfg(unix)]
@@ -602,7 +611,7 @@ fn prepare_private_host_identity_tree(_root: &std::path::Path) -> io::Result<()>
     ))
 }
 
-/// Writes public metadata to `$XDG_CONFIG_HOME/qos/identity/primary.json`
+/// Writes public metadata to `$XDG_CONFIG_HOME/tilo/identity/primary.json`
 /// (falling back to `$HOME/.config/...`) and imports its private share into
 /// the runtime identity provider before returning.
 pub struct DiskIdentityStore {
@@ -793,13 +802,13 @@ pub fn pairing_channel_at(
 /// Returns an error when the identity root is unavailable or the durable
 /// pairing protocol cannot be initialized.
 pub fn new_pairing_channel() -> Result<SharedPairingChannel, IdentityFlowError> {
-    let root = std::env::var_os("QOS_IDENTITY_ROOT")
+    let root = std::env::var_os("TILO_IDENTITY_ROOT")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .ok_or_else(|| {
             IdentityFlowError::Io(io::Error::new(
                 io::ErrorKind::NotFound,
-                "pairing broker unavailable: QOS_IDENTITY_ROOT is not configured",
+                "pairing broker unavailable: TILO_IDENTITY_ROOT is not configured",
             ))
         })?;
     let mut id = [0u8; 16];
@@ -816,15 +825,15 @@ pub fn new_pairing_channel() -> Result<SharedPairingChannel, IdentityFlowError> 
 /// Returns an error for an incomplete or invalid bind/advertise
 /// configuration, or when the broker cannot start.
 pub fn start_configured_invite_broker() -> io::Result<Option<PairingBrokerServer>> {
-    let bind = std::env::var("QOS_INVITE_BROKER_BIND").ok();
-    let advertise = std::env::var("QOS_INVITE_BROKER_ADVERTISE").ok();
+    let bind = std::env::var("TILO_INVITE_BROKER_BIND").ok();
+    let advertise = std::env::var("TILO_INVITE_BROKER_ADVERTISE").ok();
     let (bind, advertise) = match (bind, advertise) {
         (Some(bind), Some(advertise)) => (bind, advertise),
         (None, None) => return Ok(None),
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "both QOS_INVITE_BROKER_BIND and QOS_INVITE_BROKER_ADVERTISE are required",
+                "both TILO_INVITE_BROKER_BIND and TILO_INVITE_BROKER_ADVERTISE are required",
             ));
         }
     };
@@ -834,7 +843,7 @@ pub fn start_configured_invite_broker() -> io::Result<Option<PairingBrokerServer
     if bind.port() == 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "QOS_INVITE_BROKER_BIND must use a stable non-zero port so signed invites survive restart",
+            "TILO_INVITE_BROKER_BIND must use a stable non-zero port so signed invites survive restart",
         ));
     }
     let mut advertised = advertise
@@ -843,15 +852,15 @@ pub fn start_configured_invite_broker() -> io::Result<Option<PairingBrokerServer
     if advertised.ip().is_unspecified() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "QOS_INVITE_BROKER_ADVERTISE must be a reachable address, not a wildcard",
+            "TILO_INVITE_BROKER_ADVERTISE must be a reachable address, not a wildcard",
         ));
     }
-    let root = std::env::var_os("QOS_IDENTITY_ROOT")
+    let root = std::env::var_os("TILO_IDENTITY_ROOT")
         .map(PathBuf::from)
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                "QOS_IDENTITY_ROOT is not configured",
+                "TILO_IDENTITY_ROOT is not configured",
             )
         })?;
     let authority =
@@ -891,7 +900,7 @@ mod tests {
             let nonce = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos());
-            let path = base.join(format!("qos-identity-prov-{name}-{pid}-{nonce}"));
+            let path = base.join(format!("tilo-identity-prov-{name}-{pid}-{nonce}"));
             fs::create_dir_all(&path).expect("tempdir");
             Self(path)
         }
@@ -988,11 +997,11 @@ mod tests {
     fn host_identity_root_uses_the_xdg_data_contract() {
         assert_eq!(
             host_identity_root(Some("/home/alice/.data".into()), Some("/ignored".into())).unwrap(),
-            PathBuf::from("/home/alice/.data/qos")
+            PathBuf::from("/home/alice/.data/tilo")
         );
         assert_eq!(
             host_identity_root(None, Some("/home/alice".into())).unwrap(),
-            PathBuf::from("/home/alice/.local/share/qos")
+            PathBuf::from("/home/alice/.local/share/tilo")
         );
     }
 
@@ -1009,7 +1018,7 @@ mod tests {
         use std::os::unix::fs::{PermissionsExt, symlink};
 
         let tmp = TmpDir::new("host-private-root");
-        let root = tmp.0.join("data/qos");
+        let root = tmp.0.join("data/tilo");
         prepare_private_host_identity_tree(&root).unwrap();
         for directory in [&root, &root.join("user-identity"), &root.join("device")] {
             assert_eq!(
@@ -1153,7 +1162,7 @@ mod tests {
         assert!(authority.take_pairer_reply(&[7; 16]).is_none());
 
         let unrelated =
-            rcgen::generate_simple_self_signed(vec!["qos-pairing.invalid".into()]).unwrap();
+            rcgen::generate_simple_self_signed(vec!["tilo-pairing.invalid".into()]).unwrap();
         assert!(
             PairingHandshake::remote_call(
                 &server.endpoint().to_string(),

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 /// journal-only would look identical to "your workspaces are gone".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StateNotice {
-    /// The file was written by a newer qOS than this build understands.
+    /// The file was written by a newer Tilo than this build understands.
     NewerSchema {
         path: PathBuf,
         found: u32,
@@ -30,7 +30,7 @@ impl StateNotice {
     pub fn body(&self) -> String {
         match self {
             Self::NewerSchema { .. } => {
-                "Saved by a newer version of qOS. Nothing was changed.".into()
+                "Saved by a newer version of Tilo. Nothing was changed.".into()
             }
             Self::Unreadable { .. } => "The file could not be read. Nothing was changed.".into(),
         }
@@ -43,7 +43,7 @@ impl StateNotice {
                 found,
                 understood,
             } => format!(
-                "{} was written by a newer version of qOS (layout {found}; this \
+                "{} was written by a newer version of Tilo (layout {found}; this \
                  one understands {understood}). It has not been changed, and \
                  nothing has been written over it — this session runs without \
                  saving, so it cannot be. Update again, or roll forward, to get \
@@ -75,7 +75,7 @@ fn notice_path(state: &Path) -> PathBuf {
 fn leave_notice_beside_the_file(state: &Path, notice: &StateNotice) {
     let path = notice_path(state);
     let body = format!(
-        "{}\n\n{}\n\nWritten by qOS when it declined to open the file next to \
+        "{}\n\n{}\n\nWritten by Tilo when it declined to open the file next to \
          this one. Delete this file once the situation is resolved; nothing \
          reads it.\n",
         notice.title(),
@@ -86,34 +86,34 @@ fn leave_notice_beside_the_file(state: &Path, notice: &StateNotice) {
     }
 }
 
-/// `QOS_STATE_PATH` overrides it. Anything driving a compositor that
+/// `TILO_STATE_PATH` overrides it. Anything driving a compositor that
 /// isn't the user's own session must set it — `dirs::config_dir()`
 /// **ignores a relative `XDG_CONFIG_HOME`**, so a harness isolating
 /// itself with a relative path writes into the real
-/// `~/.config/qos/state.json` instead.
+/// `~/.config/tilo/state.json` instead.
 pub fn state_json_path() -> PathBuf {
-    if let Ok(v) = std::env::var("QOS_STATE_PATH")
+    if let Ok(v) = std::env::var("TILO_STATE_PATH")
         && !v.is_empty()
     {
         return PathBuf::from(v);
     }
     dirs::config_dir().map_or_else(
         || PathBuf::from("state.json"),
-        |c| c.join("qos").join("state.json"),
+        |c| c.join("tilo").join("state.json"),
     )
 }
 
-/// One path, named once, so the compositor and `qos-fs --acl` cannot
-/// end up enforcing different lists. `QOS_FS_ACL_PATH` overrides it for tests.
+/// One path, named once, so the compositor and `tilo-fs --acl` cannot
+/// end up enforcing different lists. `TILO_FS_ACL_PATH` overrides it for tests.
 pub fn fs_capability_export_path() -> PathBuf {
-    if let Ok(v) = std::env::var("QOS_FS_ACL_PATH")
+    if let Ok(v) = std::env::var("TILO_FS_ACL_PATH")
         && !v.is_empty()
     {
         return PathBuf::from(v);
     }
     dirs::config_dir().map_or_else(
         || PathBuf::from("fs-capabilities.json"),
-        |c| c.join("qos").join("fs-capabilities.json"),
+        |c| c.join("tilo").join("fs-capabilities.json"),
     )
 }
 
@@ -303,6 +303,7 @@ fn is_legacy_demo_bootstrap(tree: &WorkspaceTree) -> bool {
         || !tree.continuation_owned_tabs.is_empty()
         || !tree.continuation_closed_tabs.is_empty()
         || !tree.continuation_file_references.is_empty()
+        || !tree.native_document_tabs.is_empty()
     {
         return false;
     }
@@ -673,7 +674,7 @@ mod tests {
                     id: survivor,
                     title: "Notes".into(),
                     tile: TileContent::PeerWindow {
-                        app_id: "qos.notes".into(),
+                        app_id: "tilo.notes".into(),
                         label: "Notes".into(),
                         note: String::new(),
                     },
@@ -749,7 +750,9 @@ mod tests {
                 width: WindowWidth::Normal,
                 maximized: false,
             });
-        assert!(crate::compositor::tab_binding::close_tab_for_destroyed_surface(&mut tree, 92_003));
+        assert!(crate::shell::tab_binding::close_tab_for_destroyed_surface(
+            &mut tree, 92_003
+        ));
 
         save_tree_to(&tree, &path).expect("save after close");
         let loaded = load_tree_from(&path).expect("restart");

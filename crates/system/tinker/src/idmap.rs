@@ -17,7 +17,7 @@ use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 /// Set in the environment of the re-executed child so it does not loop.
-const MARKER: &str = "QOS_TINKER_IN_USERNS";
+const MARKER: &str = "TILO_TINKER_IN_USERNS";
 
 /// Whether this process is already running inside the layer id mapping.
 pub fn inside_mapping() -> bool {

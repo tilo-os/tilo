@@ -231,7 +231,7 @@ impl MailState {
             doc,
             MAIL_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Mail", "Mail", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Mail", "Mail", action),
         );
     }
 
@@ -396,7 +396,7 @@ impl MailState {
     }
 
     /// Select a device-local account. Account identity/credentials live in the
-    /// shared qOS account store + secret vault, never in the collaborative mail
+    /// shared Tilo account store + secret vault, never in the collaborative mail
     /// document, so this deliberately has no Automerge write.
     pub fn set_active_account(&mut self, idx: usize) {
         self.accounts.set_active(idx);

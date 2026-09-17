@@ -1,7 +1,7 @@
 //! Stable local operation/resource contract for palette, agents and a11y.
 use automerge::AutoCommit;
-use qos_actions::{ActionSpec, OperationKind, Resource, ResourceProvider, RetryPolicy};
 use serde::{Deserialize, Serialize};
+use tilo_actions::{ActionSpec, OperationKind, Resource, ResourceProvider, RetryPolicy};
 
 pub const OPERATION_TYPE: &str = "clocks.operation";
 
@@ -70,7 +70,7 @@ impl ResourceProvider for ClockResources {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::ResourceProvider;
+    use tilo_actions::ResourceProvider;
     #[test]
     fn contract_is_addressable() {
         assert_eq!(

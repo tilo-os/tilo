@@ -71,7 +71,7 @@ pub struct EngineConfig {
     /// default) keeps the long-standing [`VideoFrame`] behaviour;
     /// [`FrameAcceptance::Native`] lets the pipeline keep pictures on the GPU.
     pub acceptance: FrameAcceptance,
-    /// Hardware-decode policy. Defaults to whatever `QOS_MEDIA_HWDEC` says.
+    /// Hardware-decode policy. Defaults to whatever `TILO_MEDIA_HWDEC` says.
     pub hw_policy: HwPolicy,
     /// Starting output volume, `0.0..=1.0`.
     pub volume: f32,
@@ -221,7 +221,7 @@ impl MediaEngine {
     }
 
     /// Build an engine with the default configuration: system-memory RGBA
-    /// frames, hardware decode per `QOS_MEDIA_HWDEC`. With `--features decode`
+    /// frames, hardware decode per `TILO_MEDIA_HWDEC`. With `--features decode`
     /// this stands up a real `GStreamer` pipeline; if `GStreamer` can't initialise
     /// (or the feature is off) it transparently falls back to the synthesized
     /// backend. Never fails.

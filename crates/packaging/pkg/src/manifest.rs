@@ -1,4 +1,4 @@
-//! The qOS package manifest — schema, TOML parsing, and its sub-types.
+//! The Tilo package manifest — schema, TOML parsing, and its sub-types.
 //!
 //! Human-authored side of a `.qpkg`; deserialised from TOML, validated
 //! (see [`crate::validate`]), then bound into the signed root via
@@ -18,7 +18,7 @@ use crate::id::Kind;
 pub struct Manifest {
     /// `[package]` block — id, version, kind, optional runtime.
     pub package: Package,
-    /// `[publisher]` block — identity + signature (filled by `qos-pkg sign`, empty at author time).
+    /// `[publisher]` block — identity + signature (filled by `tilo-pkg sign`, empty at author time).
     pub publisher: Publisher,
     /// `[trust]` block — third-party attestations.
     #[serde(default)]
@@ -46,7 +46,7 @@ pub struct Manifest {
 /// `[package]` — the identifying metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Package {
-    /// Reverse-DNS identifier — `dev.qos.editor`. Stable across versions;
+    /// Reverse-DNS identifier — `dev.tilo.editor`. Stable across versions;
     /// pinned in CLI/loader/sandbox profile names.
     pub id: String,
     /// Human-facing name — `"API Tester"`, `"On-Screen Keyboard"`. Absent
@@ -62,7 +62,7 @@ pub struct Package {
     pub version: String,
     /// One of the [`Kind`] variants.
     pub kind: Kind,
-    /// `<runtime-name>/<version>` of the qOS runtime this binds to;
+    /// `<runtime-name>/<version>` of the Tilo runtime this binds to;
     /// `None` for `kind = "runtime"`. Version must parse as semver.
     #[serde(default)]
     pub runtime: Option<String>,
@@ -76,7 +76,7 @@ pub struct Package {
     /// ```
     ///
     /// A missing entry for the host's arch means "no build available";
-    /// `qos-install` refuses the install with a clear error.
+    /// `tilo-install` refuses the install with a clear error.
     #[serde(default)]
     pub isa: IsaRequirements,
 }
@@ -102,7 +102,7 @@ impl IsaRequirements {
     }
 }
 
-/// Architectures qOS distributes packages for. Deliberately narrow —
+/// Architectures Tilo distributes packages for. Deliberately narrow —
 /// broader targets join once the publisher pipeline, bootc image,
 /// and test coverage support them.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,7 +128,7 @@ impl IsaLevel {
         }
     }
 
-    /// Machine-readable label used in .qpkg filenames — e.g. `dev.qos.editor-0.1.0-x86_64-v3.qpkg`.
+    /// Machine-readable label used in .qpkg filenames — e.g. `dev.tilo.editor-0.1.0-x86_64-v3.qpkg`.
     pub fn wire_label(self) -> &'static str {
         match self {
             IsaLevel::X86_64(l) => l.wire_label(),
@@ -161,7 +161,7 @@ pub enum X86_64Level {
     #[serde(alias = "x86-64-v2")]
     V2,
     /// v3 — Haswell (Intel 2013) + Excavator (AMD 2015). Adds AVX/AVX2
-    /// + BMI1/BMI2/FMA/F16C/LZCNT/MOVBE/OSXSAVE. **qOS default floor.**
+    /// + BMI1/BMI2/FMA/F16C/LZCNT/MOVBE/OSXSAVE. **Tilo default floor.**
     #[serde(rename = "v3")]
     #[serde(alias = "x86-64-v3")]
     V3,
@@ -247,7 +247,7 @@ impl AArch64Level {
 pub struct Publisher {
     /// The publisher's Ed25519 public key as `ed25519:<hex>` (canonical lower-case hex).
     pub identity: String,
-    /// Detached signature over `signing_bytes(manifest, payload)`; empty until `qos-pkg sign` fills it.
+    /// Detached signature over `signing_bytes(manifest, payload)`; empty until `tilo-pkg sign` fills it.
     #[serde(default)]
     pub signature: String,
 }
@@ -327,7 +327,7 @@ pub struct Trust {
 /// One row from `[[trust.attested_by]]`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustAttestation {
-    /// Attestor's identity, e.g. `qos-curated/2025.06`.
+    /// Attestor's identity, e.g. `tilo-curated/2025.06`.
     pub attestor: String,
     /// Opaque, hex-encoded claim bytes; format is attestor-specific.
     #[serde(rename = "claim")]
@@ -402,7 +402,7 @@ impl TrustAttestation {
 pub struct Sandbox {
     /// Linux namespaces to unshare, matching `unshare(2)`'s flag names (user, pid, uts, ipc, mount, net).
     pub namespaces: Vec<String>,
-    /// Named seccomp profile — `qos-default` is the baseline.
+    /// Named seccomp profile — `tilo-default` is the baseline.
     pub seccomp: String,
     /// Landlock strictness — `strict` | `lax` | `off`.
     pub landlock: String,
@@ -509,7 +509,7 @@ pub enum NetMode {
 /// `required@N`/`optional@N` — a declared dependency on a service protocol with a version pin.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceReq {
-    /// Protocol name as declared by the providing service (e.g. `collab`, `qos-fs`, `spellcheck`).
+    /// Protocol name as declared by the providing service (e.g. `collab`, `tilo-fs`, `spellcheck`).
     pub protocol: String,
     /// Whether absence is a hard failure.
     pub requirement: Requirement,
@@ -655,7 +655,7 @@ pub enum EntrypointType {
 
 /// `[cli]` — commands the package publishes on the user's PATH. Each
 /// name in `commands` becomes a shim at
-/// `~/.local/share/qos-apps/bin/<cmd>` that re-execs through
+/// `~/.local/share/tilo-apps/bin/<cmd>` that re-execs through
 /// `run-installed`; the shim layer treats names as raw filesystem
 /// paths, so keep them short and namespace-clean.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -829,7 +829,7 @@ impl Manifest {
         Ok(m)
     }
 
-    /// Re-encode to TOML; used for round-trip tests and `qos-pkg inspect`.
+    /// Re-encode to TOML; used for round-trip tests and `tilo-pkg inspect`.
     ///
     /// # Errors
     ///

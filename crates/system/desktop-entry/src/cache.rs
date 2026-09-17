@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn a_missing_directory_fingerprints_as_absent_rather_than_failing() {
-        let fp = fingerprint(&[PathBuf::from("/nonexistent/qos/applications")]);
+        let fp = fingerprint(&[PathBuf::from("/nonexistent/tilo/applications")]);
         assert_eq!(fp.len(), 1);
         assert!(fp[0].1.is_none());
     }

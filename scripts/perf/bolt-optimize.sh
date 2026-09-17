@@ -4,14 +4,14 @@
 # the PGO'd binaries so BOLT and PGO share the same profile signal.
 #
 # Usage:   scripts/perf/bolt-optimize.sh
-# Emits:   target/bolted/{shell,terminal,file-explorer,qos-install}
+# Emits:   target/bolted/{shell,terminal,file-explorer,tilo-install}
 #
 # Requires: llvm-bolt (Fedora: llvm-bolt package, RPMFusion or ships
 # with the current llvm meta package on Fedora 44+).
 
 set -euo pipefail
 
-DISTROBOX="${QOS_DISTROBOX:-}"
+DISTROBOX="${TILO_DISTROBOX:-}"
 run_in_env() {
     if [ -n "$DISTROBOX" ]; then
         distrobox enter "$DISTROBOX" -- "$@"
@@ -23,7 +23,7 @@ run_in_env() {
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
-PROFDATA="$ROOT/os/pgo/qos.profdata"
+PROFDATA="$ROOT/os/pgo/tilo.profdata"
 PGO_BUILD="$ROOT/target/pgo-release/release"
 OUT="$ROOT/target/bolted"
 
@@ -48,7 +48,7 @@ mkdir -p "$OUT"
 # `perf record` has landed a session.fdata for each binary at
 # $ROOT/target/pgo-profraw/<binary>.fdata. The pgo-instrument
 # helper is set up to capture those alongside the .profraw files.
-for bin in shell terminal file-explorer qos-install; do
+for bin in shell terminal file-explorer tilo-install; do
     FDATA="$ROOT/target/pgo-profraw/${bin}.fdata"
     IN="$PGO_BUILD/$bin"
     OUT_BIN="$OUT/$bin"

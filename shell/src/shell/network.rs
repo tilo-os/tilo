@@ -98,7 +98,7 @@ fn portable_media_file_name(name: &str) -> Option<String> {
 }
 
 fn personal_media_cache_root() -> Option<PathBuf> {
-    let root = dirs::cache_dir()?.join("qos/personal-media");
+    let root = dirs::cache_dir()?.join("tilo/personal-media");
     // A partial stream is never useful after restart and can never become
     // authorized again because transfer ids/actions are session-local.
     let incoming = root.join("incoming");
@@ -414,14 +414,14 @@ pub fn room_topic_id(room: RoomId) -> u64 {
     // Fall back to the "no room identity" topic rather than panic on this
     // hot path — `room_workspace_id` never returns 0 on success, so a real
     // topic id can't collide with the fallback.
-    qos_relay::room_workspace_id(&room.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
+    tilo_relay::room_workspace_id(&room.to_string()).unwrap_or(DEFAULT_WS_TOPIC)
 }
 
 /// Stable private shard shared only by certified devices rooted in the same
 /// person identity. The full root key is also carried in and authenticated on
 /// every message; this 64-bit value is routing, never authority.
 pub fn personal_continuity_topic_id(user_public_key: &[u8; 32]) -> u64 {
-    qos_relay::personal_continuity_workspace_id(user_public_key)
+    tilo_relay::personal_continuity_workspace_id(user_public_key)
 }
 
 /// Default on-disk path of the machine's device key, from which the
@@ -429,14 +429,14 @@ pub fn personal_continuity_topic_id(user_public_key: &[u8; 32]) -> u64 {
 /// file, so one device has one identity rather than one per subsystem.
 pub const DEFAULT_KEYPAIR_PATH: &str = crate::network::behaviour::DEVICE_KEY_PATH;
 
-/// The active collaboration identity tree unless `QOS_PEER_KEY_PATH` names
+/// The active collaboration identity tree unless `TILO_PEER_KEY_PATH` names
 /// somewhere else. Full-system sessions resolve to [`DEFAULT_KEYPAIR_PATH`];
 /// host-installed sessions select an XDG-owned tree at process startup. The
 /// override is what makes two sessions on one machine two
 /// *peers*: the key is the shell's network identity, so two processes
 /// reading one key file are one peer talking to itself.
 pub fn peer_key_path() -> std::path::PathBuf {
-    match std::env::var("QOS_PEER_KEY_PATH") {
+    match std::env::var("TILO_PEER_KEY_PATH") {
         Ok(v) if !v.is_empty() => std::path::PathBuf::from(v),
         _ => crate::firstboot::collaboration_identity_paths().device_privkey,
     }
@@ -453,19 +453,19 @@ fn parse_host_addr(value: &str) -> Option<iroh::EndpointAddr> {
 
 fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
     let mut hosts = Vec::new();
-    if let Ok(value) = std::env::var("QOS_COLLAB_HOSTS") {
+    if let Ok(value) = std::env::var("TILO_COLLAB_HOSTS") {
         match serde_json::from_str::<Vec<iroh::EndpointAddr>>(&value) {
             Ok(parsed) => hosts.extend(parsed),
             Err(error) => {
-                tracing::warn!(%error, "QOS_COLLAB_HOSTS must be a JSON array of Iroh endpoint addresses");
+                tracing::warn!(%error, "TILO_COLLAB_HOSTS must be a JSON array of Iroh endpoint addresses");
             }
         }
     }
-    if let Ok(value) = std::env::var("QOS_COLLAB_HOST") {
+    if let Ok(value) = std::env::var("TILO_COLLAB_HOST") {
         if let Some(addr) = parse_host_addr(&value) {
             hosts.push(addr);
         } else {
-            tracing::warn!("QOS_COLLAB_HOST is not a valid Iroh endpoint address or id");
+            tracing::warn!("TILO_COLLAB_HOST is not a valid Iroh endpoint address or id");
         }
     }
     hosts.sort_by_key(|addr| addr.id.to_string());
@@ -479,7 +479,7 @@ const MAX_HOME_PEER_LABEL_BYTES: usize = 80;
 const MAX_HOME_PEER_WORKSPACES: usize = 4096;
 
 fn home_peer_registry_path() -> PathBuf {
-    std::env::var_os("QOS_HOME_PEERS_PATH")
+    std::env::var_os("TILO_HOME_PEERS_PATH")
         .filter(|path| !path.is_empty())
         .map_or_else(
             || {
@@ -488,7 +488,7 @@ fn home_peer_registry_path() -> PathBuf {
                     .user_pubkey
                     .parent()
                     .and_then(std::path::Path::parent)
-                    .map_or_else(|| PathBuf::from("/var/lib/qos"), PathBuf::from)
+                    .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from)
                     .join("home-peers.json")
             },
             PathBuf::from,
@@ -535,9 +535,9 @@ fn registered_home_peer_addrs(
         tracing::warn!(path = %path.display(), "home-peer registry exceeds its bounded schema");
         return Err("home-peer registry exceeds its bounded schema".into());
     }
-    let registrations: Vec<qos_relay::HomePeerRegistration> =
+    let registrations: Vec<tilo_relay::HomePeerRegistration> =
         match std::fs::read(&path).ok().and_then(|bytes| {
-            serde_json::from_slice::<Vec<qos_relay::HomePeerRegistration>>(&bytes).ok()
+            serde_json::from_slice::<Vec<tilo_relay::HomePeerRegistration>>(&bytes).ok()
         }) {
             Some(registrations) if registrations.len() <= MAX_HOME_PEERS => registrations,
             _ => {
@@ -1042,7 +1042,7 @@ pub struct InboundPresence {
     pub ts: u64,
 }
 
-/// Start mDNS LAN peer discovery when `QOS_COLLAB_LAN_DISCOVERY` requests
+/// Start mDNS LAN peer discovery when `TILO_COLLAB_LAN_DISCOVERY` requests
 /// it, registering it with `endpoint`'s address lookup. Returns `None`
 /// when discovery is disabled, disallowed by the env var, or the mDNS
 /// service or address-lookup registry is unavailable — the caller then
@@ -1050,13 +1050,13 @@ pub struct InboundPresence {
 fn init_lan_discovery(
     endpoint: &iroh::Endpoint,
 ) -> Option<iroh_mdns_address_lookup::MdnsAddressLookup> {
-    let lan_discovery = std::env::var_os("QOS_COLLAB_LAN_DISCOVERY")
+    let lan_discovery = std::env::var_os("TILO_COLLAB_LAN_DISCOVERY")
         .is_some_and(|value| value != "0" && !value.is_empty());
     if !lan_discovery {
         return None;
     }
     let mdns = match iroh_mdns_address_lookup::MdnsAddressLookup::builder()
-        .service_name("qos-collab-v1")
+        .service_name("tilo-collab-v1")
         .build(endpoint.id())
     {
         Ok(mdns) => mdns,
@@ -1097,7 +1097,7 @@ fn spawn_lan_discovery_forwarding(
         }
     });
     tracing::info!(
-        "peer-sync: privacy-sensitive LAN discovery enabled; advertising on _qos-collab-v1._udp.local"
+        "peer-sync: privacy-sensitive LAN discovery enabled; advertising on _tilo-collab-v1._udp.local"
     );
 }
 
@@ -1312,7 +1312,7 @@ impl ShellNetwork {
         ))
     }
 
-    /// Resolve and open a qOS workspace-control session over an authenticated
+    /// Resolve and open a Tilo workspace-control session over an authenticated
     /// exact-target device route. A successful route is transport reachability
     /// only: the returned session still waits for the target's authenticated
     /// `SurfaceStreamStart` before allowing input.
@@ -1348,10 +1348,10 @@ impl ShellNetwork {
             .unwrap_or_default();
         let candidates = relay_ids
             .iter()
-            .map(|relay| qos_relay::ServerAdvertisement {
+            .map(|relay| tilo_relay::ServerAdvertisement {
                 device: *relay.as_bytes(),
-                role: qos_relay::DeviceRole::AlwaysOnServer,
-                services: qos_relay::ServiceCapabilities::relay_only(),
+                role: tilo_relay::DeviceRole::AlwaysOnServer,
+                services: tilo_relay::ServiceCapabilities::relay_only(),
                 workspaces: std::collections::BTreeSet::from([workspace]),
                 apps: std::collections::BTreeSet::new(),
                 priority: 0,
@@ -1361,17 +1361,17 @@ impl ShellNetwork {
                 online: true,
             })
             .collect::<Vec<_>>();
-        let route = match qos_relay::route_remote_control(
+        let route = match tilo_relay::route_remote_control(
             *self.local_peer_id.as_bytes(),
             *target.as_bytes(),
             workspace,
             direct_reachable,
             &candidates,
         ) {
-            qos_relay::RemoteControlRoute::Direct { .. } => {
+            tilo_relay::RemoteControlRoute::Direct { .. } => {
                 WorkspaceControlRoute::Direct { target }
             }
-            qos_relay::RemoteControlRoute::Relayed { via, .. } => {
+            tilo_relay::RemoteControlRoute::Relayed { via, .. } => {
                 let _via = iroh::EndpointId::from_bytes(&via)
                     .map_err(|_| "mesh selected an invalid relay identity")?;
                 return Err(
@@ -1379,7 +1379,7 @@ impl ShellNetwork {
                         .into(),
                 );
             }
-            qos_relay::RemoteControlRoute::Unavailable => {
+            tilo_relay::RemoteControlRoute::Unavailable => {
                 return Err("no authenticated direct workspace-control path is online".into());
             }
         };
@@ -1453,6 +1453,36 @@ impl ShellNetwork {
         };
 
         replica.tree.read().room_peer_labels(room)
+    }
+
+    /// Live session handles and their admitted display names for one room.
+    /// Unlike [`Self::peer_labels`], this projection is deliberately
+    /// ephemeral: [`WorkspaceTree::retire_session`] removes a device as soon
+    /// as the transport reports departure. Presence cleanup uses it to avoid
+    /// erasing a person's status when another device of theirs is still here.
+    pub fn active_session_labels(
+        &self,
+        cluster_id: &str,
+    ) -> std::collections::BTreeMap<u64, String> {
+        let Some(room) = crate::shell::state::RoomId::parse(cluster_id) else {
+            return std::collections::BTreeMap::new();
+        };
+        let Ok(replica) = self.replica.lock() else {
+            return std::collections::BTreeMap::new();
+        };
+        replica
+            .tree
+            .read()
+            .workspaces
+            .iter()
+            .filter(|workspace| workspace.room == room)
+            .flat_map(|workspace| &workspace.collaborators)
+            .filter_map(|participant| {
+                participant
+                    .session
+                    .map(|session| (session, participant.name.clone()))
+            })
+            .collect()
     }
 
     /// Snapshot recent transport departures, oldest first. This is bounded
@@ -1739,7 +1769,7 @@ impl ShellNetwork {
     fn is_in_room(&self, cluster_id: &str) -> bool {
         let Some(room) = crate::shell::state::RoomId::parse(cluster_id) else {
             tracing::info!(
-                target: "qos_collab_probe",
+                target: "tilo_collab_probe",
                 cluster = %cluster_id,
                 "PROBE is_in_room=false (not a uuid)",
             );
@@ -1747,7 +1777,7 @@ impl ShellNetwork {
         };
         if room.is_nil() {
             tracing::info!(
-                target: "qos_collab_probe",
+                target: "tilo_collab_probe",
                 cluster = %cluster_id,
                 "PROBE is_in_room=false (nil)",
             );
@@ -1760,7 +1790,7 @@ impl ShellNetwork {
         let in_room = known.contains(&room);
         drop(replica);
         tracing::info!(
-            target: "qos_collab_probe",
+            target: "tilo_collab_probe",
             cluster = %cluster_id,
             in_room,
             known = ?known.iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
@@ -2125,7 +2155,7 @@ impl ShellNetwork {
         true
     }
 
-    /// Export the selected person identity as a non-secret card another qOS
+    /// Export the selected person identity as a non-secret card another Tilo
     /// user can paste into the recipient-bound invite composer.
     ///
     /// # Errors
@@ -2149,7 +2179,7 @@ impl ShellNetwork {
         };
         let cert = selected_device_cert(room, &self.keypair)?;
         Ok(format!(
-            "qos-identity:{}",
+            "tilo-identity:{}",
             hex::encode(cert.user_public_key)
         ))
     }
@@ -2476,14 +2506,14 @@ impl ShellNetwork {
         &self,
         peer: &iroh::EndpointId,
         room: &str,
-        device_cert: &qos_user_identity::DeviceCert,
-        revocations: &[qos_user_identity::RevocationEntry],
+        device_cert: &tilo_user_identity::DeviceCert,
+        revocations: &[tilo_user_identity::RevocationEntry],
     ) -> bool {
         let Some(room) = RoomId::parse(room) else {
             return false;
         };
         if device_cert.device_public_key != *peer.as_bytes()
-            || qos_user_identity::verify_device_cert(device_cert).is_err()
+            || tilo_user_identity::verify_device_cert(device_cert).is_err()
         {
             tracing::warn!(%peer, %room, "dropping mismatched device identity announcement");
             return false;
@@ -4468,7 +4498,7 @@ impl ShellNetwork {
 
     /// Authenticate the transport device as a person and then authorize that
     /// person against the room capability model. Device authentication alone
-    /// is deliberately insufficient: any valid qOS identity can possess a
+    /// is deliberately insufficient: any valid Tilo identity can possess a
     /// certificate without being a member of this workspace.
     fn peer_room_allows(
         &self,
@@ -4602,15 +4632,15 @@ impl ShellNetwork {
         workspace_topic: u64,
         origin: &crate::shell::state::PeerOrigin,
         peer: &iroh::EndpointId,
-        cert: &qos_user_identity::DeviceCert,
-        revocations: &[qos_user_identity::RevocationEntry],
+        cert: &tilo_user_identity::DeviceCert,
+        revocations: &[tilo_user_identity::RevocationEntry],
     ) {
         if cert.device_public_key != *peer.as_bytes() || revocations.len() > 4096 {
             tracing::warn!(peer = %peer, "rejecting invalid peer identity handshake");
             self.peer_identities.remove(origin);
             return;
         }
-        let mut list = qos_user_identity::RevocationList::new();
+        let mut list = tilo_user_identity::RevocationList::new();
         for entry in revocations {
             if entry.user_public_key != cert.user_public_key || list.insert(entry.clone()).is_err()
             {
@@ -4671,7 +4701,7 @@ impl ShellNetwork {
         workspace_topic: u64,
         invite_id: [u8; 32],
         peer: &iroh::EndpointId,
-        cert: &qos_user_identity::DeviceCert,
+        cert: &tilo_user_identity::DeviceCert,
     ) {
         let room = self.replica.lock().ok().and_then(|replica| {
             replica
@@ -4848,16 +4878,16 @@ impl ShellNetwork {
 fn selected_device_cert(
     room: RoomId,
     keypair: &iroh::SecretKey,
-) -> Result<qos_user_identity::DeviceCert, String> {
+) -> Result<tilo_user_identity::DeviceCert, String> {
     let profile = crate::identity_registry::selected_identity_profile(&room.to_string())
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "no identity is selected for this workspace".to_string())?;
     let paths = crate::firstboot::collaboration_identity_paths();
-    let cert = qos_user_identity::persist::read_device_cert(
+    let cert = tilo_user_identity::persist::read_device_cert(
         &paths.device_cert_for_user(&profile.user_public_key),
     )
     .map_err(|error| error.to_string())?;
-    qos_user_identity::verify_device_cert(&cert).map_err(|error| error.to_string())?;
+    tilo_user_identity::verify_device_cert(&cert).map_err(|error| error.to_string())?;
     if cert.user_public_key != profile.user_public_key
         || cert.device_public_key != *keypair.public().as_bytes()
     {
@@ -4877,10 +4907,10 @@ fn host_identity_for_key(
     keypair_path: &std::path::Path,
 ) -> Option<HostIdentity> {
     let identity_root = keypair_path.parent()?.parent()?;
-    let paths = qos_user_identity::IdentityPaths::under(identity_root);
-    let user_public_key = qos_user_identity::persist::read_public_key(&paths.user_pubkey).ok()?;
-    let device_cert = qos_user_identity::persist::read_device_cert(&paths.device_cert).ok()?;
-    if qos_user_identity::verify_device_cert(&device_cert).is_err()
+    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
+    let user_public_key = tilo_user_identity::persist::read_public_key(&paths.user_pubkey).ok()?;
+    let device_cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert).ok()?;
+    if tilo_user_identity::verify_device_cert(&device_cert).is_err()
         || device_cert.user_public_key != user_public_key
         || device_cert.device_public_key != *keypair.public().as_bytes()
     {
@@ -4900,7 +4930,7 @@ fn host_identity_for_key(
                 continue;
             };
             let cert_path = paths.device_cert_for_user(&profile.user_public_key);
-            let Ok(cert) = qos_user_identity::persist::read_device_cert(&cert_path) else {
+            let Ok(cert) = tilo_user_identity::persist::read_device_cert(&cert_path) else {
                 tracing::warn!(
                     room = %room_id,
                     identity = %identity_id,
@@ -4908,7 +4938,7 @@ fn host_identity_for_key(
                 );
                 continue;
             };
-            if qos_user_identity::verify_device_cert(&cert).is_ok()
+            if tilo_user_identity::verify_device_cert(&cert).is_ok()
                 && cert.user_public_key == profile.user_public_key
                 && cert.device_public_key == *keypair.public().as_bytes()
                 && !crate::device_fleet::DeviceFleetStore::from_env()
@@ -4937,18 +4967,18 @@ fn host_identity_for_key(
 fn load_identity_revocations(
     path: &std::path::Path,
     user_public_key: [u8; 32],
-) -> Result<Vec<qos_user_identity::RevocationEntry>, String> {
+) -> Result<Vec<tilo_user_identity::RevocationEntry>, String> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error.to_string()),
     };
-    let entries: Vec<qos_user_identity::RevocationEntry> =
+    let entries: Vec<tilo_user_identity::RevocationEntry> =
         postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
-    if entries.len() > qos_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
+    if entries.len() > tilo_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
         || entries.iter().any(|entry| {
             entry.user_public_key != user_public_key
-                || qos_user_identity::verify_revocation_entry(entry).is_err()
+                || tilo_user_identity::verify_revocation_entry(entry).is_err()
         })
     {
         return Err("revocation entries are invalid, cross-root, or over capacity".into());
@@ -5328,8 +5358,8 @@ mod tests {
         net.send_personal_fabric_action(
             &target,
             crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
-                session_id: "dev.qos.music:1".into(),
-                app_id: "dev.qos.music".into(),
+                session_id: "dev.tilo.music:1".into(),
+                app_id: "dev.tilo.music".into(),
                 workspace_id: "11111111-1111-1111-1111-111111111111".into(),
                 title: "Song".into(),
                 locator: crate::shell::device_fabric::MediaSourceLocator::PersonalTransfer {
@@ -5466,7 +5496,7 @@ mod tests {
         root: &ed25519_dalek::SigningKey,
         device: &iroh::SecretKey,
     ) {
-        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
@@ -5747,7 +5777,7 @@ mod tests {
                 &target,
                 crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
                     session_id: "player:one".into(),
-                    app_id: "dev.qos.music".into(),
+                    app_id: "dev.tilo.music".into(),
                     workspace_id: "11111111-1111-1111-1111-111111111111".into(),
                     title: "Track".into(),
                     locator: crate::shell::device_fabric::MediaSourceLocator::Workspace {
@@ -5908,7 +5938,7 @@ mod tests {
                     id: browser_tab,
                     title: "Browser".into(),
                     tile: TileContent::Foreign {
-                        app_id: "dev.qos.browser".into(),
+                        app_id: "dev.tilo.browser".into(),
                         surface_id: 101,
                     },
                 },
@@ -5916,7 +5946,7 @@ mod tests {
                     id: ebook_tab,
                     title: "Ebook".into(),
                     tile: TileContent::Foreign {
-                        app_id: "dev.qos.ebook".into(),
+                        app_id: "dev.tilo.ebook".into(),
                         surface_id: 102,
                     },
                 },
@@ -5924,7 +5954,7 @@ mod tests {
                     id: music_tab,
                     title: "Music".into(),
                     tile: TileContent::Foreign {
-                        app_id: "dev.qos.music".into(),
+                        app_id: "dev.tilo.music".into(),
                         surface_id: 103,
                     },
                 },
@@ -5953,24 +5983,38 @@ mod tests {
             for (tab, app_id, metadata) in [
                 (
                     browser_tab,
-                    "dev.qos.browser",
+                    "dev.tilo.browser",
                     br#"{"url":"https://example.test/reading"}"#.to_vec(),
                 ),
                 (
                     ebook_tab,
-                    "dev.qos.ebook",
+                    "dev.tilo.ebook",
                     br#"{"book_id":"book-42","chapter":4,"page":9}"#.to_vec(),
                 ),
                 (
                     music_tab,
-                    "dev.qos.music",
+                    "dev.tilo.music",
                     br#"{"track_id":"track-42","position_ms":12345,"paused":true}"#.to_vec(),
                 ),
             ] {
+                let metadata = ui::app::compose_structural_continuation_metadata(
+                    ui::view::View::default(),
+                    Some(ui::collaboration::ContinuationMetadata {
+                        schema_version: 1,
+                        bytes: metadata,
+                    }),
+                )
+                .expect("framework presentation and app semantic checkpoint");
                 reports.bind_tab(AppInstanceId(tab), AppInstanceId(tab));
                 assert!(
                     reports
-                        .report(room, app_id, AppInstanceId(tab), 1, metadata)
+                        .report(
+                            room,
+                            app_id,
+                            AppInstanceId(tab),
+                            metadata.schema_version,
+                            metadata.bytes
+                        )
                         .expect("shipped app metadata contract accepts the report")
                 );
             }
@@ -6049,7 +6093,7 @@ mod tests {
         // Model the exact peer-window -> launcher staging used before the
         // restored toplevel adopts its remote tab. This verifies metadata and
         // source CRDT record identity travel together without starting a GUI.
-        let browser_launch = LaunchIntent::app("dev.qos.browser").expect("known app id");
+        let browser_launch = LaunchIntent::app("dev.tilo.browser").expect("known app id");
         let browser_resume = registry
             .lock()
             .expect("continuation registry")
@@ -6057,8 +6101,8 @@ mod tests {
             .expect("remote placeholder retains the app report");
         crate::shell::launcher::clear_pending_placements();
         crate::shell::launcher::set_pending_placement(
-            "dev.qos.browser",
-            crate::compositor::tab_binding::Placement::IntoTab(browser_tab),
+            "dev.tilo.browser",
+            crate::shell::tab_binding::Placement::IntoTab(browser_tab),
         );
         crate::shell::launcher::stage_continuation_resume(
             room,
@@ -6068,9 +6112,12 @@ mod tests {
             browser_resume.record_instance.0,
         );
         assert_eq!(
-            crate::shell::launcher::take_staged_resume_for_package("dev.qos.browser", room),
+            crate::shell::launcher::take_staged_resume_for_package("dev.tilo.browser", room),
             Some((
-                Some((1, br#"{"url":"https://example.test/reading"}"#.to_vec())),
+                Some((
+                    browser_resume.resume.schema_version(),
+                    browser_resume.resume.bytes().to_vec()
+                )),
                 browser_tab,
             )),
             "the real launcher consumption path receives exact resume metadata and record",
@@ -6082,7 +6129,7 @@ mod tests {
         // it while retaining the other independent offers.
         {
             let replica = source.replica.lock().expect("source replica");
-            assert!(crate::compositor::tab_binding::remove_tab(
+            assert!(crate::shell::tab_binding::remove_tab(
                 &mut replica.tree.write(),
                 browser_tab,
             ));
@@ -6583,7 +6630,7 @@ mod tests {
     #[test]
     #[serial_test::serial(identity_env)]
     fn exact_invite_redeems_as_editor_and_revocation_removes_trust() {
-        use qos_user_identity::{
+        use tilo_user_identity::{
             DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
             sign_revocation_entry,
         };
@@ -6770,7 +6817,7 @@ mod tests {
         );
 
         let route = crate::shell::collab_broker::CrdtRoute::record(
-            "dev.qos.notes",
+            "dev.tilo.notes",
             room.to_string(),
             "meeting-notes",
         );
@@ -6958,7 +7005,7 @@ mod tests {
     #[test]
     #[serial_test::serial(identity_env)]
     fn signed_viewer_invite_admits_a_viewer_not_an_editor() {
-        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
         let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
         let device = iroh::SecretKey::from_bytes(&[82; 32]);
@@ -7045,7 +7092,7 @@ mod tests {
     #[test]
     #[serial_test::serial(identity_env)]
     fn only_the_invite_pinned_authority_can_bootstrap_room_governance() {
-        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
         let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
         let device = iroh::SecretKey::from_bytes(&[92; 32]);
@@ -7147,9 +7194,9 @@ mod tests {
             .expect("registry"),
         )
         .expect("write registry");
-        let previous = std::env::var_os("QOS_HOME_PEERS_PATH");
+        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
         // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("QOS_HOME_PEERS_PATH", &registry) };
+        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
         let rooms = std::collections::BTreeSet::from([42]);
         let first_boot = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
         let restarted = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
@@ -7160,8 +7207,8 @@ mod tests {
         // SAFETY: guarded by the process_env serial group.
         unsafe {
             match previous {
-                Some(value) => std::env::set_var("QOS_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("QOS_HOME_PEERS_PATH"),
+                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
+                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
             }
         }
     }
@@ -7178,8 +7225,8 @@ mod tests {
         let hint = iroh::EndpointAddr::new(hinted_service)
             .with_ip_addr("127.0.0.1:47891".parse().expect("loopback address"));
         let registrations = vec![
-            qos_relay::HomePeerRegistration {
-                schema_version: qos_relay::HomePeerRegistration::CURRENT_SCHEMA,
+            tilo_relay::HomePeerRegistration {
+                schema_version: tilo_relay::HomePeerRegistration::CURRENT_SCHEMA,
                 device_node_id: hex::encode(device.as_bytes()),
                 relay_service_node_id: hex::encode(hinted_service.as_bytes()),
                 relay_endpoint: Some(hint.clone()),
@@ -7188,7 +7235,7 @@ mod tests {
                 device_cert: None,
                 relay_workspace_ids: vec![42],
             },
-            qos_relay::HomePeerRegistration {
+            tilo_relay::HomePeerRegistration {
                 schema_version: 1,
                 device_node_id: hex::encode(device.as_bytes()),
                 relay_service_node_id: hex::encode(legacy_service.as_bytes()),
@@ -7204,9 +7251,9 @@ mod tests {
             serde_json::to_vec(&registrations).expect("registry"),
         )
         .expect("write registry");
-        let previous = std::env::var_os("QOS_HOME_PEERS_PATH");
+        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
         // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("QOS_HOME_PEERS_PATH", &registry) };
+        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
         let hosts =
             registered_home_peer_addrs(Some(own_user), &std::collections::BTreeSet::from([42]))
                 .expect("registry parses");
@@ -7219,8 +7266,8 @@ mod tests {
         // SAFETY: guarded by the process_env serial group.
         unsafe {
             match previous {
-                Some(value) => std::env::set_var("QOS_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("QOS_HOME_PEERS_PATH"),
+                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
+                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
             }
         }
     }
@@ -7229,13 +7276,13 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn home_peer_registry_defaults_to_the_active_identity_root() {
         let temp = tempfile::tempdir().expect("temp");
-        let identity_root = temp.path().join("user-data/qos");
-        let old_identity_root = std::env::var_os("QOS_IDENTITY_ROOT");
-        let old_registry = std::env::var_os("QOS_HOME_PEERS_PATH");
+        let identity_root = temp.path().join("user-data/tilo");
+        let old_identity_root = std::env::var_os("TILO_IDENTITY_ROOT");
+        let old_registry = std::env::var_os("TILO_HOME_PEERS_PATH");
         // SAFETY: guarded by the process_env serial group.
         unsafe {
-            std::env::set_var("QOS_IDENTITY_ROOT", &identity_root);
-            std::env::remove_var("QOS_HOME_PEERS_PATH");
+            std::env::set_var("TILO_IDENTITY_ROOT", &identity_root);
+            std::env::remove_var("TILO_HOME_PEERS_PATH");
         }
         assert_eq!(
             home_peer_registry_path(),
@@ -7245,12 +7292,12 @@ mod tests {
         // SAFETY: guarded by the process_env serial group.
         unsafe {
             match old_identity_root {
-                Some(value) => std::env::set_var("QOS_IDENTITY_ROOT", value),
-                None => std::env::remove_var("QOS_IDENTITY_ROOT"),
+                Some(value) => std::env::set_var("TILO_IDENTITY_ROOT", value),
+                None => std::env::remove_var("TILO_IDENTITY_ROOT"),
             }
             match old_registry {
-                Some(value) => std::env::set_var("QOS_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("QOS_HOME_PEERS_PATH"),
+                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
+                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
             }
         }
     }
@@ -7269,9 +7316,9 @@ mod tests {
         assert!(tree.set_room(workspace, room));
         let (mut net, mut commands) = shell_network_for_test(tree.shared(), 7);
         net.personal_continuity_user = Some(own_user);
-        let old_registry = std::env::var_os("QOS_HOME_PEERS_PATH");
+        let old_registry = std::env::var_os("TILO_HOME_PEERS_PATH");
         // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("QOS_HOME_PEERS_PATH", &registry) };
+        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
         std::fs::write(
             &registry,
             serde_json::to_vec(&serde_json::json!([{
@@ -7309,8 +7356,8 @@ mod tests {
         // SAFETY: guarded by the process_env serial group.
         unsafe {
             match old_registry {
-                Some(value) => std::env::set_var("QOS_HOME_PEERS_PATH", value),
-                None => std::env::remove_var("QOS_HOME_PEERS_PATH"),
+                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
+                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
             }
         }
     }
@@ -7359,7 +7406,7 @@ mod tests {
 
     #[test]
     fn concurrent_invites_redeem_their_own_names_and_roles() {
-        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
         let (_tmp, tree, net, rooms) = net_with_rooms();
         let room = rooms[0];
@@ -7469,7 +7516,7 @@ mod tests {
 
     #[test]
     fn peer_departure_retains_identity_route_and_cause_before_cleanup() {
-        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let room = tree.read().rooms()[0];
@@ -7594,7 +7641,7 @@ mod tests {
         peer: iroh::PublicKey,
         device: &ed25519_dalek::SigningKey,
     ) -> NetEvent {
-        let app_id = "dev.qos.notes";
+        let app_id = "dev.tilo.notes";
         let record_id = "note-1";
         let mut envelope = collab_types::SignedOp::new_unsigned(
             collab_types::DocumentMutation::Incremental(vec![1, 2, 3, 4])
@@ -7645,16 +7692,16 @@ mod tests {
         let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
         let device = iroh::SecretKey::from_bytes(&[72; 32]);
         let device_signing = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
-        let mut cert = qos_user_identity::DeviceCert {
+        let mut cert = tilo_user_identity::DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: *device.public().as_bytes(),
             device_label: "Peer laptop".into(),
-            capabilities: qos_user_identity::DeviceCapabilities::member(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
         };
-        qos_user_identity::sign_device_cert(&mut cert, &root).expect("device certificate");
+        tilo_user_identity::sign_device_cert(&mut cert, &root).expect("device certificate");
         let _ = net
             .pending_identity_admissions
             .lock()
@@ -7819,7 +7866,7 @@ mod tests {
     #[test]
     fn accepting_a_pinned_home_host_invite_queues_exact_expectation_once() {
         use crate::network::invite::{HomeHostPin, InviteRole, make_invite_token_with_recipient};
-        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
         let owner_root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
         let owner_device = iroh::SecretKey::from_bytes(&[0x52; 32]);
@@ -8203,16 +8250,16 @@ mod tests {
         let device_secret = iroh::SecretKey::generate();
         let endpoint = device_secret.public();
         let root = ed25519_dalek::SigningKey::from_bytes(&[104; 32]);
-        let mut certificate = qos_user_identity::DeviceCert {
+        let mut certificate = tilo_user_identity::DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: *endpoint.as_bytes(),
             device_label: "Ada's laptop".into(),
-            capabilities: qos_user_identity::DeviceCapabilities::member(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
         };
-        qos_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
 
         assert!(tree.write().name_peer(
             room,
@@ -8228,10 +8275,10 @@ mod tests {
         ));
         let projection_path = runtime
             .path()
-            .join("qos/identity-projections")
+            .join("tilo/identity-projections")
             .join(room.to_string())
             .join("trusted-identities.json");
-        let projected: qos_user_identity::TrustedIdentityProjectionV2 =
+        let projected: tilo_user_identity::TrustedIdentityProjectionV2 =
             serde_json::from_slice(&std::fs::read(&projection_path).unwrap()).unwrap();
         assert_eq!(projected.humans.len(), 1);
         assert_eq!(projected.humans[0].display_name, "Ada Lovelace");
@@ -8243,21 +8290,21 @@ mod tests {
             "the signed certificate cannot be rebound to another transport endpoint"
         );
 
-        let mut revocation = qos_user_identity::RevocationEntry {
+        let mut revocation = tilo_user_identity::RevocationEntry {
             user_public_key: root.verifying_key().to_bytes(),
             revoked_device_public_key: *endpoint.as_bytes(),
             revoked_at_ns: 2,
-            reason: qos_user_identity::RevocationReason::Retired,
+            reason: tilo_user_identity::RevocationReason::Retired,
             signature: [0; 64],
         };
-        qos_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
+        tilo_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
         assert!(network.handle_identity_announcement(
             &endpoint,
             &room.to_string(),
             &certificate,
             &[revocation]
         ));
-        let projected: qos_user_identity::TrustedIdentityProjectionV2 =
+        let projected: tilo_user_identity::TrustedIdentityProjectionV2 =
             serde_json::from_slice(&std::fs::read(&projection_path).unwrap()).unwrap();
         assert!(
             projected.humans.is_empty(),
@@ -8289,14 +8336,14 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let mut entry = qos_user_identity::RevocationEntry {
+        let mut entry = tilo_user_identity::RevocationEntry {
             user_public_key: root.verifying_key().to_bytes(),
             revoked_device_public_key: [102; 32],
             revoked_at_ns: 5,
-            reason: qos_user_identity::RevocationReason::Compromised,
+            reason: tilo_user_identity::RevocationReason::Compromised,
             signature: [0; 64],
         };
-        qos_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
+        tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
         std::fs::write(&path, postcard::to_allocvec(&vec![entry.clone()]).unwrap()).unwrap();
         assert_eq!(
             load_identity_revocations(&path, root.verifying_key().to_bytes()).unwrap(),

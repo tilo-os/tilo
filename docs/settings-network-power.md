@@ -10,7 +10,7 @@ SIM, or hardware-capability database.
 
 - Everyday Wi-Fi, hotspot, LAN, APN and SIM-PIN flows stay on the main page.
   Saved-profile metering, Wi-Fi MAC policy and automatic proxy discovery are
-  behind **Advanced** and write NetworkManager connection settings. qOS offers
+  behind **Advanced** and write NetworkManager connection settings. Tilo offers
   PAC URLs because that is NetworkManager's portable per-connection proxy
   contract; it does not invent a parallel manual-proxy service.
 - Advanced Wi-Fi and LAN editors identify profiles by UUID and seed every
@@ -19,7 +19,7 @@ SIM, or hardware-capability database.
   and multiple saved profiles get an explicit selector rather than silently
   editing the first one.
 - Enterprise Wi-Fi supports PEAP, TTLS and EAP-TLS. A valid CA is mandatory;
-  EAP-TLS additionally requires a client certificate and private key. qOS
+  EAP-TLS additionally requires a client certificate and private key. Tilo
   inspects subject, expiry and SHA-256 fingerprint with the platform OpenSSL
   implementation and refuses expired certificates. Password and private-key
   passphrase flags are `not-saved`, leaving custody to NetworkManager's secret

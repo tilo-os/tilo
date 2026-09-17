@@ -352,10 +352,14 @@ impl Topbar {
         title_right: f64,
     ) {
         let available = (title_right - title_x).max(0.0);
+        // At 200% text a compact bar still needs to retain *which month* is
+        // being shown. A modestly smaller base size leaves room for “Sep
+        // 2026” instead of falling all the way back to an ambiguous year.
+        let font_size = if self.compact() { 14.0 } else { 19.0 };
         let variants = period_title_variants(view, anchor);
         let title = variants
             .iter()
-            .find(|variant| f64::from(text.measure(variant, 19.0, None).0) <= available)
+            .find(|variant| f64::from(text.measure(variant, font_size, None).0) <= available)
             .or_else(|| variants.last());
         let Some(title) = title else {
             return;
@@ -371,7 +375,7 @@ impl Topbar {
         text.draw_text(
             scene,
             title,
-            19.0,
+            font_size,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((title_x, center_y - 11.0)),
             None,

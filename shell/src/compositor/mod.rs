@@ -6,45 +6,65 @@
 //!
 //! Mode selection is a single `--mode <hosted|native>` (or `--mode=<...>`) flag; anything unrecognised, including the flag being absent, falls back to [`Mode::Native`].
 
+#[cfg(target_os = "linux")]
 pub mod accessibility;
+#[cfg(target_os = "linux")]
 pub mod activation;
 #[cfg(feature = "hdr-decode")]
+#[cfg(target_os = "linux")]
 mod audio_capture;
 pub mod backend;
+#[cfg(target_os = "linux")]
 pub mod bridge;
+#[cfg(target_os = "linux")]
 pub mod capture;
+#[cfg(target_os = "linux")]
 pub mod client_input;
 pub mod dev_env;
 pub mod drag_feedback;
+#[cfg(target_os = "linux")]
 pub mod floating_service;
 pub mod foreign;
 pub mod frame;
+#[cfg(target_os = "linux")]
 pub mod gpu_import;
+#[cfg(target_os = "linux")]
 pub mod hosted;
 #[cfg(feature = "hosted-test-control")]
+#[cfg(target_os = "linux")]
 pub mod hosted_test_control;
 pub mod idle;
 pub mod lock_auth;
 pub mod lock_controller;
 pub mod lock_screen;
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod metrics;
 #[cfg(feature = "hdr-decode")]
-mod mp4_recording;
+pub mod mp4_recording;
+#[cfg(target_os = "linux")]
 pub mod native;
+#[cfg(target_os = "linux")]
 pub mod osk_service;
+#[cfg(target_os = "linux")]
 pub mod output_globals;
 pub mod pacing;
 pub mod present;
 pub mod projection_capture;
+#[cfg(target_os = "linux")]
 pub mod remote_seat;
 pub mod render_node;
 pub mod selection;
+#[cfg(target_os = "linux")]
 pub mod state;
 pub mod surface_outputs;
+#[cfg(target_os = "linux")]
 pub mod surface_readback;
 pub mod switch_control;
 pub mod tab_binding;
+#[cfg(target_os = "linux")]
 pub mod test_control;
+#[cfg(target_os = "linux")]
 mod xwayland;
 
 /// Which run mode the compositor should boot into.
@@ -56,7 +76,7 @@ pub enum Mode {
     Native,
 }
 
-/// Whether this session is part of a complete qOS installation or was added
+/// Whether this session is part of a complete Tilo installation or was added
 /// to an existing Linux host.
 ///
 /// This is deliberately an explicit launch contract.  A DRM backend can be
@@ -65,12 +85,12 @@ pub enum Mode {
 /// identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallMode {
-    /// The qOS image: machine identity material lives in the system identity
+    /// The Tilo image: machine identity material lives in the system identity
     /// tree and the complete first-login experience is available.
     FullSystem,
-    /// A qOS session installed alongside another desktop: identity material
+    /// A Tilo session installed alongside another desktop: identity material
     /// must remain in this login's XDG-owned storage and setup is limited to
-    /// the qOS identity ceremony.
+    /// the Tilo identity ceremony.
     HostDesktop,
 }
 
@@ -82,7 +102,7 @@ pub fn parse_install_mode_from_args() -> InstallMode {
 }
 
 /// Resolve the installation context from the package-owned session wrapper.
-/// Absence means full qOS, preserving the existing image boot path exactly.
+/// Absence means full Tilo, preserving the existing image boot path exactly.
 pub fn parse_install_mode(args: &[&str]) -> InstallMode {
     if args.contains(&"--host-desktop-session") {
         InstallMode::HostDesktop
@@ -99,7 +119,7 @@ pub enum BackendKind {
     /// Drive a TTY directly via DRM/KMS + libinput — see [`backend::DrmBackend`].
     Drm,
     /// Display-free wgpu-offscreen backend: no window, no event loop, no GPU surface — paints
-    /// into an offscreen texture via [`backend::HeadlessBackend`]. Lets the live binary boot in CI, distrobox without a display, or SSH without X-forwarding; drivable via `QOS_TEST_CONTROL`.
+    /// into an offscreen texture via [`backend::HeadlessBackend`]. Lets the live binary boot in CI, distrobox without a display, or SSH without X-forwarding; drivable via `TILO_TEST_CONTROL`.
     Headless,
 }
 
@@ -112,7 +132,7 @@ pub fn parse_mode_from_args() -> Mode {
 }
 
 /// Process-global wrapper around [`parse_peer_sync`]. Peer sync is part of a
-/// normal qOS session; `--disable-peer-sync` is the explicit safe override
+/// normal Tilo session; `--disable-peer-sync` is the explicit safe override
 /// for tests, recovery, and deliberately offline sessions.
 pub fn parse_peer_sync_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
@@ -132,14 +152,14 @@ pub fn parse_peer_sync_disabled(args: &[&str]) -> bool {
 
 /// Source of truth for the peer-sync marker file. Mockable so tests don't touch the
 /// filesystem; production wires up [`XdgConfigMarkerSource`], checking
-/// `$XDG_CONFIG_HOME/quick-desktop/peer-sync.enabled` (falling back to `~/.config/...`). See
+/// `$XDG_CONFIG_HOME/tilo-desktop/peer-sync.enabled` (falling back to `~/.config/...`). See
 /// `os/docs/peer-sync.md`: the `shell-peer-sync.service` user unit drops this marker so the next launch picks up peer-sync without the CLI flag.
 pub trait MarkerSource {
     /// Returns true if the peer-sync marker exists.
     fn peer_sync_marker_exists(&self) -> bool;
 }
 
-/// Production marker source — checks `$XDG_CONFIG_HOME/quick-desktop/peer-sync.enabled`, falling back to `$HOME/.config/...` when `XDG_CONFIG_HOME` is unset.
+/// Production marker source — checks `$XDG_CONFIG_HOME/tilo-desktop/peer-sync.enabled`, falling back to `$HOME/.config/...` when `XDG_CONFIG_HOME` is unset.
 pub struct XdgConfigMarkerSource;
 
 impl XdgConfigMarkerSource {
@@ -165,14 +185,14 @@ pub fn peer_sync_marker_path_from_env(
 ) -> Option<std::path::PathBuf> {
     if let Some(xdg) = xdg_config_home.filter(|v| !v.is_empty()) {
         let mut p = std::path::PathBuf::from(xdg);
-        p.push("quick-desktop");
+        p.push("tilo-desktop");
         p.push("peer-sync.enabled");
         return Some(p);
     }
     let home = home.filter(|v| !v.is_empty())?;
     let mut p = std::path::PathBuf::from(home);
     p.push(".config");
-    p.push("quick-desktop");
+    p.push("tilo-desktop");
     p.push("peer-sync.enabled");
     Some(p)
 }
@@ -201,7 +221,7 @@ pub fn peer_sync_enabled_from_env_or_marker() -> bool {
 }
 
 /// Process-global wrapper around [`parse_portal_server_only`]: when true, `main` skips the
-/// full compositor boot and runs the xdg-desktop-portal D-Bus backend stand-alone — the shape `quick-desktop-portal.service` expects.
+/// full compositor boot and runs the xdg-desktop-portal D-Bus backend stand-alone — the shape `tilo-desktop-portal.service` expects.
 pub fn parse_portal_server_only_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
     let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
@@ -214,7 +234,7 @@ pub fn parse_portal_server_only(args: &[&str]) -> bool {
     args.contains(&"--portal-server-only")
 }
 
-/// Process-global wrapper around [`parse_firstboot`]: when true, `main` runs first-boot setup (creating `$XDG_CONFIG_HOME/quick-desktop/` etc.) before the normal boot.
+/// Process-global wrapper around [`parse_firstboot`]: when true, `main` runs first-boot setup (creating `$XDG_CONFIG_HOME/tilo-desktop/` etc.) before the normal boot.
 pub fn parse_firstboot_from_args() -> bool {
     let owned: Vec<String> = std::env::args().skip(1).collect();
     let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
@@ -252,7 +272,7 @@ pub fn parse_provision_identity_from_args() -> bool {
 /// Pure, testable `--provision-identity` flag parser.
 ///
 /// Unlike `--firstboot`, this is a *separate entry point*: runs the identity ceremony and exits
-/// without starting a compositor. The `qos-identity.service` **user** unit calls it, putting the key in the user's own home instead of root's.
+/// without starting a compositor. The `tilo-identity.service` **user** unit calls it, putting the key in the user's own home instead of root's.
 pub fn parse_provision_identity(args: &[&str]) -> bool {
     args.contains(&"--provision-identity")
 }
@@ -347,12 +367,12 @@ mod tests {
 
     #[test]
     fn no_flag_defaults_native() {
-        // `cargo run -p quick-desktop` (no flags) boots the real smithay server.
+        // `cargo run -p tilo-desktop` (no flags) boots the real smithay server.
         assert!(matches!(parse_mode(&[]), Mode::Native));
     }
 
     #[test]
-    fn install_mode_defaults_to_the_full_qos_system() {
+    fn install_mode_defaults_to_the_full_tilo_system() {
         assert_eq!(parse_install_mode(&[]), InstallMode::FullSystem);
         assert_eq!(
             parse_install_mode(&["--backend", "drm"]),
@@ -462,7 +482,7 @@ mod tests {
     #[test]
     fn parse_backend_headless_returns_headless() {
         // Both `--backend headless` and `--backend=headless` resolve to `BackendKind::Headless` — the
-        // third path alongside winit (default) and drm, letting the binary boot without a display server so e2e harnesses can drive it via `QOS_TEST_CONTROL`.
+        // third path alongside winit (default) and drm, letting the binary boot without a display server so e2e harnesses can drive it via `TILO_TEST_CONTROL`.
         assert!(matches!(
             parse_backend(&["--backend", "headless"]),
             BackendKind::Headless
@@ -477,7 +497,7 @@ mod tests {
 
     #[test]
     fn portal_server_only_default_false() {
-        // Bare cargo run -p quick-desktop must still boot the compositor — no flag means no portal-only short-circuit.
+        // Bare cargo run -p tilo-desktop must still boot the compositor — no flag means no portal-only short-circuit.
         assert!(!parse_portal_server_only(&[]));
         assert!(!parse_portal_server_only(&["--mode", "native"]));
         assert!(!parse_portal_server_only(&["--enable-peer-sync"]));
@@ -605,7 +625,7 @@ mod tests {
         .expect("path resolves with XDG set");
         assert_eq!(
             path,
-            std::path::PathBuf::from("/custom/xdg/quick-desktop/peer-sync.enabled")
+            std::path::PathBuf::from("/custom/xdg/tilo-desktop/peer-sync.enabled")
         );
     }
 
@@ -616,7 +636,7 @@ mod tests {
                 .expect("path resolves via HOME");
         assert_eq!(
             path,
-            std::path::PathBuf::from("/home/alice/.config/quick-desktop/peer-sync.enabled")
+            std::path::PathBuf::from("/home/alice/.config/tilo-desktop/peer-sync.enabled")
         );
     }
 
@@ -630,7 +650,7 @@ mod tests {
         .expect("falls back through empty XDG to HOME");
         assert_eq!(
             path,
-            std::path::PathBuf::from("/home/bob/.config/quick-desktop/peer-sync.enabled")
+            std::path::PathBuf::from("/home/bob/.config/tilo-desktop/peer-sync.enabled")
         );
     }
 

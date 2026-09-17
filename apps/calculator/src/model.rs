@@ -222,7 +222,7 @@ impl CalcModel {
         };
         // The headless screenshot picks which tab it captures via this hook;
         // unset (the live default) keeps the lived-in Graph 2D launch view.
-        if let Some(want) = std::env::var_os("QOS_CALC_MODE") {
+        if let Some(want) = std::env::var_os("TILO_CALC_MODE") {
             m.mode = match want.to_string_lossy().as_ref() {
                 "calc" | "calculator" => Mode::Calc,
                 "graph3d" | "3d" => Mode::Graph3d,
@@ -232,7 +232,7 @@ impl CalcModel {
         // Shot-only: a single long function so the headless screenshot can show
         // a formula that overflows the fixed-height field and scrolls within it
         // (caret kept in view at the end) rather than resizing the row.
-        if std::env::var_os("QOS_CALC_LONG_DEMO").is_some() {
+        if std::env::var_os("TILO_CALC_LONG_DEMO").is_some() {
             m.mode = Mode::Graph2d;
             m.funcs = vec![PlotFn {
                 expr: "sin(x)+cos(2*x)+sin(3*x)+cos(4*x)+sin(5*x)+cos(6*x)+sin(7*x)".into(),
@@ -242,7 +242,7 @@ impl CalcModel {
         }
         // Screenshot-only: exercise the visible, truthful parse-error state.
         // The live app never injects this expression.
-        if std::env::var_os("QOS_CALC_ERROR_DEMO").is_some() {
+        if std::env::var_os("TILO_CALC_ERROR_DEMO").is_some() {
             m.apply_error_demo();
         }
         m

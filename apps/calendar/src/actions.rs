@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use ui::widget::BlockEditOp;
 use uuid::Uuid;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, OperationKind, ParamType, PermissionRequirement, Resource,
     ResourceProvider, ResultSpec, RetryPolicy,
@@ -49,7 +49,11 @@ pub const CALENDAR_OPERATION_TYPE: &str = "calendar.operation";
 /// The root resource is intentionally a contextual snapshot, not a second
 /// unbounded copy of Calendar's data. Search and direct invocation resolve any
 /// omitted stable id through [`ResourceProvider::resource`] below.
-const EAGER_RESOURCE_SNAPSHOT_LIMIT: usize = 96;
+pub(crate) const EAGER_RESOURCE_SNAPSHOT_LIMIT: usize = 96;
+/// A task delete action carries every child id it will tombstone, so cap that
+/// payload independently from directory paging. Larger child sets remain
+/// addressable one-by-one but require their children to be handled first.
+pub(crate) const TASK_DELETE_FANOUT_LIMIT: usize = 96;
 
 /// Stable resource id for one event. Search, the palette, accessibility and
 /// agents all address this same resource.
@@ -70,6 +74,16 @@ pub fn project_resource_id(id: Id) -> String {
 /// Stable resource id for a local or configured remote calendar collection.
 pub fn calendar_resource_id(id: &str) -> String {
     format!("calendar.collection:{id}")
+}
+
+fn project_id_from_resource(address: &str) -> Option<Id> {
+    address.strip_prefix("calendar.project:")?.parse().ok()
+}
+
+fn calendar_id_from_resource(address: &str) -> Option<&str> {
+    address
+        .strip_prefix("calendar.collection:")
+        .filter(|id| !id.is_empty())
 }
 
 pub fn attendee_resource_id(event_id: Id, attendee_id: Id) -> String {
@@ -169,7 +183,7 @@ fn calendar_operation(
         | CalendarOperation::ShowAgenda => spec.retry_policy(RetryPolicy::Idempotent),
         CalendarOperation::Sync => spec
             .retry_policy(RetryPolicy::Idempotent)
-            .execution(qos_actions::ExecutionMode::Background { cancellable: false }),
+            .execution(tilo_actions::ExecutionMode::Background { cancellable: false }),
         CalendarOperation::ExportIcs | CalendarOperation::ImportIcs => {
             spec.retry_policy(RetryPolicy::AtMostOnce)
         }
@@ -190,7 +204,7 @@ fn calendar_operation(
     }
 }
 
-fn calendar_collection_resource(calendar: &CalendarCollectionResource) -> Resource {
+pub(crate) fn calendar_collection_resource(calendar: &CalendarCollectionResource) -> Resource {
     let open = calendar_operation(
         "open",
         "Open calendar",
@@ -207,6 +221,65 @@ fn calendar_collection_resource(calendar: &CalendarCollectionResource) -> Resour
     .with_action(open)
 }
 
+/// Minimal, exact event resource used by the retained global-search provider.
+/// It deliberately materialises only the action named by a search result, so a
+/// late search hit never has to construct the root resource tree (or an
+/// event's attendees, notes, reminders and recurrence children) just to open
+/// its stable address.
+pub(crate) fn search_event_resource(event: &Event) -> Resource {
+    Resource::new(
+        event_resource_id(event.id),
+        "calendar.event",
+        event.display_title(),
+    )
+    .with_action(calendar_operation(
+        "open",
+        "Open event",
+        OperationKind::View,
+        &CalendarOperation::OpenEvent {
+            id: event.id.to_string(),
+        },
+    ))
+}
+
+/// Minimal, exact task resource used by the retained global-search provider.
+pub(crate) fn search_task_resource(task: &Task) -> Resource {
+    Resource::new(
+        task_resource_id(task.id),
+        "calendar.task",
+        if task.title.trim().is_empty() {
+            "Untitled task".to_string()
+        } else {
+            task.title.clone()
+        },
+    )
+    .with_action(calendar_operation(
+        "open",
+        "Open task",
+        OperationKind::View,
+        &CalendarOperation::OpenTask {
+            id: task.id.to_string(),
+        },
+    ))
+}
+
+/// Minimal, exact project resource used by the retained global-search provider.
+pub(crate) fn search_project_resource(project: &Project) -> Resource {
+    Resource::new(
+        project_resource_id(project.id),
+        "calendar.project",
+        project.name.clone(),
+    )
+    .with_action(calendar_operation(
+        "open",
+        "Open project tasks",
+        OperationKind::View,
+        &CalendarOperation::OpenProject {
+            id: project.id.to_string(),
+        },
+    ))
+}
+
 /// Encode an app-local operation without allowing a serialization fault to
 /// crash a desktop application. The enum only contains strings and unit
 /// variants today, but the fallback keeps its failure mode explicit if that
@@ -214,7 +287,7 @@ fn calendar_collection_resource(calendar: &CalendarCollectionResource) -> Resour
 fn encode_operation(operation: &CalendarOperation) -> EncodedAction {
     EncodedAction::encode_operation(CALENDAR_OPERATION_TYPE, operation).unwrap_or_else(|_| {
         EncodedAction {
-            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
             payload: b"Calendar operation could not be encoded".to_vec(),
         }
     })
@@ -819,9 +892,9 @@ pub enum NoteOwner {
     clippy::too_many_lines,
     reason = "exhaustive action-to-history metadata table is clearer kept beside the action enum"
 )]
-pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
+pub fn history_context(action: &CalendarAction) -> tilo_actions::ActionContext {
     let mut context =
-        qos_actions::ActionContext::for_action("org.qos.Calendar", "Calendar", action);
+        tilo_actions::ActionContext::for_action("org.tilo.Calendar", "Calendar", action);
     let (label, id, kind, title) = match action {
         CalendarAction::UpsertProject(project) => (
             "Update project",
@@ -920,7 +993,7 @@ pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
         ),
     };
     context.action_label = label.to_string();
-    context.resource = Some(qos_actions::ActionResource {
+    context.resource = Some(tilo_actions::ActionResource {
         id: if kind == "calendar.calendar" {
             kind.to_string()
         } else {
@@ -1530,13 +1603,16 @@ pub struct EventResource {
     pub remote_delete: Option<String>,
 }
 
-/// One task surfaced as a resource, with its subtask ids resolved so deleting a
-/// parent removes the whole subtree. Subtasks are resources too: search and
-/// agents must be able to address every task the app presents.
+/// One task surfaced as a resource. Its delete fanout is bounded; when the
+/// parent has more children, the delete action explicitly remains unavailable
+/// until children are handled through their own stable resources.
 #[derive(Debug, Clone)]
 pub struct TaskResource {
     pub data: TaskData,
     pub subtasks: Vec<String>,
+    /// Children omitted from `subtasks` to keep exact resource/action
+    /// materialisation bounded.
+    pub subtask_overflow: usize,
 }
 
 /// One durable task project plus whether deleting it would strand linked
@@ -1546,20 +1622,6 @@ pub struct TaskResource {
 pub struct ProjectResource {
     pub data: ProjectData,
     pub in_use: bool,
-}
-
-/// A destination that an event may be filed under. This is projected from the
-/// shared account store at resource-publication time, so an agent gets the
-/// same real target list as the editor's calendar picker.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CalendarTargetResource {
-    /// `local` for the on-device calendar, otherwise the stable remote
-    /// collection id carried by Calendar accounts.
-    pub id: String,
-    pub label: String,
-    /// The selected remote calendar's palette index. Local does not impose a
-    /// colour, matching the visible editor behaviour.
-    pub color: Option<usize>,
 }
 
 /// A local or remote event collection that owns event resources. Calendar
@@ -1572,14 +1634,6 @@ pub struct CalendarCollectionResource {
     pub label: String,
     pub color: Option<usize>,
     pub visible: bool,
-}
-
-/// A real local project that a task may be filed under. Projects live in the
-/// shared calendar document, so their ids are safe collaboration targets.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskProjectTarget {
-    pub id: String,
-    pub label: String,
 }
 
 /// The presentation context the calendar hands [`provide_resources`]: a template
@@ -1595,8 +1649,6 @@ pub struct CalendarResourceCtx {
     pub tasks: Vec<TaskResource>,
     pub projects: Vec<ProjectResource>,
     pub calendars: Vec<CalendarCollectionResource>,
-    pub calendar_targets: Vec<CalendarTargetResource>,
-    pub task_project_targets: Vec<TaskProjectTarget>,
     pub can_sync: bool,
     pub syncing: bool,
     pub can_export: bool,
@@ -1605,11 +1657,105 @@ pub struct CalendarResourceCtx {
     pub next_project_order: u32,
 }
 
+impl CalendarResourceCtx {
+    pub(crate) fn new(
+        new_event: EventData,
+        can_sync: bool,
+        syncing: bool,
+        can_export: bool,
+        next_project_order: u32,
+    ) -> Self {
+        Self {
+            new_event,
+            events: Vec::new(),
+            tasks: Vec::new(),
+            projects: Vec::new(),
+            calendars: Vec::new(),
+            can_sync,
+            syncing,
+            can_export,
+            next_project_order,
+        }
+    }
+
+    fn empty_scoped(&self) -> Self {
+        Self {
+            new_event: self.new_event.clone(),
+            events: Vec::new(),
+            tasks: Vec::new(),
+            projects: Vec::new(),
+            calendars: self.calendars.clone(),
+            can_sync: self.can_sync,
+            syncing: self.syncing,
+            can_export: self.can_export,
+            next_project_order: self.next_project_order,
+        }
+    }
+    fn event(&self, id: &str) -> Option<&EventResource> {
+        self.events.iter().find(|event| event.data.id == id)
+    }
+    fn task(&self, id: &str) -> Option<&TaskResource> {
+        self.tasks.iter().find(|task| task.data.id == id)
+    }
+    fn project(&self, id: &str) -> Option<&ProjectResource> {
+        self.projects.iter().find(|project| project.data.id == id)
+    }
+    fn calendar(&self, id: &str) -> Option<&CalendarCollectionResource> {
+        self.calendars.iter().find(|calendar| calendar.id == id)
+    }
+}
+
+/// Whether an event may be exposed to the global resource/action surface.
+///
+/// Calendar visibility is a Settings-owned policy, so it is deliberately
+/// evaluated from the current context rather than persisted into a replicated
+/// event. Unknown owners remain available: an imported local record can
+/// outlive its account configuration. A known hidden collection, however,
+/// suppresses every descendant resource so its title, attendees, reminder and
+/// notes cannot be discovered by search, agents, or action history.
+fn event_visible_to_resource_surface(ctx: &CalendarResourceCtx, event: &EventResource) -> bool {
+    let owner = if event.data.calendar_id.is_empty() {
+        "local"
+    } else {
+        event.data.calendar_id.as_str()
+    };
+    ctx.calendar(owner).is_none_or(|calendar| calendar.visible)
+}
+
+/// Retain exactly the event's owning collection when materialising a nested
+/// resource. Dropping it would make `provide_resources` correctly refuse to
+/// attach a remote event to an unrelated calendar, but would also make a valid
+/// reminder/attendee/occurrence address disappear.
+fn scope_event_owner(
+    ctx: &CalendarResourceCtx,
+    scoped: &mut CalendarResourceCtx,
+    event: &EventResource,
+) {
+    let owner = if event.data.calendar_id.is_empty() {
+        "local"
+    } else {
+        event.data.calendar_id.as_str()
+    };
+    scoped.calendars = ctx
+        .calendar(owner)
+        .cloned()
+        .or_else(|| {
+            Some(CalendarCollectionResource {
+                id: owner.to_string(),
+                label: owner.to_string(),
+                color: None,
+                visible: true,
+            })
+        })
+        .into_iter()
+        .collect();
+}
+
 /// Return an explicit invalid-arguments envelope rather than silently turning
 /// a malformed agent request into a no-op document action.
 fn invalid_arguments(reason: impl Into<String>) -> EncodedAction {
     EncodedAction {
-        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
         payload: reason.into().into_bytes(),
     }
 }
@@ -1997,7 +2143,11 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
         root = root.with_child(child);
     }
 
-    for ev in &ctx.events {
+    for ev in ctx
+        .events
+        .iter()
+        .filter(|event| event_visible_to_resource_surface(ctx, event))
+    {
         if eager_remaining == 0 {
             break;
         }
@@ -2365,27 +2515,22 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                 ))
             },
         ));
-        let projects = ctx.task_project_targets.clone();
         child = child.with_action(event_update_spec(
             "move-to-project",
             "Move to project",
             "project destination",
-            vec![
-                ActionParam::required("project", ParamType::Text, "A Calendar project or none")
-                    .with_choices(
-                        std::iter::once("none".to_string())
-                            .chain(projects.iter().map(|project| project.id.clone())),
-                    ),
-            ],
+            vec![ActionParam::optional(
+                "project",
+                ParamType::Resource,
+                "calendar.project resource address; omit to unfile",
+            )],
             ev.data.clone(),
             move |data, args| {
-                let selected = args.text("project").unwrap_or_default();
-                let project = if selected == "none" {
-                    String::new()
-                } else if projects.iter().any(|project| project.id == selected) {
-                    selected.to_string()
-                } else {
-                    return Err("project is no longer available".into());
+                let project = match args.text("project") {
+                    None => String::new(),
+                    Some(resource) => project_id_from_resource(resource)
+                        .ok_or_else(|| "project must be a calendar.project resource".to_string())?
+                        .to_string(),
                 };
                 Ok(patch_event_action(
                     data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
@@ -2396,27 +2541,22 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                 ))
             },
         ));
-        let targets = ctx.calendar_targets.clone();
         child = child.with_action(event_update_spec(
             "move-to-calendar",
             "Move to calendar",
             "calendar destination",
-            vec![
-                ActionParam::required(
-                    "calendar",
-                    ParamType::Text,
-                    "The local or configured remote calendar that should own this event",
-                )
-                .with_choices(targets.iter().map(|target| target.id.clone())),
-            ],
+            vec![ActionParam::required(
+                "calendar",
+                ParamType::Resource,
+                "calendar.collection resource address (calendar.collection:local is on-device)",
+            )],
             ev.data.clone(),
             move |data, args| {
-                let id = args.text("calendar").unwrap_or_default();
-                let target = targets
-                    .iter()
-                    .find(|target| target.id == id)
-                    .ok_or_else(|| "calendar is no longer configured".to_string())?;
-                if target.id == "local" {
+                let target = args
+                    .text("calendar")
+                    .and_then(calendar_id_from_resource)
+                    .ok_or_else(|| "calendar must be a calendar.collection resource".to_string())?;
+                if target == "local" {
                     Ok(patch_event_action(
                         data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
                         EventPatch {
@@ -2429,8 +2569,7 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                     Ok(patch_event_action(
                         data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
                         EventPatch {
-                            calendar_id: Some(target.id.clone()),
-                            color: target.color,
+                            calendar_id: Some(target.to_string()),
                             enqueue_remote: Some(true),
                             ..EventPatch::default()
                         },
@@ -2633,7 +2772,6 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
         } else {
             "Mark done"
         };
-        let projects = ctx.task_project_targets.clone();
         let mut child = Resource::new(
             task_resource_id(parsed_id),
             "calendar.task",
@@ -2730,22 +2868,18 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
             "move-to-project",
             "Move to project",
             "project destination",
-            vec![
-                ActionParam::required("project", ParamType::Text, "A Calendar project or none")
-                    .with_choices(
-                        std::iter::once("none".to_string())
-                            .chain(projects.iter().map(|project| project.id.clone())),
-                    ),
-            ],
+            vec![ActionParam::optional(
+                "project",
+                ParamType::Resource,
+                "calendar.project resource address; omit to unfile",
+            )],
             tk.data.clone(),
             move |data, args| {
-                let selected = args.text("project").unwrap_or_default();
-                let project = if selected == "none" {
-                    String::new()
-                } else if projects.iter().any(|project| project.id == selected) {
-                    selected.to_string()
-                } else {
-                    return Err("project is no longer available".into());
+                let project = match args.text("project") {
+                    None => String::new(),
+                    Some(resource) => project_id_from_resource(resource)
+                        .ok_or_else(|| "project must be a calendar.project resource".to_string())?
+                        .to_string(),
                 };
                 Ok(patch_task_action(
                     data.id.parse::<Id>().map_err(|_| "task id is invalid")?,
@@ -2756,11 +2890,21 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                 ))
             },
         ));
-        child = child.with_action(immediate_spec(
+        let mut delete = immediate_spec(
             "delete",
             "Delete task",
             &delete_task_action(id.clone(), tk.subtasks.clone()),
-        ));
+        );
+        if tk.subtask_overflow > 0 {
+            delete = delete.unavailable(
+                "task_children_overflow",
+                format!(
+                    "This task has {} additional children; handle them first before deleting the parent",
+                    tk.subtask_overflow
+                ),
+            );
+        }
+        child = child.with_action(delete);
         child = child.with_child(note_resource(
             &task_resource_id(parsed_id),
             NoteOwner::Task { id: id.clone() },
@@ -2858,10 +3002,7 @@ fn find_resource(resources: Vec<Resource>, id: &str) -> Option<Resource> {
     reason = "stable-id routing keeps every ownership/staleness branch adjacent for auditability"
 )]
 fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
-    let mut scoped = ctx.clone();
-    scoped.events.clear();
-    scoped.tasks.clear();
-    scoped.projects.clear();
+    let mut scoped = ctx.empty_scoped();
 
     if id == "calendar.calendar" {
         return find_resource(provide_resources(&scoped, doc), id);
@@ -2869,41 +3010,23 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
 
     if let Some(raw) = id.strip_prefix("calendar.collection:") {
         let calendar = ctx
-            .calendars
-            .iter()
-            .find(|calendar| calendar.id == raw && calendar_resource_id(raw) == id)?;
+            .calendar(raw)
+            .filter(|_| calendar_resource_id(raw) == id)?;
         scoped.calendars = vec![calendar.clone()];
-        scoped.events = ctx
-            .events
-            .iter()
-            .filter(|event| {
-                if raw == "local" {
-                    event.data.calendar_id.is_empty()
-                } else {
-                    event.data.calendar_id == raw
-                }
-            })
-            .take(EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(2))
-            .cloned()
-            .collect();
+        // Resolve only the addressed container. Its potentially unbounded
+        // event history remains independently addressable by stable id.
         return find_resource(provide_resources(&scoped, doc), id);
     }
 
     if let Some(raw) = id.strip_prefix("calendar.project:") {
         let parsed = raw.parse::<Id>().ok()?;
         let project = ctx
-            .projects
-            .iter()
-            .find(|project| project.data.id == raw && project_resource_id(parsed) == id)?;
+            .project(raw)
+            .filter(|_| project_resource_id(parsed) == id)?;
         scoped.calendars.clear();
         scoped.projects.push(project.clone());
-        scoped.tasks = ctx
-            .tasks
-            .iter()
-            .filter(|task| task.data.project == raw)
-            .take(EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(2))
-            .cloned()
-            .collect();
+        // Do not materialise/scan an unbounded project task history merely to
+        // resolve the project container; tasks resolve by their own ids.
         return find_resource(provide_resources(&scoped, doc), id);
     }
 
@@ -2914,11 +3037,10 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
         if attendee_resource_id(event_id, attendee_id) != id {
             return None;
         }
-        let mut event = ctx
-            .events
-            .iter()
-            .find(|event| event.data.id == event_raw)?
-            .clone();
+        let mut event = ctx.event(event_raw)?.clone();
+        if !event_visible_to_resource_surface(ctx, &event) {
+            return None;
+        }
         let attendee = event
             .data
             .attendees
@@ -2928,7 +3050,7 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
         event.data.attendees = vec![attendee];
         event.data.recurrence_exdates.clear();
         event.data.occurrence_overrides.clear();
-        scoped.calendars.clear();
+        scope_event_owner(ctx, &mut scoped, &event);
         scoped.events.push(event);
         return find_resource(provide_resources(&scoped, doc), id);
     }
@@ -2940,11 +3062,13 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
             return None;
         }
         let event = ctx
-            .events
-            .iter()
-            .find(|event| event.data.id == event_raw && event.data.reminder >= 0)?
+            .event(event_raw)
+            .filter(|event| event.data.reminder >= 0)?
             .clone();
-        scoped.calendars.clear();
+        if !event_visible_to_resource_surface(ctx, &event) {
+            return None;
+        }
+        scope_event_owner(ctx, &mut scoped, &event);
         scoped.events.push(event);
         return find_resource(provide_resources(&scoped, doc), id);
     }
@@ -2956,11 +3080,10 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
         if occurrence_resource_id(event_id, original_date) != id {
             return None;
         }
-        let mut event = ctx
-            .events
-            .iter()
-            .find(|event| event.data.id == event_raw)?
-            .clone();
+        let mut event = ctx.event(event_raw)?.clone();
+        if !event_visible_to_resource_surface(ctx, &event) {
+            return None;
+        }
         let mut base = event.data.to_event()?;
         base.recurrence_exdates.clear();
         base.occurrence_overrides.clear();
@@ -2979,7 +3102,7 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
             event.data.recurrence_exdates.push(date_raw.to_string());
         }
         event.data.attendees.clear();
-        scoped.calendars.clear();
+        scope_event_owner(ctx, &mut scoped, &event);
         scoped.events.push(event);
         return find_resource(provide_resources(&scoped, doc), id);
     }
@@ -2993,27 +3116,11 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
         if id != resource_id && (!notes || id != format!("{resource_id}:notes")) {
             return None;
         }
-        let event = ctx.events.iter().find(|event| event.data.id == raw)?;
-        let owner = if event.data.calendar_id.is_empty() {
-            "local"
-        } else {
-            event.data.calendar_id.as_str()
-        };
-        scoped.calendars = ctx
-            .calendars
-            .iter()
-            .find(|calendar| calendar.id == owner)
-            .cloned()
-            .or_else(|| {
-                Some(CalendarCollectionResource {
-                    id: owner.to_string(),
-                    label: owner.to_string(),
-                    color: None,
-                    visible: true,
-                })
-            })
-            .into_iter()
-            .collect();
+        let event = ctx.event(raw)?;
+        if !event_visible_to_resource_surface(ctx, event) {
+            return None;
+        }
+        scope_event_owner(ctx, &mut scoped, event);
         scoped.events.push(event.clone());
         return find_resource(provide_resources(&scoped, doc), id);
     }
@@ -3027,15 +3134,12 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
         if id != resource_id && (!notes || id != format!("{resource_id}:notes")) {
             return None;
         }
-        let task = ctx.tasks.iter().find(|task| task.data.id == raw)?;
+        let task = ctx.task(raw)?;
         scoped.calendars.clear();
-        if !task.data.project.is_empty() {
-            scoped.projects.extend(
-                ctx.projects
-                    .iter()
-                    .filter(|project| project.data.id == task.data.project)
-                    .cloned(),
-            );
+        if !task.data.project.is_empty()
+            && let Some(project) = ctx.project(&task.data.project)
+        {
+            scoped.projects.push(project.clone());
         }
         scoped.tasks.push(task.clone());
         return find_resource(provide_resources(&scoped, doc), id);
@@ -3050,7 +3154,8 @@ impl ResourceProvider for crate::app::CalendarApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        resource_from_ctx(&self.calendar_resource_ctx(), doc, id)
+        self.exact_resource_ctx(id)
+            .and_then(|ctx| resource_from_ctx(&ctx, doc, id))
     }
 }
 
@@ -3059,7 +3164,7 @@ mod tests {
     use super::*;
     use crate::app::CalendarApp;
     use automerge::ROOT;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -3150,7 +3255,7 @@ mod tests {
         // toggle/delete that sort after the events. The palette's Actions group
         // is display-capped, so reachability is asserted on the flatten and only
         // the leading rows on the palette itself.
-        let flat: Vec<&str> = qos_actions::flatten(&resources)
+        let flat: Vec<&str> = tilo_actions::flatten(&resources)
             .iter()
             .map(|f| f.action.label.as_str())
             .collect();
@@ -3253,14 +3358,14 @@ mod tests {
         let resolved = resource_from_ctx(&ctx, &doc, &calendar_id)
             .expect("an omitted current calendar resolves directly");
         assert_eq!(resolved.id.as_str(), calendar_id);
-        assert_eq!(
-            resolved.children.len(),
-            1,
-            "direct context has only its owner event"
+        assert!(
+            resolved.children.is_empty(),
+            "exact container lookup must not expand an unbounded event history"
         );
-        assert_eq!(
-            resolved.children[0].id.as_str(),
-            format!("calendar.event:{}", event.data.id)
+        let event_id = format!("calendar.event:{}", event.data.id);
+        assert!(
+            resource_from_ctx(&ctx, &doc, &event_id).is_some(),
+            "the omitted collection's event remains independently addressable"
         );
 
         ctx.calendars
@@ -3283,24 +3388,101 @@ mod tests {
             &project_resource_id(project_id.parse().unwrap()),
         )
         .expect("current project resolves lazily");
-        assert!(resource.children.iter().all(|child| {
-            let raw = child
-                .id
-                .as_str()
-                .strip_prefix("calendar.task:")
-                .expect("project direct children are tasks");
-            ctx.tasks
-                .iter()
-                .any(|task| task.data.id == raw && task.data.project == project_id)
-        }));
-        assert_eq!(
-            resource.children.len(),
-            ctx.tasks
-                .iter()
-                .filter(|task| task.data.project == project_id)
-                .count()
-                .min(EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(2))
+        assert!(
+            resource.children.is_empty(),
+            "exact project lookup must not expand an unbounded task history"
         );
+    }
+
+    #[test]
+    fn deep_resource_actions_resolve_from_the_bounded_directory_by_exact_id() {
+        fn collect_deep<'a>(resource: &'a Resource, found: &mut Vec<&'a Resource>) {
+            if matches!(
+                resource.kind.as_str(),
+                "calendar.note" | "calendar.reminder" | "calendar.attendee" | "calendar.occurrence"
+            ) {
+                found.push(resource);
+            }
+            for child in &resource.children {
+                collect_deep(child, found);
+            }
+        }
+
+        let (app, doc) = seeded();
+        let ctx = app.calendar_resource_ctx();
+        let root = provide_resources(&ctx, &doc).remove(0);
+        let mut deep = Vec::new();
+        collect_deep(&root, &mut deep);
+        assert!(
+            !deep.is_empty(),
+            "the demo contains note/reminder/attendee/occurrence resources"
+        );
+
+        for resource in deep {
+            let Some(resolved) = resource_from_ctx(&ctx, &doc, resource.id.as_str()) else {
+                panic!(
+                    "a deep canonical resource resolves without expanding the root tree: {}",
+                    resource.id.as_str()
+                );
+            };
+            assert_eq!(resolved.id, resource.id);
+            for action in &resource.actions {
+                assert!(
+                    resolved
+                        .actions
+                        .iter()
+                        .any(|candidate| candidate.id == action.id),
+                    "{} action {} stays reachable by exact resource id",
+                    resource.id.as_str(),
+                    action.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hidden_collection_withholds_event_resources_and_all_descendants() {
+        let (app, doc) = seeded();
+        let mut ctx = app.calendar_resource_ctx();
+        let event = &mut ctx.events[0];
+        let event_id = event.data.id.parse::<Id>().unwrap();
+        event.data.title = "Private planning session".into();
+        event.data.calendar_id = "work/private".into();
+        event.data.reminder = 30;
+        let attendee = AttendeeData {
+            id: Uuid::new_v4().to_string(),
+            name: "Private guest".into(),
+            email: "guest@example.test".into(),
+            status: "NEEDS-ACTION".into(),
+        };
+        let attendee_id = attendee.id.parse::<Id>().unwrap();
+        event.data.attendees = vec![attendee];
+        ctx.calendars = vec![CalendarCollectionResource {
+            id: "work/private".into(),
+            label: "Private work".into(),
+            color: None,
+            visible: false,
+        }];
+
+        let root = provide_resources(&ctx, &doc).remove(0);
+        let private_collection = root
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == calendar_resource_id("work/private"))
+            .expect("the collection remains available to re-enable");
+        assert!(private_collection.children.is_empty());
+
+        for resource_id in [
+            event_resource_id(event_id),
+            format!("{}:notes", event_resource_id(event_id)),
+            reminder_resource_id(event_id),
+            attendee_resource_id(event_id, attendee_id),
+        ] {
+            assert!(
+                resource_from_ctx(&ctx, &doc, &resource_id).is_none(),
+                "hidden collection leaked {resource_id}"
+            );
+        }
     }
 
     /// Search activation stays entirely inside the resource/action door for
@@ -3312,9 +3494,11 @@ mod tests {
         let resources = Widget::resources(&app, &doc);
         let all_hits = Widget::search_providers(&app)[0].search("");
         assert!(
-            all_hits.iter().all(|hit| hit
-                .action_address()
-                .is_some_and(|address| qos_actions::door::resolve(&resources, &address).is_some())),
+            all_hits.iter().all(|hit| {
+                hit.action_address().is_some_and(|address| {
+                    tilo_actions::door::resolve(&resources, &address).is_some()
+                })
+            }),
             "every event, task and subtask hit resolves in the live resource tree"
         );
 
@@ -3417,7 +3601,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -3475,9 +3659,9 @@ mod tests {
         let decoded = registry().decode(&encoded).expect("calendar note action");
         let mut transport = LocalTransport::new();
         let envelope =
-            qos_actions::dispatch(&mut author, decoded.as_ref(), encoded, &mut transport)
+            tilo_actions::dispatch(&mut author, decoded.as_ref(), encoded, &mut transport)
                 .expect("note action dispatches");
-        qos_actions::replay(&mut peer, envelope.envelope(), &registry())
+        tilo_actions::replay(&mut peer, envelope.envelope(), &registry())
             .expect("note action replays");
 
         assert_eq!(
@@ -3518,8 +3702,8 @@ mod tests {
         let action = set_task_done_action(task.id.to_string(), true);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -3548,8 +3732,8 @@ mod tests {
         let action = upsert_event_action(&ev);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "edit replayed identically");
         assert_eq!(
@@ -3604,7 +3788,7 @@ mod tests {
         let blank = prompted_encode(edit_spec, "   ");
         assert_eq!(
             blank.type_id,
-            qos_actions::resource::INVALID_ARGUMENTS_TYPE,
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
             "rename refuses a whitespace-only title"
         );
     }
@@ -3698,7 +3882,7 @@ mod tests {
         let encoded = prompted_encode(spec, "Coffee with Dana");
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let model = CalDoc::read_model(&doc);
         assert_eq!(model.events.len(), before + 1, "the action added an event");
@@ -3731,12 +3915,12 @@ mod tests {
         let encoded = location
             .build_args([(
                 "location".to_string(),
-                qos_actions::ArgValue::Text("Studio 3 · https://meet.example".to_string()),
+                tilo_actions::ArgValue::Text("Studio 3 · https://meet.example".to_string()),
             )])
             .expect("well-typed location request");
         let decoded = registry().decode(&encoded).expect("calendar action");
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
             .expect("location action dispatches");
         assert_eq!(
             CalDoc::read_model(&doc).event(id).expect("event").location,
@@ -3752,7 +3936,7 @@ mod tests {
             repeat
                 .build_args([(
                     "repeat".to_string(),
-                    qos_actions::ArgValue::Text("every-other-tuesday".to_string()),
+                    tilo_actions::ArgValue::Text("every-other-tuesday".to_string()),
                 )])
                 .is_err(),
             "the declared choices reject an invented recurrence rather than silently defaulting"
@@ -3760,17 +3944,59 @@ mod tests {
         let encoded = repeat
             .build_args([(
                 "repeat".to_string(),
-                qos_actions::ArgValue::Text("weekly".to_string()),
+                tilo_actions::ArgValue::Text("weekly".to_string()),
             )])
             .expect("declared recurrence is accepted");
         let decoded = registry().decode(&encoded).expect("calendar action");
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
             .expect("repeat action dispatches");
         let updated = CalDoc::read_model(&doc).event(id).expect("event").clone();
         assert_eq!(updated.recurrence, Recurrence::Weekly);
         assert_eq!(
             updated.location, "Studio 3 · https://meet.example",
             "a recurrence patch did not rewrite an independently-authored location"
+        );
+
+        let project = CalDoc::read_model(&doc).projects[0].id;
+        let move_project = event
+            .actions
+            .iter()
+            .find(|action| action.id == "move-to-project")
+            .expect("typed project resource action");
+        let encoded = move_project
+            .build_args([(
+                "project".to_string(),
+                tilo_actions::ArgValue::Resource(project_resource_id(project)),
+            )])
+            .expect("canonical project resource address is accepted");
+        let decoded = registry().decode(&encoded).expect("calendar action");
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+            .expect("current project remains authoritatively valid");
+        assert_eq!(
+            CalDoc::read_model(&doc).event(id).unwrap().project,
+            Some(project)
+        );
+
+        let move_calendar = event
+            .actions
+            .iter()
+            .find(|action| action.id == "move-to-calendar")
+            .expect("typed calendar resource action");
+        let encoded = move_calendar
+            .build_args([(
+                "calendar".to_string(),
+                tilo_actions::ArgValue::Resource(calendar_resource_id("local")),
+            )])
+            .expect("canonical local collection is accepted");
+        let decoded = registry().decode(&encoded).expect("calendar action");
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+            .expect("local calendar move dispatches");
+        assert!(
+            CalDoc::read_model(&doc)
+                .event(id)
+                .unwrap()
+                .calendar_id
+                .is_none()
         );
     }
 
@@ -3787,7 +4013,7 @@ mod tests {
         let encoded = prompted_encode(spec, "Book dentist appointment");
         let decoded = registry().decode(&encoded).expect("calendar action");
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
             .expect("new task dispatches");
         let model = CalDoc::read_model(&doc);
         assert_eq!(model.tasks.len(), before + 1);
@@ -3800,7 +4026,7 @@ mod tests {
         let blank = prompted_encode(spec, "\t ");
         assert_eq!(
             blank.type_id,
-            qos_actions::resource::INVALID_ARGUMENTS_TYPE,
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
             "new task refuses a whitespace-only title"
         );
     }
@@ -3851,12 +4077,12 @@ mod tests {
         let encoded = rename
             .build_args([(
                 "name".to_string(),
-                qos_actions::ArgValue::Text("Critical path".to_string()),
+                tilo_actions::ArgValue::Text("Critical path".to_string()),
             )])
             .expect("typed project rename");
         let decoded = registry().decode(&encoded).expect("calendar action");
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
             .expect("project rename dispatches");
         assert_eq!(
             CalDoc::read_model(&doc).project(id).expect("project").name,
@@ -4062,12 +4288,12 @@ mod tests {
         let encoded = priority
             .build_args([(
                 "priority".to_string(),
-                qos_actions::ArgValue::Text("p1".to_string()),
+                tilo_actions::ArgValue::Text("p1".to_string()),
             )])
             .expect("declared priority is accepted");
         let decoded = registry().decode(&encoded).expect("calendar action");
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
             .expect("priority action dispatches");
         let changed = CalDoc::read_model(&doc).task(id).expect("task").clone();
         assert_eq!(changed.priority, Priority::High);
@@ -4124,8 +4350,8 @@ mod tests {
             tasks: Vec::new(),
         };
         let encoded = encode(&action);
-        let envelope = qos_actions::apply_local(&mut a, &action, encoded).expect("apply import");
-        qos_actions::replay(&mut b, &envelope, &registry()).expect("replay import");
+        let envelope = tilo_actions::apply_local(&mut a, &action, encoded).expect("apply import");
+        tilo_actions::replay(&mut b, &envelope, &registry()).expect("replay import");
         assert_eq!(
             a.get_heads(),
             b.get_heads(),

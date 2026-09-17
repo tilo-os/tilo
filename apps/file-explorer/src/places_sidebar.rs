@@ -147,7 +147,7 @@ impl PlacesSidebar {
         }
     }
 
-    /// Surface the qOS collaborative-workspace mounts as first-class System
+    /// Surface the Tilo collaborative-workspace mounts as first-class System
     /// locations, above Root. Each root the FUSE driver mounts (e.g.
     /// `/var/workspace`) becomes a clickable place with a cloud emblem, so the
     /// user reaches their synced workspace without typing a path.

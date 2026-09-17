@@ -9,17 +9,17 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use crate::automerge::{AutoCommit, ObjId};
 use crate::kurbo::{Affine, Point, Rect};
-use crate::qos_actions::{
+use crate::taffy::{NodeId, TaffyTree};
+use crate::tilo_actions::{
     ActionContract, ActionFailure, ActionOutput, ActionParam, ActionSpec, DiscoveryScope,
     EncodedAction, ExecutionMode, InvocationId, InvocationUpdate, OperationKind, Resource,
     ResultSpec,
 };
-use crate::taffy::{NodeId, TaffyTree};
 use crate::vello::Scene;
 use crate::widget::{ResourceOperationStart, TaffyTreeExt, Widget};
 
 /// Shared effect-operation type used by the one-resource app host.
-pub const OPERATION_TYPE: &str = "qos.app.operation";
+pub const OPERATION_TYPE: &str = "tilo.app.operation";
 
 /// Build one launchable resource with a unit operation.
 ///

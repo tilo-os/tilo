@@ -77,7 +77,7 @@ mod tests {
     use std::time::SystemTime;
 
     use collab_types::ArtifactKind;
-    use qos_actions::{ActionContext, ActionFacet};
+    use tilo_actions::{ActionContext, ActionFacet};
 
     use super::*;
     use crate::widget::{HistoryAuthor, HistoryEntryId};

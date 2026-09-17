@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use qos_bluez::DeviceInfo;
+use tilo_bluez::DeviceInfo;
 
 /// One Bluetooth device entry returned by [`list_bt_devices`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,10 +106,10 @@ pub fn pair_bluetooth_handoff(address: &str) -> Result<(), String> {
     connected_pair_outcome(crate::bluez::pair(&device.path)?)
 }
 
-fn connected_pair_outcome(outcome: qos_bluez::PairOutcome) -> Result<(), String> {
+fn connected_pair_outcome(outcome: tilo_bluez::PairOutcome) -> Result<(), String> {
     match outcome {
-        qos_bluez::PairOutcome::PairedAndConnected => Ok(()),
-        qos_bluez::PairOutcome::PairedNotConnected { reason } => Err(format!(
+        tilo_bluez::PairOutcome::PairedAndConnected => Ok(()),
+        tilo_bluez::PairOutcome::PairedNotConnected { reason } => Err(format!(
             "Bluetooth pairing completed but the handoff connection failed: {reason}"
         )),
     }
@@ -346,11 +346,11 @@ Device AA:BB:CC:DD:EE:01\n\
     #[test]
     fn handoff_pairing_requires_the_connection_to_complete() {
         assert_eq!(
-            connected_pair_outcome(qos_bluez::PairOutcome::PairedAndConnected),
+            connected_pair_outcome(tilo_bluez::PairOutcome::PairedAndConnected),
             Ok(())
         );
         assert!(
-            connected_pair_outcome(qos_bluez::PairOutcome::PairedNotConnected {
+            connected_pair_outcome(tilo_bluez::PairOutcome::PairedNotConnected {
                 reason: "accessory stayed busy".into(),
             })
             .unwrap_err()

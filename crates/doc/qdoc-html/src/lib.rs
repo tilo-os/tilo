@@ -81,7 +81,7 @@ impl Default for HtmlOptions {
 #[allow(
     clippy::needless_pass_by_value,
     reason = "HtmlOptions is a small public options struct passed by value at every call site \
-              across other crates (the qOS-wide builder-options idiom); switching to a reference \
+              across other crates (the Tilo-wide builder-options idiom); switching to a reference \
               would only move the & to each of those callers for no behavioural gain"
 )]
 pub fn render_html(snap: &DocSnapshot, opts: HtmlOptions) -> String {

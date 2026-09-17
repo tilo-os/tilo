@@ -32,12 +32,12 @@ pub fn export(model: &Model) -> String {
     let mut out = String::new();
     out.push_str("BEGIN:VCALENDAR\r\n");
     out.push_str("VERSION:2.0\r\n");
-    out.push_str("PRODID:-//qOS//Calendar//EN\r\n");
+    out.push_str("PRODID:-//Tilo//Calendar//EN\r\n");
     out.push_str("CALSCALE:GREGORIAN\r\n");
 
     for e in &model.events {
         out.push_str("BEGIN:VEVENT\r\n");
-        raw(&mut out, "UID", &format!("{}@qos", e.id));
+        raw(&mut out, "UID", &format!("{}@tilo", e.id));
         line(&mut out, "SUMMARY", &e.title);
         if e.all_day {
             raw(
@@ -103,11 +103,11 @@ pub fn export(model: &Model) -> String {
             raw(&mut out, "TRIGGER", &format!("-PT{m}M"));
             out.push_str("END:VALARM\r\n");
         }
-        raw(&mut out, "X-QOS-COLOR", e.color.name());
+        raw(&mut out, "X-TILO-COLOR", e.color.name());
         out.push_str("END:VEVENT\r\n");
         for edit in &e.occurrence_overrides {
             out.push_str("BEGIN:VEVENT\r\n");
-            raw(&mut out, "UID", &format!("{}@qos", e.id));
+            raw(&mut out, "UID", &format!("{}@tilo", e.id));
             if let Some(time) = edit.original_time {
                 emit_datetime(
                     &mut out,
@@ -143,7 +143,7 @@ pub fn export(model: &Model) -> String {
 
     for t in &model.tasks {
         out.push_str("BEGIN:VTODO\r\n");
-        raw(&mut out, "UID", &format!("{}@qos", t.id));
+        raw(&mut out, "UID", &format!("{}@tilo", t.id));
         line(&mut out, "SUMMARY", &t.title);
         if let Some(due) = t.due {
             raw(&mut out, "DUE;VALUE=DATE", &due.format(D_ONLY).to_string());
@@ -201,7 +201,7 @@ fn recurrence_rule(event: &Event) -> String {
 
 fn participant_line(out: &mut String, property: &str, attendee: &Attendee) {
     let mut key = format!(
-        "{property};X-QOS-ID={};PARTSTAT={}",
+        "{property};X-TILO-ID={};PARTSTAT={}",
         attendee.id,
         attendee.status.as_ical()
     );
@@ -347,7 +347,7 @@ fn parse_vevent(lines: &[String], mut i: usize) -> (Option<ParsedEvent>, usize) 
                         }
                     }
                 }
-                "X-QOS-COLOR" => color = color_from_name(&val),
+                "X-TILO-COLOR" => color = color_from_name(&val),
                 "DTSTART" => {
                     let Some((dt, ad)) = parse_cal_datetime(&key, &val) else {
                         return (None, i);
@@ -415,8 +415,8 @@ fn parse_vevent(lines: &[String], mut i: usize) -> (Option<ParsedEvent>, usize) 
 }
 
 fn parse_vtodo(lines: &[String], mut i: usize) -> (Option<Task>, usize) {
-    // qOS resource identities are UUIDs. Preserve a UUID-valued RFC UID so a
-    // task exported by qOS can be imported repeatedly without becoming a new
+    // Tilo resource identities are UUIDs. Preserve a UUID-valued RFC UID so a
+    // task exported by Tilo can be imported repeatedly without becoming a new
     // task. Non-UUID external UIDs still import safely with an author-minted
     // id; they cannot be used as an Automerge object key in this model.
     let mut id: Option<Id> = None;
@@ -633,7 +633,7 @@ fn parse_participant(key: &str, value: &str) -> Option<Attendee> {
         .trim()
         .strip_prefix("mailto:")
         .or_else(|| value.trim().strip_prefix("MAILTO:"))?;
-    let id = property_parameter(key, "X-QOS-ID")
+    let id = property_parameter(key, "X-TILO-ID")
         .and_then(|value| value.parse().ok())
         .unwrap_or_else(|| stable_external_attendee_id(email));
     Some(Attendee {
@@ -698,7 +698,7 @@ fn color_from_name(name: &str) -> Palette {
 
 /// Default export filename, derived from the visible month.
 pub fn suggested_filename(anchor: NaiveDate) -> String {
-    format!("qos-calendar-{}-{:02}.ics", anchor.year(), anchor.month())
+    format!("tilo-calendar-{}-{:02}.ics", anchor.year(), anchor.month())
 }
 
 /// A small, self-contained `.ics` payload anchored near `today`, built by
@@ -868,7 +868,7 @@ mod tests {
 
         let exported = export(&model);
         assert!(exported.contains("INTERVAL=2"), "{exported}");
-        let uid = format!("UID:{event_id}@qos");
+        let uid = format!("UID:{event_id}@tilo");
         let block = exported
             .split("BEGIN:VEVENT")
             .find(|block| block.contains(&uid) && block.contains("RRULE:"))

@@ -76,7 +76,7 @@ const DEFAULT_MAX_SUGGESTIONS: usize = 5;
 /// A token is *not* flagged when it is:
 /// - present in the dictionary (compared case-insensitively), or
 /// - a pure number (e.g. `42`, `3.14`, `1,000`), or
-/// - an ALL-CAPS acronym of length >= 2 (e.g. `NASA`, `qOS` is *not* all-caps so
+/// - an ALL-CAPS acronym of length >= 2 (e.g. `NASA`, `Tilo` is *not* all-caps so
 ///   it would still be checked), or
 /// - a URL or email-looking token.
 pub fn check(dict: &Dictionary, text: &str) -> Vec<Misspelling> {
@@ -786,14 +786,14 @@ mod tests {
     #[test]
     fn add_word_removes_a_word_from_check_results() {
         let mut dict = Dictionary::from_words(["the", "quick", "brown", "fox"]);
-        // "qos" is unknown → flagged.
-        let before = check(&dict, "the qos fox");
+        // "tilo" is unknown → flagged.
+        let before = check(&dict, "the tilo fox");
         assert_eq!(before.len(), 1, "got {before:?}");
-        assert_eq!(before[0].word, "qos");
+        assert_eq!(before[0].word, "tilo");
         // Accept it into the user dictionary.
-        assert!(dict.add_word("qos"));
+        assert!(dict.add_word("tilo"));
         // Re-check: no longer flagged.
-        let after = check(&dict, "the qos fox");
+        let after = check(&dict, "the tilo fox");
         assert!(
             after.is_empty(),
             "expected no misspellings after add_word, got {after:?}"

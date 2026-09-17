@@ -4,18 +4,18 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Tiny PATH shim binary — resolves its sidecar, execvs qos-launcher run-installed."
+description = "Tiny PATH shim binary — resolves its sidecar, execvs tilo-launcher run-installed."
 
 # A single tiny binary installed once per PATH command a package
 # publishes. When invoked as `notes ...` it reads its own path,
-# finds the sibling `<name>.qos-shim` sidecar (a TOML with
-# `package_id` and `command`), and execvs the qOS launcher with
+# finds the sibling `<name>.tilo-shim` sidecar (a TOML with
+# `package_id` and `command`), and execvs the Tilo launcher with
 # `run-installed --package <id> --command <cmd> -- <argv>`. The
 # shim is intentionally minimal (no allocator-heavy deps, no
 # tokio) so the boot cost is close to the launcher's fork+exec.
 
 [[bin]]
-name = "qos-cli-shim"
+name = "tilo-cli-shim"
 path = "src/main.rs"
 
 [dependencies]

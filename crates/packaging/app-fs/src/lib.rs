@@ -1,4 +1,4 @@
-//! app-fs — read-only FUSE3 driver that mounts a qOS
+//! app-fs — read-only FUSE3 driver that mounts a Tilo
 //! package payload from a content-addressed [`BlobStore`].
 //!
 //! ## Mental model
@@ -10,7 +10,7 @@
 //! BLAKE3-addressed blob in a [`BlobStore`].
 //!
 //! The launcher mounts a package at
-//! `/var/qos-apps/<package_id>/`. The mount is intentionally
+//! `/var/tilo-apps/<package_id>/`. The mount is intentionally
 //! **lazy**:
 //!
 //! - `lookup` / `getattr` resolve from the Collection's path
@@ -53,7 +53,7 @@ pub mod store;
 
 pub use cache::{PAGE_SIZE, PageCache, PageCacheStats};
 pub use collection::{Collection, CollectionDecodeError};
-pub use fs::QosAppFs;
+pub use fs::TiloAppFs;
 pub use mount::{Mount, MountError, MountOptions};
 pub use store::{
     BlobError, BlobStore, CounterSnapshot, CountingStore, DiskBlobStore, MemoryBlobStore,

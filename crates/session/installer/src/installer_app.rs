@@ -21,7 +21,7 @@
 //!
 //! State lives in the CRDT (toolkit convention):
 //!   * `installer.username` — `Text`
-//!   * `installer.hostname` — `Text` (seeded `qos`)
+//!   * `installer.hostname` — `Text` (seeded `tilo`)
 //!   * `installer.timezone` — `Text` (seeded `UTC`)
 //!   * `installer.next` / `back` / `begin` — `bool` rising-edge flags
 //!   * `installer.reboot` / `poweroff` — `bool` rising-edge flags (Finish)
@@ -133,7 +133,7 @@ const RECOVERY_ACK_PATH: &str = "installer.recovery_ack";
 pub const FIDO2_LABELS: [&str; 2] = ["No security key", "Enroll security key"];
 
 /// Default hostname seeded into the CRDT (and the installed system).
-const DEFAULT_HOSTNAME: &str = "qos";
+const DEFAULT_HOSTNAME: &str = "tilo";
 /// Default time zone seeded into the CRDT.
 const DEFAULT_TIMEZONE: &str = "UTC";
 /// Default keyboard-layout display name seeded into the CRDT.
@@ -142,7 +142,7 @@ const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
 /// Filesystem choices, in display order. Index 0 is the default.
 pub const FILESYSTEMS: [&str; 3] = ["btrfs", "ext4", "xfs"];
 pub const INSTALL_METHOD_LABELS: [&str; 2] = ["Erase disk", "Install alongside"];
-const WINDOWS_ALONGSIDE_PREPARATION: &str = "Windows or NTFS storage was detected on this disk. Before continuing, boot Windows, save its BitLocker recovery key, and turn off Fast Startup. If you still need unallocated space, shrink Windows with Disk Management. qOS cannot make these Windows changes and will not resize NTFS.";
+const WINDOWS_ALONGSIDE_PREPARATION: &str = "Windows or NTFS storage was detected on this disk. Before continuing, boot Windows, save its BitLocker recovery key, and turn off Fast Startup. If you still need unallocated space, shrink Windows with Disk Management. Tilo cannot make these Windows changes and will not resize NTFS.";
 
 fn connect_power_message(percent: u8) -> String {
     format!(
@@ -210,7 +210,7 @@ impl ProfileCompletion {
 /// One-line explanation for each filesystem, shown under the chooser.
 fn fs_description(i: usize) -> &'static str {
     match i {
-        0 => "Btrfs: snapshots, compression and rollback — recommended for qOS.",
+        0 => "Btrfs: snapshots, compression and rollback — recommended for Tilo.",
         1 => "Ext4: simple and battle-tested; no snapshot support.",
         2 => "XFS: high throughput for large files; no snapshot support.",
         _ => "",
@@ -255,7 +255,7 @@ fn kernel_lockdown_active() -> bool {
 /// unless the target UKI, initramfs, command line and firmware trust chain are
 /// all covered.
 fn target_verified_boot_ready() -> bool {
-    Command::new("/usr/libexec/qos-verified-boot-install-preflight")
+    Command::new("/usr/libexec/tilo-verified-boot-install-preflight")
         .status()
         .is_ok_and(|status| status.success())
 }
@@ -274,19 +274,19 @@ enum VerifiedBootState {
 fn encrypt_description(state: VerifiedBootState) -> &'static str {
     match state {
         VerifiedBootState::TargetVerified => {
-            "qOS encrypts the disk with LUKS2 and binds unlock to this computer's Secure Boot state plus the release-authorized qOS boot measurement. You will use a short startup PIN; a recovery key is shown once during install."
+            "Tilo encrypts the disk with LUKS2 and binds unlock to this computer's Secure Boot state plus the release-authorized Tilo boot measurement. You will use a short startup PIN; a recovery key is shown once during install."
         }
         VerifiedBootState::TargetUnverified => {
-            "qOS always encrypts the disk with LUKS2. Verified boot is unavailable for this installation, so use one strong startup passphrase. A short PIN is only safe when the TPM can verify the complete boot chain."
+            "Tilo always encrypts the disk with LUKS2. Verified boot is unavailable for this installation, so use one strong startup passphrase. A short PIN is only safe when the TPM can verify the complete boot chain."
         }
         VerifiedBootState::KernelLockdownInactive => {
-            "qOS always encrypts the disk with LUKS2. Secure Boot is active but kernel lockdown is not, so qOS cannot treat this boot as verified and uses a strong disk passphrase instead."
+            "Tilo always encrypts the disk with LUKS2. Secure Boot is active but kernel lockdown is not, so Tilo cannot treat this boot as verified and uses a strong disk passphrase instead."
         }
         VerifiedBootState::SecureBootInactive => {
-            "qOS always encrypts the disk with LUKS2. TPM2 short-PIN protection requires verified boot, but Secure Boot is not active, so this installation uses a strong disk passphrase instead."
+            "Tilo always encrypts the disk with LUKS2. TPM2 short-PIN protection requires verified boot, but Secure Boot is not active, so this installation uses a strong disk passphrase instead."
         }
         VerifiedBootState::NoTpm => {
-            "qOS always encrypts the disk with LUKS2. This computer has no TPM2 chip, so you will enter a disk passphrase at startup. A recovery key is shown once during install as a backup."
+            "Tilo always encrypts the disk with LUKS2. This computer has no TPM2 chip, so you will enter a disk passphrase at startup. A recovery key is shown once during install as a backup."
         }
     }
 }
@@ -297,7 +297,7 @@ const CTRL_DONE: &str = "\u{1}done";
 const CTRL_FAIL: &str = "\u{1}fail";
 const PREFLIGHT_OK_PREFIX: &str = "\u{1}storage-preflight-ok:";
 const PREFLIGHT_FAIL_PREFIX: &str = "\u{1}storage-preflight-fail:";
-const RECOVERY_KEY_PREFIX: &str = "::qos-recovery-key::";
+const RECOVERY_KEY_PREFIX: &str = "::tilo-recovery-key::";
 
 /// Card geometry (logical px).
 const CARD_WIDTH: f32 = 520.0;
@@ -394,7 +394,7 @@ pub fn valid_hostname(h: &str) -> bool {
 }
 
 /// Whether `username` is portable across the Linux `useradd`
-/// implementations supported by the qOS installer.
+/// implementations supported by the Tilo installer.
 pub fn valid_username(username: &str) -> bool {
     let bytes = username.as_bytes();
     !bytes.is_empty()
@@ -427,7 +427,7 @@ pub fn valid_username(username: &str) -> bool {
                 | "chrony"
                 | "tss"
                 | "greetd"
-                | "qos"
+                | "tilo"
         )
 }
 
@@ -532,9 +532,9 @@ fn validate_startup_secret_for(secret: &str, tpm_pin: bool) -> Result<(), &'stat
         "welcome",
         "administrator",
         "admin",
-        "quickdesktop",
+        "tilo",
         "quickdesk",
-        "qos",
+        "tilo",
     ];
 
     if secret.trim() != secret {
@@ -1114,13 +1114,13 @@ pub struct InstallerApp {
     /// probe to disk/root/ESP identities.
     storage_preflight_request: Option<String>,
     storage_preflight_passed: bool,
-    /// Independently validated choices supplied by qOS Imager. `None` is the
+    /// Independently validated choices supplied by Tilo Imager. `None` is the
     /// ordinary manual flow; incomplete fields route to their repair screen.
     profile_completion: Option<ProfileCompletion>,
     /// Wired by `main` so the worker thread can pump progress back.
     proxy_slot: Option<ProxySlot>,
     /// Live power probe. Tests and deterministic screenshots use a no-op;
-    /// [`Self::new`] replaces it with the shared sysfs-backed qOS reader.
+    /// [`Self::new`] replaces it with the shared sysfs-backed Tilo reader.
     power_probe: fn() -> Option<u8>,
     /// Scroll position survives incidental composition rebuilds (network
     /// status, validation, progress). Deliberate step changes reset it.
@@ -1441,7 +1441,7 @@ impl InstallerApp {
         }
     }
 
-    /// May the install start, as far as encryption is concerned? Native qOS
+    /// May the install start, as far as encryption is concerned? Native Tilo
     /// always requires both a reproducible recovery factor and a startup
     /// secret. A short PIN is accepted only for a signed, measured target.
     fn encryption_ready(&self) -> bool {
@@ -1816,7 +1816,7 @@ impl InstallerApp {
             return;
         };
         let Some(disk) = self.selected_dev() else {
-            self.set_status("Select the prepared qOS disk before checking it.");
+            self.set_status("Select the prepared Tilo disk before checking it.");
             return;
         };
         let opts = self.install_options();
@@ -1860,7 +1860,7 @@ impl InstallerApp {
                 self.install_launched = false;
                 self.status_lines.clear();
                 self.set_status(
-                    "Refresh storage before continuing. qOS will not reinitialize a target from unauthenticated on-disk metadata; use Ctrl+Alt+F2 if you need recovery tools.",
+                    "Refresh storage before continuing. Tilo will not reinitialize a target from unauthenticated on-disk metadata; use Ctrl+Alt+F2 if you need recovery tools.",
                 );
                 self.dirty_structure = true;
                 self.focus_reset = true;
@@ -2084,7 +2084,7 @@ impl InstallerApp {
         children.push(Box::new(Text::new("Connect to a network").with_size(xl)));
         children.push(Box::new(
             Text::new(
-                "Optional — qOS installs from this medium and does not require internet access.",
+                "Optional — Tilo installs from this medium and does not require internet access.",
             )
             .with_size(sm)
             .with_color(dim),
@@ -2208,7 +2208,7 @@ impl InstallerApp {
         let base = theme.tokens.typography.scale.base;
         let sm = theme.tokens.typography.scale.sm;
 
-        children.push(Box::new(Text::new("Install qOS").with_size(xl)));
+        children.push(Box::new(Text::new("Install Tilo").with_size(xl)));
         children.push(Box::new(
             SegChoice::new(
                 INSTALL_METHOD_LABELS
@@ -2225,7 +2225,7 @@ impl InstallerApp {
         let guidance = if self.install_method == InstallMethod::Erase {
             "Erase disk deletes every partition and operating system on the selected disk."
         } else {
-            "Alongside preserves existing partitions. qOS can use one unallocated GPT extent (34 GiB+) or prepared qOS partitions. It never shrinks, moves, or deletes an existing partition."
+            "Alongside preserves existing partitions. Tilo can use one unallocated GPT extent (34 GiB+) or prepared Tilo partitions. It never shrinks, moves, or deletes an existing partition."
         };
         children.push(Box::new(Text::new(guidance).with_size(sm).with_color(
             if self.install_method == InstallMethod::Erase {
@@ -2283,7 +2283,7 @@ impl InstallerApp {
         {
             children.push(Box::new(
                 Text::new(&format!(
-                    "Ready to use {} GiB of unallocated space: a new 2 GiB qOS EFI partition and a new {} GiB encrypted root. Existing partitions will not be changed.",
+                    "Ready to use {} GiB of unallocated space: a new 2 GiB Tilo EFI partition and a new {} GiB encrypted root. Existing partitions will not be changed.",
                     plan.free_size_bytes / (1024 * 1024 * 1024),
                     plan.root_size_bytes / (1024 * 1024 * 1024)
                 ))
@@ -2336,7 +2336,7 @@ impl InstallerApp {
         plans: &[GuidedAlongsidePlan],
     ) {
         children.push(Box::new(
-            Text::new("Choose the exact unallocated region for qOS")
+            Text::new("Choose the exact unallocated region for Tilo")
                 .with_size(theme.tokens.typography.scale.base),
         ));
         for (index, plan) in plans.iter().enumerate() {
@@ -2460,7 +2460,7 @@ impl InstallerApp {
         ));
         children.push(Box::new(KeyboardView::new(KEYMAP_PATH)));
         children.push(Box::new(
-            Text::new("Need files from this computer, or removing an alongside qOS install? Press Ctrl+Alt+F2 for recovery tools; Ctrl+Alt+F1 returns here.")
+            Text::new("Need files from this computer, or removing an alongside Tilo install? Press Ctrl+Alt+F2 for recovery tools; Ctrl+Alt+F1 returns here.")
                 .with_size(sm)
                 .with_color(dim),
         ));
@@ -2588,7 +2588,7 @@ impl InstallerApp {
                 if self.uses_guided_alongside() {
                     "guided free-space partition plan"
                 } else {
-                    "qOS root format"
+                    "Tilo root format"
                 },
             ),
         };
@@ -2644,7 +2644,7 @@ impl InstallerApp {
                     theme,
                     "Partition plan",
                     &format!(
-                        "Create 2 GiB qOS EFI + {} GiB qOS root in {} GiB unallocated space",
+                        "Create 2 GiB Tilo EFI + {} GiB Tilo root in {} GiB unallocated space",
                         plan.root_size_bytes / (1024 * 1024 * 1024),
                         plan.free_size_bytes / (1024 * 1024 * 1024)
                     ),
@@ -2662,20 +2662,20 @@ impl InstallerApp {
             } else {
                 children.push(summary_row(
                     theme,
-                    "qOS root",
+                    "Tilo root",
                     disk.alongside_root()
                         .map_or("<missing>", |p| p.name.as_str()),
                 ));
                 children.push(summary_row(
                     theme,
-                    "qOS EFI partition",
+                    "Tilo EFI partition",
                     disk.efi_partition()
                         .map_or("<missing>", |p| p.name.as_str()),
                 ));
                 children.push(summary_row(
                     theme,
                     "Choose an OS",
-                    "qOS adds safe menu shortcuts for unambiguous Windows/Linux loaders on this shared EFI partition",
+                    "Tilo adds safe menu shortcuts for unambiguous Windows/Linux loaders on this shared EFI partition",
                 ));
             }
         }
@@ -2694,7 +2694,7 @@ impl InstallerApp {
             &self.network.connection_summary(),
         ));
         children.push(Box::new(
-            Text::new("This install uses the qOS image on this medium; it does not download an update. Future system updates come from the signature-required qOS repository and are checked automatically after first boot whenever the computer is online.")
+            Text::new("This install uses the Tilo image on this medium; it does not download an update. Future system updates come from the signature-required Tilo repository and are checked automatically after first boot whenever the computer is online.")
                 .with_size(sm)
                 .with_color(dim),
         ));
@@ -2710,11 +2710,11 @@ impl InstallerApp {
         let impact = if self.install_method == InstallMethod::Alongside {
             if self.uses_guided_alongside() {
                 format!(
-                    "Two new qOS partitions will be created only in the reviewed unallocated space on {dev}. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
+                    "Two new Tilo partitions will be created only in the reviewed unallocated space on {dev}. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
                 )
             } else {
                 format!(
-                    "Only the prepared qOS root partition on {dev} is formatted. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
+                    "Only the prepared Tilo root partition on {dev} is formatted. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
                 )
             }
         } else {
@@ -2766,7 +2766,7 @@ impl InstallerApp {
         match self.install_state {
             InstallState::Done => {
                 children.push(Box::new(
-                    Text::new("qOS is installed")
+                    Text::new("Tilo is installed")
                         .with_size(xl)
                         .with_color(theme.status_success)
                         .with_role(TextRole::Title)
@@ -2780,9 +2780,9 @@ impl InstallerApp {
                 if self.install_method == InstallMethod::Alongside {
                     children.push(Box::new(
                         Text::new(if self.uses_guided_alongside() {
-                            "To choose qOS or your existing system, open this computer's firmware boot picker. The installer preserved its previous default."
+                            "To choose Tilo or your existing system, open this computer's firmware boot picker. The installer preserved its previous default."
                         } else {
-                            "The qOS boot menu includes each unambiguous Windows or Linux loader found on the shared EFI partition; firmware choices remain available too."
+                            "The Tilo boot menu includes each unambiguous Windows or Linux loader found on the shared EFI partition; firmware choices remain available too."
                         })
                         .with_size(sm)
                         .with_color(dim),
@@ -2809,7 +2809,7 @@ impl InstallerApp {
                         .with_live(Politeness::Assertive),
                 ));
                 children.push(Box::new(
-                    Text::new("The installer stopped before it could confirm a bootable system. The destination may already contain a partial encrypted installation. qOS will not treat on-disk names, labels, or metadata as permission to erase it. Save the recovery key below if one was generated, then review storage or use Ctrl+Alt+F2 for recovery tools.")
+                    Text::new("The installer stopped before it could confirm a bootable system. The destination may already contain a partial encrypted installation. Tilo will not treat on-disk names, labels, or metadata as permission to erase it. Save the recovery key below if one was generated, then review storage or use Ctrl+Alt+F2 for recovery tools.")
                         .with_size(sm)
                         .with_color(dim),
                 ));
@@ -2823,7 +2823,7 @@ impl InstallerApp {
             }
             _ => {
                 children.push(Box::new(
-                    Text::new("Installing qOS…")
+                    Text::new("Installing Tilo…")
                         .with_size(xl)
                         .with_role(TextRole::Title),
                 ));
@@ -3005,7 +3005,7 @@ fn sample_disks() -> Vec<Disk> {
             logical_sector_size: 512,
             major_minor: "8:0".to_string(),
             wwn: "0x5002538e40abcdef".to_string(),
-            serial: "QOS-SAMPLE-SATA".to_string(),
+            serial: "TILO-SAMPLE-SATA".to_string(),
             removable: false,
             read_only: false,
             is_system: false,
@@ -3046,7 +3046,7 @@ fn sample_disks() -> Vec<Disk> {
                     size_bytes: 2_147_483_648,
                     part_uuid: "00000000-0000-0000-0000-000000000004".to_string(),
                     filesystem: "vfat".to_string(),
-                    label: "qOS EFI".to_string(),
+                    label: "Tilo EFI".to_string(),
                     mountpoint: String::new(),
                     part_type: EFI_SYSTEM_GUID.to_string(),
                 },
@@ -3062,7 +3062,7 @@ fn sample_disks() -> Vec<Disk> {
             logical_sector_size: 512,
             major_minor: "259:0".to_string(),
             wwn: "eui.0000000000000001".to_string(),
-            serial: "QOS-SAMPLE-NVME".to_string(),
+            serial: "TILO-SAMPLE-NVME".to_string(),
             removable: false,
             read_only: false,
             is_system: false,
@@ -3076,12 +3076,12 @@ fn sample_disks() -> Vec<Disk> {
 fn sample_install_log() -> Vec<String> {
     vec![
         "Starting install to /dev/sda for user ada (btrfs).".to_string(),
-        "==> Copying the running qOS image into local container storage".to_string(),
-        "Copying local image docker://localhost/qos-installer:latest to containers-storage:localhost/bootc".to_string(),
-        "==> Installing qOS onto /dev/sda (this ERASES the disk)".to_string(),
+        "==> Copying the running Tilo image into local container storage".to_string(),
+        "Copying local image docker://localhost/tilo-installer:latest to containers-storage:localhost/bootc".to_string(),
+        "==> Installing Tilo onto /dev/sda (this ERASES the disk)".to_string(),
         "  base system installed.".to_string(),
         "==> Preparing the 'ada' account on the installed system".to_string(),
-        "==> Setting hostname 'qos' and time zone 'UTC'".to_string(),
+        "==> Setting hostname 'tilo' and time zone 'UTC'".to_string(),
     ]
 }
 
@@ -3100,16 +3100,17 @@ fn friendly_install_status(lines: &[String]) -> Vec<String> {
         let lower = line.to_ascii_lowercase();
         if lower.contains("starting install") {
             add("✓ Installation choices verified");
-        } else if lower.contains("copying the running qos image")
+        } else if lower.contains("copying the running tilo image")
             || lower.contains("copying blob")
             || lower.contains("copying config")
         {
-            add("Copying verified qOS system files…");
+            add("Copying verified Tilo system files…");
         } else if lower.contains("preparing an encrypted root") || lower.contains("formatting luks")
         {
             add("Preparing encrypted storage…");
-        } else if lower.contains("installing qos onto") || lower.contains("base system installed") {
-            add("Installing the signed qOS system…");
+        } else if lower.contains("installing tilo onto") || lower.contains("base system installed")
+        {
+            add("Installing the signed Tilo system…");
         } else if lower.contains("fido2") && (lower.contains("touch") || lower.contains("enroll")) {
             // This is not background progress: systemd-cryptenroll is blocked
             // until the person touches their selected hardware token. Keep it
@@ -3136,7 +3137,7 @@ fn friendly_install_status(lines: &[String]) -> Vec<String> {
         {
             add("Finalizing the secure boot setup…");
         } else if lower.contains("installed — remove the medium") {
-            add("✓ qOS is ready");
+            add("✓ Tilo is ready");
         }
     }
 
@@ -3900,24 +3901,24 @@ mod tests {
 
     #[test]
     fn keyboard_step_never_blocks_forward_progress() {
-        assert!(validate_step(Step::Keyboard, Some(0), "ada", "qos").is_ok());
+        assert!(validate_step(Step::Keyboard, Some(0), "ada", "tilo").is_ok());
     }
 
     #[test]
     fn validate_disk_requires_selection() {
-        assert!(validate_step(Step::Disk, None, "", "qos").is_err());
-        assert!(validate_step(Step::Disk, Some(0), "", "qos").is_ok());
+        assert!(validate_step(Step::Disk, None, "", "tilo").is_err());
+        assert!(validate_step(Step::Disk, Some(0), "", "tilo").is_ok());
     }
 
     #[test]
     fn validate_account_requires_username() {
-        assert!(validate_step(Step::Account, Some(0), "", "qos").is_err());
-        assert!(validate_step(Step::Account, Some(0), "   ", "qos").is_err());
-        assert!(validate_step(Step::Account, Some(0), "ada", "qos").is_ok());
-        assert!(validate_step(Step::Account, Some(0), "lab-user_2", "qos").is_ok());
-        assert!(validate_step(Step::Account, Some(0), "2bad", "qos").is_err());
-        assert!(validate_step(Step::Account, Some(0), "has space", "qos").is_err());
-        assert!(validate_step(Step::Account, Some(0), "bad:name", "qos").is_err());
+        assert!(validate_step(Step::Account, Some(0), "", "tilo").is_err());
+        assert!(validate_step(Step::Account, Some(0), "   ", "tilo").is_err());
+        assert!(validate_step(Step::Account, Some(0), "ada", "tilo").is_ok());
+        assert!(validate_step(Step::Account, Some(0), "lab-user_2", "tilo").is_ok());
+        assert!(validate_step(Step::Account, Some(0), "2bad", "tilo").is_err());
+        assert!(validate_step(Step::Account, Some(0), "has space", "tilo").is_err());
+        assert!(validate_step(Step::Account, Some(0), "bad:name", "tilo").is_err());
     }
 
     #[test]
@@ -3964,7 +3965,7 @@ mod tests {
 
     #[test]
     fn validate_options_requires_valid_hostname() {
-        assert!(validate_step(Step::Options, Some(0), "q", "qos").is_ok());
+        assert!(validate_step(Step::Options, Some(0), "q", "tilo").is_ok());
         assert!(validate_step(Step::Options, Some(0), "q", "").is_err());
         assert!(validate_step(Step::Options, Some(0), "q", "-bad").is_err());
         assert!(validate_step(Step::Options, Some(0), "q", "bad host").is_err());
@@ -3972,7 +3973,7 @@ mod tests {
 
     #[test]
     fn hostname_validator() {
-        assert!(valid_hostname("qos"));
+        assert!(valid_hostname("tilo"));
         assert!(valid_hostname("lab-1"));
         assert!(!valid_hostname(""));
         assert!(!valid_hostname("-x"));
@@ -4461,10 +4462,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
-        assert_eq!(app.hostname, "qos");
+        assert_eq!(app.hostname, "tilo");
         assert_eq!(app.timezone, "UTC");
         let opts = app.install_options();
-        assert_eq!(opts.hostname, "qos");
+        assert_eq!(opts.hostname, "tilo");
         assert_eq!(opts.timezone, "UTC");
         assert_eq!(opts.filesystem, "btrfs");
     }
@@ -4478,7 +4479,7 @@ mod tests {
         assert_eq!(opts.disk_size_bytes, 256_000_000_000);
         assert_eq!(opts.disk_major_minor, "8:0");
         assert_eq!(opts.disk_wwn, "0x5002538e40abcdef");
-        assert_eq!(opts.disk_serial, "QOS-SAMPLE-SATA");
+        assert_eq!(opts.disk_serial, "TILO-SAMPLE-SATA");
         assert_eq!(opts.alongside_root, "/dev/sda3");
         assert_eq!(
             opts.alongside_root_partuuid,
@@ -4544,7 +4545,7 @@ mod tests {
         assert!(
             find_accessible(
                 &app,
-                "To choose qOS or your existing system, open this computer's firmware boot picker. The installer preserved its previous default."
+                "To choose Tilo or your existing system, open this computer's firmware boot picker. The installer preserved its previous default."
             )
             .is_some()
         );
@@ -4575,7 +4576,7 @@ mod tests {
     #[test]
     fn alongside_explains_a_determinable_prepared_efi_failure() {
         let mut disk = sample_disks().remove(0);
-        disk.partitions.pop(); // remove the valid 2 GiB qOS ESP
+        disk.partitions.pop(); // remove the valid 2 GiB Tilo ESP
         let mut app = InstallerApp::with_disks(vec![disk]);
         app.install_method = InstallMethod::Alongside;
         app.selected_disk = Some(0);
@@ -4585,7 +4586,7 @@ mod tests {
         assert!(
             find_accessible(
                 &app,
-                "/dev/sda1 is too small for qOS boot images; a prepared EFI partition must be at least 2 GiB. The privileged install check will also verify FAT health and at least 1 GiB of free space before formatting anything."
+                "/dev/sda1 is too small for Tilo boot images; a prepared EFI partition must be at least 2 GiB. The privileged install check will also verify FAT health and at least 1 GiB of free space before formatting anything."
             )
             .is_some(),
             "known ESP failures should be explained before the user leaves storage selection"
@@ -4663,7 +4664,7 @@ mod tests {
                 size_bytes: 2 * gib,
                 part_uuid: "10000000-0000-4000-8000-000000000002".into(),
                 filesystem: String::new(),
-                label: "qOS EFI".into(),
+                label: "Tilo EFI".into(),
                 mountpoint: String::new(),
                 part_type: EFI_SYSTEM_GUID.into(),
             },
@@ -4673,7 +4674,7 @@ mod tests {
                 size_bytes: disk.size_bytes - 7 * gib,
                 part_uuid: "20000000-0000-4000-8000-000000000003".into(),
                 filesystem: String::new(),
-                label: "qOS root".into(),
+                label: "Tilo root".into(),
                 mountpoint: String::new(),
                 part_type: LINUX_FILESYSTEM_GUID.into(),
             },
@@ -4882,7 +4883,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
 
-        app.on_external_event("::qos-recovery-key::abcd-efgh-ijkl-mnop", &mut doc, &root);
+        app.on_external_event("::tilo-recovery-key::abcd-efgh-ijkl-mnop", &mut doc, &root);
         assert_eq!(app.recovery_key.as_deref(), Some("abcd-efgh-ijkl-mnop"));
         assert!(
             app.status_lines.is_empty(),
@@ -4980,7 +4981,7 @@ mod tests {
     #[test]
     fn install_progress_hides_container_noise_behind_human_milestones() {
         let lines = vec![
-            "Starting install to /dev/vdb for user qostest (btrfs).".to_string(),
+            "Starting install to /dev/vdb for user tilotest (btrfs).".to_string(),
             "Copying blob 0123456789abcdef".to_string(),
             "Copying blob fedcba9876543210".to_string(),
             "==> Preparing an encrypted root on /dev/vdb".to_string(),
@@ -4990,7 +4991,7 @@ mod tests {
             friendly_install_status(&lines),
             vec![
                 "✓ Installation choices verified",
-                "Copying verified qOS system files…",
+                "Copying verified Tilo system files…",
                 "Preparing encrypted storage…",
             ]
         );
@@ -5017,7 +5018,7 @@ mod tests {
         done.shot_finished();
         done.recovery_key = Some("test-recovery-key".to_string());
         let _ = build(&mut done);
-        let success = find_accessible(&done, "qOS is installed").expect("success title");
+        let success = find_accessible(&done, "Tilo is installed").expect("success title");
         assert_eq!(success.live, Some(Politeness::Polite));
         let reboot = find_accessible(&done, "Reboot now").expect("reboot action");
         assert_eq!(reboot.role, ui::a11y::Role::Button);

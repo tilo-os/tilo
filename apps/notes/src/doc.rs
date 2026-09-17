@@ -38,6 +38,42 @@ use crate::num;
 pub struct NotesDoc;
 
 impl NotesDoc {
+    /// Copy a canonical subtree after validating the complete authored mapping.
+    ///
+    /// # Errors
+    /// Refuses stale mappings or reused/malformed identities before mutation.
+    pub fn duplicate_subtree(
+        doc: &mut AutoCommit,
+        source: PageId,
+        pages: &[crate::actions::DuplicatePage],
+    ) -> Result<(), String> {
+        let (workspace, copies) = prepare_duplicate(doc, source, pages)?;
+        let current = Self::list_pages(doc);
+        let mut metadata = workspace.data.pages;
+        metadata.sort_by_key(|page| page.id);
+        for page in metadata {
+            if !current.iter().any(|old| old == &page) {
+                Self::upsert_page_meta(doc, &page);
+            }
+        }
+        for copy in copies {
+            let list =
+                Self::page_blocks_list(doc, copy.page).ok_or("copy block list is missing")?;
+            for (index, block) in copy.blocks.into_iter().enumerate() {
+                insert_block(doc, &list, index, &block.id, &block.kind, &block.text)?;
+                let text = Self::block_text_obj(doc, &list, index).ok_or("copy text is missing")?;
+                for mark in block.marks {
+                    doc.mark(&text, mark, ExpandMark::After)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            for tag in copy.tags {
+                Self::set_tag_assignment(doc, copy.page, tag, true);
+            }
+        }
+        Ok(())
+    }
+
     /// Tags are an independent keyed map. A page/tag association is another
     /// keyed map entry (`page:tag`), so peers changing unrelated memberships
     /// never contend on one aggregate array.
@@ -454,7 +490,7 @@ impl NotesDoc {
     /// Replace Notes' own formatting/link marks on one durable block.  The
     /// marks live on Automerge's Text object rather than in a sidecar JSON
     /// blob, so a concurrent text splice carries the marked range with it.
-    /// Other applications' marks (notably `qos.author`) are deliberately left
+    /// Other applications' marks (notably `tilo.author`) are deliberately left
     /// untouched.
     ///
     /// # Errors
@@ -532,6 +568,165 @@ impl NotesDoc {
             })
             .collect()
     }
+}
+
+struct DuplicateBlock {
+    id: String,
+    kind: String,
+    text: String,
+    marks: Vec<Mark>,
+}
+struct PreparedDuplicate {
+    page: PageId,
+    blocks: Vec<DuplicateBlock>,
+    tags: Vec<TagId>,
+}
+
+/// Preflight the whole source/mapping and snapshot all native data before writes.
+fn prepare_duplicate(
+    doc: &AutoCommit,
+    source: PageId,
+    pages: &[crate::actions::DuplicatePage],
+) -> Result<(crate::Workspace, Vec<PreparedDuplicate>), String> {
+    use std::collections::{BTreeMap, HashSet};
+    let mut workspace = crate::notebook::project(doc, None)?;
+    let original = workspace
+        .get(source)
+        .ok_or("source page no longer exists")?
+        .clone();
+    let mut subtree = HashSet::new();
+    let mut pending = vec![source];
+    while let Some(id) = pending.pop() {
+        if subtree.insert(id) {
+            pending.extend(
+                workspace
+                    .pages()
+                    .iter()
+                    .filter(|p| p.parent == Some(id))
+                    .map(|p| p.id),
+            );
+        }
+    }
+    let mut used = workspace
+        .pages()
+        .iter()
+        .map(|p| p.id)
+        .collect::<HashSet<_>>();
+    for page in workspace.pages() {
+        for (id, _) in NotesDoc::page_block_snapshots(doc, page.id) {
+            used.insert(id.parse::<Uuid>().map_err(|_| "invalid source block id")?);
+        }
+    }
+    let mut mapping = BTreeMap::new();
+    for page in pages {
+        let src = page
+            .source
+            .parse::<PageId>()
+            .map_err(|_| "invalid source page id")?;
+        let dst = page
+            .destination
+            .parse::<PageId>()
+            .map_err(|_| "invalid destination page id")?;
+        if !subtree.contains(&src)
+            || dst.is_nil()
+            || !used.insert(dst)
+            || mapping.insert(src, (dst, page)).is_some()
+        {
+            return Err("duplicate page mapping is stale or reuses an identity".into());
+        }
+    }
+    if mapping.len() != subtree.len() {
+        return Err("duplicate page mapping is incomplete".into());
+    }
+    let new_root = mapping.get(&source).ok_or("missing source mapping")?.0;
+    let next_sibling = workspace
+        .children_of(original.parent)
+        .iter()
+        .map(|p| p.id)
+        .skip_while(|id| *id != source)
+        .nth(1);
+    let mut prepared = Vec::new();
+    let mut metadata = Vec::new();
+    for (&src, &(dst, page)) in &mapping {
+        let copied_blocks = prepare_duplicate_blocks(doc, src, &page.blocks, &mapping, &mut used)?;
+        let mut meta = workspace.get(src).ok_or("source page is missing")?.clone();
+        meta.id = dst;
+        if src == source {
+            meta.title.push_str(" copy");
+        } else {
+            meta.parent = meta
+                .parent
+                .and_then(|parent| mapping.get(&parent).map(|(id, _)| *id));
+        }
+        metadata.push(meta);
+        prepared.push(PreparedDuplicate {
+            page: dst,
+            blocks: copied_blocks,
+            tags: workspace
+                .tags_for_page(src)
+                .into_iter()
+                .map(|tag| tag.id)
+                .collect(),
+        });
+    }
+    workspace.data.pages.extend(metadata);
+    workspace.move_to(new_root, original.parent, next_sibling);
+    workspace.check_invariants()?;
+    Ok((workspace, prepared))
+}
+
+fn prepare_duplicate_blocks(
+    doc: &AutoCommit,
+    src: PageId,
+    block_mapping: &[(String, String)],
+    mapping: &std::collections::BTreeMap<PageId, (PageId, &crate::actions::DuplicatePage)>,
+    used: &mut std::collections::HashSet<Uuid>,
+) -> Result<Vec<DuplicateBlock>, String> {
+    use std::collections::BTreeMap;
+    let source_blocks = NotesDoc::page_block_snapshots(doc, src);
+    let mut blocks = BTreeMap::new();
+    for (old, new) in block_mapping {
+        let id = new
+            .parse::<Uuid>()
+            .map_err(|_| "invalid destination block id")?;
+        if id.is_nil() || !used.insert(id) || blocks.insert(old.as_str(), new).is_some() {
+            return Err("duplicate block mapping reuses an identity".into());
+        }
+    }
+    if blocks.len() != source_blocks.len()
+        || source_blocks
+            .iter()
+            .any(|(id, _)| !blocks.contains_key(id.as_str()))
+    {
+        return Err("duplicate block mapping is stale or incomplete".into());
+    }
+    let list = NotesDoc::page_blocks_list(doc, src).ok_or("source list is missing")?;
+    let mut copied_blocks = Vec::new();
+    for (index, (id, text)) in source_blocks.into_iter().enumerate() {
+        let object = NotesDoc::block_text_obj(doc, &list, index).ok_or("source text is missing")?;
+        let mut marks = doc.marks(&object).map_err(|e| e.to_string())?;
+        for mark in &mut marks {
+            if let Some(raw) = mark.name.strip_prefix("notes.inline.link:") {
+                let target = raw
+                    .parse::<PageId>()
+                    .map_err(|_| "invalid source page link")?;
+                if let Some((destination, _)) = mapping.get(&target) {
+                    mark.name = format!("notes.inline.link:{destination}").into();
+                    mark.value = automerge::ScalarValue::Str(destination.to_string().into());
+                }
+            }
+        }
+        copied_blocks.push(DuplicateBlock {
+            id: (*blocks
+                .get(id.as_str())
+                .ok_or("source block mapping is missing")?)
+            .clone(),
+            kind: NotesDoc::block_kind(doc, &list, index),
+            text,
+            marks,
+        });
+    }
+    Ok(copied_blocks)
 }
 
 const NOTE_MARK_PREFIX: &str = "notes.inline.";
@@ -707,7 +902,7 @@ fn block_map(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<(usize, ObjId)>
     }
 }
 
-fn valid_kind(kind: &str) -> bool {
+pub(crate) fn valid_kind(kind: &str) -> bool {
     matches!(
         kind,
         "paragraph" | "divider" | "heading1" | "heading2" | "heading3"
@@ -746,6 +941,15 @@ fn insert_block(
         .map_err(|_| "page block list no longer exists")?;
     doc.put(&block, "kind", kind)
         .map_err(|_| "page block list no longer exists")?;
+    if doc
+        .get(ROOT, "notes_schema_version")
+        .ok()
+        .flatten()
+        .is_some_and(|(value, _)| value.to_i64() == Some(1))
+    {
+        doc.put(&block, "notes_marks_version", 1_i64)
+            .map_err(|e| e.to_string())?;
+    }
     let text_obj = doc
         .put_object(&block, "text", ObjType::Text)
         .map_err(|_| "page block list no longer exists")?;

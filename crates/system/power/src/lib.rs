@@ -1,4 +1,4 @@
-//! qOS **power management** — suspend-on-idle, lid/power-key handling,
+//! Tilo **power management** — suspend-on-idle, lid/power-key handling,
 //! suspend inhibitors, and battery thresholds, built on `systemd-logind` and
 //! `UPower` over D-Bus.
 //!
@@ -54,7 +54,6 @@ pub mod bridge;
 pub mod config;
 #[cfg(feature = "service")]
 pub mod history;
-#[cfg(feature = "service")]
 pub mod inhibit;
 #[cfg(feature = "service")]
 pub mod logind;
@@ -77,7 +76,6 @@ pub use history::{
     BatteryHistory, BatteryHistoryPoint, PowerSourceKind, load_battery_history, load_ups_history,
     record_power_history,
 };
-#[cfg(feature = "service")]
 pub use inhibit::{InhibitRegistry, InhibitToken};
 #[cfg(feature = "service")]
 pub use logind::{LogindInhibitor, LogindManager};
