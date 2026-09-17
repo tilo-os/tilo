@@ -6132,8 +6132,10 @@ impl CameraApp {
         // Centred sheet — wide enough that grouped rows use the full width and
         // stay aligned, capped so it reads as a sheet rather than a stranded
         // narrow column in an empty window.
-        let total = Self::settings_total_height();
-        let sw = 620.0_f64.min(full.width() - 96.0);
+        let large_type = theme.text_scale >= 1.5;
+        let total = Self::settings_total_height(theme);
+        let horizontal_margin = if full.width() < 500.0 { 24.0 } else { 96.0 };
+        let sw = 620.0_f64.min(full.width() - horizontal_margin);
         let sh = (total + 24.0).min(full.height() - 72.0);
         let sx = full.center().x - sw / 2.0;
         let sy = full.center().y - sh / 2.0;
@@ -6156,7 +6158,7 @@ impl CameraApp {
         p::push_clip_round(scene, t, sheet, 22.0);
         let mut y = sheet.y0 + 22.0 - off;
         p::text(scene, tr, x0, y, "Settings", 22.0, c.text_primary);
-        y += 44.0;
+        y += if large_type { 60.0 } else { 44.0 };
 
         y = self.draw_settings_capture_group(scene, t, tr, theme, x0, y, colw);
         y = self.draw_settings_composition_group(scene, t, tr, theme, x0, y, colw);
@@ -6211,8 +6213,9 @@ impl CameraApp {
     ) -> f64 {
         let c = &theme.tokens.colors;
         let y = Self::group_title(scene, tr, theme, x0, y, "Capture");
+        let row_height = Self::settings_row_height(theme);
         let cap_rows = 4;
-        let cap_rect = Rect::new(x0, y, x0 + colw, y + f64::from(cap_rows) * 52.0);
+        let cap_rect = Rect::new(x0, y, x0 + colw, y + f64::from(cap_rows) * row_height);
         p::fill_round(scene, t, cap_rect, 14.0, c.surfaces.raised);
         p::stroke_round(
             scene,
@@ -6227,7 +6230,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, y, x0 + colw, y + 52.0),
+            Rect::new(x0, y, x0 + colw, y + row_height),
             ValueRowContent {
                 label: "Resolution",
                 value: self.settings.resolution.label(),
@@ -6240,7 +6243,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, ry, x0 + colw, ry + 52.0),
+            Rect::new(x0, ry, x0 + colw, ry + row_height),
             ValueRowContent {
                 label: "Photo format",
                 value: self.settings.photo_format.label(),
@@ -6253,7 +6256,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, ry, x0 + colw, ry + 52.0),
+            Rect::new(x0, ry, x0 + colw, ry + row_height),
             ToggleRowContent {
                 label: "HDR",
                 on: self.settings.hdr,
@@ -6261,7 +6264,13 @@ impl CameraApp {
             },
         );
         Self::row_sep(scene, t, theme, x0, ry, colw);
-        let ry = self.timer_row(scene, t, tr, theme, Rect::new(x0, ry, x0 + colw, ry + 52.0));
+        let ry = self.timer_row(
+            scene,
+            t,
+            tr,
+            theme,
+            Rect::new(x0, ry, x0 + colw, ry + row_height),
+        );
         ry + 20.0
     }
 
@@ -6285,7 +6294,8 @@ impl CameraApp {
     ) -> f64 {
         let c = &theme.tokens.colors;
         let y = Self::group_title(scene, tr, theme, x0, y, "Composition");
-        let comp_rect = Rect::new(x0, y, x0 + colw, y + 3.0 * 52.0);
+        let row_height = Self::settings_row_height(theme);
+        let comp_rect = Rect::new(x0, y, x0 + colw, y + 3.0 * row_height);
         p::fill_round(scene, t, comp_rect, 14.0, c.surfaces.raised);
         p::stroke_round(
             scene,
@@ -6300,7 +6310,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, y, x0 + colw, y + 52.0),
+            Rect::new(x0, y, x0 + colw, y + row_height),
             ToggleRowContent {
                 label: "Grid (rule of thirds)",
                 on: self.settings.grid,
@@ -6313,7 +6323,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, ry, x0 + colw, ry + 52.0),
+            Rect::new(x0, ry, x0 + colw, ry + row_height),
             ToggleRowContent {
                 label: "Level guide",
                 on: self.settings.level,
@@ -6326,7 +6336,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, ry, x0 + colw, ry + 52.0),
+            Rect::new(x0, ry, x0 + colw, ry + row_height),
             ToggleRowContent {
                 label: "Mirror front camera",
                 on: self.settings.mirror_front,
@@ -6355,7 +6365,8 @@ impl CameraApp {
     ) {
         let c = &theme.tokens.colors;
         let y = Self::group_title(scene, tr, theme, x0, y, "Privacy & camera");
-        let pc_rect = Rect::new(x0, y, x0 + colw, y + 2.0 * 52.0);
+        let row_height = Self::settings_row_height(theme);
+        let pc_rect = Rect::new(x0, y, x0 + colw, y + 2.0 * row_height);
         p::fill_round(scene, t, pc_rect, 14.0, c.surfaces.raised);
         p::stroke_round(
             scene,
@@ -6370,7 +6381,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, y, x0 + colw, y + 52.0),
+            Rect::new(x0, y, x0 + colw, y + row_height),
             ToggleRowContent {
                 label: "Location tags",
                 on: self.settings.geotag,
@@ -6383,7 +6394,7 @@ impl CameraApp {
             t,
             tr,
             theme,
-            Rect::new(x0, ry, x0 + colw, ry + 52.0),
+            Rect::new(x0, ry, x0 + colw, ry + row_height),
             ValueRowContent {
                 label: "Default camera",
                 value: self.settings.default_facing.label(),
@@ -6395,15 +6406,20 @@ impl CameraApp {
     /// Full painted height of the settings sheet, independent of window size.
     /// Mirrors the group layout in [`Self::draw_settings`]; the two must stay
     /// in step so scroll always reaches the last row.
-    fn settings_total_height() -> f64 {
-        let row = 52.0;
-        let header = 24.0;
+    fn settings_total_height(theme: &Theme) -> f64 {
+        let large_type = theme.text_scale >= 1.5;
+        let row = Self::settings_row_height(theme);
+        let header = if large_type { 32.0 } else { 24.0 };
         let group_gap = 20.0;
-        let body = 44.0                                 // title → first group
+        let body = if large_type { 60.0 } else { 44.0 } // title → first group
             + header + 4.0 * row + group_gap            // Capture (4 rows)
             + header + 3.0 * row + group_gap            // Composition (3 rows)
             + header + 2.0 * row; // Privacy & camera (2 rows)
         22.0 + body + 24.0 // top gap + body + bottom breathing room
+    }
+
+    fn settings_row_height(theme: &Theme) -> f64 {
+        if theme.text_scale >= 1.5 { 84.0 } else { 52.0 }
     }
 
     fn group_title(
@@ -6423,7 +6439,7 @@ impl CameraApp {
             11.0,
             p::alpha(theme.tokens.colors.text_dim, 0.9),
         );
-        y + 24.0
+        y + if theme.text_scale >= 1.5 { 32.0 } else { 24.0 }
     }
 
     fn row_sep(scene: &mut Scene, t: Affine, theme: &Theme, x: f64, y: f64, w: f64) {
@@ -6453,20 +6469,38 @@ impl CameraApp {
     ) -> f64 {
         let ToggleRowContent { label, on, action } = content;
         let c = &theme.tokens.colors;
+        let large_type = theme.text_scale >= 1.5;
+        let label = if large_type {
+            ellipsize(tr, label, 14.0, row.width() - 36.0)
+        } else {
+            label.to_string()
+        };
         p::text(
             scene,
             tr,
             row.x0 + 18.0,
-            row.center().y - 8.0,
-            label,
+            if large_type {
+                row.y0 + 10.0
+            } else {
+                row.center().y - 8.0
+            },
+            &label,
             14.0,
             c.text_primary,
         );
         let sw = Rect::new(
             row.x1 - 18.0 - 46.0,
-            row.center().y - 13.0,
+            if large_type {
+                row.y1 - 34.0
+            } else {
+                row.center().y - 13.0
+            },
             row.x1 - 18.0,
-            row.center().y + 13.0,
+            if large_type {
+                row.y1 - 8.0
+            } else {
+                row.center().y + 13.0
+            },
         );
         self.toggle_switch(scene, t, theme, sw, on, action);
         row.y1
@@ -6490,27 +6524,49 @@ impl CameraApp {
             action,
         } = content;
         let c = &theme.tokens.colors;
+        let large_type = theme.text_scale >= 1.5;
+        let label = if large_type {
+            ellipsize(tr, label, 14.0, row.width() - 36.0)
+        } else {
+            label.to_string()
+        };
         p::text(
             scene,
             tr,
             row.x0 + 18.0,
-            row.center().y - 8.0,
-            label,
+            if large_type {
+                row.y0 + 10.0
+            } else {
+                row.center().y - 8.0
+            },
+            &label,
             14.0,
             c.text_primary,
         );
         let chev = Rect::new(
             row.x1 - 30.0,
-            row.center().y - 9.0,
+            if large_type {
+                row.y1 - 32.0
+            } else {
+                row.center().y - 9.0
+            },
             row.x1 - 16.0,
-            row.center().y + 9.0,
+            if large_type {
+                row.y1 - 14.0
+            } else {
+                row.center().y + 9.0
+            },
         );
         p::icon(scene, t, "chevron", chev, p::alpha(c.text_dim, 0.9), 1.8);
         p::text_right(
             scene,
             tr,
             chev.x0 - 8.0,
-            row.center().y - 8.0,
+            if large_type {
+                row.y1 - 34.0
+            } else {
+                row.center().y - 8.0
+            },
             value,
             13.5,
             theme.accent_primary,
@@ -6531,21 +6587,30 @@ impl CameraApp {
         row: Rect,
     ) -> f64 {
         let c = &theme.tokens.colors;
+        let large_type = theme.text_scale >= 1.5;
         p::text(
             scene,
             tr,
             row.x0 + 18.0,
-            row.center().y - 8.0,
+            if large_type {
+                row.y0 + 10.0
+            } else {
+                row.center().y - 8.0
+            },
             "Self-timer",
             14.0,
             c.text_primary,
         );
-        let seg = Rect::new(
-            row.x1 - 18.0 - 168.0,
-            row.center().y - 15.0,
-            row.x1 - 18.0,
-            row.center().y + 15.0,
-        );
+        let seg = if large_type {
+            Rect::new(row.x0 + 18.0, row.y1 - 40.0, row.x1 - 18.0, row.y1 - 8.0)
+        } else {
+            Rect::new(
+                row.x1 - 18.0 - 168.0,
+                row.center().y - 15.0,
+                row.x1 - 18.0,
+                row.center().y + 15.0,
+            )
+        };
         let items: Vec<(String, bool, Action)> = Timer::ALL
             .iter()
             .map(|tm| {
@@ -7736,13 +7801,18 @@ mod tests {
     fn settings_sheet_needs_scroll_on_short_windows() {
         // On a short window the whole sheet must remain reachable: the max
         // scroll equals how far the content overflows the viewport.
-        let total = CameraApp::settings_total_height();
+        let total = CameraApp::settings_total_height(&Theme::dark());
         assert!(
             (total - 670.0).abs() < 1.0,
             "settings height ~670, got {total}"
         );
         let short = 560.0;
         assert!(total - short > 100.0, "last rows are below a 560px fold");
+        let large_type = CameraApp::settings_total_height(&Theme::dark().with_text_scale(2.0));
+        assert!(
+            large_type > total + 250.0,
+            "large text rows need independent vertical controls"
+        );
     }
 
     #[test]
