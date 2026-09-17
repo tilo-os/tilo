@@ -242,7 +242,7 @@ fi
 # Dockerfile FROM references are resolved even for a pruned browser stage.
 [ -n "$WPE_BUILDROOT_REF" ] || WPE_BUILDROOT_REF="$BASE_REF"
 if [ "${TILO_REQUIRE_WPE_SIGNATURE:-0}" = 1 ] && [ "$TILO_WITH_BROWSER" = 1 ]; then
-  [[ "$WPE_BUILDROOT_REF" =~ ^code\.podesta\.ai/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] \
+  [[ "$WPE_BUILDROOT_REF" =~ ^code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] \
     || die "release builds require a digest-pinned WPE buildroot"
   command -v cosign >/dev/null || die "release builds require cosign to verify the WPE buildroot"
   cosign verify --key "$TILO_REPO/keys/cosign.pub" "$WPE_BUILDROOT_REF" >/dev/null \
