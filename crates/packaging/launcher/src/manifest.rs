@@ -108,7 +108,7 @@ struct RawManifest {
     continuity: ContinuityContract,
 }
 
-pub use pkg::manifest::{ContinuityContract, ContinuityFacet};
+pub use pkg::manifest::{ContinuityContract, ContinuityFacet, ContinuitySemanticSchema};
 
 /// `[providers]` block, mirrors [`pkg::manifest::Providers`], decoded
 /// here to keep the launcher independent of the full pkg crate.

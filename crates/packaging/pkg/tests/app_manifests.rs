@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use pkg::id::Kind;
-use pkg::manifest::{ContinuityFacet, EntrypointType, Manifest, NetMode};
+use pkg::manifest::{ContinuityFacet, ContinuitySemanticSchema, EntrypointType, Manifest, NetMode};
 use pkg::validate::validate_manifest;
 
 /// Repo root, derived from this crate's path at `<root>/crates/packaging/pkg`.
@@ -88,6 +88,15 @@ fn every_manifest_passes_schema_validation() {
 #[test]
 fn app_fleet_declares_structural_continuity_fidelity() {
     let semantic_apps = ["dev.tilo.browser", "dev.tilo.ebook", "dev.tilo.music"];
+    let semantic_schemas = BTreeMap::from([
+        ("dev.tilo.browser", ContinuitySemanticSchema::WebLocationV1),
+        (
+            "dev.tilo.ebook",
+            ContinuitySemanticSchema::PublicationPositionV1,
+        ),
+        ("dev.tilo.music", ContinuitySemanticSchema::MediaPositionV1),
+        ("dev.tilo.chat", ContinuitySemanticSchema::RealtimeSessionV1),
+    ]);
 
     for dir in app_dirs() {
         let m = load(&dir);
@@ -102,6 +111,12 @@ fn app_fleet_declares_structural_continuity_fidelity() {
             m.continuity.required.contains(&ContinuityFacet::Semantic),
             semantic_apps.contains(&m.package.id.as_str()),
             "{}: signed semantic-continuity declaration drifted from the apps that implement it",
+            dir.display()
+        );
+        assert_eq!(
+            m.continuity.semantic_schema,
+            semantic_schemas.get(m.package.id.as_str()).copied(),
+            "{}: portable semantic schema drifted from runtime validation",
             dir.display()
         );
     }

@@ -1123,9 +1123,9 @@ pub enum InstalledContinuityRequirements {
     /// No installed package owns this id (development/legacy callers use the
     /// framework presentation baseline).
     NotInstalled,
-    /// Facets parsed from the installed manifest. An old manifest produces
-    /// the presentation default.
-    Required(Vec<launcher::manifest::ContinuityFacet>),
+    /// Signed contract parsed from the installed manifest. An old manifest
+    /// produces the presentation-only default.
+    Required(launcher::manifest::ContinuityContract),
     /// Registry or manifest authority was present but unreadable/inconsistent.
     /// Callers must reject rather than silently weaken the signed contract.
     Invalid,
@@ -1134,7 +1134,7 @@ pub enum InstalledContinuityRequirements {
 /// Read the signed continuity contract for an installed package without using
 /// the UI-oriented app cache. This keeps every checkpoint tied to current
 /// install authority and distinguishes legacy absence from corruption.
-pub fn installed_continuity_required_facets(package_id: &str) -> InstalledContinuityRequirements {
+pub fn installed_continuity_contract(package_id: &str) -> InstalledContinuityRequirements {
     let Ok(entries) = launcher::registry::list_installed() else {
         return InstalledContinuityRequirements::Invalid;
     };
@@ -1147,7 +1147,7 @@ pub fn installed_continuity_required_facets(package_id: &str) -> InstalledContin
     if !manifest.package_id.is_empty() && manifest.package_id != package_id {
         return InstalledContinuityRequirements::Invalid;
     }
-    InstalledContinuityRequirements::Required(manifest.continuity.required)
+    InstalledContinuityRequirements::Required(manifest.continuity)
 }
 
 /// Installed packages, memoised for [`APP_CACHE_TTL`]. Errors are not
@@ -2873,7 +2873,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn installed_continuity_lookup_reads_signed_manifest_facets() {
+    fn installed_continuity_lookup_reads_signed_manifest_contract() {
         let tmp = tempfile::tempdir().unwrap();
         let payload = install_fixture(tmp.path(), "dev.tilo.browser", "gui");
         let manifest_path = payload.join("manifest.toml");
@@ -2883,22 +2883,25 @@ mod tests {
             .unwrap();
         writeln!(
             manifest,
-            "\n[continuity]\nrequired = [\"presentation\", \"semantic\"]"
+            "\n[continuity]\nrequired = [\"presentation\", \"semantic\"]\nsemantic-schema = \"web-location-v1\""
         )
         .unwrap();
 
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
-        let required = installed_continuity_required_facets("dev.tilo.browser");
-        let legacy = installed_continuity_required_facets("dev.tilo.not-installed");
+        let required = installed_continuity_contract("dev.tilo.browser");
+        let legacy = installed_continuity_contract("dev.tilo.not-installed");
         unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
 
         assert_eq!(
             required,
-            InstalledContinuityRequirements::Required(vec![
-                launcher::manifest::ContinuityFacet::Presentation,
-                launcher::manifest::ContinuityFacet::Semantic,
-            ])
+            InstalledContinuityRequirements::Required(launcher::manifest::ContinuityContract {
+                required: vec![
+                    launcher::manifest::ContinuityFacet::Presentation,
+                    launcher::manifest::ContinuityFacet::Semantic,
+                ],
+                semantic_schema: Some(launcher::manifest::ContinuitySemanticSchema::WebLocationV1,),
+            })
         );
         assert_eq!(legacy, InstalledContinuityRequirements::NotInstalled);
     }
