@@ -61,6 +61,9 @@ ARG WINDOWS_GUEST_REF=scratch
 # out is how you get an image to boot-test in minutes while the browser's own
 # build is being repaired.
 ARG TILO_WITH_BROWSER=1
+FROM scratch AS public-trust
+COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /
+
 FROM ${RPMS_REF} AS rpms
 
 # ---- Custom kernel repo ----------------------------------------------------
@@ -1272,10 +1275,20 @@ COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules /usr/lib/udev/rules.d/90-ti
 #    artefacts themselves — needs a signed prediction, or every update would
 #    break the seal. This key is what such a prediction would verify against.
 #    See docs/security/boot-chain.md.
-COPY \
-    keys/cosign.pub \
-    keys/tpm2-pcr-signing.public.pem \
-    /usr/share/tilo/
+# The named context can override only this public bundle. The separate tracked
+# reference below binds production mode to the unchanged official keys.
+ARG TILO_PUBLIC_TRUST_MODE=production
+ARG TILO_PUBLIC_TRUST_MANIFEST_SHA256
+ARG TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY
+COPY --from=public-trust / /run/tilo-public-trust/
+COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /run/tilo-official-trust/
+COPY os/dev/development-trust.py os/dev/install-public-trust.py /run/tilo-trust-tools/
+RUN python3 /run/tilo-trust-tools/install-public-trust.py \
+      --source /run/tilo-public-trust --official /run/tilo-official-trust \
+      --destination /usr/share/tilo --mode "$TILO_PUBLIC_TRUST_MODE" \
+      --manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256" \
+      --registry-owner "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" \
+ && rm -rf /run/tilo-public-trust /run/tilo-official-trust /run/tilo-trust-tools
 
 # Container signature policy: REQUIRE a valid cosign signature for
 # code.podesta.ai/qos/tilo (everything else stays permissive), so a tampered or
