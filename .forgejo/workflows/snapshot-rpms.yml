@@ -17,7 +17,9 @@ on:
       - os/Containerfile.rpms
       - os/external-assets/github-assets.tsv
       - os/dev/cache-github-assets.sh
+      - os/dev/install-cached-cosign.sh
       - os/dev/derive-rpm-package-set.py
+      - keys/cosign.pub
       - os/Containerfile.host
       - os/dev/composefs/Containerfile
       - os/containers/tilo-relay/Containerfile
@@ -30,8 +32,9 @@ concurrency:
 
 jobs:
   snapshot:
+    if: github.ref == 'refs/heads/main'
     runs-on: runner
-    timeout-minutes: 240
+    enable-openid-connect: true
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -56,6 +59,9 @@ jobs:
         with:
           path: os/external-assets/cache
           key: github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+
+      - name: Install checksum-pinned Cosign
+        run: ./os/dev/install-cached-cosign.sh
 
       # The base is the mirrored, digest-pinned one every image builds FROM
       # (os/base-snapshot.env) — the package set has to resolve against the
@@ -87,6 +93,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
 
+      - name: Enable deterministic cross-architecture snapshot builds
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          image: tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+
       - name: Set up buildx for registry cache export
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
@@ -100,18 +112,71 @@ jobs:
           build-contexts: |
             github-assets=os/external-assets/cache
           file: os/Containerfile.rpms
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: code.sandbox.example/qos/rpms:${{ github.sha }}
+          tags: code.sandbox.example/tilo/rpms:${{ github.sha }}
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
             PACKAGES=${{ env.PACKAGES }}
-          cache-from: type=registry,ref=code.sandbox.example/qos/tilo-rpms-buildcache:latest
-          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-rpms-buildcache:latest,mode=max
+          cache-from: type=registry,ref=code.sandbox.example/tilo/tilo-rpms-buildcache:latest
+          cache-to: type=registry,ref=code.sandbox.example/tilo/tilo-rpms-buildcache:latest,mode=max
           provenance: false
 
       - name: Report the pinned RPMS_REF to commit
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
         run: |
-          ref="code.sandbox.example/qos/rpms@${{ steps.rpms.outputs.digest }}"
+          set -euo pipefail
+          ref="code.sandbox.example/tilo/rpms@${{ steps.rpms.outputs.digest }}"
+          platforms="$(docker buildx imagetools inspect --raw "$ref" | jq -c \
+            '[.manifests[].platform | {os,architecture}] | sort_by(.architecture)')"
+          expected='[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]'
+          [ "$platforms" = "$expected" ] || {
+            echo "::error::frozen RPM index does not contain exactly amd64 and arm64: $platforms"
+            exit 1
+          }
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+          esac
+          package_set_sha256="$(printf '%s\n' $PACKAGES | sort -u | sha256sum | cut -d' ' -f1)"
+          digest='${{ steps.rpms.outputs.digest }}'
+          jq -n --arg source "git+ssh://code.sandbox.example/tilo/tilo@$GITHUB_SHA" \
+            --arg digest "$digest" --arg base "$BASE_REF" \
+            --arg package_set_sha256 "$package_set_sha256" '
+              {
+                buildDefinition: {
+                  buildType: "https://tilo.dev/buildtypes/frozen-rpm-index/v1",
+                  externalParameters: {
+                    architectures: ["amd64", "arm64"],
+                    packageSetSha256: $package_set_sha256
+                  },
+                  internalParameters: {expectedReleaseDigest: $digest},
+                  resolvedDependencies: [{uri: $source}, {uri: $base}]
+                },
+                runDetails: {
+                  builder: {id: "https://code.sandbox.example/tilo/forgejo/actions/rpm-snapshot-v1"},
+                  metadata: {invocationId: env.GITHUB_RUN_ID}
+                }
+              }
+            ' > rpm-provenance.json
+          cosign sign --yes --key "$COSIGN_KEY_REF" "$ref"
+          cosign attest --yes --key "$COSIGN_KEY_REF" --type slsaprovenance1 \
+            --predicate rpm-provenance.json "$ref"
+          cosign verify --key keys/cosign.pub "$ref" >/dev/null
+          provenance="$(cosign verify-attestation --key keys/cosign.pub \
+            --type slsaprovenance1 "$ref")"
+          printf '%s' "$provenance" | jq -e --arg digest "$digest" \
+            --arg base "$BASE_REF" --arg package_set_sha256 "$package_set_sha256" '
+              [.[].payload | @base64d | fromjson | .predicate]
+              | any(
+                  .buildDefinition.buildType == "https://tilo.dev/buildtypes/frozen-rpm-index/v1"
+                  and .buildDefinition.externalParameters.architectures == ["amd64", "arm64"]
+                  and .buildDefinition.externalParameters.packageSetSha256 == $package_set_sha256
+                  and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
+                  and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
+                )
+            ' >/dev/null
           echo "::notice::Frozen RPM repo published. Set os/rpms-snapshot.env to: RPMS_REF=$ref"
           {
             echo "## Frozen RPM repo published"
@@ -127,7 +192,7 @@ jobs:
         env:
           RPMS_DIGEST: ${{ steps.rpms.outputs.digest }}
         run: |
-          ref="code.sandbox.example/qos/rpms@${RPMS_DIGEST}"
+          ref="code.sandbox.example/tilo/rpms@${RPMS_DIGEST}"
           printf '%s\n' \
             '# Digest-pinned frozen RPM repository used by os/Containerfile.' \
             '# Updated by the snapshot-rpms workflow when the package set changes.' \

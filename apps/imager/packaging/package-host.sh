@@ -183,8 +183,7 @@ case "$host" in
         cert_tmp="$(mktemp -d)"
         trap 'rm -rf "$cert_tmp"' EXIT
         codesign -d --extract-certificates "$cert_tmp/cert" "$app"
-        openssl x509 -inform DER -in "$cert_tmp/cert0" -noout -fingerprint -sha256 \
-          | sed 's/^[^=]*=//; s/://g'
+        shasum -a 256 "$cert_tmp/cert0" | awk '{print toupper($1)}'
       )"
       [ -z "$expected_cert" ] || [ "$actual_cert" = "$expected_cert" ] \
         || { printf 'macOS signing certificate fingerprint does not match protected release policy\n' >&2; exit 1; }
@@ -266,7 +265,7 @@ case "$host" in
     cp apps/imager/packaging/linux/tilo-imager "$appdir/usr/bin/tilo-imager"
     cp apps/imager/packaging/linux/tilo-imager.desktop \
       "$appdir/usr/share/applications/org.tilo.Imager.desktop"
-    sed "s|https://code.sandbox.example/qos/releases|$release_page|g" \
+    sed "s|https://code.sandbox.example/tilo/releases|$release_page|g" \
       apps/imager/packaging/linux/org.tilo.Imager.metainfo.xml \
       >"$appdir/usr/share/metainfo/org.tilo.Imager.appdata.xml"
     cp apps/imager/packaging/linux/AppRun "$appdir/AppRun"

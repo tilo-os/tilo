@@ -18,7 +18,7 @@
 //! `MODEL`. That keeps us robust to multi-word model strings without
 //! depending on fixed column widths.
 
-use std::process::Command;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -573,7 +573,13 @@ fn format_bytes(bytes: u64) -> String {
 /// Run `lsblk` and parse its output. Returns an empty vec when `lsblk`
 /// is missing or fails — the UI surfaces that as "No disks found".
 pub fn read_disks() -> Vec<Disk> {
-    match Command::new("lsblk").args(LSBLK_ARGS).output() {
+    match bounded_command::run(
+        "lsblk",
+        &LSBLK_ARGS,
+        None,
+        4 * 1024 * 1024,
+        Duration::from_secs(10),
+    ) {
         Ok(out) if out.status.success() => parse_lsblk(&String::from_utf8_lossy(&out.stdout)),
         _ => Vec::new(),
     }

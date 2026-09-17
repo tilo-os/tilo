@@ -6,6 +6,7 @@
 //! samples into a level meter; it never creates a playback/monitor link.
 
 use std::io::{Read, Write};
+use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
@@ -255,22 +256,42 @@ impl PersistentAudioPolicy {
 pub struct RealAudioRuntime;
 
 fn command_works(bin: &str, args: &[&str]) -> bool {
-    Command::new(bin)
-        .args(args)
-        .output()
-        .is_ok_and(|o| o.status.success())
+    bounded_command::run(bin, args, None, 64 * 1024, Duration::from_secs(3))
+        .is_ok_and(|output| output.status.success())
 }
 
 fn run(bin: &str, args: &[String]) -> Result<String, String> {
-    let out = Command::new(bin)
-        .args(args)
-        .output()
-        .map_err(|e| format!("{bin} is unavailable: {e}"))?;
+    let mut command = Command::new(bin);
+    command.args(args);
+    let out = bounded_command::run_prepared(command, None, 64 * 1024, Duration::from_secs(3))
+        .map_err(|e| format!("{bin} control failed: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        Err(sanitize_diagnostic(&out.stderr))
     }
+}
+
+fn sanitize_diagnostic(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
+        .take(512)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn terminate_process_group(child: &mut Child) {
+    if let Ok(pid) = i32::try_from(child.id())
+        && let Some(group) = pid.checked_neg()
+    {
+        // SAFETY: every child passed here is spawned into its own pid-named
+        // process group, so the negative pid targets only that session.
+        unsafe { libc::kill(group, libc::SIGKILL) };
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 impl AudioRuntimeControl for RealAudioRuntime {
@@ -343,18 +364,18 @@ impl AudioRuntimeControl for RealAudioRuntime {
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .process_group(0)
             .spawn()
             .map_err(|e| format!("pw-play is unavailable: {e}"))?;
         // Keep the payload below a typical 64 KiB pipe buffer so starting a
         // test never waits for real-time playback on the UI thread.
         let pcm = channel_test_pcm(left, 48_000, Duration::from_millis(280));
         let Some(mut input) = child.stdin.take() else {
-            let _ = child.kill();
+            terminate_process_group(&mut child);
             return Err("pw-play did not open its audio input".into());
         };
         if let Err(e) = input.write_all(&pcm) {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_process_group(&mut child);
             return Err(format!("could not send the channel test: {e}"));
         }
         drop(input);
@@ -389,10 +410,11 @@ impl AudioRuntimeControl for RealAudioRuntime {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .process_group(0)
             .spawn()
             .map_err(|e| format!("pw-record is unavailable: {e}"))?;
         let Some(mut output) = child.stdout.take() else {
-            let _ = child.kill();
+            terminate_process_group(&mut child);
             return Err("pw-record did not expose captured samples".into());
         };
         let (tx, rx) = mpsc::channel();
@@ -495,8 +517,7 @@ impl BoundedSession for ChildSession {
     }
     fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_process_group(&mut child);
         }
     }
 }
@@ -549,8 +570,7 @@ impl BoundedSession for MicSession {
     }
     fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            terminate_process_group(&mut child);
         }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
@@ -773,6 +793,7 @@ mod tests {
     fn child_session_drop_terminates_process() {
         let child = Command::new("sh")
             .args(["-c", "exec sleep 30"])
+            .process_group(0)
             .spawn()
             .unwrap();
         let pid = child.id();
@@ -782,11 +803,7 @@ mod tests {
                 deadline: Instant::now() + Duration::from_secs(30),
             };
         }
-        let alive = Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .status()
-            .unwrap()
-            .success();
+        let alive = i32::try_from(pid).is_ok_and(|pid| unsafe { libc::kill(pid, 0) } == 0);
         assert!(!alive);
     }
 }

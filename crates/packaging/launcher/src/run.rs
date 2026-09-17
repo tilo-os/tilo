@@ -292,6 +292,13 @@ fn validate_launch_mode(manifest: &MinimalManifest, opts: &RunOptions) -> Result
     Ok(())
 }
 
+fn is_native_game_launch(manifest: &MinimalManifest, opts: &RunOptions) -> bool {
+    matches!(&opts.mode, LaunchMode::Gui)
+        && manifest.category.as_deref().is_some_and(|category| {
+            category.eq_ignore_ascii_case("game") || category.eq_ignore_ascii_case("games")
+        })
+}
+
 #[cfg(test)]
 mod resource_claim_tests {
     use super::*;
@@ -328,6 +335,42 @@ mod resource_claim_tests {
                 "accepted {uri:?}"
             );
         }
+    }
+
+    #[test]
+    fn only_gui_game_packages_receive_the_scheduler_hint() {
+        let game: MinimalManifest = toml::from_str(
+            "[package]\nid = \"dev.tilo.game\"\nversion = \"1\"\ncategory = \"Games\"\n\
+             [entrypoint]\nbin = \"bin/game\"\n",
+        )
+        .unwrap();
+        assert!(is_native_game_launch(&game, &RunOptions::default()));
+        let service = RunOptions {
+            mode: LaunchMode::Service {
+                passthrough_argv: Vec::new(),
+            },
+            ..RunOptions::default()
+        };
+        assert!(!is_native_game_launch(&game, &service));
+        assert!(!is_native_game_launch(
+            &browser_manifest(),
+            &RunOptions::default()
+        ));
+    }
+
+    #[test]
+    fn only_game_launches_receive_the_ntsync_device() {
+        let mut game = vec!["/app/game".to_string()];
+        splice_game_ntsync(&mut game, true).unwrap();
+        assert!(
+            game.windows(3)
+                .any(|window| { window == ["--dev-bind", "/dev/ntsync", "/dev/ntsync"] })
+        );
+        assert_eq!(game.last().map(String::as_str), Some("/app/game"));
+
+        let mut ordinary = vec!["/app/browser".to_string()];
+        splice_game_ntsync(&mut ordinary, false).unwrap();
+        assert_eq!(ordinary, ["/app/browser"]);
     }
 }
 
@@ -970,6 +1013,22 @@ fn splice_cli_setenv(
     Ok(())
 }
 
+/// Expose the upstream NT synchronization device only to GUI packages marked
+/// as games. The fresh bwrap `/dev` hides host devices by default; without this
+/// bind Wine/Proton silently falls back to slower userspace synchronization.
+fn splice_game_ntsync(argv: &mut Vec<String>, latency_sensitive: bool) -> Result<(), RunError> {
+    if latency_sensitive {
+        let entry = pop_entry(argv)?;
+        argv.extend([
+            "--dev-bind".to_string(),
+            "/dev/ntsync".to_string(),
+            "/dev/ntsync".to_string(),
+            entry,
+        ]);
+    }
+    Ok(())
+}
+
 /// Narrow dynamic-loader binds only (not all of `/usr`), for a plain
 /// dynamically-linked `execve()`. Skipped when a runtime bundle (which already
 /// carries the loader) is mounted. Returns the extra ro paths bound, needed
@@ -1296,6 +1355,7 @@ fn spawn_and_wait(
     mut argv: Vec<String>,
     cli_passthrough: Vec<String>,
     opts: &RunOptions,
+    latency_sensitive: bool,
     seccomp_fd: OwnedFd,
     resolved: Vec<crate::services::ResolvedService>,
     egress: &crate::netgate::EgressDecision,
@@ -1387,6 +1447,9 @@ fn spawn_and_wait(
             }
             place_service_fds(&mut service_fds)?;
             set_sandbox_resource_limits()?;
+            if latency_sensitive {
+                crate::performance::apply_game_performance_hints()?;
+            }
             // Landlock is NOT installed here — bwrap needs broad FS access to set up
             // the namespace; the `__sandbox-exec` shim installs it after. See `landlock_shim`.
             Ok(())
@@ -1662,7 +1725,9 @@ pub fn run_with(
         identity_arg,
         &capabilities,
     )?;
+    let latency_sensitive = is_native_game_launch(manifest, opts);
     splice_cli_setenv(&mut argv, extra_setenv)?;
+    splice_game_ntsync(&mut argv, latency_sensitive)?;
     let extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
     splice_workspace_id_bind(&mut argv, opts)?;
     splice_tool_context(&mut argv)?;
@@ -1692,6 +1757,7 @@ pub fn run_with(
         argv,
         cli_passthrough,
         opts,
+        latency_sensitive,
         seccomp_fd,
         resolved,
         &egress,

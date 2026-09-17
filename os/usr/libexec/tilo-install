@@ -68,14 +68,14 @@
 # installs *itself* onto the disk — no network pull needed for the OS bits.
 # The target image *reference* recorded in the install (so future
 # `bootc upgrade` knows where to pull from) defaults to
-# code.sandbox.example/qos/tilo:latest and is overridable via $TILO_TARGET_IMGREF.
+# code.sandbox.example/tilo/tilo:latest and is overridable via $TILO_TARGET_IMGREF.
 set -euo pipefail
 
 # Where the installed system will look for updates (the "origin" imgref
 # baked into the deployment). NOT where the bits come from now — those come
 # from the booted image we copy to storage. Override via the environment;
 # the sudoers drop-in env_keep's this name so it survives the sudo re-exec.
-TILO_TARGET_IMGREF="${TILO_TARGET_IMGREF:-code.sandbox.example/qos/tilo:latest}"
+TILO_TARGET_IMGREF="${TILO_TARGET_IMGREF:-code.sandbox.example/tilo/tilo:latest}"
 
 # The local-storage tag `bootc image copy-to-storage` writes to by default.
 LOCAL_IMG="localhost/bootc"
@@ -102,8 +102,8 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 # shipped containers policy. Do not let a live-session environment override
 # silently turn the installed system onto an unsigned update origin.
 case "$TILO_TARGET_IMGREF" in
-  code.sandbox.example/qos/tilo:*|code.sandbox.example/qos/tilo@sha256:*) : ;;
-  *) die "untrusted TILO_TARGET_IMGREF '$TILO_TARGET_IMGREF' (must use the signature-required code.sandbox.example/qos/tilo repository)" ;;
+  code.sandbox.example/tilo/tilo:*|code.sandbox.example/tilo/tilo@sha256:*) : ;;
+  *) die "untrusted TILO_TARGET_IMGREF '$TILO_TARGET_IMGREF' (must use the signature-required code.sandbox.example/tilo/tilo repository)" ;;
 esac
 
 # Map an xkb layout (+optional variant) to a Linux console (kbd) keymap
@@ -903,7 +903,7 @@ step "Preparing the '$USERNAME' account on the installed system"
 
 # SHA-512 crypt the password (no colons in a crypt(3) hash, so the
 # name:hash record below parses unambiguously).
-HASH="$(printf '%s\n' "$PASSWORD" | openssl passwd -6 -stdin)"
+HASH="$(printf '%s\n' "$PASSWORD" | tilo-crypto hash-password)"
 [ -n "$HASH" ] || die "failed to hash password"
 
 # Find the newly-installed root partition by probe-mounting each partition

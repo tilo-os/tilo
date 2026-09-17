@@ -107,8 +107,7 @@ enum RepoCmd {
 }
 
 fn main() -> ExitCode {
-    // rustls needs an explicit provider: the tree carries both ring
-    // and aws-lc-rs, and 0.23 will not pick one on its own. Failing
+    // Install the workspace-standard rustls ring provider explicitly. Failing
     // here would mean every https registry silently errored later.
     let _ = rustls::crypto::ring::default_provider().install_default();
 

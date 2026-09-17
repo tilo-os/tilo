@@ -59,7 +59,7 @@ PY
 done
 
 all_packages="$("$derive")"
-for package in wine wine-dxvk gamescope qemu-kvm libvirt-client \
+for package in wine wine-dxvk qemu-kvm libvirt-client \
   libvirt-daemon-kvm libvirt-daemon-config-nwfilter swtpm swtpm-tools \
   edk2-ovmf virtio-win freerdp xwayland-satellite virt-viewer xorriso \
   genisoimage udftools; do
@@ -70,6 +70,24 @@ done
 
 has "$workflow" './os/dev/derive-rpm-package-set.py' \
   'snapshot workflow uses the invariant-tested package parser'
+has "$workflow" 'docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130' \
+  'snapshot installs a commit-pinned ARM64 emulator'
+has "$workflow" 'tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0' \
+  'snapshot pins the privileged binfmt installer by digest'
+has "$workflow" 'platforms: linux/amd64,linux/arm64' \
+  'one frozen RPM digest resolves native x86-64 and ARM64 repositories'
+has "$workflow" 'frozen RPM index does not contain exactly amd64 and arm64' \
+  'snapshot verifies its published two-architecture OCI index'
+has "$workflow" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
+  'snapshot signing requires a non-exportable key'
+has "$workflow" 'https://tilo.dev/buildtypes/frozen-rpm-index/v1' \
+  'snapshot provenance binds the package-set build type'
+has "$workflow" 'cosign attest --yes --key "$COSIGN_KEY_REF" --type slsaprovenance1' \
+  'snapshot publishes signed SLSA provenance'
+has "$image_workflow" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
+  'OS CI verifies exact RPM snapshot provenance'
+has "$build_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
+  'local OS builds verify exact RPM snapshot provenance'
 has "$workflow" '- os/dev/derive-rpm-package-set.py' \
   'package parser changes retrigger the snapshot'
 

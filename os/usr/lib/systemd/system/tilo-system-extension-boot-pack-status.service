@@ -7,6 +7,11 @@ ConditionPathExists=/var/lib/tilo/system-extensions/boot-pack-stage.json
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/tilo-system-extension-manager project-status
+Nice=10
+CPUWeight=20
+IOWeight=20
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 
 # The projection can reveal only the extension id, staging generation, and
 # reboot requirement. It does not re-run bootc, download anything, or expose

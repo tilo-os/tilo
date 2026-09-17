@@ -52,6 +52,7 @@ path = "src/home_peer_control.rs"
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
+bounded-command = { path = "../../system/bounded-command" }
 # Home-peer configuration is one signed filesystem bundle; the relay imports
 # its workspace tickets rather than asking the operator to duplicate ids.
 fs = { path = "../../../fs" }

@@ -19,6 +19,8 @@ CONFINEMENT="$OS_ROOT/usr/lib/systemd/system/cups.service.d/tilo-confinement.con
 SOCKET_DROPIN="$OS_ROOT/usr/lib/systemd/system/cups.socket.d/tilo-local-only.conf"
 CUPSD_CONF="$OS_ROOT/etc/cups/cupsd.conf"
 CONTAINERFILE="$OS_ROOT/Containerfile"
+PRINTING_RS="$OS_ROOT/../crates/system/os-actions/src/printing.rs"
+PORTAL_PRINT_RS="$OS_ROOT/../shell/src/portal/print.rs"
 
 fails=0
 checks=0
@@ -140,6 +142,18 @@ must_contain "$CUPSD_CONF" '^User lp' \
     "filter processes touch document bytes and vendor PPD code"
 must_contain "$CUPSD_CONF" '^Group lp' \
     "filter processes touch document bytes and vendor PPD code"
+
+echo "== scanner helpers are resource bounded =="
+must_contain "$PRINTING_RS" 'run_prepared_with_limits' \
+    "scan acquisition needs independent image and diagnostic ceilings"
+must_contain "$PRINTING_RS" 'SCAN_TIMEOUT' \
+    "a wedged or malicious scanner backend must not pin the caller forever"
+must_not_contain "$PRINTING_RS" 'wait_with_output\(\)' \
+    "raw scanimage execution has no deadline or descendant cleanup"
+must_contain "$PORTAL_PRINT_RS" 'run_prepared_with_input_limit' \
+    "untrusted print documents need bounded spooler input and descendant cleanup"
+must_not_contain "$PORTAL_PRINT_RS" 'wait_with_output\(\)|\.output\(\)' \
+    "the print portal contains an unbounded spooler capture"
 
 echo "== apps reach printing through the portal, never the socket =="
 # The whole point of the Print portal: no sandbox may be handed the cups

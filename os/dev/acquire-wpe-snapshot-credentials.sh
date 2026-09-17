@@ -43,8 +43,7 @@ trusted_root_executable() {
   done
 }
 
-broker="${WPE_SNAPSHOT_CREDENTIAL_BROKER:-}"
-if [ -n "$broker" ]; then
+broker="${WPE_SNAPSHOT_CREDENTIAL_BROKER:?configure the WPE snapshot credential broker}"
   : "${ACTIONS_ID_TOKEN_REQUEST_URL:?Forgejo OIDC request URL is required}"
   : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?Forgejo OIDC request token is required}"
   trusted_root_executable "$broker" 'WPE snapshot credential broker'
@@ -122,15 +121,3 @@ if [ -n "$broker" ]; then
   rmdir "$lease_dir"
   trap - EXIT
   exit 0
-fi
-
-[ "${WPE_ALLOW_STATIC_CREDENTIAL_BOOTSTRAP:-}" = 1 ] \
-  || { printf 'configure WPE_SNAPSHOT_CREDENTIAL_BROKER; static credentials are disabled\n' >&2; exit 1; }
-bounded_expiry "${WPE_STATIC_BOOTSTRAP_EXPIRES_AT:-}" 86400 'static credential bootstrap'
-[ -n "${REGISTRY_TOKEN:-}" ] \
-  || { printf 'static credential bootstrap requires REGISTRY_TOKEN\n' >&2; exit 1; }
-if [[ "$mode" = publish-* ]]; then
-  printf 'TILO_WPE_STATIC_BOOTSTRAP=1\n' >> "$GITHUB_ENV"
-fi
-printf '%s' "$REGISTRY_TOKEN" | "$container_cli" login code.sandbox.example \
-  --username "${GITHUB_ACTOR:?GITHUB_ACTOR is required}" --password-stdin

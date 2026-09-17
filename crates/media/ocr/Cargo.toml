@@ -6,6 +6,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+bounded-command = { path = "../../system/bounded-command" }
 image.workspace = true
 serde.workspace = true
 thiserror.workspace = true

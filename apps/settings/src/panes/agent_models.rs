@@ -5,7 +5,6 @@
 //! vLLM. Settings never downloads model bytes or starts a server itself.
 
 use std::collections::HashMap;
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -29,6 +28,28 @@ pub(crate) const CONFIRM_KEY: &str = "agent_models.local.confirm";
 const CANCEL_KEY: &str = "agent_models.local.cancel";
 pub(crate) const ACCELERATOR_SETUP_KEY: &str = "agent_models.accelerator.setup";
 const POLL_INTERVAL: Duration = Duration::from_millis(750);
+const MANAGER_OUTPUT_LIMIT: usize = 1024 * 1024;
+
+fn manager_run(args: &[&str], timeout: Duration) -> Result<bounded_command::Output, String> {
+    bounded_command::run(
+        "tilo-model-manager",
+        args,
+        None,
+        MANAGER_OUTPUT_LIMIT,
+        timeout,
+    )
+    .map_err(|error| format!("model service is unavailable: {error}"))
+}
+
+fn manager_diagnostic(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
+        .take(512)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
 
 #[derive(Clone)]
 struct HostedFieldBuffers {
@@ -188,13 +209,9 @@ pub struct ModelManagerCli;
 
 impl ModelManagerCli {
     fn command(verb: &str, id: &str) -> Result<(), String> {
-        let status = Command::new("tilo-model-manager")
-            .args([verb, "--model", id])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .status()
-            .map_err(|error| format!("model service is unavailable: {error}"))?;
-        status
+        let output = manager_run(&[verb, "--model", id], Duration::from_secs(10 * 60))?;
+        output
+            .status
             .success()
             .then_some(())
             .ok_or_else(|| format!("model service refused {verb}"))
@@ -203,34 +220,28 @@ impl ModelManagerCli {
 
 impl LocalModelControl for ModelManagerCli {
     fn snapshot(&self) -> Result<LocalModelSnapshot, String> {
-        let output = Command::new("tilo-model-manager")
-            .args(["snapshot", "--format", "json"])
-            .stdin(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|error| format!("model service is unavailable: {error}"))?;
+        let output = manager_run(&["snapshot", "--format", "json"], Duration::from_secs(10))?;
         if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+            return Err(manager_diagnostic(&output.stderr));
         }
         serde_json::from_slice(&output.stdout)
             .map_err(|error| format!("model service returned invalid status: {error}"))
     }
 
     fn install(&self, model: &LocalModelPackage) -> Result<(), String> {
-        let status = Command::new("tilo-model-manager")
-            .args([
+        let output = manager_run(
+            &[
                 "install",
                 "--model",
                 &model.id,
                 "--revision",
                 &model.revision,
                 "--accept-license",
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .status()
-            .map_err(|error| format!("model service is unavailable: {error}"))?;
-        status
+            ],
+            Duration::from_secs(30 * 60),
+        )?;
+        output
+            .status
             .success()
             .then_some(())
             .ok_or_else(|| "model service refused the installation".to_string())
@@ -246,13 +257,9 @@ impl LocalModelControl for ModelManagerCli {
         Self::command("remove", id)
     }
     fn stage_accelerator(&self) -> Result<(), String> {
-        let status = Command::new("tilo-model-manager")
-            .arg("stage-accelerator")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .status()
-            .map_err(|error| format!("model service is unavailable: {error}"))?;
-        status
+        let output = manager_run(&["stage-accelerator"], Duration::from_secs(30 * 60))?;
+        output
+            .status
             .success()
             .then_some(())
             .ok_or_else(|| "accelerator setup service refused the request".to_string())

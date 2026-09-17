@@ -30,14 +30,14 @@
 //!    with Ed25519.
 //!
 //! The domain-tag constants are **frozen wire ABI** and must never
-//! change. Their historical `qos` prefix is protocol data, independent of
+//! change. Their historical `tilo` prefix is protocol data, independent of
 //! the product's display name:
 //!
-//! - [`DEVCERT_PREIMAGE_TAG`] — `qos-devcert-v1\0`
-//! - [`REVOCATION_PREIMAGE_TAG`] — `qos-revocation-v1\0`
-//! - [`ENROLLMENT_PREIMAGE_TAG`] — `qos-enrollment-v1\0`
-//! - [`APPROVAL_REQUEST_TAG`] — `qos-device-approval-request-v1\0`
-//! - [`APPROVAL_RESPONSE_TAG`] — `qos-device-approval-response-v1\0`
+//! - [`DEVCERT_PREIMAGE_TAG`] — `tilo-devcert-v1\0`
+//! - [`REVOCATION_PREIMAGE_TAG`] — `tilo-revocation-v1\0`
+//! - [`ENROLLMENT_PREIMAGE_TAG`] — `tilo-enrollment-v1\0`
+//! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
+//! - [`APPROVAL_RESPONSE_TAG`] — `tilo-device-approval-response-v1\0`
 //!
 //! The tag terminator (`\0`) plus a version marker (`v1`) inside the
 //! literal ensure two things: (a) prefix ambiguity is impossible
@@ -80,6 +80,7 @@ pub mod canonical;
 pub mod cert;
 pub mod directory;
 pub mod enrollment;
+pub mod image;
 pub mod persist;
 pub mod projection;
 pub mod revocation;
@@ -99,6 +100,14 @@ pub use directory::{
 pub use enrollment::{
     ENROLLMENT_PREIMAGE_TAG, EnrollmentError, EnrollmentToken, decode_enrollment_token,
     encode_enrollment_token, mint_enrollment_token, verify_enrollment_token,
+};
+pub use image::{
+    IMAGE_ENDORSEMENT_PREIMAGE_TAG, IMAGE_SIGNING_AUTHORIZATION_PREIMAGE_TAG, ImageEndorsement,
+    ImageEndorsementError, ImageSigningAuthorization, ImageSigningAuthorizationError,
+    MAX_IMAGE_ENDORSEMENT_AGE_NS, MAX_IMAGE_SIGNING_AUTHORIZATION_LIFETIME_NS,
+    image_endorsement_signing_digest, image_signing_authorization_digest, sign_image_endorsement,
+    sign_image_signing_authorization, verify_image_endorsement_at,
+    verify_image_endorsement_with_revocations_at, verify_image_signing_authorization_at,
 };
 pub use persist::{
     DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, load_or_create_device_key,
@@ -179,7 +188,7 @@ impl UserIdentity {
 }
 
 /// A per-device Ed25519 keypair — the one at
-/// `/var/lib/tilo/device/keypair.bin`, scoped to the identity model.
+/// `/var/lib/tilo/device-private/keypair.bin`, scoped to the identity model.
 ///
 /// Devices generate a fresh keypair on first boot. The public half
 /// is embedded in the [`DeviceCert`] the trusted-device pool signs
@@ -233,26 +242,26 @@ mod tests {
     /// silently disconnect every device in the field. Freeze them.
     #[test]
     fn signing_preimage_is_frozen_abi() {
-        assert_eq!(cert::DEVCERT_PREIMAGE_TAG, b"qos-devcert-v1\0");
+        assert_eq!(cert::DEVCERT_PREIMAGE_TAG, b"tilo-devcert-v1\0");
         assert_eq!(cert::DEVCERT_PREIMAGE_TAG.len(), 15);
 
-        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"qos-revocation-v1\0");
+        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"tilo-revocation-v1\0");
         assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 18);
 
-        assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"qos-enrollment-v1\0");
+        assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"tilo-enrollment-v1\0");
         assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG.len(), 18);
 
-        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"qos-dir-delta-v1\0");
+        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"tilo-dir-delta-v1\0");
         assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG.len(), 17);
 
         assert_eq!(
             approval::APPROVAL_REQUEST_TAG,
-            b"qos-device-approval-request-v1\0"
+            b"tilo-device-approval-request-v1\0"
         );
         assert_eq!(approval::APPROVAL_REQUEST_TAG.len(), 31);
         assert_eq!(
             approval::APPROVAL_RESPONSE_TAG,
-            b"qos-device-approval-response-v1\0"
+            b"tilo-device-approval-response-v1\0"
         );
         assert_eq!(approval::APPROVAL_RESPONSE_TAG.len(), 32);
     }

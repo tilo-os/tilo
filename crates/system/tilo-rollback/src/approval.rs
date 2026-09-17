@@ -53,15 +53,16 @@
 //! issued approvals that strand it — but it's already compromised if it's lying; the bound
 //! exists to stop a *later* compromise turning a stash of approvals into a bricked machine.
 
-use crate::exec::{Runner, require};
+use crate::counter;
+use crate::exec::Runner;
 use crate::policy::Workspace;
 use crate::tpm_policy::{self, Digest256};
-use crate::{argv, counter};
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 /// Policy reference for the floor-advance `PolicyAuthorize`. Domain separation: a signature
 /// for a floor advance must not be usable as a PCR prediction approval, and vice versa, even
@@ -271,11 +272,11 @@ pub fn build_request(
 /// Returns an error if the request's schema version doesn't match, if `up_to_floor` is
 /// above the request's `safe_target_floor` and `allow_past_safe_bound` is false, if the
 /// number of increments needed would exceed [`counter::MAX_INCREMENTS_PER_ADVANCE`], if
-/// signing an approval with `openssl` fails, or if a counter/floor value overflows during
+/// reading or using the signing key fails, or if a counter/floor value overflows during
 /// the arithmetic that relates them.
 pub fn issue(
-    runner: &dyn Runner,
-    ws: &Workspace,
+    _runner: &dyn Runner,
+    _ws: &Workspace,
     request: &Request,
     private_key_pem: &Path,
     up_to_floor: u64,
@@ -322,28 +323,15 @@ pub fn issue(
         );
     }
 
+    let key = Zeroizing::new(
+        std::fs::read_to_string(private_key_pem)
+            .with_context(|| format!("reading {}", private_key_pem.display()))?,
+    );
     let mut out = Vec::new();
     for target_counter in first..=last {
         let policy = approved_policy(&nv_name, target_counter)?;
         let message = tpm_policy::authorize_signed_message(&policy, POLICY_REF);
-        let msg_file = ws.put("floor_tosign.bin", &message)?;
-        let sig_file = ws.path("floor.sig");
-        require(
-            runner,
-            "openssl",
-            &argv![
-                "dgst",
-                "-sha256",
-                "-sign",
-                private_key_pem.as_os_str(),
-                "-out",
-                sig_file.as_os_str(),
-                msg_file.as_os_str(),
-            ],
-            "signing a floor-advance approval",
-        )?;
-        let sig =
-            std::fs::read(&sig_file).with_context(|| format!("reading {}", sig_file.display()))?;
+        let sig = tilo_crypto::sign_rsa_sha256(&key, &message).map_err(anyhow::Error::msg)?;
         let target_floor_signed = i128::from(target_counter)
             .checked_sub(i128::from(request.base))
             .context("target counter and request base are too far apart to relate")?;

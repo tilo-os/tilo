@@ -142,6 +142,7 @@ impl<R: CommandRunner> LibvirtBackend<R> {
         S: Into<OsString>,
     {
         let request = CommandRequest::new(self.virsh.clone())
+            .timeout(std::time::Duration::from_secs(300))
             .args(["--connect", LIBVIRT_URI])
             .args(args);
         self.runner.run(&request).map_err(Into::into)
@@ -179,6 +180,7 @@ impl<R: CommandRunner> LibvirtBackend<R> {
             .domain_xml()
             .ok_or(VmBackendError::InvalidGraphicsAssignment)?;
         let request = CommandRequest::new(self.virsh.clone())
+            .timeout(std::time::Duration::from_secs(300))
             .args([
                 "--connect",
                 LIBVIRT_URI,
@@ -212,6 +214,7 @@ impl<R: CommandRunner> LibvirtBackend<R> {
             .domain_xml()
             .ok_or(VmBackendError::InvalidGraphicsAssignment)?;
         let request = CommandRequest::new(self.virsh.clone())
+            .timeout(std::time::Duration::from_secs(300))
             .args([
                 "--connect",
                 LIBVIRT_URI,
@@ -268,6 +271,7 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
 
         let xml = render_domain_xml(config)?;
         let request = CommandRequest::new(self.virsh.clone())
+            .timeout(std::time::Duration::from_secs(300))
             .args(["--connect", LIBVIRT_URI, "define", "/dev/stdin"])
             .stdin_secret(xml.as_bytes());
         let output = self.runner.run(&request)?;

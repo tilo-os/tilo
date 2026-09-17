@@ -23,7 +23,7 @@ use crate::widgets::{El, caption, card, cards, hgap, rows, status_pill, value_ro
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
 use serde::Deserialize;
 use std::path::PathBuf;
-use std::process::Command;
+use std::time::Duration;
 use ui::widget::{Button, Row, Spacer, Text, Widget};
 use vello::peniko::Color;
 
@@ -44,7 +44,8 @@ struct DeviceSecurity {
 }
 
 fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new(program).args(args).output().ok()?;
+    let out =
+        bounded_command::run(program, args, None, 1024 * 1024, Duration::from_secs(5)).ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())

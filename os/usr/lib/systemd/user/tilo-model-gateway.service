@@ -6,6 +6,7 @@ Wants=network-online.target
 PartOf=tilo-graphical-session.target
 Requires=tilo-model-storage.service
 After=tilo-model-storage.service
+# Started by tilo-model-gateway.socket only when Settings or Agent connects.
 
 [Service]
 Type=simple
@@ -15,10 +16,13 @@ RestartSec=2
 UMask=0077
 RuntimeDirectory=tilo
 RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=%h/.config/tilo %t/tilo
 PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
 NoNewPrivileges=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
@@ -27,9 +31,16 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
+RemoveIPC=yes
+KeyringMode=private
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
 SystemCallArchitectures=native
-
-[Install]
-WantedBy=default.target
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @debug @keyring @module @mount @obsolete @raw-io @reboot @resources @swap
+SystemCallErrorNumber=EPERM

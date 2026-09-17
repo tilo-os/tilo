@@ -119,8 +119,13 @@ tilo-rollback enroll --device /dev/vda3 --generation 42 --recovery-key-file -
 tilo-rollback status --device /dev/vda3
 
 # A signed statement of the floor, for a peer to verify.
-tilo-rollback certify --nonce "$(openssl rand -hex 16)" --out-dir /tmp/att
+tilo-rollback certify --nonce "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" --out-dir /tmp/att
 ```
+
+The installed system schedules that one-time hardening ceremony five seconds
+after boot. It remains early, but TPM probing, LUKS discovery, and key generation
+do not hold `multi-user.target` or the first greeter open. Its service conditions
+skip later boots once the authorization is durably recorded.
 
 `--retain N` sets the window (default 3: the current generation plus the two
 before it). `--floor-at-least N` on `confirm` jumps the floor past a
