@@ -19,8 +19,8 @@ use ui::widget::Avatar;
 use crate::app::{AVATAR, ChatApp, Hit, MenuTarget};
 use crate::model::{self, Attachment, ChannelKind, Message, Presence};
 use crate::paint::{
-    band_at_least, blend_toward, fill_circle, fill_rect, fill_round, hline, label, legible_on,
-    palette_color, push_clip, stroke_circle, stroke_round, text, truncate_to,
+    PaintContext, band_at_least, blend_toward, fill_circle, fill_rect, fill_round, hline, label,
+    legible_on, palette_color, push_clip, stroke_circle, stroke_round, text, truncate_to,
 };
 
 /// Body text size for a message. Shared by the measure and the draw so a
@@ -51,6 +51,21 @@ struct ChannelRowCtx<'a> {
     y: f64,
     is_active: bool,
     ch: &'a crate::model::Channel,
+}
+
+#[derive(Clone, Copy)]
+struct AttachmentLayout {
+    origin: Point,
+    max_width: f32,
+}
+
+impl AttachmentLayout {
+    fn new(x: f64, y: f64, max_width: f32) -> Self {
+        Self {
+            origin: Point::new(x, y),
+            max_width,
+        }
+    }
 }
 
 /// How a mention of `user` is painted on `ground`: an optional filled band, and
@@ -1831,16 +1846,9 @@ impl ChatApp {
             let spans = body_spans(self, m, theme, theme.tokens.colors.surfaces.base);
             f64::from(shape_body(tr, &spans, text_w).height())
         };
-        let att_h = match &m.attachment {
-            None => 0.0,
-            Some(Attachment::File { .. }) => 70.0 * scale,
-            Some(Attachment::Image { w, h, .. }) => {
-                image_thumb_size(*w, *h, f64::from(text_w)).1 + 24.0 * scale
-            }
-            Some(Attachment::Video { w, h, .. }) => {
-                video_card_size(*w, *h, f64::from(text_w)).1 + 24.0 * scale
-            }
-        };
+        let att_h = m.attachment.as_ref().map_or(0.0, |attachment| {
+            attachment_flow_height(attachment, f64::from(text_w), scale)
+        });
         let react_h = if m.reactions.is_empty() {
             0.0
         } else {
@@ -2102,7 +2110,11 @@ impl ChatApp {
         }
 
         if let Some(att) = &m.attachment {
-            self.draw_attachment(scene, tf, tr, theme, att, text_x, *y, text_w);
+            self.draw_attachment(
+                PaintContext::new(scene, tf, tr, theme),
+                att,
+                AttachmentLayout::new(text_x, *y, text_w),
+            );
             *y += rm.att_h;
         }
 
@@ -2380,39 +2392,31 @@ impl ChatApp {
         ChatApp::push_hit(hits, bar, Hit::OpenThread(m.id.clone()));
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw_attachment(
+    fn draw_attachment(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        mut paint: PaintContext<'_>,
         att: &Attachment,
-        x: f64,
-        y: f64,
-        text_w: f32,
+        layout: AttachmentLayout,
     ) {
         // Permission boundary: an embed this peer hasn't been granted access to
         // renders as a locked card and never requests its shared bytes. Same
         // footprint as the real embed so the timeline layout is
         // identical whether granted or gated.
         if !self.embed_allowed(att.blob()) {
-            Self::draw_gated_embed(scene, tf, tr, theme, att, x, y, text_w);
+            Self::draw_gated_embed(paint, att, layout);
             return;
         }
         match att {
             Attachment::Image { name, blob, w, h } => {
-                self.draw_image_attachment(scene, tf, tr, theme, name, blob, *w, *h, x, y, text_w);
+                self.draw_image_attachment(paint.reborrow(), name, blob, (*w, *h), layout);
             }
             Attachment::Video {
                 name, w, h, size, ..
             } => {
-                Self::draw_video_attachment(
-                    scene, tf, tr, theme, name, *w, *h, *size, x, y, text_w,
-                );
+                Self::draw_video_attachment(paint, name, (*w, *h), *size, layout);
             }
             Attachment::File { name, size, .. } => {
-                Self::draw_file_attachment(scene, tf, tr, theme, name, *size, x, y, text_w);
+                Self::draw_file_attachment(paint, name, *size, layout);
             }
         }
     }
@@ -2420,24 +2424,23 @@ impl ChatApp {
     /// The image attachment card: a decoded thumbnail (or a neutral
     /// placeholder while it hydrates), a caption scrim with the filename,
     /// and its pixel dimensions beneath.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_image_attachment(
         &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         name: &str,
         blob: &str,
-        img_w: u32,
-        img_h: u32,
-        x: f64,
-        y: f64,
-        text_w: f32,
+        dimensions: (u32, u32),
+        layout: AttachmentLayout,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let (img_w, img_h) = dimensions;
+        let Point { x, y } = layout.origin;
+        let text_w = layout.max_width;
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale);
         let (tw, th) = image_thumb_size(img_w, img_h, f64::from(text_w));
@@ -2527,23 +2530,22 @@ impl ChatApp {
     /// The video attachment card: a poster surface with a centred play
     /// glyph, a caption scrim with the filename, and dimensions + size
     /// metadata beneath.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_video_attachment(
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         name: &str,
-        vid_w: u32,
-        vid_h: u32,
+        dimensions: (u32, u32),
         size: u64,
-        x: f64,
-        y: f64,
-        text_w: f32,
+        layout: AttachmentLayout,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let (vid_w, vid_h) = dimensions;
+        let Point { x, y } = layout.origin;
+        let text_w = layout.max_width;
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale);
         let (tw, th) = video_card_size(vid_w, vid_h, f64::from(text_w));
@@ -2628,21 +2630,20 @@ impl ChatApp {
 
     /// The generic file attachment chip: an icon tile, filename, and human
     /// metadata (kind/size) beneath it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "draw-context bundle, not real parameter coupling"
-    )]
     fn draw_file_attachment(
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintContext<'_>,
         name: &str,
         size: u64,
-        x: f64,
-        y: f64,
-        text_w: f32,
+        layout: AttachmentLayout,
     ) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let Point { x, y } = layout.origin;
+        let text_w = layout.max_width;
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale);
         let chip = Rect::new(x, y, x + f64::from(text_w).min(360.0), y + 58.0 * scale);
@@ -2695,24 +2696,18 @@ impl ChatApp {
     /// Render an embed this peer isn't permitted to open: a neutral locked card
     /// with the filename but no hydrated content. Sized to match the granted
     /// embed's footprint so the timeline layout is identical either way.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_gated_embed(
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        att: &Attachment,
-        x: f64,
-        y: f64,
-        text_w: f32,
-    ) {
+    fn draw_gated_embed(paint: PaintContext<'_>, att: &Attachment, layout: AttachmentLayout) {
+        let PaintContext {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let Point { x, y } = layout.origin;
+        let text_w = layout.max_width;
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale);
-        let (card_w, card_h) = match att {
-            Attachment::Image { w, h, .. } => image_thumb_size(*w, *h, f64::from(text_w)),
-            Attachment::Video { w, h, .. } => video_card_size(*w, *h, f64::from(text_w)),
-            Attachment::File { .. } => (f64::from(text_w).min(360.0), 58.0 * scale),
-        };
+        let (card_w, card_h) = attachment_card_size(att, f64::from(text_w), scale);
         let rect = Rect::new(x, y, x + card_w, y + card_h);
         fill_round(scene, tf, rect, 12.0, c.neutral[1]);
         stroke_round(scene, tf, rect, 12.0, c.border_standard, 1.0);
@@ -3268,16 +3263,12 @@ impl ChatApp {
             yy += h + 4.0 * scale;
         }
         if let Some(att) = &m.attachment {
-            self.draw_attachment(scene, tf, tr, theme, att, tx, yy, tw);
-            yy += match att {
-                Attachment::File { .. } => 66.0 * scale,
-                Attachment::Image { w, h, .. } => {
-                    image_thumb_size(*w, *h, f64::from(tw)).1 + 24.0 * scale
-                }
-                Attachment::Video { w, h, .. } => {
-                    video_card_size(*w, *h, f64::from(tw)).1 + 24.0 * scale
-                }
-            };
+            self.draw_attachment(
+                PaintContext::new(scene, tf, tr, theme),
+                att,
+                AttachmentLayout::new(tx, yy, tw),
+            );
+            yy += attachment_flow_height(att, f64::from(tw), scale);
         }
         if !m.reactions.is_empty() {
             let mut x = tx;
@@ -3888,6 +3879,29 @@ fn video_card_size(w: u32, h: u32, max_w: f64) -> (f64, f64) {
     }
 }
 
+/// Painted card dimensions shared by granted and permission-gated embeds.
+/// Keeping this independent from the paint path guarantees access control
+/// cannot change timeline geometry.
+fn attachment_card_size(att: &Attachment, max_w: f64, scale: f64) -> (f64, f64) {
+    match att {
+        Attachment::Image { w, h, .. } => image_thumb_size(*w, *h, max_w),
+        Attachment::Video { w, h, .. } => video_card_size(*w, *h, max_w),
+        Attachment::File { .. } => (max_w.min(360.0), 58.0 * scale),
+    }
+}
+
+/// Vertical space consumed by an attachment, including metadata and the gap
+/// before the following message content.
+fn attachment_flow_height(att: &Attachment, max_w: f64, scale: f64) -> f64 {
+    let (_, card_h) = attachment_card_size(att, max_w, scale);
+    card_h
+        + if matches!(att, Attachment::File { .. }) {
+            12.0 * scale
+        } else {
+            24.0 * scale
+        }
+}
+
 /// The user-facing metadata line for a file-attachment chip: the file type
 /// (derived from the display name's extension) and a human-readable size.
 ///
@@ -3913,7 +3927,12 @@ const RAIL_W_CENTER: f64 = crate::app::RAIL_W / 2.0;
 
 #[cfg(test)]
 mod tests {
-    use super::file_chip_meta;
+    use super::{attachment_card_size, attachment_flow_height, file_chip_meta};
+    use crate::model::Attachment;
+
+    fn close(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < f64::EPSILON);
+    }
 
     /// Defect regression: the attachment chip must never leak the internal
     /// mount path. The demo's shared note lives at
@@ -3955,5 +3974,42 @@ mod tests {
     #[test]
     fn attachment_size_uses_canonical_binary_units() {
         assert_eq!(file_chip_meta("archive.zip", 1536), "ZIP · 1.5 KiB");
+    }
+
+    #[test]
+    fn attachment_geometry_reserves_card_metadata_and_following_gap() {
+        let file = Attachment::File {
+            name: "notes.md".into(),
+            blob: "sha256:file".into(),
+            size: 512,
+        };
+        let image = Attachment::Image {
+            name: "wide.png".into(),
+            blob: "sha256:image".into(),
+            w: 800,
+            h: 400,
+        };
+        let unknown_video = Attachment::Video {
+            name: "clip.mp4".into(),
+            blob: "sha256:video".into(),
+            w: 0,
+            h: 0,
+            size: 1024,
+        };
+
+        let (file_w, file_h) = attachment_card_size(&file, 420.0, 1.0);
+        close(file_w, 360.0);
+        close(file_h, 58.0);
+        close(attachment_flow_height(&file, 420.0, 1.0), 70.0);
+
+        let (image_w, image_h) = attachment_card_size(&image, 300.0, 1.0);
+        close(image_w, 300.0);
+        close(image_h, 150.0);
+        close(attachment_flow_height(&image, 300.0, 1.0), 174.0);
+
+        let (video_w, video_h) = attachment_card_size(&unknown_video, 320.0, 1.0);
+        close(video_w, 320.0);
+        close(video_h, 180.0);
+        close(attachment_flow_height(&unknown_video, 320.0, 1.0), 204.0);
     }
 }
