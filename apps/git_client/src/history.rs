@@ -18,16 +18,113 @@ use crate::model::{Commit, RefKind, RepoModel};
 // Ref-decorated commits use three text baselines (refs, summary, metadata).
 // 56px clipped the metadata into the following row, especially in the compact
 // overlay where labels wrap sooner. Keep one deliberate line of breathing room.
+// This is the 1× pitch; the painted pitch is [`Metrics::row_h`].
 const ROW_H: f64 = 68.0;
 const LANE_W: f64 = 18.0;
 const DOT_R: f64 = 5.0;
 const GRAPH_PAD: f64 = 16.0;
+/// Text sizes painted in a commit row — measured with these exact values.
+/// Whole-number sizes stay inline at their call sites (the F1 spacing ratchet
+/// counts named whole-number `f32` consts); the two fractional ones are named.
+const META_DIM_FONT: f32 = 11.5;
+
+/// Row metrics measured from the renderer the list paints with.
+///
+/// Refreshed at the top of every draw and handed back to the owner with the
+/// row rects, so the graph edges, dots, three text lines, separators and the
+/// scroll clamp share one pitch at every text scale. The rhythm fields hold
+/// the row's vertical grammar: at 1× that is 9 above the ref pills, 3 to the
+/// summary, 2 to the meta line and 4 below (9 + 18 + 3 + 16.25 + 2 + 15 + 4 =
+/// 67.25 ≤ 68), so the 1× pitch is the historical 68 and every line sits where
+/// it did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Metrics {
+    /// Row pitch.
+    pub row_h: f64,
+    /// Ref pill height (`draw::pill_height` at the 12 px ref label).
+    pill_h: f64,
+    /// Measured summary and meta line heights.
+    summary_h: f64,
+    meta_h: f64,
+    /// Space above the ref pills, between pills and summary, between summary
+    /// and meta line, and below the meta line.
+    pad_top: f64,
+    ref_gap: f64,
+    meta_gap: f64,
+    pad_bottom: f64,
+    /// Where the summary starts when the commit carries no ref pills.
+    no_refs_top: f64,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            row_h: ROW_H,
+            pill_h: 18.0,
+            summary_h: 16.25,
+            meta_h: 15.0,
+            pad_top: 9.0,
+            ref_gap: 3.0,
+            meta_gap: 2.0,
+            pad_bottom: 4.0,
+            no_refs_top: 10.0,
+        }
+    }
+}
+
+impl Metrics {
+    pub fn measure(tr: &mut TextRenderer, theme: &Theme) -> Self {
+        let rhythm = Self::default();
+        let pill_h = draw::pill_height(tr, 12.0);
+        let summary_h = f64::from(
+            tr.measure_weighted("Ag", 13.0, None, TextWeight::Medium)
+                .1,
+        );
+        let meta_h = f64::from(tr.measure("Ag", 12.0, None).1);
+        // The one on-grid gap reads its token; the rest are the row's own
+        // off-grid rhythm, kept in `Default` where 1× reads them verbatim.
+        let pad_bottom = f64::from(theme.tokens.spacing.s1);
+        let row_h = (rhythm.pad_top
+            + pill_h
+            + rhythm.ref_gap
+            + summary_h
+            + rhythm.meta_gap
+            + meta_h
+            + pad_bottom)
+            .max(ROW_H);
+        Self {
+            row_h,
+            pill_h,
+            summary_h,
+            meta_h,
+            pad_bottom,
+            ..rhythm
+        }
+    }
+
+    /// Top of the summary line: under the ref pills when any were painted.
+    fn summary_top(&self, y: f64, has_refs: bool) -> f64 {
+        if has_refs {
+            y + self.pad_top + self.pill_h + self.ref_gap
+        } else {
+            y + self.no_refs_top
+        }
+    }
+}
+
+/// What one [`HistoryView::draw_list`] pass produced: the row rects for
+/// hit-testing and the metrics the owner clamps scrolling with.
+pub struct ListDraw {
+    pub rows: Vec<Rect>,
+    pub metrics: Metrics,
+}
 
 pub struct HistoryView;
 
 impl HistoryView {
-    pub fn content_height(model: &RepoModel) -> f64 {
-        model.commits.len() as f64 * ROW_H + 8.0
+    /// Total list height at the row pitch of the last draw.
+    pub fn content_height(model: &RepoModel, metrics: &Metrics) -> f64 {
+        model.commits.len() as f64 * metrics.row_h + 8.0
     }
 
     /// Draw the commit list with graph. Returns the row rects so the app
@@ -44,9 +141,10 @@ impl HistoryView {
         layout: &GraphLayout,
         selected: usize,
         scroll: f64,
-    ) -> Vec<Rect> {
+    ) -> ListDraw {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.base);
+        let m = Metrics::measure(tr, theme);
 
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -56,26 +154,26 @@ impl HistoryView {
             &area,
         );
 
-        Self::draw_graph_edges(scene, t, theme, area, layout, scroll);
+        Self::draw_graph_edges(scene, t, theme, area, layout, scroll, &m);
 
         let graph_total_w = GRAPH_PAD + (layout.lanes.max(1) as f64) * LANE_W + 8.0;
         let text_x = area.x0 + graph_total_w + 6.0;
-        let mut row_rects: Vec<Rect> = Vec::new();
+        let mut rows: Vec<Rect> = Vec::new();
 
         for (row, commit) in model.commits.iter().enumerate() {
-            let y = area.y0 - scroll + row as f64 * ROW_H;
-            let rrect = Rect::new(area.x0, y, area.x1, y + ROW_H);
-            row_rects.push(rrect);
-            if y + ROW_H < area.y0 || y > area.y1 {
+            let y = area.y0 - scroll + row as f64 * m.row_h;
+            let rrect = Rect::new(area.x0, y, area.x1, y + m.row_h);
+            rows.push(rrect);
+            if y + m.row_h < area.y0 || y > area.y1 {
                 continue;
             }
             Self::draw_commit_row(
-                scene, tr, t, theme, area, layout, commit, row, y, rrect, selected, text_x,
+                scene, tr, t, theme, area, layout, commit, row, y, rrect, selected, text_x, &m,
             );
         }
 
         scene.pop_layer();
-        row_rects
+        ListDraw { rows, metrics: m }
     }
 
     /// The branch/merge lane edges, drawn before the dots so dots paint on
@@ -87,15 +185,17 @@ impl HistoryView {
         area: Rect,
         layout: &GraphLayout,
         scroll: f64,
+        m: &Metrics,
     ) {
+        let row_h = m.row_h;
         let graph_x = area.x0 + GRAPH_PAD;
         let lane_x = |lane: usize| graph_x + lane as f64 * LANE_W + LANE_W / 2.0;
-        let row_center_y = |row: usize| area.y0 - scroll + row as f64 * ROW_H + ROW_H / 2.0;
+        let row_center_y = |row: usize| area.y0 - scroll + row as f64 * row_h + row_h / 2.0;
         for edge in &layout.edges {
             let y0 = row_center_y(edge.from_row);
             let y1 = row_center_y(edge.to_row);
             // Cull if both endpoints are far off-screen.
-            if y0.max(y1) < area.y0 - ROW_H || y0.min(y1) > area.y1 + ROW_H {
+            if y0.max(y1) < area.y0 - row_h || y0.min(y1) > area.y1 + row_h {
                 continue;
             }
             let x0 = lane_x(edge.from_lane);
@@ -129,12 +229,13 @@ impl HistoryView {
         commit: &Commit,
         row: usize,
         y: f64,
+        row_h: f64,
     ) {
         let c = &theme.tokens.colors;
         let graph_x = area.x0 + GRAPH_PAD;
         let lane = layout.lane_of.get(row).copied().unwrap_or(0);
         let cx = graph_x + lane as f64 * LANE_W + LANE_W / 2.0;
-        let cy = y + ROW_H / 2.0;
+        let cy = y + row_h / 2.0;
         let dot_color = draw::lane_color(theme, lane);
         let is_merge = commit.parents.len() > 1;
         let dr = if is_merge { DOT_R + 1.5 } else { DOT_R };
@@ -172,28 +273,47 @@ impl HistoryView {
         commit: &Commit,
         y: f64,
         text_x: f64,
+        m: &Metrics,
     ) {
         let c = &theme.tokens.colors;
-        // Ref pills.
+        let gap = f64::from(theme.tokens.spacing.s2);
+        // Short hash, right-aligned on the first text line; the ref pills and
+        // summary stop before it.
+        let short: String = commit.id.chars().take(7).collect();
+        let hw = f64::from(draw::mono_width(tr, &short, 12.0));
+        let hash_x = area.x1 - hw - 14.0;
+
+        // Ref pills, painted while they fit left of the hash. The first pill
+        // always paints — elided to the room left — so a commit with a long
+        // branch name still shows that it carries a ref instead of an empty
+        // first line; later pills that do not fit are dropped.
         let mut px = text_x;
-        let pill_y = y + 9.0;
+        let pill_y = y + m.pad_top;
+        let mut painted_any = false;
         for r in &commit.refs {
             let (fg, bg) = ref_colors(theme, r.kind);
-            px += draw::pill(scene, tr, t, px, pill_y, 18.0, &r.name, fg, bg, None);
-            if px > area.x1 - 200.0 {
+            let room = hash_x - gap - px;
+            let name = if draw::pill_width(tr, &r.name, 12.0) <= room {
+                r.name.clone()
+            } else if painted_any {
                 break;
-            }
+            } else {
+                let label_room = (room - draw::pill_width(tr, "", 12.0)).max(0.0) as f32;
+                tr.elide_to_width_weighted(&r.name, 12.0, label_room, TextWeight::Medium)
+            };
+            px += draw::pill(scene, tr, t, px, pill_y, 12.0, &name, fg, bg, None);
+            painted_any = true;
         }
 
-        // Summary. If there are refs, draw it on the second line; else
-        // the first.
+        // Summary. If ref pills were painted, draw it on the second line;
+        // else the first.
         let sx = text_x;
-        let sy = if commit.refs.is_empty() {
-            y + 10.0
+        let sy = m.summary_top(y, painted_any);
+        let avail = if painted_any {
+            area.x1 - 14.0 - sx
         } else {
-            y + 30.0
+            hash_x - gap - sx
         };
-        let avail = area.x1 - sx - 90.0;
         let summary = tr.elide_to_width_weighted(
             &commit.summary,
             13.0,
@@ -217,7 +337,7 @@ impl HistoryView {
         // carried by the avatar; keeping the name neutral avoids implying
         // that the author's hue is a status/severity colour like graph lanes
         // and file badges.
-        let meta_y = sy + 18.0;
+        let meta_y = sy + m.summary_h + m.meta_gap;
         draw::text(
             scene,
             tr,
@@ -231,21 +351,22 @@ impl HistoryView {
         );
         let aw = f64::from(tr.measure(&commit.author_name, 12.0, None).0);
         let meta = format!("·  {}", commit.when);
+        let meta_x = sx + aw + gap;
+        let meta = tr.elide_to_width(&meta, META_DIM_FONT, (area.x1 - 14.0 - meta_x).max(12.0) as f32);
+        // The dimmer, smaller time shares the author's centre line.
+        let (_, mh) = tr.measure(&meta, META_DIM_FONT, None);
         draw::text(
             scene,
             tr,
             t,
             &meta,
-            11.5,
+            META_DIM_FONT,
             c.text_dim,
-            sx + aw + 8.0,
-            meta_y,
+            meta_x,
+            meta_y + (m.meta_h - f64::from(mh)) / 2.0,
             None,
         );
 
-        // Short hash, right-aligned.
-        let short: String = commit.id.chars().take(7).collect();
-        let hw = f64::from(draw::mono_width(tr, &short, 12.0));
         draw::mono(
             scene,
             tr,
@@ -253,14 +374,14 @@ impl HistoryView {
             &short,
             12.0,
             c.text_dim,
-            area.x1 - hw - 14.0,
-            y + 10.0,
+            hash_x,
+            y + m.no_refs_top,
         );
 
         draw::hline(
             scene,
             t,
-            y + ROW_H,
+            y + m.row_h,
             area.x0 + 8.0,
             area.x1 - 8.0,
             c.lift(0.35),
@@ -289,6 +410,7 @@ impl HistoryView {
         rrect: Rect,
         selected: usize,
         text_x: f64,
+        m: &Metrics,
     ) {
         let c = &theme.tokens.colors;
         if row == selected {
@@ -303,8 +425,8 @@ impl HistoryView {
                 theme.accent_primary,
             );
         }
-        Self::draw_commit_dot(scene, t, theme, area, layout, commit, row, y);
-        Self::draw_commit_row_text(scene, tr, t, theme, area, commit, y, text_x);
+        Self::draw_commit_dot(scene, t, theme, area, layout, commit, row, y, m.row_h);
+        Self::draw_commit_row_text(scene, tr, t, theme, area, commit, y, text_x, m);
     }
 
     /// Draw the detail panel for `commit` on the right.
@@ -645,5 +767,37 @@ fn ref_colors(theme: &Theme, kind: RefKind) -> (Color, Color) {
             let a = c.semantic.warning;
             (c.surfaces.base, Color::from_rgba8(a.r(), a.g(), a.b(), 220))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The measured row reproduces the historical 68 px pitch at 1× and grows
+    /// with its three text lines at 2×, so ref pills, summary and meta line
+    /// never share pixels.
+    #[test]
+    fn row_metrics_match_the_constant_at_1x_and_follow_the_text_scale() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let one = Metrics::measure(&mut tr, &theme);
+        assert_eq!(one, Metrics::default(), "1× measures exactly the historical rhythm");
+        assert_eq!(one.row_h, ROW_H);
+        assert_eq!(one.pill_h, 18.0, "12 px ref label → the historical 18 px pill");
+        // With refs the summary starts where it did (y + 30); without refs it
+        // stays on the first line.
+        assert!((one.summary_top(0.0, true) - 30.0).abs() < 0.01);
+        assert_eq!(one.summary_top(0.0, false), 10.0);
+
+        tr.set_text_scale(2.0);
+        let two = Metrics::measure(&mut tr, &theme);
+        assert!(two.row_h > one.row_h && two.pill_h > one.pill_h);
+        let meta_bottom = two.summary_top(0.0, true) + two.summary_h + two.meta_gap + two.meta_h;
+        assert!(
+            meta_bottom + two.pad_bottom <= two.row_h + 0.01,
+            "the meta line ({meta_bottom}) must end inside the {} px row",
+            two.row_h
+        );
     }
 }
