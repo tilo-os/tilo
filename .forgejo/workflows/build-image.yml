@@ -392,7 +392,7 @@ jobs:
             *) printf 'unsupported WPE buildroot architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
           esac
           if [ "$WITH_BROWSER" = 1 ]; then
-            [[ "$ref" =~ ^code\.podesta\.ai/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] || {
+            [[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] || {
               printf 'no digest-pinned WPE buildroot for %s; run snapshot-wpe-buildroot\n' "$(uname -m)" >&2
               exit 1
             }
