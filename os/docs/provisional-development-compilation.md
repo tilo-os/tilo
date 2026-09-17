@@ -20,6 +20,11 @@ Cargo both use two build jobs, and receipts record the visible cgroup/guest memo
 limits and peak. A storage abort is a failed experiment, never a reason to
 disable the browser or publish an incomplete image.
 
+`admission-capacity.json` records the actual free, used and total bytes of both
+private backing filesystems before input pulls and compilation. It is retained
+even when admission or a later preflight fails; `capacity.json` starts only when
+the compilation process starts. Neither receipt proves that a future build fits.
+
 The privileged tools container receives an explicit 9 GiB memory limit with
 swap disabled (`--memory=9g --memory-swap=9g`). It is a sibling of the workflow
 job container, so the job's own limit does not constrain it. This ceiling leaves
