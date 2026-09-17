@@ -550,6 +550,7 @@ impl PdfApp {
     ) {
         let mut page_imgs = std::collections::HashMap::new();
         let mut thumb_imgs = std::collections::HashMap::new();
+        self.pending_visuals = false;
         if !self.raster_active() {
             return (page_imgs, thumb_imgs);
         }
@@ -593,6 +594,15 @@ impl PdfApp {
         #[cfg(test)]
         let mut rendered_new = false;
         if let Some(document) = self.raster_document.as_ref() {
+            self.pending_visuals = want_pages.iter().any(|i| {
+                !self
+                    .raster_images
+                    .contains_key(&(*i, crate::source::Rasterizer::bucket_for(page_bucket)))
+            }) || want_thumbs.iter().any(|(i, width)| {
+                !self
+                    .raster_images
+                    .contains_key(&(*i, crate::source::Rasterizer::bucket_for(*width)))
+            });
             // Worker mode: never ask PDFium to rasterise from the draw pass.
             // A cache miss becomes bounded owner work and this frame simply
             // paints the existing placeholder; the result wakes a later frame.

@@ -75,10 +75,32 @@ fn live(args: &LaunchArgs) -> Result<(), LaunchError> {
     Ok(())
 }
 
+fn shot(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let mut harness = ui::headless::FrameHarness::new_with_theme(
+        ui::State::new(),
+        build_widget(args)?,
+        args.viewport.unwrap_or(ui::headless::DEFAULT_VIEWPORT),
+        ui::launch::shot_theme(args),
+    );
+    // The loading scenario intentionally demonstrates an unfinished open.
+    if args.scenario.as_deref() != Some("loading") {
+        harness
+            .wait_for_visuals(std::time::Duration::from_secs(15))
+            .map_err(LaunchError::Operation)?;
+    }
+    let out = args
+        .shots
+        .as_ref()
+        .ok_or_else(|| LaunchError::Operation("Missing screenshot path".into()))?;
+    harness.render_png(out);
+    Ok(())
+}
+
 pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args(APP_ID, build_widget)
             .shot_root(build_widget)
+            .shot_handler(shot)
             .allowed_live_flags(&["--sample"])
             .max_positionals(1)
             .scenarios(&[
