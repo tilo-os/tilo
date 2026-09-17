@@ -1,4 +1,5 @@
 use super::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::permissions::UserId;
 use crate::text_render::TextRenderer;
@@ -419,7 +420,7 @@ fn peer_pill_size_for(
     label: &str,
     is_agent: bool,
 ) -> (f64, f64) {
-    let size = pill_label_size(theme);
+    let size = renderer_type_size(text_renderer, pill_label_size(theme));
     // Both axes come from the same measurement the painter draws with, so
     // the pill fits its label at every renderer text scale.
     let (tw, th) = text_renderer.measure(label, size, None);
@@ -712,7 +713,7 @@ fn draw_peer_pill_kind(
     peer: Color,
     is_agent: bool,
 ) {
-    let label_size = pill_label_size(theme);
+    let label_size = renderer_type_size(text_renderer, pill_label_size(theme));
     let radius = f64::from(theme.tokens.radii.sm);
     let shadow = RoundedRect::from_rect(
         rect.inflate(0.5, 0.5) + vello::kurbo::Vec2::new(0.0, 1.0),
@@ -846,7 +847,7 @@ const CHIP_GAP: f64 = 2.0;
 /// lane area that clips its contents, a viewport edge — needs this before it
 /// can decide where the chip goes.
 fn chip_size(theme: &Theme, text_renderer: &mut TextRenderer, name: &str) -> (f64, f64) {
-    let label_size = theme.tokens.typography.scale.xs;
+    let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
     // Height from the measured line box, not the font size: the box is a
     // quarter taller than the size and carries the renderer's text scale,
     // so sizing from `label_size` clipped descenders at 1× and lost the
@@ -877,7 +878,7 @@ fn draw_name_chip_in(
     scene.fill(Fill::NonZero, transform, color, None, &chip);
     // Label ink: white or near-black for contrast against the colour; the
     // measured line box is centred in the chip.
-    let label_size = theme.tokens.typography.scale.xs;
+    let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
     let (_, th) = text_renderer.measure(name, label_size, None);
     let text_y = chip_rect.y0 + (chip_rect.height() - f64::from(th)) / 2.0;
     text_renderer.draw_text(
@@ -1013,7 +1014,7 @@ fn draw_edge_mist(
     }
 
     let tokens = &theme.tokens;
-    let label_size = tokens.typography.scale.xs;
+    let label_size = renderer_type_size(text_renderer, tokens.typography.scale.xs);
     // Sized from the measured line box so the tag holds its label at every
     // text scale (see `chip_size`).
     let (tw, th) = text_renderer.measure(name, label_size, None);
@@ -2207,13 +2208,14 @@ mod tests {
             let mut tr = TextRenderer::new();
             tr.set_text_scale(scale);
             let (_, pill_h) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
-            let (_, label_h) = tr.measure("Alice", pill_label_size(&theme), None);
+            let (_, label_h) = tr.measure("Alice", renderer_type_size(&tr, pill_label_size(&theme)), None);
             assert!(
                 (pill_h - (f64::from(label_h) + PILL_PAD_Y * 2.0)).abs() < 1e-6,
                 "at {scale}x the pill is {pill_h} tall around a {label_h} label"
             );
             let (_, chip_h) = chip_size(&theme, &mut tr, "Alice");
-            let (_, chip_label_h) = tr.measure("Alice", theme.tokens.typography.scale.xs, None);
+            let (_, chip_label_h) =
+                tr.measure("Alice", renderer_type_size(&tr, theme.tokens.typography.scale.xs), None);
             assert!(
                 (chip_h - (f64::from(chip_label_h) + CHIP_PAD_Y * 2.0)).abs() < 1e-6,
                 "at {scale}x the chip is {chip_h} tall around a {chip_label_h} label"

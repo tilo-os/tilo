@@ -6,6 +6,7 @@
 //! and centred on its own measured line — never a literal colour, size or
 //! `(height - 15.0) / 2.0`.
 
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use vello::Scene;
@@ -20,10 +21,10 @@ pub const STATUS_BAR_HEIGHT: f64 = 28.0;
 /// Weight of a status readout — a label, not a value the eye must find.
 const LABEL_WEIGHT: TextWeight = TextWeight::Regular;
 
-/// Renderer-relative label size: `scale.sm`, with the theme's text scale
-/// divided back out because the renderer applies it again.
-fn label_size(theme: &Theme) -> f32 {
-    theme.tokens.typography.scale.sm / theme.text_scale
+/// Renderer-relative label size: `scale.sm`, divided once by the renderer's
+/// text scale because the renderer applies it again.
+fn label_size(theme: &Theme, tr: &TextRenderer) -> f32 {
+    renderer_type_size(tr, theme.tokens.typography.scale.sm)
 }
 
 /// Where the two readouts start, given the measured widths of the right
@@ -55,7 +56,7 @@ pub fn draw(
         &Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + 1.0),
     );
 
-    let size = label_size(theme);
+    let size = label_size(theme, tr);
     let ink = colors.text_dim;
     let (right_w, line_h) = tr.measure_weighted(right, size, None, LABEL_WEIGHT);
     let (left_w, left_h) = tr.measure_weighted(left, size, None, LABEL_WEIGHT);
@@ -122,9 +123,12 @@ mod tests {
     #[test]
     fn label_size_divides_the_text_scale_back_out() {
         let base = Theme::dark();
+        let base_tr = TextRenderer::new();
         let scaled = Theme::dark().with_text_scale(2.0);
-        assert!((label_size(&base) - label_size(&scaled)).abs() < 0.01);
-        assert!((label_size(&base) - 12.0).abs() < 0.01, "scale.sm at 1×");
+        let mut scaled_tr = TextRenderer::new();
+        scaled_tr.set_text_scale(2.0);
+        assert!((label_size(&base, &base_tr) - label_size(&scaled, &scaled_tr)).abs() < 0.01);
+        assert!((label_size(&base, &base_tr) - 12.0).abs() < 0.01, "scale.sm at 1×");
     }
 
     #[test]

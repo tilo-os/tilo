@@ -11,6 +11,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 use winit::event::WindowEvent;
 
+use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::widget::TaffyTreeExt;
 
@@ -64,7 +65,9 @@ fn px_f32(v: f64) -> f32 {
 }
 
 pub fn chip_size(label: &str, text_renderer: &mut TextRenderer, text_size: f32) -> (f64, f64) {
-    let (tw, _th) = text_renderer.measure(label, text_size, None);
+    // `text_size` is the theme-resolved size: it sizes the box in theme
+    // space and is divided back out once for the renderer's own measure.
+    let (tw, _th) = text_renderer.measure(label, renderer_type_size(text_renderer, text_size), None);
     let w = (f64::from(tw) + 2.0 * CHIP_PAD_X).min(CHIP_MAX_W);
     let h = (f64::from(text_size) + 2.0 * CHIP_PAD_Y).max(CHIP_MIN_H);
     (w, h)
@@ -146,7 +149,7 @@ pub fn draw_chip(
         &shape,
     );
 
-    let text_size = theme.tokens.typography.scale.sm;
+    let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
     // Centre on the measured line, not the font size: the chip's box is
     // sized from the font size, so the label otherwise sits low by half the
     // face's ascent/descent difference.

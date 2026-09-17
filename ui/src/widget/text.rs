@@ -18,25 +18,12 @@ use winit::event::WindowEvent;
 type DynamicTextSource = Box<dyn FnMut() -> Option<String>>;
 type DocumentTextSource = Box<dyn FnMut(&AutoCommit, &ObjId) -> String>;
 
-/// Top edge of one text line centred in a band.
-///
-/// `measured_line_height` must be the height the renderer *measured* for the
-/// string that will be drawn — the `.1` of [`TextRenderer::measure`] /
-/// [`TextRenderer::measure_style`] — never the font size. cosmic-text lays a
-/// line out as `size × line_height` (1.25 for the legacy [`TextStyle::new`],
-/// 1.4 for the theme's body role), so centring on the bare font size leaves
-/// the glyphs `(line_height − 1) × size / 2` too low: 1.5 px at 12 px, 1.75 px
-/// at 14 px, and the drift grows with the accessibility text scale. Measuring
-/// and drawing with one style is what keeps the line where the band says it
-/// is.
-///
-/// The result is not clamped: a band shorter than its line legitimately lets
-/// the line overhang equally above and below. This is the same arithmetic
-/// [`super::Button`] uses for its label; use it wherever a control paints a
-/// single line into a rect it owns.
-pub fn centered_text_top(band_y0: f64, band_height: f64, measured_line_height: f64) -> f64 {
-    band_y0 + (band_height - measured_line_height) / 2.0
-}
+/// Top edge of one text line centred in a band — the shared rule from
+/// [`crate::text_metrics`], re-exported here because [`super::Button`] and
+/// the other controls learned it from this module. Pass the `.1` of
+/// [`TextRenderer::measure`] / [`TextRenderer::measure_style`], never the
+/// font size.
+pub use crate::text_metrics::centered_text_top;
 
 /// Test helper shared by the widgets that centre a line with
 /// [`centered_text_top`]: asserts that glyph run `run_index` of `scene` sits

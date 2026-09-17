@@ -21,6 +21,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
+use crate::text_metrics::renderer_type_size;
 use crate::icons::Icon;
 use crate::platform::{DialogActionOrder, PlatformConventions};
 use crate::text_render::{TextRenderer, TextWeight};
@@ -358,7 +359,7 @@ impl ModalFrame {
         // `TextRenderer` applies the accessibility multiplier. Theme type
         // tokens already carry it too, so recover the design size for direct
         // renderer calls and scale the surrounding geometry exactly once.
-        let body_size = (tokens.typography.scale.sm / theme.text_scale).max(12.0);
+        let body_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
 
         let avail_w = (viewport.width() - MODAL_VIEWPORT_MARGIN * scale * 2.0).max(0.0);
         let w = (spec.max_width * scale)
@@ -501,7 +502,7 @@ impl ModalFrame {
         );
 
         if !spec.title.is_empty() {
-            let size = (tokens.typography.scale.base / theme.text_scale).max(14.0);
+            let size = renderer_type_size(text_renderer, tokens.typography.scale.base);
             // Title-band width is a bounded screen dimension; the f64->f32
             // narrowing for the text layout call cannot lose meaningful
             // precision at UI scale.
@@ -556,7 +557,7 @@ impl ModalFrame {
         layout: &ModalLayout,
         spec: &ModalSpec<'_>,
     ) {
-        let body_size = (theme.tokens.typography.scale.sm / theme.text_scale).max(12.0);
+        let body_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         for (i, a) in spec.actions.iter().enumerate() {
             let Some(rect) = layout.actions.get(i).copied() else {
                 continue;

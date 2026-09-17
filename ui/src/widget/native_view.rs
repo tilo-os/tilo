@@ -15,6 +15,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::WindowEvent;
 
+use crate::text_metrics::renderer_type_size;
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -453,7 +454,7 @@ impl Widget for NativeView {
         text_renderer.draw_text(
             scene,
             label,
-            theme.tokens.typography.scale.sm,
+            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             transform.pre_translate((self.rect.x0 + 12.0, self.rect.y0 + 12.0).into()),
             Some(max_width),
