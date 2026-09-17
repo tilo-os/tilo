@@ -3,6 +3,19 @@ from runtime_benchmark import distribution, measured_rows, present_rows, worker_
 
 
 class StatisticsTests(unittest.TestCase):
+    def test_occlusion_is_counted_as_skipped_not_presented_work(self):
+        import json
+        lines=['qos-render-frame '+json.dumps(dict(frame_ix=i,outcome=outcome,total_us=cost))
+               for i,(outcome,cost) in enumerate([('Presented',40),('Occluded',1),('Skipped',2)])]
+        result=worker_summary(lines)
+        self.assertEqual(result['outcomes']['Occluded'],1)
+        self.assertEqual(result['occluded_fraction'],1/3)
+        self.assertEqual(result['skipped_fraction'],2/3)
+        self.assertEqual(result['presented_worker_wall']['n'],1)
+        self.assertEqual(result['presented_worker_wall']['p99_ms'],.04)
+        with self.assertRaises(ValueError):
+            worker_summary([lines[1]])
+
     def test_correlation_uses_explicit_identity_and_keeps_missing_outcomes(self):
         import json
         lines = ["qos-render-frame " + json.dumps(row) for row in [

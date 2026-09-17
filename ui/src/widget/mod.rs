@@ -434,9 +434,18 @@ pub enum WindowCloseAdmission {
 }
 
 pub trait Widget {
+    /// A successful, locally applied resource Document action on this exact owner.
+    /// Immutable document access permits cache reconciliation only. Not called for
+    /// submissions, failed execution, replay, remote merge, or History restore.
+    fn document_action_applied(&mut self, _action: &qos_actions::EncodedAction, _before: &[automerge::ChangeHash], _doc: &AutoCommit, _path: &ObjId) {}
+
     /// Explicit root-owned History custody, including selected external resources.
     /// Runners consume this bundle; preview renderers never receive the root.
     fn history_registration(&self) -> Result<Option<crate::history_mode::HistoryRegistration>,crate::history_mode::HistoryRegistrationError> { Ok(None) }
+    /// Presentation declaration for a legacy tile's eventual checked record.
+    /// The TileHost resolves custody after binding; this grants no authority.
+    fn document_history_definition(&self) -> Option<&'static crate::history_mode::HistoryDefinition> { None }
+
 
     /// Framework lifecycle traversal, independent of visible presentation children.
     /// Borrowed surfaces and retained children cannot escape this callback.

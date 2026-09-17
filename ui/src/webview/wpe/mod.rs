@@ -576,6 +576,7 @@ extern "C" fn on_export_shm_buffer(
                 rgba.set_len(n);
                 crate::webview::profile::record_frame(width, height, swizzle_start.elapsed());
                 *state.shared.frames.lock().unwrap() = Some(Frame {
+                    trace_id: None,
                     rgba: Arc::new(rgba),
                     width,
                     height,
@@ -1120,6 +1121,7 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
             | WebViewCommand::SetBlockingScripts(_)
             | WebViewCommand::SetSiteExceptions(_)
             | WebViewCommand::RequestSiteStatus { .. }
+            | WebViewCommand::Credentials(_)
             | WebViewCommand::SiteAction { .. } => {}
         }
     }

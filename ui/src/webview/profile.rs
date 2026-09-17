@@ -3,9 +3,10 @@
 //!
 //! What it measures, from the engine thread and the widget:
 //!  * **frame throughput** — inter-frame intervals → frames/sec,
-//!  * **input→paint latency** — time from an interactive command being
-//!    sent to the next distinct frame arriving (the number that governs
-//!    how responsive scrolling / clicking feels),
+//!  * **input→next-frame interval** — time from an interactive command
+//!    being sent to the next observed engine frame. This is uncorrelated:
+//!    the frame may belong to another tab or unrelated animation, and
+//!    arrival does not prove that the window displayed it,
 //!  * **SHM swizzle cost** — the per-frame BGRA→RGBA copy time,
 //!  * **geometry** — each frame's pixel size and each draw's rect, so a
 //!    size/rect mismatch (a stretched or mispositioned frame) is visible.
@@ -130,7 +131,7 @@ pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
         let ms = now.duration_since(sent).as_secs_f64() * 1000.0;
         s.latency_ms.push(ms);
         if TRACE.load(Ordering::Relaxed) && s.frame_count < TRACE_FRAMES {
-            eprintln!("[webview-profile] input({kind})→paint {ms:.1}ms");
+            eprintln!("[webview-profile] input({kind})→next-frame (uncorrelated) {ms:.1}ms");
         }
     }
 
@@ -215,7 +216,7 @@ impl State {
             dims = self.dims_changes,
         );
         self.intervals_ms.report("frame interval (ms)");
-        self.latency_ms.report("input→paint (ms)");
+        self.latency_ms.report("input→next-frame, uncorrelated (ms)");
         self.swizzle_us.report("SHM swizzle (us)");
     }
 }

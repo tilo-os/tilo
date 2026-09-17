@@ -59,8 +59,12 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.typst-editor", typst_editor::app_root)
+    ui::launch::run_or_exit(&launch_spec());
+}
+
+fn launch_spec() -> LaunchSpec {
+    LaunchSpec::new("dev.qos.typst-editor", typst_editor::app_root)
+            .history(&typst_editor::framework_history::HISTORY)
             .shot_handler(shot_handler)
             .allowed_options(&["--theme"])
             .scenarios(&[
@@ -75,8 +79,7 @@ pub fn main() {
                 "select",
                 "stale",
                 "status",
-            ]),
-    );
+            ])
 }
 
 fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
@@ -179,3 +182,6 @@ fn render_shot_to_png(
     println!("typst_editor: wrote shot to {}", out.display());
     Ok(())
 }
+
+#[test]
+fn production_launch_registers_history() { launch_spec().validate_history_declaration().unwrap(); }

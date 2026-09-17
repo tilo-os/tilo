@@ -284,6 +284,9 @@ struct Binding {
     /// otherwise the first Ctrl+Z deletes the body wholesale instead of
     /// reverting what was typed into it.
     established: bool,
+    /// A close/replacement may keep this binding alive. Suppress another
+    /// settlement only while its exact committed frontier remains unchanged.
+    settled_frontier: Option<Vec<automerge::ChangeHash>>,
 }
 
 struct PendingBinding {
@@ -293,10 +296,36 @@ struct PendingBinding {
 }
 
 impl Binding {
+    fn settle_outgoing(&mut self) -> Option<crate::application::ComponentCloseReport> {
+        use automerge::transaction::Transactable;
+        // This comparison must not commit a local draft or advance any sibling.
+        if let Some((heads, 0)) = self.store.read(&self.live, |doc| (doc.base_heads(), doc.pending_ops()))
+            && self.settled_frontier.as_ref() == Some(&heads) {
+            return None;
+        }
+        let error = self.store.try_flush_record(&self.live).err();
+        // Capture only this owner's post-settlement committed frontier. Pending
+        // edits or an unavailable document cannot establish a reusable marker.
+        self.settled_frontier = self.store.read(&self.live, |doc| {
+            (doc.pending_ops() == 0).then(|| doc.base_heads())
+        }).flatten();
+        Some(crate::application::ComponentCloseReport {
+            recovery: None, view_error: None, view_retry: None,
+            record_retry: error.as_ref().map(|_| self.store.clone()),
+            record_retry_target: error.as_ref().map(|_| self.live.clone()),
+            record_error: error, teardown_error: None,
+        })
+    }
+
     fn follow_checked(
         &mut self,
         want: Option<RecordCheckout>,
+        reports: &mut Vec<crate::application::ComponentCloseReport>,
     ) -> Result<RecordId, crate::record::RecordOpenError> {
+        if want.as_ref().is_some_and(|want| want.id != self.live)
+            && let Some(report) = self.settle_outgoing() {
+            reports.push(report);
+        }
         let requested = want
             .as_ref()
             .or_else(|| (self.live == self.tab.id).then_some(&self.tab));
@@ -308,6 +337,7 @@ impl Binding {
         {
             self.live = want.id;
             self.established = false;
+            self.settled_frontier = None;
         }
         Ok(self.live.clone())
     }
@@ -336,6 +366,7 @@ fn admit_record(
 pub struct TileHost {
     content: TileContent,
     history: Option<Box<crate::history_mode::host::HistoryHost>>,
+    automatic_history: bool,
     live_callback_node: Option<NodeId>,
     retained_invocations: HashMap<qos_actions::InvocationId, crate::history_mode::HistoryOwner>,
     close_reports: Vec<crate::application::ComponentCloseReport>,
@@ -449,6 +480,7 @@ impl TileHost {
         let mut tile = Self {
             content,
             history: None,
+            automatic_history: false,
             live_callback_node: None,
             retained_invocations: HashMap::new(),
             close_reports: vec![],
@@ -499,12 +531,14 @@ impl TileHost {
     /// fresh empty document, and the tree re-binds every tile on rebuild.
     pub fn bind_record(&mut self, store: RecordStore, tab: RecordCheckout) {
         self.bind_record_intent(store, tab, false);
+        self.install_declared_history();
     }
 
     /// Admit a newly created scratch resource owned by this caller. Creation
     /// applies only to this exact checkout, never to later record intents.
     pub fn bind_or_create_record(&mut self, store: RecordStore, tab: RecordCheckout) {
         self.bind_record_intent(store, tab, true);
+        self.install_declared_history();
     }
 
     /// Keep a failed fresh creation unavailable without attaching an existing
@@ -531,7 +565,35 @@ impl TileHost {
         self.record_creation_refused
     }
 
+    fn install_declared_history(&mut self) {
+        if self.automatic_history || self.record_error.is_some() || self.binding.is_none() { return; }
+        let definition = match &self.content {
+            TileContent::App(root) => root.document_history_definition(),
+            _ => None,
+        };
+        let Some(definition) = definition else { return; };
+        if self.history.is_some() {
+            self.record_error = Some("Conflicting History declarations for this tile".into());
+            return;
+        }
+        match self.register_document_history(definition) {
+            Ok(()) => self.automatic_history = true,
+            Err(error) => self.record_error = Some(format!("History unavailable: {error}")),
+        }
+    }
+
+    fn settle_outgoing_record(&mut self) {
+        if let Some(binding) = &mut self.binding
+            && let Some(report) = binding.settle_outgoing() {
+            self.close_reports.push(report);
+        }
+    }
+
     fn renew_history_lifetime(&mut self) {
+        if self.automatic_history {
+            self.history = None;
+            self.automatic_history = false;
+        }
         self.history_lifetime.active.set(false);
         self.history_lifetime = crate::history_mode::owner::LegacyHistoryLifetime::new();
     }
@@ -549,6 +611,7 @@ impl TileHost {
         }
         // A spelling is not custody: a replaced store or checkout must be
         // admitted afresh, including failed same-ID kind changes.
+        self.settle_outgoing_record();
         self.announced = None;
         self.renew_history_lifetime();
         if let Err(error) = admit_record(&store, &tab, create) {
@@ -565,6 +628,7 @@ impl TileHost {
             tab,
             live,
             established: false,
+            settled_frontier: None,
         });
         self.announce_scope();
     }
@@ -583,6 +647,7 @@ impl TileHost {
                 live: pending.tab.id.clone(),
                 tab: pending.tab,
                 established: false,
+                settled_frontier: None,
             });
         }
         let want = match &self.content {
@@ -592,7 +657,7 @@ impl TileHost {
         let Some(binding) = self.binding.as_mut() else {
             return Ok(None);
         };
-        let live = match binding.follow_checked(want) {
+        let live = match binding.follow_checked(want, &mut self.close_reports) {
             Ok(live) => live,
             Err(error) => {
                 if !was_unavailable { self.renew_history_lifetime(); }
@@ -635,6 +700,7 @@ impl TileHost {
             self.callback_binding().is_none(),
             "canonical content requires checked replacement"
         );
+        self.settle_outgoing_record();
         self.renew_history_lifetime();
         self.structure_dirty = true;
         &mut self.content
@@ -660,12 +726,13 @@ impl TileHost {
     /// since `App` and the card variants have different taffy shapes.
     pub fn replace_content(&mut self, content: TileContent) {
         self.record_creation_refused = false;
-        self.renew_history_lifetime();
         if let TileContent::App(root) = &mut self.content {
             self.close_reports.extend(root.close_components());
             self.close_reports
                 .extend(root.take_component_close_reports());
         }
+        self.settle_outgoing_record();
+        self.renew_history_lifetime();
         self.content = content;
         let registration = match &self.content { TileContent::App(root) => root.history_registration(), _ => Ok(None) };
         self.history = None;
@@ -674,6 +741,7 @@ impl TileHost {
             Err(error) => self.record_error = Some(format!("History unavailable: {error}")),
             Ok(None) => {},
         }
+        self.install_declared_history();
         self.announced = None;
         self.structure_dirty = true;
     }
@@ -976,7 +1044,7 @@ impl Widget for TileHost {
                 };
                 Some(
                     binding
-                        .follow_checked(want)
+                        .follow_checked(want, &mut self.close_reports)
                         .map_err(|error| error.to_string())?,
                 )
             }
@@ -1029,7 +1097,9 @@ impl Widget for TileHost {
     }
 
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.history_lifetime.active.set(false);
+        if self.history_lifetime.active.replace(false) {
+            self.settle_outgoing_record();
+        }
         if let TileContent::App(root) = &mut self.content {
             self.close_reports.extend(root.close_components());
         }
@@ -1087,6 +1157,8 @@ impl Widget for TileHost {
         let Ok(live) = self.resolve_record() else {
             return;
         };
+        self.install_declared_history();
+        if self.record_error.is_some() { return; }
         let TileContent::App(w) = &mut self.content else {
             return;
         };
@@ -1104,10 +1176,21 @@ impl Widget for TileHost {
     }
 
     fn update(&mut self, s: &mut AutoCommit, p: &ObjId) -> bool {
+        // This custody is independent of the outer App State and remains
+        // durable while History hides the live widget.
+        if let Some(binding) = &self.binding {
+            binding.store.schedule_committed_history(&binding.live);
+            if let (Ok(status), TileContent::App(app)) =
+                (binding.store.save_status(&binding.live), &mut self.content) {
+                app.record_save_status(status);
+            }
+        }
         if self.history.as_ref().is_some_and(|history| !history.live_interactive()) || crate::history_mode::frame::FrameworkInputFrame::active() { return false; }
         let Ok(live) = self.resolve_record() else {
             return false;
         };
+        self.install_declared_history();
+        if self.record_error.is_some() { return false; }
         let TileContent::App(w) = &mut self.content else {
             return false;
         };
@@ -1266,6 +1349,8 @@ impl Widget for TileHost {
             *handled = true;
             return;
         };
+        self.install_declared_history();
+        if self.record_error.is_some() { *handled = true; return; }
         let TileContent::App(app) = &mut self.content else {
             return;
         };
@@ -2168,6 +2253,240 @@ mod tests {
             host.accessibility().and_then(|node| node.name),
             Some("Document unavailable".into())
         );
+    }
+
+    struct DeclaredHistoryProbe {
+        definition: &'static crate::history_mode::HistoryDefinition,
+        existing: bool,
+        focused: bool,
+    }
+    static DECLARED_HISTORY: crate::history_mode::HistoryDefinition = crate::history_mode::HistoryDefinition {
+        app_id: "dev.qos.tile-host-test",
+        scopes: &[crate::history_mode::HistoryScopeDefinition {
+            key: "body", title: "Body", content_schema: None,
+            presentation: crate::history_mode::HistoryPresentation::Domain {
+                create: |_| Err("Preview is not needed for custody admission tests".into()),
+            },
+        }],
+    };
+    static FOREIGN_HISTORY: crate::history_mode::HistoryDefinition = crate::history_mode::HistoryDefinition {
+        app_id: "foreign.app", scopes: DECLARED_HISTORY.scopes,
+    };
+    static EXISTING_HISTORY: crate::history_mode::HistoryDefinition = crate::history_mode::HistoryDefinition {
+        app_id: "dev.qos.tile-host-test",
+        scopes: &[crate::history_mode::HistoryScopeDefinition {
+            key: "external", title: "External", content_schema: None,
+            presentation: crate::history_mode::HistoryPresentation::External { reason: "existing provider" },
+        }],
+    };
+    impl Widget for DeclaredHistoryProbe {
+        fn document_history_definition(&self) -> Option<&'static crate::history_mode::HistoryDefinition> { Some(self.definition) }
+        fn history_registration(&self) -> Result<Option<crate::history_mode::HistoryRegistration>, crate::history_mode::HistoryRegistrationError> {
+            if !self.existing { return Ok(None); }
+            crate::history_mode::HistoryRegistration::new(&EXISTING_HISTORY, vec![crate::history_mode::HistorySourceRegistration::Unversioned { scope: "external", reason: "existing provider" }]).map(Some)
+        }
+        fn name(&self) -> &str { "Declared history probe" }
+        fn test_id(&self) -> Option<&str> { Some("declared-probe") }
+        fn is_focusable(&self) -> bool { true }
+        fn is_focused(&self) -> bool { self.focused }
+        fn set_focus(&mut self, focused: bool) { self.focused = focused; }
+        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+        fn build_layout(&mut self, tree: &mut TaffyTree<()>, _: &Theme, nodes: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+            let node = tree.leaf_node(Style::default()); nodes.insert(node, self as *mut dyn Widget); node
+        }
+        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
+        fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {}
+        fn handle_event(&mut self, _: &WindowEvent, _: f64, _: &winit::event::Modifiers, _: &mut AutoCommit, _: &ObjId, _: &mut bool, _: &mut Option<NodeId>, _: NodeId, _: &TaffyTree<()>) {}
+        fn get_rect(&self) -> Rect { Rect::ZERO }
+    }
+    impl crate::widget::AppWidget for DeclaredHistoryProbe {
+        fn app_kind(&self) -> AppKind { AppKind::Editor }
+        fn app_title(&self) -> &str { "Declared history probe" }
+        fn permission_hint(&self) -> Option<AppKind> { None }
+        fn app_icon(&self) -> crate::widget::IconDescriptor { crate::widget::IconDescriptor::Glyph("H") }
+    }
+    fn declared_probe(definition: &'static crate::history_mode::HistoryDefinition, existing: bool) -> TileContent {
+        TileContent::App(Box::new(DeclaredHistoryProbe { definition, existing, focused: true }))
+    }
+    #[test]
+    fn outgoing_record_intent_keeps_failed_owner_and_unrelated_pending_record() {
+        use automerge::{ReadDoc, transaction::Transactable};
+        for reject in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("records");
+            let store = canonical_store(&root);
+            let a = tab_checkout(3980);
+            let sibling = tab_checkout(3981);
+            let file = temp.path().join("next.txt");
+            let b = RecordCheckout::new(RecordId::for_file(&file), crate::record::RecordKind::new("file"));
+            for checkout in [&a, &sibling] {
+                store.reserve_record(checkout).unwrap().initialize(|_| Ok(())).unwrap();
+            }
+            if !reject { store.reserve_record(&b).unwrap().initialize(|_| Ok(())).unwrap(); }
+            store.with(&a.id, |doc| { doc.put(ROOT, "body", "durable baseline").unwrap(); }).unwrap();
+            store.try_flush_record(&a.id).unwrap();
+            store.with(&sibling.id, |doc| { doc.put(ROOT, "pending", "sibling").unwrap(); }).unwrap();
+            let pending = store.read(&sibling.id, |doc| (doc.base_heads(), doc.pending_ops())).unwrap();
+            let path = app_state::DocStore::room_record_dir_at(&root, "dev.qos.tile-host-test", "room", &a.id.storage_key()).unwrap().join(app_state::DOCUMENT_FILE);
+            std::fs::remove_file(&path).unwrap();
+            std::fs::create_dir(&path).unwrap();
+            let mut host = TileHost::new(TileContent::App(Box::new(Scribe { text: "unused".into(), opens: Some(file) })));
+            host.bind_record(store.clone(), a.clone());
+            let old = host.history_owner().unwrap();
+            store.with(&a.id, |doc| { doc.put(ROOT, "body", "unflushed A").unwrap(); }).unwrap();
+            assert_eq!(host.resolve_record().is_err(), reject);
+            assert!(old.validate().is_err());
+            drop(old);
+            let mut reports = host.take_component_close_reports();
+            assert_eq!(reports.len(), 1, "intent change must settle the outgoing owner");
+            let mut report = reports.pop().unwrap();
+            assert!(report.record_error.is_some());
+            assert!(report.record_retry.as_ref().unwrap().same_owner(&store));
+            assert_eq!(report.record_retry_target.as_ref(), Some(&a.id));
+            let _ = host.resolve_record();
+            assert!(host.take_component_close_reports().is_empty());
+            drop(host); drop(store);
+            std::fs::remove_dir(&path).unwrap();
+            let retained = report.record_retry.as_ref().unwrap().clone();
+            report.retry_record().unwrap();
+            assert_eq!(retained.read(&sibling.id, |doc| (doc.base_heads(), doc.pending_ops())).unwrap(), pending);
+            drop(retained);
+            let reopened = canonical_store(&root);
+            reopened.try_open_record(&a).unwrap();
+            assert_eq!(reopened.read(&a.id, |doc| doc.get(ROOT, "body").unwrap().unwrap().0.to_str().unwrap().to_owned()).unwrap(), "unflushed A");
+        }
+    }
+
+    #[test]
+    fn outgoing_settlement_is_idempotent_but_new_edits_require_another_close() {
+        use automerge::transaction::Transactable;
+        let temp = tempfile::tempdir().unwrap();
+        let store = canonical_store(temp.path());
+        let checkout = tab_checkout(3982);
+        store.reserve_record(&checkout).unwrap().initialize(|_| Ok(())).unwrap();
+        let mut host = TileHost::new(declared_probe(&DECLARED_HISTORY, false));
+        host.bind_record(store.clone(), checkout.clone());
+        store.with(&checkout.id, |doc| { doc.put(ROOT, "body", "first").unwrap(); }).unwrap();
+        host.replace_content(declared_probe(&DECLARED_HISTORY, false));
+        let reports = host.take_component_close_reports();
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].record_error.is_none());
+        let settled = store.read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops())).unwrap();
+        assert_eq!(settled.1, 0);
+        host.bind_record(store.clone(), checkout.clone());
+        assert!(host.close_components().is_empty());
+        assert!(host.close_components().is_empty());
+        assert_eq!(store.read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops())).unwrap(), settled);
+        host.replace_content(declared_probe(&DECLARED_HISTORY, false));
+        store.with(&checkout.id, |doc| { doc.put(ROOT, "body", "later accepted edit").unwrap(); }).unwrap();
+        assert!(store.read(&checkout.id, |doc| doc.pending_ops()).unwrap() > 0);
+        let reports = host.close_components();
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].record_error.is_none());
+        let later = store.read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops())).unwrap();
+        assert_ne!(later.0, settled.0);
+        assert_eq!(later.1, 0);
+        assert!(host.close_components().is_empty());
+    }
+
+    #[test]
+    fn declared_history_binds_once_and_replaces_its_actual_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = canonical_store(&temp.path().join("first"));
+        let second = canonical_store(&temp.path().join("second"));
+        let checkout = tab_checkout(3910);
+        for store in [&first, &second] {
+            store.reserve_record(&checkout).unwrap().initialize(|_| Ok(())).unwrap();
+        }
+        let mut host = TileHost::new(declared_probe(&DECLARED_HISTORY, false));
+        assert!(host.history.is_none());
+        host.bind_record(first.clone(), checkout.clone());
+        let initial = host.history_owner().unwrap();
+        assert!(host.automatic_history);
+        host.bind_record(first, checkout.clone());
+        assert!(initial.same_owner(&host.history_owner().unwrap()));
+        host.replace_content(declared_probe(&DECLARED_HISTORY, false));
+        assert!(initial.validate().is_err());
+        assert!(host.history.is_some(), "replacement must consume the new root declaration");
+        let replaced = host.history_owner().unwrap();
+        host.bind_record(second, checkout);
+        assert!(replaced.validate().is_err());
+        assert!(host.history.as_ref().unwrap().validate().is_ok());
+        let mut count = 0;
+        host.visit_framework_history(&mut |_, _| count += 1);
+        assert_eq!(count, 1);
+    }
+    #[test]
+    fn declared_history_waits_for_deferred_record_admission() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = canonical_store(&temp.path().join("records"));
+        let checkout = tab_checkout(3913);
+        let mut host = TileHost::new(declared_probe(&DECLARED_HISTORY, false));
+        host.bind_record(store.clone(), checkout.clone());
+        assert!(host.history.is_none());
+        assert!(host.history_owner().is_none());
+        store.reserve_record(&checkout).unwrap().initialize(|_| Ok(())).unwrap();
+        host.sync(&mut AutoCommit::new(), &ROOT);
+        assert!(host.record_error.is_none());
+        assert!(host.automatic_history);
+        let owner = host.history_owner().unwrap();
+        host.sync(&mut AutoCommit::new(), &ROOT);
+        assert!(owner.same_owner(&host.history_owner().unwrap()));
+        let mut count = 0;
+        host.visit_framework_history(&mut |_, _| count += 1);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn declared_history_rebind_cannot_restore_focus_into_same_named_new_owner() {
+        use crate::widget::layout::CompositionFocus;
+        let temp = tempfile::tempdir().unwrap();
+        let first = canonical_store(&temp.path().join("first"));
+        let second = canonical_store(&temp.path().join("second"));
+        let checkout = tab_checkout(3912);
+        for store in [&first, &second] {
+            store.reserve_record(&checkout).unwrap().initialize(|_| Ok(())).unwrap();
+        }
+        let mut host = TileHost::new(declared_probe(&DECLARED_HISTORY, false));
+        host.bind_record(first, checkout.clone());
+        let mut tree = TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        let root = host.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        unsafe { bindings.rebuild(&host, &tree, root, &nodes); }
+        let target = nodes.iter().find_map(|(node, pointer)| {
+            (unsafe { &**pointer }.test_id() == Some("declared-probe")).then_some(*node)
+        }).unwrap();
+        let focus = unsafe { CompositionFocus::capture(Some(target), &nodes, &bindings) }.unwrap();
+        assert_eq!(unsafe { focus.restore(&nodes, &bindings, None) }, Some(target));
+        nodes.clear(); bindings.clear();
+        host.bind_record(second, checkout);
+        tree = TaffyTree::new();
+        let root = host.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+        unsafe { bindings.rebuild(&host, &tree, root, &nodes); }
+        assert!(unsafe { focus.restore(&nodes, &bindings, None) }.is_none());
+    }
+
+    #[test]
+    fn declared_history_refuses_foreign_custody_and_conflicting_root_provider() {
+        for (definition, existing) in [(&FOREIGN_HISTORY, false), (&DECLARED_HISTORY, true)] {
+            let temp = tempfile::tempdir().unwrap();
+            let store = canonical_store(&temp.path().join("records"));
+            let checkout = tab_checkout(3911);
+            store.reserve_record(&checkout).unwrap().initialize(|_| Ok(())).unwrap();
+            let mut host = TileHost::new(declared_probe(definition, existing));
+            host.bind_record(store, checkout);
+            assert!(host.record_error.is_some());
+            assert!(host.history_owner().is_none());
+            assert!(!host.automatic_history);
+            for _ in 0..2 {
+                host.sync(&mut AutoCommit::new(), &ROOT);
+                host.update(&mut AutoCommit::new(), &ROOT);
+                assert!(host.record_error.is_some(), "refusal must survive ordinary frames");
+                assert!(host.history_owner().is_none());
+            }
+            if existing { assert!(host.record_error.as_ref().unwrap().contains("Conflicting")); }
+        }
     }
 
     #[test]

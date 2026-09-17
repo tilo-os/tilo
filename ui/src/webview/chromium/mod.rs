@@ -723,7 +723,9 @@ impl WebViewEngine for ChromiumEngine {
         if let Some(mut command) = encode_command(command) {
             command["tab"] = json!(self.tab);
             if let Err(error) = self.tx.push(command) {
-                if self.shared.failed.load(Ordering::Acquire) {
+                // A prior helper error describes its previous URL. Each new
+                // rejected navigation still needs an error for the requested URL.
+                if navigation.is_none() && self.shared.failed.load(Ordering::Acquire) {
                     return;
                 }
                 tracing::error!(%error, "Chromium command rejected");
@@ -811,6 +813,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         .ok_or("missing event name")?;
     let text = |key: &str| value.get(key).is_some_and(Value::is_string);
     let valid = match event {
+        "credential_result" => super::CredentialReply::decode(value).is_some(),
         "site_status" | "site_result" => {
             let header = value["request_id"]
                 .as_u64()
@@ -957,6 +960,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
 
 fn command_within_limits(command: &WebViewCommand) -> bool {
     match command {
+        WebViewCommand::Credentials(request) => request.valid(),
         WebViewCommand::SetSiteExceptions(origins) => {
             origins.len() <= 1024 && origins.iter().all(|s| !s.is_empty() && s.len() <= 8192)
         }
@@ -1095,6 +1099,7 @@ impl CommandQueue {
 
 fn decode_event(value: &Value) -> Option<WebViewEvent> {
     Some(match value["event"].as_str()? {
+        "credential_result" => WebViewEvent::CredentialResult(super::CredentialReply::decode(value)?),
         "closed" => WebViewEvent::TabClosed,
         "tab_detached" => WebViewEvent::TabDetached,
         "close_blocked" => WebViewEvent::TabCloseBlocked,
@@ -1267,6 +1272,7 @@ fn decode_base64_bounded(input: &str, limit: usize) -> Option<Vec<u8>> {
 
 fn encode_command(command: WebViewCommand) -> Option<Value> {
     Some(match command {
+        WebViewCommand::Credentials(request) => request.encode()?,
         WebViewCommand::Navigate(url) => json!({"op":"navigate","url":url}),
         WebViewCommand::RequestNavigationHistory {
             request_id,

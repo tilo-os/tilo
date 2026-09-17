@@ -73,7 +73,7 @@ class Session:
             os.seteuid(0)
 
     def request(self, operation, **fields):
-        packet = {'schema': 2, 'nonce': self.locator['nonce'], 'id': self.sequence,
+        packet = {'schema': 3, 'nonce': self.locator['nonce'], 'id': self.sequence,
                   'operation': {'operation': operation, **fields}}
         self.sequence += 1
         self.sock.send(json.dumps(packet).encode())
@@ -83,7 +83,7 @@ class Session:
         data, ancillary, flags, _ = self.sock.recvmsg(65536, 1024)
         require(data and not ancillary and not flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC), 'invalid reply packet')
         reply = json.loads(data)
-        require(reply['schema'] == 2 and reply['nonce'] == request['nonce'] and reply['id'] == request['id'],
+        require(reply['schema'] == 3 and reply['nonce'] == request['nonce'] and reply['id'] == request['id'],
                 'stale/wrong-session reply')
         return reply['result']
 
@@ -213,7 +213,7 @@ def transport(probe, selected, uid, device):
         s = Session(probe, selected, uid)
         try:
             s.connect(0 if attack == 'wrong-uid' else None)
-            packet = {'schema': 2, 'nonce': s.locator['nonce'], 'id': 0, 'operation': {'operation': 'Hello'}}
+            packet = {'schema': 3, 'nonce': s.locator['nonce'], 'id': 0, 'operation': {'operation': 'Hello'}}
             if attack == 'wrong-uid':
                 pass  # UID 0 can reach the filesystem socket but is not the selected UID.
             elif attack == 'nonce':
@@ -229,7 +229,7 @@ def transport(probe, selected, uid, device):
             elif attack == 'oversize':
                 s.sock.send(b'x'*65537)
             elif attack == 'malformed':
-                s.sock.send(b'{"schema":2')
+                s.sock.send(b'{"schema":3')
             elif attack == 'unknown':
                 packet['operation']['operation'] = 'Write'; s.sock.send(json.dumps(packet).encode())
             else:

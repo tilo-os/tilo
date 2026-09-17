@@ -1393,6 +1393,24 @@ impl RecordStore {
             .and_then(app_state::Autosave::last_error)
     }
 
+    /// Close/retry one actual owner without settling another record's edit.
+    pub(crate) fn try_flush_record(&self, id: &RecordId) -> Result<(), String> {
+        let mut set = self.0.try_borrow_mut().map_err(|_| "record store is busy".to_string())?;
+        let canonical = set.canonical_root.is_some();
+        let slot = set.open.get_mut(id).ok_or_else(|| format!("{id}: record is not open"))?;
+        let doc = slot.doc.as_mut().ok_or_else(|| format!("{id}: record is busy"))?;
+        let Some(saver) = &mut slot.autosave else { return Ok(()); };
+        if canonical && saver.last_error().is_some() {
+            saver.try_restart_canonical().map_err(|error| format!("{id}: {error}"))?;
+            slot.action_state.commit_for_save(doc);
+            saver.request_checkpoint(doc);
+        } else {
+            slot.action_state.commit_for_save(doc);
+            saver.request(doc);
+        }
+        saver.try_flush().map_err(|error| format!("{id}: {error}"))
+    }
+
     /// Request current changes once and await actual acknowledgements for every record.
     ///
     /// # Errors

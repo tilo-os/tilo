@@ -16,6 +16,15 @@ class RenderBoundaryTests(unittest.TestCase):
     def change(self,lines,index,**values):
         lines=list(lines);prefix,raw=lines[index].split(' ',1);row=json.loads(raw);row.update(values);lines[index]=prefix+' '+json.dumps(row);return lines
 
+    def test_auxiliary_occlusion_diagnostic_does_not_count_as_presentation(self):
+        lines,ids=self.fixture()
+        row=json.loads(lines[1].split(' ',1)[1])
+        row.update(cpu_frame_id=None,worker_frame_ix=10,outcome='Occluded')
+        report=summarize_render_boundaries(lines+['qos-native-worker '+json.dumps(row)],ids)
+        self.assertEqual(len(report['frames']),1)
+        with self.assertRaises(ValueError):
+            summarize_render_boundaries(self.change(lines,1,outcome='Occluded'),ids)
+
     def test_worker_receive_during_blocking_send_is_valid(self):
         report=summarize_render_boundaries(*self.fixture())
         self.assertIsInstance(report,dict)

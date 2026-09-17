@@ -558,6 +558,54 @@ impl EditForm {
         }
     }
 
+    /// Rebase only local differences onto the current canonical contact. Inputs
+    /// stay local: unchanged fields adopt restored content, genuinely edited
+    /// values (including temporarily invalid birthday text) remain unsaved.
+    fn reconcile(&mut self, canonical: &Contact) {
+        if self.is_new || self.base == *canonical {
+            return;
+        }
+        let baseline_inputs = Self::new(self.base.clone(), false).inputs;
+        self.collect();
+        let old_draft = self.draft.clone();
+        let draft = rebase_contact(&self.base, &self.draft, canonical);
+        let mut next = Self::new(draft, false);
+        let mut previous = std::mem::take(&mut self.inputs);
+        for input in &mut next.inputs {
+            let key = form_input_key(&next.draft, input.slot);
+            if let Some(index) = previous
+                .iter()
+                .position(|old| form_input_key(&old_draft, old.slot) == key)
+            {
+                let mut old = previous.remove(index);
+                let base_value = baseline_inputs
+                    .iter()
+                    .find(|base| form_input_key(&self.base, base.slot) == key)
+                    .map(|base| base.ti.value());
+                if base_value == Some(old.ti.value()) && old.ti.value() != input.ti.value() {
+                    old.ti.set_text(input.ti.value());
+                }
+                input.ti = old.ti;
+            }
+        }
+        next.base = canonical.clone();
+        *self = next;
+    }
+
+    fn has_local_edits(&mut self) -> bool {
+        let baseline = Self::new(self.base.clone(), false);
+        let raw_edit = self.inputs.iter().any(|input| {
+            let key = form_input_key(&self.draft, input.slot);
+            baseline
+                .inputs
+                .iter()
+                .find(|old| form_input_key(&self.base, old.slot) == key)
+                .is_none_or(|old| old.ti.value() != input.ti.value())
+        });
+        self.collect();
+        raw_edit || self.draft != self.base
+    }
+
     fn any_focused(&self) -> bool {
         self.inputs.iter().any(|f| f.ti.is_focused())
     }
@@ -567,6 +615,115 @@ impl EditForm {
             f.ti.set_focus(false);
         }
     }
+}
+
+/// Stable identity across reordered repeated fields; indices are layout slots.
+fn form_input_key(contact: &Contact, slot: Slot) -> String {
+    match slot {
+        Slot::Phone(i) => format!("phone:{:?}", contact.phones.get(i).map(|row| row.id)),
+        Slot::Email(i) => format!("email:{:?}", contact.emails.get(i).map(|row| row.id)),
+        Slot::AddrStreet(i)
+        | Slot::AddrCity(i)
+        | Slot::AddrRegion(i)
+        | Slot::AddrPostal(i)
+        | Slot::AddrCountry(i) => {
+            let kind = match slot {
+                Slot::AddrStreet(_) => "street",
+                Slot::AddrCity(_) => "city",
+                Slot::AddrRegion(_) => "region",
+                Slot::AddrPostal(_) => "postal",
+                _ => "country",
+            };
+            format!(
+                "address:{:?}:{kind}",
+                contact.addresses.get(i).map(|row| row.id)
+            )
+        }
+        _ => format!("{slot:?}"),
+    }
+}
+
+fn rebase_entries<T: Clone + PartialEq>(
+    base: &[T],
+    draft: &[T],
+    canonical: &[T],
+    id: impl Fn(&T) -> uuid::Uuid,
+    merge: impl Fn(&T, &T, &T) -> T,
+) -> Vec<T> {
+    let mut result: Vec<T> = canonical
+        .iter()
+        .filter(|row| {
+            !base.iter().any(|old| id(old) == id(row))
+                || draft.iter().any(|local| id(local) == id(row))
+        })
+        .cloned()
+        .collect();
+    for local in draft {
+        let old = base.iter().find(|row| id(row) == id(local));
+        if old == Some(local) {
+            continue;
+        }
+        if let Some(current) = result.iter_mut().find(|row| id(row) == id(local)) {
+            *current = old.map_or_else(|| local.clone(), |old| merge(old, local, current));
+        } else {
+            result.push(local.clone());
+        }
+    }
+    result
+}
+
+fn rebase_contact(base: &Contact, local: &Contact, canonical: &Contact) -> Contact {
+    let mut result = canonical.clone();
+    macro_rules! local_fields {
+        ($out:expr, $old:expr, $local:expr, $($field:ident),+ $(,)?) => { $(if $old.$field != $local.$field { $out.$field.clone_from(&$local.$field); })+ };
+    }
+    local_fields!(
+        result, base, local, first, last, org, title, website, notes, birthday, favorite
+    );
+    result.groups = rebase_entries(
+        &base.groups,
+        &local.groups,
+        &canonical.groups,
+        |row| row.id,
+        |old, local, current| {
+            let mut result = current.clone();
+            local_fields!(result, old, local, value);
+            result
+        },
+    );
+    let labeled = |old: &Labeled, local: &Labeled, current: &Labeled| {
+        let mut result = current.clone();
+        local_fields!(result, old, local, label, value);
+        result
+    };
+    result.phones = rebase_entries(
+        &base.phones,
+        &local.phones,
+        &canonical.phones,
+        |row| row.id,
+        labeled,
+    );
+    result.emails = rebase_entries(
+        &base.emails,
+        &local.emails,
+        &canonical.emails,
+        |row| row.id,
+        labeled,
+    );
+    result.addresses = rebase_entries(
+        &base.addresses,
+        &local.addresses,
+        &canonical.addresses,
+        |row| row.id,
+        |old, local, current| {
+            let mut result = current.clone();
+            local_fields!(
+                result, old, local, label, street, city, region, postal, country
+            );
+            result
+        },
+    );
+    result
 }
 
 fn set_addr(c: &mut Contact, i: usize, pick: impl Fn(&mut Address) -> &mut String, v: String) {
@@ -4148,7 +4305,7 @@ impl FieldInput {
 // Drawing helpers (free functions)
 // =====================================================================
 
-fn detail_section(
+pub(crate) fn detail_section(
     scene: &mut Scene,
     t: Affine,
     tr: &mut TextRenderer,
@@ -4171,7 +4328,7 @@ fn detail_section(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn detail_field(
+pub(crate) fn detail_field(
     scene: &mut Scene,
     t: Affine,
     tr: &mut TextRenderer,
@@ -4436,7 +4593,7 @@ pub(crate) fn draw_checkbox(
     );
 }
 
-fn draw_avatar(
+pub(crate) fn draw_avatar(
     scene: &mut Scene,
     t: Affine,
     tr: &mut TextRenderer,
@@ -4847,6 +5004,10 @@ impl ContactsApp {
 }
 
 impl Widget for ContactsApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CONTACTS_OPERATION_TYPE]
     }
@@ -4927,6 +5088,19 @@ impl Widget for ContactsApp {
         let heads = state.get_heads();
         if heads != self.model_heads {
             self.store.contacts = ContactsDoc::list_contacts(state);
+            if let Some(form) = &mut self.form {
+                if let Some(canonical) = self.store.get(form.draft.id) {
+                    form.reconcile(canonical);
+                } else if !form.is_new {
+                    if form.has_local_edits() {
+                        self.show_toast(
+                            "This contact no longer exists. Your unsaved edits are retained.",
+                        );
+                    } else {
+                        self.cancel_edit();
+                    }
+                }
+            }
             self.model_heads = heads;
             if let Some(sel) = self.selected
                 && self.store.get(sel).is_none()

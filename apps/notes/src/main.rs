@@ -36,7 +36,6 @@
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-use notes::NotesApp;
 use notes::shots::{self, DEFAULT_SHOTS_VIEWPORT};
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
@@ -70,6 +69,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new_with_args("dev.qos.notes", live_root)
             .open_state_with_args(open_state)
+            .allowed_live_flags(&["--import-legacy-stopped"])
+            .allowed_live_options(&["--notebook-dir", "--notebook-state-dir"])
             .shot_handler(render_shot)
             .scenarios(SHOT_SCENARIOS)
             .configure_app(configure_app),
@@ -84,10 +85,17 @@ fn peer_id() -> &'static str {
     })
 }
 
-fn live_root(_args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
-    let mut app = NotesApp::spawn_default().map_err(LaunchError::Operation)?;
-    app.set_local_author(Some(peer_id().to_owned()));
-    Ok(Box::new(app))
+fn live_root(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
+    let root = args.value("--notebook-dir").map(std::path::PathBuf::from)
+        .or_else(notes::storage::default_root)
+        .ok_or_else(|| LaunchError::Operation("Notes notebook directory unavailable".into()))?;
+    let state_root = args.value("--notebook-state-dir")
+        .map_or_else(|| root.join(".qos-records"), std::path::PathBuf::from);
+    let notebook = notes::production::prepare_notebook(
+        &root, &state_root, &ui::collaboration::local_cluster_id().to_string(),
+        args.has("--import-legacy-stopped"),
+    ).map_err(LaunchError::Operation)?;
+    Ok(Box::new(notebook.root))
 }
 
 fn open_state(_app_id: &'static str, _args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
@@ -97,7 +105,7 @@ fn open_state(_app_id: &'static str, _args: &LaunchArgs) -> (ui::State, ui::pers
         .set_actor(automerge::ActorId::from(peer_id().as_bytes()));
     (
         state,
-        ui::persist::Autosave::disabled("Notes owns its workspace persistence"),
+        ui::persist::Autosave::disabled("Notes owns its canonical notebook persistence"),
     )
 }
 
