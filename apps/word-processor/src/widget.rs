@@ -501,6 +501,24 @@ enum NumField {
     Indent,
 }
 
+#[derive(Clone, Copy)]
+struct PanelRow {
+    x0: f64,
+    right: f64,
+    y: f64,
+}
+
+struct NumRow {
+    field: NumField,
+    value: f32,
+    geometry: PanelRow,
+}
+
+struct ImageFlipRow {
+    geometry: PanelRow,
+    button_width: f64,
+}
+
 impl NumField {
     fn get(self, s: &crate::styles::StyleProps) -> f32 {
         match self {
@@ -4500,11 +4518,11 @@ impl WordProcessorWidget {
                 ctx.scene,
                 ctx.transform,
                 ctx.tr,
-                field,
-                field.get(&st),
-                x0,
-                right,
-                y,
+                NumRow {
+                    field,
+                    value: field.get(&st),
+                    geometry: PanelRow { x0, right, y },
+                },
             );
             y += 30.0;
         }
@@ -5001,7 +5019,15 @@ impl WordProcessorWidget {
         self.panel_hits.push((rl, PanelHit::ImageScale(1.1)));
         y += 34.0;
 
-        self.draw_panel_image_flip(scene, transform, tr, x0, right, y, bw);
+        self.draw_panel_image_flip(
+            scene,
+            transform,
+            tr,
+            ImageFlipRow {
+                geometry: PanelRow { x0, right, y },
+                button_width: bw,
+            },
+        );
         y += 38.0;
 
         // ---- Crop ---------------------------------------------------------
@@ -5105,17 +5131,15 @@ impl WordProcessorWidget {
     /// toggles, reflecting the selected image's current `flip_h`/`flip_v`
     /// attrs. `bw` is the button width the Size section above already
     /// computed, so the two rows of steppers line up.
-    #[allow(clippy::too_many_arguments)]
     fn draw_panel_image_flip(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
-        x0: f64,
-        right: f64,
-        y: f64,
-        bw: f64,
+        row: ImageFlipRow,
     ) {
+        let PanelRow { x0, right, y } = row.geometry;
+        let bw = row.button_width;
         let cc = self.chrome;
         let img_id = self.selected_image_id();
         let (fh, fv) = self
@@ -5164,18 +5188,18 @@ impl WordProcessorWidget {
 
     /// One numeric property row: `Label    [−] [ value ] [+]`. The value box is
     /// click-to-type / drag-to-scrub; the steppers nudge by `field.step()`.
-    #[allow(clippy::too_many_arguments)] // each param is a distinct draw input; no natural grouping
     fn draw_num_row(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
-        field: NumField,
-        value: f32,
-        x0: f64,
-        right: f64,
-        y: f64,
+        row: NumRow,
     ) {
+        let NumRow {
+            field,
+            value,
+            geometry: PanelRow { x0, right, y },
+        } = row;
         let cc = self.chrome;
         tr.draw_text(
             scene,
