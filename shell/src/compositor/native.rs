@@ -4668,6 +4668,16 @@ pub fn run() -> ! {
     if let Some(broker) = collab_broker.as_ref() {
         attach_collab_broker_bridges(&mut frame_builder, broker);
     }
+    let mut realtime_fabric_bridge = collab_broker
+        .as_ref()
+        .and_then(crate::shell::collab_broker::BrokerHandle::realtime_fabric_bridge);
+    if let (Some(runtime), Some(bridge)) = (
+        device_fabric_runtime.as_mut(),
+        realtime_fabric_bridge.as_ref(),
+    ) && let Some(adapter) = bridge.adapter()
+    {
+        runtime.set_realtime_adapter(adapter);
+    }
     let _identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
@@ -5972,6 +5982,12 @@ pub fn run() -> ! {
                     notif_bridge.clone(),
                 )
             });
+            if let Some(adapter) = realtime_fabric_bridge
+                .as_ref()
+                .and_then(crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::adapter)
+            {
+                runtime.set_realtime_adapter(adapter);
+            }
             let (width, height) = combined_geometry(backend.outputs());
             let display =
                 (width > 0 && height > 0).then_some(crate::shell::device_fabric::DisplayRect {
@@ -5990,6 +6006,9 @@ pub fn run() -> ! {
                     audio_output: system_audio,
                 },
             );
+            if let Some(bridge) = realtime_fabric_bridge.as_ref() {
+                bridge.pump_app_events();
+            }
             for (controller, event) in crate::shell::device_fabric_runtime::take_spatial_input() {
                 let _ = state.apply_personal_fabric_input(&controller, event);
             }
@@ -6278,6 +6297,14 @@ pub fn run() -> ! {
                 spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
             if let Some(broker) = collab_broker.as_ref() {
                 attach_collab_broker_bridges(&mut frame_builder, broker);
+                realtime_fabric_bridge = broker.realtime_fabric_bridge();
+                if let (Some(runtime), Some(bridge)) = (
+                    device_fabric_runtime.as_mut(),
+                    realtime_fabric_bridge.as_ref(),
+                ) && let Some(adapter) = bridge.adapter()
+                {
+                    runtime.set_realtime_adapter(adapter);
+                }
                 if let Some(net) = peer_sync.as_ref() {
                     attach_peer_presence(&mut frame_builder, broker, net);
                 }
