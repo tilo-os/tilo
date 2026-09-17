@@ -478,6 +478,35 @@ struct RoutedEvent<'a> {
     taffy: &'a TaffyTree<()>,
 }
 
+/// Text metrics and placement shared by caret hit-testing, selection geometry,
+/// and caret painting for one text box.
+#[derive(Clone, Copy)]
+struct TextBoxStyle {
+    rect: Rect,
+    font_px: f32,
+    weight: TextWeight,
+    italic: bool,
+    align: TextAlign,
+    center_vertically: bool,
+}
+
+impl TextBoxStyle {
+    fn for_element(element: &Element, rect: Rect, scale: f64) -> Self {
+        Self {
+            rect,
+            font_px: (element.font_size * scale).max(1.0) as f32,
+            weight: if element.bold {
+                TextWeight::Bold
+            } else {
+                TextWeight::Regular
+            },
+            italic: element.italic,
+            align: element.align,
+            center_vertically: true,
+        }
+    }
+}
+
 /// Default size of the fill colour-picker popover, in logical px.
 const FILL_PICKER_W: f64 = 260.0;
 const FILL_PICKER_H: f64 = 220.0;
@@ -4705,16 +4734,8 @@ impl SlidesApp {
         er: Rect,
         s: f64,
     ) {
-        let font_px = (el.font_size * s).max(1.0) as f32;
-        let weight = if el.bold {
-            TextWeight::Bold
-        } else {
-            TextWeight::Regular
-        };
-        self.draw_caret_in_box(
-            scene, t, tr, pal.accent, &el.text, self.caret, er, font_px, weight, el.italic,
-            el.align, true,
-        );
+        let style = TextBoxStyle::for_element(el, er, s);
+        self.draw_caret_in_box(scene, t, tr, pal.accent, &el.text, self.caret, style);
     }
 
     /// Paint a vertical caret over one line of text inside `er`. The caret
@@ -4722,7 +4743,6 @@ impl SlidesApp {
     /// 1.25`, per-line `align` offset, optional vertical centering), so it lands
     /// correctly on centre- and right-aligned boxes — not just left-anchored
     /// ones. `caret` is a char index into `text`.
-    #[allow(clippy::too_many_arguments)]
     fn draw_caret_in_box(
         &self,
         scene: &mut Scene,
@@ -4731,16 +4751,9 @@ impl SlidesApp {
         accent: Color,
         text: &str,
         caret: usize,
-        er: Rect,
-        font_px: f32,
-        weight: TextWeight,
-        italic: bool,
-        align: TextAlign,
-        center_v: bool,
+        style: TextBoxStyle,
     ) {
-        let (top, line_h) = self.caret_geometry(
-            tr, text, caret, er, font_px, weight, italic, align, center_v,
-        );
+        let (top, line_h) = self.caret_geometry(tr, text, caret, style);
         let bar = Line::new(
             Point::new(top.x, top.y + 2.0),
             Point::new(top.x, top.y + line_h - 2.0),
@@ -4752,7 +4765,6 @@ impl SlidesApp {
     /// and the line height, tracking the same layout the painter uses (line
     /// height `font_px * 1.25`, per-line `align` offset, optional vertical
     /// centering). Split out so the placement can be asserted directly.
-    #[allow(clippy::too_many_arguments)]
     #[allow(
         clippy::unused_self,
         reason = "keeps the ergonomic self.caret_geometry(...) call site consistent with the \
@@ -4764,12 +4776,7 @@ impl SlidesApp {
         tr: &mut TextRenderer,
         text: &str,
         caret: usize,
-        er: Rect,
-        font_px: f32,
-        weight: TextWeight,
-        italic: bool,
-        align: TextAlign,
-        center_v: bool,
+        style: TextBoxStyle,
     ) -> (Point, f64) {
         let chars: Vec<char> = text.chars().collect();
         let caret = caret.min(chars.len());
@@ -4794,8 +4801,8 @@ impl SlidesApp {
             .collect();
         let prefix: String = chars.get(line_start..caret).unwrap_or(&[]).iter().collect();
 
-        let line_h = f64::from(font_px) * 1.25;
-        let wrap_w = (er.width() + 4.0).max(1.0) as f32;
+        let line_h = f64::from(style.font_px) * 1.25;
+        let wrap_w = (style.rect.width() + 4.0).max(1.0) as f32;
         // Total painted height (wrapped rows across explicit lines) mirrors
         // `render::draw_text_element`, so the caret shares its baselines.
         let rows: Vec<usize> = text
@@ -4804,28 +4811,49 @@ impl SlidesApp {
                 if l.is_empty() {
                     1
                 } else {
-                    let (_, h) = tr.measure_styled(l, font_px, Some(wrap_w), weight, italic, false);
+                    let (_, h) = tr.measure_styled(
+                        l,
+                        style.font_px,
+                        Some(wrap_w),
+                        style.weight,
+                        style.italic,
+                        false,
+                    );
                     ((f64::from(h) / line_h).round() as usize).max(1)
                 }
             })
             .collect();
         let total_h = rows.iter().sum::<usize>() as f64 * line_h;
-        let block_top = if center_v && total_h < er.height() {
-            er.y0 + (er.height() - total_h) / 2.0
+        let block_top = if style.center_vertically && total_h < style.rect.height() {
+            style.rect.y0 + (style.rect.height() - total_h) / 2.0
         } else {
-            er.y0
+            style.rect.y0
         };
         let rows_before: usize = rows.iter().take(li).sum();
         let cy = block_top + rows_before as f64 * line_h;
 
         // Horizontal: offset the line by its own width per its alignment (as the
         // painter does), then advance past the prefix to the caret.
-        let (lw, _) = tr.measure_styled(&cur_line, font_px, Some(wrap_w), weight, italic, false);
-        let (pw, _) = tr.measure_styled(&prefix, font_px, None, weight, italic, false);
-        let line_x = match align {
-            TextAlign::Left | TextAlign::Justify => er.x0,
-            TextAlign::Center => er.x0 + (er.width() - f64::from(lw)) / 2.0,
-            TextAlign::Right => er.x1 - f64::from(lw),
+        let (lw, _) = tr.measure_styled(
+            &cur_line,
+            style.font_px,
+            Some(wrap_w),
+            style.weight,
+            style.italic,
+            false,
+        );
+        let (pw, _) = tr.measure_styled(
+            &prefix,
+            style.font_px,
+            None,
+            style.weight,
+            style.italic,
+            false,
+        );
+        let line_x = match style.align {
+            TextAlign::Left | TextAlign::Justify => style.rect.x0,
+            TextAlign::Center => style.rect.x0 + (style.rect.width() - f64::from(lw)) / 2.0,
+            TextAlign::Right => style.rect.x1 - f64::from(lw),
         };
         let cx = line_x + f64::from(pw);
         (Point::new(cx, cy), line_h)
@@ -4835,25 +4863,18 @@ impl SlidesApp {
     /// nearest `p` in the same wrapped layout, for click-to-position and
     /// drag-select. Scans candidate carets and picks the closest, weighting a
     /// matching visual line over horizontal distance.
-    #[allow(clippy::too_many_arguments)]
     fn char_at_point_in_box(
         &self,
         tr: &mut TextRenderer,
         text: &str,
-        er: Rect,
-        font_px: f32,
-        weight: TextWeight,
-        italic: bool,
-        align: TextAlign,
-        center_v: bool,
+        style: TextBoxStyle,
         p: Point,
     ) -> usize {
         let len = text.chars().count();
         let mut best = 0usize;
         let mut best_d = f64::INFINITY;
         for i in 0..=len {
-            let (pt, line_h) =
-                self.caret_geometry(tr, text, i, er, font_px, weight, italic, align, center_v);
+            let (pt, line_h) = self.caret_geometry(tr, text, i, style);
             let dy = if p.y < pt.y {
                 pt.y - p.y
             } else if p.y > pt.y + line_h {
@@ -4875,19 +4896,13 @@ impl SlidesApp {
     /// Selection highlight rectangles for the char range `[min, max)` in `text`,
     /// tracking the same wrapped layout the caret + painter use. One rect per
     /// explicit line the selection covers.
-    #[allow(clippy::too_many_arguments)]
     fn selection_rects_in_box(
         &self,
         tr: &mut TextRenderer,
         text: &str,
         min: usize,
         max: usize,
-        er: Rect,
-        font_px: f32,
-        weight: TextWeight,
-        italic: bool,
-        align: TextAlign,
-        center_v: bool,
+        style: TextBoxStyle,
     ) -> Vec<Rect> {
         if min >= max {
             return Vec::new();
@@ -4911,14 +4926,12 @@ impl SlidesApp {
             }
             let a = a.min(le);
             let b = b.max(a).min(le);
-            let (pa, lh) =
-                self.caret_geometry(tr, text, a, er, font_px, weight, italic, align, center_v);
-            let (pb, _) =
-                self.caret_geometry(tr, text, b, er, font_px, weight, italic, align, center_v);
+            let (pa, lh) = self.caret_geometry(tr, text, a, style);
+            let (pb, _) = self.caret_geometry(tr, text, b, style);
             let x0 = pa.x.min(pb.x);
             let mut x1 = pa.x.max(pb.x);
             if covers_break {
-                x1 = x1.max(x0) + f64::from(font_px) * 0.35;
+                x1 = x1.max(x0) + f64::from(style.font_px) * 0.35;
             }
             if x1 - x0 < 1.5 {
                 x1 = x0 + 1.5;
@@ -4948,23 +4961,14 @@ impl SlidesApp {
             return;
         }
         let er = render::element_dest(chrome.slide_dest, chrome.scale, &el);
-        let font_px = (el.font_size * chrome.scale).max(1.0) as f32;
-        let weight = if el.bold {
-            TextWeight::Bold
-        } else {
-            TextWeight::Regular
-        };
+        let style = TextBoxStyle::for_element(&el, er, chrome.scale);
         if let Some(p) = self.select_word_click.take() {
-            let idx = self.char_at_point_in_box(
-                tr, &el.text, er, font_px, weight, el.italic, el.align, true, p,
-            );
+            let idx = self.char_at_point_in_box(tr, &el.text, style, p);
             let (a, b) = word_boundaries_chars(&el.text, idx);
             self.sel_anchor = a;
             self.caret = b;
         } else if let Some((p, extend)) = self.caret_click.take() {
-            let idx = self.char_at_point_in_box(
-                tr, &el.text, er, font_px, weight, el.italic, el.align, true, p,
-            );
+            let idx = self.char_at_point_in_box(tr, &el.text, style, p);
             self.place_caret(idx, extend);
         }
     }
@@ -4990,25 +4994,9 @@ impl SlidesApp {
         if sel.is_collapsed() {
             return;
         }
-        let font_px = (el.font_size * s).max(1.0) as f32;
-        let weight = if el.bold {
-            TextWeight::Bold
-        } else {
-            TextWeight::Regular
-        };
+        let style = TextBoxStyle::for_element(el, er, s);
         let col = render::with_alpha(pal.accent, 70);
-        for r in self.selection_rects_in_box(
-            tr,
-            &el.text,
-            sel.min(),
-            sel.max(),
-            er,
-            font_px,
-            weight,
-            el.italic,
-            el.align,
-            true,
-        ) {
+        for r in self.selection_rects_in_box(tr, &el.text, sel.min(), sel.max(), style) {
             chrome::fill_rrect(scene, t, r, 2.0, col);
         }
     }
@@ -9770,18 +9758,15 @@ mod tests {
         let text = "Hello";
         let end = text.chars().count();
         let geo = |al: TextAlign, tr: &mut TextRenderer| {
-            app.caret_geometry(
-                tr,
-                text,
-                end,
-                er,
-                40.0,
-                TextWeight::Regular,
-                false,
-                al,
-                true,
-            )
-            .0
+            let style = TextBoxStyle {
+                rect: er,
+                font_px: 40.0,
+                weight: TextWeight::Regular,
+                italic: false,
+                align: al,
+                center_vertically: true,
+            };
+            app.caret_geometry(tr, text, end, style).0
         };
         let left = geo(TextAlign::Left, &mut tr);
         let center = geo(TextAlign::Center, &mut tr);
