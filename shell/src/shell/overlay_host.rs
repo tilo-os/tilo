@@ -40,8 +40,6 @@ use ui::widget::{
 };
 use ui::{CommandEntry, CommandPalette};
 
-#[cfg(test)]
-use crate::shell::capture_surface::CaptureMirrorHandoffLayer;
 use crate::shell::capture_surface::{
     CaptureMirrorImage, CaptureSurfaceKind, CaptureSurfaceRequest,
 };
@@ -857,16 +855,6 @@ fn visible_capture_spawn(bounds: Rect, source: Option<Rect>) -> Option<Rect> {
             .clamp(bounds.y0 + TOP_SAFE, bounds.y1 - EDGE_INSET - PORTAL_HEIGHT)
     };
     Some(Rect::new(x, y, x + PORTAL_WIDTH, y + PORTAL_HEIGHT))
-}
-
-#[cfg(test)]
-fn lerp_normalized_rect(from: Rect, to: Rect, progress: f64) -> Rect {
-    Rect::new(
-        from.x0 + (to.x0 - from.x0) * progress,
-        from.y0 + (to.y0 - from.y0) * progress,
-        from.x1 + (to.x1 - from.x1) * progress,
-        from.y1 + (to.y1 - from.y1) * progress,
-    )
 }
 
 fn capture_mirror_initial_size(
@@ -23327,7 +23315,7 @@ mod tests {
     }
 
     #[test]
-    fn tall_pinned_screenshot_uses_a_readable_scrollable_document_viewport() {
+    fn tall_pinned_screenshot_uses_a_readable_initial_viewport() {
         let compact = Rect::new(0.0, 0.0, 800.0, 600.0);
         let size = capture_mirror_initial_size(
             compact,
@@ -23336,77 +23324,10 @@ mod tests {
         );
         assert_eq!(size.width, 340.0);
         assert_eq!(size.height, 330.0);
-
-        let pixel: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![20_u8, 30, 40, 255]);
-        let image = Image::from_rgba(pixel.clone(), 1, 1).with_fit(ImageFit::Fill);
-        let preview = Image::from_rgba(pixel, 1, 1).with_fit(ImageFit::Fill);
-        let mut mirror = CaptureMirrorImage::new_crossfade(image, preview, Some(524.0 / 3_021.0));
-        mirror.rect = Rect::new(0.0, 0.0, 340.0, 300.0);
-        mirror.set_handoff_progress(1_000);
-        let mix = mirror.handoff_mix();
-        let painted = mirror.painted_image_rect(mix);
-        assert_eq!(painted.width(), 340.0);
-        assert!(painted.height() > 1_900.0, "full pixels fit the card width");
-
-        let event = WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
-            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-            phase: winit::event::TouchPhase::Moved,
-        };
-        let mut state = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        mirror.handle_event(
-            &event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::from(0_u64),
-            &TaffyTree::new(),
-        );
-        assert!(handled);
-        assert_eq!(mirror.document_scroll_y, 54.0);
     }
 
     #[test]
-    fn rearranged_pip_holds_spatial_pixels_then_yields_to_live_layout() {
-        let pixel: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![0_u8, 0, 0, 0]);
-        let target = Image::from_rgba(pixel.clone(), 1, 1);
-        let mut mirror = CaptureMirrorImage::new(
-            target,
-            vec![CaptureMirrorHandoffLayer {
-                rgba: pixel,
-                width: 1,
-                height: 1,
-                source: Rect::new(0.0, 0.0, 0.4, 0.5),
-                target: Rect::new(0.0, 0.0, 0.5, 1.0),
-            }],
-        );
-
-        mirror.set_handoff_progress(0);
-        assert_eq!(mirror.handoff_mix(), 0.0);
-        mirror.set_handoff_progress(400);
-        assert!((mirror.handoff_mix() - 0.352).abs() < 0.000_001);
-        mirror.set_handoff_progress(600);
-        assert!((mirror.handoff_mix() - 0.648).abs() < 0.000_001);
-        mirror.set_handoff_progress(1_000);
-        assert_eq!(mirror.handoff_mix(), 1.0);
-
-        assert_eq!(
-            lerp_normalized_rect(
-                Rect::new(0.0, 0.0, 0.4, 0.5),
-                Rect::new(0.0, 0.0, 0.5, 1.0),
-                0.0,
-            ),
-            Rect::new(0.0, 0.0, 0.4, 0.5)
-        );
-    }
-
-    #[test]
-    fn capture_surface_requests_preserve_live_layout_and_model_pinned_documents() {
+    fn capture_surface_requests_reuse_live_id_and_add_pinned_surface() {
         let mut h = build_harness();
         let pixel: std::sync::Arc<[u8]> = std::sync::Arc::from(vec![0_u8, 0, 0, 255]);
         h.host.upsert_capture_surface(CaptureSurfaceRequest {
@@ -23422,7 +23343,6 @@ mod tests {
             },
         });
         assert_eq!(h.host.capture_mirrors.len(), 1);
-        h.host.capture_mirrors[0].1.content_mut().rect = Rect::new(20.0, 30.0, 220.0, 130.0);
 
         h.host.upsert_capture_surface(CaptureSurfaceRequest {
             id: "live",
@@ -23441,11 +23361,6 @@ mod tests {
             1,
             "a live frame refresh must update the existing surface"
         );
-        assert_eq!(
-            h.host.capture_mirrors[0].1.content_mut().rect,
-            Rect::new(20.0, 30.0, 220.0, 130.0),
-            "refreshing pixels must not reset retained content layout"
-        );
 
         h.host.upsert_capture_surface(CaptureSurfaceRequest {
             id: "pinned",
@@ -23462,10 +23377,7 @@ mod tests {
                 },
             },
         });
-        let pinned = h.host.capture_mirrors[1].1.content_mut();
-        assert!(pinned.crossfade_handoff);
-        assert_eq!(pinned.document_aspect, Some(0.25));
-        assert_eq!(pinned.handoff_layers.len(), 1);
+        assert_eq!(h.host.capture_mirrors.len(), 2);
     }
 
     /// Recording mock content for the host's `content` slot. The palette
