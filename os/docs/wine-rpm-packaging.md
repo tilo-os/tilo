@@ -37,10 +37,47 @@ It retains acquisition/signature logs and publishes only verified inputs to
 a new directory. Failed attempts retain their staging directory and logs.
 This acquisition step does not resolve or build either target environment.
 
-`.forgejo/workflows/build-wine.yml` runs this input stage on the native `runner`
-lane. It publishes a run-specific candidate tooling image, consumes that exact
-digest, and retains the signed source and acquisition evidence as a CI artifact.
-This stage neither publishes Wine RPMs nor changes production image pins.
+The `native-inputs` job in `.forgejo/workflows/build-wine.yml` runs this stage
+on the native `runner` lane. It publishes a run-specific candidate tooling
+image, consumes that exact digest, and retains the signed source and acquisition
+evidence as a CI artifact.
+
+### CI producer: locked Mock builds
+
+The workflow builds both targets on native x86-64 hardware, one at a time.
+`wine-mock-producer.py resolve` uses Mock's supported
+`--calculate-build-dependencies` and `mock-hermetic-repo` lifecycle to retain
+the full dependency repository, bootstrap image, configuration and lockfile.
+The i686 target selects Fedora's `fedora-44-i386` configuration rather than
+trying to turn an x86-64 dependency root into i686 with RPM macros alone.
+
+`run-wine-ci.sh` publishes that complete resolution bundle under a run-specific
+candidate OCI reference. It then starts a fresh privileged build container
+with networking disabled, separate Mock/container storage, and the resolved
+bundle mounted read-only. Mock's supported `--hermetic-build` creates the
+target root from that bundle and performs the normal build. Source, target,
+macros, concurrency, runtime image, tool hashes and installed tool packages
+must match resolution. Both phases retain the traditional Wine option and
+the qOS release suffix. No feature, dependency, debug package or scriptlet is
+removed to make the build pass.
+
+The artifact records `mock-hermetic` provenance separately from the older
+prepared-buildroot OCI producer below: the tooling image is not described as
+the target buildroot. The adapter checks the actual output RPM identities,
+loader bytes and layout, preserves both source RPMs and all logs, and binds
+the output to the resolution manifest and lock. The complete dependency
+snapshot remains available by its immutable OCI reference. Both references
+are retained in CI evidence; production pins and release signatures remain
+separate promotion steps. Passing producer tests alone does not prove that
+Mock integration, compilation or runtime acceptance succeeded.
+
+The final CI job independently revalidates both architecture artifacts and
+merges their shared noarch packages only after semantic equivalence checks.
+It publishes a run-specific paired candidate and retains its immutable
+reference and contract. This does not sign the RPMs or select a production
+Windows guest image.
+
+### Alternative: prepared buildroot OCI inputs
 
 Use native x86 hardware. Prepare separate Fedora 44 target buildroots for
 `x86_64` and `i686`, retaining the complete spec-derived BuildRequires.
