@@ -58,6 +58,14 @@ pub struct Row {
     /// Optional explicit insets for toolbars and sticky action rows.
     horizontal_padding: f32,
     vertical_padding: f32,
+    /// See [`Row::with_gap`]. `None` is the theme's `gap_standard` on both
+    /// axes (between children, and between wrapped lines).
+    gap_override: Option<f32>,
+    /// See [`Row::with_justify`]. `None` leaves taffy's start packing.
+    justify: Option<taffy::JustifyContent>,
+    /// See [`Row::with_align_items`]. `None` keeps the fill-height /
+    /// toolbar default below.
+    align_items_override: Option<taffy::AlignItems>,
     /// Subtree cache — same pattern as `Column::subtree_cache`.
     /// See that field for the gory rationale.
     subtree_cache: Scene,
@@ -85,6 +93,9 @@ impl Row {
             fill_height: false,
             horizontal_padding: 0.0,
             vertical_padding: 0.0,
+            gap_override: None,
+            justify: None,
+            align_items_override: None,
             subtree_cache: Scene::new(),
             cache_rect: vello::kurbo::Rect::ZERO,
             cache_present: false,
@@ -115,6 +126,39 @@ impl Row {
     pub fn with_padding(mut self, horizontal: f32, vertical: f32) -> Self {
         self.horizontal_padding = horizontal.max(0.0);
         self.vertical_padding = vertical.max(0.0);
+        self
+    }
+
+    /// Override the gap between children (and between wrapped lines;
+    /// default `theme.gap_standard`, `s3`). Pass a spacing token —
+    /// `theme.tokens.spacing.s2` for a tight icon-and-label cluster, `s1`
+    /// for a segmented pair — rather than a number. `0.0` for children that
+    /// carry their own spacing.
+    #[must_use]
+    pub fn with_gap(mut self, px: f32) -> Self {
+        self.gap_override = Some(px.max(0.0));
+        self
+    }
+
+    /// Place children along the row: `SpaceBetween` for a title on the left
+    /// and actions on the right, `End` for a trailing action group, `Center`
+    /// for a centred pager. Without it children pack at the start, and the
+    /// grow-to-fill [`super::Spacer`] remains the way to push one group away
+    /// from another when the row also wraps.
+    #[must_use]
+    pub fn with_justify(mut self, justify: taffy::JustifyContent) -> Self {
+        self.justify = Some(justify);
+        self
+    }
+
+    /// Align children across the row (default: centred, or stretched for a
+    /// [`Row::with_fill_remaining_height`] body row). `Start` keeps a
+    /// single-line control level with the first line of a wrapping label
+    /// beside it; `Baseline` lines text of different sizes up on one
+    /// baseline.
+    #[must_use]
+    pub fn with_align_items(mut self, align: taffy::AlignItems) -> Self {
+        self.align_items_override = Some(align);
         self
     }
 
@@ -184,6 +228,8 @@ impl Widget for Row {
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
 
+        let gap = self.gap_override.unwrap_or(theme.gap_standard);
+
         let node = taffy.parent_node(
             Style {
                 display: taffy::Display::Flex,
@@ -196,16 +242,17 @@ impl Widget for Row {
                 // Stretch children to the row height when it is a fill-body
                 // row (so the file list spans the available height);
                 // otherwise centre them (toolbar/button rows).
-                align_items: Some(if self.fill_height {
+                align_items: Some(self.align_items_override.unwrap_or(if self.fill_height {
                     taffy::AlignItems::Stretch
                 } else {
                     taffy::AlignItems::Center
-                }),
+                })),
+                justify_content: self.justify,
                 flex_grow: if self.fill_height { 1.0 } else { 0.0 },
                 flex_shrink: 0.0, // Prevent vertical squashing
                 gap: taffy::Size {
-                    width: length(theme.gap_standard),
-                    height: length(theme.gap_standard),
+                    width: length(gap),
+                    height: length(gap),
                 },
                 size: taffy::Size {
                     width: percent(1.0_f32),
@@ -214,12 +261,7 @@ impl Widget for Row {
                 // Keep optional toolbar padding inside the row's percentage
                 // width instead of growing the parent's content bounds.
                 box_sizing: taffy::BoxSizing::BorderBox,
-                padding: taffy::Rect {
-                    left: length(self.horizontal_padding),
-                    right: length(self.horizontal_padding),
-                    top: length(self.vertical_padding),
-                    bottom: length(self.vertical_padding),
-                },
+                padding: super::layout::insets_xy(self.horizontal_padding, self.vertical_padding),
                 ..Default::default()
             },
             &self.child_nodes,
@@ -516,6 +558,123 @@ impl Widget for Row {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::Text;
+
+    /// Same five-pass layout the `Column` tests use, with the real text
+    /// renderer measuring the `Text` children.
+    fn lay_out(root: &mut dyn Widget, width: f32) -> Vec<vello::kurbo::Rect> {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut nodes: std::collections::HashMap<NodeId, *mut dyn Widget> =
+            std::collections::HashMap::new();
+        let mut tr = TextRenderer::new();
+        let node = root.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::Definite(200.0),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = nodes.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, &mut tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )
+            .unwrap();
+        root.apply_layout(&taffy, node, Point::ZERO);
+        root.children().iter().map(|c| c.get_rect()).collect()
+    }
+
+    fn two_texts() -> Row {
+        Row::new()
+            .no_wrap()
+            .push(Box::new(Text::new("lead")))
+            .push(Box::new(Text::new("trail")))
+    }
+
+    #[test]
+    fn default_row_gap_is_the_theme_gap_standard_and_children_pack_at_start() {
+        let theme = Theme::dark();
+        let rects = lay_out(&mut two_texts(), 600.0);
+        assert!(
+            (rects[1].x0 - rects[0].x1 - f64::from(theme.gap_standard)).abs() < 0.5,
+            "default gap is gap_standard: {rects:?}"
+        );
+        assert!(
+            (rects[0].x0).abs() < 0.5,
+            "children start at the leading edge: {rects:?}"
+        );
+    }
+
+    #[test]
+    fn with_gap_overrides_the_gap_between_children() {
+        let rects = lay_out(&mut two_texts().with_gap(4.0), 600.0);
+        assert!((rects[1].x0 - rects[0].x1 - 4.0).abs() < 0.5, "{rects:?}");
+        let tight = lay_out(&mut two_texts().with_gap(0.0), 600.0);
+        assert!((tight[1].x0 - tight[0].x1).abs() < 0.5, "{tight:?}");
+    }
+
+    #[test]
+    fn with_justify_space_between_pushes_the_last_child_to_the_far_edge() {
+        let rects = lay_out(
+            &mut two_texts().with_justify(taffy::JustifyContent::SpaceBetween),
+            600.0,
+        );
+        assert!((rects[0].x0).abs() < 0.5, "{rects:?}");
+        assert!((rects[1].x1 - 600.0).abs() < 0.5, "{rects:?}");
+        let end = lay_out(
+            &mut two_texts().with_justify(taffy::JustifyContent::End),
+            600.0,
+        );
+        assert!((end[1].x1 - 600.0).abs() < 0.5, "{end:?}");
+        assert!(
+            end[0].x0 > 300.0,
+            "both children sit at the trailing end: {end:?}"
+        );
+    }
+
+    #[test]
+    fn with_align_items_start_keeps_a_short_child_at_the_top_of_a_tall_row() {
+        let tall = Box::new(
+            crate::widget::Container::new()
+                .with_no_padding()
+                .with_size(40.0, 80.0),
+        );
+        let centred = lay_out(
+            &mut Row::new()
+                .no_wrap()
+                .push(Box::new(Text::new("x")))
+                .push(tall),
+            600.0,
+        );
+        let text_mid = centred[0].y0.midpoint(centred[0].y1);
+        let tall_mid = centred[1].y0.midpoint(centred[1].y1);
+        assert!(
+            (text_mid - tall_mid).abs() < 1.0,
+            "default centres the short child: {centred:?}"
+        );
+
+        let tall = Box::new(
+            crate::widget::Container::new()
+                .with_no_padding()
+                .with_size(40.0, 80.0),
+        );
+        let start = lay_out(
+            &mut Row::new()
+                .no_wrap()
+                .with_align_items(taffy::AlignItems::Start)
+                .push(Box::new(Text::new("x")))
+                .push(tall),
+            600.0,
+        );
+        assert!(
+            (start[0].y0 - start[1].y0).abs() < 0.5,
+            "Start aligns the short child's top with the tall child's: {start:?}"
+        );
+    }
 
     #[test]
     fn damage_merge_keeps_progress_wrap_endpoints_separate() {

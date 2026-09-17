@@ -11,6 +11,14 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use winit::event::WindowEvent;
 
+/// Children painted on top of one another, each `position: Absolute` and
+/// anchored at the stack's top-left. There is deliberately no alignment
+/// option: a child that wants a corner or the centre positions itself (a
+/// `Column`/`Row` with its own insets and justify, or a `Container` with
+/// `with_centered_max_width`), so the stack stays a pure z-order primitive
+/// and the layer's geometry is owned by the layer. If a caller needs the
+/// stack itself to anchor, add an opt-in that maps to `inset` on the child
+/// node rather than changing this default.
 pub struct Stack {
     children: Vec<Box<dyn Widget>>,
     rect: vello::kurbo::Rect,

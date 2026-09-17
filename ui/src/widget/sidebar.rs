@@ -33,10 +33,18 @@ use vello::peniko::{Color, Fill};
 
 use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
+use crate::tokens::Metrics;
 use crate::widget::nav_split::{FlapState, SplitLayout};
 
-pub const DEFAULT_DRAWER_WIDTH: f64 = 320.0;
-/// At/above this width the drawer docks; below it overlays.
+/// The OS-wide drawer / utility-panel width (`Metrics::drawer_width`).
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
+)]
+pub const DEFAULT_DRAWER_WIDTH: f64 = Metrics::BASE.drawer_width as f64;
+/// At/above this width the drawer docks; below it overlays. 40 px over
+/// `Metrics::compact_breakpoint` (720) because the drawer is 40 px wider
+/// than the sidebar that breakpoint was sized for.
 pub const DEFAULT_DRAWER_BREAKPOINT: f64 = 760.0;
 /// Upper bound (seconds) on the per-frame delta used to advance the slide, so
 /// a stale clock (first frame, or a parked event loop) can't teleport it.
