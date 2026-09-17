@@ -133,7 +133,6 @@ jobs:
       - name: Ensure invariant test tooling
         run: |
           command -v jq >/dev/null || dnf install -y jq
-          command -v openssl >/dev/null || dnf install -y openssl
           python3 -c 'import PIL' 2>/dev/null || dnf install -y python3-pillow
 
       # These boundaries are mostly shell, image configuration, and workflow
@@ -165,6 +164,19 @@ jobs:
           python3 os/tests/test_wine_rpm_merge.py
           python3 os/tests/imager_media_profiles.py
           python3 apps/imager/packaging/test_generate_winget.py
+          bash os/tests/kernel_module_signing_test.sh
+          bash os/tests/boot_performance_gate_test.sh
+          bash os/tests/no_openssl_runtime.sh
+          bash os/tests/media_subprocess_invariants.sh
+          bash os/tests/os_actions_subprocess_invariants.sh
+          bash os/tests/packaging_subprocess_invariants.sh
+          bash os/tests/shell_subprocess_invariants.sh
+          bash os/tests/fs_subprocess_invariants.sh
+          bash os/tests/disks_subprocess_invariants.sh
+          bash os/tests/secret_service_subprocess_invariants.sh
+          bash os/tests/secureboot_signing_test.sh
+          bash os/tests/image_trust_update_gate.sh
+          bash os/tests/update_subprocess_invariants.sh
           bash os/tests/release_security_invariants.sh
           bash os/tests/selinux_policy_store_invariants.sh
           bash os/tests/first_boot_service_readiness.sh
@@ -188,6 +200,7 @@ jobs:
           bash os/tests/wpe_reproducibility_invariants.sh
           bash os/tests/generation_series_security.sh
           bash os/tests/system_extension_invariants.sh
+          bash os/tests/tinker_subprocess_invariants.sh
           bash os/tests/local_model_catalog_invariants.sh
           bash os/tests/release_pipeline_invariants.sh
 

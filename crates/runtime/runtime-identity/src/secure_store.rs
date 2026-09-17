@@ -15,11 +15,13 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use zeroize::Zeroizing;
 
-const MAX_IDENTITY_SECRET_BYTES: u64 = 128 * 1024 + 16;
+// Secret Service transports the hex encoding through the bounded subprocess
+// helper, so the decoded value may consume at most half its input ceiling.
+const MAX_IDENTITY_SECRET_BYTES: u64 = (bounded_command::MAX_INPUT_BYTES / 2) as u64;
 
 use crate::{KeyProtection, SecretReference};
 
@@ -76,29 +78,31 @@ impl SecretProvider for SecretServiceProvider {
 
     fn store(&self, locator: &str, secret: &[u8]) -> io::Result<()> {
         validate_software_locator(locator)?;
+        if secret.is_empty() || secret.len() as u64 > MAX_IDENTITY_SECRET_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "identity secret has an invalid length",
+            ));
+        }
         // secret-tool's stdin is text. Hex is unambiguous, contains no NULs,
         // and is decoded into a zeroizing buffer on lookup.
         let encoded = Zeroizing::new(hex::encode(secret));
-        let mut child = Command::new("secret-tool")
-            .args([
+        let output = bounded_command::run(
+            "secret-tool",
+            &[
                 "store",
                 "--label=Tilo identity signing key",
                 "tilo-purpose",
                 PURPOSE_ATTRIBUTE,
                 "tilo-identity-key",
                 locator,
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-        child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| io::Error::other("secret-tool stdin unavailable"))?
-            .write_all(encoded.as_bytes())?;
-        let status = child.wait()?;
-        if status.success() {
+            ],
+            Some(encoded.as_bytes()),
+            1024,
+            Duration::from_secs(5),
+        )
+        .map_err(io::Error::other)?;
+        if output.status.success() {
             Ok(())
         } else {
             Err(io::Error::other(
@@ -109,22 +113,28 @@ impl SecretProvider for SecretServiceProvider {
 
     fn load(&self, locator: &str) -> io::Result<Zeroizing<Vec<u8>>> {
         validate_software_locator(locator)?;
-        let output = Command::new("secret-tool")
-            .args([
+        let output = bounded_command::run(
+            "secret-tool",
+            &[
                 "lookup",
                 "tilo-purpose",
                 PURPOSE_ATTRIBUTE,
                 "tilo-identity-key",
                 locator,
-            ])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()?;
+            ],
+            None,
+            usize::try_from(MAX_IDENTITY_SECRET_BYTES)
+                .unwrap_or(usize::MAX)
+                .saturating_mul(2)
+                .saturating_add(2),
+            Duration::from_secs(5),
+        )
+        .map_err(io::Error::other)?;
         if !output.status.success() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "identity key is unavailable from Secret Service",
-            ));
+            // ENOKEY is retained through the runtime loader so the trusted
+            // compositor can distinguish a locked/missing keyring from a
+            // corrupt identity record without parsing human error text.
+            return Err(io::Error::from_raw_os_error(libc::ENOKEY));
         }
         let encoded =
             Zeroizing::new(String::from_utf8(output.stdout).map_err(|_| {
@@ -137,19 +147,21 @@ impl SecretProvider for SecretServiceProvider {
 
     fn remove(&self, locator: &str) -> io::Result<()> {
         validate_software_locator(locator)?;
-        let status = Command::new("secret-tool")
-            .args([
+        let output = bounded_command::run(
+            "secret-tool",
+            &[
                 "clear",
                 "tilo-purpose",
                 PURPOSE_ATTRIBUTE,
                 "tilo-identity-key",
                 locator,
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()?;
-        if status.success() {
+            ],
+            None,
+            1024,
+            Duration::from_secs(5),
+        )
+        .map_err(io::Error::other)?;
+        if output.status.success() {
             Ok(())
         } else {
             Err(io::Error::other(

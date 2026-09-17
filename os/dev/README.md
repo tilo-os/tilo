@@ -125,7 +125,6 @@ capture.
 
 ```bash
 distrobox enter my-distrobox -- sudo dnf install -y swtpm swtpm-tools \
-    sbsigntools efitools
 ```
 
 | Flag | Effect |
@@ -263,7 +262,7 @@ How it works:
 - The backend (`/usr/libexec/tilo-install`) does: `bootc image copy-to-storage`
   → privileged `podman run … localhost/bootc bootc install to-disk --wipe
   --filesystem btrfs --target-imgref "$TILO_TARGET_IMGREF" <disk>` → mounts the
-  fresh root and writes `name:hash` (password via `openssl passwd -6`) into the
+  fresh root and writes `name:hash` (password via the pure-Rust `tilo-crypto`) into the
   deployment's writable `/etc/tilo/install-user.conf`.
 - On the installed system's first boot, `tilo-firstboot-user.service` creates the
   account from that file (`useradd -G wheel` + `chpasswd -e`) and shreds it.

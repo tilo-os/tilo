@@ -111,8 +111,9 @@ pub use background::BackgroundBackend;
 #[cfg(target_os = "linux")]
 pub use camera::AccessBackend;
 pub use capture_broker::{
-    CaptureAuthorizationId, CaptureBroker, CaptureKind, CaptureLeaseId, CapturePrivacyEvent,
-    CaptureRevocation, CaptureSessionBinding, CaptureSourceView, LocalCaptureHandle,
+    CaptureAuthorizationId, CaptureBroker, CaptureKind, CaptureLeaseGrant, CaptureLeaseId,
+    CapturePrivacyEvent, CaptureRevocation, CaptureSessionBinding, CaptureSourceView,
+    LocalCaptureHandle,
 };
 #[cfg(target_os = "linux")]
 pub use clipboard::ClipboardBackend;

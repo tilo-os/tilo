@@ -32,7 +32,7 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 }
 
 /// Machine-wide device key used by the compositor, filesystem and host.
-pub const DEVICE_KEY_PATH: &str = "/var/lib/tilo/device/keypair.bin";
+pub const DEVICE_KEY_PATH: &str = "/var/lib/tilo/device-private/keypair.bin";
 
 /// Pre-device-key location used by the libp2p compositor. It is read only
 /// during a one-way migration into [`DEVICE_KEY_PATH`].

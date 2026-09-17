@@ -5,22 +5,18 @@
 //! pointer input.  The root calendar only receives semantic edits to apply to
 //! its model; it does not need to coordinate picker focus or backing scrims.
 
-use automerge::{AutoCommit, ObjId};
 use chrono::{NaiveDate, Timelike};
-use taffy::{NodeId, TaffyTree};
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
 use ui::widget::{DatePicker, TimePicker};
 
 use crate::app::{CalTarget, draw_check};
-use crate::draw_util::{fill_round, stroke_round};
+use crate::draw_util::{PaintContext, fill_round, stroke_round};
+use crate::input_context::InputContext;
 use crate::model::Event;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -45,6 +41,16 @@ pub(crate) struct PopoverAnchors {
     pub start_date: Rect,
     pub end_date: Rect,
     pub calendar: Rect,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PopoverRenderModel<'a> {
+    pub(crate) presence: &'a PresenceCtx,
+    pub(crate) panel: Rect,
+    pub(crate) anchors: PopoverAnchors,
+    pub(crate) pointer: Point,
+    pub(crate) calendar_options: &'a [(CalTarget, String)],
+    pub(crate) current_calendar: Option<&'a str>,
 }
 
 #[derive(Clone, Debug)]
@@ -121,25 +127,17 @@ impl EventPopovers {
     /// Route input to the active picker and return a semantic model edit.  All
     /// popover pointer hit-testing (outside dismiss, padding guard, calendar
     /// rows) is resolved here using the regions built by [`Self::draw`].
-    #[allow(clippy::too_many_arguments)]
     pub fn handle_event(
         &mut self,
-        event: &WindowEvent,
+        input: &mut InputContext<'_>,
         pointer: Point,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> (bool, Option<PopoverEdit>) {
+    ) -> Option<PopoverEdit> {
         let kind = self.active;
         if kind == PopoverKind::None {
-            return (false, None);
+            return None;
         }
         if matches!(
-            event,
+            input.event,
             WindowEvent::KeyboardInput {
                 event: KeyEvent {
                     logical_key: Key::Named(NamedKey::Escape),
@@ -150,11 +148,12 @@ impl EventPopovers {
             }
         ) {
             self.close();
-            return (true, None);
+            *input.handled = true;
+            return None;
         }
 
         let is_enter = matches!(
-            event,
+            input.event,
             WindowEvent::KeyboardInput {
                 event: KeyEvent {
                     logical_key: Key::Named(NamedKey::Enter | NamedKey::Space),
@@ -165,59 +164,32 @@ impl EventPopovers {
             }
         );
         let is_click = matches!(
-            event,
+            input.event,
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             }
         );
-        let mut handled = false;
         let mut edit = None;
 
-        self.dispatch_picker_event(
-            kind,
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-            is_enter,
-            is_click,
-            &mut handled,
-            &mut edit,
-        );
+        self.dispatch_picker_event(kind, input, is_enter, is_click, &mut edit);
 
-        if !handled && is_click {
-            self.handle_hit_fallback(pointer, &mut handled, &mut edit);
+        if !*input.handled && is_click {
+            self.handle_hit_fallback(pointer, input.handled, &mut edit);
         }
 
-        (handled, edit)
+        edit
     }
 
     /// Route the event into whichever picker the open popover owns (part of
     /// [`Self::handle_event`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal event-handling split of an over-length function"
-    )]
     fn dispatch_picker_event(
         &mut self,
         kind: PopoverKind,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        input: &mut InputContext<'_>,
         is_enter: bool,
         is_click: bool,
-        handled: &mut bool,
         edit: &mut Option<PopoverEdit>,
     ) {
         match kind {
@@ -225,23 +197,23 @@ impl EventPopovers {
             PopoverKind::StartDate | PopoverKind::EndDate => {
                 let before = self.date_picker.selected();
                 self.date_picker.handle_event(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    input.event,
+                    input.scale_factor,
+                    &input.modifiers,
+                    input.state,
+                    input.path,
+                    input.handled,
+                    input.focus_target,
+                    input.node_id,
+                    input.taffy,
                 );
                 let after = self.date_picker.selected();
                 if after != before {
                     *edit = Some(PopoverEdit::Date(kind, after));
                 }
-                if (is_click && *handled && after != before) || is_enter {
+                if (is_click && *input.handled && after != before) || is_enter {
                     self.close();
-                    *handled = true;
+                    *input.handled = true;
                 }
             }
             PopoverKind::StartTime | PopoverKind::EndTime => {
@@ -252,15 +224,15 @@ impl EventPopovers {
                 };
                 let before = (picker.hours(), picker.minutes());
                 picker.handle_event(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    input.event,
+                    input.scale_factor,
+                    &input.modifiers,
+                    input.state,
+                    input.path,
+                    input.handled,
+                    input.focus_target,
+                    input.node_id,
+                    input.taffy,
                 );
                 let after = (picker.hours(), picker.minutes());
                 if after != before {
@@ -268,7 +240,7 @@ impl EventPopovers {
                 }
                 if is_enter {
                     self.close();
-                    *handled = true;
+                    *input.handled = true;
                 }
             }
         }
@@ -300,20 +272,19 @@ impl EventPopovers {
         *handled = true;
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        panel: Rect,
-        anchors: PopoverAnchors,
-        pointer: Point,
-        calendar_options: &[(CalTarget, String)],
-        current_calendar: Option<&str>,
-    ) {
+    pub fn draw(&mut self, paint: &mut PaintContext<'_>, model: &PopoverRenderModel<'_>) {
+        let scene = &mut *paint.scene;
+        let transform = paint.transform;
+        let text = &mut *paint.text;
+        let theme = paint.theme;
+        let PopoverRenderModel {
+            presence,
+            panel,
+            anchors,
+            pointer,
+            calendar_options,
+            current_calendar,
+        } = *model;
         self.hits.clear();
         let kind = self.active;
         if kind == PopoverKind::None {

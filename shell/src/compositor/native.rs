@@ -15,7 +15,7 @@ use std::io::{BufReader, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -150,6 +150,64 @@ use crate::compositor::test_control::{
 };
 use crate::compositor::{BackendKind, parse_backend_from_args};
 use crate::shell::overlay_host::PeerSyncRequest;
+
+/// The lock surface hides the complete desktop tree.  Its background widgets
+/// may legitimately keep animating (an opening app, a video, a closing
+/// notification), but none of that motion is visible and therefore must not
+/// keep repainting the full-screen lock scene.  State which can change the
+/// lock surface itself remains an ordinary redraw edge.
+#[derive(Clone, Copy, Debug, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "named redraw edges keep the native loop's existing independent causes explicit and make lock filtering directly testable"
+)]
+struct NativeRedrawReasons {
+    force: bool,
+    backend_event: bool,
+    session: bool,
+    accessibility: bool,
+    revision: bool,
+    hidden_desktop_animation: bool,
+    apps: bool,
+    peers: bool,
+    presentation: bool,
+    capture: bool,
+    keepalive: bool,
+    lock_clock: bool,
+}
+
+impl NativeRedrawReasons {
+    fn content_changed(self, session_locked: bool) -> bool {
+        self.force
+            || self.backend_event
+            || self.session
+            || self.accessibility
+            || self.revision
+            || (!session_locked
+                && (self.hidden_desktop_animation
+                    || self.apps
+                    || self.peers
+                    || self.presentation
+                    || self.capture))
+            || (!session_locked && self.keepalive)
+            || (session_locked && self.lock_clock)
+    }
+}
+
+const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
+
+fn lock_clock_refresh_due(session_locked: bool, now: Instant, last_refresh: &mut Instant) -> bool {
+    if !session_locked {
+        *last_refresh = now;
+        return false;
+    }
+    if now.saturating_duration_since(*last_refresh) >= LOCK_CLOCK_REFRESH {
+        *last_refresh = now;
+        true
+    } else {
+        false
+    }
+}
 
 fn wayland_peer_credentials(stream: &UnixStream) -> Option<libc::ucred> {
     let mut credentials = libc::ucred {
@@ -910,10 +968,9 @@ const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
 const TEST_CONTROL_ENV: &str = "TILO_TEST_CONTROL";
 
-/// RAII guard that unlinks a unix-socket file when dropped. `process::exit`
-/// skips destructors, so [`run`] drops this explicitly before exiting —
-/// otherwise the stale file lingers in `XDG_RUNTIME_DIR` for the next
-/// session.
+/// RAII guard that unlinks a unix-socket file when dropped. [`run`] also
+/// drops these explicitly in shutdown order so endpoints disappear before
+/// control returns to the display-manager wrapper.
 pub(crate) struct UnlinkOnDrop(pub(crate) PathBuf);
 
 impl Drop for UnlinkOnDrop {
@@ -921,6 +978,13 @@ impl Drop for UnlinkOnDrop {
         // Errors are not actionable here — already gone, or no permission — so ignore.
         let _ = std::fs::remove_file(&self.0);
     }
+}
+
+/// Remove a Wayland endpoint and Smithay's companion lock file before the
+/// display manager starts the next graphical session.
+fn unlink_wayland_endpoint(path: &Path) {
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(path.with_extension("lock"));
 }
 
 /// Bind the test-control unix socket, returning the listener plus an
@@ -1623,6 +1687,16 @@ fn client_input_allowed(fb: &FrameBuilder) -> bool {
 /// spawned. This keeps the token single-use and binds it to the exact user
 /// action rather than accepting an app-id guess later.
 fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) -> bool {
+    // A host-session launch may resolve to a legacy X11-only program. Keep it
+    // queued during the private bridge's short startup race. Once recovery is
+    // terminally unavailable, drain it with the explicit Wayland-only
+    // environment; Wayland-capable host apps remain usable and an X11-only
+    // child gets the ordinary launcher failure notification.
+    if crate::shell::host_apps::x11_availability()
+        == crate::shell::host_apps::X11Availability::Starting
+    {
+        return false;
+    }
     let requests = crate::shell::host_apps::drain_queued_launches();
     let mut changed = false;
     for request in requests {
@@ -3226,9 +3300,50 @@ fn spawn_session_collab_broker(
     }
 }
 
+fn active_physical_gamepad_binding(
+    tree: &crate::shell::state::WorkspaceTree,
+) -> Option<crate::shell::physical_gamepad::PhysicalGamepadBinding> {
+    use crate::shell::state::TileContent;
+
+    let workspace = tree.active_workspace()?;
+    let strip_id = tree
+        .active_strip
+        .get(&workspace.id)
+        .copied()
+        .or_else(|| workspace.strips.first().map(|strip| strip.id))?;
+    let strip = workspace.strips.iter().find(|strip| strip.id == strip_id)?;
+    let group_id = tree
+        .active_group_for(strip_id)
+        .filter(|group_id| {
+            strip
+                .window_groups
+                .iter()
+                .any(|group| group.id == *group_id)
+        })
+        .or_else(|| strip.window_groups.first().map(|group| group.id))?;
+    let group = strip
+        .window_groups
+        .iter()
+        .find(|group| group.id == group_id)?;
+    let tab = group.tabs.iter().find(|tab| tab.id == group.active_tab)?;
+    let app_id = match &tab.tile {
+        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => kind.app_id(),
+        TileContent::Foreign { app_id, .. }
+        | TileContent::LocalApp { app_id, .. }
+        | TileContent::PeerWindow { app_id, .. } => app_id.clone(),
+    };
+    let workspace_id = workspace.room.to_string();
+    Some(crate::shell::physical_gamepad::PhysicalGamepadBinding {
+        app_id,
+        session_id: format!("{workspace_id}:{}", tab.id),
+        workspace_id,
+    })
+}
+
 fn install_device_fabric_bridge(
     host: &mut crate::shell::overlay_host::ShellOverlayHost,
     fabric_net: Arc<crate::shell::network::ShellNetwork>,
+    tree_handle: crate::shell::state::WorkspaceTreeHandle,
 ) {
     let fabric_cache = std::rc::Rc::new(std::cell::RefCell::new(
         None::<(Instant, crate::shell::overlay_host::DeviceFabricView)>,
@@ -3277,8 +3392,77 @@ fn install_device_fabric_bridge(
                         approved,
                     )?;
                 }
+                DeviceFabricUiAction::AuthorizeGamepadForwarding {
+                    forwarding_id,
+                    approved,
+                } => {
+                    crate::shell::device_fabric_runtime::authorize_typed_gamepad_forwarding(
+                        forwarding_id,
+                        approved,
+                    )?;
+                }
+                DeviceFabricUiAction::StartPhysicalGamepad {
+                    source_token,
+                    target,
+                } => {
+                    let binding = active_physical_gamepad_binding(&tree_handle.read())
+                        .ok_or_else(|| "focus an app before forwarding a controller".to_string())?;
+                    let _ = crate::shell::physical_gamepad::start_physical_gamepad_forwarding(
+                        &fabric_net,
+                        source_token,
+                        &target,
+                        binding,
+                    )?;
+                }
+                DeviceFabricUiAction::StopPhysicalGamepad { session } => {
+                    crate::shell::physical_gamepad::stop_physical_gamepad_forwarding(
+                        &fabric_net,
+                        session,
+                    )?;
+                }
+                DeviceFabricUiAction::StartRemoteAudio {
+                    source_token,
+                    target,
+                } => {
+                    let _ = crate::shell::device_fabric_runtime::request_remote_audio(
+                        &fabric_net,
+                        source_token,
+                        &target,
+                    )?;
+                }
+                DeviceFabricUiAction::AuthorizeRemoteAudio {
+                    session_id,
+                    approved,
+                } => {
+                    crate::shell::device_fabric_runtime::authorize_remote_audio(
+                        &fabric_net,
+                        session_id,
+                        approved,
+                    )?;
+                }
+                DeviceFabricUiAction::StopRemoteAudio { session_id } => {
+                    crate::shell::device_fabric_runtime::stop_remote_audio(
+                        &fabric_net,
+                        session_id,
+                    )?;
+                }
                 DeviceFabricUiAction::Place { device, edge } => {
                     crate::shell::device_fabric_runtime::place_device(&fabric_net, &device, edge)?;
+                }
+                DeviceFabricUiAction::ApplyCalibration { device } => {
+                    crate::shell::device_fabric_runtime::apply_spatial_calibration(
+                        &fabric_net,
+                        &device,
+                    )?;
+                }
+                DeviceFabricUiAction::DismissCalibration { device } => {
+                    crate::shell::device_fabric_runtime::dismiss_spatial_calibration(&device)?;
+                }
+                DeviceFabricUiAction::RevertCalibration { device } => {
+                    crate::shell::device_fabric_runtime::revert_spatial_calibration(
+                        &fabric_net,
+                        &device,
+                    )?;
                 }
                 DeviceFabricUiAction::GrantControl { controller } => {
                     let _ = crate::shell::device_fabric_runtime::grant_input_control(
@@ -3293,7 +3477,12 @@ fn install_device_fabric_bridge(
                     )?;
                 }
             }
-            let view = crate::shell::device_fabric_runtime::device_fabric_view(&fabric_net);
+            let mut view = crate::shell::device_fabric_runtime::device_fabric_view(&fabric_net);
+            view.local_gamepads =
+                crate::shell::physical_gamepad::local_physical_gamepads().unwrap_or_default();
+            let focus = active_physical_gamepad_binding(&tree_handle.read());
+            view.remote_audio =
+                crate::shell::device_fabric_runtime::remote_audio_view(focus.as_ref());
             *fabric_cache.borrow_mut() = Some((Instant::now(), view.clone()));
             Ok(view)
         })
@@ -3352,7 +3541,11 @@ fn spawn_session_peer_sync(
             tracing::info!("peer-sync: actor spawned, default workspace joined");
             let net = Arc::new(handle);
             install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
-            install_device_fabric_bridge(frame_builder.host_mut(), Arc::clone(&net));
+            install_device_fabric_bridge(
+                frame_builder.host_mut(),
+                Arc::clone(&net),
+                tree_handle.clone(),
+            );
             let stream_net = Arc::clone(&net);
             state.set_legacy_stream_publisher(Arc::new(move |message| {
                 stream_net.publish_legacy_active(message)
@@ -3446,6 +3639,23 @@ fn attach_collab_broker_bridges(
         frame_builder
             .host_mut()
             .attach_app_action_broker(action_broker);
+    }
+    if let Some(realtime) = broker.realtime_fabric_bridge() {
+        frame_builder
+            .host_mut()
+            .set_realtime_continuity_bridge(std::rc::Rc::new(move |action| {
+                use crate::shell::overlay_host::RealtimeContinuityUiAction;
+                match action {
+                    RealtimeContinuityUiAction::Snapshot => {}
+                    RealtimeContinuityUiAction::Propose { session, target } => {
+                        realtime.propose_to(&session, &target)?;
+                    }
+                    RealtimeContinuityUiAction::ResolveConsent { session, approved } => {
+                        realtime.resolve_consent(&session, approved)?;
+                    }
+                }
+                Ok(realtime.ui_view())
+            }));
     }
 }
 
@@ -4112,12 +4322,10 @@ fn xwayland_start_follows_public_socket_registration(source: &str) -> bool {
     registration < dispatch && dispatch < start
 }
 
-/// Entry point for the smithay-on-Wayland compositor. Diverges (`-> !`) so
-/// `main` can use it next to [`super::hosted::run`] without juggling return
-/// types; unrecoverable setup errors are logged and end the process via
-/// `std::process::exit`, appropriate for a top-level entry point (matches
-/// smithay's own examples) — never a bare `panic`, since this crate builds
-/// with `panic = "abort"` and a clean logged exit beats an abort with no message.
+/// Entry point for the smithay-on-Wayland compositor. Fatal setup errors are
+/// logged and end the process immediately, but an ordinary logout returns so
+/// backend/libseat/KMS resources unwind through RAII before the display manager
+/// acquires the seat again.
 #[allow(
     clippy::exit,
     reason = "this is the compositor's real process entry point (invoked directly from `main`); \
@@ -4140,7 +4348,7 @@ fn xwayland_start_follows_public_socket_registration(source: &str) -> bool {
               nothing to drop earlier without cloning the tree data out for no real gain, and \
               the block already ends right after both are computed"
 )]
-pub fn run() -> ! {
+pub fn run() {
     // Calloop drives the whole compositor; smithay is callback-oriented and
     // expects every wakeup to fan out from a single `EventLoop::<State>`.
     let mut event_loop: EventLoop<'static, State> = match EventLoop::try_new() {
@@ -4162,11 +4370,7 @@ pub fn run() -> ! {
     };
     let display_handle = display.handle();
 
-    let mut state = State::new(event_loop.handle(), display_handle.clone());
     spawn_auto_brightness_worker();
-    // Point `ui`'s clipboard at the compositor's selection mirror — everything
-    // hosted here isn't a Wayland client, so without this they'd share no buffer.
-    crate::compositor::selection::install_host_clipboard(state.selection_store());
 
     // `--backend drm|winit` selects the real native backend implementation.
     let backend_kind = parse_backend_from_args();
@@ -4206,26 +4410,37 @@ pub fn run() -> ! {
         .path()
         .parent()
         .is_some_and(crate::onboarding_view::has_pending_progress);
+    // `main` probes the existing schema-2 record before entering the
+    // compositor. If Secret Service is locked, that probe must not terminate
+    // the login: trusted recovery chrome owns the next step. This marker is
+    // process-local and cannot make an identity valid or bypass verification.
+    let identity_recovery =
+        std::env::var_os(crate::shell::identity_provisioning::IDENTITY_RECOVERY_ENV)
+            .is_some_and(|value| value == "1");
     let identity_missing =
         crate::shell::identity_provisioning::needs_first_run_flow(&identity_store);
-    let onboarding_identity_dir =
-        if should_activate_first_use(identity_missing, progress_pending, test_control_session) {
-            if let Some(identity_dir) = identity_store
-                .path()
-                .parent()
-                .map(std::path::Path::to_path_buf)
-            {
-                Some(identity_dir)
-            } else {
-                tracing::error!(
-                    path = %identity_store.path().display(),
-                    "identity path has no parent; refusing to start an identity-less desktop"
-                );
-                std::process::exit(1);
-            }
+    let onboarding_identity_dir = if should_activate_first_use(
+        identity_missing,
+        progress_pending,
+        identity_recovery,
+        test_control_session,
+    ) {
+        if let Some(identity_dir) = identity_store
+            .path()
+            .parent()
+            .map(std::path::Path::to_path_buf)
+        {
+            Some(identity_dir)
         } else {
-            None
-        };
+            tracing::error!(
+                path = %identity_store.path().display(),
+                "identity path has no parent; refusing to start an identity-less desktop"
+            );
+            std::process::exit(1);
+        }
+    } else {
+        None
+    };
     // A first-login compositor must not create or advertise a transport
     // identity before the identity ceremony completes. Keep a one-shot
     // deferred start so that completion brings this session online, rather
@@ -4239,6 +4454,14 @@ pub fn run() -> ! {
     // The desktop's own state, loaded from disk not bootstrapped fresh — room
     // identity, owner and capability list all have to survive a restart.
     let (tree_handle, enable_peer_sync, state_notice) = load_session_tree(enable_peer_sync);
+    let mut state = State::new_with_workspace_tree(
+        event_loop.handle(),
+        display_handle.clone(),
+        tree_handle.clone(),
+    );
+    // Point `ui`'s clipboard at the compositor's selection mirror — everything
+    // hosted here isn't a Wayland client, so without this they'd share no buffer.
+    crate::compositor::selection::install_host_clipboard(state.selection_store());
     let mut frame_builder = FrameBuilder::with_handle_and_records(
         tree_handle.clone(),
         enable_peer_sync,
@@ -4281,7 +4504,14 @@ pub fn run() -> ! {
             == crate::compositor::InstallMode::HostDesktop
         {
             eprintln!("tilo compositor: showing host-desktop identity setup from the first frame");
-            frame_builder.enable_host_desktop_onboarding(identity_dir);
+            if identity_recovery {
+                frame_builder.enable_host_desktop_recovery_onboarding(identity_dir);
+            } else {
+                frame_builder.enable_host_desktop_onboarding(identity_dir);
+            }
+        } else if identity_recovery {
+            eprintln!("tilo compositor: showing existing-identity recovery from the first frame");
+            frame_builder.enable_recovery_onboarding(identity_dir);
         } else {
             eprintln!("tilo compositor: showing full first-login setup from the first frame");
             frame_builder.enable_onboarding(identity_dir);
@@ -4355,7 +4585,17 @@ pub fn run() -> ! {
     if let Some(broker) = collab_broker.as_ref() {
         attach_collab_broker_bridges(&mut frame_builder, broker);
     }
-    let _identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
+    let mut realtime_fabric_bridge = collab_broker
+        .as_ref()
+        .and_then(crate::shell::collab_broker::BrokerHandle::realtime_fabric_bridge);
+    if let (Some(runtime), Some(bridge)) = (
+        device_fabric_runtime.as_mut(),
+        realtime_fabric_bridge.as_ref(),
+    ) && let Some(adapter) = bridge.adapter()
+    {
+        runtime.set_realtime_adapter(adapter);
+    }
+    let identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
     // failure only removes the advanced handoff, never core Settings controls.
@@ -4379,11 +4619,12 @@ pub fn run() -> ! {
     state.output_size = size_to_signed(initial_size);
 
     // `new_auto` walks `wayland-1..wayland-32`, binding the first free name.
-    let (listening_socket, socket_name, _display_file) = bind_and_publish_wayland_socket();
+    let (listening_socket, socket_name, display_file) = bind_and_publish_wayland_socket();
+    let public_socket_path = crate::shell::launcher::runtime_dir().join(&socket_name);
     // Publish to the app launcher: every app is pointed at this socket
     // explicitly (`tilo-launcher --wayland-socket`), never at the compositor's own env.
     crate::shell::launcher::set_wayland_socket(&socket_name);
-    let _windows_compat = match crate::shell::windows_compat::spawn(
+    let windows_compat = match crate::shell::windows_compat::spawn(
         frame_builder.chrome_handle().borrow().tree_handle(),
     ) {
         Ok(service) => {
@@ -4445,8 +4686,10 @@ pub fn run() -> ! {
     // its display; public clients cannot see the input-method/virtual-keyboard
     // globals at all. The preference controls both accepting connections and
     // the supervised service process.
+    let mut osk_socket_path = None;
     let mut osk_service = match bind_osk_socket() {
         Ok((osk_socket, path)) => {
+            osk_socket_path = Some(path.clone());
             let mut service = crate::compositor::osk_service::OskService::new(path.clone());
             let authorization = service.socket_authorization();
             if let Err(error) = event_loop.handle().insert_source(
@@ -4484,9 +4727,14 @@ pub fn run() -> ! {
     //
     // The privilege is the socket, not a client request: the sandbox launcher
     // bind-mounts only the public socket (`crates/packaging/launcher/src/sandbox.rs`); bind failure is logged and non-fatal.
+    let mut privileged_socket_path = None;
     match bind_privileged_socket() {
         Ok((privileged_socket, path)) => {
-            eprintln!("tilo compositor privileged socket on {}", path.display());
+            privileged_socket_path = Some(crate::shell::launcher::runtime_dir().join(&path));
+            eprintln!(
+                "tilo compositor privileged socket on {}",
+                Path::new(&path).display()
+            );
             if let Err(err) = event_loop.handle().insert_source(
                 privileged_socket,
                 move |client_stream, (), state| {
@@ -4538,12 +4786,23 @@ pub fn run() -> ! {
     // blank and suspend timeouts at startup and on live reload; environment
     // values only seed the headless/default config before that policy applies.
     let mut power_policy = tilo_power_mgmt::config::load_policy();
-    let mut session = SessionManager::new(
+    let idle_config = if crate::compositor::dev_env::DEV_ENV_OVERRIDES
+        && (std::env::var_os(crate::compositor::idle::BLANK_SECS_ENV).is_some()
+            || std::env::var_os(crate::compositor::idle::LOCK_SECS_ENV).is_some()
+            || std::env::var_os(crate::compositor::idle::SUSPEND_SECS_ENV).is_some())
+    {
+        // Explicit developer/test timeouts must remain authoritative. The
+        // production release cannot enter this branch, and otherwise the
+        // persisted minute-granularity Settings policy silently overwrites
+        // the second-granularity E2E fixture before its first tick.
+        IdleConfig::from_env()
+    } else {
         IdleConfig::from_env()
             .with_blank(power_policy.idle_blank)
-            .with_suspend(power_policy.idle_suspend),
-        Instant::now(),
-    );
+            .with_lock(power_policy.idle_lock)
+            .with_suspend(power_policy.idle_suspend)
+    };
+    let mut session = SessionManager::new(idle_config, Instant::now());
     // Session-lock unlock: input + auth state machine. Verifier is the fixed
     // test password (`TILO_LOCK_TEST_PASSWORD`) or real greetd/PAM; fail-closed otherwise.
     let mut lock = LockController::new(
@@ -4587,8 +4846,7 @@ pub fn run() -> ! {
     // Held for the lifetime of `run` so the runtime's worker threads keep driving zbus dispatch in the background.
     let mut notif_runtime: Option<tokio::runtime::Runtime> = None;
     // RAII: dropping this releases the D-Bus bus name and tears down the
-    // object server. Explicitly dropped near `process::exit` below, same as
-    // the session's other RAII guards, since `process::exit` skips destructors.
+    // object server. It is explicitly dropped in the ordered shutdown block.
     let mut notif_handle: Option<crate::notifications::ServerHandle> = None;
     match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -4737,6 +4995,7 @@ pub fn run() -> ! {
     // elapsed (safety net, refresh within a second). Layout still runs every tick for hit-testing; only paint+submit are gated.
     let keepalive = Duration::from_secs(1);
     let mut last_paint = Instant::now();
+    let mut last_lock_clock_refresh = last_paint;
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
     // `output_presentation_frame_changed` observes live foreign-frame
@@ -4815,7 +5074,11 @@ pub fn run() -> ! {
         // service, then land here because ChromeState intentionally remains
         // compositor-thread owned.
         if let Some(service) = tool_service.as_ref() {
-            service.pump_workspace_settings(&frame_builder.chrome_handle());
+            let chrome = frame_builder.chrome_handle();
+            service.pump_workspace_settings(&chrome);
+            service.pump_identity_backup(&chrome, || {
+                frame_builder.host_mut().open_portable_identity_backup()
+            });
         }
         backend.poll_events(&mut |event| pending_events.push(event));
         let had_backend_events = !pending_events.is_empty();
@@ -5226,6 +5489,7 @@ pub fn run() -> ! {
             let policy = tilo_power_mgmt::config::load_policy();
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
+            session.set_lock_timeout(policy.idle_lock);
             session.set_suspend_timeout(policy.idle_suspend);
             power_bridge.update_policy(policy);
             outputs_dirty = true;
@@ -5527,10 +5791,12 @@ pub fn run() -> ! {
                 close_requests = chrome.take_surface_close_requests();
             });
             for surface_id in close_requests {
-                let _ = crate::compositor::tab_binding::close_tab_for_destroyed_surface_and_persist(
-                    &mut state.workspace_tree,
-                    surface_id,
-                );
+                let _ = {
+                    let mut tree = state.workspace_tree.write();
+                    crate::compositor::tab_binding::close_tab_for_destroyed_surface_and_persist(
+                        &mut tree, surface_id,
+                    )
+                };
                 if let Some(toplevel) = state
                     .xdg_shell_state
                     .toplevel_surfaces()
@@ -5544,21 +5810,13 @@ pub fn run() -> ! {
                 }
             }
 
-            // Mirror foreign toplevels adopted at the protocol layer into the rendered
-            // tab tree, reaping tabs whose client went away — a diff of protocol tree
-            // against rendered, so idempotent and self-healing (no phantom tabs from a
-            // dropped event). A real change bumps the chrome revision, driving the strip resync that splices the tab into the widget tree next layout.
-            let mirrored = {
-                let chrome = frame_builder.chrome();
-                let mut rendered = chrome.tree_mut();
-                foreign::reconcile_foreign_tabs(&state.workspace_tree, &mut rendered)
-            };
-            if mirrored {
+            // Protocol callbacks and the frame builder share one tree handle, so
+            // adoption/destruction is immediately visible to chrome and persistence.
+            // The input router's queues remain bookkeeping and are drained each
+            // tick so they cannot grow across a long session.
+            if state.client_input.clear_pending() {
                 frame_builder.with_chrome(super::super::shell::chrome_state::ChromeState::bump);
             }
-            // The mirror above is the single source of tab adoption, so the input
-            // router's own queues are pure bookkeeping — drained each tick so they can't grow across a long session.
-            state.client_input.clear_pending();
         }
         // Reconcile the seat's keyboard focus with the focused tab every tick, so a
         // tab/group/workspace switch or overlay open moves the keyboard immediately, not on the next keystroke.
@@ -5657,6 +5915,12 @@ pub fn run() -> ! {
                     notif_bridge.clone(),
                 )
             });
+            if let Some(adapter) = realtime_fabric_bridge
+                .as_ref()
+                .and_then(crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::adapter)
+            {
+                runtime.set_realtime_adapter(adapter);
+            }
             let (width, height) = combined_geometry(backend.outputs());
             let display =
                 (width > 0 && height > 0).then_some(crate::shell::device_fabric::DisplayRect {
@@ -5665,6 +5929,8 @@ pub fn run() -> ! {
                     width,
                     height,
                 });
+            let gamepad_binding = active_physical_gamepad_binding(&tree_handle.read());
+            runtime.set_local_gamepad_focus(gamepad_binding.clone());
             runtime.pump(
                 net,
                 &state.selection_store(),
@@ -5675,6 +5941,10 @@ pub fn run() -> ! {
                     audio_output: system_audio,
                 },
             );
+            crate::shell::physical_gamepad::pump_physical_gamepads(net, gamepad_binding.as_ref());
+            if let Some(bridge) = realtime_fabric_bridge.as_ref() {
+                bridge.pump_app_events();
+            }
             for (controller, event) in crate::shell::device_fabric_runtime::take_spatial_input() {
                 let _ = state.apply_personal_fabric_input(&controller, event);
             }
@@ -5963,6 +6233,14 @@ pub fn run() -> ! {
                 spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.as_ref());
             if let Some(broker) = collab_broker.as_ref() {
                 attach_collab_broker_bridges(&mut frame_builder, broker);
+                realtime_fabric_bridge = broker.realtime_fabric_bridge();
+                if let (Some(runtime), Some(bridge)) = (
+                    device_fabric_runtime.as_mut(),
+                    realtime_fabric_bridge.as_ref(),
+                ) && let Some(adapter) = bridge.adapter()
+                {
+                    runtime.set_realtime_adapter(adapter);
+                }
                 if let Some(net) = peer_sync.as_ref() {
                     attach_peer_presence(&mut frame_builder, broker, net);
                 }
@@ -5980,6 +6258,8 @@ pub fn run() -> ! {
             state.output_presentation_frame_changed(),
         );
         let keepalive_due = last_paint.elapsed() >= keepalive;
+        let lock_clock_due =
+            lock_clock_refresh_due(session.is_locked(), iter_t0, &mut last_lock_clock_refresh);
         metrics.mark_pump(
             iter_t0
                 .elapsed()
@@ -5988,24 +6268,28 @@ pub fn run() -> ! {
         );
         // Is there anything new to show? This redraw gating lets a static desktop
         // idle at near-zero CPU, orthogonal to *when* a frame may show (the clock's job below).
-        let content_changed = force_first_paint
-            || had_backend_events
-            || session_changed
-            || accessibility_changed
-            || revision_changed
-            || animating
-            || apps_changed
-            || peers_moved
-            || presentation_frame_changed
-            || capture_executor.has_live_mirrors()
-            || capture_executor.is_recording()
-            || portal_backend
-                .as_ref()
-                .is_some_and(PortalBackend::capture_pending)
-            || portal_backend
-                .as_ref()
-                .is_some_and(|portal| portal.screencast.has_streams())
-            || keepalive_due;
+        let content_changed = NativeRedrawReasons {
+            force: force_first_paint,
+            backend_event: had_backend_events,
+            session: session_changed,
+            accessibility: accessibility_changed,
+            revision: revision_changed,
+            hidden_desktop_animation: animating,
+            apps: apps_changed,
+            peers: peers_moved,
+            presentation: presentation_frame_changed,
+            capture: capture_executor.has_live_mirrors()
+                || capture_executor.is_recording()
+                || portal_backend
+                    .as_ref()
+                    .is_some_and(PortalBackend::capture_pending)
+                || portal_backend
+                    .as_ref()
+                    .is_some_and(|portal| portal.screencast.has_streams()),
+            keepalive: keepalive_due,
+            lock_clock: lock_clock_due,
+        }
+        .content_changed(session.is_locked());
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
@@ -6610,7 +6894,7 @@ pub fn run() -> ! {
         // Serialize the live `WorkspaceTree` to the requested path, via a
         // tempfile-in-the-same-dir + rename so a concurrently-polling test always sees a consistent snapshot.
         if let Some(path) = test_dump_path.as_ref()
-            && let Ok(json) = serde_json::to_vec(&state.workspace_tree)
+            && let Ok(json) = serde_json::to_vec(&*state.workspace_tree.read())
             && let Err(e) = atomic_file::write_creating_parent(std::path::Path::new(path), &json)
         {
             tracing::warn!(error = %e, path = ?path, "workspace tree save failed");
@@ -6618,29 +6902,45 @@ pub fn run() -> ! {
     }
 
     // Stop the render thread and wait for the frame in flight, so a
-    // half-presented frame can't outlive its device — explicit since `process::exit` skips destructors.
+    // half-presented frame cannot outlive its device or race backend teardown.
     if let Some(mut pipe) = present_pipe.take() {
         pipe.shutdown();
     }
+    if let Some(network) = peer_sync.as_ref() {
+        crate::shell::physical_gamepad::stop_all_physical_gamepads(network);
+    }
 
-    // Flush the frame trace / write the summary before `process::exit` skips destructors; a no-op unless instrumentation was enabled.
+    // Flush the frame trace / write the summary before backend teardown; a
+    // no-op unless instrumentation was enabled.
     metrics.finish();
 
-    // `event_loop.run` only returns when asked to stop (never happens today);
-    // kept explicit so the function's `!` return type is honoured. `display` drops here, severing its clients.
+    // Sever clients before service endpoints disappear. The backend and
+    // event loop remain in scope until the function returns below, ensuring
+    // the libseat notifier, DRM handles and device leases unwind normally.
     drop(display);
-    // Explicitly drop the test-control socket guard so its `Drop` unlinks the
-    // file before `process::exit` skips destructors; the panic path already runs `Drop` via unwind.
+    // Explicitly drop service guards in dependency order so the next session
+    // cannot observe stale endpoints while backend teardown finishes.
     drop(test_control_unlink);
     // Same reasoning for the collab broker: its `Drop` quiesces the drain
     // thread and unlinks both sockets, else the next session must tell a stale file from a live one.
     drop(collab_broker);
     drop(tool_service);
     drop(xwayland);
-    // Same reasoning again: releases the D-Bus bus name and tears down the
-    // notification object server before `process::exit` skips its destructor.
+    drop(windows_compat);
+    drop(identity_broker);
+    drop(floating_surface_service);
+    drop(osk_service);
+    drop(display_file);
+    unlink_wayland_endpoint(&public_socket_path);
+    if let Some(path) = osk_socket_path.as_deref() {
+        unlink_wayland_endpoint(path);
+    }
+    if let Some(path) = privileged_socket_path.as_deref() {
+        unlink_wayland_endpoint(path);
+    }
+    // Releases the D-Bus bus name and tears down the notification object
+    // server before returning to the session wrapper.
     drop(notif_handle);
-    std::process::exit(0)
 }
 
 /// Session-owned ambient-light loop. Settings only records policy; the
@@ -6685,6 +6985,177 @@ mod tests {
     //! `#[ignore]` by default; these exercise the same `execute_planned_action`
     //! → `FrameBuilder::dispatch_event` wire without a process, so CI without winit still gates here.
     use super::*;
+
+    #[test]
+    fn locked_redraw_ignores_hidden_desktop_work_but_keeps_lock_edges() {
+        for hidden in [
+            NativeRedrawReasons {
+                hidden_desktop_animation: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                apps: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                peers: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                presentation: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                capture: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                keepalive: true,
+                ..NativeRedrawReasons::default()
+            },
+        ] {
+            assert!(!hidden.content_changed(true));
+            assert!(
+                hidden.content_changed(false),
+                "unlocked redraw behaviour must remain unchanged"
+            );
+        }
+
+        for visible_lock_edge in [
+            NativeRedrawReasons {
+                backend_event: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                session: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                accessibility: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                revision: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                lock_clock: true,
+                ..NativeRedrawReasons::default()
+            },
+        ] {
+            assert!(visible_lock_edge.content_changed(true));
+        }
+    }
+
+    #[test]
+    fn locked_clock_gets_an_explicit_minute_refresh_edge() {
+        let start = Instant::now();
+        let mut last = start;
+        assert!(!lock_clock_refresh_due(true, start, &mut last));
+        assert!(!lock_clock_refresh_due(
+            true,
+            start + Duration::from_millis(59_999),
+            &mut last,
+        ));
+        assert!(lock_clock_refresh_due(
+            true,
+            start + LOCK_CLOCK_REFRESH,
+            &mut last,
+        ));
+        assert!(!lock_clock_refresh_due(
+            true,
+            start + LOCK_CLOCK_REFRESH + Duration::from_secs(1),
+            &mut last,
+        ));
+
+        let unlocked = start + Duration::from_secs(75);
+        assert!(!lock_clock_refresh_due(false, unlocked, &mut last));
+        assert_eq!(last, unlocked);
+    }
+
+    #[test]
+    fn force_and_password_feedback_edges_always_repaint_the_lock() {
+        for visible in [
+            NativeRedrawReasons {
+                force: true,
+                ..NativeRedrawReasons::default()
+            },
+            // Lock input and async verification completion both set the
+            // session edge, updating the masked field, error, or unlock.
+            NativeRedrawReasons {
+                session: true,
+                ..NativeRedrawReasons::default()
+            },
+        ] {
+            assert!(visible.content_changed(true));
+        }
+    }
+
+    #[test]
+    fn deferred_peer_sync_starts_in_the_session_that_finishes_onboarding() {
+        let mut deferred = true;
+        assert!(!take_deferred_peer_sync_activation(&mut deferred, true));
+        assert!(deferred, "onboarding retains the pending start");
+        assert!(take_deferred_peer_sync_activation(&mut deferred, false));
+        assert!(!deferred, "the current-session start is one-shot");
+        assert!(!take_deferred_peer_sync_activation(&mut deferred, false));
+    }
+
+    #[test]
+    fn output_presentation_removal_stays_pending_until_a_full_frame_submits() {
+        let mut pending = false;
+        let mut previous_surface_count = 1;
+
+        assert!(update_output_presentation_repaint_pending(
+            &mut pending,
+            &mut previous_surface_count,
+            0,
+            false,
+        ));
+        assert_eq!(previous_surface_count, 0);
+        assert!(
+            pending,
+            "an off-cadence removal must survive until the next submitted frame"
+        );
+
+        pending = false;
+        assert!(!update_output_presentation_repaint_pending(
+            &mut pending,
+            &mut previous_surface_count,
+            0,
+            false,
+        ));
+        assert!(update_output_presentation_repaint_pending(
+            &mut pending,
+            &mut previous_surface_count,
+            0,
+            true,
+        ));
+    }
+
+    #[test]
+    fn unfinished_post_identity_setup_reactivates_trusted_first_use_chrome() {
+        assert!(should_activate_first_use(false, true, false, false));
+        assert!(
+            !should_activate_first_use(false, false, false, false),
+            "an established user without a journal must not see first-use again"
+        );
+        assert!(
+            should_activate_first_use(false, false, true, false),
+            "an existing identity whose Secret Service key is unavailable must enter recovery"
+        );
+        assert!(
+            !should_activate_first_use(true, true, true, true),
+            "the explicit development control session remains isolated"
+        );
+    }
+
+    #[test]
+    fn portal_screencast_never_publishes_a_locked_frame() {
+        assert!(portal_screencast_should_publish(true, false));
+        assert!(!portal_screencast_should_publish(true, true));
+        assert!(!portal_screencast_should_publish(false, false));
+    }
 
     #[test]
     fn switching_tabs_leaves_the_hidden_surface_and_enters_the_visible_one() {
@@ -7982,8 +8453,34 @@ mod gesture_wireup_tests {
             "satellite is itself a Wayland client; start it only after the public socket is registered and calloop has dispatched once"
         );
     }
+
+    /// A normal logout must unwind the backend, event loop and libseat
+    /// handles. Unlinking the public sockets is not enough: terminating the
+    /// process from inside `run` skips those destructors and can leave the
+    /// display manager unable to acquire the physical seat.
+    #[test]
+    fn ordinary_logout_returns_from_run_instead_of_exiting_the_process() {
+        let source = include_str!("native.rs");
+        let run = source
+            .split_once("pub fn run() {")
+            .expect("native run entry point")
+            .1
+            .split_once("/// Session-owned ambient-light loop")
+            .expect("end of native run entry point")
+            .0;
+
+        assert!(
+            !run.contains("std::process::exit(0)"),
+            "ordinary logout must return so DRM/libseat resources unwind"
+        );
+        assert!(
+            run.contains("drop(display);") && run.contains("drop(notif_handle);"),
+            "service endpoints must still be torn down before returning"
+        );
+    }
 }
 
+#[cfg(test)]
 #[cfg(test)]
 mod output_geometry_tests {
     use super::{output_geometry, select_fullscreen_output};

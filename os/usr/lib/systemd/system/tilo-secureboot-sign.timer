@@ -1,0 +1,14 @@
+[Unit]
+Description=Check owner Secure Boot signatures outside the login critical path
+Documentation=file:///usr/share/doc/tilo/boot-chain.md
+
+[Timer]
+# The path and update hooks handle changed artefacts promptly and the shutdown
+# hook is the final safety net. Delay this boot-time fallback so PE scans and
+# signatures do not compete with the greeter's cold start.
+OnBootSec=30s
+AccuracySec=1s
+Unit=tilo-secureboot-sign.service
+
+[Install]
+WantedBy=timers.target

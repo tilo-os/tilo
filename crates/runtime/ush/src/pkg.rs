@@ -34,7 +34,7 @@
 //! says so rather than letting `dnf` fail somewhere confusing.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
 
 /// Where a layer records what `pkg` put in it, inside `/usr` so it lands in
 /// the layer. `rpm -qa` can't answer this alone — it reports base+layer as
@@ -143,38 +143,50 @@ pub fn remove_argv(packages: &[String], releasever: &str) -> Vec<String> {
 
 /// `%fedora`, or whatever the base says its release is.
 pub fn releasever() -> String {
-    Command::new("rpm")
-        .args(["-E", "%fedora"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            (!s.is_empty() && s != "%fedora").then_some(s)
-        })
-        .unwrap_or_else(|| "rawhide".into())
+    bounded_command::run(
+        "rpm",
+        &["-E", "%fedora"],
+        None,
+        4096,
+        Duration::from_secs(10),
+    )
+    .ok()
+    .and_then(|o| {
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        (!s.is_empty() && s != "%fedora").then_some(s)
+    })
+    .unwrap_or_else(|| "rawhide".into())
 }
 
 /// Is this package already part of what the guest can see? The guest's rpm
 /// database is base+layer, so this answers "would installing it do
 /// anything", not "did this layer install it" — see [`Manifest`] for that.
 pub fn is_installed(name: &str) -> bool {
-    Command::new("rpm")
-        .args(["-q", name])
-        .status()
-        .is_ok_and(|s| s.success())
+    bounded_command::run(
+        "rpm",
+        &["-q", name],
+        None,
+        64 * 1024,
+        Duration::from_secs(10),
+    )
+    .is_ok_and(|output| output.status.success())
 }
 
 /// `name-version-release.arch` for an installed package, or the bare name.
 pub fn nevra(name: &str) -> String {
-    Command::new("rpm")
-        .args(["-q", name])
-        .output()
-        .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            (o.status.success() && !s.is_empty()).then_some(s)
-        })
-        .unwrap_or_else(|| name.to_string())
+    bounded_command::run(
+        "rpm",
+        &["-q", name],
+        None,
+        64 * 1024,
+        Duration::from_secs(10),
+    )
+    .ok()
+    .and_then(|o| {
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        (o.status.success() && !s.is_empty()).then_some(s)
+    })
+    .unwrap_or_else(|| name.to_string())
 }
 
 /// What `pkg inspect` reports.
@@ -256,7 +268,14 @@ pub fn inspect(name: &str) -> Inspection {
 }
 
 fn run_capture(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program).args(args).output().ok()?;
+    let output = bounded_command::run(
+        program,
+        args,
+        None,
+        8 * 1024 * 1024,
+        Duration::from_secs(30),
+    )
+    .ok()?;
     output
         .status
         .success()

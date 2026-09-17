@@ -2,6 +2,12 @@
 set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+if [ -n "${TILO_CRYPTO_BIN:-}" ]; then
+  crypto="$TILO_CRYPTO_BIN"
+else
+  cargo build --quiet --manifest-path "$repo/Cargo.toml" -p tilo-crypto
+  crypto="$repo/target/debug/tilo-crypto"
+fi
 mkdir -p "$work/dev/disk/by-partuuid" "$work/run" "$work/bin"
 touch "$work/dev/esp" "$work/dev/tilo-root" "$work/dev/linux-root" "$work/dev/removable-root"
 ln -s ../../esp "$work/dev/disk/by-partuuid/11111111-2222-3333-4444-555555555555"
@@ -22,17 +28,14 @@ cat >"$work/bin/cryptsetup" <<'EOF'
 #!/bin/bash
 exit 1
 EOF
-cat >"$work/bin/sbverify" <<'EOF'
+cat >"$work/bin/signature-check" <<'EOF'
 #!/bin/bash
 echo 'signature 1'
 exit 0
 EOF
-cat >"$work/bin/sbverify-fail" <<'EOF'
+cat >"$work/bin/signature-check-fail" <<'EOF'
 #!/bin/bash
-# Match the surprising behavior of sbsigntools 0.9.5: it exits successfully
-# for an unsigned image, so callers must inspect the listing as well.
-echo 'No signature table present'
-exit 0
+exit 1
 EOF
 chmod +x "$work/bin/"*
 env TILO_ROOT_LOADER_PARTUUID=11111111-2222-3333-4444-555555555555 \
@@ -88,33 +91,35 @@ echo 'ok: target-independent initrd units generated'
 mkdir -p "$work/preflight/predictions"
 printf 'deterministic target UKI bytes' >"$work/preflight/tilo-target.efi"
 printf '7\n' >"$work/generation"
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
-  -out "$work/private.pem" >/dev/null 2>&1
-openssl pkey -in "$work/private.pem" -pubout -out "$work/public.pem" >/dev/null 2>&1
+"$crypto" generate-secure-boot-cert "Tilo preflight test" \
+  "$work/private.pem" "$work/certificate.pem"
+"$crypto" rsa-public-key "$work/private.pem" "$work/public.pem"
 prediction="$work/preflight/predictions/generation-7.json"
-python3 - "$work/private.pem" "$prediction" <<'PY'
-import base64, json, struct, subprocess, sys, tempfile
-key, output = sys.argv[1:]
+python3 - "$work/message.bin" <<'PY'
+import struct, sys
 approved = bytes(range(32))
-with tempfile.TemporaryDirectory() as td:
-    msg, sig = td + "/msg", td + "/sig"
-    open(msg, "wb").write(approved + struct.pack(">Q", 7))
-    subprocess.run(["openssl", "dgst", "-sha256", "-sign", key,
-                    "-out", sig, msg], check=True)
-    signature = open(sig, "rb").read()
+open(sys.argv[1], "wb").write(approved + struct.pack(">Q", 7))
+PY
+"$crypto" sign-rsa-sha256 "$work/private.pem" "$work/message.bin" "$work/signature.bin"
+python3 - "$work/signature.bin" "$prediction" <<'PY'
+import base64, json, sys
+signature, output = sys.argv[1:]
+approved = bytes(range(32))
 json.dump({"generation": 7, "pcr_bank": "sha256", "pcrs": [11],
            "approved_policy": base64.b64encode(approved).decode(),
-           "signature": base64.b64encode(signature).decode()}, open(output, "w"))
+           "signature": base64.b64encode(open(signature, "rb").read()).decode()}, open(output, "w"))
 PY
-openssl dgst -sha256 -sign "$work/private.pem" -out "$prediction.uki.sig" \
-  "$work/preflight/tilo-target.efi"
+"$crypto" sign-rsa-sha256 "$work/private.pem" \
+  "$work/preflight/tilo-target.efi" "$prediction.uki.sig"
 TILO_PREFLIGHT_ROOT="$work/preflight" TILO_PREFLIGHT_PUBLIC_KEY="$work/public.pem" \
   TILO_PREFLIGHT_GENERATION="$work/generation" TILO_PREFLIGHT_SKIP_PLATFORM=1 \
-  TILO_PREFLIGHT_SBVERIFY="$work/bin/sbverify" \
+  TILO_PREFLIGHT_CRYPTO="$crypto" \
+  TILO_PREFLIGHT_SIGNATURE_CHECK="$work/bin/signature-check" \
   "$repo/os/usr/libexec/tilo-verified-boot-install-preflight"
 if TILO_PREFLIGHT_ROOT="$work/preflight" TILO_PREFLIGHT_PUBLIC_KEY="$work/public.pem" \
   TILO_PREFLIGHT_GENERATION="$work/generation" TILO_PREFLIGHT_SKIP_PLATFORM=1 \
-  TILO_PREFLIGHT_SBVERIFY="$work/bin/sbverify-fail" \
+  TILO_PREFLIGHT_CRYPTO="$crypto" \
+  TILO_PREFLIGHT_SIGNATURE_CHECK="$work/bin/signature-check-fail" \
   "$repo/os/usr/libexec/tilo-verified-boot-install-preflight"; then
   echo 'unsigned target UKI passed verified-boot preflight' >&2; exit 1
 fi
@@ -122,7 +127,8 @@ echo 'ok: unsigned target UKI is rejected before TPM short-PIN enrollment'
 printf 'tamper' >>"$work/preflight/tilo-target.efi"
 if TILO_PREFLIGHT_ROOT="$work/preflight" TILO_PREFLIGHT_PUBLIC_KEY="$work/public.pem" \
   TILO_PREFLIGHT_GENERATION="$work/generation" TILO_PREFLIGHT_SKIP_PLATFORM=1 \
-  TILO_PREFLIGHT_SBVERIFY="$work/bin/sbverify" \
+  TILO_PREFLIGHT_CRYPTO="$crypto" \
+  TILO_PREFLIGHT_SIGNATURE_CHECK="$work/bin/signature-check" \
   "$repo/os/usr/libexec/tilo-verified-boot-install-preflight"; then
   echo 'substituted target UKI passed authority preflight' >&2; exit 1
 fi
@@ -140,7 +146,8 @@ d["pcrs"] = [7]
 json.dump(d, open(p, "w"))
 PY
 if TILO_PREFLIGHT_PUBLIC_KEY="$work/public.pem" TILO_PREFLIGHT_SKIP_PLATFORM=1 \
-  TILO_PREFLIGHT_SBVERIFY="$work/bin/sbverify" \
+  TILO_PREFLIGHT_CRYPTO="$crypto" \
+  TILO_PREFLIGHT_SIGNATURE_CHECK="$work/bin/signature-check" \
   "$repo/os/usr/libexec/tilo-verified-boot-install-preflight" \
     --uki "$work/preflight/tilo-target.efi" --prediction "$prediction" --generation 7; then
   echo 'PCR7-only release policy passed exact prediction preflight' >&2; exit 1

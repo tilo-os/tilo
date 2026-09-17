@@ -304,11 +304,16 @@ impl CardHandle {
             if info.state() != connector::State::Connected {
                 continue;
             }
-            let connector_name = format!("{}-{}", info.interface().as_str(), info.interface_id());
-            let lower_name = connector_name.to_ascii_lowercase();
-            if lower_name.contains("writeback") || lower_name.contains("virtual") {
+            // Writeback connectors are capture sinks rather than physical or
+            // virtual displays.  Do not infer that from the human-readable
+            // connector name: QEMU/virtio/Bochs expose perfectly usable KMS
+            // displays as `Virtual-N`, and rejecting that label makes qOS
+            // immediately exit in a VM even while the connector is connected
+            // and advertises modes.
+            if info.interface() == connector::Interface::Writeback {
                 continue;
             }
+            let connector_name = format!("{}-{}", info.interface().as_str(), info.interface_id());
             let Some(mode) = pick_configured_mode(info.modes(), None) else {
                 continue;
             };
@@ -1136,13 +1141,13 @@ impl DrmScanout {
 
     /// Present one frame, draining this scanout's own page-flip completions first — the single-output
     /// entry point. `fill` writes the back buffer in XRGB8888 given the mapped slice and row pitch; `cursor` is consulted only when the hardware cursor is unavailable.
-    pub fn present_into<F>(&mut self, cursor: Option<(f64, f64)>, fill: F)
+    pub fn present_into<F, E>(&mut self, cursor: Option<(f64, f64)>, fill: F) -> Result<bool, E>
     where
-        F: FnOnce(&mut [u8], usize),
+        F: FnOnce(&mut [u8], usize) -> Result<(), E>,
     {
         // Drain any retired completion so we can flip again.
         self.drain_flip_events();
-        self.present_no_drain(cursor, fill);
+        self.present_no_drain_result(cursor, fill)
     }
 
     #[allow(
@@ -1301,9 +1306,30 @@ impl DrmScanout {
     where
         F: FnOnce(&mut [u8], usize),
     {
+        let _: Result<bool, std::convert::Infallible> =
+            self.present_no_drain_result(cursor, |dst, pitch| {
+                fill(dst, pitch);
+                Ok(())
+            });
+    }
+
+    /// Present only after `fill` has completely produced the new back buffer.
+    ///
+    /// Returning `Err` is a frame drop, not a presentation request. This is
+    /// load-bearing for GPU readback: flipping after a failed map would expose
+    /// the untouched previous contents and make a responsive compositor look
+    /// frozen even though its logical state kept advancing.
+    fn present_no_drain_result<F, E>(
+        &mut self,
+        cursor: Option<(f64, f64)>,
+        fill: F,
+    ) -> Result<bool, E>
+    where
+        F: FnOnce(&mut [u8], usize) -> Result<(), E>,
+    {
         if self.use_pageflip && self.flip_pending {
             // Previous flip not yet retired — drop this frame (natural vsync throttle); the next one supersedes it.
-            return;
+            return Ok(false);
         }
 
         // Back buffer when flipping, else the single live buffer. `front` is always 0 or 1, so
@@ -1322,7 +1348,7 @@ impl DrmScanout {
         let (dw, dh) = (self.width as usize, self.height as usize);
         let Some(buffer) = self.buffers.get_mut(idx) else {
             tracing::warn!("DRM scanout: back-buffer index {idx} out of range; skipping frame");
-            return;
+            return Ok(false);
         };
         let pitch = buffer.pitch() as usize;
         {
@@ -1330,11 +1356,13 @@ impl DrmScanout {
                 Ok(m) => m,
                 Err(e) => {
                     tracing::warn!("DRM scanout: map_dumb_buffer: {e}");
-                    return;
+                    return Ok(false);
                 }
             };
             let dst = map.as_mut();
-            fill(dst, pitch);
+            if !paint_completed(fill(dst, pitch))? {
+                return Ok(false);
+            }
             // Software fallback only — the hardware plane composites itself and must not also be drawn into the frame.
             if !self.hw_cursor_active
                 && let Some((px, py)) = cursor
@@ -1363,6 +1391,7 @@ impl DrmScanout {
         } else {
             let _ = self.flush_dirty(idx);
         }
+        Ok(true)
     }
 
     /// The framebuffer bound to buffer slot `idx`, if the index is in range. `idx` is always 0 or
@@ -1819,6 +1848,14 @@ fn software_cursor_damage_rect(
 /// describes only the destination-history commit decision.
 fn pageflip_history_commit_is_safe(dirty_ok: bool, flip_ok: bool) -> bool {
     dirty_ok && flip_ok
+}
+
+/// A mapped scanout buffer becomes presentable only after the producer says
+/// every pixel write completed. Keep this decision explicit and testable:
+/// render/readback errors are frame drops, never permission to expose the
+/// untouched back buffer.
+fn paint_completed<E>(result: Result<(), E>) -> Result<bool, E> {
+    result.map(|()| true)
 }
 
 #[cfg(test)]
@@ -2324,6 +2361,15 @@ mod tests {
         assert!(!pageflip_history_commit_is_safe(false, true));
         assert!(!pageflip_history_commit_is_safe(true, false));
         assert!(!pageflip_history_commit_is_safe(false, false));
+    }
+
+    #[test]
+    fn failed_paint_never_authorizes_presenting_the_back_buffer() {
+        assert_eq!(paint_completed::<&str>(Ok(())), Ok(true));
+        assert_eq!(
+            paint_completed(Err("readback timed out")),
+            Err("readback timed out")
+        );
     }
 
     #[test]

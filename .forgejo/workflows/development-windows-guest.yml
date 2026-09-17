@@ -31,7 +31,7 @@ concurrency:
 
 jobs:
   assemble:
-    if: startsWith(github.ref, 'refs/heads/codex/')
+    if: github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/codex/'))
     runs-on: runner-disk-100g
     timeout-minutes: 90
     env:

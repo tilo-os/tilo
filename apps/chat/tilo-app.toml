@@ -25,6 +25,10 @@ x86_64 = "v3"
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
 
+[continuity]
+required = ["presentation"]
+semantic-schema = "realtime-session-v1"
+
 [[trust.attested_by]]
 attestor  = "tilo-demo/2026.07"
 claim     = "deadbeef"

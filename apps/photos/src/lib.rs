@@ -221,6 +221,47 @@ pub fn shots_pattern(w: u32, h: u32) -> pixels::Rgba {
     pixels::Rgba::new(w, h, bytes).expect("generated pattern is well formed")
 }
 
+/// Deterministic, hermetic gallery fixtures. They are deliberately derived
+/// from the same small procedural scene rather than bundled stock imagery,
+/// but each has a distinct light and colour story so an offscreen library
+/// reads as a real collection instead of four copies of one placeholder.
+#[allow(
+    clippy::many_single_char_names,
+    clippy::indexing_slicing,
+    reason = "chunks_exact_mut(4) proves each RGBA pixel has the indexed channels"
+)]
+pub fn shots_pattern_variant(w: u32, h: u32, variant: u8) -> pixels::Rgba {
+    let mut image = shots_pattern(w, h);
+    for pixel in image.bytes.chunks_exact_mut(4) {
+        let (r, g, b) = (pixel[0], pixel[1], pixel[2]);
+        match variant % 5 {
+            // Warm trail, cool gallery lights, and rain respectively.
+            0 => {}
+            1 => {
+                pixel[0] = r.saturating_add(32);
+                pixel[1] = g.saturating_add(14);
+                pixel[2] = b.saturating_sub(30);
+            }
+            2 => {
+                pixel[0] = b.saturating_sub(18);
+                pixel[1] = r.saturating_add(12);
+                pixel[2] = g.saturating_add(28);
+            }
+            3 => {
+                pixel[0] = ((u16::from(r) + u16::from(g)) / 3) as u8;
+                pixel[1] = ((u16::from(g) + u16::from(b)) / 3) as u8;
+                pixel[2] = b.saturating_add(18);
+            }
+            _ => {
+                pixel[0] = r.saturating_sub(20);
+                pixel[1] = g.saturating_add(25);
+                pixel[2] = b.saturating_add(35);
+            }
+        }
+    }
+    image
+}
+
 /// Pose the app for one named `--shots` scenario.
 ///
 /// The generated pattern is written to `dir` and opened through the ordinary
@@ -264,7 +305,7 @@ pub fn seed_scenario(
     }
 
     let path = dir.join("harbour.png");
-    let pattern = shots_pattern(1200, 800);
+    let pattern = shots_pattern_variant(1200, 800, 4);
     if let Some(png) = pixels::encode_png(&pattern) {
         std::fs::create_dir_all(dir).ok();
         if std::fs::write(&path, png).is_err() {
@@ -275,20 +316,25 @@ pub fn seed_scenario(
 
     match scenario {
         // A library has useful context only when it contains more than the
-        // active image.  These rows intentionally share the generated image
-        // bytes: the gallery exercises the card layout and bounded
-        // materialisation without smuggling sample assets into the live app.
+        // active image. The fixtures are procedural and hermetic, while their
+        // different light treatments make thumbnail, selection and metadata
+        // hierarchy legible in the gallery instead of simulating a library
+        // with repeated placeholder art.
         "library" | "album-manage" | "metadata-edit" => {
             let mut library = PhotosDoc::library(doc);
             let mut travel = Vec::new();
-            for name in [
+            for (variant, name) in [
                 "Harbour dusk",
                 "Summer trail",
                 "Museum light",
                 "Rainy market",
-            ] {
+            ]
+            .into_iter()
+            .enumerate()
+            {
                 let sample_path = dir.join(format!("{name}.png"));
-                if let Some(bytes) = pixels::encode_png(&pattern) {
+                let fixture = shots_pattern_variant(1200, 800, variant as u8);
+                if let Some(bytes) = pixels::encode_png(&fixture) {
                     let _ = std::fs::write(&sample_path, bytes);
                 }
                 let image = OpenImage::from_path(&sample_path.to_string_lossy(), 1200, 800);
@@ -366,7 +412,7 @@ pub fn seed_scenario(
 mod camera_import_tests {
     use automerge::AutoCommit;
 
-    use super::{camera_import_photo, import_camera_media, pixels};
+    use super::{camera_import_photo, import_camera_media, pixels, shots_pattern_variant};
     use crate::doc::PhotosDoc;
 
     #[test]
@@ -396,5 +442,15 @@ mod camera_import_tests {
         assert!(camera_import_photo("media:blake3:not-a-hash", "x.png").is_err());
         let missing = format!("media:blake3:{}", "0".repeat(64));
         assert!(camera_import_photo(&missing, "x.png").is_err());
+    }
+
+    #[test]
+    fn gallery_fixtures_are_distinct_but_deterministic() {
+        let harbour = shots_pattern_variant(32, 20, 0);
+        let trail = shots_pattern_variant(32, 20, 1);
+        assert_eq!(harbour.w, 32);
+        assert_eq!(harbour.h, 20);
+        assert_ne!(harbour.bytes, trail.bytes);
+        assert_eq!(trail, shots_pattern_variant(32, 20, 1));
     }
 }

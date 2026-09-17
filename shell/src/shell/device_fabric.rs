@@ -33,6 +33,15 @@ pub const DISPLAY_STREAM_PROTOCOL_VERSION: u16 = 1;
 pub const MAX_DISPLAY_FRAME_BYTES: usize = 3 * 1024 * 1024;
 pub const MAX_DISPLAY_SESSIONS: usize = 4;
 pub const MAX_DISPLAY_STREAM_AGE_MS: u64 = 15_000;
+/// Versioned remote-audio wire contract. Unknown versions fail closed instead
+/// of being interpreted as raw PCM with potentially incompatible framing.
+pub const REMOTE_AUDIO_PROTOCOL_VERSION: u16 = 1;
+pub const REMOTE_AUDIO_SAMPLE_RATE_HZ: u32 = 48_000;
+pub const REMOTE_AUDIO_CHANNELS: u8 = 2;
+pub const REMOTE_AUDIO_FRAME_SAMPLES: u16 = 960;
+pub const MAX_REMOTE_AUDIO_FRAME_BYTES: usize =
+    REMOTE_AUDIO_FRAME_SAMPLES as usize * REMOTE_AUDIO_CHANNELS as usize * 2;
+pub const MAX_REMOTE_AUDIO_SESSIONS: usize = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct FabricStamp {
@@ -307,6 +316,112 @@ pub enum PersonalFabricAction {
         id: crate::notifications::ContinuityNotificationId,
         action_key: String,
     },
+    /// Metadata-only realtime handoff offer. Capture grants, media handles,
+    /// and join URLs are deliberately not representable on this wire.
+    RealtimeOffer {
+        offer: crate::shell::realtime_session::RealtimeFabricOffer,
+    },
+    RealtimeAccept {
+        session_id: crate::shell::realtime_session::RealtimeFabricSessionId,
+    },
+    RealtimeMediaReady {
+        session_id: crate::shell::realtime_session::RealtimeFabricSessionId,
+    },
+    RealtimeStopSource {
+        session_id: crate::shell::realtime_session::RealtimeFabricSessionId,
+    },
+    RealtimeCancel {
+        session_id: crate::shell::realtime_session::RealtimeFabricSessionId,
+    },
+    /// Request one fixed-profile virtual gamepad on the exact target. The
+    /// payload contains semantic controls only: descriptors, HID reports,
+    /// serials, and arbitrary evdev codes are not representable.
+    GamepadForwardRequest {
+        forwarding_id: [u8; 16],
+        app_id: String,
+        workspace_id: String,
+        session_id: String,
+        label: String,
+    },
+    /// Target acknowledgement. A nonzero lease nonce is minted only after
+    /// the constrained virtual device exists on that certified target.
+    GamepadForwardGrant {
+        forwarding_id: [u8; 16],
+        accepted: bool,
+        lease_nonce: [u8; 16],
+    },
+    /// One logical event for the exact target-issued lease. Replay and rate
+    /// checks are enforced again by the target's privileged broker.
+    GamepadForwardEvent {
+        forwarding_id: [u8; 16],
+        lease_nonce: [u8; 16],
+        sequence: u64,
+        event: os_actions::ForwardedGamepadEvent,
+    },
+    GamepadForwardStop {
+        forwarding_id: [u8; 16],
+        lease_nonce: [u8; 16],
+    },
+    /// Request a shell-owned, live audio route. Local PipeWire node identities
+    /// never cross the certified-device boundary. Appending wire variants is
+    /// intentional: postcard encodes enum discriminants by declaration order.
+    RemoteAudioOffer {
+        session_id: [u8; 16],
+        protocol_version: u16,
+        label: String,
+        sample_rate_hz: u32,
+        channels: u8,
+        frame_samples: u16,
+    },
+    /// Target-local consent result. Approval carries the random capability
+    /// required by every subsequent frame and stop message.
+    RemoteAudioDecision {
+        session_id: [u8; 16],
+        accepted: bool,
+        authorization: Option<[u8; 16]>,
+    },
+    /// One bounded S16LE frame for an approved exact-peer session.
+    RemoteAudioFrame {
+        session_id: [u8; 16],
+        authorization: [u8; 16],
+        sequence: u64,
+        pcm_s16le: Vec<u8>,
+    },
+    RemoteAudioStop {
+        session_id: [u8; 16],
+        authorization: [u8; 16],
+    },
+    /// Source-side cancellation before target consent has minted an
+    /// authorization. Exact authenticated source/session binding is required.
+    RemoteAudioCancel {
+        session_id: [u8; 16],
+    },
+    /// Bounded semantic negotiation for a camera, microphone, or document
+    /// scanner. PipeWire/V4L2 identities and local app approvals never appear
+    /// in this payload.
+    RemoteCaptureSignal {
+        signal: crate::shell::remote_capture_device::RemoteCaptureSignal,
+    },
+    /// One bounded media or scanner chunk. The runtime validates it again
+    /// against the exact authenticated peer/session/grant/profile binding.
+    RemoteCaptureChunk {
+        chunk: crate::shell::remote_capture_device::RemoteCaptureChunk,
+    },
+    /// Shell-owned liveness/RTT probe. The random nonce is bound to the exact
+    /// authenticated peer and is never exposed through an app contract.
+    DeviceHealthProbe {
+        nonce: [u8; 16],
+    },
+    /// Power is diagnostic routing context, never authorization. Latency is
+    /// deliberately absent because the probing compositor measures it.
+    DeviceHealthReport {
+        report: crate::shell::spatial_calibration::DeviceHealthReport,
+    },
+    /// Consent-bound request, grant, sealed credential, or teardown for an
+    /// exact certified phone. Plaintext Wi-Fi secrets are not representable.
+    Tethering {
+        signal: crate::shell::personal_tethering::TetheringSignal,
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -564,6 +679,96 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
+            PersonalFabricAction::RemoteAudioOffer {
+                session_id,
+                protocol_version,
+                label,
+                sample_rate_hz,
+                channels,
+                frame_samples,
+            } => {
+                if session_id == &[0; 16]
+                    || *protocol_version != REMOTE_AUDIO_PROTOCOL_VERSION
+                    || label.is_empty()
+                    || label.len() > 160
+                    || label.chars().any(char::is_control)
+                    || *sample_rate_hz != REMOTE_AUDIO_SAMPLE_RATE_HZ
+                    || *channels != REMOTE_AUDIO_CHANNELS
+                    || *frame_samples != REMOTE_AUDIO_FRAME_SAMPLES
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RemoteAudioDecision {
+                session_id,
+                accepted,
+                authorization,
+            } => {
+                if session_id == &[0; 16]
+                    || (*accepted && authorization.is_none_or(|value| value == [0; 16]))
+                    || (!*accepted && authorization.is_some())
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RemoteAudioFrame {
+                session_id,
+                authorization,
+                sequence,
+                pcm_s16le,
+            } => {
+                if session_id == &[0; 16]
+                    || authorization == &[0; 16]
+                    || *sequence == 0
+                    || pcm_s16le.is_empty()
+                    || pcm_s16le.len() > MAX_REMOTE_AUDIO_FRAME_BYTES
+                    || pcm_s16le.len() % (usize::from(REMOTE_AUDIO_CHANNELS) * 2) != 0
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RemoteAudioStop {
+                session_id,
+                authorization,
+            } => {
+                if session_id == &[0; 16] || authorization == &[0; 16] {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RemoteAudioCancel { session_id } => {
+                if session_id == &[0; 16] {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RemoteCaptureSignal { signal } => {
+                if !signal.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RemoteCaptureChunk { chunk } => {
+                use crate::shell::remote_capture_device::RemoteCaptureKind;
+                if !chunk.valid_for(RemoteCaptureKind::Camera)
+                    && !chunk.valid_for(RemoteCaptureKind::Microphone)
+                    && !chunk.valid_for(RemoteCaptureKind::DocumentScanner)
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::DeviceHealthProbe { nonce } => {
+                if nonce == &[0; 16] {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::DeviceHealthReport { report } => {
+                if !report.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::Tethering { signal } => {
+                signal
+                    .validate_transport(transport_source, local_target, now_unix_ms)
+                    .map_err(|_| FabricError::InvalidAction)?;
+            }
             PersonalFabricAction::BluetoothHandoffPrepare { address, name } => {
                 if !valid_bluetooth_address(address)
                     || name.is_empty()
@@ -693,6 +898,71 @@ impl PersonalFabricActionEnvelope {
                     || action_key.len() > 128
                     || action_key.chars().any(char::is_control)
                 {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RealtimeOffer { offer } => {
+                if !offer.valid_at(now_unix_ms) {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::RealtimeAccept { session_id }
+            | PersonalFabricAction::RealtimeMediaReady { session_id }
+            | PersonalFabricAction::RealtimeStopSource { session_id }
+            | PersonalFabricAction::RealtimeCancel { session_id } => {
+                if !session_id.valid() {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::GamepadForwardRequest {
+                forwarding_id,
+                app_id,
+                workspace_id,
+                session_id,
+                label,
+            } => {
+                if forwarding_id == &[0; 16]
+                    || !valid_identifier(app_id, 256)
+                    || !valid_identifier(workspace_id, 128)
+                    || !valid_identifier(session_id, 256)
+                    || label.is_empty()
+                    || label.len() > 128
+                    || label.chars().any(char::is_control)
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::GamepadForwardGrant {
+                forwarding_id,
+                accepted,
+                lease_nonce,
+            } => {
+                if forwarding_id == &[0; 16]
+                    || (*accepted && lease_nonce == &[0; 16])
+                    || (!*accepted && lease_nonce != &[0; 16])
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::GamepadForwardEvent {
+                forwarding_id,
+                lease_nonce,
+                sequence,
+                event,
+            } => {
+                if forwarding_id == &[0; 16]
+                    || lease_nonce == &[0; 16]
+                    || *sequence == 0
+                    || !event.is_valid()
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::GamepadForwardStop {
+                forwarding_id,
+                lease_nonce,
+            } => {
+                if forwarding_id == &[0; 16] || lease_nonce == &[0; 16] {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -2196,6 +2466,85 @@ mod tests {
     }
 
     #[test]
+    fn remote_audio_wire_is_versioned_bounded_and_capability_bearing() {
+        let source = id("source");
+        let target = id("target");
+        let envelope = |action| PersonalFabricActionEnvelope {
+            request_id: [3; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action,
+        };
+        let offer = || PersonalFabricAction::RemoteAudioOffer {
+            session_id: [4; 16],
+            protocol_version: REMOTE_AUDIO_PROTOCOL_VERSION,
+            label: "All system audio".into(),
+            sample_rate_hz: REMOTE_AUDIO_SAMPLE_RATE_HZ,
+            channels: REMOTE_AUDIO_CHANNELS,
+            frame_samples: REMOTE_AUDIO_FRAME_SAMPLES,
+        };
+        assert_eq!(
+            envelope(offer()).validate_at(&source, &target, 10_100),
+            Ok(())
+        );
+        let mut unsupported = offer();
+        if let PersonalFabricAction::RemoteAudioOffer {
+            protocol_version, ..
+        } = &mut unsupported
+        {
+            *protocol_version = REMOTE_AUDIO_PROTOCOL_VERSION + 1;
+        }
+        assert_eq!(
+            envelope(unsupported).validate_at(&source, &target, 10_100),
+            Err(FabricError::InvalidAction)
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::RemoteAudioDecision {
+                session_id: [4; 16],
+                accepted: true,
+                authorization: None,
+            })
+            .validate_at(&source, &target, 10_100),
+            Err(FabricError::InvalidAction)
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::RemoteAudioFrame {
+                session_id: [4; 16],
+                authorization: [5; 16],
+                sequence: 1,
+                pcm_s16le: vec![0; MAX_REMOTE_AUDIO_FRAME_BYTES],
+            })
+            .validate_at(&source, &target, 10_100),
+            Ok(())
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::RemoteAudioFrame {
+                session_id: [4; 16],
+                authorization: [5; 16],
+                sequence: 2,
+                pcm_s16le: vec![0; MAX_REMOTE_AUDIO_FRAME_BYTES + 4],
+            })
+            .validate_at(&source, &target, 10_100),
+            Err(FabricError::InvalidAction)
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::RemoteAudioCancel {
+                session_id: [4; 16],
+            })
+            .validate_at(&source, &target, 10_100),
+            Ok(())
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::RemoteAudioCancel {
+                session_id: [0; 16],
+            })
+            .validate_at(&source, &target, 10_100),
+            Err(FabricError::InvalidAction)
+        );
+    }
+
+    #[test]
     fn bluetooth_handoff_actions_accept_only_canonical_bounded_ephemeral_identity() {
         let source = id("source");
         let target = id("target");
@@ -2340,6 +2689,202 @@ mod tests {
         })
         .unwrap();
         assert_eq!(notification.first(), Some(&21));
+        let realtime_id = crate::shell::realtime_session::RealtimeFabricSessionId {
+            broker: [1; 16],
+            nonce: [2; 16],
+        };
+        for (action, index) in [
+            (
+                PersonalFabricAction::RealtimeOffer {
+                    offer: crate::shell::realtime_session::RealtimeFabricOffer {
+                        session_id: realtime_id,
+                        app_id: "dev.qos.chat".into(),
+                        workspace_id: "room".into(),
+                        provider: "chat".into(),
+                        room_id: "call".into(),
+                        semantic_position: None,
+                        media_bits: 1,
+                        controls: crate::shell::realtime_session::RealtimeControlState::default(),
+                        expires_unix_ms: 20_000,
+                    },
+                },
+                24,
+            ),
+            (
+                PersonalFabricAction::RealtimeAccept {
+                    session_id: realtime_id,
+                },
+                25,
+            ),
+            (
+                PersonalFabricAction::RealtimeMediaReady {
+                    session_id: realtime_id,
+                },
+                26,
+            ),
+            (
+                PersonalFabricAction::RealtimeStopSource {
+                    session_id: realtime_id,
+                },
+                27,
+            ),
+            (
+                PersonalFabricAction::RealtimeCancel {
+                    session_id: realtime_id,
+                },
+                28,
+            ),
+        ] {
+            assert_eq!(
+                postcard::to_allocvec(&action).unwrap().first(),
+                Some(&index)
+            );
+        }
+        for (action, index) in [
+            (
+                PersonalFabricAction::GamepadForwardRequest {
+                    forwarding_id: [3; 16],
+                    app_id: "dev.tilo.game".into(),
+                    workspace_id: "workspace".into(),
+                    session_id: "session".into(),
+                    label: "Controller".into(),
+                },
+                29,
+            ),
+            (
+                PersonalFabricAction::GamepadForwardGrant {
+                    forwarding_id: [3; 16],
+                    accepted: true,
+                    lease_nonce: [4; 16],
+                },
+                30,
+            ),
+            (
+                PersonalFabricAction::GamepadForwardEvent {
+                    forwarding_id: [3; 16],
+                    lease_nonce: [4; 16],
+                    sequence: 1,
+                    event: os_actions::ForwardedGamepadEvent::Hat { x: 0, y: -1 },
+                },
+                31,
+            ),
+            (
+                PersonalFabricAction::GamepadForwardStop {
+                    forwarding_id: [3; 16],
+                    lease_nonce: [4; 16],
+                },
+                32,
+            ),
+        ] {
+            assert_eq!(
+                postcard::to_allocvec(&action).unwrap().first(),
+                Some(&index)
+            );
+        }
+    }
+
+    #[test]
+    fn gamepad_actions_are_typed_exact_bound_and_nonzero() {
+        let source = id("source");
+        let target = id("target");
+        let envelope = |action| PersonalFabricActionEnvelope {
+            request_id: [8; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action,
+        };
+        assert!(
+            envelope(PersonalFabricAction::GamepadForwardEvent {
+                forwarding_id: [1; 16],
+                lease_nonce: [2; 16],
+                sequence: 1,
+                event: os_actions::ForwardedGamepadEvent::Button {
+                    button: os_actions::GamepadButton::South,
+                    pressed: true,
+                },
+            })
+            .validate_at(&source, &target, 10_001)
+            .is_ok()
+        );
+        for action in [
+            PersonalFabricAction::GamepadForwardGrant {
+                forwarding_id: [1; 16],
+                accepted: true,
+                lease_nonce: [0; 16],
+            },
+            PersonalFabricAction::GamepadForwardGrant {
+                forwarding_id: [1; 16],
+                accepted: false,
+                lease_nonce: [2; 16],
+            },
+            PersonalFabricAction::GamepadForwardEvent {
+                forwarding_id: [1; 16],
+                lease_nonce: [2; 16],
+                sequence: 2,
+                event: os_actions::ForwardedGamepadEvent::Hat { x: 2, y: 0 },
+            },
+        ] {
+            assert_eq!(
+                envelope(action).validate_at(&source, &target, 10_001),
+                Err(FabricError::InvalidAction)
+            );
+        }
+    }
+
+    #[test]
+    fn realtime_offer_rejects_spoofing_urls_and_stale_metadata() {
+        let source = id("source");
+        let target = id("target");
+        let mut offer = crate::shell::realtime_session::RealtimeFabricOffer {
+            session_id: crate::shell::realtime_session::RealtimeFabricSessionId {
+                broker: [1; 16],
+                nonce: [2; 16],
+            },
+            app_id: "dev.qos.chat".into(),
+            workspace_id: "room".into(),
+            provider: "chat".into(),
+            room_id: "call-7".into(),
+            semantic_position: Some("stage".into()),
+            media_bits: 1,
+            controls: crate::shell::realtime_session::RealtimeControlState::default(),
+            expires_unix_ms: 20_000,
+        };
+        let envelope = PersonalFabricActionEnvelope {
+            request_id: [9; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action: PersonalFabricAction::RealtimeOffer {
+                offer: offer.clone(),
+            },
+        };
+        assert!(envelope.validate_at(&source, &target, 10_000).is_ok());
+        assert_eq!(
+            envelope.validate_at(&id("spoof"), &target, 10_000),
+            Err(FabricError::InvalidAction)
+        );
+        offer.room_id = "https://secret.example/join?token=x".into();
+        assert_eq!(
+            PersonalFabricActionEnvelope {
+                action: PersonalFabricAction::RealtimeOffer {
+                    offer: offer.clone(),
+                },
+                ..envelope.clone()
+            }
+            .validate_at(&source, &target, 10_000),
+            Err(FabricError::InvalidAction)
+        );
+        offer.room_id = "call-7".into();
+        offer.expires_unix_ms = 9_999;
+        assert_eq!(
+            PersonalFabricActionEnvelope {
+                action: PersonalFabricAction::RealtimeOffer { offer },
+                ..envelope
+            }
+            .validate_at(&source, &target, 10_000),
+            Err(FabricError::InvalidAction)
+        );
     }
 
     #[test]

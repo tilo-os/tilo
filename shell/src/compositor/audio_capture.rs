@@ -9,15 +9,19 @@
 //! sound after resume.
 
 use std::io::Read;
+use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 const CHANNELS: usize = 2;
 const BYTES_PER_SAMPLE: usize = 2;
 const SAMPLE_FRAME_BYTES: usize = CHANNELS * BYTES_PER_SAMPLE;
 const PIPE_BUFFER: usize = 16 * 1024;
 const QUEUED_CHUNKS: usize = 12;
+const PROBE_OUTPUT_LIMIT: usize = 1024 * 1024;
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AudioAvailability {
@@ -48,12 +52,10 @@ impl AudioSource {
 }
 
 pub fn availability() -> AudioAvailability {
-    let pw_record = Command::new("pw-record")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
+    let mut command = Command::new("pw-record");
+    command.arg("--version");
+    let pw_record = bounded_command::run_prepared(command, None, PROBE_OUTPUT_LIMIT, PROBE_TIMEOUT)
+        .is_ok_and(|output| output.status.success());
     AudioAvailability {
         system: pw_record && default_target(AudioSource::System).is_ok(),
         microphone: pw_record && default_target(AudioSource::Microphone).is_ok(),
@@ -96,6 +98,7 @@ impl AudioCapture {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .process_group(0)
             .spawn()
             .map_err(|error| format!("start PipeWire {} capture: {error}", source.track_name()))?;
         let stdout = child
@@ -156,6 +159,13 @@ impl AudioCapture {
 
 impl Drop for AudioCapture {
     fn drop(&mut self) {
+        if let Ok(pid) = i32::try_from(self.child.id())
+            && let Some(group) = pid.checked_neg()
+        {
+            // SAFETY: `start` places the recorder in its own pid-named process
+            // group, so the negative pid cannot target the compositor group.
+            unsafe { libc::kill(group, libc::SIGKILL) };
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         if let Some(reader) = self.reader.take() {
@@ -198,9 +208,9 @@ fn capture_args(source: AudioSource, target: &str) -> Vec<String> {
 }
 
 fn default_target(source: AudioSource) -> Result<String, String> {
-    let output = Command::new("wpctl")
-        .args(["inspect", source.default_token()])
-        .output()
+    let mut command = Command::new("wpctl");
+    command.args(["inspect", source.default_token()]);
+    let output = bounded_command::run_prepared(command, None, PROBE_OUTPUT_LIMIT, PROBE_TIMEOUT)
         .map_err(|error| format!("inspect default {}: {error}", source.track_name()))?;
     if !output.status.success() {
         return Err(format!(

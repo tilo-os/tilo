@@ -6,6 +6,11 @@ Documentation=man:systemd.special(7)
 # runs graphical-session-pre services (identity) before graphical-session.
 Requires=graphical-session-pre.target graphical-session.target
 After=graphical-session-pre.target
+# qOS apps in the layered desktop package use the same per-user services as
+# the OS image.  Pull them in only while this session target is active: a user
+# who returns to GNOME must not keep qOS's app host, model daemons or confined
+# shell runtime running in the shared user manager.
+Wants=tilo-app-host.service tilo-models.service tilo-model-gateway.service tilo-ush.service
 PartOf=graphical-session.target
 # Releasing the Tilo-owned target must tear down both standard session
 # targets immediately; relying on later StopWhenUnneeded garbage collection

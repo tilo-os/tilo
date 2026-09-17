@@ -9,6 +9,14 @@ license.workspace = true
 name = "tilo_user_identity"
 path = "src/lib.rs"
 
+[[bin]]
+name = "tilo-image-trust"
+path = "src/bin/tilo-image-trust.rs"
+
+[[bin]]
+name = "tilo-device-key-init"
+path = "src/bin/tilo-device-key-init.rs"
+
 # User root identity + device certificates + revocation for Tilo.
 #
 # Introduces the human-facing identity layer: a single Ed25519 root
@@ -53,6 +61,7 @@ blake3.workspace = true
 # varint-encoded with no field-reorder leeway, so signatures are
 # byte-for-byte reproducible across peers.
 serde.workspace = true
+serde_json.workspace = true
 serde_bytes.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 
@@ -64,10 +73,11 @@ automerge.workspace = true
 
 # Error plumbing (matches collab-types).
 thiserror.workspace = true
+libc.workspace = true
+zeroize.workspace = true
 
-# Best-effort zeroize for the root secret key on drop. dalek's
-# SigningKey already implements `ZeroizeOnDrop`; we add the derive
-# feature so the newtype wrappers we own participate too.
+# Dalek scrubs `SigningKey` on drop; this also scrubs the transient file,
+# stack, and serialization buffers used before/after that owned key exists.
 
 # Base32 for the enrollment-token wire form. Crockford variant
 # (no ambiguity between 0/O or 1/l/I) so a user can read the token

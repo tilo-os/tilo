@@ -7,8 +7,8 @@
 
 use crate::process::{run, run_capture};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
 const PRINTER_ATTRIBUTES_TEST: &str = "/usr/share/cups/ipptool/get-printer-attributes.test";
 const JOBS_TEST: &str = "/usr/share/cups/ipptool/get-jobs.test";
@@ -139,7 +139,9 @@ pub enum ScanSource {
     FeederDuplex,
 }
 
-const MAX_SCAN_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_SCAN_BYTES: usize = 128 * 1024 * 1024;
+const MAX_SCAN_DIAGNOSTIC_BYTES: usize = 1024 * 1024;
+const SCAN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Capture one page as PNG through SANE. Device identity is passed as one argv
 /// value and every option is selected from a typed finite set.
@@ -172,7 +174,8 @@ pub fn scan_page(device: &str, settings: ScanSettings) -> Result<Vec<u8>, String
         ScanSource::Feeder => "ADF",
         ScanSource::FeederDuplex => "ADF Duplex",
     };
-    let mut child = Command::new("scanimage")
+    let mut command = Command::new("scanimage");
+    command
         .arg("--device-name")
         .arg(device)
         .arg("--format=png")
@@ -181,39 +184,36 @@ pub fn scan_page(device: &str, settings: ScanSettings) -> Result<Vec<u8>, String
         .arg("--mode")
         .arg(mode)
         .arg("--source")
-        .arg(source)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("could not start scanner: {error}"))?;
-    let mut bytes = Vec::new();
-    let read = child
-        .stdout
-        .take()
-        .ok_or_else(|| "scanner output unavailable".to_string())?
-        .take(MAX_SCAN_BYTES + 1)
-        .read_to_end(&mut bytes);
-    if let Err(error) = read {
-        let _ = child.kill();
-        return Err(format!("could not read scan: {error}"));
-    }
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_SCAN_BYTES {
-        let _ = child.kill();
-        return Err("scanner output exceeded the safety limit".into());
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("could not finish scan: {error}"))?;
+        .arg(source);
+    let output = bounded_command::run_prepared_with_limits(
+        command,
+        None,
+        MAX_SCAN_BYTES,
+        MAX_SCAN_DIAGNOSTIC_BYTES,
+        SCAN_TIMEOUT,
+    )
+    .map_err(|error| match error {
+        bounded_command::Error::OutputTooLarge {
+            stream: "stdout", ..
+        } => "scanner output exceeded the safety limit".to_string(),
+        bounded_command::Error::OutputTooLarge {
+            stream: "stderr", ..
+        } => "scanner diagnostics exceeded the safety limit".to_string(),
+        bounded_command::Error::Timeout(_) => "scanner timed out".to_string(),
+        _ => format!("scanner process failed: {error}"),
+    })?;
     if !output.status.success() {
-        return Err(format!(
-            "scanner failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
+        let diagnostic = sanitize_text(&String::from_utf8_lossy(&output.stderr), 512);
+        return Err(if diagnostic.is_empty() {
+            "scanner failed".into()
+        } else {
+            format!("scanner failed: {diagnostic}")
+        });
     }
-    if bytes.is_empty() {
+    if output.stdout.is_empty() {
         return Err("scanner returned an empty page".into());
     }
-    Ok(bytes)
+    Ok(output.stdout)
 }
 
 /// List CUPS print queues, enriched with live IPP telemetry where a printer answers it.

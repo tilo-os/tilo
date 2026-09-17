@@ -9,7 +9,7 @@ concurrency:
 
 jobs:
   inspect:
-    if: startsWith(github.ref, 'refs/heads/codex/')
+    if: github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/codex/'))
     runs-on: runner-disk-100g-arm64
     timeout-minutes: 15
     steps:

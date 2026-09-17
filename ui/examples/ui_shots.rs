@@ -1,5 +1,7 @@
 //! Deterministic screenshot and visual-regression scenario runner.
 
+#[path = "common/chart_gallery_scene.rs"]
+mod chart_gallery_scene;
 #[path = "common/gallery_scene.rs"]
 mod gallery_scene;
 #[path = "registry.rs"]
@@ -8,6 +10,7 @@ mod registry;
 registry::scenario_modules! {
     Shots;
     ctrl_k_palette, "ctrl_k_palette.rs", "unified Ctrl+K palette states";
+    chart_gallery_shots, "chart_gallery_shots.rs", "responsive light and dark chart catalogue";
     data_table, "data_table.rs", "virtualized data-table states";
     denied_state_shots, "denied_state_shots.rs", "permission-denied control states";
     fractional_scale_shots, "fractional_scale_shots.rs", "fractional-scale gallery renders";

@@ -22,7 +22,7 @@ FROM registry.fedoraproject.org/fedora:42
 RUN dnf install -y \
       nodejs \
       capnproto \
-      gcc gcc-c++ make cmake perl perl-FindBin python3 git jq time yt-dlp \
+      gcc gcc-c++ make cmake perl perl-FindBin python3 git jq ripgrep time yt-dlp \
       clang clang-devel pkgconf-pkg-config \
       libxkbcommon-devel wayland-devel \
       libseat-devel libinput-devel systemd-devel libdrm-devel \
@@ -32,7 +32,7 @@ RUN dnf install -y \
       gstreamer1 gstreamer1-devel gstreamer1-plugins-base-devel \
       gstreamer1-plugins-good gstreamer1-plugins-bad-free \
       gstreamer1-plugin-openh264 \
-      openssl-devel sqlite-devel zlib-ng-compat-devel \
+      sqlite-devel zlib-ng-compat-devel \
       fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
       google-noto-sans-fonts google-noto-sans-mono-fonts \
       google-noto-serif-fonts google-noto-color-emoji-fonts \

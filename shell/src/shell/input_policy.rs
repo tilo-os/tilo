@@ -284,7 +284,9 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
         return true;
     }
     match key {
-        ChordKey::Space => mods.alt,
+        // Alt+Space has no desktop action; reserving it here silently ate
+        // application input before native widgets and Wayland/X11 clients.
+        ChordKey::Space => false,
         // The shell visibly advertises F1 as the hardware-neutral route to
         // its desktop guide. Reserving it here is essential: otherwise a
         // focused client consumes the event before the guide dispatcher can
@@ -1343,11 +1345,10 @@ mod tests {
             &ctrl,
             false
         ));
-        assert!(is_shell_chord(
-            &key_event(Key::Named(NamedKey::Space), true),
-            &alt,
-            false
-        ));
+        assert!(
+            !is_shell_chord(&key_event(Key::Named(NamedKey::Space), true), &alt, false),
+            "Alt+Space has no desktop action and must remain application input"
+        );
         assert!(is_shell_chord(
             &key_event(Key::Named(NamedKey::PrintScreen), true),
             &mods(ModifiersState::empty()),

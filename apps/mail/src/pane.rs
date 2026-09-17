@@ -30,8 +30,8 @@ use ui::widget::{EmptyState, TextInput, WebView};
 
 use crate::account::AccountStore;
 use crate::draw::{
-    ACCOUNT_HEADER_H, BACK_CLEARANCE, CHIP_CLEARANCE, CHIP_INSET, CHIP_SIZE, FOLDER_ROW_H,
-    HEADER_H, LIST_ROW_H, draw_avatar, elide, fill_rect, fill_round, stroke_round,
+    ACCOUNT_HEADER_H, AvatarPaintContext, BACK_CLEARANCE, CHIP_CLEARANCE, CHIP_INSET, CHIP_SIZE,
+    FOLDER_ROW_H, HEADER_H, LIST_ROW_H, draw_avatar, elide, fill_rect, fill_round, stroke_round,
 };
 use crate::model::{Addr, Folder, Message, MessageId};
 use crate::state::{CtxAction, Intent, MailState, Shared};
@@ -173,6 +173,40 @@ struct ListRowArgs<'a> {
     hov: bool,
     swipe_dx: f64,
     now_min: i64,
+}
+
+/// Shared immediate-mode paint resources for focused pane helpers.
+struct DrawContext<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+struct ReaderThreadLayout {
+    reader: Rect,
+    content_x: f64,
+    content_w: f32,
+    y: f64,
+    head_has_html: bool,
+}
+
+struct LargeTextFlow {
+    bounds: Rect,
+    x: f64,
+    width: f32,
+    y: f64,
+}
+
+struct EventContext<'a> {
+    scale_factor: f64,
+    modifiers: winit::event::Modifiers,
+    state: &'a mut AutoCommit,
+    path: &'a ObjId,
+    handled: &'a mut bool,
+    focus_target: &'a mut Option<NodeId>,
+    node_id: NodeId,
+    taffy: &'a TaffyTree<()>,
 }
 
 pub struct Pane {
@@ -540,13 +574,35 @@ impl Pane {
         for (rect, hit) in &self.hits {
             match hit {
                 Hit::Account(ai) => {
-                    Self::draw_sidebar_account_row(scene, t, tr, theme, &st, *rect, *ai, sb);
+                    Self::draw_sidebar_account_row(
+                        &mut DrawContext {
+                            scene,
+                            transform: t,
+                            text: tr,
+                            theme,
+                        },
+                        &st,
+                        *rect,
+                        *ai,
+                        sb,
+                    );
                 }
                 Hit::AddAccount => {
                     self.draw_sidebar_add_account_row(scene, t, tr, theme, *rect);
                 }
                 Hit::Folder(ai, f) => {
-                    Self::draw_sidebar_folder_row(scene, t, tr, theme, &st, *rect, *ai, *f);
+                    Self::draw_sidebar_folder_row(
+                        &mut DrawContext {
+                            scene,
+                            transform: t,
+                            text: tr,
+                            theme,
+                        },
+                        &st,
+                        *rect,
+                        *ai,
+                        *f,
+                    );
                 }
                 _ => {}
             }
@@ -556,20 +612,17 @@ impl Pane {
     /// One account header row: expand chevron, avatar, name/email, and the
     /// per-account settings gear. A no-op if `ai` is out of range. Part of
     /// [`Self::draw_sidebar`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row layout draw_sidebar already computed; bundling them would just move the same count into a field list"
-    )]
     fn draw_sidebar_account_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         st: &MailState,
         rect: Rect,
         ai: usize,
         sb: Rect,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let Some(account) = st.accounts.accounts.get(ai) else {
             return;
@@ -598,11 +651,13 @@ impl Pane {
             c.text_dim,
         );
         draw_avatar(
-            scene,
-            tr,
-            t,
-            theme,
-            &st.images,
+            &mut AvatarPaintContext {
+                scene,
+                text: tr,
+                transform: t,
+                theme,
+                images: &st.images,
+            },
             Point::new(rect.x0 + 36.0, rect.y0 + ACCOUNT_HEADER_H / 2.0),
             13.0,
             &Addr::new(
@@ -691,20 +746,17 @@ impl Pane {
     /// One folder row within an expanded account: icon, title, unread badge
     /// (active account only), and the selected-state highlight. Part of
     /// [`Self::draw_sidebar`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row layout draw_sidebar already computed; bundling them would just move the same count into a field list"
-    )]
     fn draw_sidebar_folder_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         st: &MailState,
         rect: Rect,
         ai: usize,
         f: Folder,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let active_account = ai == st.accounts.active;
         let selected = active_account && f == st.folder;
@@ -936,10 +988,12 @@ impl Pane {
             let hov = rect.contains(st.last_mouse);
             let swipe_dx = self.swipe.filter(|s| s.id == id).map_or(0.0, |s| s.dx);
             self.draw_list_row(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut DrawContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
                 &ListRowArgs {
                     msg,
                     rect: *rect,
@@ -957,14 +1011,7 @@ impl Pane {
     /// selection/hover background, unread dot, avatar, name/date, subject
     /// (+ thread-size badge), snippet, and star/attachment glyphs. Part of
     /// [`Self::draw_list`].
-    fn draw_list_row(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        args: &ListRowArgs<'_>,
-    ) {
+    fn draw_list_row(&self, ctx: &mut DrawContext<'_>, args: &ListRowArgs<'_>) {
         let ListRowArgs {
             msg,
             rect,
@@ -974,28 +1021,25 @@ impl Pane {
             swipe_dx,
             now_min,
         } = *args;
-        let row = Self::draw_list_row_frame(scene, t, tr, theme, rect, swipe_dx, selected, hov);
-        self.draw_list_row_content(scene, t, tr, theme, row, msg, len, now_min);
+        let row = Self::draw_list_row_frame(ctx, rect, swipe_dx, selected, hov);
+        self.draw_list_row_content(ctx, row, msg, len, now_min);
     }
 
     /// Draw the swipe-action overlay (if dragged past the threshold) and the
     /// row's selection/hover background + bottom divider, returning the
     /// (possibly swipe-shifted) row rect the rest of the row draws into.
     /// Part of [`Self::draw_list_row`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_list_row_frame(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         rect: Rect,
         swipe_dx: f64,
         selected: bool,
         hov: bool,
     ) -> Rect {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         if swipe_dx.abs() > 1.0 {
             let (col, icon, label, on_left) = if swipe_dx < 0.0 {
@@ -1050,40 +1094,33 @@ impl Pane {
     /// Draw one row's content within its (already framed) `row` rect: unread
     /// dot, avatar, name/date, subject (+ thread-size badge), snippet, and
     /// star/attachment glyphs. Part of [`Self::draw_list_row`].
-    #[allow(clippy::too_many_arguments)]
     fn draw_list_row_content(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         row: Rect,
         msg: &Message,
         len: usize,
         now_min: i64,
     ) {
         let unread = !msg.read;
-        self.draw_list_row_identity(scene, t, tr, theme, row, msg, unread, now_min);
-        self.draw_list_row_subject(scene, t, tr, theme, row, msg, len, unread);
+        self.draw_list_row_identity(ctx, row, msg, unread, now_min);
+        self.draw_list_row_subject(ctx, row, msg, len, unread);
     }
 
     /// The unread dot, avatar, sender name, and relative date of a list row.
     /// Part of [`Self::draw_list_row_content`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_list_row_identity(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         row: Rect,
         msg: &Message,
         unread: bool,
         now_min: i64,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         if unread {
             scene.fill(
@@ -1101,11 +1138,13 @@ impl Pane {
             );
         }
         draw_avatar(
-            scene,
-            tr,
-            t,
-            theme,
-            &self.shared.borrow().images,
+            &mut AvatarPaintContext {
+                scene,
+                text: tr,
+                transform: t,
+                theme,
+                images: &self.shared.borrow().images,
+            },
             Point::new(row.x0 + 42.0 * self.scale(), row.y0 + 26.0 * self.scale()),
             17.0 * self.scale(),
             &msg.from,
@@ -1149,21 +1188,18 @@ impl Pane {
 
     /// The subject line (+ thread-size badge), snippet, and star/attachment
     /// glyphs of a list row. Part of [`Self::draw_list_row_content`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_list_row_subject(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         row: Rect,
         msg: &Message,
         len: usize,
         unread: bool,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let s = self.scale();
         let text_x = row.x0 + 70.0 * s;
@@ -1255,20 +1291,17 @@ impl Pane {
 
     /// The reader's action bar: Reply/Archive/Delete/Star/Mark-unread, icon
     /// only when `compact`, icon + label otherwise. Part of [`Self::draw_reader`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the reader state draw_reader already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_reader_action_bar(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         compact: bool,
         starred: bool,
         last_mouse: Point,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         for (rect, hit) in &self.hits {
             let (label, danger, icon) = match hit {
@@ -1412,10 +1445,6 @@ impl Pane {
     /// Accessibility-scale reader presentation: a measured, single-column
     /// thread flow.  It intentionally favours message text over dense sender /
     /// recipient metadata, which is still available in the ordinary 1× cards.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the large-text reader is one linear measured flow; keeping its action bar, thread header, and message cards in one pass preserves a single vertical cursor"
-    )]
     fn draw_large_text_reader(
         &mut self,
         scene: &mut Scene,
@@ -1452,7 +1481,17 @@ impl Pane {
             .selected
             .and_then(|id| st.mailbox.get(id))
             .is_some_and(|message| message.starred);
-        self.draw_reader_action_bar(scene, t, tr, theme, compact, starred, st.last_mouse);
+        self.draw_reader_action_bar(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            compact,
+            starred,
+            st.last_mouse,
+        );
 
         let width = (rr.width() - 48.0).max(120.0) as f32;
         let x = rr.x0 + 24.0;
@@ -1494,8 +1533,41 @@ impl Pane {
         );
         y += 38.0;
 
-        for message in msgs {
-            if y >= rr.y1 - 30.0 {
+        Self::draw_large_text_messages(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            &msgs,
+            &LargeTextFlow {
+                bounds: rr,
+                x,
+                width,
+                y,
+            },
+        );
+    }
+
+    fn draw_large_text_messages(
+        ctx: &mut DrawContext<'_>,
+        messages: &[&Message],
+        flow: &LargeTextFlow,
+    ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
+        let colors = &theme.tokens.colors;
+        let LargeTextFlow {
+            bounds,
+            x,
+            width,
+            mut y,
+        } = *flow;
+        for message in messages {
+            if y >= bounds.y1 - 30.0 {
                 break;
             }
             let sender = message.from.display();
@@ -1503,7 +1575,7 @@ impl Pane {
                 scene,
                 &sender,
                 14.0,
-                c.text_primary,
+                colors.text_primary,
                 t * Affine::translate((x, y)),
                 Some(width),
                 TextWeight::Semibold,
@@ -1514,7 +1586,7 @@ impl Pane {
                 scene,
                 &when,
                 11.5,
-                c.text_dim,
+                colors.text_dim,
                 t * Affine::translate((x, y)),
                 Some(width),
             );
@@ -1524,7 +1596,7 @@ impl Pane {
                 scene,
                 &message.body,
                 13.5,
-                c.text_primary,
+                colors.text_primary,
                 t * Affine::translate((x, y)),
                 Some(width),
             );
@@ -1532,10 +1604,38 @@ impl Pane {
             fill_rect(
                 scene,
                 t,
-                Rect::new(x, y - 12.0, rr.x1 - 24.0, y - 11.0),
-                c.border_standard,
+                Rect::new(x, y - 12.0, bounds.x1 - 24.0, y - 11.0),
+                colors.border_standard,
             );
         }
+    }
+
+    fn draw_empty_reader(ctx: &mut DrawContext<'_>, bounds: Rect) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let colors = &ctx.theme.tokens.colors;
+        let center = bounds.center();
+        Icon::Mail.draw(
+            scene,
+            ctx.transform,
+            Rect::new(
+                center.x - 26.0,
+                center.y - 66.0,
+                center.x + 26.0,
+                center.y - 14.0,
+            ),
+            colors.neutral[4],
+        );
+        let hint = "Select a conversation to read";
+        let (width, _) = tr.measure(hint, 14.0, None);
+        tr.draw_text(
+            scene,
+            hint,
+            14.0,
+            colors.text_dim,
+            ctx.transform * Affine::translate((center.x - f64::from(width) / 2.0, center.y)),
+            None,
+        );
     }
 
     /// The message-thread portion of [`Self::draw_reader`]: the empty-state
@@ -1558,23 +1658,14 @@ impl Pane {
         let msgs = st.selected_thread_messages();
         if msgs.is_empty() {
             self.reader_attachment_hits.clear();
-            let cx = f64::midpoint(rr.x0, rr.x1);
-            let cy = rr.y0 + rr.height() / 2.0;
-            Icon::Mail.draw(
-                scene,
-                t,
-                Rect::new(cx - 26.0, cy - 66.0, cx + 26.0, cy - 14.0),
-                c.neutral[4],
-            );
-            let hint = "Select a conversation to read";
-            let (w, _) = tr.measure(hint, 14.0, None);
-            tr.draw_text(
-                scene,
-                hint,
-                14.0,
-                c.text_dim,
-                t * Affine::translate((cx - f64::from(w) / 2.0, cy)),
-                None,
+            Self::draw_empty_reader(
+                &mut DrawContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
+                rr,
             );
             return None;
         }
@@ -1585,7 +1676,17 @@ impl Pane {
             .selected
             .and_then(|id| st.mailbox.get(id))
             .is_some_and(|m| m.starred);
-        self.draw_reader_action_bar(scene, t, tr, theme, compact, starred, st.last_mouse);
+        self.draw_reader_action_bar(
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            compact,
+            starred,
+            st.last_mouse,
+        );
 
         let Some(head) = msgs.last() else {
             // Unreachable: `msgs.is_empty()` returned above — but bail rather
@@ -1595,10 +1696,12 @@ impl Pane {
         let content_x = rr.x0 + 24.0;
         let content_w = (rr.width() - 48.0) as f32;
         let mut y = Self::draw_reader_thread_heading(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             content_x,
             content_w,
             head,
@@ -1607,10 +1710,12 @@ impl Pane {
             rr.y0 + HEADER_H + 8.0,
         );
         y = Self::draw_inspection_badge(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             content_x,
             y,
             head.read,
@@ -1630,16 +1735,20 @@ impl Pane {
         let head_id = head.id;
         let head_html = head.html_body.clone();
         let webview_rect = self.draw_reader_thread_messages(
-            scene,
-            t,
-            tr,
-            theme,
-            rr,
+            &mut DrawContext {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             &msgs,
-            content_x,
-            content_w,
-            y,
-            head_html.is_some(),
+            &ReaderThreadLayout {
+                reader: rr,
+                content_x,
+                content_w,
+                y,
+                head_has_html: head_html.is_some(),
+            },
             &mut chip_hits,
         );
         self.reader_attachment_hits = chip_hits;
@@ -1649,12 +1758,8 @@ impl Pane {
 
     /// Draw the conversation title and its compact count/folder context,
     /// returning the baseline after that header.
-    #[allow(clippy::too_many_arguments)]
     fn draw_reader_thread_heading(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         content_x: f64,
         content_w: f32,
         head: &Message,
@@ -1662,6 +1767,10 @@ impl Pane {
         folder: Folder,
         y: f64,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let subject = elide(
             tr,
@@ -1698,12 +1807,8 @@ impl Pane {
     /// Draw the persistent visual counterpart of an explicit no-side-effect
     /// inspection. Returns the next baseline unchanged when the reader is
     /// showing a normal message open.
-    #[allow(clippy::too_many_arguments)]
     fn draw_inspection_badge(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         content_x: f64,
         y: f64,
         already_read: bool,
@@ -1712,6 +1817,10 @@ impl Pane {
         if !inspecting {
             return y;
         }
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         let label = if already_read {
             "Preview · read state unchanged"
@@ -1749,27 +1858,27 @@ impl Pane {
     /// when it carries an HTML body, everything else draws as a text card.
     /// Returns the reserved HTML webview rect, if any. Part of
     /// [`Self::draw_reader_thread`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn draw_reader_thread_messages(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rr: Rect,
+        ctx: &mut DrawContext<'_>,
         msgs: &[&Message],
-        content_x: f64,
-        content_w: f32,
-        mut y: f64,
-        head_has_html: bool,
+        layout: &ReaderThreadLayout,
         chip_hits: &mut Vec<(Rect, MessageId, usize)>,
     ) -> Option<Rect> {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
+        let ReaderThreadLayout {
+            reader,
+            content_x,
+            content_w,
+            mut y,
+            head_has_html,
+        } = *layout;
         let mut webview_rect: Option<Rect> = None;
         for (i, m) in msgs.iter().enumerate() {
-            if y > rr.y1 - 40.0 {
+            if y > reader.y1 - 40.0 {
                 break;
             }
             let is_head = i == msgs.len() - 1;
@@ -1790,7 +1899,7 @@ impl Pane {
                     },
                 );
                 y += 8.0;
-                let bottom = rr.y1 - 46.0; // room for the remote-images bar
+                let bottom = reader.y1 - 46.0; // room for the remote-images bar
                 if bottom > y + 48.0 {
                     webview_rect = Some(Rect::new(
                         content_x,
@@ -1801,7 +1910,20 @@ impl Pane {
                 }
             } else {
                 y = self.draw_message_card(
-                    scene, t, tr, theme, m, content_x, y, content_w, is_head, chip_hits,
+                    &mut DrawContext {
+                        scene,
+                        transform: t,
+                        text: tr,
+                        theme,
+                    },
+                    &CardHeaderArgs {
+                        msg: m,
+                        x: content_x,
+                        y,
+                        width: content_w,
+                    },
+                    is_head,
+                    chip_hits,
                 );
                 y += 14.0;
             }
@@ -1982,11 +2104,13 @@ impl Pane {
         let card_x1 = cx + f64::from(width);
         let st = self.shared.borrow();
         draw_avatar(
-            scene,
-            tr,
-            t,
-            theme,
-            &st.images,
+            &mut AvatarPaintContext {
+                scene,
+                text: tr,
+                transform: t,
+                theme,
+                images: &st.images,
+            },
             Point::new(cx + 18.0, cy + 18.0),
             17.0,
             &msg.from,
@@ -2058,26 +2182,22 @@ impl Pane {
         cy + 48.0
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// Draw the "N attachments" label and the wrapping row of attachment
     /// chips for an expanded message card, recording each chip's hit region.
     /// Returns the y past the chips. Part of [`Self::draw_message_card`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the card layout draw_message_card already computed; bundling them would just move the same count into a field list"
-    )]
     fn draw_attachment_chips(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawContext<'_>,
         msg: &Message,
         cx: f64,
         card_x1: f64,
         mut yy: f64,
         chip_hits: &mut Vec<(Rect, MessageId, usize)>,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
         yy += 8.0;
         tr.draw_text_weighted(
@@ -2166,37 +2286,27 @@ impl Pane {
 
     /// Draw one message card in the reader thread (header + body or a
     /// collapsed preview line) and return the y past it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the thread layout draw_reader already resolved; bundling them would just move the same count into a field list"
-    )]
     fn draw_message_card(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        msg: &Message,
-        cx: f64,
-        cy: f64,
-        width: f32,
+        ctx: &mut DrawContext<'_>,
+        args: &CardHeaderArgs<'_>,
         expanded: bool,
         chip_hits: &mut Vec<(Rect, MessageId, usize)>,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let t = ctx.transform;
         let c = &theme.tokens.colors;
+        let CardHeaderArgs {
+            msg,
+            x,
+            y: _,
+            width,
+        } = *args;
+        let cx = x;
         let card_x1 = cx + f64::from(width);
-        let mut yy = self.draw_card_header(
-            scene,
-            t,
-            tr,
-            theme,
-            &CardHeaderArgs {
-                msg,
-                x: cx,
-                y: cy,
-                width,
-            },
-        );
+        let mut yy = self.draw_card_header(scene, t, tr, theme, args);
         if expanded {
             for para in msg.body.split('\n') {
                 if para.trim().is_empty() {
@@ -2217,8 +2327,19 @@ impl Pane {
                 yy += f64::from(ph.max(18.0)) + 2.0;
             }
             if msg.has_attachments() {
-                yy = self
-                    .draw_attachment_chips(scene, t, tr, theme, msg, cx, card_x1, yy, chip_hits);
+                yy = self.draw_attachment_chips(
+                    &mut DrawContext {
+                        scene,
+                        transform: t,
+                        text: tr,
+                        theme,
+                    },
+                    msg,
+                    cx,
+                    card_x1,
+                    yy,
+                    chip_hits,
+                );
             }
         } else {
             // Collapsed preview: a single elided line so a narrow reader column
@@ -2447,22 +2568,7 @@ impl Pane {
     /// Forward pointer-move/wheel into the sandboxed HTML body view while one
     /// is actually shown in the reader, so an HTML mail scrolls; the view
     /// consumes a wheel that lands over it. Part of [`Widget::handle_event`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
-    )]
-    fn forward_html_view_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn forward_html_view_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) {
         let over_html = self.role == Role::Reader
             && self.html_view_rect.is_some()
             && matches!(
@@ -2475,14 +2581,14 @@ impl Pane {
         if let Some(view) = self.html_view.as_mut() {
             view.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+                ctx.focus_target,
+                ctx.node_id,
+                ctx.taffy,
             );
         }
     }
@@ -2493,22 +2599,7 @@ impl Pane {
     /// after this (true whenever the event was a keyboard event on the list
     /// role, matching the field regardless of whether search was focused).
     /// Part of [`Widget::handle_event`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
-    )]
-    fn handle_search_keyboard(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn handle_search_keyboard(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
         if !(matches!(event, WindowEvent::KeyboardInput { .. }) && self.role == Role::List) {
             return false;
         }
@@ -2517,14 +2608,14 @@ impl Pane {
             if let Some(inp) = self.search_input.as_mut() {
                 inp.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    ctx.scale_factor,
+                    &ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.taffy,
                 );
             }
             // Reflect the field into the query + first-row selection.
@@ -2537,7 +2628,7 @@ impl Pane {
             st.search = value;
             st.selected = st.list_rows().first().map(|(id, _)| *id);
             st.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
         }
         true
     }
@@ -2739,14 +2830,16 @@ impl Widget for Pane {
 
         self.forward_html_view_event(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut EventContext {
+                scale_factor,
+                modifiers: *modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
         );
         if *handled {
             return;
@@ -2754,14 +2847,16 @@ impl Widget for Pane {
 
         if self.handle_search_keyboard(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut EventContext {
+                scale_factor,
+                modifiers: *modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
         ) {
             return;
         }

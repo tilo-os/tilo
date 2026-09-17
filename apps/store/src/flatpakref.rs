@@ -94,6 +94,7 @@ impl FlatpakRef {
                 available: version.clone(),
                 version,
                 pinned: true,
+                user_managed: true,
             });
         StoreItem {
             id: self.app_id,

@@ -57,6 +57,16 @@ class ArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'browser'):
             artifact.inventory(self.root, self.inputs)
 
+    def test_security_tools_are_required(self):
+        for name in ('tilo-crypto', 'tilo-image-trust', 'tilo-device-key-init'):
+            with self.subTest(name=name):
+                path = self.root / 'out' / name
+                data = path.read_bytes()
+                path.unlink()
+                with self.assertRaisesRegex(ValueError, name):
+                    artifact.inventory(self.root, self.inputs)
+                self.write('out/' + name, data, 0o755)
+
     def test_secret_identity_and_pem_rejected(self):
         for data in (b'{"secret_key_hex":"' + b'a' * 64 + b'"}',
                      b'-----BEGIN PRIVATE KEY-----\nQUFB\n-----END PRIVATE KEY-----'):

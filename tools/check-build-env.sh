@@ -13,13 +13,13 @@ MODULES=(
   xkbcommon libseat libinput libudev libdrm gbm gl egl
   wayland-client libpipewire-0.3 fuse3 dbus-1
   libavcodec libavformat libavutil libswscale
-  gstreamer-1.0 gstreamer-app-1.0 openssl
+  gstreamer-1.0 gstreamer-app-1.0
 )
 # Test subjects rather than build tools, but a missing one fails a test instead
 # of naming itself: bwrap runs the launcher's confinement suites and
 # rust-analyzer is the real language server the code editor's suite drives;
 # sccache is baked into the image so workflows never download or compile it.
-BINARIES=(capnp bwrap rust-analyzer sccache fc-match gst-inspect-1.0 jq yt-dlp)
+BINARIES=(capnp bwrap rust-analyzer sccache fc-match gst-inspect-1.0 jq rg yt-dlp)
 FONTS=(
   "Noto Sans Arabic"
   "Noto Sans Hebrew"

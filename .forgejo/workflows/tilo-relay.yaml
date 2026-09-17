@@ -87,6 +87,9 @@ jobs:
           echo "RPMS_REF=$RPMS_REF" >> "$GITHUB_ENV"
           echo "rpms=$RPMS_REF"
 
+      - name: Verify the frozen RPM package set
+        run: ./os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"
+
       - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
@@ -157,8 +160,13 @@ jobs:
       - name: Sign the published image
         if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
         env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
         run: |
-          cosign sign --yes --tlog-upload=false --key env://COSIGN_PRIVATE_KEY \
-            "code.sandbox.example/qos/tilo-relay@${{ steps.build.outputs.digest }}"
+          set -euo pipefail
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+          esac
+          ref="code.sandbox.example/qos/tilo-relay@${{ steps.build.outputs.digest }}"
+          cosign sign --yes --key "$COSIGN_KEY_REF" "$ref"
+          cosign verify --key keys/cosign.pub "$ref" >/dev/null

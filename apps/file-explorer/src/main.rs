@@ -126,7 +126,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some("thumbnails") => Some(seed_thumbnails_demo()),
             Some("thumbnails-fs") => Some(seed_thumbnails_fs_demo()),
             Some("history") => Some(seed_history_demo()),
-            Some("archive" | "archive-menu") => Some(seed_archive_demo()),
+            Some("archive" | "archive-menu") => Some(seed_archive_demo()?),
             _ => None,
         };
         // Audits must not inherit a developer's persisted item zoom or custom
@@ -351,10 +351,9 @@ fn seed_history_demo() -> std::path::PathBuf {
 
 /// Build a believable archive hierarchy for permanent responsive screenshots.
 /// The shot navigates the actual ZIP reader rather than injecting sample rows.
-fn seed_archive_demo() -> std::path::PathBuf {
+fn seed_archive_demo() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     let path = std::env::temp_dir().join("tilo-files-archive-demo.zip");
-    let file = std::fs::File::create(&path)
-        .unwrap_or_else(|error| panic!("could not create archive screenshot fixture: {error}"));
+    let file = std::fs::File::create(&path)?;
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -365,14 +364,11 @@ fn seed_archive_demo() -> std::path::PathBuf {
         ("Documents/Packing list.txt", b"list".as_slice()),
         ("Read me.txt", b"A trip archive".as_slice()),
     ] {
-        zip.start_file(name, options)
-            .unwrap_or_else(|error| panic!("could not add archive screenshot entry: {error}"));
-        zip.write_all(content)
-            .unwrap_or_else(|error| panic!("could not write archive screenshot entry: {error}"));
+        zip.start_file(name, options)?;
+        zip.write_all(content)?;
     }
-    zip.finish()
-        .unwrap_or_else(|error| panic!("could not finish archive screenshot fixture: {error}"));
-    path
+    zip.finish()?;
+    Ok(path)
 }
 
 /// Seed a demo directory of **real** sample files — gradient images, a genuine

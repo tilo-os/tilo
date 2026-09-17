@@ -295,6 +295,14 @@ interface ChannelHandle {
   realtimeCommand @38 (appId :Text, commandJson :Data) -> (replyJson :Data);
   # Directed lifecycle edges for this exact certified application connection.
   subscribeRealtime @39 () -> (stream :RealtimeStream);
+
+  # Files' local semantic action reaches the shell through the same
+  # authenticated application connection as every other system operation.
+  # The JSON vocabulary is typed and bounded by runtime-collab; the broker
+  # re-derives the caller/app/workspace route and alone may turn an exact path
+  # into an existing personal-device transfer. No file bytes, certificate, or
+  # ambient device authority crosses this command surface.
+  nearbyTransferCommand @40 (appId :Text, commandJson :Data) -> (replyJson :Data);
 }
 
 # Application-owned, broker-pulled resource/action directory. A capability is

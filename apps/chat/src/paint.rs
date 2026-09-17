@@ -12,6 +12,43 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 
+/// Backend state shared by Chat's custom-painted views.
+///
+/// View helpers should accept this bundle alongside their semantic model and
+/// geometry inputs, instead of repeating renderer plumbing in every signature.
+pub struct PaintContext<'a> {
+    pub scene: &'a mut Scene,
+    pub transform: Affine,
+    pub text: &'a mut TextRenderer,
+    pub theme: &'a Theme,
+}
+
+impl<'a> PaintContext<'a> {
+    pub fn new(
+        scene: &'a mut Scene,
+        transform: Affine,
+        text: &'a mut TextRenderer,
+        theme: &'a Theme,
+    ) -> Self {
+        Self {
+            scene,
+            transform,
+            text,
+            theme,
+        }
+    }
+
+    /// Borrow the same backend state for a nested paint helper.
+    pub fn reborrow(&mut self) -> PaintContext<'_> {
+        PaintContext {
+            scene: self.scene,
+            transform: self.transform,
+            text: self.text,
+            theme: self.theme,
+        }
+    }
+}
+
 /// Fill a rounded rectangle.
 pub fn fill_round(scene: &mut Scene, tf: Affine, rect: Rect, radius: f64, color: Color) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -76,7 +113,10 @@ pub fn hline(scene: &mut Scene, tf: Affine, x0: f64, x1: f64, y: f64, color: Col
 
 /// Draw text with its top-left corner at `(x, y)`. Returns the measured
 /// `(width, height)` so callers can advance the layout cursor.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "leaf text adapter mirrors independently variable TextRenderer inputs; its broad call surface benefits from keeping typography visible at each paint site"
+)]
 pub fn text(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -106,7 +146,10 @@ pub fn text(
 }
 
 /// Convenience: regular-weight single-line text, no wrap.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "regular-weight leaf adapter keeps the independently variable text, size, colour, and position visible at each paint site"
+)]
 pub fn label(
     scene: &mut Scene,
     tr: &mut TextRenderer,

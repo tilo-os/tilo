@@ -9,6 +9,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
@@ -47,6 +48,9 @@ struct LauncherHandshake {
 pub struct FloatingSurfaceService {
     events: mpsc::Receiver<FloatingServiceEvent>,
     writers: Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    acceptor: Option<std::thread::JoinHandle<()>>,
+    path: PathBuf,
 }
 
 impl FloatingSurfaceService {
@@ -73,11 +77,13 @@ impl FloatingSurfaceService {
         let (event_tx, event_rx) = mpsc::channel();
         let writers = Arc::new(Mutex::new(HashMap::new()));
         let thread_writers = Arc::clone(&writers);
-        std::thread::Builder::new()
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let acceptor = std::thread::Builder::new()
             .name("tilo-shell-ui-accept".into())
             .spawn(move || {
                 let next_id = AtomicU64::new(1);
-                loop {
+                while !thread_stop.load(std::sync::atomic::Ordering::Acquire) {
                     match listener.accept() {
                         Ok((stream, _)) => {
                             let connection = next_id.fetch_add(1, Ordering::Relaxed);
@@ -91,17 +97,26 @@ impl FloatingSurfaceService {
                             std::thread::sleep(Duration::from_millis(12));
                         }
                         Err(error) => {
+                            if thread_stop.load(std::sync::atomic::Ordering::Acquire) {
+                                break;
+                            }
                             tracing::warn!(%error, "shell-ui service accept failed");
                             std::thread::sleep(Duration::from_millis(100));
                         }
                     }
                 }
             })
-            .map_err(|error| format!("spawn shell-ui service: {error}"))?;
+            .map_err(|error| {
+                let _ = std::fs::remove_file(&path);
+                format!("spawn shell-ui service: {error}")
+            })?;
 
         Ok(Self {
             events: event_rx,
             writers,
+            stop,
+            acceptor: Some(acceptor),
+            path,
         })
     }
 
@@ -158,6 +173,16 @@ impl FloatingSurfaceService {
                 writers.remove(&connection);
             }
         }
+    }
+}
+
+impl Drop for FloatingSurfaceService {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(acceptor) = self.acceptor.take() {
+            let _ = acceptor.join();
+        }
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -264,4 +289,43 @@ fn read_frame(reader: &mut BufReader<UnixStream>) -> std::io::Result<Option<Vec<
     }
     frame.pop();
     Ok(Some(frame))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn drop_stops_acceptor_promptly_and_unlinks_socket() {
+        let runtime = tempfile::tempdir().expect("temporary runtime");
+        let previous_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+        // SAFETY: this test is serialised with every test that mutates the
+        // process environment, so the fixture cannot race another runtime.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+
+        let socket = launcher::services::socket_for(FLOATING_SURFACE_SERVICE);
+        let service = FloatingSurfaceService::start().expect("start floating service");
+        assert!(
+            socket.exists(),
+            "service must publish its socket while live"
+        );
+        let started = Instant::now();
+        drop(service);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "dropping the service must not wait on an accept() blocked forever"
+        );
+        assert!(!socket.exists(), "drop must unlink the service socket");
+
+        // SAFETY: restore the process environment after the serial fixture.
+        unsafe {
+            if let Some(previous) = previous_runtime {
+                std::env::set_var("XDG_RUNTIME_DIR", previous);
+            } else {
+                std::env::remove_var("XDG_RUNTIME_DIR");
+            }
+        }
+    }
 }

@@ -5,8 +5,11 @@
 //! wire protocol refers only to random IDs and portable display names.
 
 use std::collections::BTreeSet;
+use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::fd::{AsRawFd as _, FromRawFd as _};
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
 
@@ -20,6 +23,147 @@ pub const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 pub const MAX_FOLDER_ENTRIES: usize = 100_000;
 pub const TRANSFER_LIFETIME_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 pub const CHECKPOINT_BYTES: u64 = 8 * 1024 * 1024;
+
+const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+const RESOLVE_BENEATH: u64 = 0x08;
+
+#[repr(C)]
+struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+
+/// An already-open source capability rooted beneath one live Files grant.
+/// Deferred staging owns the descriptor and never reopens the app-provided
+/// absolute path.
+pub struct SecureNearbySource {
+    file: File,
+    name: String,
+}
+
+/// An already-open writable destination capability. Installation remains
+/// anchored to this descriptor even if the granted directory is renamed.
+pub struct SecureNearbyDestination {
+    directory: File,
+    display_root: PathBuf,
+}
+
+impl SecureNearbyDestination {
+    /// Open one approved writable Files grant without following a final link.
+    pub fn open_grant(grant: &Path) -> Result<Self, String> {
+        let display_root = fs::canonicalize(grant).map_err(display)?;
+        let directory = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY)
+            .open(&display_root)
+            .map_err(display)?;
+        if !directory.metadata().map_err(display)?.is_dir() {
+            return Err("Nearby Send destination is not a directory".into());
+        }
+        Ok(Self {
+            directory,
+            display_root,
+        })
+    }
+
+    fn anchored_root(&self) -> PathBuf {
+        PathBuf::from(format!("/proc/self/fd/{}", self.directory.as_raw_fd()))
+    }
+
+    pub(crate) fn install_inline(&self, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+        let anchored = install_bytes_create_new(&self.anchored_root(), name, bytes)?;
+        Ok(self.display_root.join(
+            anchored
+                .file_name()
+                .ok_or_else(|| "Nearby Send destination name is unavailable".to_string())?,
+        ))
+    }
+}
+
+impl SecureNearbySource {
+    /// Open `requested` beneath one exact granted file/directory without
+    /// following any symlink in the relative walk.
+    ///
+    /// # Errors
+    /// Returns an error when the grant/source is unavailable, outside the
+    /// grant, contains symlinks, or is not a regular file/directory.
+    pub fn open_beneath(grant: &Path, requested: &Path) -> Result<Self, String> {
+        let name = portable_name(requested)?;
+        let canonical_grant = fs::canonicalize(grant).map_err(display)?;
+        let metadata = fs::metadata(&canonical_grant).map_err(display)?;
+        let root = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(&canonical_grant)
+            .map_err(display)?;
+        let file = if metadata.is_dir() {
+            let relative = requested
+                .strip_prefix(grant)
+                .map_err(|_| "Nearby Send source is outside this Files grant".to_string())?;
+            if relative.as_os_str().is_empty() {
+                root
+            } else {
+                validate_relative(relative)?;
+                openat2_beneath(&root, relative, false)?
+            }
+        } else if metadata.is_file() && requested == grant {
+            root
+        } else {
+            return Err("Nearby Send source is outside this Files grant".into());
+        };
+        let source_metadata = file.metadata().map_err(display)?;
+        if !source_metadata.is_file() && !source_metadata.is_dir() {
+            return Err("Nearby Send requires one regular file or folder".into());
+        }
+        Ok(Self { file, name })
+    }
+
+    pub(crate) fn metadata(&self) -> Result<fs::Metadata, String> {
+        self.file.metadata().map_err(display)
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(crate) fn into_file(self) -> File {
+        self.file
+    }
+}
+
+fn openat2_beneath(root: &File, relative: &Path, directory: bool) -> Result<File, String> {
+    validate_relative(relative)?;
+    let path = CString::new(relative.as_os_str().as_bytes())
+        .map_err(|_| "Nearby Send path contains NUL".to_string())?;
+    let mut flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+    if directory {
+        flags |= libc::O_DIRECTORY;
+    }
+    let how = OpenHow {
+        flags: u64::try_from(flags).map_err(display)?,
+        mode: 0,
+        resolve: RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+    };
+    // SAFETY: `path` and `how` are valid for the duration of the syscall; a
+    // successful return is a new owned descriptor.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            root.as_raw_fd(),
+            path.as_ptr(),
+            &raw const how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error().to_string());
+    }
+    let fd = i32::try_from(fd).map_err(display)?;
+    // SAFETY: `openat2` returned a fresh descriptor owned by this function.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -211,6 +355,77 @@ impl NearbyTransferStore {
         Ok(entry)
     }
 
+    /// Stage from an already-open Files grant capability. No app-controlled
+    /// absolute path is reopened, including on the deferred worker path.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid/in-use ID, unsafe directory contents,
+    /// quota exhaustion, or I/O failure.
+    pub fn stage_secure_with_id(
+        &mut self,
+        source: SecureNearbySource,
+        target: String,
+        now_unix_ms: u64,
+        id: [u8; 16],
+    ) -> Result<OutboxEntry, String> {
+        self.ensure_capacity(0)?;
+        if id == [0; 16]
+            || self.index.outbox.iter().any(|entry| entry.id == id)
+            || self.index.inbox.iter().any(|entry| entry.id == id)
+            || self.object_path(id).exists()
+            || self.partial_path(id).exists()
+        {
+            return Err("nearby transfer id is already in use".into());
+        }
+        let metadata = source.metadata()?;
+        let object = self.object_path(id);
+        let name = source.name().to_string();
+        let staged = if metadata.is_file() {
+            if metadata.len() == 0 || metadata.len() > MAX_TRANSFER_BYTES {
+                return Err("nearby transfer exceeds the size limit".into());
+            }
+            self.ensure_capacity(metadata.len())?;
+            copy_open_regular(source.into_file(), &object).map(|()| TransferKind::File)
+        } else if metadata.is_dir() {
+            archive_open_folder(source.into_file(), &object).map(|()| TransferKind::FolderArchive)
+        } else {
+            return Err("nearby transfer source must be a regular file or folder".into());
+        };
+        let kind = match staged {
+            Ok(kind) => kind,
+            Err(error) => {
+                let _ = fs::remove_file(&object);
+                return Err(error);
+            }
+        };
+        let (total_bytes, content_hash) = hash_file(&object)?;
+        if total_bytes == 0 || total_bytes > MAX_TRANSFER_BYTES {
+            let _ = fs::remove_file(&object);
+            return Err("nearby transfer exceeds the size limit".into());
+        }
+        if let Err(error) = self.ensure_capacity(total_bytes) {
+            let _ = fs::remove_file(&object);
+            return Err(error);
+        }
+        let entry = OutboxEntry {
+            id,
+            target,
+            name,
+            kind,
+            total_bytes,
+            content_hash,
+            created_unix_ms: now_unix_ms,
+            expires_unix_ms: now_unix_ms.saturating_add(TRANSFER_LIFETIME_MS),
+        };
+        self.index.outbox.push(entry.clone());
+        if let Err(error) = self.persist() {
+            self.index.outbox.pop();
+            let _ = fs::remove_file(object);
+            return Err(error);
+        }
+        Ok(entry)
+    }
+
     /// Create or resume one exact-source, exact-request incoming object.
     ///
     /// # Errors
@@ -335,6 +550,38 @@ impl NearbyTransferStore {
         };
         self.cancel_incoming(id)?;
         Ok(installed)
+    }
+
+    /// Verify and install through an already-open destination capability.
+    pub fn finish_secure(
+        &mut self,
+        id: [u8; 16],
+        destination: &SecureNearbyDestination,
+    ) -> Result<PathBuf, String> {
+        let entry = self
+            .index
+            .inbox
+            .iter()
+            .find(|entry| entry.id == id)
+            .cloned()
+            .ok_or_else(|| "unknown nearby transfer".to_string())?;
+        let part = self.partial_path(id);
+        let (len, hash) = hash_file(&part)?;
+        if len != entry.total_bytes || hash != entry.content_hash {
+            self.cancel_incoming(id)?;
+            return Err("nearby transfer integrity check failed".into());
+        }
+        let root = destination.anchored_root();
+        let installed = match entry.kind {
+            TransferKind::File => install_file_create_new(&part, &root, &entry.name)?,
+            TransferKind::FolderArchive => extract_archive_create_new(&part, &root, &entry.name)?,
+        };
+        self.cancel_incoming(id)?;
+        Ok(destination.display_root.join(
+            installed
+                .file_name()
+                .ok_or_else(|| "Nearby Send destination name is unavailable".to_string())?,
+        ))
     }
 
     /// Remove outgoing metadata and staged bytes.
@@ -581,6 +828,83 @@ fn archive_folder(source: &Path, destination: &Path) -> Result<(), String> {
     output.sync_all().map_err(display)
 }
 
+fn copy_open_regular(mut source: File, destination: &Path) -> Result<(), String> {
+    source.seek(SeekFrom::Start(0)).map_err(display)?;
+    let metadata = source.metadata().map_err(display)?;
+    if !metadata.is_file() {
+        return Err("nearby transfer source changed type".into());
+    }
+    let mut output = create_private_new(destination)?;
+    let copied = io::copy(&mut source, &mut output).map_err(display)?;
+    if copied != metadata.len() {
+        return Err("nearby transfer source changed while staging".into());
+    }
+    output.sync_all().map_err(display)
+}
+
+fn archive_open_folder(source: File, destination: &Path) -> Result<(), String> {
+    if !source.metadata().map_err(display)?.is_dir() {
+        return Err("nearby transfer source changed type".into());
+    }
+    let root = PathBuf::from(format!("/proc/self/fd/{}", source.as_raw_fd()));
+    let mut entries = walkdir::WalkDir::new(&root)
+        .follow_links(false)
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(display)?;
+    entries.sort_by(|a, b| {
+        a.path()
+            .strip_prefix(&root)
+            .unwrap_or_else(|_| a.path())
+            .cmp(b.path().strip_prefix(&root).unwrap_or_else(|_| b.path()))
+    });
+    if entries.len() > MAX_FOLDER_ENTRIES {
+        return Err("folder contains too many entries".into());
+    }
+    let output = create_private_new(destination)?;
+    let mut archive = tar::Builder::new(output);
+    archive.mode(tar::HeaderMode::Deterministic);
+    let mut source_bytes = 0_u64;
+    for entry in entries.into_iter().skip(1) {
+        let relative = entry.path().strip_prefix(&root).map_err(display)?;
+        validate_relative(relative)?;
+        let mut opened = openat2_beneath(&source, relative, entry.file_type().is_dir())?;
+        let metadata = opened.metadata().map_err(display)?;
+        if !metadata.is_dir() && !metadata.is_file() {
+            return Err("folder contains a link or special file".into());
+        }
+        let mut header = tar::Header::new_gnu();
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(0);
+        header.set_mode(if metadata.is_dir() { 0o700 } else { 0o600 });
+        if metadata.is_dir() {
+            header.set_entry_type(tar::EntryType::Directory);
+            header.set_size(0);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, relative, io::empty())
+                .map_err(display)?;
+        } else {
+            let size = metadata.len();
+            source_bytes = source_bytes
+                .checked_add(size)
+                .ok_or_else(|| "folder exceeds the size limit".to_string())?;
+            if source_bytes > MAX_TRANSFER_BYTES {
+                return Err("folder exceeds the size limit".into());
+            }
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_size(size);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, relative, &mut opened)
+                .map_err(display)?;
+        }
+    }
+    let output = archive.into_inner().map_err(display)?;
+    output.sync_all().map_err(display)
+}
+
 fn extract_archive_create_new(
     archive_path: &Path,
     root: &Path,
@@ -665,6 +989,17 @@ fn install_file_create_new(source: &Path, root: &Path, name: &str) -> Result<Pat
         .map_err(display)?;
     let mut output = create_private_new(&destination)?;
     io::copy(&mut input, &mut output).map_err(display)?;
+    output.sync_all().map_err(display)?;
+    Ok(destination)
+}
+
+fn install_bytes_create_new(root: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    if bytes.is_empty() || u64::try_from(bytes.len()).map_err(display)? > MAX_TRANSFER_BYTES {
+        return Err("nearby transfer exceeds the size limit".into());
+    }
+    let destination = unique_destination(root, name)?;
+    let mut output = create_private_new(&destination)?;
+    output.write_all(bytes).map_err(display)?;
     output.sync_all().map_err(display)?;
     Ok(destination)
 }
@@ -939,6 +1274,50 @@ mod tests {
         assert_eq!(installed.file_name().unwrap(), "folder (1)");
         assert_eq!(fs::read(installed.join("a.txt")).unwrap(), b"a");
         drop(receive);
+    }
+
+    #[test]
+    fn secure_source_is_anchored_across_intermediate_rename_and_symlink_swap() {
+        let tmp = TempDir::new().unwrap();
+        let grant = tmp.path().join("grant");
+        let folder = grant.join("folder");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("report.txt"), b"original").unwrap();
+
+        let source = SecureNearbySource::open_beneath(&grant, &folder).unwrap();
+        let moved = grant.join("moved");
+        fs::rename(&folder, &moved).unwrap();
+        std::os::unix::fs::symlink("/etc", &folder).unwrap();
+
+        assert!(
+            SecureNearbySource::open_beneath(&grant, &folder.join("passwd")).is_err(),
+            "an intermediate symlink swap must not escape the grant"
+        );
+        let mut store = NearbyTransferStore::open(tmp.path().join("store"), 10).unwrap();
+        let staged = store
+            .stage_secure_with_id(source, "peer".into(), 10, [9; 16])
+            .expect("opened directory capability remains anchored after rename");
+        assert_eq!(staged.kind, TransferKind::FolderArchive);
+        assert!(store.object_path(staged.id).is_file());
+    }
+
+    #[test]
+    fn secure_destination_survives_rename_and_never_overwrites() {
+        let tmp = TempDir::new().unwrap();
+        let destination = tmp.path().join("approved");
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("report.txt"), b"existing").unwrap();
+        let capability = SecureNearbyDestination::open_grant(&destination).unwrap();
+        let moved = tmp.path().join("moved");
+        fs::rename(&destination, &moved).unwrap();
+        std::os::unix::fs::symlink("/etc", &destination).unwrap();
+
+        let installed = capability
+            .install_inline("report.txt", b"received")
+            .unwrap();
+        assert_eq!(installed, destination.join("report (1).txt"));
+        assert_eq!(fs::read(moved.join("report.txt")).unwrap(), b"existing");
+        assert_eq!(fs::read(moved.join("report (1).txt")).unwrap(), b"received");
     }
 
     #[test]

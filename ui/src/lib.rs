@@ -54,6 +54,8 @@ pub(crate) mod application_test_support;
 
 pub mod app;
 pub mod caps_lock;
+pub mod chart_palette;
+pub mod charts;
 pub mod chrome;
 pub mod clipboard;
 pub mod collaboration;

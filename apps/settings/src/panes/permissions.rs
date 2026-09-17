@@ -23,7 +23,7 @@ use crate::widgets::{El, caption, card, cards, hgap, rows, status_pill, value_ro
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
 use serde::Deserialize;
 use std::path::PathBuf;
-use std::process::Command;
+use std::time::Duration;
 use ui::widget::{Button, Row, Spacer, Text, Widget};
 use vello::peniko::Color;
 
@@ -44,7 +44,8 @@ struct DeviceSecurity {
 }
 
 fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new(program).args(args).output().ok()?;
+    let out =
+        bounded_command::run(program, args, None, 1024 * 1024, Duration::from_secs(5)).ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -240,11 +241,8 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
 /// keeping only workspaces that actually hold app grants. Stable ordering
 /// (workspaces as stored; apps and their caps sorted) so the pane is
 /// deterministic.
-fn project(state_json: &str) -> Vec<WsGrants> {
-    let tree: TreeView = match serde_json::from_str(state_json) {
-        Ok(t) => t,
-        Err(_) => return Vec::new(),
-    };
+fn project(state_json: &str) -> Result<Vec<WsGrants>, serde_json::Error> {
+    let tree: TreeView = serde_json::from_str(state_json)?;
     let mut out = Vec::new();
     for ws in tree.workspaces {
         // Bucket this workspace's app grants by app id.
@@ -273,7 +271,7 @@ fn project(state_json: &str) -> Vec<WsGrants> {
             apps,
         });
     }
-    out
+    Ok(out)
 }
 
 /// Total number of app grants across every workspace — drives populated vs.
@@ -434,8 +432,8 @@ fn workspace_grants_intro_card() -> El {
     )
 }
 
-/// Honest empty state — no app has been granted anything (or the compositor
-/// has not written its state file yet).
+/// Honest empty state — a successfully loaded workspace record contains no
+/// app grants.
 fn no_workspace_grants_card() -> El {
     card(
         "No workspace access grants",
@@ -453,6 +451,26 @@ fn no_workspace_grants_card() -> El {
             caption(
                 "Nothing here means nothing is granted: apps see only their own \
                  workspace until you say otherwise.",
+            ),
+        ]),
+    )
+}
+
+/// Loading workspace state is distinct from successfully reading a workspace
+/// that has no app grants. A privacy surface must never turn an I/O or parse
+/// failure into a claim that access is absent.
+fn workspace_grants_unavailable_card() -> El {
+    card(
+        "Workspace access status unavailable",
+        rows(vec![
+            Box::new(
+                Text::new(
+                    "qOS could not load the current workspace access record, so it cannot verify whether any app has additional access.",
+                )
+                .with_size(12.0),
+            ),
+            caption(
+                "Open current workspace access or try again after the desktop session has finished starting.",
             ),
         ]),
     )
@@ -512,8 +530,7 @@ fn enforcement_card() -> El {
 fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
     let colors = ui::Theme::dark().tokens.colors;
     let c = &colors;
-    let all = state_json.map(project).unwrap_or_default();
-    let total = grant_count(&all);
+    let workspace_access = state_json.map(project).transpose();
 
     let mut panel: Vec<El> = Vec::new();
 
@@ -524,10 +541,13 @@ fn build_view(state_json: Option<&str>) -> Box<dyn Widget> {
     panel.push(device_security_card());
     panel.push(workspace_grants_intro_card());
 
-    if all.is_empty() {
-        panel.push(no_workspace_grants_card());
-    } else {
-        push_workspace_grant_cards(&mut panel, &all, total, c);
+    match workspace_access {
+        Ok(Some(all)) if all.is_empty() => panel.push(no_workspace_grants_card()),
+        Ok(Some(all)) => {
+            let total = grant_count(&all);
+            push_workspace_grant_cards(&mut panel, &all, total, c);
+        }
+        Ok(None) | Err(_) => panel.push(workspace_grants_unavailable_card()),
     }
 
     panel.push(enforcement_card());
@@ -559,6 +579,17 @@ mod tests {
         }
         for c in w.children() {
             button_labels(c, labels);
+        }
+    }
+
+    fn text_labels(w: &dyn Widget, labels: &mut Vec<String>) {
+        if w.name() == "Text"
+            && let Some(label) = w.accessibility().and_then(|node| node.name)
+        {
+            labels.push(label);
+        }
+        for c in w.children() {
+            text_labels(c, labels);
         }
     }
 
@@ -615,7 +646,7 @@ mod tests {
     fn projection_reads_the_real_grants_from_state_json() {
         // The projection is exactly what `build_view` renders from, so
         // asserting on it asserts on the production path.
-        let all = project(&sample_state());
+        let all = project(&sample_state()).expect("sample state parses");
         assert_eq!(all.len(), 1, "one workspace holds grants");
         assert_eq!(all[0].name, "Studio");
         assert_eq!(all[0].apps.len(), 1, "one app");
@@ -692,8 +723,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_pane_is_honest_and_names_no_fake_grant() {
-        // No state document → an honest empty pane with zero grant pills.
+    fn missing_state_never_claims_that_no_grants_exist() {
+        // No state document means the panel cannot make a claim about grants.
         let mut pane = build_view(None);
         build_layout_of(&mut pane);
         assert_eq!(
@@ -701,6 +732,24 @@ mod tests {
             0,
             "no grant pills when empty"
         );
+        let mut labels = Vec::new();
+        text_labels(pane.as_ref(), &mut labels);
+        assert!(labels.contains(&"Workspace access status unavailable".to_string()));
+        assert!(
+            !labels
+                .iter()
+                .any(|label| label.contains("Nothing here means nothing is granted"))
+        );
+    }
+
+    #[test]
+    fn valid_empty_state_is_the_only_path_that_claims_no_grants() {
+        let mut pane = build_view(Some(r#"{"workspaces":[]}"#));
+        build_layout_of(&mut pane);
+        let mut labels = Vec::new();
+        text_labels(pane.as_ref(), &mut labels);
+        assert!(labels.contains(&"No workspace access grants".to_string()));
+        assert!(!labels.contains(&"Workspace access status unavailable".to_string()));
     }
 
     #[test]
@@ -711,16 +760,19 @@ mod tests {
         let caps = serde_json::to_string(&vec![membership]).unwrap();
         let json = format!(r#"{{"workspaces":[{{"name":"Empty","capabilities":{caps}}}]}}"#);
         assert!(
-            project(&json).is_empty(),
+            project(&json).expect("valid workspace state").is_empty(),
             "no app grants → no workspace card"
         );
     }
 
     #[test]
-    fn garbage_document_is_treated_as_empty() {
-        assert!(project("not json {").is_empty());
+    fn malformed_document_is_reported_as_unavailable_not_empty() {
+        assert!(project("not json {").is_err());
         let mut pane = build_view(Some("not json {"));
         build_layout_of(&mut pane);
         assert_eq!(count_named(pane.as_ref(), "Badge"), 0);
+        let mut labels = Vec::new();
+        text_labels(pane.as_ref(), &mut labels);
+        assert!(labels.contains(&"Workspace access status unavailable".to_string()));
     }
 }
