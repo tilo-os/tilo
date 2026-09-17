@@ -85,12 +85,18 @@ fn list_zero_state(
 /// vertical centre). `chip_here` is whether the chip overlays this pane's
 /// header. Pure so the "title lines up with, and is spaced from, the collapse
 /// button" invariant is unit-testable.
-fn list_header_layout(rect: Rect, chip_here: bool, gap: f64, title_h: f64) -> (f64, f64, f64) {
-    // The chip is a CHIP_SIZE square inset CHIP_INSET from the pane's top-left
-    // (mirrored from `ui`'s NavShell), so its centre line is:
-    let header_cy = rect.y0 + CHIP_INSET + CHIP_SIZE / 2.0;
+fn list_header_layout(
+    rect: Rect,
+    chip: Rect,
+    chip_here: bool,
+    gap: f64,
+    title_h: f64,
+) -> (f64, f64, f64) {
+    // `chip` is the shell's collapse chip as laid out (or the 1x mirror,
+    // `mirrored_chip`, when the shell shows none); its centre line is:
+    let header_cy = chip.center().y;
     let title_x = if chip_here {
-        rect.x0 + CHIP_INSET + CHIP_SIZE + gap
+        chip.x1 + gap
     } else {
         rect.x0 + 20.0
     };
@@ -99,6 +105,18 @@ fn list_header_layout(rect: Rect, chip_here: bool, gap: f64, title_h: f64) -> (f
     // at every text scale.
     let title_y = header_cy - title_h / 2.0;
     (title_x, title_y, header_cy)
+}
+
+/// The 1x mirror of the shell's collapse chip: a `CHIP_SIZE` square inset
+/// `CHIP_INSET` from the pane's top-left. Used only while the shell has not
+/// published its real chip (see `State::shell_chip`).
+fn mirrored_chip(rect: Rect) -> Rect {
+    Rect::new(
+        rect.x0 + CHIP_INSET,
+        rect.y0 + CHIP_INSET,
+        rect.x0 + CHIP_INSET + CHIP_SIZE,
+        rect.y0 + CHIP_INSET + CHIP_SIZE,
+    )
 }
 
 /// The per-account settings gear rect on the right edge of an account row.
@@ -450,17 +468,33 @@ impl Pane {
         self.list_metrics.unwrap_or_else(ListRowMetrics::fallback)
     }
 
+    /// The shell's collapse chip in app coordinates, or the 1x mirror at
+    /// this pane's top-left while the shell shows none.
+    fn shell_chip(&self, rect: Rect) -> Rect {
+        self.shared
+            .borrow()
+            .shell_chip
+            .unwrap_or_else(|| mirrored_chip(rect))
+    }
+
+    /// Leading room the shell's chip needs in this pane's header: past the
+    /// chip's right edge by the same breath the 1x constant carried.
+    fn chip_clearance(&self) -> f64 {
+        let chip = self.shell_chip(self.rect);
+        (chip.x1 - self.rect.x0) + (CHIP_CLEARANCE - CHIP_INSET - CHIP_SIZE)
+    }
+
     fn header_left_inset(&self) -> f64 {
         let st = self.shared.borrow();
         match self.role {
-            Role::Sidebar => CHIP_CLEARANCE,
+            Role::Sidebar => self.chip_clearance(),
             // The list is the leftmost content pane (so the shell's collapse /
             // hamburger toggle sits over its header) whenever the layout is
             // narrow OR the docked sidebar is collapsed. Reserve room so the
             // folder title never renders under the toggle chip.
             Role::List => {
                 if st.narrow || !st.sidebar_open {
-                    CHIP_CLEARANCE
+                    self.chip_clearance()
                 } else {
                     20.0
                 }
@@ -532,7 +566,7 @@ impl Pane {
         // band to clear anymore), so it aligns with the list column's first
         // row.
         let pad = 12.0;
-        let mut y = sb.y0 + CHIP_INSET + CHIP_SIZE + 8.0;
+        let mut y = self.shell_chip(sb).y1 + 8.0;
         hits.push((
             Rect::new(sb.x0 + pad, y, sb.x1 - pad, y + 40.0),
             Hit::Compose,
@@ -976,7 +1010,7 @@ impl Pane {
         let title_full = st.folder.title();
         let (twd, th) = tr.measure_weighted(title_full, 18.0, None, TextWeight::Bold);
         let (title_x, title_y, header_cy) =
-            list_header_layout(r, chip_here, gap, f64::from(th));
+            list_header_layout(r, self.shell_chip(r), chip_here, gap, f64::from(th));
         let title_budget = sr.x0 - title_x - 12.0;
         let title = crate::draw::elide(tr, title_full, 18.0, TextWeight::Bold, title_budget);
         tr.draw_text_weighted(
@@ -3229,12 +3263,13 @@ mod tests {
         // The 1× line box of the 18 px bold title; the layout centres whatever
         // box it is handed, so a 200% box (45) lands on the same centre.
         let title_h = 22.5;
-        let (title_x, title_y, header_cy) = list_header_layout(rect, true, gap, title_h);
+        let (title_x, title_y, header_cy) =
+            list_header_layout(rect, mirrored_chip(rect), true, gap, title_h);
         let chip_cy = rect.y0 + CHIP_INSET + CHIP_SIZE / 2.0;
         let chip_right = rect.x0 + CHIP_INSET + CHIP_SIZE;
         // Vertically centred on the chip's centre line from the measured box.
         let title_center = title_y + title_h / 2.0;
-        let (_, big_y, _) = list_header_layout(rect, true, gap, 45.0);
+        let (_, big_y, _) = list_header_layout(rect, mirrored_chip(rect), true, gap, 45.0);
         assert!(
             (big_y + 22.5 - chip_cy).abs() < 0.001,
             "a scaled title box still centres on the chip"
@@ -3257,7 +3292,14 @@ mod tests {
             "title does not crowd the collapse button"
         );
         // With no chip over the header, the title returns to the plain inset.
-        let (nx, _, _) = list_header_layout(rect, false, gap, title_h);
+        let (nx, _, _) = list_header_layout(rect, mirrored_chip(rect), false, gap, title_h);
+        // The shell's real chip at 2x is larger than the 1x mirror; the title
+        // follows it, centred on its centre line and spaced past its edge.
+        let big_chip = Rect::new(12.0, 12.0, 12.0 + 53.5, 12.0 + 53.5);
+        let (bx, by, bcy) = list_header_layout(rect, big_chip, true, gap, 45.0);
+        assert!((bcy - big_chip.center().y).abs() < 1e-9, "centre line follows the real chip");
+        assert!((bx - (big_chip.x1 + gap)).abs() < 1e-9, "title clears the real chip");
+        assert!((by + 22.5 - bcy).abs() < 1e-9);
         assert_eq!(nx, rect.x0 + 20.0);
     }
 
