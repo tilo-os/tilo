@@ -191,6 +191,17 @@ struct ReaderThreadLayout {
     head_has_html: bool,
 }
 
+struct EventContext<'a> {
+    scale_factor: f64,
+    modifiers: winit::event::Modifiers,
+    state: &'a mut AutoCommit,
+    path: &'a ObjId,
+    handled: &'a mut bool,
+    focus_target: &'a mut Option<NodeId>,
+    node_id: NodeId,
+    taffy: &'a TaffyTree<()>,
+}
+
 pub struct Pane {
     role: Role,
     shared: Shared,
@@ -2501,22 +2512,7 @@ impl Pane {
     /// Forward pointer-move/wheel into the sandboxed HTML body view while one
     /// is actually shown in the reader, so an HTML mail scrolls; the view
     /// consumes a wheel that lands over it. Part of [`Widget::handle_event`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
-    )]
-    fn forward_html_view_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn forward_html_view_event(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) {
         let over_html = self.role == Role::Reader
             && self.html_view_rect.is_some()
             && matches!(
@@ -2529,14 +2525,14 @@ impl Pane {
         if let Some(view) = self.html_view.as_mut() {
             view.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+                ctx.focus_target,
+                ctx.node_id,
+                ctx.taffy,
             );
         }
     }
@@ -2547,22 +2543,7 @@ impl Pane {
     /// after this (true whenever the event was a keyboard event on the list
     /// role, matching the field regardless of whether search was focused).
     /// Part of [`Widget::handle_event`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
-    )]
-    fn handle_search_keyboard(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn handle_search_keyboard(&mut self, event: &WindowEvent, ctx: &mut EventContext<'_>) -> bool {
         if !(matches!(event, WindowEvent::KeyboardInput { .. }) && self.role == Role::List) {
             return false;
         }
@@ -2571,14 +2552,14 @@ impl Pane {
             if let Some(inp) = self.search_input.as_mut() {
                 inp.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    ctx.scale_factor,
+                    &ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                    ctx.focus_target,
+                    ctx.node_id,
+                    ctx.taffy,
                 );
             }
             // Reflect the field into the query + first-row selection.
@@ -2591,7 +2572,7 @@ impl Pane {
             st.search = value;
             st.selected = st.list_rows().first().map(|(id, _)| *id);
             st.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
         }
         true
     }
@@ -2793,14 +2774,16 @@ impl Widget for Pane {
 
         self.forward_html_view_event(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut EventContext {
+                scale_factor,
+                modifiers: *modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
         );
         if *handled {
             return;
@@ -2808,14 +2791,16 @@ impl Widget for Pane {
 
         if self.handle_search_keyboard(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut EventContext {
+                scale_factor,
+                modifiers: *modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
         ) {
             return;
         }
