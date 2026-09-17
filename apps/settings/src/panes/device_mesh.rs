@@ -25,6 +25,7 @@ use crate::widgets::{
     caption, card, card_with_action, cards, choice_row_described, rows, setting_row_described,
     status_pill, value_row,
 };
+use settings_store::roaming_provenance::{Origin, RoamingProvenance};
 
 const DEFAULT_CONFIG: &str = "/etc/tilo/relay.toml";
 const ROLE_KEY: &str = "device_mesh.role";
@@ -209,6 +210,10 @@ pub struct DeviceMeshPane {
     continuity: ContinuityPrivacy,
     continuity_path: Option<PathBuf>,
     continuity_status: Option<String>,
+    roaming_provenance_path: Option<PathBuf>,
+    roaming_provenance_stamp: Option<SystemTime>,
+    roaming_provenance: Option<RoamingProvenance>,
+    roaming_provenance_status: Option<String>,
     personal_remove_armed: std::collections::HashSet<[u8; 32]>,
     management_child: Option<Child>,
     management_device: Option<String>,
@@ -330,6 +335,83 @@ fn unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
+}
+
+fn origin_summary(origin: &Origin) -> String {
+    format!("{} · revision {}", origin.device_label, origin.counter)
+}
+
+fn resolution_summary(winner: &Origin, alternatives: &[Origin]) -> String {
+    if alternatives.is_empty() {
+        return format!("From {}", origin_summary(winner));
+    }
+    let others = alternatives
+        .iter()
+        .take(3)
+        .map(|origin| origin.device_label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let remainder = alternatives.len().saturating_sub(3);
+    let suffix = if remainder == 0 {
+        String::new()
+    } else {
+        format!(" and {remainder} more")
+    };
+    format!(
+        "Resolved to {}; differs from {others}{suffix}",
+        origin_summary(winner)
+    )
+}
+
+fn provenance_summaries(provenance: &RoamingProvenance) -> Vec<(String, String)> {
+    provenance
+        .settings
+        .iter()
+        .map(|setting| {
+            (
+                setting.key.clone(),
+                resolution_summary(&setting.winner, &setting.alternatives),
+            )
+        })
+        .chain(provenance.wifi.iter().map(|wifi| {
+            (
+                format!("Wi-Fi · {}", wifi.ssid),
+                format!(
+                    "Sealed {} profile. {}",
+                    wifi.security,
+                    resolution_summary(&wifi.winner, &wifi.alternatives)
+                ),
+            )
+        }))
+        .collect()
+}
+
+fn load_roaming_provenance(
+    path: Option<&std::path::Path>,
+) -> (
+    Option<RoamingProvenance>,
+    Option<String>,
+    Option<SystemTime>,
+) {
+    let Some(path) = path else {
+        return (None, None, None);
+    };
+    let stamp = std::fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok());
+    if stamp.is_none() {
+        return (None, None, None);
+    }
+    match RoamingProvenance::load_at(path) {
+        Ok(provenance) => (Some(provenance), None, stamp),
+        Err(error) => (
+            None,
+            Some(format!(
+                "Roaming provenance is unavailable; no conflict decision is shown: {error}"
+            )),
+            stamp,
+        ),
+    }
 }
 
 fn revocation_reason(label: &str) -> RevocationReason {
@@ -467,6 +549,9 @@ impl DeviceMeshPane {
         let continuity = continuity_path
             .as_deref()
             .map_or_else(ContinuityPrivacy::default, ContinuityPrivacy::load_at);
+        let roaming_provenance_path = settings_store::roaming_provenance::path();
+        let (roaming_provenance, roaming_provenance_status, roaming_provenance_stamp) =
+            load_roaming_provenance(roaming_provenance_path.as_deref());
         Self {
             config_path,
             config,
@@ -485,6 +570,10 @@ impl DeviceMeshPane {
             continuity,
             continuity_path,
             continuity_status: None,
+            roaming_provenance_path,
+            roaming_provenance_stamp,
+            roaming_provenance,
+            roaming_provenance_status,
             personal_remove_armed: std::collections::HashSet::new(),
             management_child: None,
             management_device: None,
@@ -510,6 +599,9 @@ impl DeviceMeshPane {
         let continuity_path = path.with_file_name("settings.json");
         pane.continuity = ContinuityPrivacy::load_at(&continuity_path);
         pane.continuity_path = Some(continuity_path);
+        pane.roaming_provenance_path =
+            Some(path.with_file_name(settings_store::roaming_provenance::FILE_NAME));
+        pane.refresh_roaming_provenance();
         pane
     }
 
@@ -544,7 +636,25 @@ impl DeviceMeshPane {
             self.runtime_status = status;
             self.structure_dirty = true;
         }
+        self.refresh_roaming_provenance();
         self.next_status_refresh = Instant::now() + STATUS_REFRESH_INTERVAL;
+    }
+
+    fn refresh_roaming_provenance(&mut self) {
+        let stamp = self
+            .roaming_provenance_path
+            .as_deref()
+            .and_then(|path| std::fs::metadata(path).ok())
+            .and_then(|metadata| metadata.modified().ok());
+        if stamp == self.roaming_provenance_stamp {
+            return;
+        }
+        let (projection, status, stamp) =
+            load_roaming_provenance(self.roaming_provenance_path.as_deref());
+        self.roaming_provenance = projection;
+        self.roaming_provenance_status = status;
+        self.roaming_provenance_stamp = stamp;
+        self.structure_dirty = true;
     }
 
     fn apply_role_change(
@@ -925,6 +1035,32 @@ impl DeviceMeshPane {
                 )))
                 .collect()
         };
+        let mut roaming_rows = self.roaming_provenance.as_ref().map_or_else(
+            || {
+                vec![caption(
+                    "No roaming settings decision has been published on this device yet.",
+                )]
+            },
+            |provenance| {
+                let summaries = provenance_summaries(provenance);
+                if summaries.is_empty() {
+                    vec![caption(
+                        "No personal settings or saved Wi-Fi profiles are roaming.",
+                    )]
+                } else {
+                    summaries
+                        .into_iter()
+                        .map(|(name, detail)| value_row(&name, &detail))
+                        .collect()
+                }
+            },
+        );
+        if let Some(status) = &self.roaming_provenance_status {
+            roaming_rows.push(caption(status));
+        }
+        roaming_rows.push(caption(
+            "Settings conflicts use the newest certified revision, then the device identity as a stable tie-break. Wi-Fi rows contain only profile metadata; passwords and sealed envelopes never enter Settings.",
+        ));
         let mut home_server_rows = vec![caption(
             "Choose Pair home server while your new Tilo server is starting. It receives its identity and full-sync setup automatically.",
         )];
@@ -941,6 +1077,7 @@ impl DeviceMeshPane {
             card("Continue across devices", rows(continuation_rows)),
             card("Continuity privacy", rows(privacy_rows)),
             card("Current Continuity route", rows(provenance_rows)),
+            card("Roaming settings & Wi-Fi", rows(roaming_rows)),
             card("Recent Continuity activity", rows(audit_rows)),
             card_with_action(
                 "Add a personal device",
@@ -2049,6 +2186,7 @@ impl Widget for DeviceMeshPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use settings_store::roaming_provenance::{SCHEMA_VERSION, SettingResolution, WifiResolution};
     use std::time::Instant;
     use tilo_relay::WorkspaceBinding;
 
@@ -2078,6 +2216,64 @@ mod tests {
             let key = continuity_key(capability);
             assert!(ids.iter().any(|id| id == &key), "missing {key}");
         }
+    }
+
+    #[test]
+    fn roaming_conflict_summaries_name_deterministic_winners_without_secrets() {
+        let origin = |id: &str, label: &str, counter| Origin {
+            device_id: id.into(),
+            device_label: label.into(),
+            counter,
+        };
+        let projection = RoamingProvenance {
+            schema_version: SCHEMA_VERSION,
+            generated_unix_ms: 1,
+            settings: vec![SettingResolution {
+                key: "tilo.appearance.theme".into(),
+                winner: origin("b", "Laptop", 8),
+                alternatives: vec![origin("a", "Desktop", 7)],
+            }],
+            wifi: vec![WifiResolution {
+                network_id: "ab".repeat(32),
+                ssid: "Home".into(),
+                security: "WPA2".into(),
+                winner: origin("b", "Laptop", 9),
+                alternatives: Vec::new(),
+            }],
+        };
+        let summaries = provenance_summaries(&projection);
+        assert_eq!(
+            summaries,
+            vec![
+                (
+                    "tilo.appearance.theme".into(),
+                    "Resolved to Laptop · revision 8; differs from Desktop".into()
+                ),
+                (
+                    "Wi-Fi · Home".into(),
+                    "Sealed WPA2 profile. From Laptop · revision 9".into()
+                )
+            ]
+        );
+        let encoded = format!("{summaries:?}");
+        assert!(!encoded.contains("password"));
+        assert!(!encoded.contains("sealed_secret"));
+    }
+
+    #[test]
+    fn future_provenance_is_refused_instead_of_partially_rendered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join(settings_store::roaming_provenance::FILE_NAME);
+        std::fs::write(&path, r#"{"schema_version":99}"#).unwrap();
+        let (projection, status, _) = load_roaming_provenance(Some(&path));
+        assert!(projection.is_none());
+        assert!(
+            status
+                .unwrap()
+                .contains("unsupported roaming provenance schema 99")
+        );
     }
 
     #[test]
