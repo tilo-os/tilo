@@ -155,6 +155,7 @@ print(json.dumps({'signed_rootfs_id': identity}))
         self.assertIn('final', arguments)
         self.assertIn('rootfs=container-image://sha256:' + '2' * 64, arguments)
         self.assertIn('--pull=never', arguments)
+        self.assertEqual(arguments.count('-t'), 1)
 
     def test_development_signer_failure_never_enters_sealing(self):
         inputs = self.development_pipeline_inputs()
@@ -165,6 +166,7 @@ print(json.dumps({'signed_rootfs_id': identity}))
                 arguments = self.log.read_bytes().decode().split('\0')
                 self.assertEqual(arguments.count('build'), 1)
                 self.assertNotIn('final', arguments)
+                self.assertNotIn('-t', arguments)
                 self.assertNotIn('Development container staged', result.stderr)
 
     def test_development_requires_signer_before_build(self):

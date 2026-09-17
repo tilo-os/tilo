@@ -63,7 +63,7 @@ case "${TILO_PUBLIC_TRUST_MODE:-production}" in
     [ "${TILO_SKIP_BUILD:-0}" != 1 ] || die "development trust requires a fresh build"
     [ "$(id -u)" -eq 0 ] || die "development signing requires a rootful Linux build and Podman store"
     [ -n "${TILO_PCR_PREDICTION_SIGNER:-}" ] || die "development builds require the independent EFI/PCR signer"
-    [ -z "${CONTAINER_HOST:-}${CONTAINER_CONNECTION:-}" ] || die "development signing requires local Podman storage"
+    [ -z "${CONTAINER_HOST:-}${CONTAINER_CONNECTION:-}${CONTAINER_SSHKEY:-}${DOCKER_HOST:-}" ] || die "development signing requires local Podman storage"
     _tilo_podman_args=(--remote=false)
     _tilo_development_revision=$(git -C "$TILO_REPO" rev-parse --verify HEAD) \
       || die "development builds require a committed source revision"
@@ -269,8 +269,12 @@ fi
 TILO_PROVISIONAL_CFS_DIGEST="$(printf '0%.0s' {1..128})"
 build_image() {
   local seal_digest="${1:-$TILO_PROVISIONAL_CFS_DIGEST}"
-  shift || true
-  podman "${_tilo_podman_args[@]}" build -f "$TILO_OS_DIR/Containerfile" -t "$TILO_IMAGE" \
+  local image_tag="${2-$TILO_IMAGE}"
+  local tag_args=()
+  [ -z "$image_tag" ] || tag_args=(-t "$image_tag")
+  [ "$#" -eq 0 ] || shift
+  [ "$#" -eq 0 ] || shift
+  podman "${_tilo_podman_args[@]}" build -f "$TILO_OS_DIR/Containerfile" "${tag_args[@]}" \
     --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
     "${_tilo_build_args[@]}" \
     "${_tilo_trust_args[@]}" \
@@ -314,7 +318,7 @@ else
     # intermediate BEFORE the existing split/UKI sealing stages run.
     _tilo_signing_work=$(mktemp -d "${TILO_INSTALLER_SCRATCH:-/var/tmp}/tilo-build-signing.XXXXXX")
     trap 'rm -rf -- "$_tilo_signing_work"' EXIT
-    build_image "$TILO_PROVISIONAL_CFS_DIGEST" --target rootfs --iidfile "$_tilo_signing_work/raw.iid"
+    build_image "$TILO_PROVISIONAL_CFS_DIGEST" "" --target rootfs --iidfile "$_tilo_signing_work/raw.iid"
     _tilo_raw_rootfs=$(cat "$_tilo_signing_work/raw.iid")
     [[ "$_tilo_raw_rootfs" =~ ^sha256:[0-9a-f]{64}$ ]] || die "rootfs build did not return an immutable image ID"
     python3 "$TILO_OS_DIR/dev/sign-development-rootfs.py" \
@@ -325,7 +329,7 @@ else
       > "$_tilo_signing_work/receipt.json"
     _tilo_signed_rootfs=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["signed_rootfs_id"])' "$_tilo_signing_work/receipt.json")
     [[ "$_tilo_signed_rootfs" =~ ^sha256:[0-9a-f]{64}$ ]] || die "signer did not return an immutable rootfs image ID"
-    build_image "$TILO_PROVISIONAL_CFS_DIGEST" --target final --pull=never \
+    build_image "$TILO_PROVISIONAL_CFS_DIGEST" "$TILO_IMAGE" --target final --pull=never --skip-unused-stages=true \
       --build-context "rootfs=container-image://$_tilo_signed_rootfs"
   else
     build_image "$TILO_PROVISIONAL_CFS_DIGEST"
