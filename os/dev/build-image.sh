@@ -253,6 +253,12 @@ fi
 # corrupt RPM database, which then surfaces as dnf insisting that packages the
 # base image plainly has are missing — TILO_BUILD_ARGS=--no-cache is the way out.
 read -r -a _tilo_build_args <<< "${TILO_BUILD_ARGS:-}"
+_tilo_wpe_args=()
+if [ -n "${TILO_WPE_BUILD_CACHE_REF:-}" ]; then
+  [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] && [ "$TILO_WITH_BROWSER" = 1 ] \
+    && [ "$TILO_SKIP_BUILD" != 1 ] || die "WPE stage caching requires a fresh full-browser development build"
+  [ -n "${TILO_WPE_SOURCE_DATE_EPOCH:-}" ] || die "WPE stage caching requires an explicit dependency epoch"
+fi
 
 TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY="${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}"
 if [ "$TILO_SKIP_BUILD" != 1 ]; then
@@ -277,6 +283,7 @@ build_image() {
   podman "${_tilo_podman_args[@]}" build -f "$TILO_OS_DIR/Containerfile" "${tag_args[@]}" \
     --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
     "${_tilo_build_args[@]}" \
+    "${_tilo_wpe_args[@]}" \
     "${_tilo_trust_args[@]}" \
     --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
     --build-arg "BASE_REF=$BASE_REF" \
@@ -313,6 +320,15 @@ if [ "$TILO_SKIP_BUILD" = "1" ]; then
   msg "1/2 skipped (TILO_SKIP_BUILD=1): imaging the existing $TILO_IMAGE"
 else
   msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; generation=$TILO_GENERATION)"
+  if [ -n "${TILO_WPE_BUILD_CACHE_REF:-}" ]; then
+    _tilo_wpe_id=$(python3 "$TILO_OS_DIR/dev/prepare-wpe-stage.py" \
+      --architecture "$TILO_WINDOWS_ARCH" --epoch "$TILO_WPE_SOURCE_DATE_EPOCH" \
+      --cache "$TILO_WPE_BUILD_CACHE_REF" --repo "$TILO_REPO" \
+      --assets "$TILO_REPO/os/external-assets/cache" \
+      --base "$BASE_REF" --rpms "$RPMS_REF" --kernel "$KERNEL_RPMS_REF" --wpe "$WPE_BUILDROOT_REF")
+    [[ "$_tilo_wpe_id" =~ ^sha256:[0-9a-f]{64}$ ]] || die "WPE stage did not return an immutable image ID"
+    _tilo_wpe_args=(--build-context "wpe-builder=container-image://$_tilo_wpe_id")
+  fi
   if [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ]; then
     # The signed loader changes /usr, so install it into an immutable rootfs
     # intermediate BEFORE the existing split/UKI sealing stages run.

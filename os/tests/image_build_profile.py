@@ -158,6 +158,28 @@ print(json.dumps({'signed_rootfs_id': identity}))
         self.assertIn('--pull=never', arguments)
         self.assertEqual(arguments.count('-t'), 1)
 
+    def test_development_wpe_cache_overrides_only_immutable_dependency_stage(self):
+        inputs = self.development_pipeline_inputs()
+        self.write('os/dev/prepare-wpe-stage.py', '''import sys
+assert sys.argv[sys.argv.index('--epoch') + 1] == '0'
+assert '--public-bundle' not in sys.argv
+print('sha256:''' + '3' * 64 + '''')
+''')
+        self.commit_fixture()
+        inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='code.podesta.ai/qos/tilo-wpe-buildroot@sha256:' + '4' * 64,
+            TILO_WPE_BUILD_CACHE_REF='code.podesta.ai/qos/tilo-development-wpe-cache-aarch64',
+            TILO_WPE_SOURCE_DATE_EPOCH='0')
+        result = self.run_builder(**inputs)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = self.log.read_bytes().decode().split('\0')
+        self.assertEqual(arguments.count('wpe-builder=container-image://sha256:' + '3' * 64), 2)
+        self.assertNotIn('--cache-to', arguments)
+        self.assertEqual(arguments.count('1700000000'), 2)
+
+    def test_wpe_cache_is_rejected_for_production_or_browserless_build(self):
+        result = self.run_builder(TILO_WPE_BUILD_CACHE_REF='code.podesta.ai/qos/tilo-development-wpe-cache-aarch64')
+        self.assert_rejected_before_build(result, 'WPE stage caching requires a fresh full-browser development build')
+
     def test_development_signer_failure_never_enters_sealing(self):
         inputs = self.development_pipeline_inputs()
         for failure in ('exit', 'identity'):
