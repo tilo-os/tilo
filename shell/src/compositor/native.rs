@@ -968,10 +968,9 @@ const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
 const TEST_CONTROL_ENV: &str = "TILO_TEST_CONTROL";
 
-/// RAII guard that unlinks a unix-socket file when dropped. `process::exit`
-/// skips destructors, so [`run`] drops this explicitly before exiting —
-/// otherwise the stale file lingers in `XDG_RUNTIME_DIR` for the next
-/// session.
+/// RAII guard that unlinks a unix-socket file when dropped. [`run`] also
+/// drops these explicitly in shutdown order so endpoints disappear before
+/// control returns to the display-manager wrapper.
 pub(crate) struct UnlinkOnDrop(pub(crate) PathBuf);
 
 impl Drop for UnlinkOnDrop {
@@ -981,9 +980,8 @@ impl Drop for UnlinkOnDrop {
     }
 }
 
-/// Remove a Wayland endpoint and Smithay's companion lock file. The native
-/// entry point uses `process::exit` after its orderly shutdown path, which
-/// skips the `Drop` implementation that normally removes both files.
+/// Remove a Wayland endpoint and Smithay's companion lock file before the
+/// display manager starts the next graphical session.
 fn unlink_wayland_endpoint(path: &Path) {
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(path.with_extension("lock"));
@@ -4280,12 +4278,10 @@ fn xwayland_start_follows_public_socket_registration(source: &str) -> bool {
     registration < dispatch && dispatch < start
 }
 
-/// Entry point for the smithay-on-Wayland compositor. Diverges (`-> !`) so
-/// `main` can use it next to [`super::hosted::run`] without juggling return
-/// types; unrecoverable setup errors are logged and end the process via
-/// `std::process::exit`, appropriate for a top-level entry point (matches
-/// smithay's own examples) — never a bare `panic`, since this crate builds
-/// with `panic = "abort"` and a clean logged exit beats an abort with no message.
+/// Entry point for the smithay-on-Wayland compositor. Fatal setup errors are
+/// logged and end the process immediately, but an ordinary logout returns so
+/// backend/libseat/KMS resources unwind through RAII before the display manager
+/// acquires the seat again.
 #[allow(
     clippy::exit,
     reason = "this is the compositor's real process entry point (invoked directly from `main`); \
@@ -4308,7 +4304,7 @@ fn xwayland_start_follows_public_socket_registration(source: &str) -> bool {
               nothing to drop earlier without cloning the tree data out for no real gain, and \
               the block already ends right after both are computed"
 )]
-pub fn run() -> ! {
+pub fn run() {
     // Calloop drives the whole compositor; smithay is callback-oriented and
     // expects every wakeup to fan out from a single `EventLoop::<State>`.
     let mut event_loop: EventLoop<'static, State> = match EventLoop::try_new() {
@@ -4806,8 +4802,7 @@ pub fn run() -> ! {
     // Held for the lifetime of `run` so the runtime's worker threads keep driving zbus dispatch in the background.
     let mut notif_runtime: Option<tokio::runtime::Runtime> = None;
     // RAII: dropping this releases the D-Bus bus name and tears down the
-    // object server. Explicitly dropped near `process::exit` below, same as
-    // the session's other RAII guards, since `process::exit` skips destructors.
+    // object server. It is explicitly dropped in the ordered shutdown block.
     let mut notif_handle: Option<crate::notifications::ServerHandle> = None;
     match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -6863,7 +6858,7 @@ pub fn run() -> ! {
     }
 
     // Stop the render thread and wait for the frame in flight, so a
-    // half-presented frame can't outlive its device — explicit since `process::exit` skips destructors.
+    // half-presented frame cannot outlive its device or race backend teardown.
     if let Some(mut pipe) = present_pipe.take() {
         pipe.shutdown();
     }
@@ -6871,14 +6866,16 @@ pub fn run() -> ! {
         crate::shell::physical_gamepad::stop_all_physical_gamepads(network);
     }
 
-    // Flush the frame trace / write the summary before `process::exit` skips destructors; a no-op unless instrumentation was enabled.
+    // Flush the frame trace / write the summary before backend teardown; a
+    // no-op unless instrumentation was enabled.
     metrics.finish();
 
-    // `event_loop.run` only returns when asked to stop (never happens today);
-    // kept explicit so the function's `!` return type is honoured. `display` drops here, severing its clients.
+    // Sever clients before service endpoints disappear. The backend and
+    // event loop remain in scope until the function returns below, ensuring
+    // the libseat notifier, DRM handles and device leases unwind normally.
     drop(display);
-    // Explicitly drop the test-control socket guard so its `Drop` unlinks the
-    // file before `process::exit` skips destructors; the panic path already runs `Drop` via unwind.
+    // Explicitly drop service guards in dependency order so the next session
+    // cannot observe stale endpoints while backend teardown finishes.
     drop(test_control_unlink);
     // Same reasoning for the collab broker: its `Drop` quiesces the drain
     // thread and unlinks both sockets, else the next session must tell a stale file from a live one.
@@ -6897,10 +6894,9 @@ pub fn run() -> ! {
     if let Some(path) = privileged_socket_path.as_deref() {
         unlink_wayland_endpoint(path);
     }
-    // Same reasoning again: releases the D-Bus bus name and tears down the
-    // notification object server before `process::exit` skips its destructor.
+    // Releases the D-Bus bus name and tears down the notification object
+    // server before returning to the session wrapper.
     drop(notif_handle);
-    std::process::exit(0)
 }
 
 /// Session-owned ambient-light loop. Settings only records policy; the
@@ -8411,6 +8407,31 @@ mod gesture_wireup_tests {
         assert!(
             xwayland_start_follows_public_socket_registration(source),
             "satellite is itself a Wayland client; start it only after the public socket is registered and calloop has dispatched once"
+        );
+    }
+
+    /// A normal logout must unwind the backend, event loop and libseat
+    /// handles. Unlinking the public sockets is not enough: terminating the
+    /// process from inside `run` skips those destructors and can leave the
+    /// display manager unable to acquire the physical seat.
+    #[test]
+    fn ordinary_logout_returns_from_run_instead_of_exiting_the_process() {
+        let source = include_str!("native.rs");
+        let run = source
+            .split_once("pub fn run() {")
+            .expect("native run entry point")
+            .1
+            .split_once("/// Session-owned ambient-light loop")
+            .expect("end of native run entry point")
+            .0;
+
+        assert!(
+            !run.contains("std::process::exit(0)"),
+            "ordinary logout must return so DRM/libseat resources unwind"
+        );
+        assert!(
+            run.contains("drop(display);") && run.contains("drop(notif_handle);"),
+            "service endpoints must still be torn down before returning"
         );
     }
 }
