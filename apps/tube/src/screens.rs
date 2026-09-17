@@ -528,8 +528,12 @@ fn nav_item(
 
 pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
     let sec = model.route.nav_section();
+    // The rail column matches the split's icon sidebar width under this
+    // theme (`ui_scale` only, like the split), so the rail never paints
+    // narrower or wider than the pane the split reserves for it.
+    let rail_w = ui::widget::AuthoredExtent::icon(NAV_RAIL_W).resolve(theme);
     Flex::col()
-        .w(Len::Px(NAV_RAIL_W as f32))
+        .w(Len::Px(rail_w as f32))
         .fill_h()
         .pad_xy(8.0, 14.0)
         .gap(8.0)
