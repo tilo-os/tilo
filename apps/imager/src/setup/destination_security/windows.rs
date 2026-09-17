@@ -395,6 +395,26 @@ fn create_secured(parent: &File, name: &OsStr, security: &LocalAllocation) -> io
     Ok(())
 }
 
+/// Descriptor is live only during the native creation call; no ACL retrofit.
+pub(crate) fn with_private_creation_descriptor<T>(
+    f: impl FnOnce(*mut std::ffi::c_void) -> io::Result<T>,
+) -> io::Result<T> {
+    let user = current_user()?;
+    let security = descriptor(&format!(
+        "O:{user}D:P(A;OICI;FA;;;{user})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+    ))?;
+    f(security.0)
+}
+pub(crate) fn require_private_protected(file: &File) -> io::Result<()> {
+    check_volume(file)?;
+    let security = Security::query(file)?;
+    security.check(&current_user()?, true)?;
+    if !security.protected()? {
+        return Err(refusal("Connected private ACL is not protected"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::super::migration::copy_folder;

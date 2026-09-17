@@ -15,3 +15,6 @@ mod transaction;
 pub fn maybe_run_lease_receiver(args: &[String]) -> Option<i32> {
     transaction::maybe_run_lease_receiver(args)
 }
+
+#[cfg(any(windows, test))]
+mod windows_native;

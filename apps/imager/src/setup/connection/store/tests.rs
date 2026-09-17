@@ -768,7 +768,7 @@ fn garbage_collection_is_bounded_and_reachability_checked() {
 
 thread_local! {static CAPTURE_SUBSTITUTE:std::cell::Cell<bool>=const {std::cell::Cell::new(false)};}
 pub(super) fn before_capture(
-    parent: &std::sync::Arc<super::super::super::migration::PinnedDirectory>,
+    parent: &std::sync::Arc<storage::Directory>,
     name: &str,
 ) -> Result<(), StoreError> {
     if CAPTURE_SUBSTITUTE.with(|flag| flag.replace(false)) {
@@ -1701,4 +1701,16 @@ fn admission_active_intent_capacity_preserves_log_and_fence_reserve() {
             .lifecycle,
         Lifecycle::Disconnecting
     );
+}
+
+#[cfg(windows)]
+pub(super) fn native_fault_after(point: Option<usize>) {
+    FAULT.with(|fault| fault.set(point.map(|point| (point, false))));
+}
+#[cfg(windows)]
+pub(super) fn native_checkpoint_hook(
+    point: CheckpointBoundary,
+    hook: Box<dyn FnOnce() -> Result<(), StoreError>>,
+) {
+    CHECKPOINT_HOOK.with(|slot| *slot.borrow_mut() = Some((point, hook)));
 }
