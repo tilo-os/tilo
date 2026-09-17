@@ -63,7 +63,7 @@ Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture, and the Cap'n Proto compiler (`capnp.exe` on `PATH`). The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
 Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Image Editor,
-Photos and Hex Editor have been built and run on Windows. Other apps
+Photos, Hex Editor and Code Editor have been built and run on Windows. Other apps
 are still being ported; a
 workspace-wide build currently includes Linux services and is not a Windows
 application build command.
@@ -239,6 +239,23 @@ checks both the resulting file and the collaboration document.
 cargo test --locked -p hex-editor --all-targets
 ./tools/install-windows-apps.ps1 -Apps hex-editor
 ```
+
+Code Editor is installed as **Code Editor** (`code-editor.exe`). Pass a file or
+project directory as a positional argument or with `--path`; its embedded
+terminal uses Windows ConPTY. Language servers must be installed on `PATH`
+(for Rust, `rustup component add rust-analyzer`). Server processes use pipes
+without opening console windows, and incoming events wake an idle editor.
+Windows drive letters are normalized in LSP document URIs so rust-analyzer's
+diagnostics and definition locations match the opened buffers.
+
+```powershell
+cargo test --locked -p code-editor --all-targets
+./tools/install-windows-apps.ps1 -Apps code-editor
+```
+
+Unchanged shared fonts are preserved during installation, so a running Tilo app
+does not prevent installing another app. If font contents change, close running
+Tilo apps before installing the update.
 
 Clocks saves private device state under `%LOCALAPPDATA%/tilo/clocks.json` on
 Windows (an absolute `XDG_STATE_HOME` overrides that location). Its live startup

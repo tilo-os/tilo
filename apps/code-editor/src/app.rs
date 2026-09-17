@@ -5663,8 +5663,8 @@ mod tests {
             "the file was stat'ed, so a save has something to check against"
         );
         assert_eq!(
-            buf.path.as_deref(),
-            Some(crate::disk::canonical(&file).as_path()),
+            buf.path.as_deref().map(crate::disk::canonical),
+            Some(crate::disk::canonical(&file)),
             "and the buffer knows which file it writes back to"
         );
         assert_eq!(
