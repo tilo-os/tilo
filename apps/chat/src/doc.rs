@@ -852,7 +852,10 @@ impl ChatDoc {
         let _ = doc.put(&cat, "collapsed", collapsed);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "private leaf serializer mirrors the fixed channel CRDT schema; all call sites provide complete channel records"
+    )]
     fn put_channel(
         doc: &mut AutoCommit,
         id: &str,
