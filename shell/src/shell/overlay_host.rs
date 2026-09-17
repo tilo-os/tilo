@@ -242,6 +242,7 @@ mod device_fabric_ui_tests {
             DeviceFabricView {
                 bluetooth_authorizations: Vec::new(),
                 gamepad_authorizations: Vec::new(),
+                local_gamepads: Vec::new(),
                 devices: vec![FabricDeviceView {
                     id: remote.clone(),
                     label: "Travel laptop".into(),
@@ -372,6 +373,38 @@ mod device_fabric_ui_tests {
                 .contains(&DeviceFabricUiAction::AuthorizeGamepadForwarding {
                     forwarding_id: [7; 16],
                     approved: false,
+                })
+        );
+    }
+
+    #[test]
+    fn device_pane_starts_a_selected_local_controller_on_exact_device() {
+        let (mut view, remote) = fixture();
+        view.local_media.clear();
+        view.local_outputs.clear();
+        view.local_gamepads = vec![crate::shell::physical_gamepad::LocalPhysicalGamepadView {
+            token: 42,
+            name: "Arcade controller".into(),
+            forwarding: None,
+        }];
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(view.clone())
+        }));
+
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(0).center());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+
+        assert!(
+            actions
+                .borrow()
+                .contains(&DeviceFabricUiAction::StartPhysicalGamepad {
+                    source_token: 42,
+                    target: remote,
                 })
         );
     }
@@ -811,6 +844,7 @@ pub struct GamepadAuthorizationView {
 pub struct DeviceFabricView {
     pub bluetooth_authorizations: Vec<BluetoothHandoffAuthorizationView>,
     pub gamepad_authorizations: Vec<GamepadAuthorizationView>,
+    pub local_gamepads: Vec<crate::shell::physical_gamepad::LocalPhysicalGamepadView>,
     pub devices: Vec<FabricDeviceView>,
     pub local_media: Vec<FabricMediaView>,
     pub local_outputs: Vec<LocalMediaOutputView>,
@@ -839,6 +873,13 @@ pub enum DeviceFabricUiAction {
     AuthorizeGamepadForwarding {
         forwarding_id: [u8; 16],
         approved: bool,
+    },
+    StartPhysicalGamepad {
+        source_token: u64,
+        target: crate::shell::personal_continuity::DeviceId,
+    },
+    StopPhysicalGamepad {
+        session: u64,
     },
     Place {
         device: crate::shell::personal_continuity::DeviceId,
@@ -880,6 +921,7 @@ enum DeviceFabricPaneRow {
     RealtimeSource(crate::shell::collab_broker_capnp::RealtimeSourceUiView),
     BluetoothAuthorization(BluetoothHandoffAuthorizationView),
     GamepadAuthorization(GamepadAuthorizationView),
+    LocalGamepad(crate::shell::physical_gamepad::LocalPhysicalGamepadView),
     Media(FabricMediaView),
     LocalOutput(LocalMediaOutputView),
     Device(FabricDeviceView),
@@ -912,6 +954,12 @@ fn device_fabric_pane_rows(
                 .iter()
                 .cloned()
                 .map(DeviceFabricPaneRow::GamepadAuthorization),
+        )
+        .chain(
+            view.local_gamepads
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::LocalGamepad),
         )
         .chain(
             view.local_media
@@ -1182,6 +1230,7 @@ pub struct ShellOverlayHost {
     /// This is private view state, never convergent fabric state.
     qs_selected_media: Option<String>,
     qs_selected_realtime: Option<String>,
+    qs_selected_gamepad: Option<u64>,
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
@@ -2481,6 +2530,7 @@ impl ShellOverlayHost {
             qs_device_fabric_wheel_remainder: 0.0,
             qs_selected_media: None,
             qs_selected_realtime: None,
+            qs_selected_gamepad: None,
             power_menu: PowerMenu::default(),
             session_inhibitors: tilo_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
@@ -11137,6 +11187,7 @@ impl ShellOverlayHost {
             DeviceFabricPaneRow::RealtimeSource(source) => {
                 self.qs_selected_realtime = Some(source.session);
                 self.qs_selected_media = None;
+                self.qs_selected_gamepad = None;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
                 }
@@ -11176,9 +11227,28 @@ impl ShellOverlayHost {
                 };
                 Some((action, success))
             }
+            DeviceFabricPaneRow::LocalGamepad(gamepad) => {
+                if let Some(forwarding) = gamepad.forwarding {
+                    Some((
+                        DeviceFabricUiAction::StopPhysicalGamepad {
+                            session: forwarding.session,
+                        },
+                        format!("Stopped forwarding {}", gamepad.name),
+                    ))
+                } else {
+                    self.qs_selected_gamepad = Some(gamepad.token);
+                    self.qs_selected_media = None;
+                    self.qs_selected_realtime = None;
+                    if let Some(chrome) = self.chrome.as_ref() {
+                        chrome.borrow_mut().bump();
+                    }
+                    return;
+                }
+            }
             DeviceFabricPaneRow::Media(media) => {
                 self.qs_selected_media = Some(media.session_id);
                 self.qs_selected_realtime = None;
+                self.qs_selected_gamepad = None;
                 if let Some(chrome) = self.chrome.as_ref() {
                     chrome.borrow_mut().bump();
                 }
@@ -11190,6 +11260,20 @@ impl ShellOverlayHost {
                 },
                 format!("Audio is now routed to {}", output.label),
             )),
+            DeviceFabricPaneRow::Device(device)
+                if !device.is_local && device.online && self.qs_selected_gamepad.is_some() =>
+            {
+                Some((
+                    DeviceFabricUiAction::StartPhysicalGamepad {
+                        source_token: self.qs_selected_gamepad.unwrap_or_default(),
+                        target: device.id,
+                    },
+                    format!(
+                        "Asked {} to allow this controller once for the focused app",
+                        device.label
+                    ),
+                ))
+            }
             DeviceFabricPaneRow::Device(device)
                 if !device.is_local && device.online && self.qs_selected_realtime.is_some() =>
             {
@@ -14016,6 +14100,17 @@ impl Widget for ShellOverlayHost {
                                                 AccessNode::new(Role::Button)
                                                     .with_name("Decline this controller"),
                                             ],
+                                        ),
+                                        DeviceFabricPaneRow::LocalGamepad(gamepad) => (
+                                            gamepad.name,
+                                            if gamepad.forwarding.is_some() {
+                                                "Controller forwarding active or awaiting approval; activate to stop"
+                                                    .into()
+                                            } else {
+                                                "Choose this local controller, then choose a certified destination"
+                                                    .into()
+                                            },
+                                            Vec::new(),
                                         ),
                                         DeviceFabricPaneRow::Media(media) => (
                                             media.title,
@@ -18827,6 +18922,27 @@ impl ShellOverlayHost {
                     false,
                     true,
                 ),
+                DeviceFabricPaneRow::LocalGamepad(gamepad) => (
+                    gamepad.name.clone(),
+                    gamepad.forwarding.as_ref().map_or_else(
+                        || "Local controller · select a certified destination below".into(),
+                        |forwarding| {
+                            let target = view
+                                .devices
+                                .iter()
+                                .find(|device| device.id == forwarding.target)
+                                .map_or("another device", |device| device.label.as_str());
+                            if forwarding.ready {
+                                format!("Forwarding to {target} · select to stop")
+                            } else {
+                                format!("Waiting for approval on {target} · select to cancel")
+                            }
+                        },
+                    ),
+                    ui::icons::Icon::Mouse,
+                    self.qs_selected_gamepad == Some(gamepad.token) || gamepad.forwarding.is_some(),
+                    true,
+                ),
                 DeviceFabricPaneRow::Media(media) => (
                     media.title.clone(),
                     if media.playing {
@@ -18861,10 +18977,15 @@ impl ShellOverlayHost {
                 DeviceFabricPaneRow::Device(device) => {
                     let enabled = !device.is_local
                         && device.online
-                        && (self.qs_selected_realtime.is_some()
+                        && (self.qs_selected_gamepad.is_some()
+                            || self.qs_selected_realtime.is_some()
                             || selected.is_some_and(|media| media.targets.contains(&device.id)));
-                    (
-                        device.label.clone(),
+                    let detail = if self.qs_selected_gamepad.is_some()
+                        && !device.is_local
+                        && device.online
+                    {
+                        "Use selected controller here · target approves once".into()
+                    } else {
                         Self::fabric_device_detail(
                             device,
                             selected,
@@ -18872,7 +18993,11 @@ impl ShellOverlayHost {
                                 .iter()
                                 .rev()
                                 .find(|transfer| transfer.target == device.id),
-                        ),
+                        )
+                    };
+                    (
+                        device.label.clone(),
+                        detail,
                         ui::icons::Icon::Monitor,
                         false,
                         enabled,
