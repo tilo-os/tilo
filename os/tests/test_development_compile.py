@@ -16,9 +16,80 @@ driver = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(driver)
 WPE = 'code.sandbox.example/qos/tilo-wpe-buildroot@sha256:' + 'a' * 64
 REVISION = 'b' * 40
+CACHE_ENV = {'SCCACHE_ENDPOINT': 'https://s3.eu-central-1.amazonaws.com',
+             'SCCACHE_BUCKET': 'podesta-agent-sccache-125650147312-eu-central-1',
+             'SCCACHE_REGION': 'eu-central-1', 'SCCACHE_S3_USE_SSL': 'true',
+             'SCCACHE_S3_KEY_PREFIX': 'forgejo-runners/v1'}
+CACHE = driver.cache_configuration(CACHE_ENV)
 
 
 class CompileBoundaries(unittest.TestCase):
+    def test_cache_rejects_missing_redirected_or_shell_configuration(self):
+        for field, value in (('SCCACHE_ENDPOINT', 'https://attacker.invalid'),
+                             ('SCCACHE_BUCKET', 'wrong-bucket'), ('SCCACHE_REGION', ''),
+                             ('SCCACHE_S3_KEY_PREFIX', 'prefix --secret=other'),
+                             ('SCCACHE_S3_KEY_PREFIX', '../escape')):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                driver.cache_configuration({**CACHE_ENV, field: value})
+
+    def test_credential_staging_excludes_values_from_build_arguments(self):
+        credentials = {'AWS_ACCESS_KEY_ID': 'test-access-key', 'AWS_SECRET_ACCESS_KEY': 'test-secret-key'}
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {**CACHE_ENV, **credentials}, clear=True):
+            directory = Path(temporary)
+            driver.stage_cache_credentials(directory)
+            for variable, filename in driver.CACHE_CREDENTIALS.items():
+                self.assertEqual((directory / filename).read_text(), credentials[variable])
+            env = driver.build_environment(WPE, '7', REVISION, 'c' * 64, '/signer', CACHE)
+            for variable, value in credentials.items():
+                self.assertNotIn(variable, env)
+                self.assertNotIn(value, repr(env))
+            for filename in driver.CACHE_CREDENTIALS.values():
+                self.assertIn(f'--secret id={filename},src=/run/tilo-cache-secrets/{filename}', env['TILO_BUILD_ARGS'])
+
+    def test_temporary_or_missing_credentials_fail_before_staging(self):
+        for extra in ({}, {'AWS_SESSION_TOKEN': 'temporary'}):
+            with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {**CACHE_ENV, **extra}, clear=True):
+                with self.assertRaises(ValueError):
+                    driver.stage_cache_credentials(temporary)
+                self.assertEqual(list(Path(temporary).iterdir()), [])
+
+    def test_remote_counter_receipt_rejects_local_cache_and_errors(self):
+        for payload in ({'cache_location': 'Local disk: /tmp', 'stats': {}},
+                        {'cache_location': 's3://bucket/' + CACHE['SCCACHE_S3_KEY_PREFIX'] + '/',
+                         'stats': {'cache_write_errors': 1}}):
+            with self.assertRaises(ValueError):
+                driver.cache_counters(json.dumps(payload), CACHE['SCCACHE_S3_KEY_PREFIX'])
+
+    def test_probe_restarts_with_empty_local_caches_and_checks_epoch_output(self):
+        for stale_epoch in (False, True):
+            with self.subTest(stale_epoch=stale_epoch), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                calls = []
+                def command(*args, env=None, **kwargs):
+                    calls.append((args, dict(env)))
+                    if len(args) > 1 and args[1] == 'rustc':
+                        Path(args[args.index('-o') + 1]).write_bytes(
+                            b'1' if stale_epoch else env['SOURCE_DATE_EPOCH'].encode())
+                    if '--stats-format=json' in args:
+                        return json.dumps({'cache_location': 's3://bucket/' + CACHE['SCCACHE_S3_KEY_PREFIX'] + '/',
+                                           'stats': {'cache_hits': {'counts': {'Rust': 1}}}})
+                    return ''
+                with patch.object(driver, 'PRIVATE', directory), patch.object(driver, 'EVIDENCE', directory), \
+                     patch.object(driver, 'cache_credentials', return_value={'AWS_SECRET_ACCESS_KEY': 'private-sentinel'}), \
+                     patch.object(driver, 'run', side_effect=command):
+                    if stale_epoch:
+                        with self.assertRaisesRegex(ValueError, 'cache probe failed'):
+                            driver.verify_remote_cache(CACHE)
+                    else:
+                        driver.verify_remote_cache(CACHE)
+                receipt_text = (directory / 'cache-configuration.json').read_text()
+                self.assertNotIn('private-sentinel', receipt_text)
+                receipt = json.loads(receipt_text)
+                self.assertEqual(receipt['status'], 'failed-before-full-compilation' if stale_epoch else 'verified-remote-compile-and-hit')
+                compilations = [env for args, env in calls if len(args) > 1 and args[1] == 'rustc']
+                self.assertEqual(len({env['SCCACHE_DIR'] for env in compilations}), 3)
+                self.assertGreaterEqual(sum('--stop-server' in args for args, env in calls), 3)
+
     def test_installation_discovery_exposes_no_disks_or_network(self):
         image = 'sha256:' + 'a' * 64
         with patch.object(driver, 'run', side_effect=['--via-loopback --generic-image-extra',
@@ -103,7 +174,7 @@ class CompileBoundaries(unittest.TestCase):
             'COSIGN_PRIVATE_KEY': 'secret', 'DOCKER_HOST': 'tcp://remote:2375',
             'CONTAINER_HOST': 'ssh://remote', 'TILO_PUBLIC_TRUST_MODE': 'production'}
         with patch.dict(os.environ, inherited, clear=True):
-            env = driver.build_environment(WPE, '7', REVISION, 'c' * 64, '/private/signer')
+            env = driver.build_environment(WPE, '7', REVISION, 'c' * 64, '/private/signer', CACHE)
         self.assertEqual(env['TILO_WITH_BROWSER'], '1')
         self.assertEqual(env['TILO_SKIP_BUILD'], '0')
         self.assertEqual(env['TILO_PUBLIC_TRUST_MODE'], 'development')
@@ -112,9 +183,35 @@ class CompileBoundaries(unittest.TestCase):
         self.assertNotIn('COSIGN_PRIVATE_KEY', env)
         self.assertNotIn('CONTAINER_HOST', env)
         self.assertNotIn('DOCKER_HOST', env)
-        self.assertEqual(env['TILO_BUILD_ARGS'],
+        self.assertTrue(env['TILO_BUILD_ARGS'].startswith(
             '--build-arg TILO_PREBUILT_APPS=0 --build-arg TILO_PREBUILT_DESKTOP=0 --build-arg TILO_CARGO_BUILD_JOBS=2')
+        )
         self.assertTrue(env['TILO_TARGET_IMGREF'].endswith('-x86_64'))
+
+
+@unittest.skipUnless(hasattr(os, 'getuid') and os.getuid() == 0, 'secret ownership tests require root')
+class CredentialFiles(unittest.TestCase):
+    def test_only_private_regular_root_owned_files_are_accepted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for filename in driver.CACHE_CREDENTIALS.values():
+                path = directory / filename
+                path.write_text('private-test-value')
+                path.chmod(0o600)
+            with patch.object(driver, 'CACHE_SECRETS', directory):
+                self.assertEqual(set(driver.cache_credentials()), set(driver.CACHE_CREDENTIALS))
+                selected = directory / 'aws_access_key_id'
+                selected.chmod(0o644)
+                with self.assertRaises(ValueError):
+                    driver.cache_credentials()
+                selected.unlink()
+                selected.symlink_to(directory / 'aws_secret_access_key')
+                with self.assertRaises(OSError):
+                    driver.cache_credentials()
+                selected.unlink()
+                os.mkfifo(selected)
+                with self.assertRaises(ValueError):
+                    driver.cache_credentials()
 
 
 if __name__ == '__main__':
