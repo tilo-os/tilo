@@ -12,7 +12,6 @@
 //! Every request runs on the worker thread with a bounded timeout so a
 //! flaky Flathub does not stall the UI.
 
-use std::process::Command;
 use std::time::Duration;
 
 use reqwest::blocking::Client;
@@ -381,30 +380,11 @@ pub fn flatpak_available() -> bool {
 /// Run a host probe with a hard wait bound. A timed-out child is killed and
 /// reaped so repeated probes cannot accumulate detached host processes.
 pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
-    let mut child = Command::new(program)
-        .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => {
-                let output = child.wait_with_output().ok()?;
-                return Some(String::from_utf8_lossy(&output.stdout).into_owned());
-            }
-            Ok(Some(_)) | Err(_) => return None,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
+    let output = bounded_command::run(program, args, None, 1024 * 1024, timeout).ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 pub fn list_remotes() -> Vec<Remote> {
