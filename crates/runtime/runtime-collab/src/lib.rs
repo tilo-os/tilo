@@ -427,6 +427,31 @@ impl NearbyTargetHandle {
     }
 }
 
+/// A short-lived shell capability naming one transfer for one authenticated
+/// Files connection. It is never the transport's global transfer identity.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct NearbyTransferHandle([u8; 16]);
+
+impl NearbyTransferHandle {
+    /// Wrap random bytes freshly issued by the shell's authenticated broker.
+    pub fn from_issued_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    /// Return opaque bytes for equality and serialization.
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+
+    /// Whether this is a structurally valid shell-issued handle.
+    pub fn valid(self) -> bool {
+        self.0 != [0; 16]
+    }
+}
+
 /// A certified personal-device target safe to show in an application picker.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -459,7 +484,7 @@ pub enum NearbyTransferPhase {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NearbyTransferStatus {
-    pub transfer_id: [u8; 16],
+    pub handle: NearbyTransferHandle,
     pub name: String,
     pub device_label: String,
     pub direction: NearbyTransferDirection,
@@ -488,14 +513,14 @@ pub enum NearbyTransferCommand {
         source_path: Vec<u8>,
     },
     Decide {
-        transfer_id: [u8; 16],
+        handle: NearbyTransferHandle,
         accept: bool,
     },
     Cancel {
-        transfer_id: [u8; 16],
+        handle: NearbyTransferHandle,
     },
     Retry {
-        transfer_id: [u8; 16],
+        handle: NearbyTransferHandle,
     },
 }
 
@@ -503,7 +528,7 @@ pub enum NearbyTransferCommand {
 #[serde(tag = "result", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum NearbyTransferReply {
     Snapshot { snapshot: NearbyTransferSnapshot },
-    Queued { transfer_id: [u8; 16] },
+    Queued { handle: NearbyTransferHandle },
     Accepted,
     Rejected { reason: String },
 }
@@ -514,7 +539,10 @@ impl NearbyTransferCommand {
     /// the app, source path, transfer id and device to its live route.
     pub fn valid(&self) -> bool {
         match self {
-            Self::Snapshot | Self::Decide { .. } | Self::Cancel { .. } | Self::Retry { .. } => true,
+            Self::Snapshot => true,
+            Self::Decide { handle, .. } | Self::Cancel { handle } | Self::Retry { handle } => {
+                handle.valid()
+            }
             Self::Send {
                 target,
                 source_path,
@@ -548,7 +576,7 @@ impl NearbyTransferReply {
                             && transfer.transferred_bytes <= transfer.total_bytes
                     })
             }
-            Self::Queued { transfer_id } => *transfer_id != [0; 16],
+            Self::Queued { handle } => handle.valid(),
             Self::Accepted => true,
             Self::Rejected { reason } => {
                 !reason.is_empty() && reason.len() <= MAX_NEARBY_TRANSFER_LABEL_BYTES
@@ -2649,7 +2677,7 @@ mod tests {
             online: true,
         };
         let transfer = NearbyTransferStatus {
-            transfer_id: [4; 16],
+            handle: NearbyTransferHandle::from_issued_bytes([4; 16]),
             name: "Photos".into(),
             device_label: target.label.clone(),
             direction: NearbyTransferDirection::Sending,

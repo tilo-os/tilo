@@ -236,10 +236,10 @@ enum CollabPanelAction {
         version_id: collab_types::FileVersionId,
     },
     AcceptNearby {
-        transfer_id: [u8; 16],
+        handle: ui::collaboration::NearbyTransferHandle,
     },
     RetryNearby {
-        transfer_id: [u8; 16],
+        handle: ui::collaboration::NearbyTransferHandle,
     },
 }
 
@@ -1417,13 +1417,13 @@ impl FileExplorerWidget {
                 strategy: collab_types::ConflictStrategy::Merge,
                 version_id: *version_id,
             }),
-            CollabPanelAction::AcceptNearby { transfer_id } => Some(FileCommand::DecideNearby {
-                transfer_id: *transfer_id,
+            CollabPanelAction::AcceptNearby { handle } => Some(FileCommand::DecideNearby {
+                handle: *handle,
                 accept: true,
             }),
-            CollabPanelAction::RetryNearby { transfer_id } => Some(FileCommand::RetryNearby {
-                transfer_id: *transfer_id,
-            }),
+            CollabPanelAction::RetryNearby { handle } => {
+                Some(FileCommand::RetryNearby { handle: *handle })
+            }
         }
     }
 
@@ -2928,12 +2928,12 @@ impl FileExplorerWidget {
                 true
             }
             FileCommand::CloseCollabPanel => {
-                if let Some(CollabPanelAction::AcceptNearby { transfer_id }) = self
+                if let Some(CollabPanelAction::AcceptNearby { handle }) = self
                     .collab_panel
                     .as_ref()
                     .and_then(|panel| panel.action.as_ref())
                 {
-                    self.nearby_send.decide(*transfer_id, false);
+                    self.nearby_send.decide(*handle, false);
                 }
                 self.close_collab_panel();
                 true
@@ -3007,11 +3007,8 @@ impl FileExplorerWidget {
                 self.nearby_send.send(&path, target);
                 true
             }
-            FileCommand::DecideNearby {
-                transfer_id,
-                accept,
-            } => {
-                self.nearby_send.decide(transfer_id, accept);
+            FileCommand::DecideNearby { handle, accept } => {
+                self.nearby_send.decide(handle, accept);
                 self.close_collab_panel();
                 self.status = Some(if accept {
                     t("files-nearby-accepted")
@@ -3020,14 +3017,14 @@ impl FileExplorerWidget {
                 });
                 true
             }
-            FileCommand::RetryNearby { transfer_id } => {
-                self.nearby_send.retry(transfer_id);
+            FileCommand::RetryNearby { handle } => {
+                self.nearby_send.retry(handle);
                 self.close_collab_panel();
                 self.status = Some(t("files-nearby-retrying"));
                 true
             }
-            FileCommand::CancelNearby { transfer_id } => {
-                self.nearby_send.cancel(transfer_id);
+            FileCommand::CancelNearby { handle } => {
+                self.nearby_send.cancel(handle);
                 self.status = Some(t("files-nearby-cancelled"));
                 true
             }
@@ -7517,7 +7514,7 @@ impl Widget for FileExplorerWidget {
                             ),
                         ],
                         action: Some(CollabPanelAction::AcceptNearby {
-                            transfer_id: transfer.transfer_id,
+                            handle: transfer.handle,
                         }),
                         history: None,
                     });
@@ -7534,7 +7531,7 @@ impl Widget for FileExplorerWidget {
                             t("files-nearby-retry-detail"),
                         ],
                         action: Some(CollabPanelAction::RetryNearby {
-                            transfer_id: transfer.transfer_id,
+                            handle: transfer.handle,
                         }),
                         history: None,
                     });
