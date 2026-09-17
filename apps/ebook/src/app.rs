@@ -4844,6 +4844,26 @@ impl Widget for BooksApp {
             for action in &resource.actions {
                 action.id.hash(&mut action_hasher);
                 action.label.hash(&mut action_hasher);
+                action.description.hash(&mut action_hasher);
+                action.operation_type.hash(&mut action_hasher);
+                match &action.input {
+                    tilo_actions::ActionInput::Immediate(encoded) => {
+                        0_u8.hash(&mut action_hasher);
+                        encoded.type_id.hash(&mut action_hasher);
+                        encoded.payload.hash(&mut action_hasher);
+                    }
+                    tilo_actions::ActionInput::Prompted {
+                        prompt,
+                        placeholder,
+                        collects,
+                        ..
+                    } => {
+                        1_u8.hash(&mut action_hasher);
+                        prompt.hash(&mut action_hasher);
+                        placeholder.hash(&mut action_hasher);
+                        (*collects as u8).hash(&mut action_hasher);
+                    }
+                }
             }
         }
         let action_fingerprint = action_hasher.finish();

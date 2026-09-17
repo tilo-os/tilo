@@ -1069,7 +1069,15 @@ impl SearchProvider for BookActionSearchProvider {
                 inspected: 0,
             };
         };
-        if !self.books.available || work_budget == 0 || result_limit == 0 {
+        // A palette session is a snapshot.  A caller may start a page without
+        // a cursor, so check the live revision here as well as when decoding a
+        // continuation below; otherwise an old provider can quietly serve a
+        // freshly-started search after its live actions changed.
+        if !self.books.available
+            || self.live_epoch.load(Ordering::Acquire) != self.snapshot_epoch
+            || work_budget == 0
+            || result_limit == 0
+        {
             return SearchPage {
                 results: Vec::new(),
                 next: None,
@@ -2111,6 +2119,10 @@ mod tests {
                 None,
                 Some(0)
             ))
+        );
+        assert!(
+            actions.search("delete highlight").is_empty(),
+            "a stale provider must reject a fresh search as well as continuations"
         );
         assert!(actions.resolve_action_resource(&address).is_none());
     }
