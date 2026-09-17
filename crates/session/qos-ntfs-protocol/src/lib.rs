@@ -217,8 +217,8 @@ mod tests {
             "size":0, "directory":true, "metadata_digest":"digest",
             "content_readable":false, "enumeration_complete":true,
             "copy_times": {
-                "last_access_100ns": 116444736012345678_i64,
-                "last_data_change_100ns": 116444735999999999_i64
+                "last_access_100ns": 116_444_736_012_345_678_i64,
+                "last_data_change_100ns": 116_444_735_999_999_999_i64
             },
             "copy_times_unavailable_reason": null,
             "fidelity_pending":[]
