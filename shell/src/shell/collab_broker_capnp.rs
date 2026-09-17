@@ -1548,7 +1548,7 @@ impl RealtimeFabricAppBridge {
         {
             return Err("realtime session continuity is disabled".into());
         }
-        let mut realtime = self
+        let realtime = self
             .state
             .realtime
             .lock()
