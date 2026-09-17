@@ -270,6 +270,7 @@ mod device_fabric_ui_tests {
                 device_health: Vec::new(),
                 calibration_proposals: Vec::new(),
                 revertible_calibrations: Vec::new(),
+                tethering: Vec::new(),
             },
             remote,
         )
@@ -420,6 +421,80 @@ mod device_fabric_ui_tests {
                 .contains(&DeviceFabricUiAction::AuthorizeGamepadForwarding {
                     forwarding_id: [7; 16],
                     approved: false,
+                })
+        );
+    }
+
+    #[test]
+    fn device_pane_requests_tethering_from_the_exact_certified_phone() {
+        let (mut view, remote) = fixture();
+        view.local_media.clear();
+        view.local_outputs.clear();
+        view.devices[0].kind = DeviceKind::Phone;
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(view.clone())
+        }));
+
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(0).center());
+        assert!(
+            actions
+                .borrow()
+                .contains(&DeviceFabricUiAction::RequestPhoneTethering { phone: remote })
+        );
+    }
+
+    #[test]
+    fn device_pane_requires_explicit_tethering_consent_and_exposes_disconnect() {
+        let (mut view, remote) = fixture();
+        view.local_media.clear();
+        view.local_outputs.clear();
+        view.devices.clear();
+        view.tethering = vec![
+            crate::shell::personal_tethering_runtime::TetheringStatusView {
+                request_id: [14; 16],
+                peer: remote.clone(),
+                peer_label: "Travel laptop".into(),
+                direction: crate::shell::personal_tethering_runtime::TetheringDirection::Provider,
+                phase: crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired,
+                expires_unix_ms: 30_000,
+            },
+        ];
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let shared = Rc::new(RefCell::new(view));
+        let bridge_view = Rc::clone(&shared);
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(bridge_view.borrow().clone())
+        }));
+
+        let (_, decline) =
+            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+        host.handle_qs_device_fabric_click(decline.center());
+        assert!(
+            actions
+                .borrow()
+                .contains(&DeviceFabricUiAction::AuthorizePhoneTethering {
+                    request_id: [14; 16],
+                    approved: false,
+                })
+        );
+
+        shared.borrow_mut().tethering[0].phase =
+            crate::shell::personal_tethering_runtime::TetheringPhase::Active;
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(0).center());
+        assert!(
+            actions
+                .borrow()
+                .contains(&DeviceFabricUiAction::DisconnectPhoneTethering {
+                    request_id: [14; 16],
                 })
         );
     }
@@ -983,6 +1058,7 @@ pub struct DeviceFabricView {
     pub device_health: Vec<crate::shell::spatial_calibration::DeviceHealthView>,
     pub calibration_proposals: Vec<crate::shell::spatial_calibration::CalibrationProposal>,
     pub revertible_calibrations: Vec<crate::shell::personal_continuity::DeviceId>,
+    pub tethering: Vec<crate::shell::personal_tethering_runtime::TetheringStatusView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1025,6 +1101,16 @@ pub enum DeviceFabricUiAction {
     },
     StopRemoteAudio {
         session_id: [u8; 16],
+    },
+    RequestPhoneTethering {
+        phone: crate::shell::personal_continuity::DeviceId,
+    },
+    AuthorizePhoneTethering {
+        request_id: [u8; 16],
+        approved: bool,
+    },
+    DisconnectPhoneTethering {
+        request_id: [u8; 16],
     },
     Place {
         device: crate::shell::personal_continuity::DeviceId,
@@ -1083,6 +1169,7 @@ enum DeviceFabricPaneRow {
     LocalGamepad(crate::shell::physical_gamepad::LocalPhysicalGamepadView),
     Media(FabricMediaView),
     LocalOutput(LocalMediaOutputView),
+    Tethering(crate::shell::personal_tethering_runtime::TetheringStatusView),
     Device(FabricDeviceView),
 }
 
@@ -1164,6 +1251,12 @@ fn device_fabric_pane_rows(
                 .iter()
                 .cloned()
                 .map(DeviceFabricPaneRow::LocalOutput),
+        )
+        .chain(
+            view.tethering
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::Tethering),
         )
         .chain(
             view.devices
@@ -8097,6 +8190,10 @@ impl ShellOverlayHost {
                             | DeviceFabricPaneRow::RealtimeConsent(_)
                             | DeviceFabricPaneRow::GamepadAuthorization(_)
                     )
+                ) || matches!(
+                    rows.get(self.qs_device_fabric_start),
+                    Some(DeviceFabricPaneRow::Tethering(status))
+                        if status.phase == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired
                 );
                 if consent {
                     let (allow, decline) =
@@ -11577,6 +11674,44 @@ impl ShellOverlayHost {
                 },
                 format!("Audio is now routed to {}", output.label),
             )),
+            DeviceFabricPaneRow::Tethering(status) => {
+                if status.phase
+                    == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired
+                {
+                    let (allow, decline) =
+                        Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+                    let approved = if allow.contains(point) {
+                        true
+                    } else if decline.contains(point) {
+                        false
+                    } else {
+                        return;
+                    };
+                    Some((
+                        DeviceFabricUiAction::AuthorizePhoneTethering {
+                            request_id: status.request_id,
+                            approved,
+                        },
+                        if approved {
+                            format!(
+                                "Allowed {} to use this phone's connection",
+                                status.peer_label
+                            )
+                        } else {
+                            format!("Declined tethering for {}", status.peer_label)
+                        },
+                    ))
+                } else if status.can_disconnect() {
+                    Some((
+                        DeviceFabricUiAction::DisconnectPhoneTethering {
+                            request_id: status.request_id,
+                        },
+                        format!("Disconnected tethering with {}", status.peer_label),
+                    ))
+                } else {
+                    None
+                }
+            }
             DeviceFabricPaneRow::Device(device)
                 if !device.is_local
                     && device.online
@@ -11592,6 +11727,20 @@ impl ShellOverlayHost {
                         "Asked {} to allow this audio once; playback stays local until approved",
                         device.label
                     ),
+                ))
+            }
+            DeviceFabricPaneRow::Device(device)
+                if !device.is_local
+                    && device.online
+                    && device.kind == crate::shell::device_fabric::DeviceKind::Phone
+                    && self.qs_selected_remote_audio.is_none()
+                    && self.qs_selected_gamepad.is_none()
+                    && self.qs_selected_realtime.is_none()
+                    && self.qs_selected_media.is_none() =>
+            {
+                Some((
+                    DeviceFabricUiAction::RequestPhoneTethering { phone: device.id },
+                    format!("Asked {} to share its connection", device.label),
                 ))
             }
             DeviceFabricPaneRow::Device(device)
@@ -14440,6 +14589,26 @@ impl Widget for ShellOverlayHost {
                                                 "Route current and future local audio here".into()
                                             },
                                             Vec::new(),
+                                        ),
+                                        DeviceFabricPaneRow::Tethering(status) => (
+                                            format!("Tethering with {}", status.peer_label),
+                                            match status.phase {
+                                                crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired =>
+                                                    "A certified device requested one short-lived tethering grant".into(),
+                                                crate::shell::personal_tethering_runtime::TetheringPhase::Active =>
+                                                    "Tethering is active; activate to disconnect".into(),
+                                                _ => "Tethering lifecycle status".into(),
+                                            },
+                                            if status.phase == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired {
+                                                vec![
+                                                    AccessNode::new(Role::Button)
+                                                        .with_name("Allow tethering once"),
+                                                    AccessNode::new(Role::Button)
+                                                        .with_name("Decline tethering"),
+                                                ]
+                                            } else {
+                                                Vec::new()
+                                            },
                                         ),
                                         DeviceFabricPaneRow::Device(device) => {
                                             let mut description = Self::fabric_device_detail(
@@ -19252,14 +19421,55 @@ impl ShellOverlayHost {
                     output.is_default,
                     !output.is_default,
                 ),
+                DeviceFabricPaneRow::Tethering(status) => {
+                    use crate::shell::personal_tethering_runtime::{
+                        TetheringDirection, TetheringPhase,
+                    };
+                    let detail = match status.phase {
+                        TetheringPhase::Requesting => "Waiting for phone approval",
+                        TetheringPhase::ConsentRequired => "Allow once or decline",
+                        TetheringPhase::Active => match status.direction {
+                            TetheringDirection::Requester => {
+                                "Connected through this phone · select to disconnect"
+                            }
+                            TetheringDirection::Provider => {
+                                "Sharing this phone's connection · select to disconnect"
+                            }
+                        },
+                        TetheringPhase::Denied => "Declined on the phone",
+                        TetheringPhase::Expired => "Request expired",
+                        TetheringPhase::Offline => "Device went offline · disconnected",
+                        TetheringPhase::PolicyDisabled => "Wi-Fi Continuity was disabled",
+                        TetheringPhase::Failed => "Could not establish tethering",
+                        TetheringPhase::Disconnected => "Disconnected",
+                    };
+                    (
+                        format!("Tethering · {}", status.peer_label),
+                        detail.into(),
+                        ui::icons::Icon::Wifi,
+                        status.phase == TetheringPhase::Active,
+                        status.can_disconnect(),
+                    )
+                }
                 DeviceFabricPaneRow::Device(device) => {
                     let enabled = !device.is_local
                         && device.online
-                        && (self.qs_selected_gamepad.is_some()
+                        && (device.kind == crate::shell::device_fabric::DeviceKind::Phone
+                            || self.qs_selected_gamepad.is_some()
                             || self.qs_selected_remote_audio.is_some()
                             || self.qs_selected_realtime.is_some()
                             || selected.is_some_and(|media| media.targets.contains(&device.id)));
-                    let mut detail = if self.qs_selected_gamepad.is_some()
+                    let mut detail = if device.kind
+                        == crate::shell::device_fabric::DeviceKind::Phone
+                        && !device.is_local
+                        && device.online
+                        && self.qs_selected_gamepad.is_none()
+                        && self.qs_selected_remote_audio.is_none()
+                        && self.qs_selected_realtime.is_none()
+                        && self.qs_selected_media.is_none()
+                    {
+                        "Ask this phone to share its connection · approval required there".into()
+                    } else if self.qs_selected_gamepad.is_some()
                         && !device.is_local
                         && device.online
                     {
@@ -19309,14 +19519,20 @@ impl ShellOverlayHost {
                 face = face.primary();
             }
             Button::paint(scene, transform, text_renderer, theme, &face);
-            let trailing = if matches!(
+            let tethering_consent = matches!(
                 item,
-                DeviceFabricPaneRow::Device(_)
-                    | DeviceFabricPaneRow::CalibrationProposal(_)
-                    | DeviceFabricPaneRow::RemoteAudioConsent(_)
-                    | DeviceFabricPaneRow::RealtimeConsent(_)
-                    | DeviceFabricPaneRow::GamepadAuthorization(_)
-            ) {
+                DeviceFabricPaneRow::Tethering(status)
+                    if status.phase == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired
+            );
+            let trailing = if tethering_consent
+                || matches!(
+                    item,
+                    DeviceFabricPaneRow::Device(_)
+                        | DeviceFabricPaneRow::CalibrationProposal(_)
+                        | DeviceFabricPaneRow::RemoteAudioConsent(_)
+                        | DeviceFabricPaneRow::RealtimeConsent(_)
+                        | DeviceFabricPaneRow::GamepadAuthorization(_)
+                ) {
                 86.0
             } else {
                 0.0
@@ -19359,13 +19575,15 @@ impl ShellOverlayHost {
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
             );
-            if matches!(
-                item,
-                DeviceFabricPaneRow::CalibrationProposal(_)
-                    | DeviceFabricPaneRow::RemoteAudioConsent(_)
-                    | DeviceFabricPaneRow::RealtimeConsent(_)
-                    | DeviceFabricPaneRow::GamepadAuthorization(_)
-            ) {
+            if tethering_consent
+                || matches!(
+                    item,
+                    DeviceFabricPaneRow::CalibrationProposal(_)
+                        | DeviceFabricPaneRow::RemoteAudioConsent(_)
+                        | DeviceFabricPaneRow::RealtimeConsent(_)
+                        | DeviceFabricPaneRow::GamepadAuthorization(_)
+                )
+            {
                 let (allow, decline) = Self::qs_realtime_consent_actions(row);
                 Button::paint(
                     scene,
@@ -19386,6 +19604,7 @@ impl ShellOverlayHost {
                             DeviceFabricPaneRow::GamepadAuthorization(_) => {
                                 "Allow this controller once"
                             }
+                            DeviceFabricPaneRow::Tethering(_) => "Allow tethering once",
                             _ => "Allow this call handoff once",
                         }),
                 );
@@ -19411,6 +19630,7 @@ impl ShellOverlayHost {
                             DeviceFabricPaneRow::GamepadAuthorization(_) => {
                                 "Decline this controller"
                             }
+                            DeviceFabricPaneRow::Tethering(_) => "Decline tethering",
                             _ => "Decline this call handoff",
                         }),
                 );

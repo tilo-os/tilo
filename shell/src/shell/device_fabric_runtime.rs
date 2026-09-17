@@ -4437,6 +4437,7 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         device_health,
         calibration_proposals,
         revertible_calibrations,
+        tethering: crate::shell::personal_tethering_runtime::tethering_statuses(),
     }
 }
 
