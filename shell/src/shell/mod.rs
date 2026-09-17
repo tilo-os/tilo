@@ -72,6 +72,7 @@ pub mod persist;
 pub mod personal_continuity;
 pub mod personal_continuity_registry;
 pub mod personal_tethering;
+pub mod personal_tethering_runtime;
 pub mod physical_gamepad;
 pub mod placement;
 pub mod portal_dialog;

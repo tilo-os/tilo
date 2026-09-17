@@ -657,6 +657,20 @@ pub fn connect_wifi(ssid: &str, password: Option<&str>) -> Result<(), String> {
     }
 }
 
+/// Disconnect the exact NetworkManager connection used for a remote
+/// tethering grant. This does not forget the profile or affect other radios.
+///
+/// # Errors
+///
+/// Returns an error when `ssid` is invalid or NetworkManager rejects the
+/// targeted disconnect.
+pub fn disconnect_wifi(ssid: &str) -> Result<(), String> {
+    if ssid.is_empty() || ssid.len() > 32 || ssid.chars().any(char::is_control) {
+        return Err("Wi-Fi name is invalid".into());
+    }
+    run("nmcli", &["connection", "down", "id", ssid])
+}
+
 /// `NetworkManager`'s connectivity result, including the portal state used by
 /// captive-portal helpers. Values intentionally mirror the daemon rather than
 /// deriving "online" from a local address.

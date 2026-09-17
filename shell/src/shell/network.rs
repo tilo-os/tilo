@@ -3330,6 +3330,51 @@ impl ShellNetwork {
             })
     }
 
+    /// Seal one ephemeral tethering credential to exactly one certified
+    /// requester. Unlike roaming Wi-Fi continuity this does not mutate or
+    /// persist the local fabric snapshot.
+    pub(crate) fn seal_tethering_credential(
+        &self,
+        requester: &crate::shell::personal_continuity::DeviceId,
+        ssid: &str,
+        password: &str,
+    ) -> Result<crate::shell::device_fabric::WifiCredential, String> {
+        let author = self
+            .personal_continuity_device
+            .clone()
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        if !self.certified_secret_recipients().contains(requester) {
+            return Err("tethering requester is not an enrolled personal device".into());
+        }
+        crate::shell::device_fabric_secrets::seal_wifi_credential(
+            ssid,
+            os_actions::WifiSecurity::Wpa2,
+            password,
+            &author,
+            std::collections::BTreeSet::from([requester.clone()]),
+            crate::shell::device_fabric::FabricStamp {
+                counter: self.device_fabric().max_counter().saturating_add(1).max(1),
+                device: author.clone(),
+            },
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    /// Open one already route-validated tethering envelope for an immediate
+    /// NetworkManager call. The plaintext is never retained by ShellNetwork.
+    pub(crate) fn open_tethering_credential(
+        &self,
+        credential: &crate::shell::device_fabric::WifiCredential,
+    ) -> Result<String, String> {
+        let key = &self
+            .host_identity
+            .as_ref()
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?
+            .device_signing_key;
+        crate::shell::device_fabric_secrets::open_wifi_credential(credential, key)
+            .map_err(|error| error.to_string())
+    }
+
     /// Rewrap credentials this device can open whenever certified device
     /// membership changes. This is decentralized: any online recipient can
     /// onboard a new device without uploading a universal key to a service.

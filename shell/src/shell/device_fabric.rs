@@ -417,6 +417,11 @@ pub enum PersonalFabricAction {
     DeviceHealthReport {
         report: crate::shell::spatial_calibration::DeviceHealthReport,
     },
+    /// Consent-bound request, grant, sealed credential, or teardown for an
+    /// exact certified phone. Plaintext Wi-Fi secrets are not representable.
+    Tethering {
+        signal: crate::shell::personal_tethering::TetheringSignal,
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -758,6 +763,11 @@ impl PersonalFabricActionEnvelope {
                 if !report.valid() {
                     return Err(FabricError::InvalidAction);
                 }
+            }
+            PersonalFabricAction::Tethering { signal } => {
+                signal
+                    .validate_transport(transport_source, local_target, now_unix_ms)
+                    .map_err(|_| FabricError::InvalidAction)?;
             }
             PersonalFabricAction::BluetoothHandoffPrepare { address, name } => {
                 if !valid_bluetooth_address(address)
