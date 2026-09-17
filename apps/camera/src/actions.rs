@@ -67,12 +67,18 @@ pub enum CameraOperation {
     SelectCamera {
         device: String,
     },
-    Share {
-        id: String,
-    },
-    Delete {
-        id: String,
-    },
+    /// Choose an existing image through the system portal and scan it without
+    /// importing or browsing a Camera-owned media library.
+    ImportCodeImage,
+    CaptureDocumentPage,
+    RotateDocumentPage,
+    RecognizeDocumentPage,
+    CopyDocumentText,
+    ExportDocument,
+    BeginDocumentCrop,
+    MoveDocumentPageEarlier,
+    MoveDocumentPageLater,
+    RemoveDocumentPage,
 }
 
 /// Decode one Camera effect payload, declining operation types owned by other
@@ -108,9 +114,8 @@ pub enum CameraAction {
         label: String,
         facing: Facing,
     },
-    /// Remove a published capture from the shared capture index. Blob bytes
-    /// are content-addressed and may remain referenced elsewhere; this action
-    /// removes only this resource's canonical metadata row.
+    /// Legacy history payload retained only so old documents fail honestly;
+    /// media removal belongs to Photos or Video Player.
     RemoveCapture {
         id: String,
     },
@@ -182,7 +187,7 @@ impl Action for CameraAction {
                 dur_ms,
                 label,
                 facing,
-            } => doc::register_shared_capture(
+            } => doc::register_recent_capture(
                 doc,
                 &ROOT,
                 &doc::SharedCapture {
@@ -198,8 +203,10 @@ impl Action for CameraAction {
                 },
             )
             .map_err(ActionError::Refused)?,
-            CameraAction::RemoveCapture { id } => {
-                doc::remove_shared_capture(doc, &ROOT, id).map_err(ActionError::Refused)?;
+            CameraAction::RemoveCapture { .. } => {
+                return Err(ActionError::Refused(
+                    "Camera no longer removes media; use Photos or Video Player".into(),
+                ));
             }
             CameraAction::SetMode { mode } => doc::write_mode(doc, &ROOT, *mode),
             CameraAction::SetFacing { facing } => doc::write_facing(doc, &ROOT, *facing),
@@ -218,11 +225,10 @@ impl Action for CameraAction {
             CameraAction::SetDefaultFacing { facing } => {
                 doc::set_default_facing(doc, &ROOT, *facing);
             }
-            CameraAction::SetFavorite { id, on } => {
-                // An empty id is never produced by our own builder; no-op.
-                if !id.is_empty() {
-                    doc::set_favorite(doc, &ROOT, id, *on);
-                }
+            CameraAction::SetFavorite { .. } => {
+                return Err(ActionError::Refused(
+                    "Camera no longer manages favorites; use Photos".into(),
+                ));
             }
             CameraAction::RecordScan { raw, ts } => {
                 doc::record_scan(doc, &ROOT, raw, *ts).map_err(ActionError::Refused)?;
@@ -258,13 +264,6 @@ pub fn encode(action: &CameraAction) -> Result<EncodedAction, ActionError> {
 // affordances (see `crate::app`) and the Ctrl+K resource tree below.
 // ===========================================================================
 
-pub fn set_favorite_action(id: &str, on: bool) -> CameraAction {
-    CameraAction::SetFavorite {
-        id: id.to_string(),
-        on,
-    }
-}
-
 pub fn record_scan_action(raw: &str, ts: i64) -> CameraAction {
     CameraAction::RecordScan {
         raw: raw.to_string(),
@@ -276,14 +275,13 @@ pub fn record_scan_action(raw: &str, ts: i64) -> CameraAction {
 // Resource tree
 // ===========================================================================
 
-/// One capture surfaced as a resource: its id (file name), a one-line
-/// label, its current favorite state, and whether it is a video. Everything
+/// One recent capture surfaced as a handoff resource: its id (file name), a
+/// one-line label, and whether it is a video. Everything
 /// here is derived from state the app already holds; nothing is fabricated.
 #[derive(Debug, Clone)]
 pub struct CaptureItem {
     pub id: String,
     pub label: String,
-    pub favorite: bool,
     pub is_video: bool,
     /// A verified portable still-image identity, when the bytes have been
     /// published. It is intentionally not a local path.
@@ -295,7 +293,7 @@ pub struct CaptureItem {
 /// sample source, with favorite state from the document).
 #[derive(Debug, Clone)]
 pub struct CameraResourceCtx {
-    pub items: Vec<CaptureItem>,
+    pub recent: Option<CaptureItem>,
     pub mode: CaptureMode,
     pub facing: Facing,
     pub recording: bool,
@@ -309,12 +307,17 @@ pub struct CameraResourceCtx {
     pub camera_devices: Vec<String>,
     pub selected_camera: Option<String>,
     pub settings: Settings,
+    pub scan_import_pending: bool,
+    pub document_pages: usize,
+    pub document_selected: usize,
+    pub document_busy: bool,
+    pub document_has_text: bool,
 }
 
 impl Default for CameraResourceCtx {
     fn default() -> Self {
         Self {
-            items: Vec::new(),
+            recent: None,
             mode: CaptureMode::Photo,
             facing: Facing::Back,
             recording: false,
@@ -323,6 +326,11 @@ impl Default for CameraResourceCtx {
             camera_devices: Vec::new(),
             selected_camera: None,
             settings: Settings::default(),
+            scan_import_pending: false,
+            document_pages: 0,
+            document_selected: 0,
+            document_busy: false,
+            document_has_text: false,
         }
     }
 }
@@ -429,7 +437,7 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             navigation = navigation.with_action(spec);
         }
     }
-    let mut root = Resource::new("camera.captures", "camera.captures", "Captures");
+    let mut root = Resource::new("camera.capture", "camera.capture", "Capture");
     if let Ok(spec) = ActionSpec::operation(
         "capture",
         "Capture photo",
@@ -549,7 +557,7 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             });
         }
     }
-    for it in ctx.items.iter().take(MAX_CONTEXT_CAPTURE_RESOURCES) {
+    if let Some(it) = &ctx.recent {
         root = root.with_child(capture_resource(it));
     }
     let mut settings = Resource::new("camera.settings", "camera.settings", "Capture settings");
@@ -669,23 +677,121 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             });
         }
     }
-    // Keep the first capture for callers that scope Ctrl+K to the current
-    // media collection, then expose navigation as its own searchable root.
-    vec![root, settings, navigation]
+    let mut scanner = Resource::new("camera.scanner", "camera.scanner", "Code scanner");
+    if let Ok(spec) = ActionSpec::operation(
+        "import-image",
+        "Scan an existing image",
+        OperationKind::Effect,
+        CAMERA_OPERATION_TYPE,
+        &CameraOperation::ImportCodeImage,
+    ) {
+        scanner = scanner.with_action(if ctx.scan_import_pending {
+            spec.unavailable("picker_open", "An image picker is already open")
+        } else {
+            spec
+        });
+    }
+
+    let mut document = Resource::new(
+        "camera.document-scanner",
+        "camera.document-scanner",
+        "Document scanner",
+    );
+    let document_actions = [
+        (
+            "capture-page",
+            "Capture document page",
+            CameraOperation::CaptureDocumentPage,
+            true,
+        ),
+        (
+            "rotate-page",
+            "Rotate selected page",
+            CameraOperation::RotateDocumentPage,
+            ctx.document_pages > 0,
+        ),
+        (
+            "recognize-text",
+            "Recognize text on selected page",
+            CameraOperation::RecognizeDocumentPage,
+            ctx.document_pages > 0,
+        ),
+        (
+            "copy-text",
+            "Copy recognized text",
+            CameraOperation::CopyDocumentText,
+            ctx.document_has_text,
+        ),
+        (
+            "export-pdf",
+            "Export searchable PDF",
+            CameraOperation::ExportDocument,
+            ctx.document_pages > 0,
+        ),
+        (
+            "crop-page",
+            "Crop selected page",
+            CameraOperation::BeginDocumentCrop,
+            ctx.document_pages > 0,
+        ),
+        (
+            "move-page-earlier",
+            "Move selected page earlier",
+            CameraOperation::MoveDocumentPageEarlier,
+            ctx.document_pages > 0 && ctx.document_selected > 0,
+        ),
+        (
+            "move-page-later",
+            "Move selected page later",
+            CameraOperation::MoveDocumentPageLater,
+            ctx.document_pages > 0 && ctx.document_selected + 1 < ctx.document_pages,
+        ),
+        (
+            "remove-page",
+            "Remove selected page",
+            CameraOperation::RemoveDocumentPage,
+            ctx.document_pages > 0,
+        ),
+    ];
+    for (id, label, operation, available) in document_actions {
+        if let Ok(spec) = ActionSpec::operation(
+            id,
+            label,
+            OperationKind::Effect,
+            CAMERA_OPERATION_TYPE,
+            &operation,
+        ) {
+            document = document.with_action(if ctx.document_busy {
+                spec.unavailable("document_busy", "Wait for the current document task")
+            } else if available {
+                spec
+            } else {
+                spec.unavailable("no_selected_page", "Capture and select a page first")
+            });
+        }
+    }
+    vec![root, scanner, document, settings, navigation]
 }
 
 /// Resolve a stable capture/root id independently of the bounded contextual
 /// snapshot. Search and agents use this to reach an exact older capture
 /// without forcing every camera-roll row into Ctrl+K on every frame.
 pub fn resolve_resource(ctx: &CameraResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
-    if matches!(id, "camera.captures" | "camera.settings" | "camera") {
+    if matches!(
+        id,
+        "camera.capture"
+            | "camera.scanner"
+            | "camera.document-scanner"
+            | "camera.settings"
+            | "camera"
+    ) {
         return provide_resources(ctx, doc)
             .into_iter()
             .find(|resource| resource.id.as_str() == id);
     }
-    ctx.items
-        .iter()
-        .find_map(|item| (id == capture_resource_id(item)).then(|| capture_resource(item)))
+    ctx.recent
+        .as_ref()
+        .and_then(|item| (id == capture_resource_id(item)).then(|| capture_resource(item)))
 }
 
 impl ResourceProvider for crate::app::CameraApp {
