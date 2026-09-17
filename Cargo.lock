@@ -2283,6 +2283,7 @@ version = "0.1.0"
 dependencies = [
  "atomic-file",
  "automerge",
+ "libc",
  "runtime-dylib",
  "serde",
  "serde_json",
