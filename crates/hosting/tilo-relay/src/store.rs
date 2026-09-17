@@ -39,6 +39,10 @@ pub const MEMBERSHIP_FILE: &str = "membership.json";
 
 /// Retained bootstrap checkpoints and the incremental tails after them.
 pub const RETAINED_DIR: &str = "retained";
+/// Durable personal-mesh compute route bindings and lifecycle state.
+pub const COMPUTE_DIR: &str = "compute";
+/// Dedicated queue for the versioned personal-compute protocol.
+pub const COMPUTE_PENDING_DIR: &str = "compute-pending";
 
 /// Root-signed device revocations enforced during relay authentication.
 pub const REVOCATIONS_FILE: &str = "revocations.json";
@@ -172,6 +176,8 @@ impl WorkspaceStore {
         fs::create_dir_all(root.join("pending"))?;
         fs::create_dir_all(root.join(RETAINED_DIR).join("checkpoints"))?;
         fs::create_dir_all(root.join(RETAINED_DIR).join("tails"))?;
+        fs::create_dir_all(root.join(COMPUTE_DIR))?;
+        fs::create_dir_all(root.join(COMPUTE_PENDING_DIR))?;
         Ok(Self {
             root,
             workspace_id,
@@ -265,6 +271,143 @@ impl WorkspaceStore {
             .map_err(|error| StoreError::Json(error.to_string()))?;
         atomic_file::write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
         Ok(())
+    }
+
+    /// Claim a compute job identifier durably before routing it. Returns the
+    /// existing record when the identifier was already claimed so callers can
+    /// distinguish an idempotent replay from a conflicting request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the record cannot be encoded, created, synced, or
+    /// an existing record cannot be decoded.
+    pub fn claim_compute_job(
+        &self,
+        record: &crate::compute_transport::DurableComputeJob,
+    ) -> Result<Option<crate::compute_transport::DurableComputeJob>, StoreError> {
+        let path = self.compute_job_path(&record.spec.job_id);
+        let bytes =
+            serde_json::to_vec(record).map_err(|error| StoreError::Json(error.to_string()))?;
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(&bytes)?;
+                file.sync_all()?;
+                Ok(None)
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                self.load_compute_job(&record.spec.job_id)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Load one durable compute route and lifecycle record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the record cannot be read or decoded.
+    pub fn load_compute_job(
+        &self,
+        job_id: &[u8; 16],
+    ) -> Result<Option<crate::compute_transport::DurableComputeJob>, StoreError> {
+        let path = self.compute_job_path(job_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        serde_json::from_slice(&fs::read(path)?)
+            .map(Some)
+            .map_err(|error| StoreError::Json(error.to_string()))
+    }
+
+    /// Atomically replace one previously claimed compute record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the record is unknown, cannot be encoded, or the
+    /// crash-safe replacement fails.
+    pub fn save_compute_job(
+        &self,
+        record: &crate::compute_transport::DurableComputeJob,
+    ) -> Result<(), StoreError> {
+        let path = self.compute_job_path(&record.spec.job_id);
+        if !path.exists() {
+            return Err(StoreError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                "compute job was not claimed",
+            )));
+        }
+        let bytes =
+            serde_json::to_vec(record).map_err(|error| StoreError::Json(error.to_string()))?;
+        atomic_file::write(&path, &bytes)?;
+        Ok(())
+    }
+
+    fn compute_job_path(&self, job_id: &[u8; 16]) -> PathBuf {
+        self.root
+            .join(COMPUTE_DIR)
+            .join(format!("{}.json", hex::encode(job_id)))
+    }
+
+    /// Queue one encoded personal-compute envelope for an offline exact
+    /// target. This queue is intentionally separate from frozen relay-v1
+    /// envelopes so postcard enum evolution cannot corrupt either protocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the target directory or crash-safe file cannot be
+    /// created.
+    pub fn enqueue_compute_pending(
+        &self,
+        device: &[u8; 32],
+        sequence: u64,
+        bytes: &[u8],
+    ) -> Result<PathBuf, StoreError> {
+        let directory = self
+            .root
+            .join(COMPUTE_PENDING_DIR)
+            .join(hex::encode(device));
+        fs::create_dir_all(&directory)?;
+        let path = directory.join(format!("{sequence:016x}.compute"));
+        atomic_file::write(&path, bytes)?;
+        Ok(path)
+    }
+
+    /// Load compute envelopes without acknowledging them. A session removes
+    /// each returned path only after the matching frame reaches the wire.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the queue cannot be enumerated or read.
+    pub(crate) fn load_compute_pending(
+        &self,
+        device: &[u8; 32],
+    ) -> Result<Vec<PendingEntry>, StoreError> {
+        let directory = self
+            .root
+            .join(COMPUTE_PENDING_DIR)
+            .join(hex::encode(device));
+        if !directory.exists() {
+            return Ok(Vec::new());
+        }
+        let mut entries = fs::read_dir(directory)?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".compute"))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(fs::DirEntry::file_name);
+        entries
+            .into_iter()
+            .map(|entry| {
+                let path = entry.path();
+                Ok(PendingEntry {
+                    bytes: fs::read(&path)?,
+                    path,
+                })
+            })
+            .collect()
     }
 
     /// Append an audit log entry. Non-fatal if the log file fails —
