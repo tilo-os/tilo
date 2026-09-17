@@ -2072,14 +2072,19 @@ mod tests {
     }
 
     #[test]
-    fn live_action_rows_dedupe_and_stale_epochs_fail_closed() {
+    fn annotation_publication_invalidates_existing_action_sessions() {
         let book = Book {
             id: "book".into(),
             title: "Live book".into(),
             ..Book::default()
         };
-        let provider = BookSearchProvider::new(&[book], &[]);
-        let address = ActionAddress::new("ebook.book:book", "open");
+        let highlight =
+            Annotation::new("book", AnnoKind::Highlight, 0, 0).with_group(uuid::Uuid::from_u128(9));
+        let provider = BookSearchProvider::new(&[book], &[highlight]);
+        let address = ActionAddress::new(
+            "ebook.highlight:00000000-0000-0000-0000-000000000009",
+            "delete-highlight",
+        );
         let resource = provider
             .resolve_action_resource(&address)
             .expect("book resource");
@@ -2090,7 +2095,7 @@ mod tests {
             9,
         );
         let opens = actions
-            .search("open")
+            .search("delete highlight")
             .into_iter()
             .filter(|result| result.action_address().as_ref() == Some(&address))
             .count();
