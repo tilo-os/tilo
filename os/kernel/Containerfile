@@ -236,6 +236,9 @@ RUN set -eux; \
         CONFIG_MODULE_SIG=y \
         '# CONFIG_MODULE_SIG_ALL is not set' \
         CONFIG_MODULE_SIG_FORCE=y \
+        '# CONFIG_MODULE_FORCE_LOAD is not set' \
+        '# CONFIG_MODULE_UNLOAD is not set' \
+        '# CONFIG_LIVEPATCH is not set' \
         CONFIG_USER_NS=y \
         CONFIG_SECCOMP_FILTER=y \
         CONFIG_SECURITY_LANDLOCK=y \

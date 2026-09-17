@@ -36,6 +36,10 @@ done < <(awk '$1 !~ /^#/ && NF == 3 && $2 == "=" { sub(/^-/, "", $1); print $1, 
 
 for required in \
   CONFIG_MODULE_SIG_FORCE=y \
+  CONFIG_MODULE_FORCE_LOAD=n \
+  CONFIG_MODULE_UNLOAD=n \
+  CONFIG_MODULE_FORCE_UNLOAD=n \
+  CONFIG_LIVEPATCH=n \
   CONFIG_STRICT_KERNEL_RWX=y \
   CONFIG_STRICT_MODULE_RWX=y \
   CONFIG_RANDOMIZE_BASE=y \
