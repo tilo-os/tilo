@@ -483,19 +483,16 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && missing=0 \
     && for b in shell tilo-projector fs tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control terminal file-explorer settings tilo-model-manager tilo-model-gateway tilo-greeter tilo-installer tilo-runtime-bundle tilo-launcher tilo-app-host tilo-power tilo-unlock-helper tilo-rollback tilo tilo-pkg tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime; do \
          case "${TILO_PREBUILT_DESKTOP}:$b" in 1:shell|1:tilo-launcher|1:tilo-unlock-helper) continue ;; esac; \
-         [ -x "target/release/$b" ] || missing=1; \
+         if [ ! -x "target/release/$b" ]; then \
+           printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
+         fi; \
        done \
-    && { [ "${TILO_WITH_BROWSER}" = "0" ] || [ -x target/release/browser ] || missing=1; } \
-    && if [ "$missing" = 1 ]; then \
-         cargo clean --release \
-         && CARGO_PROFILE_RELEASE_LTO=thin \
-            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-             cargo build --release ${RELEASE_ARGS} -p tilo-relay --bins ${BROWSER_PKG} \
-         && CARGO_PROFILE_RELEASE_LTO=thin \
-            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-            cargo build --release -p windows-vm \
-              --bin tilo-windows-vm-control --bin tilo-windows-rail; \
+    && if [ "${TILO_WITH_BROWSER}" != "0" ] && [ ! -x target/release/browser ]; then \
+         printf '%s\n' 'Required build output is missing: browser' >&2; missing=1; \
        fi \
+    # Profiles were already cleaned before compilation. A missing output now
+    # indicates a build contract error; repeating the same full build hides it.
+    && [ "$missing" = 0 ] \
     && build_phase rust-stage-outputs \
     && mkdir -p /out /out/optional /out/thin-apps \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
