@@ -157,7 +157,7 @@ def retain(args):
             raise ValueError('remote manifest bytes differ from the published digest')
         verify_manifest(raw_manifest, image_id)
         source.command(['cosign', 'sign', '--yes', '--tlog-upload=false', '--key', str(key),
-                        '--annotation', ANNOTATION + '=' + handoff_digest, reference], environment)
+                        '--annotations', ANNOTATION + '=' + handoff_digest, reference], environment)
         verified = source.command(['cosign', 'verify', '--insecure-ignore-tlog=true',
                                    '--key', str(bundle / 'cosign.pub'), reference], environment)
         verify_signature(verified, reference, handoff_digest)
