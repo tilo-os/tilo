@@ -154,6 +154,14 @@ pub enum RealtimeEvent {
         session: String,
         intent: RealtimeResumeIntent,
     },
+    /// The compositor-owned consent sheet selected concrete target-local
+    /// capture sources. These opaque, one-shot capabilities travel only over
+    /// the verified local app IPC; device identities and source handles stay
+    /// in the shell.
+    CaptureAuthorized {
+        session: String,
+        capture_authorizations: Vec<String>,
+    },
     StopSource {
         session: String,
     },
@@ -170,6 +178,17 @@ impl RealtimeEvent {
     pub fn valid(&self) -> bool {
         match self {
             Self::Offer { session, intent } => opaque_token(session) && intent.valid(),
+            Self::CaptureAuthorized {
+                session,
+                capture_authorizations,
+            } => {
+                opaque_token(session)
+                    && !capture_authorizations.is_empty()
+                    && capture_authorizations.len() <= MAX_CAPTURE_AUTHORIZATIONS
+                    && capture_authorizations
+                        .iter()
+                        .all(|authorization| opaque_capture_authorization(authorization))
+            }
             Self::StopSource { session }
             | Self::RolledBack { session }
             | Self::Ended { session } => opaque_token(session),
@@ -272,6 +291,15 @@ mod tests {
         let event = RealtimeEvent::StopSource {
             session: "restart-scoped-1".into(),
         };
+        assert_eq!(
+            serde_json::from_slice::<RealtimeEvent>(&serde_json::to_vec(&event).unwrap()).unwrap(),
+            event
+        );
+        let event = RealtimeEvent::CaptureAuthorized {
+            session: "restart-scoped-1".into(),
+            capture_authorizations: vec!["ab".repeat(OPAQUE_CAPTURE_AUTHORIZATION_BYTES)],
+        };
+        assert!(event.valid());
         assert_eq!(
             serde_json::from_slice::<RealtimeEvent>(&serde_json::to_vec(&event).unwrap()).unwrap(),
             event
