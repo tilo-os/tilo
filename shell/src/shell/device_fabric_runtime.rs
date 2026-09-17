@@ -950,6 +950,11 @@ impl DeviceFabricRuntime {
         }
         self.maintain_gamepad_forwarding(network, policy);
         self.handle_fabric_actions(network, policy);
+        crate::shell::remote_audio::pump(
+            network,
+            policy.permits(ContinuityCapability::Media),
+            self.local_gamepad_focus.as_ref(),
+        );
         self.pump_realtime_continuity(network, policy);
         self.pump_notification_continuity(network, policy);
         if policy.permits(ContinuityCapability::FileTransfer) {
@@ -1162,6 +1167,9 @@ impl DeviceFabricRuntime {
         prune_spatial_leases(network);
         for envelope in network.take_personal_fabric_actions() {
             if !policy.permits_action(&envelope.action) {
+                continue;
+            }
+            if crate::shell::remote_audio::handle_action(network, &envelope) {
                 continue;
             }
             if self.handle_gamepad_action(network, &envelope) {
@@ -3159,6 +3167,54 @@ pub fn request_media_handoff(
     }
     media::handoff::remember_outbound_handoff(request_id, report);
     Ok(request_id)
+}
+
+/// Start a shell-owned live audio route using one opaque source-picker token.
+/// PipeWire node ids are resolved only inside [`crate::shell::remote_audio`].
+///
+/// # Errors
+///
+/// Returns an error when media continuity is disabled, the picker token is
+/// stale, or the exact certified target is unavailable.
+pub fn request_remote_audio(
+    network: &ShellNetwork,
+    source_token: u64,
+    target: &crate::shell::personal_continuity::DeviceId,
+) -> Result<[u8; 16], String> {
+    require_continuity(ContinuityCapability::Media)?;
+    crate::shell::remote_audio::request(network, source_token, target)
+}
+
+/// Resolve a target-local remote-audio consent prompt.
+///
+/// # Errors
+///
+/// Returns an error for disabled policy, stale consent, sink startup failure,
+/// or exact-peer delivery failure.
+pub fn authorize_remote_audio(
+    network: &ShellNetwork,
+    session_id: [u8; 16],
+    approved: bool,
+) -> Result<(), String> {
+    require_continuity(ContinuityCapability::Media)?;
+    crate::shell::remote_audio::authorize(network, session_id, approved)
+}
+
+/// Stop an active remote-audio route and revoke its target-issued capability.
+///
+/// # Errors
+///
+/// Returns an error when the route is stale or its exact peer cannot be
+/// notified.
+pub fn stop_remote_audio(network: &ShellNetwork, session_id: [u8; 16]) -> Result<(), String> {
+    crate::shell::remote_audio::stop(network, session_id)
+}
+
+#[must_use]
+pub fn remote_audio_view(
+    focus: Option<&crate::shell::physical_gamepad::PhysicalGamepadBinding>,
+) -> crate::shell::remote_audio::RemoteAudioView {
+    crate::shell::remote_audio::snapshot(focus)
 }
 
 /// Send one file or folder to an authenticated exact target. Files up to
