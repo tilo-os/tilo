@@ -52,6 +52,18 @@ class InitramfsTests(unittest.TestCase):
             with self.subTest(index=index), self.assertRaises(verifier.VerificationError):
                 self.verify(data)
 
+    def test_invalid_numeric_header_and_redirected_key_are_rejected(self):
+        original = cpio([(verifier.KEY, KEY)])
+        bad_numeric = bytearray(original)
+        bad_numeric[54:62] = b'-0000001'
+        symlink = bytearray(original)
+        symlink[14:22] = f'{stat.S_IFLNK | 0o777:08x}'.encode()
+        hardlink = bytearray(original)
+        hardlink[38:46] = b'00000002'
+        for data in (bad_numeric, symlink, hardlink):
+            with self.assertRaises(verifier.VerificationError):
+                self.verify(bytes(data))
+
     def test_expansion_budget_and_child_deadline_reject(self):
         main = gzip.compress(cpio([(verifier.KEY, KEY)]))
         with patch.object(verifier, 'MAX_EXPANDED', 32):
