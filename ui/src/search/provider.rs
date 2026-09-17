@@ -674,6 +674,7 @@ impl SearchCatalog {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.generation = generation;
+        drop(inner);
         Ok(())
     }
 
