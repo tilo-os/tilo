@@ -740,6 +740,17 @@ impl AudioPane {
         if self.devices.sinks.len() >= 2 {
             let opts: Vec<String> = self.devices.sinks.iter().map(|d| d.name.clone()).collect();
             let mut dd = Dropdown::new(opts, OUTPUT_DEVICE_KEY).with_id("audio.output_device");
+            let devices = self
+                .devices
+                .sinks
+                .iter()
+                .map(|device| (device.name.clone(), device.id))
+                .collect();
+            if let Some(binding) = crate::actions::audio_device_binding("output-device", devices) {
+                dd = dd.on_action(binding);
+            } else {
+                dd = dd.with_enabled(false);
+            }
             if let Some(name) = self.devices.default_sink() {
                 dd = dd.with_placeholder(name);
             }
@@ -747,25 +758,51 @@ impl AudioPane {
         }
         output_rows.push(setting_row(
             "Volume",
-            Box::new(Slider::new("settings.audio.volume", VOLUME_KEY).with_id("audio.volume")),
+            Box::new(
+                Slider::new("settings.audio.volume", VOLUME_KEY)
+                    .with_id("audio.volume")
+                    .on_action(
+                        crate::actions::audio_number_binding("volume")
+                            .expect("output volume is part of the static resource contract"),
+                    ),
+            ),
         ));
         output_rows.push(setting_row(
             "Mute",
-            Box::new(Toggle::new("settings.audio.mute", MUTED_KEY).with_id("audio.mute")),
+            Box::new(
+                Toggle::new("settings.audio.mute", MUTED_KEY)
+                    .with_id("audio.mute")
+                    .on_action(
+                        crate::actions::audio_bool_binding("muted")
+                            .expect("output mute is part of the static resource contract"),
+                    ),
+            ),
         ));
         let stereo_sink = self.graph.default_sink().filter(|sink| sink.channels == 2);
         if self.runtime_caps.balance && stereo_sink.is_some() {
             output_rows.push(setting_row(
                 "Balance",
                 Box::new(
-                    Slider::new("settings.audio.balance", BALANCE_KEY).with_id("audio.balance"),
+                    Slider::new("settings.audio.balance", BALANCE_KEY)
+                        .with_id("audio.balance")
+                        .on_action(
+                            crate::actions::audio_number_binding("balance")
+                                .expect("output balance is part of the static resource contract"),
+                        ),
                 ),
             ));
         }
         if self.runtime_caps.mono_output && stereo_sink.is_some() {
             output_rows.push(setting_row(
                 "Mono audio",
-                Box::new(Toggle::new("settings.audio.mono", MONO_KEY).with_id("audio.mono")),
+                Box::new(
+                    Toggle::new("settings.audio.mono", MONO_KEY)
+                        .with_id("audio.mono")
+                        .on_action(
+                            crate::actions::audio_bool_binding("mono")
+                                .expect("mono output is part of the static resource contract"),
+                        ),
+                ),
             ));
             output_rows.push(caption("Combines left and right across this desktop session. The session restores the physical output when you turn it off."));
         }
@@ -819,6 +856,17 @@ impl AudioPane {
                 .map(|d| d.name.clone())
                 .collect();
             let mut dd = Dropdown::new(opts, INPUT_DEVICE_KEY).with_id("audio.input_device");
+            let devices = self
+                .devices
+                .sources
+                .iter()
+                .map(|device| (device.name.clone(), device.id))
+                .collect();
+            if let Some(binding) = crate::actions::audio_device_binding("input-device", devices) {
+                dd = dd.on_action(binding);
+            } else {
+                dd = dd.with_enabled(false);
+            }
             if let Some(name) = self.devices.default_source() {
                 dd = dd.with_placeholder(name);
             }
@@ -828,7 +876,11 @@ impl AudioPane {
             "Input level",
             Box::new(
                 Slider::new("settings.audio.input_volume", INPUT_VOLUME_KEY)
-                    .with_id("audio.input_volume"),
+                    .with_id("audio.input_volume")
+                    .on_action(
+                        crate::actions::audio_number_binding("input-volume")
+                            .expect("input volume is part of the static resource contract"),
+                    ),
             ),
         ));
         if self.runtime_caps.microphone_meter && self.graph.default_source().is_some() {
@@ -1111,12 +1163,13 @@ impl AudioPane {
     /// Load the current prefs from disk, apply `f` to the audio section, and
     /// persist — reading fresh each time so a change here never clobbers a
     /// different pane's section.
-    fn persist_audio(f: impl FnOnce(&mut AudioPrefs)) {
+    fn persist_audio(f: impl FnOnce(&mut AudioPrefs)) -> Result<(), String> {
         let mut p = SystemPrefs::load();
         f(&mut p.audio);
-        if let Err(e) = p.save() {
+        p.save().map(|_| ()).map_err(|e| {
             warn!(target: "tilo::settings", op = "audio_prefs_save", error = %e, "failed to persist audio prefs");
-        }
+            format!("Audio preference could not be saved: {e}")
+        })
     }
 
     /// Advance the bounded speaker/mic diagnostics and re-enumerate the
@@ -1206,12 +1259,25 @@ impl AudioPane {
         if let Some(new) = read_f64(state, root, VOLUME_KEY) {
             let new = new as f32;
             if (new - self.last_volume).abs() > 0.001 {
+                let operation = crate::actions::AudioOperation::SetOutputVolume {
+                    value: f64::from(new),
+                };
                 match self.dispatcher.set_volume(new.clamp(0.0, 1.0) * 100.0) {
-                    Ok(()) => self.last_volume = new,
+                    Ok(()) => {
+                        self.last_volume = new;
+                        self.finish_local_operation(
+                            operation,
+                            Ok(format!("Output volume set to {}%.", (new * 100.0).round())),
+                        );
+                    }
                     Err(e) => {
                         let _ = state.put(root, VOLUME_KEY, f64::from(self.last_volume));
                         self.runtime_notice = Some(format!("Volume could not be changed: {e}"));
                         self.structure_dirty = true;
+                        self.finish_local_operation(
+                            operation,
+                            Err(format!("Output volume could not be changed: {e}")),
+                        );
                         warn!(target: "tilo::settings", op = "set_volume", error = %e, "audio pane dispatch failed");
                     }
                 }
@@ -1220,13 +1286,26 @@ impl AudioPane {
         if let Some(new) = read_f64(state, root, INPUT_VOLUME_KEY) {
             let new = new as f32;
             if (new - self.last_input).abs() > 0.001 {
+                let operation = crate::actions::AudioOperation::SetInputVolume {
+                    value: f64::from(new),
+                };
                 match self.input.set_input_volume(new.clamp(0.0, 1.0) * 100.0) {
-                    Ok(()) => self.last_input = new,
+                    Ok(()) => {
+                        self.last_input = new;
+                        self.finish_local_operation(
+                            operation,
+                            Ok(format!("Input level set to {}%.", (new * 100.0).round())),
+                        );
+                    }
                     Err(e) => {
                         let _ = state.put(root, INPUT_VOLUME_KEY, f64::from(self.last_input));
                         self.runtime_notice =
                             Some(format!("Input level could not be changed: {e}"));
                         self.structure_dirty = true;
+                        self.finish_local_operation(
+                            operation,
+                            Err(format!("Input level could not be changed: {e}")),
+                        );
                         warn!(target: "tilo::settings", op = "set_input_volume", error = %e, "audio pane dispatch failed");
                     }
                 }
@@ -1235,12 +1314,27 @@ impl AudioPane {
         if let Some(b) = read_bool(state, root, MUTED_KEY)
             && b != self.last_muted
         {
+            let operation = crate::actions::AudioOperation::SetOutputMuted { muted: b };
             match self.dispatcher.set_mute(b) {
-                Ok(()) => self.last_muted = b,
+                Ok(()) => {
+                    self.last_muted = b;
+                    self.finish_local_operation(
+                        operation,
+                        Ok(if b {
+                            "Output muted.".into()
+                        } else {
+                            "Output unmuted.".into()
+                        }),
+                    );
+                }
                 Err(e) => {
                     let _ = state.put(root, MUTED_KEY, self.last_muted);
                     self.runtime_notice = Some(format!("Mute could not be changed: {e}"));
                     self.structure_dirty = true;
+                    self.finish_local_operation(
+                        operation,
+                        Err(format!("Output mute could not be changed: {e}")),
+                    );
                     warn!(target: "tilo::settings", op = "set_mute", error = %e, "audio pane dispatch failed");
                 }
             }
@@ -1249,23 +1343,60 @@ impl AudioPane {
 
     /// Apply the balance slider and mono toggle from the CRDT, persisting the
     /// preference (never touching the compositor's live session transform).
-    fn apply_balance_and_mono(&mut self, state: &AutoCommit, root: &ObjId) {
+    fn apply_balance_and_mono(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Some(value) = read_f64(state, root, BALANCE_KEY).map(|v| v as f32)
             && (value - self.balance).abs() > 0.001
         {
-            self.balance = value.clamp(0.0, 1.0);
-            if self.persist_prefs {
-                let balance = self.balance;
-                Self::persist_audio(|prefs| prefs.balance = balance);
+            let requested = value.clamp(0.0, 1.0);
+            let operation = crate::actions::AudioOperation::SetBalance {
+                value: f64::from(requested),
+            };
+            let result = if self.persist_prefs {
+                Self::persist_audio(|prefs| prefs.balance = requested)
+            } else {
+                Ok(())
+            };
+            match result {
+                Ok(()) => {
+                    self.balance = requested;
+                    self.finish_local_operation(
+                        operation,
+                        Ok(format!(
+                            "Output balance set to {}%.",
+                            (requested * 100.0).round()
+                        )),
+                    );
+                }
+                Err(error) => {
+                    let _ = state.put(root, BALANCE_KEY, f64::from(self.balance));
+                    self.finish_local_operation(operation, Err(error));
+                }
             }
         }
         if let Some(enabled) = read_bool(state, root, MONO_KEY)
             && enabled != self.mono_enabled
         {
-            self.mono_enabled = enabled;
-            if self.persist_prefs {
-                Self::persist_audio(|prefs| prefs.mono_output = enabled);
+            let operation = crate::actions::AudioOperation::SetMono { enabled };
+            let result = if self.persist_prefs {
+                Self::persist_audio(|prefs| prefs.mono_output = enabled)
+            } else {
+                Ok(())
+            };
+            if let Err(error) = result {
+                let _ = state.put(root, MONO_KEY, self.mono_enabled);
+                self.finish_local_operation(operation, Err(error));
+                return;
             }
+            self.mono_enabled = enabled;
+            self.finish_local_operation(
+                operation,
+                Ok(if enabled {
+                    "Mono output enabled."
+                } else {
+                    "Mono output disabled."
+                }
+                .into()),
+            );
             self.runtime_notice = Some(if enabled {
                 "Mono output is active for this desktop session.".into()
             } else {
@@ -1357,7 +1488,7 @@ impl AudioPane {
                 Ok(()) => {
                     if self.persist_prefs {
                         let nm = name.clone();
-                        Self::persist_audio(|a| a.output_device = Some(nm));
+                        let _ = Self::persist_audio(|a| a.output_device = Some(nm));
                     }
                     self.last_sink = Some(name);
                     self.finish_local_operation(
@@ -1388,7 +1519,7 @@ impl AudioPane {
                 Ok(()) => {
                     if self.persist_prefs {
                         let nm = name.clone();
-                        Self::persist_audio(|a| a.input_device = Some(nm));
+                        let _ = Self::persist_audio(|a| a.input_device = Some(nm));
                     }
                     self.last_source = Some(name);
                     self.finish_local_operation(
