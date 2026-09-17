@@ -71,6 +71,27 @@ else
   bad 'mutable release-VM state is not scoped to one named cycle'
 fi
 
+if grep -Fq 'cmd_pointer()' "$vm" \
+  && grep -Fq 'mouse_move $qx $qy 1' "$vm" \
+  && grep -Fq 'mouse_button $mask' "$vm" \
+  && grep -Fq 'mouse_button 0' "$vm" \
+  && grep -Fq 'pointer coordinate ($x,$y) is outside' "$vm"; then
+  ok 'VM interaction helper maps guest pixels to the absolute tablet and releases clicks'
+else
+  bad 'VM interaction helper can leave buttons held or inject coordinates outside the guest mode'
+fi
+
+if grep -Fq 'cmd_wait_greeter_return()' "$vm" \
+  && grep -Fq "! pgrep -f '^/usr/bin/shell --backend drm( |$)'" "$vm" \
+  && grep -Fq 'systemctl is-active --quiet greetd.service' "$vm" \
+  && grep -Fq 'cmd_shutdown()' "$vm" \
+  && grep -Fq 'sudo systemctl poweroff' "$vm" \
+  && grep -Fq 'guest did not power off' "$vm"; then
+  ok 'VM helpers prove UI logout returned to greetd and bound clean guest shutdown'
+else
+  bad 'VM lifecycle helpers cannot distinguish logout, crash, and forced VM termination'
+fi
+
 [ "$(grep -Fc 'serial=tilo-install-target' "$vm")" -ge 3 ] \
   && ok 'the target keeps one stable serial through attach, install and reboot' \
   || bad 'the target disk serial changes across the install cycle'
