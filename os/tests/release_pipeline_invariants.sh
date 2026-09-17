@@ -198,6 +198,7 @@ grep -Fq 'SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945
   && grep -Fq 'export RUSTC_WRAPPER=' "$repo/os/Containerfile" \
   && grep -Fq 'SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77' "$repo/os/Containerfile.builder" \
   && grep -Fq 'sccache_arch=aarch64' "$repo/os/Containerfile.builder" \
+  && grep -Fq 'git jq ripgrep time yt-dlp' "$repo/os/Containerfile.builder" \
   && ok 'OS and CI builder images install checksum-pinned native cache clients' \
   || bad 'an ARM build image can still install the x86 compiler-cache client'
 
