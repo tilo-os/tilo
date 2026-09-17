@@ -314,6 +314,26 @@ struct PartitionColumns {
     used: f64,
 }
 
+#[derive(Clone, Copy)]
+struct PartitionRow<'a> {
+    area: Rect,
+    columns: PartitionColumns,
+    y: f64,
+    index: usize,
+    partition: &'a Partition,
+    selected: bool,
+    hovered: bool,
+}
+
+/// Mutable rendering resources shared by the app's immediate-mode paint
+/// passes. Geometry and domain data remain explicit at each boundary.
+struct PaintContext<'a> {
+    scene: &'a mut Scene,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+    transform: Affine,
+}
+
 pub struct DisksApp {
     topo: Topology,
     topo_json_cache: String,
@@ -723,11 +743,15 @@ impl DisksApp {
     }
 
     // ---- drawing primitives -------------------------------------------
-    // Each of `txt` / `txt_right` / `txt_center` takes every value it draws
-    // independently (position, size, colour, weight, ...); bundling them
-    // into a params struct would just move the same field count into a
-    // call-site literal at 74 call sites for no behavioural difference.
-    #[allow(clippy::too_many_arguments, reason = "see the comment above")]
+    // This is the one leaf adapter around `TextRenderer::draw_text_weighted`.
+    // Its text, typography, origin and optional clipping width are independent
+    // at 57 call sites; a parameter object would add construction noise but
+    // express no invariant. Alignment-aware adapters below group their anchor
+    // into a `Point` and therefore remain lint-clean.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "leaf adapter mirrors independently variable renderer inputs at 57 call sites; no domain invariant exists to model"
+    )]
     fn txt(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -750,15 +774,13 @@ impl DisksApp {
         );
     }
 
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn txt_right(
         scene: &mut Scene,
         tr: &mut TextRenderer,
         s: &str,
         size: f32,
         color: Color,
-        right: f64,
-        top: f64,
+        anchor: Point,
         weight: TextWeight,
     ) {
         let (w, _) = tr.measure_weighted(s, size, None, weight);
@@ -768,22 +790,20 @@ impl DisksApp {
             s,
             size,
             color,
-            right - f64::from(w),
-            top,
+            anchor.x - f64::from(w),
+            anchor.y,
             None,
             weight,
         );
     }
 
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn txt_center(
         scene: &mut Scene,
         tr: &mut TextRenderer,
         s: &str,
         size: f32,
         color: Color,
-        cx: f64,
-        top: f64,
+        anchor: Point,
         weight: TextWeight,
     ) {
         let (w, _) = tr.measure_weighted(s, size, None, weight);
@@ -793,8 +813,8 @@ impl DisksApp {
             s,
             size,
             color,
-            cx - f64::from(w) / 2.0,
-            top,
+            anchor.x - f64::from(w) / 2.0,
+            anchor.y,
             None,
             weight,
         );
@@ -832,14 +852,11 @@ impl DisksApp {
     }
 
     // ---- top bar -------------------------------------------------------
-    fn draw_topbar(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-    ) {
+    fn draw_topbar(&self, paint: &mut PaintContext<'_>, lay: &Layout) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let bar = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, TOPBAR_H);
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &bar);
@@ -916,24 +933,17 @@ impl DisksApp {
     }
 
     // ---- drive list ----------------------------------------------------
-    fn draw_drive_list(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-    ) {
+    fn draw_drive_list(&self, paint: &mut PaintContext<'_>, lay: &Layout) {
         // Section header — anchors the column as an explicit, pickable list.
-        self.draw_drive_list_header(scene, tr, theme, lay.list_header);
+        self.draw_drive_list_header(paint, lay.list_header);
 
         // Rows, clipped to the scrolling body so a long list can't spill over
         // the header or the window edge.
-        scene.push_layer(
+        paint.scene.push_layer(
             Fill::NonZero,
             ui::vello::peniko::BlendMode::default(),
             1.0,
-            t,
+            paint.transform,
             &lay.list_body,
         );
         for (i, drive) in self.topo.drives.iter().enumerate() {
@@ -943,20 +953,17 @@ impl DisksApp {
             }
             let selected = i == self.selected;
             let hover = self.hover_card == Some(i);
-            Self::draw_drive_row(scene, tr, theme, t, r, drive, selected, hover);
+            Self::draw_drive_row(paint, r, drive, selected, hover);
         }
-        scene.pop_layer();
+        paint.scene.pop_layer();
     }
 
     /// The "DRIVES" section header + drive count (part of
     /// [`Self::draw_drive_list`]).
-    fn draw_drive_list_header(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        hr: Rect,
-    ) {
+    fn draw_drive_list_header(&self, paint: &mut PaintContext<'_>, hr: Rect) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
         let c = &theme.tokens.colors;
         Self::txt(
             scene,
@@ -975,25 +982,24 @@ impl DisksApp {
             &format!("{}", self.topo.drives.len()),
             11.5,
             c.text_dim,
-            hr.x1 - 2.0,
-            hr.y0 + 8.0,
+            Point::new(hr.x1 - 2.0, hr.y0 + 8.0),
             TextWeight::Semibold,
         );
     }
 
     /// One drive card: kind badge, model/name/size, usage bar, and health
     /// dot (part of [`Self::draw_drive_list`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_drive_row(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         r: Rect,
         drive: &Drive,
         selected: bool,
         hover: bool,
     ) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let bg = if selected {
             with_alpha(theme.accent_primary, 46)
@@ -1041,8 +1047,7 @@ impl DisksApp {
             drive.kind.tag(),
             12.0,
             Color::WHITE,
-            f64::midpoint(badge.x0, badge.x1),
-            badge.y0 + 4.0,
+            Point::new(f64::midpoint(badge.x0, badge.x1), badge.y0 + 4.0),
             TextWeight::Bold,
         );
 
@@ -1088,7 +1093,15 @@ impl DisksApp {
             usage_color(theme, used_frac),
         );
 
-        // Health dot + short label at a glance.
+        Self::draw_drive_health(paint, r, drive);
+    }
+
+    /// Health dot + short label at a glance (part of [`Self::draw_drive_row`]).
+    fn draw_drive_health(paint: &mut PaintContext<'_>, r: Rect, drive: &Drive) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let status = drive.smart_status();
         let dot_c = status_color(theme, status);
         let dot = Rect::new(r.x1 - 26.0, r.y0 + 18.0, r.x1 - 16.0, r.y0 + 28.0);
@@ -1099,21 +1112,17 @@ impl DisksApp {
             status.label(),
             10.5,
             dot_c,
-            r.x1 - 32.0,
-            r.y0 + 17.0,
+            Point::new(r.x1 - 32.0, r.y0 + 17.0),
             TextWeight::Semibold,
         );
     }
 
     // ---- detail header -------------------------------------------------
-    fn draw_header(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-        drive: &Drive,
-    ) {
+    fn draw_header(paint: &mut PaintContext<'_>, lay: &Layout, drive: &Drive) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let h = lay.header;
         Self::fill_rr(scene, t, h, 14.0, c.surfaces.raised);
@@ -1160,10 +1169,7 @@ impl DisksApp {
         let chip_y = h.y0 + 62.0;
         let status = drive.smart_status();
         Self::draw_chip(
-            scene,
-            tr,
-            theme,
-            t,
+            paint,
             tx,
             chip_y,
             &format!("● {}", status.label()),
@@ -1174,13 +1180,10 @@ impl DisksApp {
             .clone()
             .unwrap_or_else(|| "—".into())
             .to_uppercase();
-        Self::draw_chip(scene, tr, theme, t, tx + 132.0, chip_y, &tran, c.neutral[5]);
+        Self::draw_chip(paint, tx + 132.0, chip_y, &tran, c.neutral[5]);
         if drive.removable {
             Self::draw_chip(
-                scene,
-                tr,
-                theme,
-                t,
+                paint,
                 tx + 132.0 + 86.0,
                 chip_y,
                 "REMOVABLE",
@@ -1292,8 +1295,7 @@ impl DisksApp {
                     a.label(),
                     13.0,
                     with_alpha(c.text_dim, 130),
-                    f64::midpoint(r.x0, r.x1),
-                    r.y0 + 9.0,
+                    Point::new(f64::midpoint(r.x0, r.x1), r.y0 + 9.0),
                     TextWeight::Medium,
                 );
                 continue;
@@ -1323,8 +1325,7 @@ impl DisksApp {
                 a.label(),
                 13.0,
                 fg,
-                f64::midpoint(r.x0, r.x1),
-                r.y0 + 9.0,
+                Point::new(f64::midpoint(r.x0, r.x1), r.y0 + 9.0),
                 TextWeight::Medium,
             );
         }
@@ -1366,21 +1367,14 @@ impl DisksApp {
         );
     }
 
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     #[allow(
         clippy::many_single_char_names,
-        reason = "t/x/y/w/r are the standard graphics convention: transform, position, measured width, resulting rect"
+        reason = "x/y/w/r are the standard graphics convention: position, measured width, resulting rect"
     )]
-    fn draw_chip(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        _theme: &Theme,
-        t: Affine,
-        x: f64,
-        y: f64,
-        label: &str,
-        color: Color,
-    ) {
+    fn draw_chip(paint: &mut PaintContext<'_>, x: f64, y: f64, label: &str, color: Color) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let t = paint.transform;
         let (w, _) = tr.measure_weighted(label, 12.0, None, TextWeight::Semibold);
         let r = Rect::new(x, y, x + f64::from(w) + 22.0, y + 24.0);
         Self::fill_rr(scene, t, r, 12.0, with_alpha(color, 38));
@@ -1432,15 +1426,11 @@ impl DisksApp {
     }
 
     // ---- content: overview --------------------------------------------
-    fn draw_overview(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        lay: &Layout,
-        drive: &Drive,
-    ) {
+    fn draw_overview(&self, paint: &mut PaintContext<'_>, lay: &Layout, drive: &Drive) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let area = lay.content;
         // Section heading + "Whole disk" selector (top-right).
@@ -1497,8 +1487,7 @@ impl DisksApp {
             "◍ Whole disk",
             11.5,
             if whole { pill_c } else { c.text_dim },
-            f64::midpoint(pill.x0, pill.x1),
-            pill.y0 + 4.0,
+            Point::new(f64::midpoint(pill.x0, pill.x1), pill.y0 + 4.0),
             TextWeight::Semibold,
         );
 
@@ -1506,7 +1495,7 @@ impl DisksApp {
         self.draw_partition_map(scene, tr, theme, t, map, drive);
         // Legend.
         let legend_y = map.y1 + 12.0;
-        Self::draw_legend(scene, tr, theme, t, area.x0, legend_y, area.x1, drive);
+        Self::draw_legend(paint, area.x0, legend_y, area.x1, drive);
 
         // Two columns below: capacity (left) + SMART summary (right). Sized to
         // their natural content height (not the viewport) so scrolling can
@@ -1518,8 +1507,15 @@ impl DisksApp {
         let left = Rect::new(area.x0, cols_top, area.x0 + left_w, cols_bottom);
         let right = Rect::new(left.x1 + gap, cols_top, area.x1, cols_bottom);
 
-        self.draw_capacity(scene, tr, theme, t, left, drive);
-        Self::draw_smart_card(scene, tr, theme, t, right, drive);
+        self.draw_capacity(
+            paint.scene,
+            paint.text,
+            paint.theme,
+            paint.transform,
+            left,
+            drive,
+        );
+        Self::draw_smart_card(paint, right, drive);
     }
 
     /// Natural pixel height of the current tab's content, used to size the
@@ -1643,17 +1639,11 @@ impl DisksApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
-    fn draw_legend(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        x0: f64,
-        y: f64,
-        x1: f64,
-        drive: &Drive,
-    ) {
+    fn draw_legend(paint: &mut PaintContext<'_>, x0: f64, y: f64, x1: f64, drive: &Drive) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let mut x = x0;
         let mut yy = y;
@@ -1794,8 +1784,7 @@ impl DisksApp {
                 &mp,
                 12.0,
                 c.text_dim,
-                area.x1,
-                y + 1.0,
+                Point::new(area.x1, y + 1.0),
                 TextWeight::Regular,
             );
             let barr = Rect::new(area.x0, y + 22.0, area.x1, y + 32.0);
@@ -1830,33 +1819,34 @@ impl DisksApp {
         }
     }
 
-    fn draw_smart_card(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        area: Rect,
-        drive: &Drive,
-    ) {
+    fn draw_smart_card(paint: &mut PaintContext<'_>, area: Rect, drive: &Drive) {
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
-        Self::fill_rr(scene, t, area, 12.0, c.neutral[2]);
-        Self::stroke_rr(scene, t, area, 12.0, c.border_standard, 1.0);
         let pad = 16.0;
         let x = area.x0 + pad;
         let status = drive.smart_status();
-        Self::txt(
-            scene,
-            tr,
-            "SMART HEALTH",
-            11.0,
-            c.text_dim,
-            x,
-            area.y0 + pad,
-            None,
-            TextWeight::Semibold,
-        );
+        {
+            let scene = &mut *paint.scene;
+            let tr = &mut *paint.text;
+            Self::fill_rr(scene, t, area, 12.0, c.neutral[2]);
+            Self::stroke_rr(scene, t, area, 12.0, c.border_standard, 1.0);
+            Self::txt(
+                scene,
+                tr,
+                "SMART HEALTH",
+                11.0,
+                c.text_dim,
+                x,
+                area.y0 + pad,
+                None,
+                TextWeight::Semibold,
+            );
+        }
 
-        let pill = Self::draw_smart_status_pill(scene, tr, theme, t, area, x, pad, status);
+        let pill = Self::draw_smart_status_pill(paint, area, x, pad, status);
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
 
         let Some(smart) = &drive.smart else {
             Self::txt(
@@ -1894,23 +1884,23 @@ impl DisksApp {
             return;
         }
 
-        Self::draw_smart_card_body(scene, tr, theme, t, area, x, pad, pill, smart);
+        Self::draw_smart_card_body(paint, area, x, pad, pill, smart);
     }
 
     /// The status pill under the "SMART HEALTH" label (part of
     /// [`Self::draw_smart_card`]). Returns the pill's rect so the caller can
     /// anchor the rest of the card beneath it.
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_smart_status_pill(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         x: f64,
         pad: f64,
         status: SmartStatus,
     ) -> Rect {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let sc = status_color(theme, status);
         let pill = Rect::new(
             x,
@@ -1937,18 +1927,18 @@ impl DisksApp {
     /// The temperature gauge + stat rows below the status pill, once SMART
     /// telemetry is known to have at least one usable value (part of
     /// [`Self::draw_smart_card`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_smart_card_body(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         x: f64,
         pad: f64,
         pill: Rect,
         smart: &SmartInfo,
     ) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         // Temperature gauge.
         let mut yy = pill.y1 + 18.0;
@@ -1970,8 +1960,7 @@ impl DisksApp {
                 &format!("{temp} °C"),
                 13.0,
                 c.text_primary,
-                area.x1 - pad,
-                yy,
+                Point::new(area.x1 - pad, yy),
                 TextWeight::Semibold,
             );
             let frac = ((temp as f64 - 20.0) / 50.0).clamp(0.0, 1.0);
@@ -2003,8 +1992,7 @@ impl DisksApp {
                     &val,
                     12.5,
                     c.text_primary,
-                    area.x1 - pad,
-                    *yy,
+                    Point::new(area.x1 - pad, *yy),
                     TextWeight::Semibold,
                 );
                 *yy += 22.0;
@@ -2039,16 +2027,9 @@ impl DisksApp {
     }
 
     // ---- content: SMART tab -------------------------------------------
-    fn draw_smart_tab(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        area: Rect,
-        drive: &Drive,
-    ) {
+    fn draw_smart_tab(paint: &mut PaintContext<'_>, area: Rect, drive: &Drive) {
         let status = drive.smart_status();
-        let banner = Self::draw_smart_tab_banner(scene, tr, theme, t, area, drive, status);
+        let banner = Self::draw_smart_tab_banner(paint, area, drive, status);
 
         let Some(smart) = &drive.smart else {
             return;
@@ -2056,23 +2037,24 @@ impl DisksApp {
 
         let tiles_top = banner.y1 + 16.0;
         let tile_h = 78.0;
-        Self::draw_smart_tiles(scene, tr, theme, t, area, smart, tiles_top, tile_h);
+        Self::draw_smart_tiles(paint, area, smart, tiles_top, tile_h);
 
         let table_top = tiles_top + tile_h + 18.0;
-        Self::draw_smart_attr_table(scene, tr, theme, t, area, smart, table_top);
+        Self::draw_smart_attr_table(paint, area, smart, table_top);
     }
 
     /// The overall self-assessment banner (part of [`Self::draw_smart_tab`]).
     /// Returns its rect so the caller can anchor the stat tiles beneath it.
     fn draw_smart_tab_banner(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         drive: &Drive,
         status: SmartStatus,
     ) -> Rect {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let sc = status_color(theme, status);
         let banner = Rect::new(area.x0, area.y0, area.x1, area.y0 + 64.0);
@@ -2126,17 +2108,17 @@ impl DisksApp {
 
     /// The temperature / power-on / power-cycles / reallocated / wear stat
     /// tiles row (part of [`Self::draw_smart_tab`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_smart_tiles(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         smart: &SmartInfo,
         tiles_top: f64,
         tile_h: f64,
     ) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let tiles: Vec<(String, String)> = vec![
             (
@@ -2208,12 +2190,13 @@ impl DisksApp {
     /// [`Self::draw_smart_attr_table`]). Returns `(header_y, id_x, name_x,
     /// val_x, stat_x)` so each row aligns beneath them.
     fn draw_smart_attr_table_header(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         table_top: f64,
     ) -> (f64, f64, f64, f64, f64) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
         let c = &theme.tokens.colors;
         Self::txt(
             scene,
@@ -2281,18 +2264,18 @@ impl DisksApp {
     /// One row of the SMART attribute table (part of
     /// [`Self::draw_smart_attr_table`]). `xs` is `(id_x, name_x, val_x,
     /// stat_x)` from [`Self::draw_smart_attr_table_header`].
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_smart_attr_row(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         i: usize,
         a: &SmartAttr,
         xs: (f64, f64, f64, f64),
         ry: f64,
     ) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let (id_x, name_x, val_x, stat_x) = xs;
         if i.is_multiple_of(2) {
@@ -2346,65 +2329,51 @@ impl DisksApp {
     }
 
     fn draw_smart_attr_table(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         area: Rect,
         smart: &SmartInfo,
         table_top: f64,
     ) {
         let (header_y, id_x, name_x, val_x, stat_x) =
-            Self::draw_smart_attr_table_header(scene, tr, theme, area, table_top);
+            Self::draw_smart_attr_table_header(paint, area, table_top);
         let mut ry = header_y + 22.0;
         for (i, a) in smart.attrs.iter().enumerate() {
             if ry > area.y1 - 20.0 {
                 break;
             }
-            Self::draw_smart_attr_row(
-                scene,
-                tr,
-                theme,
-                t,
-                area,
-                i,
-                a,
-                (id_x, name_x, val_x, stat_x),
-                ry,
-            );
+            Self::draw_smart_attr_row(paint, area, i, a, (id_x, name_x, val_x, stat_x), ry);
             ry += 24.0;
         }
     }
 
     // ---- content: partitions tab --------------------------------------
-    fn draw_partitions_tab(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        area: Rect,
-        drive: &Drive,
-    ) {
-        let cols = Self::draw_partitions_header(scene, tr, theme, area);
+    fn draw_partitions_tab(&self, paint: &mut PaintContext<'_>, area: Rect, drive: &Drive) {
+        let columns = Self::draw_partitions_header(paint, area);
 
-        let mut ry = area.y0 + 24.0;
-        for (i, p) in drive.partitions.iter().enumerate() {
-            let selected = self.selected_part == Some(i);
-            let hover = self.hover_part == Some(i);
-            Self::draw_partitions_row(scene, tr, theme, t, area, &cols, ry, i, p, selected, hover);
-            ry += 38.0;
+        let mut y = area.y0 + 24.0;
+        for (index, partition) in drive.partitions.iter().enumerate() {
+            Self::draw_partitions_row(
+                paint,
+                PartitionRow {
+                    area,
+                    columns,
+                    y,
+                    index,
+                    partition,
+                    selected: self.selected_part == Some(index),
+                    hovered: self.hover_part == Some(index),
+                },
+            );
+            y += 38.0;
         }
     }
 
     /// The column headers (part of [`Self::draw_partitions_tab`]). Returns
     /// the resolved column x-positions so each row aligns to them.
-    fn draw_partitions_header(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-    ) -> PartitionColumns {
+    fn draw_partitions_header(paint: &mut PaintContext<'_>, area: Rect) -> PartitionColumns {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
         let c = &theme.tokens.colors;
         let cols = PartitionColumns {
             name: area.x0 + 6.0,
@@ -2476,8 +2445,7 @@ impl DisksApp {
             "USED",
             11.0,
             c.text_dim,
-            cols.used,
-            hy,
+            Point::new(cols.used, hy),
             TextWeight::Semibold,
         );
         cols
@@ -2485,18 +2453,19 @@ impl DisksApp {
 
     /// The row's selection/hover/zebra background plus the role swatch (part
     /// of [`Self::draw_partitions_row`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
-    fn draw_partitions_row_bg(
-        scene: &mut Scene,
-        theme: &Theme,
-        t: Affine,
-        area: Rect,
-        ry: f64,
-        i: usize,
-        p: &Partition,
-        selected: bool,
-        hover: bool,
-    ) {
+    fn draw_partitions_row_bg(paint: &mut PaintContext<'_>, row: PartitionRow<'_>) {
+        let scene = &mut *paint.scene;
+        let theme = paint.theme;
+        let t = paint.transform;
+        let PartitionRow {
+            area,
+            y: ry,
+            index: i,
+            partition: p,
+            selected,
+            hovered: hover,
+            ..
+        } = row;
         let c = &theme.tokens.colors;
         let rowr = Rect::new(area.x0, ry - 6.0, area.x1, ry + 30.0);
         if selected {
@@ -2529,14 +2498,13 @@ impl DisksApp {
 
     /// The name/label/fs/size/mount text fields of a partition row (part of
     /// [`Self::draw_partitions_row`]).
-    fn draw_partitions_row_fields(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        cols: &PartitionColumns,
-        ry: f64,
-        p: &Partition,
-    ) {
+    fn draw_partitions_row_fields(paint: &mut PaintContext<'_>, row: PartitionRow<'_>) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let cols = row.columns;
+        let ry = row.y;
+        let p = row.partition;
         let c = &theme.tokens.colors;
         Self::txt(
             scene,
@@ -2597,15 +2565,14 @@ impl DisksApp {
 
     /// The usage mini-bar (or the "—" placeholder when unmounted) at the
     /// right of a partition row (part of [`Self::draw_partitions_row`]).
-    fn draw_partitions_row_usage(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        cols: &PartitionColumns,
-        ry: f64,
-        p: &Partition,
-    ) {
+    fn draw_partitions_row_usage(paint: &mut PaintContext<'_>, row: PartitionRow<'_>) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
+        let cols = row.columns;
+        let ry = row.y;
+        let p = row.partition;
         let c = &theme.tokens.colors;
         if let Some(f) = p.used_frac() {
             let barr = Rect::new(cols.used - 64.0, ry + 6.0, cols.used, ry + 14.0);
@@ -2616,8 +2583,7 @@ impl DisksApp {
                 &format!("{:.0}%", f * 100.0),
                 11.0,
                 c.text_dim,
-                cols.used,
-                ry - 8.0,
+                Point::new(cols.used, ry - 8.0),
                 TextWeight::Regular,
             );
         } else {
@@ -2627,8 +2593,7 @@ impl DisksApp {
                 "—",
                 12.0,
                 c.text_dim,
-                cols.used,
-                ry,
+                Point::new(cols.used, ry),
                 TextWeight::Regular,
             );
         }
@@ -2637,35 +2602,17 @@ impl DisksApp {
     /// One partition row: selection/hover/zebra background, role swatch,
     /// name/label/fs/size/mount, and the usage mini-bar (part of
     /// [`Self::draw_partitions_tab`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
-    fn draw_partitions_row(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        area: Rect,
-        cols: &PartitionColumns,
-        ry: f64,
-        i: usize,
-        p: &Partition,
-        selected: bool,
-        hover: bool,
-    ) {
-        Self::draw_partitions_row_bg(scene, theme, t, area, ry, i, p, selected, hover);
-        Self::draw_partitions_row_fields(scene, tr, theme, cols, ry, p);
-        Self::draw_partitions_row_usage(scene, tr, theme, t, cols, ry, p);
+    fn draw_partitions_row(paint: &mut PaintContext<'_>, row: PartitionRow<'_>) {
+        Self::draw_partitions_row_bg(paint, row);
+        Self::draw_partitions_row_fields(paint, row);
+        Self::draw_partitions_row_usage(paint, row);
     }
 
     // ---- modal ---------------------------------------------------------
-    fn draw_modal(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        ml: &ModalLayout,
-        pending: Pending,
-    ) {
+    fn draw_modal(&mut self, paint: &mut PaintContext<'_>, ml: &ModalLayout, pending: Pending) {
+        let scene = &mut *paint.scene;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         // `surfaces.overlay` is intentionally opaque in the high-contrast
         // palette, which previously erased all surrounding context whenever a
@@ -2682,22 +2629,23 @@ impl DisksApp {
         Self::stroke_rr(scene, t, ml.card, 16.0, c.border_standard, 1.0);
         let danger = pending.action.destructive();
 
-        self.draw_modal_card_text(scene, tr, theme, ml.card, pending, danger);
-        let ready = self.draw_modal_input(scene, tr, theme, t, ml, pending);
-        self.draw_modal_buttons(scene, tr, theme, t, ml, danger, ready);
+        self.draw_modal_card_text(paint, ml.card, pending, danger);
+        let ready = self.draw_modal_input(paint, ml, pending);
+        self.draw_modal_buttons(paint, ml, danger, ready);
     }
 
     /// The title + body text on the confirm card (part of
     /// [`Self::draw_modal`]).
     fn draw_modal_card_text(
         &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: &mut PaintContext<'_>,
         card: Rect,
         pending: Pending,
         danger: bool,
     ) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
         let c = &theme.tokens.colors;
         let target = self.pending_target_name(pending);
         let title_c = if danger {
@@ -2734,13 +2682,14 @@ impl DisksApp {
     /// currently matches.
     fn draw_modal_input(
         &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         ml: &ModalLayout,
         pending: Pending,
     ) -> bool {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let c = &theme.tokens.colors;
         let card = ml.card;
         let inp = ml.input;
@@ -2770,8 +2719,7 @@ impl DisksApp {
                 "✓ match",
                 12.0,
                 c.semantic.success,
-                inp.x1 - 12.0,
-                inp.y0 + 10.0,
+                Point::new(inp.x1 - 12.0, inp.y0 + 10.0),
                 TextWeight::Semibold,
             );
         }
@@ -2780,17 +2728,17 @@ impl DisksApp {
 
     /// The Cancel + Confirm buttons — Confirm is locked (dimmed, inert)
     /// until the typed name matches (part of [`Self::draw_modal`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_modal_buttons(
         &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        paint: &mut PaintContext<'_>,
         ml: &ModalLayout,
         danger: bool,
         ready: bool,
     ) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let cancel_hov = ml.cancel.contains(self.last_mouse);
         Button::paint(
             scene,
@@ -2860,8 +2808,7 @@ impl DisksApp {
             "No storage devices found",
             17.0,
             c.text_primary,
-            cx,
-            card.y0 + 96.0,
+            Point::new(cx, card.y0 + 96.0),
             TextWeight::Bold,
         );
         let line = if std::env::var("DISKS_LIVE").is_ok() {
@@ -2875,8 +2822,7 @@ impl DisksApp {
             line,
             12.5,
             c.text_dim,
-            cx,
-            card.y0 + 124.0,
+            Point::new(cx, card.y0 + 124.0),
             TextWeight::Regular,
         );
         Self::txt_center(
@@ -2885,8 +2831,7 @@ impl DisksApp {
             "Reflecting the live system — nothing is invented here.",
             11.5,
             with_alpha(c.text_dim, 180),
-            cx,
-            card.y0 + 144.0,
+            Point::new(cx, card.y0 + 144.0),
             TextWeight::Regular,
         );
 
@@ -3187,6 +3132,94 @@ impl DisksApp {
             result: ResultSpec::Job,
             ..ActionContract::default()
         }))
+    }
+
+    /// Refresh scroll extents and derive the frame's shared geometry before
+    /// any paint pass consumes it.
+    fn prepare_draw_layout(&mut self) -> Layout {
+        let drive_count = self.topo.drives.len();
+        let (content_height, list_height) = match self.drive() {
+            Some(drive) => (
+                self.content_height(drive),
+                drive_count as f64 * CARD_H + drive_count.saturating_sub(1) as f64 * CARD_GAP,
+            ),
+            None => (0.0, 0.0),
+        };
+        self.content_h = content_height;
+        self.list_h = list_height;
+
+        let list_body_height = (self.rect.y1 - PAD) - (TOPBAR_H + PAD + LIST_HEADER_H);
+        let content_top = TOPBAR_H + PAD + HEADER_H + 12.0 + ACTIONBAR_H + 12.0 + TAB_H + PAD;
+        let content_height_available = (self.rect.y1 - PAD) - content_top;
+        self.content_scroll = self
+            .content_scroll
+            .clamp(0.0, (content_height - content_height_available).max(0.0));
+        self.list_scroll = self
+            .list_scroll
+            .clamp(0.0, (list_height - list_body_height).max(0.0));
+        self.compute_layout()
+    }
+
+    /// Paint the selected drive's header, action band, tabs, and clipped tab
+    /// content. The empty state follows the same detail-pane boundary.
+    fn draw_detail_pane(&self, paint: &mut PaintContext<'_>, layout: &Layout) {
+        let Some(drive) = self.drive() else {
+            self.draw_empty_state(
+                paint.scene,
+                paint.text,
+                paint.theme,
+                paint.transform,
+                layout,
+            );
+            return;
+        };
+
+        Self::draw_header(paint, layout, drive);
+        self.draw_action_bar(
+            paint.scene,
+            paint.text,
+            paint.theme,
+            paint.transform,
+            layout,
+            drive,
+        );
+        self.draw_tabs(
+            paint.scene,
+            paint.text,
+            paint.theme,
+            paint.transform,
+            layout,
+        );
+
+        let content_transform = paint.transform * Affine::translate((0.0, -self.content_scroll));
+        let natural_bottom = (layout.content.y0 + self.content_h).max(layout.content.y1);
+        let extended = Rect::new(
+            layout.content.x0,
+            layout.content.y0,
+            layout.content.x1,
+            natural_bottom,
+        );
+        paint.scene.push_layer(
+            Fill::NonZero,
+            ui::vello::peniko::BlendMode::default(),
+            1.0,
+            paint.transform,
+            &layout.content,
+        );
+        let mut content_paint = PaintContext {
+            scene: &mut *paint.scene,
+            text: &mut *paint.text,
+            theme: paint.theme,
+            transform: content_transform,
+        };
+        match self.tab {
+            Tab::Overview => self.draw_overview(&mut content_paint, layout, drive),
+            Tab::Smart => Self::draw_smart_tab(&mut content_paint, extended, drive),
+            Tab::Partitions => {
+                self.draw_partitions_tab(&mut content_paint, extended, drive);
+            }
+        }
+        paint.scene.pop_layer();
     }
 
     /// Resolve an operation payload against the latest locally-probed
@@ -3684,69 +3717,22 @@ impl Widget for DisksApp {
         // App background.
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
 
-        // Measure content extents + clamp scroll before laying out (the list
-        // rows are positioned from `list_scroll`).
-        let n = self.topo.drives.len();
-        let (ch, lh) = match self.drive() {
-            Some(d) => (
-                self.content_height(d),
-                n as f64 * CARD_H + n.saturating_sub(1) as f64 * CARD_GAP,
-            ),
-            None => (0.0, 0.0),
+        let lay = self.prepare_draw_layout();
+        let mut paint = PaintContext {
+            scene,
+            text: text_renderer,
+            theme,
+            transform,
         };
-        self.content_h = ch;
-        self.list_h = lh;
-        let v = self.rect;
-        let list_body_h = (v.y1 - PAD) - (TOPBAR_H + PAD + LIST_HEADER_H);
-        let content_top = TOPBAR_H + PAD + HEADER_H + 12.0 + ACTIONBAR_H + 12.0 + TAB_H + PAD;
-        let content_avail = (v.y1 - PAD) - content_top;
-        self.content_scroll = self
-            .content_scroll
-            .clamp(0.0, (ch - content_avail).max(0.0));
-        self.list_scroll = self.list_scroll.clamp(0.0, (lh - list_body_h).max(0.0));
 
-        let lay = self.compute_layout();
-        let tr = text_renderer;
-
-        // Detail pane (drawn first; in overlay mode the flap sits on top).
-        if let Some(drive) = self.drive() {
-            Self::draw_header(scene, tr, theme, transform, &lay, drive);
-            self.draw_action_bar(scene, tr, theme, transform, &lay, drive);
-            self.draw_tabs(scene, tr, theme, transform, &lay);
-            // Content scrolls within its own clip so it stays usable when the
-            // window is short/narrow. `ct` shifts the content up by the scroll;
-            // interactive rects live in unscrolled coords (see handle_event).
-            let ct = transform * Affine::translate((0.0, -self.content_scroll));
-            let natural_bottom = (lay.content.y0 + self.content_h).max(lay.content.y1);
-            let ext = Rect::new(
-                lay.content.x0,
-                lay.content.y0,
-                lay.content.x1,
-                natural_bottom,
-            );
-            scene.push_layer(
-                Fill::NonZero,
-                ui::vello::peniko::BlendMode::default(),
-                1.0,
-                transform,
-                &lay.content,
-            );
-            match self.tab {
-                Tab::Overview => self.draw_overview(scene, tr, theme, ct, &lay, drive),
-                Tab::Smart => Self::draw_smart_tab(scene, tr, theme, ct, ext, drive),
-                Tab::Partitions => self.draw_partitions_tab(scene, tr, theme, ct, ext, drive),
-            }
-            scene.pop_layer();
-        } else {
-            self.draw_empty_state(scene, tr, theme, transform, &lay);
-        }
-
-        self.draw_statusline(scene, tr, theme, transform);
+        // Detail pane is drawn first; in overlay mode the flap sits on top.
+        self.draw_detail_pane(&mut paint, &lay);
+        self.draw_statusline(paint.scene, paint.text, theme, transform);
 
         // Dimming scrim behind the open overlay flap (eased with the reveal).
         if lay.scrim.width() > 0.0 {
             let alpha = (self.flap.reveal() * 0.5 * 255.0) as u8;
-            scene.fill(
+            paint.scene.fill(
                 Fill::NonZero,
                 transform,
                 with_alpha(Color::BLACK, alpha),
@@ -3761,8 +3747,10 @@ impl Widget for DisksApp {
         if self.flap.reveal() > 0.001 {
             if lay.split == SplitLayout::Overlay {
                 let panel = lay.sidebar.intersect(self.rect);
-                scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &panel);
-                scene.stroke(
+                paint
+                    .scene
+                    .fill(Fill::NonZero, transform, c.surfaces.base, None, &panel);
+                paint.scene.stroke(
                     &Stroke::new(1.0),
                     transform,
                     c.border_standard,
@@ -3773,14 +3761,14 @@ impl Widget for DisksApp {
                     ),
                 );
             }
-            self.draw_drive_list(scene, tr, theme, transform, &lay);
+            self.draw_drive_list(&mut paint, &lay);
         }
 
         // Top bar last so the hamburger + title stay above the flap panel.
-        self.draw_topbar(scene, tr, theme, transform, &lay);
+        self.draw_topbar(&mut paint, &lay);
 
         if let (Some(ml), Some(p)) = (lay.modal, self.pending) {
-            self.draw_modal(scene, tr, theme, transform, &ml, p);
+            self.draw_modal(&mut paint, &ml, p);
         }
     }
 
@@ -5010,6 +4998,38 @@ mod tests {
             DisksDoc::selected(&h.doc),
             2,
             "selection persisted to the CRDT"
+        );
+    }
+
+    #[test]
+    fn smart_tab_activation_persists_and_draws_its_full_content() {
+        let mut h = Harness::new(1280.0, 800.0);
+        let selected_before = h.app.selected;
+        let smart_tab = h
+            .lay()
+            .tabs
+            .iter()
+            .find(|(_, tab)| *tab == Tab::Smart)
+            .map(|(rect, _)| *rect)
+            .expect("SMART tab has a hit target");
+
+        assert!(h.click(center(smart_tab)), "the SMART tab claims its click");
+        assert_eq!(h.app.tab, Tab::Smart);
+        assert_eq!(DisksDoc::tab(&h.doc), Tab::Smart.key());
+        assert_eq!(
+            h.app.selected, selected_before,
+            "changing detail tabs must not retarget the selected drive"
+        );
+
+        h.draw();
+        let expected_height = h
+            .app
+            .drive()
+            .map(|drive| h.app.content_height(drive))
+            .expect("the seeded app has a selected drive");
+        assert_eq!(
+            h.app.content_h, expected_height,
+            "the real draw pass publishes the SMART tab's complete scroll extent"
         );
     }
 
