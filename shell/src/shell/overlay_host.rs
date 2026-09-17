@@ -15547,7 +15547,7 @@ impl ShellOverlayHost {
         );
         text_renderer.draw_text(
             scene,
-            "F1 opens this desktop guide anywhere. Super+? is the configurable shortcut for the same guide.",
+            "F1 opens this desktop guide anywhere. Super+/ is the configurable shortcut for the same guide.",
             theme.tokens.typography.scale.sm,
             colors.text_dim,
             transform.pre_translate((panel.x0 + 28.0, panel.y0 + 58.0).into()),
