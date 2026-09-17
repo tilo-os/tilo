@@ -1,4 +1,4 @@
-# Native tooling for provisional, unpublished full OS compilation in CI.
+# Native tooling for retained development compilation in CI.
 ARG BUILDER_REF
 FROM ${BUILDER_REF}
 RUN dnf -y install podman skopeo python3 openssl sbsigntools /usr/bin/bootctl \
