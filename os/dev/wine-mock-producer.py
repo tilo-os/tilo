@@ -53,6 +53,25 @@ def run(argv, log):
         subprocess.run(argv, stdout=output, stderr=subprocess.STDOUT, check=True)
 
 
+def verify_i686_execution(directory):
+    """Prove kernel IA32 execution without depending on target libc installation."""
+    source = directory / 'i686-execution.S'
+    binary = directory / 'i686-execution'
+    source.write_text('.section .text\n.global _start\n_start:\n'
+                      '    mov $1, %eax\n    xor %ebx, %ebx\n    int $0x80\n'
+                      '.section .note.GNU-stack,"",@progbits\n')
+    run(['gcc', '-m32', '-nostdlib', '-static', '-Wl,--build-id=none',
+         str(source), '-o', str(binary)], directory / 'i686-compile.log')
+    contract.elf_identity(binary.read_bytes()[:20], 'i686')
+    try:
+        run([str(binary)], directory / 'i686-execution.log')
+    except (OSError, subprocess.CalledProcessError) as error:
+        with (directory / 'i686-execution.log').open('a') as output:
+            output.write(str(error) + '\n')
+        raise ValueError('runner cannot execute the static i686 probe; native '
+                         'IA32 execution is required before resolving Wine dependencies') from error
+
+
 def flags(target, pin, jobs):
     contract.target(target)
     if jobs <= 0:
@@ -105,6 +124,8 @@ def tool_record(runtime_image):
 def resolve(args, pin):
     destination = args.output.resolve()
     destination.mkdir(parents=True, exist_ok=False)
+    if args.target == 'i686':
+        verify_i686_execution(destination)
     contract.source(args.source, pin)
     shutil.copytree(args.source, destination / 'source')
     shutil.copytree(args.config_dir, destination / 'mock-config', symlinks=False)
