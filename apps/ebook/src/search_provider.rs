@@ -87,6 +87,7 @@ enum BodyChunk {
         done: bool,
     },
     Done,
+    Invalid,
 }
 
 #[derive(Clone)]
@@ -463,6 +464,9 @@ impl BookSearchProvider {
     }
 
     fn source_body_chunk(source: &str, query: &str, byte_offset: usize) -> BodyChunk {
+        if byte_offset > source.len() || !source.is_char_boundary(byte_offset) {
+            return BodyChunk::Invalid;
+        }
         let (start, end, done) = source_chunk(source, byte_offset);
         // Recheck a bounded overlap so a match crossing a yield point is
         // never lost. Query input itself is capped at 1,024 scalars.
@@ -847,6 +851,13 @@ impl SearchProvider for BookSearchProvider {
             }
             inspected += 1;
             match self.body_chunk_matches(entry, &query, block_index, byte_offset) {
+                BodyChunk::Invalid => {
+                    return SearchPage {
+                        results: Vec::new(),
+                        next: None,
+                        inspected: 0,
+                    };
+                }
                 BodyChunk::Done => {
                     entry_index += 1;
                     block_index = 0;
@@ -998,7 +1009,7 @@ fn block_contains(block: &crate::model::Block, query: &str) -> bool {
 }
 
 fn source_chunk(source: &str, byte_offset: usize) -> (usize, usize, bool) {
-    let start = byte_offset.min(source.len());
+    let start = byte_offset;
     let mut end = start;
     for character in source[start..].chars().take(BODY_CHUNK_SCALARS) {
         end += character.len_utf8();
@@ -1258,6 +1269,28 @@ mod tests {
             assert!(page.next.is_none());
             assert_eq!(page.inspected, 0);
         }
+    }
+
+    #[test]
+    fn hostile_non_utf8_body_cursor_fails_closed() {
+        let books = vec![Book {
+            id: "unicode".into(),
+            chapters: vec![crate::model::Chapter {
+                blocks: vec![crate::model::Block::Math {
+                    expr: ui::math::MathExpr::new(),
+                    source: "é needle".into(),
+                    display: false,
+                }],
+                ..crate::model::Chapter::default()
+            }],
+            ..Book::default()
+        }];
+        let provider = BookSearchProvider::new(&books, &[]);
+        let cursor = SearchCursor::opaque(1, "needle", Some("body:1:0:1".into()), Some(BODY_PHASE));
+        let page = provider.search_page("needle", Some(&cursor), 1, 1);
+        assert!(page.results.is_empty());
+        assert!(page.next.is_none());
+        assert_eq!(page.inspected, 0);
     }
 
     #[test]
