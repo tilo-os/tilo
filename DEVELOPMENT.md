@@ -118,8 +118,8 @@ build)"** must be selected in its greeter once.  `deploy shell` writes the
 marked debug binary to `~/.local/share/tilo-dev/shell` and updates the existing
 developer-session config, so later cycles do not install an RPM.  Change the
 remote account/location with `TILO_VM_USER`, `TILO_VM_HOST`, and
-`TILO_VM_DEV_ROOT`; `TILO_VM_SSH_PORT` is always mandatory.  Build an app or
-an app or the two canonical host executables on demand with, for example,
+`TILO_VM_DEV_ROOT`; `TILO_VM_SSH_PORT` is always mandatory. Build an app or
+the two canonical host executables on demand with, for example,
 `build calculator`, `build tilo-launcher`, `build tilo-unlock-helper`, or
 `build host`, rather than rebuilding the application collection.
 
@@ -128,10 +128,13 @@ also compile screenshot tooling during compositor iteration. It retains the
 normal shell features inside Fedora 44, matching the actual session rather than
 silently dropping media behavior to work around a host ABI mismatch.
 
-The loop also pins sccache to a container-local server/namespace.  Distrobox
-copies host environment variables inward; without this pin, a host sccache
-server can compile the generated SPA/PipeWire C shims using the host headers,
-which is not a valid Fedora 44 result.
+The loop also gives this checkout a dedicated sccache server and namespace.
+Distrobox copies host environment variables inward; sharing either its generic
+cache or the host cache can replay a path-sensitive Rust build script (such as
+the vendored shader compiler, which embeds `CARGO_MANIFEST_DIR`) into the host
+target directory. This is not a valid host or Fedora 44 artifact. The cache is
+persistent for warm iterations; set `TILO_FEDORA44_SCCACHE_PORT` only if two
+active checkouts collide on its derived port.
 
 ### Hardware-dependent settings
 
