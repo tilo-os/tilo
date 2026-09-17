@@ -5126,8 +5126,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                         },
                     );
                 };
+                let staging_owner = format!("{}:{}", self.peer_id, route.channel_key());
                 match crate::shell::device_fabric_runtime::request_nearby_drop_secure(
-                    &network, &target, source,
+                    &network,
+                    &target,
+                    source,
+                    &staging_owner,
                 ) {
                     Ok(transfer_id) => {
                         let handle =
@@ -11513,6 +11517,71 @@ mod tests {
         registry.begin_snapshot(41, &route, &[], now);
         assert!(registry.consume(retained, 41, &route, now).is_none());
         assert!(registry.bindings.is_empty());
+    }
+
+    #[test]
+    fn nearby_transfer_handles_reject_cross_workspace_actions_and_disconnect() {
+        let route = CrdtRoute::app(FILES_APP_ID, "room-a");
+        let other_route = CrdtRoute::app(FILES_APP_ID, "room-b");
+        let transfer_id = [7_u8; 16];
+        let now = Instant::now();
+        let mut registry = NearbyTransferRegistry::default();
+        let handle = registry
+            .issue(
+                41,
+                &route,
+                transfer_id,
+                runtime_collab::NearbyTransferDirection::Receiving,
+                true,
+                now,
+            )
+            .expect("owner receives opaque handle");
+        assert!(
+            registry
+                .resolve(
+                    handle,
+                    42,
+                    &route,
+                    runtime_collab::NearbyTransferDirection::Receiving,
+                    now,
+                )
+                .is_none()
+        );
+        assert!(
+            registry
+                .resolve(
+                    handle,
+                    41,
+                    &other_route,
+                    runtime_collab::NearbyTransferDirection::Receiving,
+                    now,
+                )
+                .is_none()
+        );
+        assert!(
+            registry
+                .issue(
+                    42,
+                    &other_route,
+                    transfer_id,
+                    runtime_collab::NearbyTransferDirection::Receiving,
+                    true,
+                    now,
+                )
+                .is_none()
+        );
+        registry.remove_peer(41);
+        assert!(
+            registry
+                .resolve(
+                    handle,
+                    41,
+                    &route,
+                    runtime_collab::NearbyTransferDirection::Receiving,
+                    now,
+                )
+                .is_none()
+        );
     }
 
     #[test]
