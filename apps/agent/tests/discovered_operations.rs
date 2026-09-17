@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use automerge::AutoCommit;
 use qos_actions::{Resource, ResourceProvider};
 use qos_agent::{Config, Session};
-use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
+use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
 use uuid::Uuid;
 
 mod typed_peer;
