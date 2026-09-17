@@ -688,6 +688,11 @@ RUN BIN_DIR=/out/thin-apps \
 # files). Their internal COPY layers are cheap scratch-tree commits; each is
 # applied to the multi-gigabyte bootc rootfs once, at the same logical boundary
 # where its individual files were previously copied.
+FROM scratch AS native-builder-payload
+COPY --from=builder /out/ /out/
+COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
+COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/
+
 FROM scratch AS desktop-binaries
 COPY --from=builder \
     /out/shell /out/fs /out/terminal /out/file-explorer /out/settings \
