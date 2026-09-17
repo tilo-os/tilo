@@ -126,8 +126,11 @@ pub fn load_manifest(path: &Path) -> io::Result<ValidatedManifest> {
     validate_manifest(manifest)
 }
 
-/// Configure every persistent path before a runtime or broker thread starts.
-pub fn configure_profile(profile: &Path) -> io::Result<()> {
+/// Create private profile directories and return the startup environment.
+///
+/// This function does not mutate process-global state. The native executable
+/// applies the returned values at its single-threaded startup boundary.
+pub fn prepare_profile_environment(profile: &Path) -> io::Result<[(&'static str, PathBuf); 6]> {
     if !profile.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -146,12 +149,7 @@ pub fn configure_profile(profile: &Path) -> io::Result<()> {
     for (_, path) in &paths {
         super::unix::private_directory(path)?;
     }
-    for (name, path) in paths {
-        // SAFETY: the native host calls this before constructing runtimes,
-        // brokers, reader threads, or child processes.
-        unsafe { std::env::set_var(name, path) };
-    }
-    Ok(())
+    Ok(paths)
 }
 
 pub fn read_frame(reader: &mut impl BufRead) -> io::Result<Frame> {
@@ -308,6 +306,9 @@ fn protocol_error(code: i32, message: &str) -> Value {
 }
 
 /// Own one MCP connection, one production service session and its app children.
+///
+/// The caller supplies the process environment before invoking this reusable
+/// serving layer. This function never mutates process-global environment.
 pub fn serve<R, W>(
     profile: &Path,
     manifest: ValidatedManifest,
@@ -318,7 +319,6 @@ where
     R: Read + Send + 'static,
     W: Write,
 {
-    configure_profile(profile)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -366,6 +366,7 @@ where
     }
 }
 
+/// Load a validated manifest and serve with the caller's configured profile environment.
 pub fn run(profile: &Path, manifest_path: &Path) -> io::Result<()> {
     // The complete startup configuration is parsed and validated before
     // profile services or any application process is started.
