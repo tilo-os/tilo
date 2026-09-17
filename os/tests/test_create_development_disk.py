@@ -38,6 +38,8 @@ class CreationTests(unittest.TestCase):
                     public_bundle=Path('/public'), receipt={'source': args.source})
             finally:
                 events.append('unmounted')
+                if getattr(self, 'fail_unmount', False):
+                    raise ValueError('unmount failed')
 
         class Disk:
             def __init__(inner, path, size):
@@ -93,14 +95,21 @@ class CreationTests(unittest.TestCase):
         self.assertNotIn('--skip-fetch-check', argv)
         self.assertFalse(receipt['installable'])
         self.assertFalse(receipt['installed_bytes_verified'])
-        self.assertLess(self.events.index('retained'), self.events.index('unmounted'))
+        self.assertLess(self.events.index('unmounted'), self.events.index('retained'))
         self.assertEqual(self.predict.call_args.args[-1], '259.8')
 
     def test_installer_failure_removes_output_and_unmounts(self):
         with self.assertRaisesRegex(ValueError, 'installer failed'):
             self.execute(fail=True)
         self.assertFalse(self.path.exists())
-        self.assertEqual(self.events[-2:], ['removed', 'unmounted'])
+        self.assertEqual(self.events[-2:], ['unmounted', 'removed'])
+
+    def test_source_cleanup_failure_removes_output(self):
+        self.fail_unmount = True
+        with self.assertRaisesRegex(ValueError, 'unmount failed'):
+            self.execute()
+        self.assertFalse(self.path.exists())
+        self.assertNotIn('retained', self.events)
 
     def test_missing_policy_flag_never_allocates(self):
         with self.assertRaisesRegex(ValueError, 'required installation flag'):
