@@ -1605,6 +1605,14 @@ pub trait Widget {
         false
     }
 
+    /// Work already requested by this view whose completion will replace a
+    /// placeholder. Unlike animations, this can be awaited by still captures.
+    fn has_pending_visual_work(&self) -> bool {
+        let mut pending = false;
+        self.for_each_child(&mut |child| pending |= child.has_pending_visual_work());
+        pending
+    }
+
     /// Default `true` (dirty every frame). Opt into incremental redraw by
     /// tracking a `dirty: bool`, setting it in `handle_event`/`sync`, and
     /// clearing it in `mark_drawn()`. Containers MUST forward: dirty iff any
