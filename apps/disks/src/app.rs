@@ -314,6 +314,17 @@ struct PartitionColumns {
     used: f64,
 }
 
+#[derive(Clone, Copy)]
+struct PartitionRow<'a> {
+    area: Rect,
+    columns: PartitionColumns,
+    y: f64,
+    index: usize,
+    partition: &'a Partition,
+    selected: bool,
+    hovered: bool,
+}
+
 /// Mutable rendering resources shared by the app's immediate-mode paint
 /// passes. Geometry and domain data remain explicit at each boundary.
 struct PaintContext<'a> {
@@ -2337,34 +2348,33 @@ impl DisksApp {
     }
 
     // ---- content: partitions tab --------------------------------------
-    fn draw_partitions_tab(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        area: Rect,
-        drive: &Drive,
-    ) {
-        let cols = Self::draw_partitions_header(scene, tr, theme, area);
+    fn draw_partitions_tab(&self, paint: &mut PaintContext<'_>, area: Rect, drive: &Drive) {
+        let columns = Self::draw_partitions_header(paint, area);
 
-        let mut ry = area.y0 + 24.0;
-        for (i, p) in drive.partitions.iter().enumerate() {
-            let selected = self.selected_part == Some(i);
-            let hover = self.hover_part == Some(i);
-            Self::draw_partitions_row(scene, tr, theme, t, area, &cols, ry, i, p, selected, hover);
-            ry += 38.0;
+        let mut y = area.y0 + 24.0;
+        for (index, partition) in drive.partitions.iter().enumerate() {
+            Self::draw_partitions_row(
+                paint,
+                PartitionRow {
+                    area,
+                    columns,
+                    y,
+                    index,
+                    partition,
+                    selected: self.selected_part == Some(index),
+                    hovered: self.hover_part == Some(index),
+                },
+            );
+            y += 38.0;
         }
     }
 
     /// The column headers (part of [`Self::draw_partitions_tab`]). Returns
     /// the resolved column x-positions so each row aligns to them.
-    fn draw_partitions_header(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-    ) -> PartitionColumns {
+    fn draw_partitions_header(paint: &mut PaintContext<'_>, area: Rect) -> PartitionColumns {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
         let c = &theme.tokens.colors;
         let cols = PartitionColumns {
             name: area.x0 + 6.0,
@@ -2445,18 +2455,19 @@ impl DisksApp {
 
     /// The row's selection/hover/zebra background plus the role swatch (part
     /// of [`Self::draw_partitions_row`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
-    fn draw_partitions_row_bg(
-        scene: &mut Scene,
-        theme: &Theme,
-        t: Affine,
-        area: Rect,
-        ry: f64,
-        i: usize,
-        p: &Partition,
-        selected: bool,
-        hover: bool,
-    ) {
+    fn draw_partitions_row_bg(paint: &mut PaintContext<'_>, row: PartitionRow<'_>) {
+        let scene = &mut *paint.scene;
+        let theme = paint.theme;
+        let t = paint.transform;
+        let PartitionRow {
+            area,
+            y: ry,
+            index: i,
+            partition: p,
+            selected,
+            hovered: hover,
+            ..
+        } = row;
         let c = &theme.tokens.colors;
         let rowr = Rect::new(area.x0, ry - 6.0, area.x1, ry + 30.0);
         if selected {
@@ -2489,14 +2500,13 @@ impl DisksApp {
 
     /// The name/label/fs/size/mount text fields of a partition row (part of
     /// [`Self::draw_partitions_row`]).
-    fn draw_partitions_row_fields(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        cols: &PartitionColumns,
-        ry: f64,
-        p: &Partition,
-    ) {
+    fn draw_partitions_row_fields(paint: &mut PaintContext<'_>, row: PartitionRow<'_>) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let cols = row.columns;
+        let ry = row.y;
+        let p = row.partition;
         let c = &theme.tokens.colors;
         Self::txt(
             scene,
@@ -2557,15 +2567,14 @@ impl DisksApp {
 
     /// The usage mini-bar (or the "—" placeholder when unmounted) at the
     /// right of a partition row (part of [`Self::draw_partitions_row`]).
-    fn draw_partitions_row_usage(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        cols: &PartitionColumns,
-        ry: f64,
-        p: &Partition,
-    ) {
+    fn draw_partitions_row_usage(paint: &mut PaintContext<'_>, row: PartitionRow<'_>) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
+        let cols = row.columns;
+        let ry = row.y;
+        let p = row.partition;
         let c = &theme.tokens.colors;
         if let Some(f) = p.used_frac() {
             let barr = Rect::new(cols.used - 64.0, ry + 6.0, cols.used, ry + 14.0);
@@ -2597,23 +2606,10 @@ impl DisksApp {
     /// One partition row: selection/hover/zebra background, role swatch,
     /// name/label/fs/size/mount, and the usage mini-bar (part of
     /// [`Self::draw_partitions_tab`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
-    fn draw_partitions_row(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        area: Rect,
-        cols: &PartitionColumns,
-        ry: f64,
-        i: usize,
-        p: &Partition,
-        selected: bool,
-        hover: bool,
-    ) {
-        Self::draw_partitions_row_bg(scene, theme, t, area, ry, i, p, selected, hover);
-        Self::draw_partitions_row_fields(scene, tr, theme, cols, ry, p);
-        Self::draw_partitions_row_usage(scene, tr, theme, t, cols, ry, p);
+    fn draw_partitions_row(paint: &mut PaintContext<'_>, row: PartitionRow<'_>) {
+        Self::draw_partitions_row_bg(paint, row);
+        Self::draw_partitions_row_fields(paint, row);
+        Self::draw_partitions_row_usage(paint, row);
     }
 
     // ---- modal ---------------------------------------------------------
@@ -3721,7 +3717,16 @@ impl Widget for DisksApp {
                     ext,
                     drive,
                 ),
-                Tab::Partitions => self.draw_partitions_tab(scene, tr, theme, ct, ext, drive),
+                Tab::Partitions => self.draw_partitions_tab(
+                    &mut PaintContext {
+                        scene,
+                        text: tr,
+                        theme,
+                        transform: ct,
+                    },
+                    ext,
+                    drive,
+                ),
             }
             scene.pop_layer();
         } else {
