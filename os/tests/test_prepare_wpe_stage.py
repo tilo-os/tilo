@@ -11,6 +11,23 @@ SPEC.loader.exec_module(wpe)
 
 
 class WpeStageTests(unittest.TestCase):
+    def test_failure_diagnostics_keep_compiler_context_without_registry_auth(self):
+        raw = (b'error authenticating registry token PRIVATE\n'
+               b'Source/file.cpp:4:2: error: missing symbol\n'
+               b'CMake Error at CMakeLists.txt:5 (find_package):\n'
+               b'  Missing required package Example\n'
+               b'../meson.build:23:0: ERROR: Missing package\n'
+               b'/usr/bin/ld: cannot find -lExample\n'
+               b'file.cpp:(.text): undefined reference to missing_symbol\n'
+               b'authorization bearer PRIVATE\n')
+        lines = wpe.compiler_failure_lines(raw)
+        self.assertIn('Source/file.cpp:4:2: error: missing symbol', lines)
+        self.assertIn('  Missing required package Example', lines)
+        self.assertIn('../meson.build:23:0: ERROR: Missing package', lines)
+        self.assertIn('/usr/bin/ld: cannot find -lExample', lines)
+        self.assertIn('file.cpp:(.text): undefined reference to missing_symbol', lines)
+        self.assertNotIn('PRIVATE', '\n'.join(lines))
+
     def setUp(self):
         self.args = argparse.Namespace(architecture='x86_64', epoch='0',
             cache='code.sandbox.example/qos/tilo-development-wpe-cache-x86_64',
