@@ -366,3 +366,63 @@ fn container_rows_preserve_their_canonical_visibility_contract() {
     assert_eq!(value["visibility_action"], "read");
     assert_eq!(value["visibility_contract"], contract);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn request_metadata_is_accepted_without_becoming_broker_authority() {
+    tokio::task::LocalSet::new().run_until(async {
+        let (mut fixture, room, actor) = fixture();
+        let mut server = McpServer::new(fixture.broker.clone(), room, actor.clone());
+        let metadata = json!({"progressToken":"progress-1","actor":"foreign","workspace":"foreign-room"});
+        let listed = server.handle(request("resources/list", json!({"_meta":metadata}))).await.unwrap();
+        assert_eq!(listed["result"]["resources"][0]["uri"], "qos://apps/71", "{listed}");
+        let read = server.handle(request("resources/read", json!({"uri":"qos://apps/71","_meta":metadata})));
+        let (reply, ()) = tokio::join!(read, async { tokio::task::yield_now().await; drain_directory_bridge(&fixture).await; });
+        assert!(reply.unwrap()["result"]["contents"][0]["text"].is_string());
+        let mut invoke = call("qos_invoke", json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}}));
+        invoke["params"]["_meta"] = metadata.clone();
+        let invoke = server.handle(invoke);
+        let (reply, ()) = tokio::join!(invoke, async { tokio::task::yield_now().await; drain_directory_bridge(&fixture).await; });
+        assert_eq!(reply.unwrap()["result"]["isError"], false);
+        assert_eq!(fixture.take_invocation_actor(), Some(actor));
+        let mut spoof = call("qos_list_apps", json!({"actor":"foreign"}));
+        spoof["params"]["_meta"] = metadata;
+        assert_eq!(server.handle(spoof).await.unwrap()["result"]["isError"], true);
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn request_metadata_must_be_an_object_with_a_valid_progress_token() {
+    let (fixture, room, actor) = fixture();
+    let mut server = McpServer::new(fixture.broker.clone(), room, actor);
+    for metadata in [
+        json!(null),
+        json!(false),
+        json!([]),
+        json!({"progressToken":{}}),
+        json!({"progressToken":1.5}),
+    ] {
+        for mut input in [
+            call("qos_list_apps", json!({})),
+            request("initialize", json!({"protocolVersion":"2025-06-18"})),
+            request("ping", json!({})),
+            request("tools/list", json!({})),
+            request("resources/list", json!({})),
+            request("resources/read", json!({"uri":"qos://apps/71"})),
+        ] {
+            input["params"]["_meta"] = metadata.clone();
+            assert_eq!(server.handle(input).await.unwrap()["error"]["code"], -32602);
+        }
+    }
+    for metadata in [
+        json!({}),
+        json!({"progressToken":1}),
+        json!({"progressToken":"token"}),
+    ] {
+        let mut input = call("qos_list_apps", json!({}));
+        input["params"]["_meta"] = metadata;
+        assert_eq!(
+            server.handle(input).await.unwrap()["result"]["isError"],
+            false
+        );
+    }
+}
