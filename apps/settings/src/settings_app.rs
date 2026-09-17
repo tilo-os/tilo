@@ -572,6 +572,71 @@ impl SettingsApp {
                         }
                         doc.put(path, panes::power::CHARGE_LIMIT_KEY, format!("{percent}%"))
                     }
+                    crate::actions::PowerOperation::SetProfile { profile } => {
+                        if !["Power Saver", "Balanced", "Performance"].contains(&profile.as_str()) {
+                            return Err("unsupported power profile".into());
+                        }
+                        doc.put(path, panes::power::PROFILE_KEY, profile)
+                    }
+                    crate::actions::PowerOperation::SetAutoSuspend { enabled } => {
+                        doc.put(path, panes::power::AUTO_SUSPEND_KEY, enabled)
+                    }
+                    crate::actions::PowerOperation::SetBlankTimeout { label } => {
+                        if ![
+                            "1 minute",
+                            "5 minutes",
+                            "10 minutes",
+                            "15 minutes",
+                            "30 minutes",
+                            "Never",
+                        ]
+                        .contains(&label.as_str())
+                        {
+                            return Err("unsupported screen blank timeout".into());
+                        }
+                        doc.put(path, panes::power::BLANK_KEY, label)
+                    }
+                    crate::actions::PowerOperation::SetSuspendTimeout { profile, label } => {
+                        if ![
+                            "5 minutes",
+                            "10 minutes",
+                            "15 minutes",
+                            "30 minutes",
+                            "45 minutes",
+                            "1 hour",
+                            "Never",
+                        ]
+                        .contains(&label.as_str())
+                        {
+                            return Err("unsupported suspend timeout".into());
+                        }
+                        let key = match profile.as_str() {
+                            "default" => panes::power::SUSPEND_KEY,
+                            "saver" => panes::power::SAVER_SUSPEND_KEY,
+                            "balanced" => panes::power::BALANCED_SUSPEND_KEY,
+                            "performance" => panes::power::PERFORMANCE_SUSPEND_KEY,
+                            _ => return Err("unsupported power profile timeout".into()),
+                        };
+                        doc.put(path, key, label)
+                    }
+                    crate::actions::PowerOperation::SetLidAction { action } => {
+                        if !["Suspend", "Lock screen", "Do nothing"].contains(&action.as_str()) {
+                            return Err("unsupported power action".into());
+                        }
+                        doc.put(path, panes::power::LID_KEY, action)
+                    }
+                    crate::actions::PowerOperation::SetPowerKeyAction { action } => {
+                        if !["Suspend", "Lock screen", "Do nothing"].contains(&action.as_str()) {
+                            return Err("unsupported power action".into());
+                        }
+                        doc.put(path, panes::power::POWER_KEY_KEY, action)
+                    }
+                    crate::actions::PowerOperation::SetCriticalAction { action } => {
+                        if !["Suspend", "Lock screen", "Do nothing"].contains(&action.as_str()) {
+                            return Err("unsupported power action".into());
+                        }
+                        doc.put(path, panes::power::CRITICAL_KEY, action)
+                    }
                 }
             }
             crate::actions::NETWORK_OPERATION_TYPE => {
@@ -581,6 +646,9 @@ impl SettingsApp {
                 match operation {
                     crate::actions::NetworkOperation::Refresh => {
                         doc.put(path, panes::network::REFRESH_KEY, true)
+                    }
+                    crate::actions::NetworkOperation::SetWifiEnabled { enabled } => {
+                        doc.put(path, panes::network::WIFI_ENABLED_KEY, enabled)
                     }
                     crate::actions::NetworkOperation::SetWiredEnabled { enabled } => {
                         let wired = os_actions::get_wired()?;
@@ -608,6 +676,9 @@ impl SettingsApp {
                     serde_json::from_slice(payload).map_err(|error| error.to_string())?;
                 self.select(Category::Bluetooth);
                 match operation {
+                    crate::actions::BluetoothOperation::SetPowered { enabled } => {
+                        doc.put(path, panes::bluetooth::BT_ENABLED_KEY, enabled)
+                    }
                     crate::actions::BluetoothOperation::StartScan => {
                         doc.put(path, panes::bluetooth::SCAN_KEY, true)
                     }
@@ -678,6 +749,30 @@ impl SettingsApp {
                 let graph = media::audio::enumerate();
                 self.select(Category::Sound);
                 match operation {
+                    crate::actions::AudioOperation::SetOutputVolume { value } => {
+                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                            return Err("output volume must be between 0 and 1".into());
+                        }
+                        doc.put(path, panes::audio::VOLUME_KEY, value)
+                    }
+                    crate::actions::AudioOperation::SetOutputMuted { muted } => {
+                        doc.put(path, panes::audio::MUTED_KEY, muted)
+                    }
+                    crate::actions::AudioOperation::SetInputVolume { value } => {
+                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                            return Err("input volume must be between 0 and 1".into());
+                        }
+                        doc.put(path, panes::audio::INPUT_VOLUME_KEY, value)
+                    }
+                    crate::actions::AudioOperation::SetBalance { value } => {
+                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                            return Err("output balance must be between 0 and 1".into());
+                        }
+                        doc.put(path, panes::audio::BALANCE_KEY, value)
+                    }
+                    crate::actions::AudioOperation::SetMono { enabled } => {
+                        doc.put(path, panes::audio::MONO_KEY, enabled)
+                    }
                     crate::actions::AudioOperation::SelectOutput { device_id } => {
                         let device = graph.sink_by_id(device_id).ok_or_else(|| {
                             "audio output device is no longer available".to_string()
@@ -762,12 +857,112 @@ impl SettingsApp {
                         .ok_or_else(|| "display output is no longer available".to_string())
                 };
                 match operation {
+                    crate::actions::DisplayOperation::SetBrightness { value } => {
+                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                            return Err("display brightness must be between 0 and 1".into());
+                        }
+                        doc.put(path, panes::display::BRIGHTNESS_KEY, value)
+                    }
+                    crate::actions::DisplayOperation::SetAutoBrightness { enabled } => {
+                        doc.put(path, panes::display::AUTO_BRIGHTNESS_KEY, enabled)
+                    }
+                    crate::actions::DisplayOperation::SetScale { label } => {
+                        if !["100%", "125%", "150%", "175%", "200%"].contains(&label.as_str()) {
+                            return Err("unsupported display scale".into());
+                        }
+                        doc.put(path, panes::display::DISPLAY_SCALE_KEY, label)
+                    }
                     crate::actions::DisplayOperation::SetEnabled { connector, enabled } => {
                         let _ = output(&connector)?;
                         doc.put(
                             path,
                             panes::display::output_key(&connector, "enabled"),
                             enabled,
+                        )
+                    }
+                    crate::actions::DisplayOperation::SetPrimary { connector, primary } => {
+                        let _ = output(&connector)?;
+                        doc.put(
+                            path,
+                            panes::display::output_key(&connector, "primary"),
+                            primary,
+                        )
+                    }
+                    crate::actions::DisplayOperation::SetOutputScale { connector, label } => {
+                        let _ = output(&connector)?;
+                        if !["100%", "125%", "150%", "175%", "200%"].contains(&label.as_str()) {
+                            return Err("unsupported output scale".into());
+                        }
+                        doc.put(path, panes::display::output_key(&connector, "scale"), label)
+                    }
+                    crate::actions::DisplayOperation::SetPosition { connector, label } => {
+                        let _ = output(&connector)?;
+                        if label.len() > 160 {
+                            return Err("display position label is too long".into());
+                        }
+                        doc.put(
+                            path,
+                            panes::display::output_key(&connector, "position"),
+                            label,
+                        )
+                    }
+                    crate::actions::DisplayOperation::SetMirror { connector, label } => {
+                        let _ = output(&connector)?;
+                        if label.len() > 160 {
+                            return Err("display mirror label is too long".into());
+                        }
+                        doc.put(
+                            path,
+                            panes::display::output_key(&connector, "mirror"),
+                            label,
+                        )
+                    }
+                    crate::actions::DisplayOperation::SetModeLabel { connector, label } => {
+                        let output = output(&connector)?;
+                        if !output
+                            .descriptor
+                            .modes
+                            .iter()
+                            .any(|mode| mode.label() == label)
+                        {
+                            return Err("display mode is no longer supported by that output".into());
+                        }
+                        doc.put(path, panes::display::output_key(&connector, "mode"), label)
+                    }
+                    crate::actions::DisplayOperation::SetTransformLabel { connector, label } => {
+                        let _ = output(&connector)?;
+                        if ![
+                            "Landscape",
+                            "Portrait right",
+                            "Upside down",
+                            "Portrait left",
+                        ]
+                        .contains(&label.as_str())
+                        {
+                            return Err("unsupported display orientation".into());
+                        }
+                        doc.put(
+                            path,
+                            panes::display::output_key(&connector, "transform"),
+                            label,
+                        )
+                    }
+                    crate::actions::DisplayOperation::SetColorProfileLabel { connector, label } => {
+                        let output = output(&connector)?;
+                        let valid = label == "System default"
+                            || output
+                                .color_profile_labels
+                                .iter()
+                                .any(|(id, name)| label == format!("{name} · {id}"));
+                        if !valid {
+                            return Err(
+                                "colour profile is no longer available for that output".into()
+                            );
+                        }
+                        doc.put(
+                            path,
+                            panes::display::output_key(&connector, "color_profile"),
+                            label,
                         )
                     }
                     crate::actions::DisplayOperation::SetMode { connector, mode } => {
