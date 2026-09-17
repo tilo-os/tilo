@@ -27,6 +27,11 @@ use serde::Deserialize;
 pub struct InstalledPackage {
     /// Reverse-DNS package id.
     pub id: String,
+    /// Content-addressed signed package root recorded by `tilo-install`.
+    /// Empty only for legacy/dev fixtures; security-sensitive callers must
+    /// reject it rather than deriving trust from the mutable payload path.
+    #[serde(default)]
+    pub package_id_hex: String,
     /// Path to the unpacked payload root.
     pub payload_root: PathBuf,
     /// Path to the extracted manifest.

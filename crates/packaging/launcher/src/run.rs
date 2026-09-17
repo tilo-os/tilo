@@ -10,6 +10,9 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::time::{Duration, Instant};
 
 use crate::capabilities::{CapabilityPlan, load_capability_file, now_unix};
 use crate::dbus_proxy::{self, DBusProxyGuard};
@@ -101,6 +104,71 @@ pub enum RunError {
          command line silently missing one of its sandboxing directives."
     )]
     ArgvInvariant,
+    #[error("captured worker resource plan is missing or exceeds launcher bounds")]
+    InvalidCapturePlan,
+}
+
+/// Strict resource envelope for a short-lived captured sandbox worker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CapturedResourcePlan {
+    pub cpu_seconds: u64,
+    pub memory_bytes: u64,
+    pub output_bytes: usize,
+    pub wall_time: Duration,
+}
+
+impl CapturedResourcePlan {
+    pub const MAX_CPU_SECONDS: u64 = 300;
+    pub const MAX_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+    pub const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+    pub const MAX_WALL_TIME: Duration = Duration::from_secs(10 * 60);
+
+    /// Reject absent or excessively broad limits before a process exists.
+    pub fn validate(self) -> Result<Self, RunError> {
+        if self.cpu_seconds == 0
+            || self.cpu_seconds > Self::MAX_CPU_SECONDS
+            || self.memory_bytes < 16 * 1024 * 1024
+            || self.memory_bytes > Self::MAX_MEMORY_BYTES
+            || self.output_bytes == 0
+            || self.output_bytes > Self::MAX_OUTPUT_BYTES
+            || self.wall_time.is_zero()
+            || self.wall_time > Self::MAX_WALL_TIME
+        {
+            return Err(RunError::InvalidCapturePlan);
+        }
+        Ok(self)
+    }
+}
+
+/// Cooperative cancellation shared with the trusted worker scheduler. The
+/// sandbox receives no token or descriptor and cannot cancel another job.
+#[derive(Clone, Debug, Default)]
+pub struct CaptureCancellation(Arc<AtomicBool>);
+
+impl CaptureCancellation {
+    pub fn cancel(&self) {
+        self.0.store(true, AtomicOrdering::Release);
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(AtomicOrdering::Acquire)
+    }
+}
+
+#[derive(Debug)]
+pub enum CapturedTermination {
+    Exited(ExitStatus),
+    Cancelled,
+    TimedOut,
+    OutputLimit,
+}
+
+#[derive(Debug)]
+pub struct CapturedRunOutput {
+    pub termination: CapturedTermination,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
 }
 
 impl RunError {
@@ -983,6 +1051,24 @@ unsafe fn set_sandbox_resource_limits() -> std::io::Result<()> {
     Ok(())
 }
 
+unsafe fn set_captured_resource_limits(plan: CapturedResourcePlan) -> std::io::Result<()> {
+    let cpu = libc::rlimit {
+        rlim_cur: plan.cpu_seconds,
+        rlim_max: plan.cpu_seconds,
+    };
+    let address_space = libc::rlimit {
+        rlim_cur: plan.memory_bytes,
+        rlim_max: plan.memory_bytes,
+    };
+    // SAFETY: both pointers remain valid for the duration of the syscalls.
+    if unsafe { libc::setrlimit(libc::RLIMIT_CPU, &raw const cpu) } != 0
+        || unsafe { libc::setrlimit(libc::RLIMIT_AS, &raw const address_space) } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Pop the trailing entrypoint token that `build_bwrap_argv` /
 /// `build_bwrap_argv_for_entry` always leave at the end of `argv`, so a
 /// splice function can insert its own flags before it and push it back.
@@ -1860,6 +1946,257 @@ fn spawn_and_capture(
     Ok((status, buf))
 }
 
+fn reserve_output(counter: &AtomicUsize, requested: usize, limit: usize) -> usize {
+    let mut current = counter.load(AtomicOrdering::Acquire);
+    loop {
+        let available = limit.saturating_sub(current);
+        let accepted = requested.min(available);
+        let next = current.saturating_add(accepted);
+        match counter.compare_exchange_weak(
+            current,
+            next,
+            AtomicOrdering::AcqRel,
+            AtomicOrdering::Acquire,
+        ) {
+            Ok(_) => return accepted,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+fn drain_bounded(
+    mut reader: impl std::io::Read,
+    used: Arc<AtomicUsize>,
+    exceeded: Arc<AtomicBool>,
+    limit: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut captured = Vec::new();
+    let mut chunk = [0_u8; 8 * 1024];
+    loop {
+        let read = reader.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        let accepted = reserve_output(&used, read, limit);
+        if let Some(bytes) = chunk.get(..accepted) {
+            captured.extend_from_slice(bytes);
+        }
+        if accepted != read {
+            exceeded.store(true, AtomicOrdering::Release);
+        }
+    }
+    Ok(captured)
+}
+
+#[cfg(test)]
+mod captured_resource_tests {
+    use super::*;
+
+    fn plan() -> CapturedResourcePlan {
+        CapturedResourcePlan {
+            cpu_seconds: 2,
+            memory_bytes: 64 * 1024 * 1024,
+            output_bytes: 8,
+            wall_time: Duration::from_secs(3),
+        }
+    }
+
+    #[test]
+    fn limits_are_nonzero_and_launcher_bounded() {
+        assert!(plan().validate().is_ok());
+        for invalid in [
+            CapturedResourcePlan {
+                cpu_seconds: 0,
+                ..plan()
+            },
+            CapturedResourcePlan {
+                memory_bytes: CapturedResourcePlan::MAX_MEMORY_BYTES.saturating_add(1),
+                ..plan()
+            },
+            CapturedResourcePlan {
+                output_bytes: 0,
+                ..plan()
+            },
+            CapturedResourcePlan {
+                wall_time: CapturedResourcePlan::MAX_WALL_TIME + Duration::from_millis(1),
+                ..plan()
+            },
+        ] {
+            assert!(matches!(
+                invalid.validate(),
+                Err(RunError::InvalidCapturePlan)
+            ));
+        }
+    }
+
+    #[test]
+    fn stdout_and_stderr_share_one_hard_memory_budget() {
+        let used = Arc::new(AtomicUsize::new(0));
+        let exceeded = Arc::new(AtomicBool::new(false));
+        let first = drain_bounded(
+            std::io::Cursor::new(b"123456"),
+            Arc::clone(&used),
+            Arc::clone(&exceeded),
+            8,
+        )
+        .unwrap();
+        let second = drain_bounded(
+            std::io::Cursor::new(b"abcdef"),
+            Arc::clone(&used),
+            Arc::clone(&exceeded),
+            8,
+        )
+        .unwrap();
+        assert_eq!(first, b"123456");
+        assert_eq!(second, b"ab");
+        assert_eq!(used.load(AtomicOrdering::Acquire), 8);
+        assert!(exceeded.load(AtomicOrdering::Acquire));
+    }
+
+    #[test]
+    fn cancellation_is_target_local_and_sticky() {
+        let cancellation = CaptureCancellation::default();
+        let observer = cancellation.clone();
+        assert!(!observer.is_cancelled());
+        cancellation.cancel();
+        assert!(observer.is_cancelled());
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_and_capture_bounded(
+    mut argv: Vec<String>,
+    passthrough: Vec<String>,
+    opts: &RunOptions,
+    seccomp_fd: OwnedFd,
+    resolved: Vec<crate::services::ResolvedService>,
+    identity_broker: (
+        Option<UnixStream>,
+        Option<UnixStream>,
+        Option<std::thread::JoinHandle<()>>,
+    ),
+    plan: CapturedResourcePlan,
+    cancellation: CaptureCancellation,
+) -> Result<CapturedRunOutput, RunError> {
+    const SECCOMP_CHILD_FD: i32 = 16;
+    let plan = plan.validate()?;
+    let (identity_broker_app, identity_broker_control, identity_broker_thread) = identity_broker;
+    let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
+    prefix.append(&mut argv);
+    argv = prefix;
+    argv.extend(passthrough);
+
+    let bwrap = opts
+        .bwrap_bin
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("bwrap"));
+    let mut cmd = Command::new(&bwrap);
+    cmd.args(&argv);
+    clear_bwrap_environment(&mut cmd);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.stdin(std::process::Stdio::null());
+
+    let host_seccomp_fd = seccomp_fd.as_raw_fd();
+    let mut service_fds: Vec<(RawFd, RawFd)> = resolved
+        .iter()
+        .map(|service| (service.host_fd(), service.child_fd as RawFd))
+        .collect();
+    if let Some(stream) = &identity_broker_app {
+        service_fds.push((
+            stream.as_raw_fd(),
+            runtime_identity::broker::BROKER_CHILD_FD,
+        ));
+    }
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::dup2(host_seccomp_fd, SECCOMP_CHILD_FD) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let flags = libc::fcntl(SECCOMP_CHILD_FD, libc::F_GETFD);
+            if flags != -1 {
+                let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+            }
+            place_service_fds(&mut service_fds)?;
+            set_sandbox_resource_limits()?;
+            set_captured_resource_limits(plan)?;
+            if libc::setpgid(0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = cmd.spawn().map_err(RunError::Spawn)?;
+    drop(seccomp_fd);
+    drop(resolved);
+    drop(identity_broker_app);
+    let used = Arc::new(AtomicUsize::new(0));
+    let exceeded = Arc::new(AtomicBool::new(false));
+    let stdout = child.stdout.take().ok_or_else(|| {
+        RunError::Io(std::io::Error::other(
+            "captured worker stdout was not piped",
+        ))
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        RunError::Io(std::io::Error::other(
+            "captured worker stderr was not piped",
+        ))
+    })?;
+    let stdout_used = Arc::clone(&used);
+    let stdout_exceeded = Arc::clone(&exceeded);
+    let stdout_thread = std::thread::spawn(move || {
+        drain_bounded(stdout, stdout_used, stdout_exceeded, plan.output_bytes)
+    });
+    let stderr_used = Arc::clone(&used);
+    let stderr_exceeded = Arc::clone(&exceeded);
+    let stderr_thread = std::thread::spawn(move || {
+        drain_bounded(stderr, stderr_used, stderr_exceeded, plan.output_bytes)
+    });
+
+    let deadline = Instant::now()
+        .checked_add(plan.wall_time)
+        .ok_or(RunError::InvalidCapturePlan)?;
+    let termination = loop {
+        if let Some(status) = child.try_wait()? {
+            break CapturedTermination::Exited(status);
+        }
+        let reason = if cancellation.is_cancelled() {
+            Some(CapturedTermination::Cancelled)
+        } else if exceeded.load(AtomicOrdering::Acquire) {
+            Some(CapturedTermination::OutputLimit)
+        } else if Instant::now() >= deadline {
+            Some(CapturedTermination::TimedOut)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            let pid = i32::try_from(child.id()).unwrap_or(i32::MAX);
+            // SAFETY: the child created its own process group before exec;
+            // a negative pid addresses only that exact group.
+            let killed = unsafe { libc::kill(-pid, libc::SIGKILL) } == 0;
+            if !killed {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+            break reason;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let stdout = stdout_thread
+        .join()
+        .map_err(|_| RunError::Io(std::io::Error::other("stdout capture thread panicked")))??;
+    let stderr = stderr_thread
+        .join()
+        .map_err(|_| RunError::Io(std::io::Error::other("stderr capture thread panicked")))??;
+    stop_identity_broker(identity_broker_control, identity_broker_thread);
+    Ok(CapturedRunOutput {
+        termination,
+        stdout,
+        stderr,
+    })
+}
+
 /// [`run_with`] sibling that captures the child's stdout instead of inheriting
 /// it. It deliberately uses the same Landlock, seccomp, runtime, portal,
 /// identity, filesystem and egress decisions as a normal qpkg launch.
@@ -1876,11 +2213,63 @@ fn spawn_and_capture(
 /// empty argv — it always appends the entrypoint binary as the last
 /// element, so this would indicate a bug in that builder, not a runtime
 /// condition.
+type IdentityBrokerHandles = (
+    Option<UnixStream>,
+    Option<UnixStream>,
+    Option<std::thread::JoinHandle<()>>,
+);
+
 pub fn run_with_captured(
     manifest: &MinimalManifest,
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<(ExitStatus, Vec<u8>), RunError> {
+    run_with_capture_spawn(manifest, payload_root, opts, spawn_and_capture)
+}
+
+/// Captured sandbox launch with launcher-enforced resource limits and
+/// cancellation. Sandbox construction is exactly the same as
+/// [`run_with_captured`]; only process supervision differs.
+pub fn run_with_captured_bounded(
+    manifest: &MinimalManifest,
+    payload_root: &Path,
+    opts: &RunOptions,
+    plan: CapturedResourcePlan,
+    cancellation: CaptureCancellation,
+) -> Result<CapturedRunOutput, RunError> {
+    plan.validate()?;
+    run_with_capture_spawn(
+        manifest,
+        payload_root,
+        opts,
+        move |argv, passthrough, opts, seccomp, services, identity| {
+            spawn_and_capture_bounded(
+                argv,
+                passthrough,
+                opts,
+                seccomp,
+                services,
+                identity,
+                plan,
+                cancellation,
+            )
+        },
+    )
+}
+
+fn run_with_capture_spawn<T>(
+    manifest: &MinimalManifest,
+    payload_root: &Path,
+    opts: &RunOptions,
+    spawn: impl FnOnce(
+        Vec<String>,
+        Vec<String>,
+        &RunOptions,
+        OwnedFd,
+        Vec<crate::services::ResolvedService>,
+        IdentityBrokerHandles,
+    ) -> Result<T, RunError>,
+) -> Result<T, RunError> {
     validate_open_uri(manifest, opts)?;
     // Same refusals as `run_with`: this is a second entry into the sandbox
     // builder, and a policy with one enforced door is a door beside it.
@@ -1971,7 +2360,7 @@ pub fn run_with_captured(
         },
     )?;
 
-    spawn_and_capture(
+    spawn(
         argv,
         passthrough,
         opts,
