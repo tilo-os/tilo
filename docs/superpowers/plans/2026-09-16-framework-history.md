@@ -86,6 +86,8 @@
 
 #### Task3b1 review checkpoint: shared presentation and managed headless host
 
+**Status:** Reviewed and committed in `feb28d510`; independent review fixes accepted. History: 65, headless: 50, accessibility: 31 passing tests; unchanged TileHost: 22, bound: 25, timeline: 48 passing tests. Production/native integration remains Task3b2.
+
 Complete the reusable History surface/preview/registration contract and real managed FrameHarness integration, corrected wide/narrow layout, pointer/keyboard/accessibility selection, pinned comparison, return-to-live, dirty-editor focus/pending preservation, restricted preview navigation/local dispatch isolation, and strict existing-record admission regressions. Review and commit this coherent checkpoint independently. It is not completion of Task3b or any app migration; restoration must not expose an operative control without authorized admission.
 
 #### Task3b2: production hosts, authorized restoration and provider lifecycle
