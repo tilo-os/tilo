@@ -1,5 +1,5 @@
 FROM registry.fedoraproject.org/fedora@sha256:61beafd34111e1cb85fb49377ceadeee0a53622dbc20670ed8ca303f0e17ed9c
-RUN dnf -y install podman python3 openssl ca-certificates sbsigntools systemd-boot-unsigned /usr/bin/bootctl && \
+RUN dnf -y install podman python3 openssl ca-certificates sbsigntools systemd-boot-unsigned /usr/bin/bootctl /usr/bin/objcopy /usr/lib/systemd/systemd-measure && \
     test -x /usr/bin/bootctl && dnf clean all
 COPY cosign /usr/local/bin/cosign
 COPY dev/ /fixture/os/dev/
@@ -10,6 +10,7 @@ COPY test_development_loader.py /fixture/os/tests/test_development_loader.py
 COPY development_stage_reuse.py /fixture/os/tests/development_stage_reuse.py
 COPY development_rootfs.py test_sign_development_rootfs.py /fixture/os/tests/
 COPY test_prepare_wpe_stage.py wpe_stage_cache.py /fixture/os/tests/
+COPY test_development_prediction.py development_prediction_native.py /fixture/os/tests/
 COPY test_private_disk_image.py /fixture/os/tests/
 COPY test_development_source.py test_development_boot.py /fixture/os/tests/
 ENV TILO_REQUIRE_BOOT_SIGNATURE_FIXTURE=1
@@ -17,4 +18,4 @@ COPY Containerfile.development-loader /fixture/os/Containerfile.development-load
 # A private VFS store avoids overlay-on-overlay assumptions in disposable CI.
 RUN printf '[storage]\ndriver="vfs"\ngraphroot="/var/lib/containers/storage"\nrunroot="/run/containers/storage"\n' > /etc/containers/storage.conf && \
     printf '[engine]\ncgroup_manager="cgroupfs"\nevents_logger="file"\n' > /etc/containers/containers.conf
-ENTRYPOINT ["/bin/bash", "-euc", "python3 /fixture/os/tests/test_prepare_wpe_stage.py; python3 /fixture/os/tests/test_development_boot.py; python3 /fixture/os/tests/test_development_source.py; python3 /fixture/os/tests/test_private_disk_image.py; python3 /fixture/os/tests/test_development_signer.py; python3 /fixture/os/tests/test_development_loader.py; python3 /fixture/os/tests/test_sign_development_rootfs.py; python3 /fixture/os/tests/development_signer.py; python3 /fixture/os/tests/development_stage_reuse.py; python3 /fixture/os/tests/development_rootfs.py; python3 /fixture/os/tests/development_source_registry.py; python3 /fixture/os/tests/wpe_stage_cache.py"]
+ENTRYPOINT ["/bin/bash", "-euc", "python3 /fixture/os/tests/test_prepare_wpe_stage.py; python3 /fixture/os/tests/test_development_boot.py; python3 /fixture/os/tests/test_development_prediction.py; python3 /fixture/os/tests/test_development_source.py; python3 /fixture/os/tests/test_private_disk_image.py; python3 /fixture/os/tests/test_development_signer.py; python3 /fixture/os/tests/test_development_loader.py; python3 /fixture/os/tests/test_sign_development_rootfs.py; python3 /fixture/os/tests/development_signer.py; python3 /fixture/os/tests/development_stage_reuse.py; python3 /fixture/os/tests/development_rootfs.py; python3 /fixture/os/tests/development_source_registry.py; python3 /fixture/os/tests/wpe_stage_cache.py; python3 /fixture/os/tests/development_prediction_native.py"]
