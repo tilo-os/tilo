@@ -65,9 +65,17 @@ grep -Fqx 'Signature: 8a477f597d28d172789f06886806bc55' "$repo_root/$target_rel/
 grep -Fq -- '--features dev-session' "$log"
 grep -Fq -- '--bin shell' "$log"
 ! grep -Fq -- '--no-default-features' "$log"
-grep -Fq 'SCCACHE_SERVER_PORT=4226' "$log"
-grep -Fq 'sccache-distrobox' "$log"
+grep -Fq 'SCCACHE_SERVER_PORT=' "$log"
+grep -Fq 'tilo-fedora44-' "$log"
+! grep -Fq 'SCCACHE_SERVER_PORT=4226' "$log"
+! grep -Fq 'sccache-distrobox' "$log"
 ! grep -Eq -- '--release|--profile release|--default-features' "$log"
+
+: >"$log"
+env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
+    TILO_FEDORA44_CONTAINER=test-container TILO_FEDORA44_TARGET_REL="$target_rel" \
+    TILO_FEDORA44_SCCACHE_PORT=45555 "$tool" build shell
+grep -Fq "SCCACHE_SERVER_PORT='45555'" "$log"
 
 : >"$log"
 env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \

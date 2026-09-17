@@ -28,6 +28,14 @@ vm_host=${TILO_VM_HOST:-127.0.0.1}
 vm_user=${TILO_VM_USER:-quickuser}
 vm_root=${TILO_VM_DEV_ROOT:-.local/share/tilo-dev}
 
+# Some build scripts embed CARGO_MANIFEST_DIR. The vendored Vello shader
+# builder does this, and its source path differs between the host and the
+# /run/host checkout view inside distrobox. Keep this persistent cache scoped
+# to one checkout instead of reusing either generic sccache namespace.
+repo_cache_id=$(printf '%s' "$repo_root" | cksum | awk '{print $1}')
+sccache_port=${TILO_FEDORA44_SCCACHE_PORT:-$((43000 + repo_cache_id % 2000))}
+sccache_cache_name="tilo-fedora44-$repo_cache_id"
+
 die() { printf 'fedora44-vm-iterate: %s\n' "$*" >&2; exit 2; }
 note() { printf 'fedora44-vm-iterate: %s\n' "$*" >&2; }
 
@@ -49,6 +57,11 @@ safe_target_rel() {
 
 safe_vm_user() {
     [[ $vm_user =~ ^[a-z_][a-z0-9_-]*\$?$ ]] || die "TILO_VM_USER is not a valid user name"
+}
+
+safe_sccache_port() {
+    [[ $sccache_port =~ ^[0-9]{1,5}$ ]] && (( sccache_port >= 1024 && sccache_port <= 65535 )) \
+        || die "TILO_FEDORA44_SCCACHE_PORT must be a TCP port from 1024 through 65535"
 }
 
 container_exists() { podman container exists "$container" 2>/dev/null; }
@@ -112,13 +125,11 @@ build_one() {
     local quoted
     printf -v quoted ' %q' "${args[@]}"
     container_run "set -euo pipefail
-        # Do not let distrobox's copied host environment attach this build to
-        # the host sccache server. That server executes C/C++ compiler calls in
-        # the host namespace, which can pair F44-generated PipeWire/SPA bindings
-        # with different host headers. The repository cargo shim uses this same
-        # dedicated port for the container route.
-        export SCCACHE_SERVER_PORT=4226
-        export SCCACHE_DIR=\"\$HOME/.cache/sccache-distrobox\"
+        # Do not reuse the generic host or distrobox sccache namespace: build
+        # scripts can bake CARGO_MANIFEST_DIR into their executable, so caching
+        # across host and /run/host paths can corrupt a later host build.
+        export SCCACHE_SERVER_PORT='$sccache_port'
+        export SCCACHE_DIR=\"\$HOME/.cache/$sccache_cache_name\"
         mkdir -p '$target_rel'
         # This is a persistent, disposable build cache rather than source. The
         # standard tag keeps backup/indexing tools from treating it as project
@@ -138,6 +149,7 @@ build_one() {
 cmd_build() {
     (($#)) || set -- shell
     safe_target_rel
+    safe_sccache_port
     container_exists || die "container $container is absent; run: $0 bootstrap"
     local package
     for package in "$@"; do
