@@ -319,6 +319,14 @@ impl ContinuationRegistry {
             .retain(|(_, _, candidate), _| *candidate != tab);
     }
 
+    /// Purge every unclaimed offer learned from another device while keeping
+    /// process-local app reports intact. This is the revocation boundary for
+    /// the device-local App continuations privacy switch.
+    pub fn clear_remote(&mut self) {
+        self.remote_resumes.clear();
+        self.remote_records.clear();
+    }
+
     pub fn record_instance_for_tab(
         &self,
         room: RoomId,
