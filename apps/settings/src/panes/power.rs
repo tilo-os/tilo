@@ -1,3 +1,12 @@
+#![allow(
+    clippy::expect_used,
+    clippy::items_after_statements,
+    clippy::needless_pass_by_value,
+    clippy::struct_excessive_bools,
+    clippy::too_many_lines,
+    reason = "power uses a closed static resource contract and keeps the coupled idle-policy transaction auditable"
+)]
+
 //! Power pane — battery status, the active power profile, and session-idle
 //! preferences.
 //!
