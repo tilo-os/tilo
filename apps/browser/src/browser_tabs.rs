@@ -178,7 +178,11 @@ impl BrowserTabs {
             }
             let engine = self.active().engine_handle().create_tab()?;
             engine.set_visible(false);
-            let mut widget = BrowserWidget::with_engine(engine, self.active().is_headless());
+            let mut widget = BrowserWidget::with_engine_mode(
+                engine,
+                self.active().is_headless(),
+                self.active().browsing_mode(),
+            );
             widget.inherit_workspace_state(self.active());
             widget.share_history_pause(self.active());
             widget.prepare_session_uri(saved.url.clone(), true);
@@ -270,8 +274,9 @@ impl BrowserTabs {
         let engine = self.active().engine_handle().create_tab()?;
         engine.set_visible(false);
         let headless = self.active().is_headless();
-        let mut widget = BrowserWidget::with_engine(engine, headless)
-            .with_initial_uri(url.unwrap_or_else(|| "about:blank".into()));
+        let mut widget =
+            BrowserWidget::with_engine_mode(engine, headless, self.active().browsing_mode())
+                .with_initial_uri(url.unwrap_or_else(|| "about:blank".into()));
         widget.share_history_pause(self.active());
         widget.inherit_workspace_state(self.active());
         let id = self.next_id;
@@ -522,6 +527,9 @@ impl BrowserTabs {
         let platform = modifiers.super_key() || modifiers.control_key();
         let shift = modifiers.shift_key();
         match key {
+            Key::Character(c) if platform && shift && c.eq_ignore_ascii_case("n") => {
+                self.active().request_private_window();
+            }
             Key::Character(c) if platform && c.eq_ignore_ascii_case("t") => {
                 let result = if shift {
                     self.reopen()

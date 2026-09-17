@@ -216,6 +216,18 @@ impl Widget for WebView {
         self.send_resize_if_needed();
     }
 
+    fn mount_native_views(&mut self, host: &crate::widget::NativeViewHost<'_>) {
+        let scale_factor = to_f32(host.scale_factor());
+        if scale_factor.is_finite()
+            && scale_factor > 0.0
+            && scale_factor.to_bits() != self.scale_factor.to_bits()
+        {
+            self.scale_factor = scale_factor;
+            self.last_sent_size = (0, 0);
+            self.send_resize_if_needed();
+        }
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -593,6 +605,24 @@ mod tests {
             &PresenceCtx::default(),
         );
         assert_eq!(engine.commands().len(), count);
+    }
+
+    #[test]
+    fn mounting_in_a_retina_window_sets_dpi_before_input() {
+        let engine = TestEngine::new();
+        let (mut view, _, _) = laid_out(engine.clone());
+        view.mount_native_views(&crate::widget::NativeViewHost::headless(
+            crate::platform::PlatformConventions::default(),
+            2.0,
+        ));
+        assert_eq!(
+            engine.commands().last(),
+            Some(&WebViewCommand::Resize {
+                width: 800,
+                height: 600,
+                scale_factor: 2.0,
+            })
+        );
     }
 
     #[test]

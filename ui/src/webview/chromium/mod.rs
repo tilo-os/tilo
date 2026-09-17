@@ -109,9 +109,66 @@ pub struct ChromiumEngine {
 }
 
 type Routes = Arc<Mutex<HashMap<u32, Weak<Shared>>>>;
+const PRIVATE_ROOT_PREFIX: &str = "qos-browser-private-";
+const PRIVATE_ROOT_MARKER: &str = ".qos-private-root-v1";
+const PRIVATE_ROOT_MARKER_CONTENT: &str = "qos-browser-owned-private-root-v1\n";
+const PRIVATE_ROOT_HELPER: &str = ".qos-private-helper-pid";
+
+struct PrivateRootCleanup(Option<PathBuf>);
+impl PrivateRootCleanup {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+impl Drop for PrivateRootCleanup {
+    fn drop(&mut self) {
+        if let Some(root) = self.0.take() {
+            cleanup_private_root(&root);
+        }
+    }
+}
+
+fn owned_private_root(root: &Path) -> bool {
+    std::fs::symlink_metadata(root)
+        .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+        && root
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|name| name.starts_with(PRIVATE_ROOT_PREFIX))
+        && std::fs::symlink_metadata(root.join(PRIVATE_ROOT_MARKER)).is_ok_and(|metadata| {
+            metadata.is_file() && !metadata.file_type().is_symlink() && metadata.len() <= 64
+        })
+        && std::fs::read_to_string(root.join(PRIVATE_ROOT_MARKER))
+            .is_ok_and(|value| value == PRIVATE_ROOT_MARKER_CONTENT)
+}
+
+fn cleanup_private_root(root: &Path) {
+    if owned_private_root(root)
+        && let Err(error) = std::fs::remove_dir_all(root)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(%error, path = %root.display(), "Could not remove private browser root");
+    }
+}
+
+fn record_private_helper(root: &Path, pid: u32) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    std::io::Write::write_all(
+        &mut options.open(root.join(PRIVATE_ROOT_HELPER))?,
+        pid.to_string().as_bytes(),
+    )
+}
+
 struct Runtime {
     tx: Arc<CommandQueue>,
     process: Arc<Shared>,
+    supervisor: Mutex<Option<std::thread::JoinHandle<()>>>,
     routes: Routes,
     next_tab: AtomicU32,
     download_events: Arc<Mutex<VecDeque<WebViewEvent>>>,
@@ -121,6 +178,15 @@ impl Drop for Runtime {
         self.process.stopping.store(true, Ordering::Release);
         let _ = self.tx.push(json!({"op":"shutdown"}));
         self.tx.close();
+        if let Some(supervisor) = self
+            .supervisor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            && supervisor.thread().id() != std::thread::current().id()
+        {
+            let _ = supervisor.join();
+        }
     }
 }
 fn queue_download_event(queue: &Mutex<VecDeque<WebViewEvent>>, event: WebViewEvent) {
@@ -159,10 +225,22 @@ fn route(routes: &Routes, id: u32) -> Option<Arc<Shared>> {
 pub struct UnavailableEngine {
     message: String,
     shared: Shared,
+    _private_root: PrivateRootCleanup,
 }
 
 impl UnavailableEngine {
     pub fn new(message: String) -> Arc<Self> {
+        Self::build(message, None)
+    }
+
+    pub fn new_with_private_root(message: String, root: &Path) -> Result<Arc<Self>, String> {
+        if !owned_private_root(root) {
+            return Err("Private Chromium root is not owned by Browser".into());
+        }
+        Ok(Self::build(message, Some(root.to_owned())))
+    }
+
+    fn build(message: String, private_root: Option<PathBuf>) -> Arc<Self> {
         Arc::new(Self {
             message,
             shared: Shared {
@@ -174,6 +252,7 @@ impl UnavailableEngine {
                 stopping: AtomicBool::new(false),
                 failed: AtomicBool::new(false),
             },
+            _private_root: PrivateRootCleanup(private_root),
         })
     }
 }
@@ -238,7 +317,11 @@ impl ChromiumEngine {
             .map(PathBuf::from)
             .or_else(|| dirs::data_dir().map(|path| path.join("qos-browser/chromium")))
             .ok_or("Cannot locate Chromium profile directory")?;
-        Self::with_host_extensions(&host_path()?, &profile, extensions)
+        Self::with_host_extensions(&host_path()?, &profile, extensions, None)
+    }
+
+    pub fn new_private(root: &Path) -> Result<Arc<Self>, String> {
+        Self::with_private_host(&host_path()?, root)
     }
 
     /// Explicit profile with the packaged helper and approved extensions.
@@ -246,18 +329,28 @@ impl ChromiumEngine {
         profile: &Path,
         extensions: &[PathBuf],
     ) -> Result<Arc<Self>, String> {
-        Self::with_host_extensions(&host_path()?, profile, extensions)
+        Self::with_host_extensions(&host_path()?, profile, extensions, None)
     }
 
     /// Explicit runtime/profile paths for packaging and isolated live tests.
     pub fn with_host(host: &Path, profile: &Path) -> Result<Arc<Self>, String> {
-        Self::with_host_extensions(host, profile, &[])
+        Self::with_host_extensions(host, profile, &[], None)
+    }
+
+    /// Start an incognito helper whose complete installation root is removed
+    /// by the process supervisor only after the native child has exited.
+    pub fn with_private_host(host: &Path, root: &Path) -> Result<Arc<Self>, String> {
+        if !owned_private_root(root) {
+            return Err("Private Chromium root is not owned by Browser".into());
+        }
+        Self::with_host_extensions(host, &root.join("chromium"), &[], Some(root.to_owned()))
     }
 
     fn with_host_extensions(
         host: &Path,
         profile: &Path,
         extensions: &[PathBuf],
+        private_root: Option<PathBuf>,
     ) -> Result<Arc<Self>, String> {
         if extensions.len() > 100 {
             return Err("Too many approved extensions".into());
@@ -273,9 +366,13 @@ impl ChromiumEngine {
                 Ok(value.to_owned())
             })
             .collect::<Result<Vec<String>, String>>()?;
+        let mut cleanup_on_error = PrivateRootCleanup(private_root.clone());
         std::fs::create_dir_all(profile).map_err(|error| format!("Chromium profile: {error}"))?;
         let profile = profile.canonicalize().map_err(|error| error.to_string())?;
         let mut command = Command::new(host);
+        if private_root.is_some() {
+            command.arg("--private");
+        }
         if !extensions.is_empty() {
             command.arg(format!("--load-extension={}", extensions.join(",")));
         }
@@ -292,8 +389,25 @@ impl ChromiumEngine {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|error| format!("Could not start Chromium at {}: {error}", host.display()))?;
-        let stdin = child.stdin.take().ok_or("Chromium stdin unavailable")?;
-        let stdout = child.stdout.take().ok_or("Chromium stdout unavailable")?;
+        if let Some(root) = private_root.as_deref()
+            && let Err(error) = record_private_helper(root, child.id())
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "Could not record private Chromium process: {error}"
+            ));
+        }
+        let Some(stdin) = child.stdin.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Chromium stdin unavailable".into());
+        };
+        let Some(stdout) = child.stdout.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Chromium stdout unavailable".into());
+        };
         let shared = Arc::new(Shared {
             open_tabs: Mutex::default(),
             frames: Arc::new(Mutex::new(None)),
@@ -309,6 +423,7 @@ impl ChromiumEngine {
         let runtime = Arc::new(Runtime {
             tx: tx.clone(),
             process: shared.clone(),
+            supervisor: Mutex::new(None),
             routes: routes.clone(),
             next_tab: AtomicU32::new(2),
             download_events: download_events.clone(),
@@ -407,7 +522,9 @@ impl ChromiumEngine {
         let supervisor_child = child.clone();
         let supervisor_shared = shared.clone();
         let supervisor_queue = tx.clone();
-        if let Err(error) = std::thread::Builder::new()
+        let wait_for_private_cleanup = private_root.is_some();
+        let supervisor_private_root = private_root;
+        let supervisor = std::thread::Builder::new()
             .name("chromium-supervisor".into())
             .spawn(move || {
                 let mut child = supervisor_child.lock().unwrap().take().unwrap();
@@ -443,15 +560,28 @@ impl ChromiumEngine {
                     std::thread::sleep(Duration::from_millis(100));
                 }
                 supervisor_queue.close();
-            })
-        {
-            if let Some(mut child) = child.lock().unwrap().take() {
-                let _ = child.kill();
-                let _ = child.wait();
+                if let Some(root) = supervisor_private_root {
+                    cleanup_private_root(&root);
+                }
+            });
+        let supervisor = match supervisor {
+            Ok(supervisor) => supervisor,
+            Err(error) => {
+                if let Some(mut child) = child.lock().unwrap().take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                tx.close();
+                return Err(format!("Chromium supervisor: {error}"));
             }
-            tx.close();
-            return Err(format!("Chromium supervisor: {error}"));
+        };
+        if wait_for_private_cleanup {
+            *runtime
+                .supervisor
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(supervisor);
         }
+        cleanup_on_error.disarm();
         Ok(Arc::new(Self {
             tx,
             shared,

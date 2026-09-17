@@ -65,11 +65,154 @@ fn missing_helper_is_a_startup_error() {
 }
 
 #[test]
+#[cfg(unix)]
+fn private_helper_gets_incognito_flag_and_owned_root_is_removed_after_exit() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = tempfile::tempdir().unwrap();
+    let host = fixture.path().join("private-helper");
+    let arguments = fixture.path().join("arguments");
+    let exited = fixture.path().join("exited");
+    let mut bytes = Vec::new();
+    protocol::write_json(
+        &mut bytes,
+        &json!({"event":"ready","cef_version":"152","chromium_version":"152"}),
+    )
+    .unwrap();
+    let encoded: String = bytes.iter().map(|byte| format!("\\{:03o}", byte)).collect();
+    std::fs::write(
+        &host,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '{encoded}'\ncat >/dev/null\nprintf done > '{}'\n",
+            arguments.display(),
+            exited.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let root = private_root();
+
+    let engine = ChromiumEngine::with_private_host(&host, &root).unwrap();
+    let launched = std::fs::read_to_string(&arguments).unwrap();
+    let has_private = launched.lines().any(|arg| arg == "--private");
+    let has_profile = launched
+        .lines()
+        .any(|arg| arg == format!("--profile={}/chromium", root.display()));
+    assert!(root.exists(), "root must outlive the running helper");
+    drop(engine);
+    assert!(has_private, "launched arguments: {launched:?}");
+    assert!(has_profile, "launched arguments: {launched:?}");
+    assert!(
+        exited.exists(),
+        "engine drop must wait for the helper to exit"
+    );
+    assert!(
+        !root.exists(),
+        "engine drop must wait for complete owned-root cleanup"
+    );
+}
+
+#[cfg(unix)]
+fn private_root() -> PathBuf {
+    let root = std::env::temp_dir().join(format!("qos-browser-private-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(
+        root.join(".qos-private-root-v1"),
+        "qos-browser-owned-private-root-v1\n",
+    )
+    .unwrap();
+    root.canonicalize().unwrap()
+}
+
+#[cfg(unix)]
+fn wait_until_removed(root: &Path) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while root.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn private_startup_failures_remove_owned_roots_after_reaping() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let missing_root = private_root();
+    assert!(
+        ChromiumEngine::with_private_host(Path::new("/missing/qos-host"), &missing_root).is_err()
+    );
+    assert!(!missing_root.exists());
+
+    let fixture = tempfile::tempdir().unwrap();
+    let host = fixture.path().join("not-ready");
+    std::fs::write(&host, "#!/bin/sh\nexit 7\n").unwrap();
+    std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let readiness_root = private_root();
+    assert!(ChromiumEngine::with_private_host(&host, &readiness_root).is_err());
+    assert!(!readiness_root.exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn private_helper_crash_removes_root_while_engine_handle_remains() {
+    let (_fixture, host) = helper_fixture("exit 9");
+    let root = private_root();
+    let engine = ChromiumEngine::with_private_host(&host, &root).unwrap();
+    wait_until_removed(&root);
+    assert!(
+        !root.exists(),
+        "supervisor must clean after the crashed helper exits"
+    );
+    assert!(engine.shared.failed.load(Ordering::Acquire));
+}
+
+#[test]
+#[ignore = "child entry point for the real process-lifecycle regression"]
+#[cfg(unix)]
+fn private_process_lifecycle_child() {
+    let host = std::env::var_os("QOS_TEST_PRIVATE_HOST").unwrap();
+    let root = PathBuf::from(std::env::var_os("QOS_TEST_PRIVATE_ROOT").unwrap());
+    let engine = ChromiumEngine::with_private_host(Path::new(&host), &root).unwrap();
+    assert!(root.exists());
+    drop(engine);
+}
+
+#[test]
+#[cfg(unix)]
+fn private_process_exit_waits_for_helper_and_root_cleanup() {
+    let (_fixture, host) = helper_fixture("exec cat >/dev/null");
+    let root = private_root();
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "webview::chromium::tests::private_process_lifecycle_child",
+            "--ignored",
+        ])
+        .env("QOS_TEST_PRIVATE_HOST", &host)
+        .env("QOS_TEST_PRIVATE_ROOT", &root)
+        .status()
+        .unwrap();
+    assert!(result.success());
+    assert!(!root.exists(), "root must be absent when the child exits");
+}
+
+#[test]
 fn unavailable_engine_reports_failure_without_page_pixels() {
     let engine = UnavailableEngine::new("Runtime missing".into());
     engine.send(WebViewCommand::Navigate("https://podesta.ai".into()));
     assert!(engine.frames().lock().unwrap().is_none());
     assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::LoadFailed {uri,error} if uri == "https://podesta.ai" && error == "Runtime missing")));
+}
+
+#[test]
+#[cfg(unix)]
+fn unavailable_private_engine_owns_its_disposable_root() {
+    let root = private_root();
+    let engine =
+        UnavailableEngine::new_with_private_root("Private backend unavailable".into(), &root)
+            .unwrap();
+    assert!(root.exists());
+    drop(engine);
+    assert!(!root.exists());
 }
 
 #[test]

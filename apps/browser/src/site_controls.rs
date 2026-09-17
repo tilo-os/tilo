@@ -84,6 +84,7 @@ pub(crate) struct SiteControls {
     notice: String,
     filters: crate::native_blocker::Status,
     persistent: bool,
+    runtime_exceptions: std::sync::Arc<std::sync::Mutex<Exceptions>>,
 }
 impl Default for SiteControls {
     fn default() -> Self {
@@ -100,23 +101,32 @@ impl Default for SiteControls {
             notice: String::new(),
             filters: crate::native_blocker::status(),
             persistent: false,
+            runtime_exceptions: Default::default(),
         }
     }
 }
 impl SiteControls {
+    pub fn share_runtime_state(&mut self, other: &Self) {
+        self.runtime_exceptions = other.runtime_exceptions.clone();
+    }
+
     pub fn initialize(&mut self, engine: &SharedEngine, persistent: bool) {
         self.persistent = persistent;
         if engine.supports_native_filtering() {
-            let exceptions = if persistent {
-                crate::storage::config_dir()
+            if persistent {
+                let exceptions = crate::storage::config_dir()
                     .map(|p| Exceptions::load(&p.join("site-exceptions.json")))
-                    .unwrap_or_default()
-            } else {
-                Exceptions::default()
-            };
-            engine.send(WebViewCommand::SetSiteExceptions(
-                exceptions.0.into_iter().collect(),
-            ));
+                    .unwrap_or_default();
+                if let Ok(mut runtime) = self.runtime_exceptions.lock() {
+                    *runtime = exceptions;
+                }
+            }
+            let exceptions = self
+                .runtime_exceptions
+                .lock()
+                .map(|rules| rules.0.iter().cloned().collect())
+                .unwrap_or_default();
+            engine.send(WebViewCommand::SetSiteExceptions(exceptions));
         }
     }
     pub fn navigation(&mut self, url: &str) {
@@ -180,13 +190,14 @@ impl SiteControls {
                 }
                 self.action = None;
                 self.notice = message;
-                if success && matches!(action.as_str(), "enable" | "disable") && self.persistent {
-                    if let Some(path) =
-                        crate::storage::config_dir().map(|p| p.join("site-exceptions.json"))
-                    {
-                        let mut exceptions = Exceptions::load(&path);
+                if success && matches!(action.as_str(), "enable" | "disable") {
+                    if let Ok(mut exceptions) = self.runtime_exceptions.lock() {
                         exceptions.set(&origin, action == "disable");
-                        if exceptions.save(&path).is_err() {
+                        if self.persistent
+                            && let Some(path) =
+                                crate::storage::config_dir().map(|p| p.join("site-exceptions.json"))
+                            && exceptions.save(&path).is_err()
+                        {
                             self.notice =
                                 "Changed for this session; could not save the preference".into();
                         }
@@ -647,5 +658,37 @@ mod tests {
             "1970-01-02 00:00 UTC"
         );
         assert_eq!(tls_version(6), "TLS 1.3");
+    }
+
+    #[test]
+    fn private_tabs_share_runtime_exceptions_without_disk_persistence() {
+        let first_engine = ui::webview::test_engine::TestEngine::new();
+        let mut first = SiteControls::default();
+        let mut second = SiteControls::default();
+        second.share_runtime_state(&first);
+        first.committed = Some("https://private.test".into());
+        first.action = Some((
+            7,
+            "https://private.test".into(),
+            3,
+            "disable".into(),
+            Instant::now(),
+        ));
+        assert!(first.apply(WebViewEvent::SiteResult {
+            request_id: 7,
+            origin: "https://private.test".into(),
+            generation: 3,
+            action: "disable".into(),
+            success: true,
+            message: "disabled".into(),
+        }));
+        assert!(
+            second
+                .runtime_exceptions
+                .lock()
+                .unwrap()
+                .contains("https://private.test/child")
+        );
+        assert!(first_engine.commands().is_empty());
     }
 }
