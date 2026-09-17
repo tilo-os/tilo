@@ -1108,7 +1108,7 @@ fn mist_tag(
     name: &str,
 ) -> Option<(Rect, String, f64)> {
     use super::geom::MistEdge;
-    let label_size = theme.tokens.typography.scale.xs;
+    let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
     // The band is fixed chrome, so — unlike a pill's — the tag's pad does
     // not grow with the type: in a 44 px band a scaled pad would leave the
     // label no room at all.
