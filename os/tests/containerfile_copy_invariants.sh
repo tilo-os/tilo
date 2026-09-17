@@ -9,7 +9,7 @@ containerfile="$repo/os/Containerfile"
 . "$here/lib/containerfile.sh"
 
 # Public trust now stages the selected keys, independent tracked references,
-# and two validation tools under /run before installing validated bytes.
+# and three validation tools under /run before installing validated bytes.
 # test_public_trust_install.py proves default keys and development provenance;
 # the contract below covers these explicit staging inputs plus existing payload.
 # Sorting intentionally ignores instruction order:
@@ -17,7 +17,7 @@ containerfile="$repo/os/Containerfile"
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=76242075a1a66be838810fa0add5d4a49a965ab2a1528ecafd3dfaa128095b0d
+expected_contract=2c17dd92c06a86898d9d64e3c8efee2789f04ef5c993fd1f57265c6b55f6408c
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -41,11 +41,11 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
   END { print n+0 }
 ')"
 # The existing image used 123; provider selection adds ARG, COPY and its
-# native dynamic-linker validation RUN. Public trust adds three ARGs, two
+# native dynamic-linker validation RUN. Public trust adds four ARGs, two
 # additional COPYs and a validation RUN before initramfs generation.
-# Keep the current 133-instruction bound exact and reviewed.
-[ "$instructions" -le 133 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 133)" >&2
+# Keep the current 134-instruction bound exact and reviewed.
+[ "$instructions" -le 134 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 134)" >&2
   exit 1
 }
 

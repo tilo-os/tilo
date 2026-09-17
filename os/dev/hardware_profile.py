@@ -1,5 +1,6 @@
 """Validated, declarative hardware definitions shared by image and UKI builders."""
 
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -16,13 +17,84 @@ PROFILE_FIELDS = {"schema_version", "id", "architecture", "devicetree", "devicet
 DEFAULT_TARGET_IMGREF = "code.podesta.ai/qos/tilo:latest"
 
 
-def validate_target_imgref(value):
-    """Only this exact repository is signature-required by the image policy."""
+def validate_target_imgref(value, *, root=None):
+    """Production by default; development requires immutable image evidence."""
+    if root is not None:
+        bound = development_origin(root)
+        if bound is not None:
+            if value != bound:
+                raise ValueError("update origin differs from immutable development origin")
+            return value
     if not isinstance(value, str) or not re.fullmatch(
         r"code\.podesta\.ai/qos/tilo(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value
     ):
         raise ValueError("TILO_TARGET_IMGREF must explicitly name a valid tag or sha256 digest in the signature-required code.podesta.ai/qos/tilo repository")
     return value
+
+
+DEVELOPMENT_PATH = Path("usr/share/tilo/development-trust")
+DEVELOPMENT_ORIGIN = DEVELOPMENT_PATH / "origin.json"
+
+
+def development_target(value):
+    """One explicitly selected development repository, never production."""
+    match = re.fullmatch(r"([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::([0-9]{1,5}))?/tilo-development/os(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value or "")
+    if not match:
+        raise ValueError("development origin must explicitly name HOST[:PORT]/tilo-development/os:TAG or @sha256:DIGEST")
+    host, port = match.groups()
+    if host in ("code.podesta.ai", "localhost") or ".." in host or any(not part or part.startswith('-') or part.endswith('-') for part in host.split('.')):
+        raise ValueError("development registry host is invalid or a production alias")
+    if port and (not 1 <= int(port) <= 65535 or str(int(port)) != port):
+        raise ValueError("development registry port must be canonical and valid")
+    registry = host + (":" + port if port else "")
+    return {"target_update_ref": value, "repository": registry + "/tilo-development/os",
+            "registry": registry, "tls_required": host != "127.0.0.1"}
+
+
+def development_policy(repository):
+    return {"default": [{"type": "reject"}], "transports": {"docker": {repository: [
+        {"type": "sigstoreSigned", "keyPath": "/usr/share/tilo/cosign.pub",
+         "signedIdentity": {"type": "matchRepository"}}]}}}
+
+
+def development_origin(root):
+    directory = root / DEVELOPMENT_PATH
+    if not directory.exists() and not directory.is_symlink():
+        return None
+    def read(relative):
+        path = trusted_path(root, relative, regular=True)
+        if path.stat().st_size > 65536:
+            raise ValueError("development origin input is too large")
+        return path.read_bytes()
+    document = json.loads(read(DEVELOPMENT_ORIGIN))
+    if set(document) != {"schema", "purpose", "target_update_ref", "manifest_sha256"} or type(document['schema']) is not int or document['schema'] != 1 or document['purpose'] != 'tilo-development':
+        raise ValueError("invalid immutable development origin metadata")
+    selected = development_target(document['target_update_ref'])
+    manifest_bytes = read(DEVELOPMENT_PATH / 'manifest.json')
+    if hashlib.sha256(manifest_bytes).hexdigest() != document['manifest_sha256']:
+        raise ValueError("development origin public manifest binding differs")
+    provenance = json.loads(read(DEVELOPMENT_PATH / 'provenance.json'))
+    if provenance.get('purpose') != 'tilo-development' or provenance.get('manifest_sha256') != document['manifest_sha256']:
+        raise ValueError('development origin provenance differs')
+    manifest = json.loads(manifest_bytes)
+    if set(manifest) != {'schema', 'purpose', 'sha256'} or manifest['schema'] != 1 or manifest['purpose'] != 'tilo-development':
+        raise ValueError("invalid development public manifest")
+    names = {'cosign.pub', 'tpm2-pcr-signing.public.pem', 'efi-signing.crt', 'registry-owner.pub'}
+    if set(manifest['sha256']) != names:
+        raise ValueError("development public identities are incomplete")
+    for name in names:
+        if hashlib.sha256(read(DEVELOPMENT_PATH / name)).hexdigest() != manifest['sha256'][name]:
+            raise ValueError("development public identity differs from manifest")
+    for name in ('cosign.pub', 'tpm2-pcr-signing.public.pem'):
+        if read(Path('usr/share/tilo') / name) != read(DEVELOPMENT_PATH / name):
+            raise ValueError("installed development key differs from bound public identity")
+    if json.loads(read(Path('etc/containers/policy.json'))) != development_policy(selected['repository']):
+        raise ValueError("development update policy must require the bound signature identity and reject other origins")
+    attachments = ('docker:\n  "' + selected['repository'] + '":\n    use-sigstore-attachments: true\n').encode()
+    transport = ('[[registry]]\nlocation = "' + selected['registry'] + '"\ninsecure = ' + str(not selected['tls_required']).lower() + '\n').encode()
+    if read(Path('etc/containers/registries.d/tilo-development.yaml')) != attachments or read(Path('etc/containers/registries.conf.d/99-tilo-development.conf')) != transport:
+        raise ValueError("development registry transport or signature attachment configuration differs")
+    return document['target_update_ref']
 
 
 def trusted_path(root, relative, *, regular):
@@ -64,14 +136,15 @@ def read_profile(root):
         raise ValueError("hardware profile id does not match its image-owned definition")
     if data["architecture"] != definition["architecture"]:
         raise ValueError("hardware profile requires a matching native image architecture")
-    validate_target_imgref(data["target_update_ref"])
+    validate_target_imgref(data["target_update_ref"], root=root)
     return data
 
 
 def install_update_origin(root, override=""):
+    bound_development = development_origin(root)
     data = read_profile(root)
     if data is None:
-        return validate_target_imgref(override or DEFAULT_TARGET_IMGREF)
+        return validate_target_imgref(override or bound_development or DEFAULT_TARGET_IMGREF, root=root)
     bound = data["target_update_ref"]
     if override and override != bound:
         raise ValueError("TILO_TARGET_IMGREF conflicts with the image-owned hardware profile update reference")
@@ -143,6 +216,12 @@ def load_definition(name, directory=PROFILES_DIR):
 
 def main():
     try:
+        if len(sys.argv) == 3 and sys.argv[1] == "--development-target":
+            print(development_target(sys.argv[2])["target_update_ref"])
+            return
+        development_build = len(sys.argv) == 7 and sys.argv[-1] == "--development-trust"
+        if development_build:
+            sys.argv.pop()
         if len(sys.argv) == 3 and sys.argv[1] == "--install-update-origin":
             # Runtime callers cannot redirect metadata to a writable path.
             print(install_update_origin(Path("/"), sys.argv[2]))
@@ -157,7 +236,10 @@ def main():
             manifest = Path(firmware_root) / name / "manifest.json"
             if not manifest.is_file() or manifest.stat().st_size == 0:
                 raise ValueError(f"stage the {name} firmware manifest first")
-        validate_target_imgref(target_update_ref)
+        if development_build:
+            development_target(target_update_ref)
+        else:
+            validate_target_imgref(target_update_ref)
     except (OSError, ValueError, TypeError) as error:
         raise SystemExit(f"hardware profile rejected: {error}") from error
 

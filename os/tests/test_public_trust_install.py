@@ -2,6 +2,8 @@
 """Test production preservation and validated development installation."""
 import importlib.util
 import json
+import os
+from unittest import mock
 from pathlib import Path
 import shutil
 import unittest
@@ -18,11 +20,24 @@ class InstallTests(fixtures.PublicBundleTests):
         self.official.mkdir()
         for name in installer.PRODUCTION_FILES:
             shutil.copyfile(self.output / name, self.official / name)
-        self.destination = Path(self.temporary.name) / 'installed'
+        self.image_root = Path(self.temporary.name) / 'image'
+        self.destination = self.image_root / 'usr/share/tilo'
         self.digest = installer.trust.validate(self.output)['manifest_sha256']
+        # Model immutable root-owned image files without requiring root to run
+        # the unit tests; preserve real permissions and symlink/file types.
+        original_lstat = Path.lstat
+        def image_lstat(path, *args, **kwargs):
+            info = list(original_lstat(path, *args, **kwargs))
+            if path == self.image_root or self.image_root in path.parents:
+                info[4] = 0
+            return os.stat_result(info)
+        patch = mock.patch.object(Path, 'lstat', image_lstat)
+        patch.start()
+        self.addCleanup(patch.stop)
+
 
     def run_install(self, source, mode, digest='', owner=''):
-        installer.install(source, self.official, self.destination, mode, digest, owner)
+        installer.install(source, self.official, self.destination, mode, digest, owner, "127.0.0.1:5000/tilo-development/os:test", self.image_root)
 
     def test_production_preserves_exact_keys_and_no_marker(self):
         self.run_install(self.official, 'production')
@@ -54,6 +69,82 @@ class InstallTests(fixtures.PublicBundleTests):
             with self.subTest(digest=digest, owner=owner), self.assertRaises(ValueError):
                 self.run_install(self.output, 'development', digest, owner)
         self.assertFalse(self.destination.exists())
+
+    def test_runtime_resolves_only_bound_development_origin(self):
+        self.run_install(self.output, 'development', self.digest, 'ab' * 32)
+        bound = "127.0.0.1:5000/tilo-development/os:test"
+        self.assertEqual(installer.origin.install_update_origin(self.image_root), bound)
+        self.assertEqual(installer.origin.install_update_origin(self.image_root, bound), bound)
+        for ref in ("code.podesta.ai/qos/tilo:latest", "127.0.0.1:5000/tilo-development/os:other"):
+            with self.assertRaises(ValueError):
+                installer.origin.install_update_origin(self.image_root, ref)
+
+    def test_runtime_rejects_weakened_policy(self):
+        self.run_install(self.output, 'development', self.digest, 'ab' * 32)
+        policy = self.image_root / 'etc/containers/policy.json'
+        document = json.loads(policy.read_text())
+        document['default'] = [{'type': 'insecureAcceptAnything'}]
+        policy.write_text(json.dumps(document))
+        with self.assertRaisesRegex(ValueError, 'policy must require'):
+            installer.origin.install_update_origin(self.image_root)
+
+    def test_remote_registry_requires_https_and_exact_signer(self):
+        installer.install(self.output, self.official, self.destination, 'development', self.digest,
+                          'ab' * 32, 'registry.vm.test:5443/tilo-development/os:test', self.image_root)
+        self.assertEqual(installer.origin.install_update_origin(self.image_root),
+                         'registry.vm.test:5443/tilo-development/os:test')
+        transport = self.image_root / 'etc/containers/registries.conf.d/99-tilo-development.conf'
+        self.assertIn('insecure = false', transport.read_text())
+        original = transport.read_text()
+        transport.write_text(original.replace('false', 'true'))
+        with self.assertRaisesRegex(ValueError, 'transport'):
+            installer.origin.install_update_origin(self.image_root)
+        transport.write_text(original)
+        policy = self.image_root / 'etc/containers/policy.json'
+        document = json.loads(policy.read_text())
+        document['transports']['docker']['registry.vm.test:5443/tilo-development/os'][0]['keyPath'] = '/tmp/untrusted.pub'
+        policy.write_text(json.dumps(document))
+        with self.assertRaisesRegex(ValueError, 'policy'):
+            installer.origin.install_update_origin(self.image_root)
+
+    def test_runtime_rejects_key_and_manifest_substitution(self):
+        self.run_install(self.output, 'development', self.digest, 'ab' * 32)
+        key = self.destination / 'cosign.pub'
+        original = key.read_bytes()
+        key.write_bytes(original + b'\n')
+        with self.assertRaisesRegex(ValueError, 'installed development key differs'):
+            installer.origin.install_update_origin(self.image_root)
+        key.write_bytes(original)
+        manifest = self.destination / 'development-trust/manifest.json'
+        manifest.write_bytes(manifest.read_bytes() + b'\n')
+        with self.assertRaisesRegex(ValueError, 'manifest binding differs'):
+            installer.origin.install_update_origin(self.image_root)
+
+    def test_runtime_rejects_missing_or_writable_origin(self):
+        self.run_install(self.output, 'development', self.digest, 'ab' * 32)
+        origin = self.destination / 'development-trust/origin.json'
+        origin.chmod(0o666)
+        with self.assertRaisesRegex(ValueError, 'not group/world writable'):
+            installer.origin.install_update_origin(self.image_root)
+        origin.unlink()
+        with self.assertRaises(OSError):
+            installer.origin.install_update_origin(self.image_root)
+
+    def test_development_origin_transport_and_repository_boundaries(self):
+        for value in ('https://dev.example/tilo-development/os:test',
+                      'user:password@dev.example/tilo-development/os:test',
+                      'code.podesta.ai/tilo-development/os:test',
+                      'dev.example/qos/tilo:test',
+                      'dev.example:0/tilo-development/os:test',
+                      'dev.example:05000/tilo-development/os:test',
+                      'dev.example/tilo-development/os:test?query',
+                      'localhost:5000/tilo-development/os:test'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                installer.origin.development_target(value)
+        self.assertTrue(installer.origin.development_target('registry.vm.test:5443/tilo-development/os:test')['tls_required'])
+        self.assertFalse(installer.origin.development_target('127.0.0.1:5000/tilo-development/os:test')['tls_required'])
+        with self.assertRaises(ValueError):
+            installer.origin.validate_target_imgref('registry.vm.test:5443/tilo-development/os:test')
 
     def test_image_trust_is_installed_before_dracut(self):
         containerfile = Path(__file__).resolve().parents[1] / 'Containerfile'

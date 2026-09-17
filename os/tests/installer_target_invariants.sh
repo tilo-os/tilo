@@ -116,8 +116,8 @@ else
   bad "installer Wi-Fi profiles are not safely preserved for first boot"
 fi
 
-if grep -Fq 'code.podesta.ai/qos/tilo:*|code.podesta.ai/qos/tilo@sha256:*' "$backend"; then
-  ok "installed update origin is restricted to the signature-required repository"
+if python3 "$repo_root/os/tests/test_public_trust_install.py" >/dev/null 2>&1; then
+  ok "installed update origin requires immutable binding and an exact mandatory-signature policy"
 else
   bad "installer can record an update origin outside the signature-required policy"
 fi
