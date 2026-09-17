@@ -2843,6 +2843,40 @@ mod tests {
                 .any(|name| name.contains("without an encrypted backup")),
             "skip acknowledgement must be keyboard reachable: {names:?}"
         );
+
+        let acknowledgement = fb
+            .focusable_order()
+            .into_iter()
+            .find(|id| {
+                focused_name(&fb, Some(*id))
+                    .is_some_and(|name| name.contains("without an encrypted backup"))
+            })
+            .expect("acknowledgement focus target");
+        fb.set_native_focus(&mut focus, Some(acknowledgement));
+        let enter = key_press(Key::Named(NamedKey::Enter));
+        assert!(fb.dispatch_event(
+            &enter,
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        fb.reconcile_native_focus(&mut focus);
+        let tab = key_press(Key::Named(NamedKey::Tab));
+        assert!(fb.dispatch_event(
+            &tab,
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(
+            focused_name(&fb, focus).as_deref(),
+            Some("Continue without backup"),
+            "acknowledging the risk must make the adjacent continuation action the next keyboard stop"
+        );
     }
 
     #[test]
