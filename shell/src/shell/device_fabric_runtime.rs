@@ -930,6 +930,8 @@ pub struct DeviceFabricRuntime {
     notification_bridge: NotificationBridge,
     realtime_adapter: Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter>,
     realtime_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
+    remote_capture: Option<crate::shell::remote_capture_runtime::RemoteCaptureFabricRuntime>,
+    remote_capture_online_peers: BTreeSet<crate::shell::personal_continuity::DeviceId>,
     gamepad_broker: ProductionGamepadBroker,
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
     local_gamepad_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
@@ -953,6 +955,8 @@ impl DeviceFabricRuntime {
             notification_bridge,
             realtime_adapter: None,
             realtime_online_peers: BTreeSet::new(),
+            remote_capture: None,
+            remote_capture_online_peers: BTreeSet::new(),
             gamepad_broker: os_actions::ForwardedPeripheralBroker::new(
                 os_actions::LinuxVirtualGamepadFactory::new(
                     os_actions::UinputGamepadDeviceProvider,
@@ -969,6 +973,13 @@ impl DeviceFabricRuntime {
         adapter: crate::shell::realtime_session::SharedRealtimeFabricAdapter,
     ) {
         self.realtime_adapter = Some(adapter);
+    }
+
+    pub(crate) fn set_remote_capture_runtime(
+        &mut self,
+        runtime: crate::shell::remote_capture_runtime::RemoteCaptureFabricRuntime,
+    ) {
+        self.remote_capture = Some(runtime);
     }
 
     /// Supply the compositor's current locally verified app focus. Remote
@@ -994,6 +1005,7 @@ impl DeviceFabricRuntime {
         }
         self.maintain_gamepad_forwarding(network, policy);
         self.handle_fabric_actions(network, policy);
+        self.pump_remote_capture_peers(network, policy);
         crate::shell::remote_audio::pump(
             network,
             policy.permits(ContinuityCapability::Media),
@@ -1150,6 +1162,10 @@ impl DeviceFabricRuntime {
                 state.transactions.clear();
                 while state.result_rx.try_recv().is_ok() {}
             }
+            if let Some(remote_capture) = self.remote_capture.as_mut() {
+                remote_capture.teardown_all();
+            }
+            self.remote_capture_online_peers.clear();
         }
     }
 
@@ -1222,6 +1238,13 @@ impl DeviceFabricRuntime {
                 continue;
             }
             if crate::shell::remote_audio::handle_action(network, &envelope) {
+                continue;
+            }
+            if self
+                .remote_capture
+                .as_mut()
+                .is_some_and(|runtime| runtime.handle_action(&envelope, Instant::now()))
+            {
                 continue;
             }
             if self.handle_gamepad_action(network, &envelope) {
@@ -1309,6 +1332,32 @@ impl DeviceFabricRuntime {
                 action => handle_spatial_action(envelope.source, &envelope.target, action),
             }
         }
+    }
+
+    fn pump_remote_capture_peers(
+        &mut self,
+        network: &ShellNetwork,
+        policy: ContinuityPolicySnapshot,
+    ) {
+        let Some(runtime) = self.remote_capture.as_mut() else {
+            return;
+        };
+        if !policy.permits(ContinuityCapability::Media) {
+            runtime.teardown_all();
+            self.remote_capture_online_peers.clear();
+            return;
+        }
+        let online = network
+            .device_fabric()
+            .snapshots()
+            .values()
+            .filter(|snapshot| snapshot.presence.online)
+            .map(|snapshot| snapshot.owner.clone())
+            .collect::<BTreeSet<_>>();
+        for peer in self.remote_capture_online_peers.difference(&online) {
+            runtime.teardown_peer(peer);
+        }
+        self.remote_capture_online_peers = online;
     }
 
     fn handle_gamepad_action(
@@ -2478,6 +2527,8 @@ fn handle_spatial_action(
         | PersonalFabricAction::RemoteAudioFrame { .. }
         | PersonalFabricAction::RemoteAudioStop { .. }
         | PersonalFabricAction::RemoteAudioCancel { .. }
+        | PersonalFabricAction::RemoteCaptureSignal { .. }
+        | PersonalFabricAction::RemoteCaptureChunk { .. }
         | PersonalFabricAction::BluetoothHandoffPrepare { .. }
         | PersonalFabricAction::BluetoothHandoffPrepared { .. }
         | PersonalFabricAction::BluetoothHandoffCommit { .. }
