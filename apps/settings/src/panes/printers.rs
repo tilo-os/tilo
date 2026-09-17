@@ -227,7 +227,7 @@ impl PrintersPane {
         self.refresh_rx = Some(rx);
         self.loading = true;
         if let Err(error) = std::thread::Builder::new()
-            .name("qos-printer-status".into())
+            .name("tilo-printer-status".into())
             .spawn(move || {
                 let _ = tx.send(PrinterSnapshot {
                     printers: service.queues(),
@@ -251,7 +251,7 @@ impl PrintersPane {
         self.discover_rx = Some(rx);
         self.discovering = true;
         if let Err(error) = std::thread::Builder::new()
-            .name("qos-printer-discovery".into())
+            .name("tilo-printer-discovery".into())
             .spawn(move || {
                 let _ = tx.send(service.discover());
             })

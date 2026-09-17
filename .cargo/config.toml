@@ -6,7 +6,7 @@ jobs = 4
 # Full RELRO, a non-executable stack, and SHSTK marking protect every produced
 # binary. Do not claim IBT: stable Rust does not emit the required landing pads.
 
-[target.'cfg(target_arch = "x86_64")']
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))']
 rustflags = [
     "-C", "target-cpu=x86-64-v3",
     "-C", "force-frame-pointers=yes",
@@ -18,7 +18,7 @@ rustflags = [
     "--remap-path-prefix=/build=.",
 ]
 
-[target.'cfg(target_arch = "aarch64")']
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))']
 rustflags = [
     "-C", "target-cpu=generic",
     "-C", "force-frame-pointers=yes",
@@ -27,15 +27,28 @@ rustflags = [
     "--remap-path-prefix=/build=.",
 ]
 
+[target.'cfg(target_os = "macos")']
+rustflags = [
+    "-C", "force-frame-pointers=yes",
+    "--remap-path-prefix=/build=.",
+]
+
 # `cc` builds vendored C/C++ outside distribution flag defaults. Force the
 # fortify, stack-protector, stack-clash, CET, and non-executable-stack floor.
-# Target-specific CFLAGS replace these values rather than extending them; copy
-# the applicable hardening flags into a cross-build override.
+# cc-rs combines generic and target-specific flags. Keep platform flags scoped
+# to their target, and avoid incompatible native LTO in distribution overrides.
 [env]
-CFLAGS = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
-CXXFLAGS = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
 CFLAGS_x86_64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
 CXXFLAGS_x86_64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
+CFLAGS_aarch64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
+CXXFLAGS_aarch64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
+# GNU assembler/ELF switches such as `-Wa,--noexecstack` must not reach Darwin,
+# whose Apple toolchain does not accept them. Keep its cc-rs flags target-specific
+# so the supported stack protector is applied without leaking Linux-only switches.
+CFLAGS_aarch64_apple_darwin = { value = "-fstack-protector-strong", force = true }
+CXXFLAGS_aarch64_apple_darwin = { value = "-fstack-protector-strong", force = true }
+CFLAGS_x86_64_apple_darwin = { value = "-fstack-protector-strong", force = true }
+CXXFLAGS_x86_64_apple_darwin = { value = "-fstack-protector-strong", force = true }
 
 # Keep incremental compilation off so sccache can serve these profiles.
 [profile.dev]

@@ -1,8 +1,8 @@
-//! qOS hosted-model gateway protocol.
+//! Tilo hosted-model gateway protocol.
 //!
 //! The API key is accepted only by the per-user gateway and is never part of
 //! Settings' CRDT/settings payload or an agent process. Sandboxed callers use
-//! one launcher-passed connected Unix descriptor (`QOS_SVC_MODEL_GATEWAY_FD`).
+//! one launcher-passed connected Unix descriptor (`TILO_SVC_MODEL_GATEWAY_FD`).
 
 use std::io::{Read, Write};
 use std::os::fd::{FromRawFd, RawFd};
@@ -14,7 +14,7 @@ use thiserror::Error;
 use zeroize::Zeroizing;
 
 pub const SERVICE_NAME: &str = "model-gateway";
-pub const SERVICE_FD_ENV: &str = "QOS_SVC_MODEL_GATEWAY_FD";
+pub const SERVICE_FD_ENV: &str = "TILO_SVC_MODEL_GATEWAY_FD";
 pub const RPC_VERSION: u16 = 2;
 pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
 
@@ -62,7 +62,7 @@ pub struct Response {
 
 #[derive(Debug, Error)]
 pub enum ClientError {
-    #[error("qOS model gateway is unavailable")]
+    #[error("Tilo model gateway is unavailable")]
     Unavailable,
     #[error("model gateway protocol error: {0}")]
     Protocol(String),

@@ -3,15 +3,15 @@
 # cross-platform Imager can expand and write byte-for-byte.
 set -euo pipefail
 
-release_tag="${QOS_INSTALLER_RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
-release_repository="${QOS_RELEASE_REPOSITORY:-qos/releases}"
+release_tag="${TILO_INSTALLER_RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
+release_repository="${TILO_RELEASE_REPOSITORY:-tilo/releases}"
 release_server="${GITHUB_SERVER_URL:-https://code.sandbox.example}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
 [[ "$release_server" =~ ^https://[^/]+$ ]] \
   || { printf 'release server must be an HTTPS origin\n' >&2; exit 2; }
-version="${QOS_INSTALLER_VERSION:-${release_tag#imager-v}}"
-channel="${QOS_INSTALLER_CHANNEL:-stable}"
+version="${TILO_INSTALLER_VERSION:-${release_tag#imager-v}}"
+channel="${TILO_INSTALLER_CHANNEL:-stable}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || { printf 'installer version must be MAJOR.MINOR.PATCH\n' >&2; exit 2; }
 case "$channel" in
@@ -20,8 +20,8 @@ case "$channel" in
       || { printf 'stable installer tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
     ;;
   rehearsal)
-    [ -n "${QOS_INSTALLER_RELEASE_TAG:-}" ] \
-      && [ -n "${QOS_INSTALLER_VERSION:-}" ] \
+    [ -n "${TILO_INSTALLER_RELEASE_TAG:-}" ] \
+      && [ -n "${TILO_INSTALLER_VERSION:-}" ] \
       && [[ "$release_tag" =~ ^rehearsal-[0-9a-fA-F]{40}$ ]] \
       || { printf 'rehearsal media require an explicit source-bound tag and version\n' >&2; exit 2; }
     ;;
@@ -30,7 +30,7 @@ esac
 
 input="${1:?usage: package-install-medium.sh INSTALLER.qcow2 ARCH [OUT]}"
 arch="${2:?missing architecture}"
-out="${3:-dist/qos-installer}"
+out="${3:-dist/tilo-installer}"
 case "$arch" in x86_64|aarch64) ;; *) printf 'unsupported architecture: %s\n' "$arch" >&2; exit 2 ;; esac
 command -v qemu-img >/dev/null
 command -v zstd >/dev/null
@@ -38,7 +38,7 @@ command -v jq >/dev/null
 test -s "$input"
 
 mkdir -p "$out"
-base="qos-installer-linux-${arch}.img"
+base="tilo-installer-linux-${arch}.img"
 raw="$out/$base"
 archive="$raw.zst"
 qemu-img convert -p -f qcow2 -O raw "$input" "$raw"
@@ -51,7 +51,7 @@ archive_size="$(stat -c %s "$archive")"
 rm -f "$raw"
 
 jq -n \
-  --arg name 'qOS' \
+  --arg name 'Tilo' \
   --arg version "$version" \
   --arg channel "$channel" \
   --arg arch "$arch" \

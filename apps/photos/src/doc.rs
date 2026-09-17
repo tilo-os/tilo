@@ -222,6 +222,83 @@ impl PhotosDoc {
         Self::structured_library(doc).unwrap_or_else(|| Self::legacy_library(doc))
     }
 
+    /// Resolve one photograph by its stable id without materialising the
+    /// complete library.  This is the path used by resource/action lookup:
+    /// opening a palette result near the end of a 100k-photo library must not
+    /// first allocate 100k unrelated records.
+    pub fn photo(doc: &AutoCommit, id: &str) -> Option<LibraryPhoto> {
+        let roots = Self::library_roots(doc);
+        if roots.is_empty() {
+            return Self::legacy_library(doc).photo(id).cloned();
+        }
+        if roots.iter().any(|root| {
+            Self::map_at(doc, root, "removed_photos")
+                .as_ref()
+                .is_some_and(|removed| Self::marked_removed(doc, Some(removed), id))
+        }) {
+            return None;
+        }
+        let mut matches = roots.iter().filter_map(|root| {
+            let photos = Self::map_at(doc, root, "photos")?;
+            Self::map_at(doc, root, "photo_core")
+                .and_then(|core| Self::read_columnar_photo(doc, root, &core, id))
+                .or_else(|| Self::read_photo(doc, &photos, id))
+        });
+        let mut photo = matches.next()?;
+        for next in matches {
+            photo.favorite |= next.favorite;
+            if photo.folder.is_none() {
+                photo.folder = next.folder;
+            }
+            for person in next.people {
+                if !photo.people.contains(&person) {
+                    photo.people.push(person);
+                }
+            }
+            for tag in next.tags {
+                if !photo.tags.contains(&tag) {
+                    photo.tags.push(tag);
+                }
+            }
+            if photo.captured_at.is_none() {
+                photo.captured_at = next.captured_at;
+            }
+        }
+        Some(photo)
+    }
+
+    /// Resolve one album directly from its keyed CRDT row. Membership is
+    /// capped by the action contract, so filtering deleted photo ids remains
+    /// bounded independently of total library size.
+    pub fn album(doc: &AutoCommit, id: &str) -> Option<crate::model::Album> {
+        let roots = Self::library_roots(doc);
+        if roots.is_empty() {
+            return Self::legacy_library(doc).album(id).cloned();
+        }
+        if roots.iter().any(|root| {
+            Self::map_at(doc, root, "removed_albums")
+                .as_ref()
+                .is_some_and(|removed| Self::marked_removed(doc, Some(removed), id))
+        }) {
+            return None;
+        }
+        let mut matches = roots.iter().filter_map(|root| {
+            Self::map_at(doc, root, "albums").and_then(|albums| Self::read_album(doc, &albums, id))
+        });
+        let mut album = matches.next()?;
+        for next in matches {
+            for photo_id in next.photo_ids {
+                if !album.photo_ids.contains(&photo_id) {
+                    album.photo_ids.push(photo_id);
+                }
+            }
+        }
+        album
+            .photo_ids
+            .retain(|photo_id| Self::photo(doc, photo_id).is_some());
+        Some(album)
+    }
+
     /// Apply a validated projection as granular record/field deltas. This is
     /// intentionally the compatibility seam used by existing canonical
     /// actions: they can keep their replayable pure model mutation while the
@@ -953,7 +1030,7 @@ mod tests {
     use super::*;
     use crate::actions::PhotosAction;
     use crate::model::Rect01;
-    use qos_actions::Action;
+    use tilo_actions::Action;
 
     #[test]
     fn a_seeded_document_has_no_image_open() {
@@ -1423,7 +1500,7 @@ mod tests {
         {
             // Somebody with a picture open, and part-way through editing it.
             let mut has_picture = replica(open_actor);
-            let img = OpenImage::from_path("/var/tmp/qos/workspace/harbour.png", 800, 600);
+            let img = OpenImage::from_path("/var/tmp/tilo/workspace/harbour.png", 800, 600);
             PhotosDoc::set_image(&mut has_picture, Some(&img));
             PhotosDoc::set_edits(&mut has_picture, &Edits::default().rotated_right());
 
@@ -1494,7 +1571,7 @@ mod tests {
     #[test]
     fn a_participant_who_closes_the_photograph_closes_it_everywhere() {
         let mut here = replica(1);
-        let img = OpenImage::from_path("/var/tmp/qos/workspace/harbour.png", 800, 600);
+        let img = OpenImage::from_path("/var/tmp/tilo/workspace/harbour.png", 800, 600);
         PhotosDoc::set_image(&mut here, Some(&img));
         PhotosDoc::set_edits(&mut here, &Edits::default().rotated_right());
 
@@ -1524,7 +1601,7 @@ mod tests {
     fn the_document_never_carries_the_pixels() {
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
-        let img = OpenImage::from_path("/var/tmp/qos/home/user/harbour.png", 4000, 3000);
+        let img = OpenImage::from_path("/var/tmp/tilo/home/user/harbour.png", 4000, 3000);
         PhotosDoc::set_image(&mut doc, Some(&img));
         PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
         let saved = doc.save().len();

@@ -7,20 +7,20 @@ param(
 # Install this script and forgejo-runner.exe as Administrator-owned files on a
 # disposable golden image. Never execute a copy from a workflow checkout.
 $ErrorActionPreference = "Stop"
-$qOSTrustedOwnerSids = @(
+$TiloTrustedOwnerSids = @(
     'S-1-5-18',
     'S-1-5-32-544',
     'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
 )
-$Runner = if ($env:QOS_FORGEJO_RUNNER) {
-    $env:QOS_FORGEJO_RUNNER
+$Runner = if ($env:TILO_FORGEJO_RUNNER) {
+    $env:TILO_FORGEJO_RUNNER
 } else {
     Join-Path $env:ProgramFiles "Forgejo Runner\forgejo-runner.exe"
 }
-$Server = if ($env:QOS_FORGEJO_URL) { $env:QOS_FORGEJO_URL } else { "https://code.sandbox.example" }
-$MaxWaitText = if ($env:QOS_RUNNER_MAX_WAIT_SECONDS) { $env:QOS_RUNNER_MAX_WAIT_SECONDS } else { "21600" }
+$Server = if ($env:TILO_FORGEJO_URL) { $env:TILO_FORGEJO_URL } else { "https://code.sandbox.example" }
+$MaxWaitText = if ($env:TILO_RUNNER_MAX_WAIT_SECONDS) { $env:TILO_RUNNER_MAX_WAIT_SECONDS } else { "21600" }
 
-function Assert-qOSPrivateMetadataFile([string]$Path, [string]$Description) {
+function Assert-TiloPrivateMetadataFile([string]$Path, [string]$Description) {
     if (-not [IO.Path]::IsPathFullyQualified($Path)) { throw "$Description must be absolute" }
     $Item = Get-Item -LiteralPath $Path -Force
     if ($Item.PSIsContainer -or ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
@@ -36,7 +36,7 @@ function Assert-qOSPrivateMetadataFile([string]$Path, [string]$Description) {
     foreach ($Rule in @($Acl.GetAccessRules(
                 $true, $true, [Security.Principal.SecurityIdentifier]))) {
         $Trusted = $Rule.IdentityReference.Value -ceq $IdentitySid -or
-            $Rule.IdentityReference.Value -in $qOSTrustedOwnerSids
+            $Rule.IdentityReference.Value -in $TiloTrustedOwnerSids
         if ($Rule.AccessControlType -eq 'Allow' -and -not $Trusted) {
             throw "$Description ACL grants another principal access"
         }
@@ -50,7 +50,7 @@ function Assert-qOSPrivateMetadataFile([string]$Path, [string]$Description) {
     foreach ($Rule in @($ParentAcl.GetAccessRules(
                 $true, $true, [Security.Principal.SecurityIdentifier]))) {
         $IsRunner = $Rule.IdentityReference.Value -ceq $IdentitySid
-        $Trusted = $IsRunner -or $Rule.IdentityReference.Value -in $qOSTrustedOwnerSids
+        $Trusted = $IsRunner -or $Rule.IdentityReference.Value -in $TiloTrustedOwnerSids
         if ($Rule.AccessControlType -eq 'Allow' -and -not $Trusted) {
             throw "$Description parent ACL grants another principal access"
         }
@@ -66,7 +66,7 @@ function Assert-qOSPrivateMetadataFile([string]$Path, [string]$Description) {
     return $Item
 }
 
-function Assert-qOSTrustedRunner([string]$Path) {
+function Assert-TiloTrustedRunner([string]$Path) {
     if (-not [IO.Path]::IsPathFullyQualified($Path)) { throw "forgejo-runner must be absolute" }
     $Item = Get-Item -LiteralPath $Path -Force
     if ($Item.PSIsContainer -or ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
@@ -77,7 +77,7 @@ function Assert-qOSTrustedRunner([string]$Path) {
     while ($Current) {
         $Acl = Get-Acl -LiteralPath $Current.FullName
         $OwnerSid = $Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-        if ($OwnerSid -notin $qOSTrustedOwnerSids) {
+        if ($OwnerSid -notin $TiloTrustedOwnerSids) {
             throw "forgejo-runner and every parent must have a trusted owner"
         }
         # WriteData on a drive root may only permit creating unrelated children.
@@ -93,7 +93,7 @@ function Assert-qOSTrustedRunner([string]$Path) {
         }
         foreach ($Rule in @($Acl.GetAccessRules(
                     $true, $true, [Security.Principal.SecurityIdentifier]))) {
-            $TrustedPrincipal = $Rule.IdentityReference.Value -in $qOSTrustedOwnerSids
+            $TrustedPrincipal = $Rule.IdentityReference.Value -in $TiloTrustedOwnerSids
             if ($Rule.AccessControlType -eq 'Allow' -and ($Rule.FileSystemRights -band $Dangerous) -and
                 -not $TrustedPrincipal) {
                 throw "forgejo-runner or a parent is writable by an untrusted principal"
@@ -104,14 +104,14 @@ function Assert-qOSTrustedRunner([string]$Path) {
     return $Item.FullName
 }
 
-$UuidItem = Assert-qOSPrivateMetadataFile $UuidFile "runner UUID file"
-$TokenItem = Assert-qOSPrivateMetadataFile $TokenFile "runner token file"
+$UuidItem = Assert-TiloPrivateMetadataFile $UuidFile "runner UUID file"
+$TokenItem = Assert-TiloPrivateMetadataFile $TokenFile "runner token file"
 $SafeMetadata = @($UuidItem.FullName, $TokenItem.FullName)
 $Process = $null
 try {
     if ($UuidItem.FullName -ceq $TokenItem.FullName) { throw "UUID and token paths must differ" }
     if ($Server -notin @("https://code.sandbox.example", "https://code.sandbox.example/")) {
-        throw "Forgejo URL must be the pinned qOS origin"
+        throw "Forgejo URL must be the pinned Tilo origin"
     }
     $MaxWait = [int]::Parse($MaxWaitText, [Globalization.CultureInfo]::InvariantCulture)
     if ($MaxWait -lt 1 -or $MaxWait -gt 86400) {
@@ -136,7 +136,7 @@ try {
     }
     Remove-Variable Token, TokenBytes -ErrorAction SilentlyContinue
 
-    $TrustedRunner = Assert-qOSTrustedRunner $Runner
+    $TrustedRunner = Assert-TiloTrustedRunner $Runner
     $VersionText = (& $TrustedRunner --version 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $VersionText -notmatch '(?<major>[0-9]+)\.(?<minor>[0-9]+)\.(?<patch>[0-9]+)') {
         throw "could not determine forgejo-runner version"

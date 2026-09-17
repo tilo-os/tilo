@@ -2,7 +2,7 @@
 //!
 //! Exposes the standard MPRIS interfaces (`org.mpris.MediaPlayer2` +
 //! `org.mpris.MediaPlayer2.Player`) at `/org/mpris/MediaPlayer2` under the bus
-//! name `org.mpris.MediaPlayer2.qos-music`, so **media keys** and the desktop's
+//! name `org.mpris.MediaPlayer2.tilo-music`, so **media keys** and the desktop's
 //! media/notification controls (GNOME's shell, `playerctl`, KDE, …) can drive
 //! playback, and the current track + transport state show up in the system
 //! media widget. The real D-Bus serving is gated behind the `audio` feature
@@ -233,9 +233,9 @@ impl Default for MprisHandle {
     }
 }
 
-/// The well-known bus name qOS Music claims (MPRIS convention:
+/// The well-known bus name Tilo Music claims (MPRIS convention:
 /// `org.mpris.MediaPlayer2.<app>`).
-pub const BUS_NAME: &str = "org.mpris.MediaPlayer2.qos-music";
+pub const BUS_NAME: &str = "org.mpris.MediaPlayer2.tilo-music";
 /// The single object path both MPRIS interfaces live at.
 pub const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
 
@@ -254,7 +254,7 @@ pub fn track_object_path(track_id: &str) -> String {
             s.push('_');
         }
     }
-    format!("/org/mpris/qos_music/track/{s}")
+    format!("/org/mpris/tilo_music/track/{s}")
 }
 
 // ---------------------------------------------------------------------------
@@ -350,7 +350,7 @@ mod imp {
         }
         #[zbus(property)]
         fn identity(&self) -> String {
-            "qOS Music".into()
+            "Tilo Music".into()
         }
         #[zbus(property)]
         fn desktop_entry(&self) -> String {
@@ -447,7 +447,7 @@ mod imp {
             clippy::unused_self,
             clippy::needless_pass_by_ref_mut,
             reason = "zbus's #[interface] macro requires &mut self on every property setter; \
-                      qOS Music doesn't support variable playback rate, so Rate is fixed and \
+                      Tilo Music doesn't support variable playback rate, so Rate is fixed and \
                       this setter is a no-op"
         )]
         fn set_rate(&mut self, _rate: f64) {}
@@ -604,7 +604,7 @@ mod imp {
         }
 
         std::thread::Builder::new()
-            .name("qos-music-mpris".into())
+            .name("tilo-music-mpris".into())
             .spawn(move || {
                 rt.block_on(async move {
                     let mut last = initial;
@@ -644,7 +644,7 @@ mod tests {
         );
         // A live id like `yt:abc-123` has non-path chars replaced.
         let p = track_object_path("yt:abc-123");
-        assert_eq!(p, "/org/mpris/qos_music/track/yt_abc_123");
+        assert_eq!(p, "/org/mpris/tilo_music/track/yt_abc_123");
         assert!(
             p.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'/' || b == b'_')

@@ -1,8 +1,8 @@
-# qOS Architecture
+# Tilo Architecture
 
 ## Overview
 
-qOS (codename **nirios**) is a collaborative Linux OS built on Fedora Bootc. See `README.md` in this directory for the resource/action model the rest follows from. Users organize application windows into **workspaces** (`Workspace → Strip → WindowGroup → Tab`): each workspace holds vertically-stacked strips of horizontally-scrollable window-groups (Niri-inspired), and workspaces are switched via a wheel disc. Users can invite peers P2P to join individual workspaces, where native and legacy apps are streamed with near-native fidelity. Every workspace runs apps inside its own Bubblewrap sandbox with explicit capability grants.
+Tilo (codename **tilo**) is a collaborative Linux OS built on Fedora Bootc. See `README.md` in this directory for the resource/action model the rest follows from. Users organize application windows into **workspaces** (`Workspace → Strip → WindowGroup → Tab`): each workspace holds vertically-stacked strips of horizontally-scrollable window-groups (Niri-inspired), and workspaces are switched via a wheel disc. Users can invite peers P2P to join individual workspaces, where native and legacy apps are streamed with near-native fidelity. Every workspace runs apps inside its own Bubblewrap sandbox with explicit capability grants.
 
 ## System Stack
 
@@ -28,7 +28,7 @@ qOS (codename **nirios**) is a collaborative Linux OS built on Fedora Bootc. See
 │  │  └───────────┘ └──────────┘ └───────────────────┘  │ │
 │  │  ┌───────────┐ ┌──────────┐ ┌───────────────────┐  │ │
 │  │  │  openh264 │ │ PipeWire │ │   Control socket  │  │ │
-│  │  │ (peer enc)│ │(screencst)│ │ (QOS_TEST_CONTROL)│  │ │
+│  │  │ (peer enc)│ │(screencst)│ │ (TILO_TEST_CONTROL)│  │ │
 │  │  └───────────┘ └──────────┘ └───────────────────┘  │ │
 │  └──────────────────────────────────────────────────── │ │
 │                                                          │
@@ -141,14 +141,14 @@ Three layers cover different parts of the stack:
 
 1. **In-process driver** (`shell/src/bin/shots/`) — `ShellDriver` builds the same widget tree the live binary builds, runs the same paint pass, and exposes a `widget_registry: HashMap<String, Rect>` that walks the live tree via `Widget::test_id(&self) -> Option<&str>` (from `ui::widget::Widget`). Path-fallback (`Parent/Child[index]`) works without opt-in. Used by >100 tests in `shell/tests/*` and by `cargo run --bin shots`.
 2. **Offscreen / recording renderer** — `cargo run --bin shots -- --mode offscreen --out target/<dir>` writes PNGs per scenario; `--mode recording --out target/<file>.h264` writes a real H.264 video. Output is identical to the live binary's rendering. **Never** screenshot the user's running session — use the offscreen path.
-3. **Control socket** — when the compositor boots with `QOS_TEST_CONTROL=<sock>` set, it binds an extra Unix socket alongside the Wayland one. `qos-control` uses its newline-delimited JSON protocol to list and activate semantic targets, inject pointer and keyboard input through the real seat, inspect state, and capture snapshots. The implementation lives in `shell/src/compositor/test_control.rs`; integration coverage is in `shell/tests/control_socket_test.rs`.
+3. **Control socket** — when the compositor boots with `TILO_TEST_CONTROL=<sock>` set, it binds an extra Unix socket alongside the Wayland one. `tilo-control` uses its newline-delimited JSON protocol to list and activate semantic targets, inject pointer and keyboard input through the real seat, inspect state, and capture snapshots. The implementation lives in `shell/src/compositor/test_control.rs`; integration coverage is in `shell/tests/control_socket_test.rs`.
 
 The control socket is the out-of-process path for covering the seat layer, frame-pacing regressions, and focus-stealing behaviour the in-process driver can't reproduce.
 
 ## Project directory structure (Cargo workspace / monorepo)
 
 ```
-quickdesktop/                            # workspace root
+tilo/                            # workspace root
 ├── plan/                                # this directory — design intent
 ├── docs/                                # architecture + testing + superpowers plans/specs
 ├── ui/                                  # UI toolkit
@@ -160,14 +160,14 @@ quickdesktop/                            # workspace root
 │       ├── sandbox/                     # bwrap profile, seccomp blob, spawn
 │       ├── portal/                      # FileChooser, ScreenCast, Camera D-Bus backends
 │       ├── network/                     # Iroh actor, identity, hub, replica, encoder, invite
-│       └── bin/{shots,qos-control}/  # e2e harness + control-socket CLI
+│       └── bin/{shots,tilo-control}/  # e2e harness + control-socket CLI
 ├── fs/                                  # FUSE3 driver
 ├── apps/{terminal,file-explorer,browser,…}/  # native apps
 ├── crates/<domain>/                     # supporting libraries (collab, doc, runtime, packaging, …)
 └── os/                                  # Containerfile + systemd units
 ```
 
-Everything lives in this one repository — see `CLAUDE.md` for the monorepo workflow.
+Everything lives in this one repository — see `AGENTS.md` for the monorepo workflow.
 
 ## Key spatial concepts
 

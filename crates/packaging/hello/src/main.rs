@@ -11,7 +11,7 @@
     )
 )]
 
-use runtime::{collab, fs, identity, is_qos_native, portal, portal_xdg};
+use runtime::{collab, fs, identity, is_tilo_native, portal, portal_xdg};
 
 // Thin build only: pull the shared runtime SDK dylib
 // (`libruntime_dylib.so`) into the link graph. Without this reference
@@ -19,24 +19,24 @@ use runtime::{collab, fs, identity, is_qos_native, portal, portal_xdg};
 // `-C prefer-dynamic` then satisfies `runtime` from its static rlib
 // instead of the dylib. Naming it here forces the dylib to be linked,
 // so `runtime` (and its whole graph) is served dynamically and the
-// `qos-hello` binary keeps only its own code. Compiled out entirely in
+// `tilo-hello` binary keeps only its own code. Compiled out entirely in
 // normal (static) builds.
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
 fn main() {
-    println!("qos-hello: a qOS-native app, running.");
+    println!("tilo-hello: a Tilo-native app, running.");
     println!();
 
     println!("== environment ==");
-    println!("  is_qos_native      : {}", is_qos_native());
+    println!("  is_tilo_native      : {}", is_tilo_native());
     println!(
-        "  QOS_WORKSPACE_ID   : {}",
-        std::env::var("QOS_WORKSPACE_ID").unwrap_or_else(|_| "(unset)".into())
+        "  TILO_WORKSPACE_ID   : {}",
+        std::env::var("TILO_WORKSPACE_ID").unwrap_or_else(|_| "(unset)".into())
     );
     println!(
-        "  QOS identity broker: {}",
-        std::env::var("QOS_IDENTITY_BROKER_FD").unwrap_or_else(|_| "(unset)".into())
+        "  TILO identity broker: {}",
+        std::env::var("TILO_IDENTITY_BROKER_FD").unwrap_or_else(|_| "(unset)".into())
     );
     println!();
 
@@ -92,24 +92,24 @@ fn main() {
         }
     }
     // Paths Landlock DOES grant — should succeed.
-    for path in ["/tmp", "/qos-launcher"] {
+    for path in ["/tmp", "/tilo-launcher"] {
         match std::fs::metadata(path) {
             Ok(_) => println!("  stat({path:>25}): OK"),
             Err(e) => println!("  stat({path:>25}): {} — unexpected!", e.kind()),
         }
     }
     // Writing to /tmp should succeed (Landlock rw).
-    match std::fs::write("/tmp/qos-hello-probe", b"hello") {
-        Ok(()) => println!("  write(/tmp/qos-hello-probe): OK"),
-        Err(e) => println!("  write(/tmp/qos-hello-probe): {} — unexpected!", e.kind()),
+    match std::fs::write("/tmp/tilo-hello-probe", b"hello") {
+        Ok(()) => println!("  write(/tmp/tilo-hello-probe): OK"),
+        Err(e) => println!("  write(/tmp/tilo-hello-probe): {} — unexpected!", e.kind()),
     }
-    // Writing to a Landlock-denied location should fail. /var/qos-apps
+    // Writing to a Landlock-denied location should fail. /var/tilo-apps
     // is bind-mounted r/o by bwrap so this would also fail without
     // Landlock — but Landlock adds defence-in-depth.
-    match std::fs::write("/var/qos-apps/probe", b"hello") {
-        Ok(()) => println!("  write(/var/qos-apps/probe): OK — unexpected!"),
+    match std::fs::write("/var/tilo-apps/probe", b"hello") {
+        Ok(()) => println!("  write(/var/tilo-apps/probe): OK — unexpected!"),
         Err(e) => println!(
-            "  write(/var/qos-apps/probe): {} — blocked (bwrap or Landlock)",
+            "  write(/var/tilo-apps/probe): {} — blocked (bwrap or Landlock)",
             e.kind()
         ),
     }
@@ -131,7 +131,7 @@ fn main() {
     // the bubble is enqueued, so we can call it inline.
     report_portal(
         "notifications",
-        portal_xdg::Notification::send("qos-hello reporting in"),
+        portal_xdg::Notification::send("tilo-hello reporting in"),
     );
     // OpenUri + FileChooser + ScreenCast: these prompt the user, so
     // they may block on the portal frontend. Wrap in a short timeout
@@ -140,7 +140,7 @@ fn main() {
     report_portal(
         "open-uri",
         with_timeout(std::time::Duration::from_millis(750), || {
-            portal_xdg::OpenUri::open("https://qos.dev/hello")
+            portal_xdg::OpenUri::open("https://tilo.dev/hello")
         }),
     );
     report_portal(
@@ -151,7 +151,7 @@ fn main() {
     );
     println!();
 
-    println!("qos-hello: done.");
+    println!("tilo-hello: done.");
 }
 
 /// Run a fallible closure on a worker thread with a deadline. If it

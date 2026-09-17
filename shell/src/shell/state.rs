@@ -21,10 +21,17 @@ pub use collab_types::caps::{
     decide_capability,
 };
 pub use collab_types::role::Role as CapRole;
+pub use collab_types::{PermissionProfile, PermissionProfileError};
 
 const DEFAULT_FS_AUTHORITY_CACHE_DIR: &str = "/var/cache/quick-fs";
 const DEFAULT_FS_AUTHORITY_PUBLISHER: &str = "/usr/bin/fs";
 const MAX_FS_AUTHORITY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn permission_profile_document_key(name: &str) -> String {
+    blake3::hash(name.trim().to_lowercase().as_bytes())
+        .to_hex()
+        .to_string()
+}
 
 #[derive(Clone, Debug)]
 struct FsAuthorityPublication {
@@ -45,7 +52,7 @@ fn fs_authority_publication_queue() -> &'static Mutex<FsAuthorityPublicationQueu
 }
 
 fn fs_authority_publisher() -> PathBuf {
-    std::env::var_os("QOS_FS_AUTHORITY_PUBLISHER")
+    std::env::var_os("TILO_FS_AUTHORITY_PUBLISHER")
         .filter(|value| !value.is_empty())
         .map_or_else(
             || PathBuf::from(DEFAULT_FS_AUTHORITY_PUBLISHER),
@@ -54,7 +61,7 @@ fn fs_authority_publisher() -> PathBuf {
 }
 
 fn fs_authority_cache_dir() -> PathBuf {
-    std::env::var_os("QOS_FS_AUTHORITY_CACHE_DIR")
+    std::env::var_os("TILO_FS_AUTHORITY_CACHE_DIR")
         .filter(|value| !value.is_empty())
         .map_or_else(
             || PathBuf::from(DEFAULT_FS_AUTHORITY_CACHE_DIR),
@@ -69,7 +76,7 @@ fn fs_authority_cache_dir() -> PathBuf {
 fn schedule_fs_authority_publication(acl: PathBuf) {
     // Unit tests exercise this only with an explicit harmless publisher;
     // never let an isolated tree submit a fixture ACL to a real service.
-    if cfg!(test) && std::env::var_os("QOS_FS_AUTHORITY_PUBLISHER").is_none() {
+    if cfg!(test) && std::env::var_os("TILO_FS_AUTHORITY_PUBLISHER").is_none() {
         return;
     }
     let publication = FsAuthorityPublication {
@@ -87,7 +94,7 @@ fn schedule_fs_authority_publication(acl: PathBuf) {
     }
     queue.running = true;
     let spawned = std::thread::Builder::new()
-        .name("qos-fs-authority-publish".to_string())
+        .name("tilo-fs-authority-publish".to_string())
         .spawn(run_fs_authority_publication_queue);
     if let Err(error) = spawned {
         queue.running = false;
@@ -202,7 +209,7 @@ mod identity_fs_tests {
         let log = temp.path().join("authority-arguments");
         std::fs::write(
             &publisher,
-            "#!/bin/sh\nsleep 0.2\nprintf '%s\\n' \"$@\" > \"$QOS_FS_AUTHORITY_TEST_LOG\"\n",
+            "#!/bin/sh\nsleep 0.2\nprintf '%s\\n' \"$@\" > \"$TILO_FS_AUTHORITY_TEST_LOG\"\n",
         )
         .expect("publisher script");
         let mut permissions = std::fs::metadata(&publisher)
@@ -212,14 +219,14 @@ mod identity_fs_tests {
         std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
         let acl = temp.path().join("fs-capabilities.json");
         let cache = temp.path().join("cache");
-        let old_publisher = std::env::var_os("QOS_FS_AUTHORITY_PUBLISHER");
-        let old_cache = std::env::var_os("QOS_FS_AUTHORITY_CACHE_DIR");
-        let old_log = std::env::var_os("QOS_FS_AUTHORITY_TEST_LOG");
+        let old_publisher = std::env::var_os("TILO_FS_AUTHORITY_PUBLISHER");
+        let old_cache = std::env::var_os("TILO_FS_AUTHORITY_CACHE_DIR");
+        let old_log = std::env::var_os("TILO_FS_AUTHORITY_TEST_LOG");
         // SAFETY: guarded by the process_env serial group.
         unsafe {
-            std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", &publisher);
-            std::env::set_var("QOS_FS_AUTHORITY_CACHE_DIR", &cache);
-            std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", &log);
+            std::env::set_var("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
+            std::env::set_var("TILO_FS_AUTHORITY_CACHE_DIR", &cache);
+            std::env::set_var("TILO_FS_AUTHORITY_TEST_LOG", &log);
         }
 
         let tree = WorkspaceTree {
@@ -250,16 +257,16 @@ mod identity_fs_tests {
         // SAFETY: guarded by the process_env serial group.
         unsafe {
             match old_publisher {
-                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", value),
-                None => std::env::remove_var("QOS_FS_AUTHORITY_PUBLISHER"),
+                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_PUBLISHER", value),
+                None => std::env::remove_var("TILO_FS_AUTHORITY_PUBLISHER"),
             }
             match old_cache {
-                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_CACHE_DIR", value),
-                None => std::env::remove_var("QOS_FS_AUTHORITY_CACHE_DIR"),
+                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_CACHE_DIR", value),
+                None => std::env::remove_var("TILO_FS_AUTHORITY_CACHE_DIR"),
             }
             match old_log {
-                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", value),
-                None => std::env::remove_var("QOS_FS_AUTHORITY_TEST_LOG"),
+                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_LOG", value),
+                None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_LOG"),
             }
         }
     }
@@ -276,7 +283,7 @@ mod identity_fs_tests {
         let log = temp.path().join("authority-arguments");
         std::fs::write(
             &publisher,
-            "#!/bin/sh\ncount=0\n[ -f \"$QOS_FS_AUTHORITY_TEST_COUNT\" ] && count=$(cat \"$QOS_FS_AUTHORITY_TEST_COUNT\")\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$QOS_FS_AUTHORITY_TEST_COUNT\"\n[ \"$count\" -le 4 ] && exit 1\nprintf '%s\\n' \"$@\" > \"$QOS_FS_AUTHORITY_TEST_LOG\"\n",
+            "#!/bin/sh\ncount=0\n[ -f \"$TILO_FS_AUTHORITY_TEST_COUNT\" ] && count=$(cat \"$TILO_FS_AUTHORITY_TEST_COUNT\")\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$TILO_FS_AUTHORITY_TEST_COUNT\"\n[ \"$count\" -le 4 ] && exit 1\nprintf '%s\\n' \"$@\" > \"$TILO_FS_AUTHORITY_TEST_LOG\"\n",
         )
         .expect("publisher script");
         let mut permissions = std::fs::metadata(&publisher)
@@ -285,14 +292,14 @@ mod identity_fs_tests {
         permissions.set_mode(0o700);
         std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
         let acl = temp.path().join("fs-capabilities.json");
-        let old_publisher = std::env::var_os("QOS_FS_AUTHORITY_PUBLISHER");
-        let old_count = std::env::var_os("QOS_FS_AUTHORITY_TEST_COUNT");
-        let old_log = std::env::var_os("QOS_FS_AUTHORITY_TEST_LOG");
+        let old_publisher = std::env::var_os("TILO_FS_AUTHORITY_PUBLISHER");
+        let old_count = std::env::var_os("TILO_FS_AUTHORITY_TEST_COUNT");
+        let old_log = std::env::var_os("TILO_FS_AUTHORITY_TEST_LOG");
         // SAFETY: guarded by the process_env serial group.
         unsafe {
-            std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", &publisher);
-            std::env::set_var("QOS_FS_AUTHORITY_TEST_COUNT", &count);
-            std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", &log);
+            std::env::set_var("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
+            std::env::set_var("TILO_FS_AUTHORITY_TEST_COUNT", &count);
+            std::env::set_var("TILO_FS_AUTHORITY_TEST_LOG", &log);
         }
         let tree = WorkspaceTree {
             fs_acl_path: Some(acl),
@@ -324,16 +331,16 @@ mod identity_fs_tests {
         // SAFETY: guarded by the process_env serial group.
         unsafe {
             match old_publisher {
-                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", value),
-                None => std::env::remove_var("QOS_FS_AUTHORITY_PUBLISHER"),
+                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_PUBLISHER", value),
+                None => std::env::remove_var("TILO_FS_AUTHORITY_PUBLISHER"),
             }
             match old_count {
-                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_TEST_COUNT", value),
-                None => std::env::remove_var("QOS_FS_AUTHORITY_TEST_COUNT"),
+                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_COUNT", value),
+                None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_COUNT"),
             }
             match old_log {
-                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", value),
-                None => std::env::remove_var("QOS_FS_AUTHORITY_TEST_LOG"),
+                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_LOG", value),
+                None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_LOG"),
             }
         }
     }
@@ -345,13 +352,13 @@ mod identity_fs_tests {
         let xdg = temp.path().join("config");
         let system = temp.path().join("system");
         let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
-        let old_root = std::env::var_os("QOS_IDENTITY_ROOT");
+        let old_root = std::env::var_os("TILO_IDENTITY_ROOT");
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", &xdg);
-            std::env::set_var("QOS_IDENTITY_ROOT", &system);
+            std::env::set_var("TILO_IDENTITY_ROOT", &system);
         }
-        let identity_dir = xdg.join("qos/identity");
-        let paths = qos_user_identity::IdentityPaths::under(&system);
+        let identity_dir = xdg.join("tilo/identity");
+        let paths = tilo_user_identity::IdentityPaths::under(&system);
         crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
         let profile = crate::identity_registry::IdentityRegistryStore::at(&identity_dir)
             .load()
@@ -374,7 +381,7 @@ mod identity_fs_tests {
 
         let exported: Vec<CapOverride> =
             serde_json::from_slice(&std::fs::read(&output).expect("export")).expect("json");
-        let device = qos_user_identity::persist::read_device_key(&paths.device_privkey)
+        let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
             .expect("device")
             .verifying_key()
             .to_bytes();
@@ -389,7 +396,7 @@ mod identity_fs_tests {
             .revoke(
                 &profile.id,
                 device,
-                qos_user_identity::RevocationReason::Retired,
+                tilo_user_identity::RevocationReason::Retired,
                 1,
             )
             .expect("revoke current device");
@@ -409,8 +416,8 @@ mod identity_fs_tests {
                 None => std::env::remove_var("XDG_CONFIG_HOME"),
             }
             match old_root {
-                Some(value) => std::env::set_var("QOS_IDENTITY_ROOT", value),
-                None => std::env::remove_var("QOS_IDENTITY_ROOT"),
+                Some(value) => std::env::set_var("TILO_IDENTITY_ROOT", value),
+                None => std::env::remove_var("TILO_IDENTITY_ROOT"),
             }
         }
     }
@@ -535,7 +542,7 @@ impl RoomId {
     }
 
     /// Parse a room id off the wire (invite token, automerge doc,
-    /// `QOS_WORKSPACE_ID`). `None` on anything that isn't a valid uuid.
+    /// `TILO_WORKSPACE_ID`). `None` on anything that isn't a valid uuid.
     pub fn parse(s: &str) -> Option<Self> {
         uuid::Uuid::parse_str(s).ok().map(Self)
     }
@@ -666,11 +673,11 @@ pub enum RoomAuthority {
 /// and must equal the certificate's device key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GovernedPeerIdentity {
-    pub device_cert: qos_user_identity::DeviceCert,
+    pub device_cert: tilo_user_identity::DeviceCert,
     /// Additive root-signed evidence. Omission in a later announcement cannot
     /// remove an already-governed revocation.
     #[serde(default)]
-    pub revocations: Vec<qos_user_identity::RevocationEntry>,
+    pub revocations: Vec<tilo_user_identity::RevocationEntry>,
 }
 
 impl From<u64> for WorkspaceId {
@@ -807,8 +814,8 @@ impl AppKind {
 
 /// Reverse-DNS prefix the compositor stamps on built-in apps' ids,
 /// matching its own portal backend name
-/// (`org.freedesktop.impl.portal.desktop.nirios`).
-pub const APP_ID_PREFIX: &str = "org.nirios";
+/// (`org.freedesktop.impl.portal.desktop.tilo`).
+pub const APP_ID_PREFIX: &str = "org.tilo";
 
 /// Reference width the legacy pixel model was scaled against, so a
 /// migrated `Custom(600)` preserves the *proportion* the user saw rather
@@ -954,6 +961,14 @@ pub struct Tab {
     pub id: TabId,
     pub title: String,
     pub tile: TileContent,
+}
+
+/// Device-local identity needed to reconstruct a hosted document tab.
+/// It is persisted in the local profile but never projected into a room doc.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NativeDocumentReference {
+    pub provider_id: String,
+    pub path: std::path::PathBuf,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1281,10 +1296,10 @@ pub struct WorkspaceTaskAuditEvent {
 /// and failure details are deliberately absent from this durable shape.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceEffectReceipt {
-    pub invocation: qos_actions::InvocationId,
+    pub invocation: tilo_actions::InvocationId,
     pub actor: String,
-    pub context: qos_actions::ActionContext,
-    pub status: qos_actions::EffectReceiptStatus,
+    pub context: tilo_actions::ActionContext,
+    pub status: tilo_actions::EffectReceiptStatus,
     pub completed_at: i64,
 }
 
@@ -1306,7 +1321,7 @@ fn bounded_receipt_text(value: &str, max: usize) -> String {
         .to_string()
 }
 
-fn redact_receipt_context(context: &mut qos_actions::ActionContext) {
+fn redact_receipt_context(context: &mut tilo_actions::ActionContext) {
     context.action_label = bounded_receipt_text(&context.action_label, 200);
     if let Some(app) = &mut context.app {
         app.id = bounded_receipt_text(&app.id, 160);
@@ -1355,12 +1370,12 @@ pub struct WorkspaceTask {
 }
 
 impl WorkspaceTask {
-    pub fn action_context(&self) -> qos_actions::ActionContext {
-        let mut context = qos_actions::ActionContext::default()
+    pub fn action_context(&self) -> tilo_actions::ActionContext {
+        let mut context = tilo_actions::ActionContext::default()
             .with_purpose(self.title.clone())
             .with_group(self.id.clone(), self.title.clone(), "task");
         if let Some(resource) = &self.resource {
-            context.resource = Some(qos_actions::ActionResource {
+            context.resource = Some(tilo_actions::ActionResource {
                 id: resource.id.clone(),
                 kind: resource.kind.clone(),
                 label: resource.label.clone(),
@@ -1416,6 +1431,11 @@ pub struct Workspace {
     /// can't drift the way a second per-app map would.
     #[serde(default)]
     pub capabilities: Vec<CapOverride>,
+    /// Reusable least-privilege bundles authored for this workspace. Profiles
+    /// are policy source; assigned authority is still materialized into
+    /// `capabilities`, the sole enforcement and replication vocabulary.
+    #[serde(default)]
+    pub permission_profiles: Vec<PermissionProfile>,
     /// Default-application policy belongs to the workspace, while each
     /// person's ordinary defaults remain in their personal settings. All
     /// mutation goes through the authority-checked methods below.
@@ -1441,6 +1461,22 @@ pub struct Workspace {
 /// the local user's account name.
 pub type UserId = String;
 
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum PermissionProfileMutationError {
+    #[error("only a workspace administrator can manage permission profiles")]
+    NotAdministrator,
+    #[error("permission profile is invalid: {0}")]
+    Invalid(#[from] PermissionProfileError),
+    #[error("permission profile was not found")]
+    NotFound,
+    #[error("permission profile actor has no assignable identity")]
+    MissingPrincipal,
+}
+
+pub const WORKSPACE_GOVERNANCE_APP_ID: &str = "tilo.workspace";
+pub const PROFILE_SAVE_ACTION_ID: &str = "profile.save";
+pub const PROFILE_ASSIGN_ACTION_ID: &str = "profile.assign";
+
 /// What a role is called on screen. One mapping shared by every surface
 /// that shows a role, so it can't be spelled two different ways.
 pub fn role_label(role: CapRole) -> &'static str {
@@ -1459,7 +1495,9 @@ pub fn role_label(role: CapRole) -> &'static str {
 /// identity when provisioned, falling back to the OS account name —
 /// stable across restarts, or an owner would lose their own workspaces.
 pub fn local_user_id() -> UserId {
-    if let Ok(v) = std::env::var("QOS_USER_ID")
+    #[cfg(test)]
+    crate::shell::test_support::ambient_start("session identity");
+    if let Ok(v) = std::env::var("TILO_USER_ID")
         && !v.is_empty()
     {
         return v;
@@ -1484,6 +1522,8 @@ pub fn local_user_id() -> UserId {
 /// a valid explicit binding always wins. Callers that launch an app use the
 /// stricter path resolver and fail closed if its private record is unavailable.
 pub fn local_user_id_for_room(room: &RoomId) -> UserId {
+    #[cfg(test)]
+    crate::shell::test_support::ambient_start("room identity");
     crate::identity_registry::selected_principal_id(&room.to_string())
         .ok()
         .flatten()
@@ -1836,6 +1876,103 @@ impl Workspace {
         Some(self.grant_capability(cap))
     }
 
+    /// Create or replace a workspace permission profile. The profile itself
+    /// grants nothing; assignment below materializes ordinary capabilities.
+    pub fn save_permission_profile_as(
+        &mut self,
+        actor: &UserId,
+        profile: PermissionProfile,
+    ) -> Result<(), PermissionProfileMutationError> {
+        self.save_permission_profile_as_actor(&self.actor_for_person(actor), profile)
+    }
+
+    /// Actor-general form used by the broker. Agents and apps have no ambient
+    /// role; they can manage profiles only when explicitly granted this exact
+    /// governance action (or the containing governance app/workspace).
+    pub fn save_permission_profile_as_actor(
+        &mut self,
+        actor: &Actor,
+        profile: PermissionProfile,
+    ) -> Result<(), PermissionProfileMutationError> {
+        if !self.allows(
+            actor,
+            &ResourceRef::Action {
+                app: WORKSPACE_GOVERNANCE_APP_ID.into(),
+                action: PROFILE_SAVE_ACTION_ID.into(),
+            },
+            Verb::Admin,
+        ) {
+            return Err(PermissionProfileMutationError::NotAdministrator);
+        }
+        profile.validate()?;
+        if let Some(existing) = self
+            .permission_profiles
+            .iter_mut()
+            .find(|candidate| candidate.name.eq_ignore_ascii_case(profile.name.trim()))
+        {
+            *existing = profile;
+        } else {
+            self.permission_profiles.push(profile);
+            self.permission_profiles
+                .sort_by_key(|candidate| candidate.name.to_lowercase());
+        }
+        Ok(())
+    }
+
+    /// Assign a saved profile to a person, app, or agent in one validated
+    /// mutation. Returned ids are the exact revocation/audit handles written
+    /// to the canonical capability store.
+    pub fn assign_permission_profile_as(
+        &mut self,
+        actor: &UserId,
+        profile_name: &str,
+        subject: Subject,
+        expiry: Expiry,
+    ) -> Result<Vec<String>, PermissionProfileMutationError> {
+        self.assign_permission_profile_as_actor(
+            &self.actor_for_person(actor),
+            profile_name,
+            subject,
+            expiry,
+        )
+    }
+
+    pub fn assign_permission_profile_as_actor(
+        &mut self,
+        actor: &Actor,
+        profile_name: &str,
+        subject: Subject,
+        expiry: Expiry,
+    ) -> Result<Vec<String>, PermissionProfileMutationError> {
+        if !self.allows(
+            actor,
+            &ResourceRef::Action {
+                app: WORKSPACE_GOVERNANCE_APP_ID.into(),
+                action: PROFILE_ASSIGN_ACTION_ID.into(),
+            },
+            Verb::Admin,
+        ) {
+            return Err(PermissionProfileMutationError::NotAdministrator);
+        }
+        let profile = self
+            .permission_profiles
+            .iter()
+            .find(|profile| profile.name.eq_ignore_ascii_case(profile_name.trim()))
+            .cloned()
+            .ok_or(PermissionProfileMutationError::NotFound)?;
+        let grantor = actor
+            .principals
+            .iter()
+            .find(|principal| !matches!(principal, Principal::Room(_)))
+            .cloned()
+            .ok_or(PermissionProfileMutationError::MissingPrincipal)?;
+        let capabilities = profile.assign_to(&subject, &grantor, expiry)?;
+        Ok(capabilities
+            .into_iter()
+            .map(|capability| self.grant_capability(capability))
+            .collect())
+    }
+
     /// Drop the capability with this id. Returns whether anything was
     /// removed.
     pub fn revoke_capability(&mut self, id: &str) -> bool {
@@ -2130,6 +2267,7 @@ impl Workspace {
             ownership_transfer_audit: Vec::new(),
             ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
+            permission_profiles: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
@@ -2195,6 +2333,7 @@ impl Default for Workspace {
             ownership_transfer_audit: Vec::new(),
             ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
+            permission_profiles: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
@@ -2228,6 +2367,12 @@ pub struct WorkspaceTree {
     /// suppress the first resync.
     #[serde(skip)]
     pub room_epoch: u64,
+    /// Mutations performed by non-UI authorities (for example the local
+    /// action broker) increment this so chrome can invalidate retained panes.
+    /// It is process-local: restoring a persisted value could suppress the
+    /// first refresh after launch.
+    #[serde(skip)]
+    pub external_revision: u64,
     pub workspaces: Vec<Workspace>,
     #[serde(default)]
     pub active: WorkspaceId,
@@ -2312,6 +2457,10 @@ pub struct WorkspaceTree {
     #[serde(default)]
     pub continuation_file_references:
         HashMap<TabId, crate::shell::personal_continuity::LaunchIntent>,
+    /// Native hosted documents on this device. Paths stay in local `state.json`;
+    /// room projection deliberately has no corresponding field.
+    #[serde(default)]
+    pub native_document_tabs: HashMap<TabId, NativeDocumentReference>,
     /// This tree's own peer salt, overriding the process-wide one — the
     /// static is wrong when one process holds **two** trees (e.g. two
     /// simulated peers). [`Self::local_salt`] prefers this field;
@@ -2325,7 +2474,7 @@ pub struct WorkspaceTree {
     pub persist_path: Option<std::path::PathBuf>,
     /// Where to export the capability list the FUSE mount enforces.
     /// `None` disables the export; set at boot to the same path passed
-    /// to `qos-fs --acl`, so both sides decide from one list.
+    /// to `tilo-fs --acl`, so both sides decide from one list.
     #[serde(skip)]
     pub fs_acl_path: Option<std::path::PathBuf>,
 }
@@ -2335,6 +2484,7 @@ impl Default for WorkspaceTree {
         Self {
             schema_version: STATE_SCHEMA_VERSION,
             room_epoch: 0,
+            external_revision: 0,
             workspaces: Vec::new(),
             active: WorkspaceId::default(),
             active_strip: HashMap::new(),
@@ -2353,6 +2503,7 @@ impl Default for WorkspaceTree {
             continuation_owned_tabs: HashMap::new(),
             continuation_closed_tabs: HashMap::new(),
             continuation_file_references: HashMap::new(),
+            native_document_tabs: HashMap::new(),
             peer_salt_override: None,
             persist_path: None,
             fs_acl_path: None,
@@ -2658,7 +2809,7 @@ impl WorkspaceTree {
         &mut self,
         room: RoomId,
         peer_id: &str,
-        device_cert: qos_user_identity::DeviceCert,
+        device_cert: tilo_user_identity::DeviceCert,
     ) -> bool {
         self.certify_peer_identity_with_revocations(room, peer_id, device_cert, Vec::new())
     }
@@ -2668,24 +2819,24 @@ impl WorkspaceTree {
         &mut self,
         room: RoomId,
         peer_id: &str,
-        device_cert: qos_user_identity::DeviceCert,
-        revocations: Vec<qos_user_identity::RevocationEntry>,
+        device_cert: tilo_user_identity::DeviceCert,
+        revocations: Vec<tilo_user_identity::RevocationEntry>,
     ) -> bool {
         if !self.governs_room(room)
-            || qos_user_identity::verify_device_cert(&device_cert).is_err()
+            || tilo_user_identity::verify_device_cert(&device_cert).is_err()
             || device_cert.is_expired_at(now_unix_nanos())
             || device_cert.device_label.is_empty()
             || device_cert.device_label.trim() != device_cert.device_label
             || device_cert.device_label.len()
-                > qos_user_identity::MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES
+                > tilo_user_identity::MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES
             || device_cert.device_label.chars().any(char::is_control)
         {
             return false;
         }
-        if revocations.len() > qos_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
+        if revocations.len() > tilo_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
             || revocations.iter().any(|entry| {
                 entry.user_public_key != device_cert.user_public_key
-                    || qos_user_identity::verify_revocation_entry(entry).is_err()
+                    || tilo_user_identity::verify_revocation_entry(entry).is_err()
             })
         {
             return false;
@@ -2703,7 +2854,7 @@ impl WorkspaceTree {
         }
         let identities = self.room_peer_identities.entry(room).or_default();
         if !identities.contains_key(peer_id)
-            && identities.len() >= qos_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
+            && identities.len() >= tilo_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
         {
             return false;
         }
@@ -2733,7 +2884,7 @@ impl WorkspaceTree {
     pub fn trusted_identity_projection(
         &self,
         room: RoomId,
-    ) -> qos_user_identity::TrustedIdentityProjectionV2 {
+    ) -> tilo_user_identity::TrustedIdentityProjectionV2 {
         let names = self.room_peer_names_in_doc(room);
         let identities = self.room_peer_identities_in_doc(room);
         let revoked = identities
@@ -2745,7 +2896,7 @@ impl WorkspaceTree {
             [u8; 32],
             (
                 String,
-                Vec<qos_user_identity::GovernedDeviceIdentityV2>,
+                Vec<tilo_user_identity::GovernedDeviceIdentityV2>,
                 bool,
             ),
         > = std::collections::BTreeMap::new();
@@ -2764,7 +2915,7 @@ impl WorkspaceTree {
                 entry.2 = false;
                 continue;
             }
-            entry.1.push(qos_user_identity::GovernedDeviceIdentityV2 {
+            entry.1.push(tilo_user_identity::GovernedDeviceIdentityV2 {
                 certificate: identity.device_cert,
             });
         }
@@ -2773,21 +2924,21 @@ impl WorkspaceTree {
             .filter(|(_, (_, devices, consistent))| *consistent && !devices.is_empty())
             .map(|(root_public_key, (display_name, mut devices, _))| {
                 devices.sort_by_key(|device| device.certificate.device_public_key);
-                qos_user_identity::GovernedHumanIdentityV2 {
+                tilo_user_identity::GovernedHumanIdentityV2 {
                     root_public_key,
                     display_name,
                     devices,
                 }
             })
             .collect();
-        let projection = qos_user_identity::TrustedIdentityProjectionV2 {
-            schema_version: qos_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+        let projection = tilo_user_identity::TrustedIdentityProjectionV2 {
+            schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
             humans,
         };
         if projection.validate().is_ok() {
             projection
         } else {
-            qos_user_identity::TrustedIdentityProjectionV2::empty()
+            tilo_user_identity::TrustedIdentityProjectionV2::empty()
         }
     }
 
@@ -3353,13 +3504,13 @@ impl WorkspaceTree {
                 continue;
             };
             if endpoint.as_bytes() == &identity.device_cert.device_public_key
-                && qos_user_identity::verify_device_cert(&identity.device_cert).is_ok()
+                && tilo_user_identity::verify_device_cert(&identity.device_cert).is_ok()
                 && !identity.device_cert.is_expired_at(now_unix_nanos())
                 && identity.revocations.len()
-                    <= qos_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
+                    <= tilo_user_identity::MAX_TRUSTED_IDENTITY_PROJECTION_DEVICES
                 && identity.revocations.iter().all(|entry| {
                     entry.user_public_key == identity.device_cert.user_public_key
-                        && qos_user_identity::verify_revocation_entry(entry).is_ok()
+                        && tilo_user_identity::verify_revocation_entry(entry).is_ok()
                 })
             {
                 out.insert(peer, identity);
@@ -4657,6 +4808,20 @@ impl WorkspaceTree {
                     }
                 }
             }
+            if let Ok(profiles_id) =
+                self.doc
+                    .put_object(&entry, "permission_profiles_v1", ObjType::Map)
+            {
+                for profile in &ws.permission_profiles {
+                    if let Ok(blob) = serde_json::to_vec(profile) {
+                        let _ = self.doc.put(
+                            &profiles_id,
+                            permission_profile_document_key(&profile.name),
+                            ScalarValue::Bytes(blob),
+                        );
+                    }
+                }
+            }
             if let Ok(tasks_id) = self.doc.put_object(&entry, "tasks_v1", ObjType::Map) {
                 for task in &ws.tasks {
                     if let Ok(blob) = serde_json::to_vec(task) {
@@ -4847,6 +5012,9 @@ impl WorkspaceTree {
                         ws.owner = owner;
                     }
                     ws.capabilities = caps;
+                }
+                if let Some(profiles) = self.doc_read_permission_profiles(&entry_id) {
+                    ws.permission_profiles = profiles;
                 }
                 ws.tasks = self.doc_read_workspace_tasks(&entry_id);
                 ws.effect_receipts = self.doc_read_workspace_effect_receipts(&entry_id);
@@ -5152,7 +5320,7 @@ impl WorkspaceTree {
         };
         let identity_paths = crate::firstboot::collaboration_identity_paths();
         let device_public_key =
-            qos_user_identity::persist::read_device_key(identity_paths.device_privkey.as_path())
+            tilo_user_identity::persist::read_device_key(identity_paths.device_privkey.as_path())
                 .ok()
                 .map(|key| key.verifying_key().to_bytes());
         let mut caps: Vec<CapOverride> = Vec::new();
@@ -5166,11 +5334,11 @@ impl WorkspaceTree {
                             return false;
                         };
                         let paths = crate::firstboot::collaboration_identity_paths();
-                        qos_user_identity::persist::read_device_cert(
+                        tilo_user_identity::persist::read_device_cert(
                             &paths.device_cert_for_user(&profile.user_public_key),
                         )
                         .ok()
-                        .filter(|cert| qos_user_identity::verify_device_cert(cert).is_ok())
+                        .filter(|cert| tilo_user_identity::verify_device_cert(cert).is_ok())
                         .is_some_and(|cert| {
                             cert.user_public_key == profile.user_public_key
                                 && cert.device_public_key == device
@@ -5357,7 +5525,7 @@ impl WorkspaceTree {
 
     /// Mirror a workspace's room into the automerge doc, as a string —
     /// what every other consumer of the value speaks
-    /// (`QOS_WORKSPACE_ID`, the invite token, `CrdtRoute::cluster_id`).
+    /// (`TILO_WORKSPACE_ID`, the invite token, `CrdtRoute::cluster_id`).
     /// Null-tolerant like the other `doc_*` mirrors.
     pub fn doc_set_room(&mut self, workspace_id: WorkspaceId, room: RoomId) {
         use automerge::transaction::Transactable;
@@ -5673,6 +5841,44 @@ impl WorkspaceTree {
         self.commit_room_change();
     }
 
+    /// Replicate a reusable permission profile as workspace policy. Expanded
+    /// assignments still replicate through `doc_insert_capability`; this map
+    /// lets another administrator inspect and reuse the named definition.
+    pub fn doc_upsert_permission_profile(
+        &mut self,
+        workspace_id: WorkspaceId,
+        profile: &PermissionProfile,
+    ) {
+        use automerge::{ObjType, ReadDoc, ScalarValue, transaction::Transactable};
+        let Some(ws_entry) = self.locate_workspace(workspace_id) else {
+            return;
+        };
+        let profiles_id = match self
+            .doc
+            .get(&ws_entry, "permission_profiles_v1")
+            .ok()
+            .flatten()
+        {
+            Some((_, id)) => id,
+            None => match self
+                .doc
+                .put_object(&ws_entry, "permission_profiles_v1", ObjType::Map)
+            {
+                Ok(id) => id,
+                Err(_) => return,
+            },
+        };
+        let Ok(blob) = serde_json::to_vec(profile) else {
+            return;
+        };
+        let _ = self.doc.put(
+            &profiles_id,
+            permission_profile_document_key(&profile.name),
+            ScalarValue::Bytes(blob),
+        );
+        self.commit_room_change();
+    }
+
     /// Mirror a revocation into the automerge doc — without this a
     /// revoke would mutate only the local cache, so a peer would keep
     /// using a capability the owner took away.
@@ -5814,10 +6020,29 @@ impl WorkspaceTree {
     pub fn append_workspace_effect_receipt(
         &mut self,
         workspace_id: WorkspaceId,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         actor: &str,
-        mut context: qos_actions::ActionContext,
-        status: qos_actions::EffectReceiptStatus,
+        context: tilo_actions::ActionContext,
+        status: tilo_actions::EffectReceiptStatus,
+    ) -> bool {
+        self.append_workspace_effect_receipt_at(
+            workspace_id,
+            invocation,
+            actor,
+            context,
+            status,
+            unix_now(),
+        )
+    }
+
+    fn append_workspace_effect_receipt_at(
+        &mut self,
+        workspace_id: WorkspaceId,
+        invocation: tilo_actions::InvocationId,
+        actor: &str,
+        mut context: tilo_actions::ActionContext,
+        status: tilo_actions::EffectReceiptStatus,
+        completed_at: i64,
     ) -> bool {
         let Some(workspace) = self
             .workspaces
@@ -5833,7 +6058,6 @@ impl WorkspaceTree {
         {
             return false;
         }
-        let completed_at = unix_now();
         let original_action = bounded_receipt_text(&context.action_label, 160);
         context.action_label = if original_action.is_empty() {
             status.label().to_string()
@@ -5842,9 +6066,9 @@ impl WorkspaceTree {
         };
         context
             .facets
-            .push(qos_actions::ActionFacet::new("qos.receipt", "effect"));
-        context.facets.push(qos_actions::ActionFacet::new(
-            "qos.invocation",
+            .push(tilo_actions::ActionFacet::new("tilo.receipt", "effect"));
+        context.facets.push(tilo_actions::ActionFacet::new(
+            "tilo.invocation",
             invocation.0.to_string(),
         ));
         redact_receipt_context(&mut context);
@@ -5859,6 +6083,40 @@ impl WorkspaceTree {
         self.doc_upsert_workspace_effect_receipt(workspace_id, &receipt);
         self.flush_to_disk();
         true
+    }
+
+    /// Deterministic history clock for screenshot journeys that create
+    /// several receipts inside one wall-clock second.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn append_workspace_effect_receipt_for_shots(
+        &mut self,
+        workspace_id: WorkspaceId,
+        invocation: tilo_actions::InvocationId,
+        actor: &str,
+        context: tilo_actions::ActionContext,
+        status: tilo_actions::EffectReceiptStatus,
+    ) -> bool {
+        let completed_at = self
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .and_then(|workspace| {
+                workspace
+                    .effect_receipts
+                    .iter()
+                    .map(|receipt| receipt.completed_at)
+                    .max()
+            })
+            .unwrap_or_else(unix_now)
+            .saturating_add(1);
+        self.append_workspace_effect_receipt_at(
+            workspace_id,
+            invocation,
+            actor,
+            context,
+            status,
+            completed_at,
+        )
     }
 
     fn doc_upsert_workspace_task(&mut self, workspace_id: WorkspaceId, task: &WorkspaceTask) {
@@ -5916,8 +6174,9 @@ impl WorkspaceTree {
             receipt.invocation.0.to_string(),
             ScalarValue::Bytes(blob),
         );
-        let _ = qdoc::history::commit_stamped_with_message(
+        let _ = qdoc::history::commit_stamped_at_with_message(
             &mut self.doc,
+            receipt.completed_at,
             receipt.context.change_message(),
         );
     }
@@ -5958,6 +6217,31 @@ impl WorkspaceTree {
             }
         }
         Some((owner, caps))
+    }
+
+    fn doc_read_permission_profiles(
+        &self,
+        ws_entry: &automerge::ObjId,
+    ) -> Option<Vec<PermissionProfile>> {
+        use automerge::{ReadDoc, ScalarValue, Value};
+        let (_, profiles_id) = self
+            .doc
+            .get(ws_entry, "permission_profiles_v1")
+            .ok()
+            .flatten()?;
+        let mut profiles = Vec::new();
+        for key in self.doc.keys(&profiles_id) {
+            if let Some((Value::Scalar(value), _)) =
+                self.doc.get(&profiles_id, key.as_str()).ok().flatten()
+                && let ScalarValue::Bytes(blob) = value.as_ref()
+                && let Ok(profile) = serde_json::from_slice::<PermissionProfile>(blob)
+                && profile.validate().is_ok()
+            {
+                profiles.push(profile);
+            }
+        }
+        profiles.sort_by_key(|profile| profile.name.to_lowercase());
+        Some(profiles)
     }
 
     fn doc_read_workspace_tasks(&self, ws_entry: &automerge::ObjId) -> Vec<WorkspaceTask> {
@@ -6475,6 +6759,7 @@ impl WorkspaceTree {
             ownership_transfer_audit: Vec::new(),
             ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
+            permission_profiles: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
@@ -6560,7 +6845,7 @@ impl WorkspaceTree {
             // One invented peer so the top-bar avatar stack has something
             // to paint. "me" is deliberately not seeded so
             // `draw_ws_settings` synthesizes its "You" tile from the
-            // fallback path. Hex matches `nirios-concept/src/data.ts`.
+            // fallback path. Hex matches `tilo-concept/src/data.ts`.
             collaborators: vec![
                 Collaborator::new("alice", "Alice")
                     .with_cursor_color("#ec4899")
@@ -6571,6 +6856,7 @@ impl WorkspaceTree {
             ownership_transfer_audit: Vec::new(),
             ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
+            permission_profiles: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
@@ -6637,6 +6923,7 @@ impl WorkspaceTree {
             ownership_transfer_audit: Vec::new(),
             ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
+            permission_profiles: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
@@ -7572,6 +7859,13 @@ fn public_key_user_id(key: collab_types::Ed25519PublicKey) -> UserId {
 /// local user is included in the settled set (never the avatar stack) so
 /// every host computes the same one.
 pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
+    roster_colors_with_local_user(roster, &local_user_id())
+}
+
+pub(crate) fn roster_colors_with_local_user(
+    roster: &[Collaborator],
+    local: &str,
+) -> HashMap<String, (u8, u8, u8)> {
     let mut explicit: HashMap<String, (u8, u8, u8)> = HashMap::new();
     for c in roster {
         if let Some(rgb) = c
@@ -7582,14 +7876,13 @@ pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
             explicit.insert(c.id.clone(), rgb);
         }
     }
-    let local = local_user_id();
     let mut ids: Vec<&str> = roster
         .iter()
         .filter(|c| !explicit.contains_key(&c.id))
         .map(|c| c.id.as_str())
         .collect();
-    if !explicit.contains_key(&local) {
-        ids.push(local.as_str());
+    if !explicit.contains_key(local) {
+        ids.push(local);
     }
     let reserved: Vec<(u8, u8, u8)> = explicit.values().copied().collect();
     let mut assigned = ui::presence::assign_peer_colors(&ids, &reserved);
@@ -9204,16 +9497,16 @@ mod automerge_foundation_tests {
         let device_secret = iroh::SecretKey::generate();
         let endpoint = device_secret.public();
         let root_key = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
-        let mut certificate = qos_user_identity::DeviceCert {
+        let mut certificate = tilo_user_identity::DeviceCert {
             user_public_key: root_key.verifying_key().to_bytes(),
             device_public_key: *endpoint.as_bytes(),
             device_label: "Studio laptop".into(),
-            capabilities: qos_user_identity::DeviceCapabilities::member(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
         };
-        qos_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+        tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
         assert!(host.name_peer(
             room,
             &"ada".to_string(),
@@ -9275,28 +9568,28 @@ mod automerge_foundation_tests {
         let device_secret = iroh::SecretKey::generate();
         let endpoint = device_secret.public();
         let root_key = ed25519_dalek::SigningKey::from_bytes(&[96; 32]);
-        let mut certificate = qos_user_identity::DeviceCert {
+        let mut certificate = tilo_user_identity::DeviceCert {
             user_public_key: root_key.verifying_key().to_bytes(),
             device_public_key: *endpoint.as_bytes(),
             device_label: "Retired laptop".into(),
-            capabilities: qos_user_identity::DeviceCapabilities::member(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
         };
-        qos_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+        tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
         assert!(host.name_peer(room, &"ada".to_string(), &endpoint.to_string(), "Ada"));
         assert!(host.certify_peer_identity(room, &endpoint.to_string(), certificate.clone()));
         assert_eq!(host.trusted_identity_projection(room).humans.len(), 1);
 
-        let mut revocation = qos_user_identity::RevocationEntry {
+        let mut revocation = tilo_user_identity::RevocationEntry {
             user_public_key: root_key.verifying_key().to_bytes(),
             revoked_device_public_key: *endpoint.as_bytes(),
             revoked_at_ns: 2,
-            reason: qos_user_identity::RevocationReason::Retired,
+            reason: tilo_user_identity::RevocationReason::Retired,
             signature: [0; 64],
         };
-        qos_user_identity::sign_revocation_entry(&mut revocation, &root_key).unwrap();
+        tilo_user_identity::sign_revocation_entry(&mut revocation, &root_key).unwrap();
         assert!(host.certify_peer_identity_with_revocations(
             room,
             &endpoint.to_string(),
@@ -9924,6 +10217,7 @@ mod active_group_tests {
             ownership_transfer_audit: Vec::new(),
             ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
+            permission_profiles: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
@@ -10376,8 +10670,8 @@ mod active_group_tests {
     #[test]
     #[serial_test::serial(next_id_statics)]
     fn mixed_layout_edits_survive_every_restart_boundary() {
-        use crate::compositor::tab_binding::{Placement, adopt_toplevel_at, remove_tab};
         use crate::shell::persist::load_tree_from;
+        use crate::shell::tab_binding::{Placement, adopt_toplevel_at, remove_tab};
 
         let state_dir = tempfile::tempdir().expect("state dir");
         let state_path = state_dir.path().join("state.json");
@@ -10511,6 +10805,7 @@ mod active_workspace_peer_count_tests {
             ownership_transfer_audit: Vec::new(),
             ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
+            permission_profiles: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
@@ -10582,15 +10877,12 @@ mod capability_tests {
     fn app_kind_app_id_is_a_reverse_dns_id_not_the_display_label() {
         // The grant key must be a real app-id, in the same namespace as
         // an adopted client's `set_app_id` — never the display label.
-        assert_eq!(AppKind::FileExplorer.app_id(), "org.nirios.Files");
-        assert_eq!(AppKind::Terminal.app_id(), "org.nirios.Terminal");
-        assert_eq!(AppKind::Browser.app_id(), "org.nirios.Browser");
-        assert_eq!(AppKind::Settings.app_id(), "org.nirios.Settings");
+        assert_eq!(AppKind::FileExplorer.app_id(), "org.tilo.Files");
+        assert_eq!(AppKind::Terminal.app_id(), "org.tilo.Terminal");
+        assert_eq!(AppKind::Browser.app_id(), "org.tilo.Browser");
+        assert_eq!(AppKind::Settings.app_id(), "org.tilo.Settings");
         // A bare `Other` label is namespaced under the compositor prefix.
-        assert_eq!(
-            AppKind::Other("Editor".into()).app_id(),
-            "org.nirios.Editor"
-        );
+        assert_eq!(AppKind::Other("Editor".into()).app_id(), "org.tilo.Editor");
         // The app-id is distinct from the display label for every kind.
         for kind in [
             AppKind::FileExplorer,
@@ -11004,7 +11296,7 @@ mod agent_membership {
         );
         assert!(ws.allows(
             &ws.actor_for_person(&"remote-editor".to_string()),
-            &ResourceRef::App("dev.qos.notes".into()),
+            &ResourceRef::App("dev.tilo.notes".into()),
             Verb::Write,
         ));
     }
@@ -11057,7 +11349,7 @@ mod agent_membership {
             &"ada".to_string(),
             CapOverride::grant(
                 Subject::agent("scribe"),
-                Scope::App("dev.qos.word-processor".into()),
+                Scope::App("dev.tilo.word-processor".into()),
                 Verb::Write,
             ),
         )
@@ -11087,6 +11379,99 @@ mod agent_membership {
 }
 
 #[cfg(test)]
+mod permission_profile_assignment {
+    use super::*;
+    use collab_types::PermissionProfileRule;
+
+    fn profile() -> PermissionProfile {
+        PermissionProfile {
+            name: "Release reviewer".into(),
+            description: "Read Builds and approve releases".into(),
+            rules: vec![
+                PermissionProfileRule::grant(Scope::App("org.tilo.Builds".into()), Verb::Read),
+                PermissionProfileRule::grant(
+                    Scope::Action {
+                        app: "org.tilo.Builds".into(),
+                        action: "release.approve".into(),
+                    },
+                    Verb::Write,
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn owner_can_save_and_atomically_assign_a_profile() {
+        let mut workspace = Workspace::test_default(WorkspaceId::new(), "Demo");
+        workspace.set_owner("owner");
+        workspace
+            .save_permission_profile_as(&"owner".into(), profile())
+            .unwrap();
+        let ids = workspace
+            .assign_permission_profile_as(
+                &"owner".into(),
+                "release REVIEWER",
+                Subject::person("ada"),
+                Expiry::Never,
+            )
+            .unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(workspace.permission_profiles.len(), 1);
+        assert!(workspace.allows(
+            &Actor::person(None, "ada"),
+            &ResourceRef::Action {
+                app: "org.tilo.Builds".into(),
+                action: "release.approve".into(),
+            },
+            Verb::Write,
+        ));
+    }
+
+    #[test]
+    fn non_admin_cannot_save_or_assign_profiles() {
+        let mut workspace = Workspace::test_default(WorkspaceId::new(), "Demo");
+        workspace.set_owner("owner");
+        assert_eq!(
+            workspace.save_permission_profile_as(&"ada".into(), profile()),
+            Err(PermissionProfileMutationError::NotAdministrator)
+        );
+        workspace
+            .save_permission_profile_as(&"owner".into(), profile())
+            .unwrap();
+        let before = workspace.capabilities.clone();
+        assert_eq!(
+            workspace.assign_permission_profile_as(
+                &"ada".into(),
+                "Release reviewer",
+                Subject::person("ada"),
+                Expiry::Never,
+            ),
+            Err(PermissionProfileMutationError::NotAdministrator)
+        );
+        assert_eq!(workspace.capabilities, before);
+    }
+
+    #[test]
+    fn profile_definitions_round_trip_through_the_room_document() {
+        let id = WorkspaceId::new();
+        let mut workspace = Workspace::test_default(id, "Demo");
+        workspace.set_owner("owner");
+        workspace
+            .save_permission_profile_as(&"owner".into(), profile())
+            .unwrap();
+        let mut tree = WorkspaceTree {
+            workspaces: vec![workspace],
+            active: id,
+            ..WorkspaceTree::default()
+        };
+        tree.seed_doc_from_cache();
+        tree.workspaces[0].permission_profiles.clear();
+        tree.rebuild_cache_from_doc();
+        assert_eq!(tree.workspaces[0].permission_profiles, vec![profile()]);
+    }
+}
+
+#[cfg(test)]
 mod peer_window_merge_tests {
     //! What a peer's window becomes here, and what keeps it that way.
     //!
@@ -11096,7 +11481,7 @@ mod peer_window_merge_tests {
 
     use super::*;
 
-    const APP: &str = "dev.qos.word-processor";
+    const APP: &str = "dev.tilo.word-processor";
 
     /// Somebody else's tab, as the room document delivers it.
     fn remote_tab(id: u64, surface: u64) -> ReplicatedTab {
@@ -11211,7 +11596,7 @@ mod peer_window_merge_tests {
         let mut rep_tab = remote_tab(7, 4242);
         rep_tab.title = "Terminal".into();
         rep_tab.tile = Some(TileContent::Foreign {
-            app_id: "dev.qos.terminal".into(),
+            app_id: "dev.tilo.terminal".into(),
             surface_id: 4242,
         });
         let rep = ReplicatedGroup {
@@ -11222,7 +11607,7 @@ mod peer_window_merge_tests {
         let mut changed = false;
         let merged = WorkspaceTree::merge_group(local, rep, &|_| false, &mut changed);
         match &merged.tabs[0].tile {
-            TileContent::PeerWindow { app_id, .. } => assert_eq!(app_id, "dev.qos.terminal"),
+            TileContent::PeerWindow { app_id, .. } => assert_eq!(app_id, "dev.tilo.terminal"),
             other => panic!("expected the new app, got {other:?}"),
         }
         assert!(changed);
@@ -11445,7 +11830,7 @@ mod peer_window_merge_tests {
                 group: 0,
                 tab: 0,
             },
-            crate::shell::personal_continuity::LaunchIntent::app("dev.qos.browser").unwrap(),
+            crate::shell::personal_continuity::LaunchIntent::app("dev.tilo.browser").unwrap(),
             None,
             crate::shell::personal_continuity::ContinuityStamp { counter: 1, device },
         );
@@ -11473,7 +11858,7 @@ mod peer_window_merge_tests {
                 group: 0,
                 tab: 0,
             },
-            crate::shell::personal_continuity::LaunchIntent::app("dev.qos.browser").unwrap(),
+            crate::shell::personal_continuity::LaunchIntent::app("dev.tilo.browser").unwrap(),
             None,
             crate::shell::personal_continuity::ContinuityStamp {
                 counter: 1,
@@ -11528,14 +11913,14 @@ mod peer_window_merge_tests {
             "Laptop",
             &crate::shell::personal_continuity::WorkspaceContinuation {
                 room,
-                apps: vec![make(0, "dev.qos.browser")],
+                apps: vec![make(0, "dev.tilo.browser")],
             },
         );
         tree.materialize_continuation_workspace(
             "Laptop",
             &crate::shell::personal_continuity::WorkspaceContinuation {
                 room,
-                apps: vec![make(1, "dev.qos.music")],
+                apps: vec![make(1, "dev.tilo.music")],
             },
         );
         let workspace = tree
@@ -11558,7 +11943,7 @@ mod peer_window_merge_tests {
             .unwrap();
         assert!(matches!(
             &moved.tile,
-            TileContent::PeerWindow { app_id, .. } if app_id == "dev.qos.music"
+            TileContent::PeerWindow { app_id, .. } if app_id == "dev.tilo.music"
         ));
     }
 
@@ -11639,7 +12024,7 @@ mod peer_window_merge_tests {
         let app = AppInstanceState::new(
             id,
             placement,
-            LaunchIntent::app("dev.qos.browser").unwrap(),
+            LaunchIntent::app("dev.tilo.browser").unwrap(),
             None,
             stamp,
         );
@@ -11663,7 +12048,7 @@ mod peer_window_merge_tests {
             .expect("the newer app offer remains in the same logical tab");
         assert!(matches!(
             &replacement.tile,
-            TileContent::PeerWindow { app_id, .. } if app_id == "dev.qos.browser"
+            TileContent::PeerWindow { app_id, .. } if app_id == "dev.tilo.browser"
         ));
     }
 
@@ -11727,7 +12112,7 @@ mod peer_window_merge_tests {
                 Some("review-agent".into()),
                 WorkspaceTaskRoute::RulesOnly,
                 Some(WorkspaceTaskResource {
-                    app_id: Some("org.qos.Writer".into()),
+                    app_id: Some("org.tilo.Writer".into()),
                     app_label: Some("Writer".into()),
                     id: "document:brief".into(),
                     kind: "document".into(),
@@ -11793,21 +12178,21 @@ mod peer_window_merge_tests {
         let workspace = tree.active;
         let mut app_document = automerge::AutoCommit::new();
         let app_heads_before = app_document.get_heads();
-        let invocation = qos_actions::InvocationId::new();
-        let context = qos_actions::ActionContext::for_resource(
+        let invocation = tilo_actions::InvocationId::new();
+        let context = tilo_actions::ActionContext::for_resource(
             "Send",
             "mail.message:42",
             "mail.message",
             "Release update",
         )
-        .with_app("org.qos.Mail", "Mail");
+        .with_app("org.tilo.Mail", "Mail");
 
         assert!(tree.append_workspace_effect_receipt(
             workspace,
             invocation,
             "ada",
             context,
-            qos_actions::EffectReceiptStatus::Failed {
+            tilo_actions::EffectReceiptStatus::Failed {
                 code: "smtp_rejected".into(),
             },
         ));
@@ -11815,8 +12200,8 @@ mod peer_window_merge_tests {
             workspace,
             invocation,
             "ada",
-            qos_actions::ActionContext::default(),
-            qos_actions::EffectReceiptStatus::Succeeded,
+            tilo_actions::ActionContext::default(),
+            tilo_actions::EffectReceiptStatus::Succeeded,
         ));
         assert_eq!(app_document.get_heads(), app_heads_before);
 
@@ -11834,7 +12219,7 @@ mod peer_window_merge_tests {
                     context
                         .facets
                         .iter()
-                        .any(|facet| facet.key == "qos.receipt" && facet.value == "effect")
+                        .any(|facet| facet.key == "tilo.receipt" && facet.value == "effect")
                 })
             })
             .expect("effect receipt appears in workspace activity");

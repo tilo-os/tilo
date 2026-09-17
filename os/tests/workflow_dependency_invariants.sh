@@ -22,7 +22,7 @@ github_cache_workflows=(
 cosign_workflows=(
   "$workflows/build-image.yml"
   "$workflows/build-kernel.yml"
-  "$workflows/qos-relay.yaml"
+  "$workflows/tilo-relay.yaml"
   "$workflows/release-imager.yml"
   "$workflows/snapshot-wpe-buildroot.yml"
 )
@@ -173,7 +173,7 @@ for workflow in "${github_cache_workflows[@]}"; do
     fail=1
   fi
 done
-if ! grep -Fq "printf '[qos] pruning stale cached asset %s" \
+if ! grep -Fq "printf '[tilo] pruning stale cached asset %s" \
   "$repo/os/dev/cache-github-assets.sh"; then
   printf 'GitHub cache cannot reconcile a prior manifest generation\n' >&2
   fail=1

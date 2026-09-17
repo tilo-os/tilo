@@ -6,10 +6,10 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "One-shot install / launch / list / remove for qOS packages."
+description = "One-shot install / launch / list / remove for Tilo packages."
 
 [[bin]]
-name = "qos-install"
+name = "tilo-install"
 path = "src/main.rs"
 
 [lib]

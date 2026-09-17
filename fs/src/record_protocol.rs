@@ -15,9 +15,9 @@ use collab_types::{
 };
 use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
-use qos_user_identity::RevocationList;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tilo_user_identity::RevocationList;
 use uuid::Uuid;
 
 use crate::authenticated_transport::{
@@ -32,7 +32,7 @@ use crate::share_authority::ShareAuthority;
 use crate::share_link::{FileShareLinkError, FileShareLinkV2};
 use crate::share_session::{LiveActorCertification, ShareSession};
 
-pub const QOS_FS_RECORD_ALPN: &[u8] = b"qos-fs-record/6";
+pub const TILO_FS_RECORD_ALPN: &[u8] = b"tilo-fs-record/6";
 pub const RECORD_PROTOCOL_VERSION: u16 = 6;
 pub const MAX_RECORD_PROTOCOL_FRAME_BYTES: usize = 256 * 1024;
 pub const RECORD_PROTOCOL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -802,7 +802,7 @@ impl RecordProtocolClient {
                 .clone();
             let connection = self
                 .endpoint
-                .connect(server.clone(), QOS_FS_RECORD_ALPN)
+                .connect(server.clone(), TILO_FS_RECORD_ALPN)
                 .await
                 .map_err(|error| RecordProtocolClientError::Transport(error.to_string()))?;
             if connection.remote_id() != server.id {
@@ -1012,11 +1012,11 @@ mod tests {
     use iroh::address_lookup::memory::MemoryLookup;
     use iroh::endpoint::presets;
     use iroh::protocol::Router;
-    use qos_user_identity::{
+    use rand::{SeedableRng, rngs::StdRng};
+    use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, IdentityPaths, adopt_device_key,
         persist::write_device_cert, sign_device_cert,
     };
-    use rand::{SeedableRng, rngs::StdRng};
 
     static NEXT_PARTY: AtomicU64 = AtomicU64::new(100);
 
@@ -1153,7 +1153,7 @@ mod tests {
         .with_availability(Arc::clone(&availability))
         .with_replica_store(Arc::clone(&replica_store));
         let router = Router::builder(server.endpoint.clone())
-            .accept(QOS_FS_RECORD_ALPN, handler)
+            .accept(TILO_FS_RECORD_ALPN, handler)
             .spawn();
 
         // Sending a perfectly valid capability request before mutual auth
@@ -1161,7 +1161,7 @@ mod tests {
         {
             let raw_connection = client
                 .endpoint
-                .connect(server.endpoint.addr(), QOS_FS_RECORD_ALPN)
+                .connect(server.endpoint.addr(), TILO_FS_RECORD_ALPN)
                 .await
                 .unwrap();
             let (mut raw_send, _raw_recv) = raw_connection.open_bi().await.unwrap();

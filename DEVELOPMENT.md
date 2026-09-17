@@ -1,7 +1,7 @@
 # Development Guide
 
 Machine and environment notes: getting a working build on a host, and running the
-result. What qOS *is* and how to work in the code is in `CLAUDE.md`.
+result. What Tilo *is* and how to work in the code is in `AGENTS.md`.
 
 ## What the build needs
 
@@ -39,11 +39,31 @@ The last two are test *subjects*: those suites fail rather than skip without
 them, which is deliberate. They belong wherever `cargo` runs — inside the
 container if you build in one, since that is the `/usr` the sandbox binds.
 
+### Video editor on macOS
+
+Install the native media dependencies with Homebrew, then launch from the
+workspace root:
+
+```bash
+brew install pkgconf gstreamer
+cargo run -p video_editor
+```
+
+The editor enables GStreamer playback and export by default. Homebrew's
+`gstreamer` formula supplies the plugins and GLib dependency as well. Check
+that Cargo can discover the libraries with:
+
+```bash
+pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
+```
+
 ### If you build in a container (optional)
 
 For image-based hosts (Silverblue, Bazzite) where `/usr` is read-only and the
 libraries cannot be installed without `rpm-ostree` layering plus a reboot per base
-update. Put the container name in `.build-container` and install `tools/cargo-shim`
+update. Create a local `.build-container` containing your distrobox name (for
+example, `printf '%s\n' tilo-build > .build-container`). This file is ignored by
+Git; there is no shared machine-specific default. Install `tools/cargo-shim`
 as `cargo` on PATH; every invocation from the tree or a worktree routes into it.
 
 It also selects the sccache server, which this route requires: sccache's server
@@ -165,13 +185,13 @@ for the disk-image step:
 ./os/test-vm.sh os/output-test/qcow2/disk.qcow2
 ```
 
-VM login `tester` / `quickdesktop`. Check the FUSE mount with
+VM login `tester` / `tilo`. Check the FUSE mount with
 `mountpoint /var/workspace`; the test image's results are in
 `journalctl -u fs-test`.
 
-## Running qOS on your own machine (Silverblue / Bazzite)
+## Running Tilo on your own machine (Silverblue / Bazzite)
 
-You do not have to boot the qOS image to run the qOS shell. `dist/` packages the
+You do not have to boot the Tilo image to run the Tilo shell. `dist/` packages the
 compositor as a Wayland session you can pick at the login screen of the
 Silverblue-family host you already use, and adds a second, developer-only entry
 that starts *the build you just made* instead of the installed one.
@@ -191,24 +211,24 @@ Two loops come out of that, and they are for different things:
 dist/rpm/build-rpm.sh
 ```
 
-Builds `shell`, `qos-launcher` and `qos-unlock-helper` in release, stages them
+Builds `shell`, `tilo-launcher` and `tilo-unlock-helper` in release, stages them
 with the session entries and PAM stack, and runs `rpmbuild` (in the build
 container, since an image-based host has no `rpm-build`). Two packages land in
 `dist/rpm/build/RPMS/x86_64/`:
 
 ```console
-$ rpm -qlp dist/rpm/build/RPMS/x86_64/qos-session-0.1.0-1.fc43.x86_64.rpm
-/etc/pam.d/qos-unlock
-/usr/bin/qos-launcher
-/usr/bin/qos-shell
-/usr/libexec/qos-session
-/usr/libexec/qos-unlock-helper
-/usr/share/wayland-sessions/qos.desktop
-/usr/share/xdg-desktop-portal/portals/qos.portal
+$ rpm -qlp dist/rpm/build/RPMS/x86_64/tilo-session-0.1.0-1.fc43.x86_64.rpm
+/etc/pam.d/tilo-unlock
+/usr/bin/tilo-launcher
+/usr/bin/tilo-shell
+/usr/libexec/tilo-session
+/usr/libexec/tilo-unlock-helper
+/usr/share/wayland-sessions/tilo.desktop
+/usr/share/xdg-desktop-portal/portals/tilo.portal
 
-$ rpm -qlp dist/rpm/build/RPMS/x86_64/qos-session-devel-0.1.0-1.fc43.x86_64.rpm
-/usr/libexec/qos-session-dev
-/usr/share/wayland-sessions/qos-dev.desktop
+$ rpm -qlp dist/rpm/build/RPMS/x86_64/tilo-session-devel-0.1.0-1.fc43.x86_64.rpm
+/usr/libexec/tilo-session-dev
+/usr/share/wayland-sessions/tilo-dev.desktop
 ```
 
 `/usr/share/wayland-sessions/` is the point of the exercise: GDM scans that
@@ -220,7 +240,7 @@ Then install, either way:
 
 ```bash
 # Persistent, and the one you want long term. Needs a reboot to take effect.
-sudo rpm-ostree install ./dist/rpm/build/RPMS/x86_64/qos-session-[0-9]*.rpm
+sudo rpm-ostree install ./dist/rpm/build/RPMS/x86_64/tilo-session-[0-9]*.rpm
 
 # Or: this boot only, no reboot. Mounts a writable overlay on /usr and unpacks
 # the same files into it. Everything under /usr is gone at the next boot.
@@ -232,9 +252,9 @@ sudo dist/rpm/usroverlay-install.sh --uninstall
 
 Either way, log **out** (not lock) afterwards: the greeter reads
 `/usr/share/wayland-sessions` when it starts, so a new entry appears at the next
-greeter, and "qOS" shows up in the session menu next to your usual desktop.
+greeter, and "Tilo" shows up in the session menu next to your usual desktop.
 
-Skip `qos-session-devel` on any machine you are not developing qOS on — see
+Skip `tilo-session-devel` on any machine you are not developing Tilo on — see
 "Edit → build → log into your own build" below for what it can do.
 
 ### Edit → build → run nested
@@ -244,22 +264,22 @@ writes it to a fixed path, so nothing has to be read out of a log:
 
 ```console
 $ cargo build -p shell && ./target/debug/shell --backend winit
-nirios compositor listening on "wayland-1"
+tilo compositor listening on "wayland-1"
   WAYLAND_DISPLAY=wayland-1 — e.g. `WAYLAND_DISPLAY=wayland-1 cargo run -p terminal`
-  also written to /run/user/1000/qos-session/wayland-display
+  also written to /run/user/1000/tilo-session/wayland-display
 ```
 
 So pointing anything at it is one step:
 
 ```bash
 cargo build -p terminal
-WAYLAND_DISPLAY=$(cat "$XDG_RUNTIME_DIR/qos-session/wayland-display") ./target/debug/terminal
+WAYLAND_DISPLAY=$(cat "$XDG_RUNTIME_DIR/tilo-session/wayland-display") ./target/debug/terminal
 ```
 
 The file is last-writer-wins — start a second compositor and it names the
 second one. The printed line stays authoritative for a particular process.
 
-qOS nests inside qOS, which is the quickest way to check that a build is a
+Tilo nests inside Tilo, which is the quickest way to check that a build is a
 working Wayland server and not just a window that painted:
 
 ```bash
@@ -276,20 +296,20 @@ code 38), which is a refusal, not an unimplemented backend.
 
 ### Edit → build → log into your own build
 
-Once, after installing `qos-session-devel`:
+Once, after installing `tilo-session-devel`:
 
 ```bash
 cargo build -p shell --features dev-session
-echo "$PWD/target/debug/shell" > ~/.config/qos/dev-session
-chmod 600 ~/.config/qos/dev-session
+echo "$PWD/target/debug/shell" > ~/.config/tilo/dev-session
+chmod 600 ~/.config/tilo/dev-session
 ```
 
-Then log out and pick **"qOS (my build)"**. Every iteration after that is
+Then log out and pick **"Tilo (my build)"**. Every iteration after that is
 `cargo build -p shell --features dev-session`, log out, log back in — the config
 file keeps pointing at the same path.
 
 `--features dev-session` is not optional and not a formality. It is the only
-thing that stamps a marker into the binary, and `/usr/libexec/qos-session-dev`
+thing that stamps a marker into the binary, and `/usr/libexec/tilo-session-dev`
 refuses to start anything that lacks one; a `--release` build never carries it
 whatever features it is given. Before it execs, the entry also requires that the
 config file, the target binary, and every directory above each of them are owned
@@ -298,62 +318,62 @@ fallback to the installed compositor: silently testing the wrong binary is worse
 than failing to start. `dist/session/tests/dev-session-refusals.sh` drives each
 refusal.
 
-None of this exists in the production path. `/usr/libexec/qos-session` hard-codes
-`/usr/bin/qos-shell` and reads no config, and the developer entry ships in a
+None of this exists in the production path. `/usr/libexec/tilo-session` hard-codes
+`/usr/bin/tilo-shell` and reads no config, and the developer entry ships in a
 subpackage precisely so "this machine can start a login session from a binary in
 someone's home directory" is a visible `rpm -q` fact rather than a property every
 installation has.
 
 ### What a stock host does not give you
 
-The compositor starts on a plain Bazzite host with none of the qOS system
-furniture present — no `/var/workspace`, `/etc/qos`, `/var/lib/qos` or
-`/usr/share/qos-apps` — and says so rather than failing. Two warnings are worth
+The compositor starts on a plain Bazzite host with none of the Tilo system
+furniture present — no `/var/workspace`, `/etc/tilo`, `/var/lib/tilo` or
+`/usr/share/tilo-apps` — and says so rather than failing. Two warnings are worth
 knowing about:
 
 - **No `ush` runtime**, so the terminal falls back to `$SHELL` unconfined. That
   works interactively and fails inside an app sandbox.
 - **No first-boot unit.** The image runs `shell --firstboot` from a systemd
   unit before the session; a host has none, so without help nothing ever
-  creates `~/.config/qos/identity/primary.json` and every session logs *"no qOS
+  creates `~/.config/tilo/identity/primary.json` and every session logs *"no Tilo
   identity found"*. Both session wrappers therefore pass `--firstboot`
   themselves — it does the setup and falls through into the compositor, and
   provisioning returns early once the record exists. Start the compositor by
   hand (`./target/debug/shell`) and you get the warning, because you skipped
   the wrapper.
 - **`shell/src/config.rs`'s `load_config` is dead code** — nothing calls it, and
-  it looks for `/etc/quick-desktop/desktop.toml` while the image ships
-  `/etc/qos/desktop.toml`. So `desktop.toml` configures nothing today, on a host
+  it looks for `/etc/tilo-desktop/desktop.toml` while the image ships
+  `/etc/tilo/desktop.toml`. So `desktop.toml` configures nothing today, on a host
   or on the image. The host package does not ship one rather than pretend
   otherwise.
 
-`/var/workspace` is a FUSE mount `fs.service` makes on the qOS image; there is
+`/var/workspace` is a FUSE mount `fs.service` makes on the Tilo image; there is
 no such unit here, so the permission UI will talk about a path that is not
 mounted.
 
-The app list is *not* empty, though: alongside qOS packages the shell scans the
+The app list is *not* empty, though: alongside Tilo packages the shell scans the
 ordinary XDG entry directories — `$XDG_DATA_HOME/applications`, each
 `$XDG_DATA_DIRS` entry's `applications`, and both Flatpak export directories
 (`crates/system/desktop-entry/src/scan.rs`). On this host that is 108 system
 entries plus 97 Flatpak ones, so host-installed apps and Flatpaks show up
-without a qOS registry existing at all.
+without a Tilo registry existing at all.
 
 The one that used to be a trap is fixed by installing the package: the
-compositor spawns `/usr/libexec/qos-unlock-helper` to verify an unlock, and with
+compositor spawns `/usr/libexec/tilo-unlock-helper` to verify an unlock, and with
 no helper at that path `verifier_from_env` falls closed — you could lock the
 session and never get back in. The package installs the helper at exactly that
-path together with `/etc/pam.d/qos-unlock`, and the helper reaches PAM on a
+path together with `/etc/pam.d/tilo-unlock`, and the helper reaches PAM on a
 stock host:
 
 ```console
-$ printf 'not-the-password\n' | /usr/libexec/qos-unlock-helper "$USER"; echo $?
+$ printf 'not-the-password\n' | /usr/libexec/tilo-unlock-helper "$USER"; echo $?
 1     # 1 = PAM ran and denied it. 2 would mean the check could not run at all.
 ```
 
-Do not try to paper over a missing helper with `QOS_UNLOCK_HELPER`. It is a
+Do not try to paper over a missing helper with `TILO_UNLOCK_HELPER`. It is a
 developer-build variable now: a release binary does not read it, along with
-`QOS_LOCK_TEST_PASSWORD`, `QOS_TEST_CONTROL`, `NIRIOS_TEST_STATE_DUMP` and
-`QOS_LAUNCHER_BIN`. On a systemd desktop the session environment comes from
+`TILO_LOCK_TEST_PASSWORD`, `TILO_TEST_CONTROL`, `TILO_TEST_STATE_DUMP` and
+`TILO_LAUNCHER_BIN`. On a systemd desktop the session environment comes from
 `~/.config/environment.d/`, so an installed binary that honoured those would let
 anything able to write a file in your home decide what unlocks your screen. See
 `shell/src/compositor/dev_env.rs`.
@@ -361,7 +381,7 @@ anything able to write a file in your home decide what unlocks your screen. See
 
 ## Headless testing
 
-`CLAUDE.md` covers the entry points. The full guide is
+`AGENTS.md` covers the entry points. The full guide is
 [`docs/headless-testing.md`](docs/headless-testing.md), and
 [`scripts/headless-examples/`](scripts/headless-examples/) holds working scripts —
 `spawn-headless.sh` starts a compositor and prints `READY <socket>`,

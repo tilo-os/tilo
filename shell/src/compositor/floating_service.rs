@@ -74,7 +74,7 @@ impl FloatingSurfaceService {
         let writers = Arc::new(Mutex::new(HashMap::new()));
         let thread_writers = Arc::clone(&writers);
         std::thread::Builder::new()
-            .name("qos-shell-ui-accept".into())
+            .name("tilo-shell-ui-accept".into())
             .spawn(move || {
                 let next_id = AtomicU64::new(1);
                 loop {
@@ -84,7 +84,7 @@ impl FloatingSurfaceService {
                             let tx = event_tx.clone();
                             let writers = Arc::clone(&thread_writers);
                             let _ = std::thread::Builder::new()
-                                .name(format!("qos-shell-ui-{connection}"))
+                                .name(format!("tilo-shell-ui-{connection}"))
                                 .spawn(move || serve_connection(connection, stream, tx, writers));
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -193,7 +193,7 @@ fn serve_connection(
         return;
     }
     let _ = std::thread::Builder::new()
-        .name(format!("qos-shell-ui-writer-{connection}"))
+        .name(format!("tilo-shell-ui-writer-{connection}"))
         .spawn(move || {
             for frame in write_rx {
                 if writer

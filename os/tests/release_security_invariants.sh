@@ -12,7 +12,7 @@ fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-grep -Fq 'group: qos-os-image-series' "$workflow" \
+grep -Fq 'group: tilo-os-image-series' "$workflow" \
   && ok 'OS generation publication is globally serialized' \
   || bad 'release jobs can race and reuse one generation'
 
@@ -38,7 +38,7 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
   && ok 'release compares uncached base and final sealed OS rebuilds' \
   || bad 'reproducibility is claimed without a release-blocking comparison'
 
-grep -Fq -- '--type https://qos.dev/security/release-freshness/v1' "$workflow" \
+grep -Fq -- '--type https://tilo.dev/security/release-freshness/v1' "$workflow" \
   && grep -Fq 'release freshness attestation is absent, expired, or does not bind this release' "$workflow" \
   && grep -Fq '604800' "$freshness" \
   && ok 'channel promotion requires a bounded signed freshness statement' \
@@ -61,12 +61,12 @@ else
   ok 'release signatures and attestations require transparency-log evidence'
 fi
 
-if grep -Fq "key='\${{ vars.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}'" "$workflow" \
-   && grep -Fq 'QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}' "$workflow" \
+if grep -Fq "key='\${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}'" "$workflow" \
+   && grep -Fq 'TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}' "$workflow" \
    && grep -Fq "if [[ '\${{ steps.release-mode.outputs.publish }}' == true ]]" "$workflow" \
-   && grep -Fq 'publishing requires QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY' "$workflow" \
-   && grep -Fq 'QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key' "$repo/os/Containerfile" \
-   && grep -Fxq 'ARG QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY' "$repo/os/Containerfile"; then
+   && grep -Fq 'publishing requires TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY' "$workflow" \
+   && grep -Fq 'TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY must be a non-placeholder 32-byte hex key' "$repo/os/Containerfile" \
+   && grep -Fxq 'ARG TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY' "$repo/os/Containerfile"; then
   ok 'fresh images carry a release-validated pinned marketplace owner key'
 else
   bad 'marketplace trust anchor is missing, placeholder, or not a release build input'
@@ -88,9 +88,9 @@ if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
    && grep -Fq 'podman manifest push --all' "$workflow" \
    && grep -Fq 'published OCI index does not contain exactly the verified native children' "$workflow" \
    && grep -Fq 'externalParameters.children == $children' "$workflow" \
-   && grep -Fq 'qos-buildcache:${{ matrix.arch }}' "$workflow" \
+   && grep -Fq 'tilo-buildcache:${{ matrix.arch }}' "$workflow" \
    && grep -Fq 'promote_immutable "$tag"' "$workflow" \
-   && grep -Fq 'latest="code.sandbox.example/qos/qos:latest"' "$workflow" \
+   && grep -Fq 'latest="code.sandbox.example/qos/tilo:latest"' "$workflow" \
    && grep -Fq 'registry did not commit latest as $index_digest' "$workflow"; then
   ok 'OS publication promotes one signed two-architecture index after both native gates'
 else
@@ -98,7 +98,7 @@ else
 fi
 
 durable_promotion_line="$(grep -n 'for tag in "${durable_tags\[@\]}"' "$workflow" | head -1 | cut -d: -f1)"
-latest_promotion_line="$(grep -n 'latest="code.sandbox.example/qos/qos:latest"' "$workflow" | head -1 | cut -d: -f1)"
+latest_promotion_line="$(grep -n 'latest="code.sandbox.example/qos/tilo:latest"' "$workflow" | head -1 | cut -d: -f1)"
 if [ -n "$durable_promotion_line" ] && [ -n "$latest_promotion_line" ] \
    && [ "$durable_promotion_line" -lt "$latest_promotion_line" ] \
    && grep -Fq 'bad semver/source name cannot strand a newly written genN' "$workflow" \
@@ -118,26 +118,26 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 hex="$(printf 'a%.0s' {1..64})"
-if RELEASE_DIGEST="sha256:$hex" QOS_GENERATION=42 SOURCE_DATE_EPOCH=1 \
+if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
-   KERNEL_RPMS_REF="kernel@sha256:$hex" QOS_APP_COLLECTION_SHA256="$hex" \
-   QOS_DESKTOP_PAYLOAD_SHA256="$hex" \
+   KERNEL_RPMS_REF="kernel@sha256:$hex" TILO_APP_COLLECTION_SHA256="$hex" \
+   TILO_DESKTOP_PAYLOAD_SHA256="$hex" \
    GITHUB_SHA="$hex" GITHUB_RUN_ID=test \
    "$provenance" "$tmp/provenance.json" \
    && jq -e '.buildDefinition.externalParameters.generation == 42' "$tmp/provenance.json" >/dev/null \
-   && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "qos-app-collection:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
-   && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "qos-desktop-payload:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
+   && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "tilo-app-collection:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
+   && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "tilo-desktop-payload:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
    && jq -e '.buildDefinition.internalParameters.expectedReleaseDigest == "sha256:'"$hex"'"' "$tmp/provenance.json" >/dev/null \
-   && jq -e '.runDetails.byproducts[0].uri == "urn:qos:verification:manifest-digest-equal"' "$tmp/provenance.json" >/dev/null; then
+   && jq -e '.runDetails.byproducts[0].uri == "urn:tilo:verification:manifest-digest-equal"' "$tmp/provenance.json" >/dev/null; then
   ok 'SLSA provenance binds generation, source inputs, app collection and image digest'
 else
   bad 'release provenance generator did not produce a bound predicate'
 fi
 
 children='[{"architecture":"x86_64","digest":"sha256:'"$hex"'"},{"architecture":"aarch64","digest":"sha256:'"$(printf 'b%.0s' {1..64})"'"}]'
-if RELEASE_DIGEST="sha256:$hex" QOS_GENERATION=42 SOURCE_DATE_EPOCH=1 \
+if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
-   KERNEL_RPMS_REF="kernel@sha256:$hex" QOS_RELEASE_CHILDREN_JSON="$children" \
+   KERNEL_RPMS_REF="kernel@sha256:$hex" TILO_RELEASE_CHILDREN_JSON="$children" \
    GITHUB_SHA="$hex" GITHUB_RUN_ID=test \
    "$provenance" "$tmp/index-provenance.json" \
    && jq -e --argjson children "$children" \
@@ -148,7 +148,7 @@ else
   bad 'index provenance omits or rewrites its native child manifests'
 fi
 
-if RELEASE_DIGEST="sha256:$hex" QOS_GENERATION=42 SOURCE_DATE_EPOCH=1 \
+if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF='base:latest' RPMS_REF="rpms@sha256:$hex" \
    KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
    "$provenance" "$tmp/bad.json" >/dev/null 2>&1; then

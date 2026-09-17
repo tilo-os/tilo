@@ -26,11 +26,11 @@ pub const LEGACY_RECORD_ENVELOPE_VERSION: u16 = 1;
 /// Domain separation included in every record-operation signature.
 ///
 /// Keeping this value inside the canonical signed view prevents a signature
-/// made for another qOS protocol from being replayed as a file operation.
-pub const RECORD_OPERATION_SIGNATURE_DOMAIN: &str = "qos.collaborative-fs.record-operation.v4";
-const RECORD_OPERATION_SIGNATURE_DOMAIN_V3: &str = "qos.collaborative-fs.record-operation.v3";
-const RECORD_OPERATION_SIGNATURE_DOMAIN_V2: &str = "qos.collaborative-fs.record-operation.v2";
-const LEGACY_RECORD_OPERATION_SIGNATURE_DOMAIN: &str = "qos.collaborative-fs.record-operation.v1";
+/// made for another Tilo protocol from being replayed as a file operation.
+pub const RECORD_OPERATION_SIGNATURE_DOMAIN: &str = "tilo.collaborative-fs.record-operation.v4";
+const RECORD_OPERATION_SIGNATURE_DOMAIN_V3: &str = "tilo.collaborative-fs.record-operation.v3";
+const RECORD_OPERATION_SIGNATURE_DOMAIN_V2: &str = "tilo.collaborative-fs.record-operation.v2";
+const LEGACY_RECORD_OPERATION_SIGNATURE_DOMAIN: &str = "tilo.collaborative-fs.record-operation.v1";
 
 /// The access being requested from the record authorizer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

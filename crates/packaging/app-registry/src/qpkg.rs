@@ -104,7 +104,7 @@ pub fn load(bytes: &[u8]) -> Result<QpkgMeta> {
 }
 
 /// Serialise the blobs of a packed bundle into `.qpkg` tar bytes —
-/// the inverse of [`load`], matching the layout `qos-pkg pack` writes.
+/// the inverse of [`load`], matching the layout `tilo-pkg pack` writes.
 /// Used by publish tooling + tests that build a bundle in memory.
 ///
 /// # Errors
@@ -207,18 +207,18 @@ pub(crate) mod test_fixture {
     use super::*;
     use pkg::pack::{SigningIdentity, pack};
 
-    /// A signed `.qpkg` for `dev.qos.editor@1.0.0`. Returns the bytes,
+    /// A signed `.qpkg` for `dev.tilo.editor@1.0.0`. Returns the bytes,
     /// its [`PackageId`], and the publisher's public key.
     pub fn signed_qpkg(identity: &SigningIdentity) -> (Vec<u8>, PackageId) {
         let pubhex = hex::encode(identity.public_key_bytes());
         let dir = tempfile::tempdir().unwrap();
         let payload = dir.path().join("payload");
         std::fs::create_dir_all(payload.join("bin")).unwrap();
-        std::fs::write(payload.join("bin").join("app"), b"#!/bin/true\nqos app\n").unwrap();
+        std::fs::write(payload.join("bin").join("app"), b"#!/bin/true\ntilo app\n").unwrap();
         let manifest_toml = format!(
             r#"
 [package]
-id = "dev.qos.editor"
+id = "dev.tilo.editor"
 version = "1.0.0"
 kind = "app"
 
@@ -228,7 +228,7 @@ signature = ""
 
 [sandbox]
 namespaces = ["user"]
-seccomp = "qos-default"
+seccomp = "tilo-default"
 landlock = "strict"
 
 [sandbox.net]
@@ -259,7 +259,7 @@ mod tests {
         let (bytes, id) = signed_qpkg(&identity);
         let meta = load(&bytes).unwrap();
         assert_eq!(meta.package_id, id);
-        assert_eq!(meta.manifest.package.id, "dev.qos.editor");
+        assert_eq!(meta.manifest.package.id, "dev.tilo.editor");
         assert_eq!(meta.manifest.package.version, "1.0.0");
     }
 

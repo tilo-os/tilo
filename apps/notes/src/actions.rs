@@ -35,7 +35,7 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
     ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
@@ -193,11 +193,21 @@ pub enum NotesAction {
     /// covers create, rename, re-parent, and reorder — all are a metadata write.
     /// The title is diff-spliced so a rename doesn't tombstone the whole title.
     UpsertPage(PageData),
+    /// Change an existing tree atomically against its complete metadata preimage.
+    UpdatePageTree {
+        before: Vec<PageData>,
+        after: Vec<PageData>,
+    },
     /// Delete a page and every descendant, then re-densify the `order` of each
     /// affected parent's surviving children so the tree stays contiguous. The
     /// descendant set and the renumbering are recomputed from the document at
     /// the replay's base state, so replicas converge.
     DeletePage { id: String },
+    /// Copy the exact source subtree using only these pre-minted identities.
+    DuplicateSubtree {
+        source: String,
+        pages: Vec<DuplicatePage>,
+    },
     /// Apply UUID-addressed rich-text changes to one page. This is the only
     /// Notes path allowed to mutate collaborative block data: widgets emit a
     /// semantic delta, and the action validates and applies it atomically.
@@ -226,6 +236,40 @@ pub enum NotesAction {
     /// note" path. Both ids are authored up front, so it is as replayable as
     /// the lower-level upsert + absolute membership operations.
     CreateAndAssignTag { page: String, tag: TagData },
+}
+
+fn update_page_tree(doc: &mut Doc, before: &[PageData], after: &[PageData]) -> Result<(), String> {
+    let mut workspace = crate::notebook::project(doc, None)?;
+    let mut current = workspace
+        .pages()
+        .iter()
+        .map(PageData::from_meta)
+        .collect::<Vec<_>>();
+    current.sort_by(|a, b| a.id.cmp(&b.id));
+    if current != before {
+        return Err("page tree changed since the action was authored".into());
+    }
+    if before.len() != after.len() || before.iter().zip(after).any(|(a, b)| a.id != b.id) {
+        return Err("page tree update must preserve every existing page identity".into());
+    }
+    let pages = after
+        .iter()
+        .map(|data| {
+            let page = data.to_meta().ok_or("invalid page identity")?;
+            if page.id.is_nil() || (!data.parent.is_empty() && page.parent.is_none()) {
+                return Err("invalid page or parent identity");
+            }
+            Ok(page)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    workspace.data.pages = pages;
+    workspace.check_invariants()?;
+    for (old, page) in current.iter().zip(&workspace.data.pages) {
+        if *old != PageData::from_meta(page) {
+            NotesDoc::upsert_page_meta(doc, page);
+        }
+    }
+    Ok(())
 }
 
 /// Serializable inline formatting stored in a Notes block's native Automerge
@@ -282,15 +326,76 @@ impl InlineMarkSpan {
     }
 }
 
+/// Authored once before dispatch; replay never mints identities.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DuplicatePage {
+    pub source: String,
+    pub destination: String,
+    pub blocks: Vec<(String, String)>,
+}
+
+/// Build a complete deterministic copy mapping from the current source tree.
+///
+/// # Errors
+/// Refuses a missing source or invalid notebook.
+pub fn duplicate_subtree_action(doc: &AutoCommit, source: PageId) -> Result<NotesAction, String> {
+    let workspace = crate::notebook::project(doc, None)?;
+    if workspace.get(source).is_none() {
+        return Err("source page no longer exists".into());
+    }
+    let mut subtree = HashSet::new();
+    let mut pending = vec![source];
+    while let Some(page) = pending.pop() {
+        if subtree.insert(page) {
+            pending.extend(
+                workspace
+                    .pages()
+                    .iter()
+                    .filter(|p| p.parent == Some(page))
+                    .map(|p| p.id),
+            );
+        }
+    }
+    let mut sources = subtree.into_iter().collect::<Vec<_>>();
+    sources.sort();
+    let pages = sources
+        .into_iter()
+        .map(|page| DuplicatePage {
+            source: page.to_string(),
+            destination: Uuid::new_v4().to_string(),
+            blocks: NotesDoc::page_block_snapshots(doc, page)
+                .into_iter()
+                .map(|(id, _)| (id, Uuid::new_v4().to_string()))
+                .collect(),
+        })
+        .collect();
+    Ok(NotesAction::DuplicateSubtree {
+        source: source.to_string(),
+        pages,
+    })
+}
+
 /// Durable, browseable history metadata for a Notes mutation.
-pub fn history_context(action: &NotesAction) -> qos_actions::ActionContext {
-    let mut context = qos_actions::ActionContext::for_action("org.qos.Notes", "Notes", action);
+pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
+    let mut context = tilo_actions::ActionContext::for_action("org.tilo.Notes", "Notes", action);
     let (label, resource_id, kind, title) = match action {
+        NotesAction::UpdatePageTree { .. } => (
+            "Move page",
+            "notes.notebook".into(),
+            "notes.notebook",
+            "Notes".into(),
+        ),
         NotesAction::UpsertPage(page) => (
             "Update page",
             format!("notes.page:{}", page.id),
             "notes.page",
             page.title.clone(),
+        ),
+        NotesAction::DuplicateSubtree { source, .. } => (
+            "Duplicate page",
+            format!("notes.page:{source}"),
+            "notes.page",
+            "Page".into(),
         ),
         NotesAction::DeletePage { id } => (
             "Delete page",
@@ -344,7 +449,7 @@ pub fn history_context(action: &NotesAction) -> qos_actions::ActionContext {
         ),
     };
     context.action_label = label.to_string();
-    context.resource = Some(qos_actions::ActionResource {
+    context.resource = Some(tilo_actions::ActionResource {
         id: resource_id,
         kind: kind.to_string(),
         label: title,
@@ -359,10 +464,19 @@ impl Action for NotesAction {
     )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
+            NotesAction::UpdatePageTree { before, after } => {
+                update_page_tree(doc, before, after).map_err(ActionError::Refused)?;
+            }
             NotesAction::UpsertPage(data) => {
                 if let Some(meta) = data.to_meta() {
                     NotesDoc::upsert_page_meta(doc, &meta);
                 }
+            }
+            NotesAction::DuplicateSubtree { source, pages } => {
+                let source = source
+                    .parse::<PageId>()
+                    .map_err(|_| ActionError::Refused("page id is invalid".into()))?;
+                NotesDoc::duplicate_subtree(doc, source, pages).map_err(ActionError::Refused)?;
             }
             NotesAction::DeletePage { id } => {
                 let Ok(root) = id.parse::<PageId>() else {
@@ -1059,11 +1173,13 @@ fn tag_resource(tag: &TagMeta, ctx: &NotesResourceCtx) -> Resource {
 
 impl ResourceProvider for crate::app::NotesApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.notes_resource_ctx(), doc)
+        self.notes_resource_ctx_for(doc)
+            .map(|ctx| provide_resources(&ctx, doc))
+            .unwrap_or_default()
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let ctx = self.notes_resource_ctx();
+        let ctx = self.notes_resource_ctx_for(doc)?;
         if id == "notes.notebook" {
             return Some(notebook_resource(&ctx));
         }
@@ -1103,7 +1219,7 @@ impl ResourceProvider for crate::app::NotesApp {
 mod tests {
     use super::*;
     use crate::model::Workspace;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use uuid::Uuid;
 
     fn registry() -> ActionRegistry {
@@ -1223,7 +1339,12 @@ mod tests {
         assert_eq!(projects.children[1].label, "Notes");
 
         // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
+        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/assets/fonts"),
+            "en-US",
+        );
+        let renderer = ui::TextRenderer::with_font_catalog(&catalog).unwrap();
+        let mut palette = ui::ActionPalette::with_text_renderer(renderer);
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
@@ -1257,7 +1378,7 @@ mod tests {
         );
         let resources = provide_resources(&ctx, &doc);
         assert!(
-            qos_actions::door::resolve(&resources, &open_block_address(projects, "obj-b"))
+            tilo_actions::door::resolve(&resources, &open_block_address(projects, "obj-b"))
                 .is_none()
         );
         let block = block_resource(projects, &ctx.blocks[&projects][1])
@@ -1297,7 +1418,7 @@ mod tests {
         );
         let resources = provide_resources(&ctx, &doc);
         assert!(
-            qos_actions::door::resolve(&resources, &open_block_address(projects, "block-9999"))
+            tilo_actions::door::resolve(&resources, &open_block_address(projects, "block-9999"))
                 .is_none()
         );
         assert!(block_resource(projects, &ctx.blocks[&projects][9_999]).is_some());
@@ -1428,7 +1549,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let left = NotesDoc::list_pages(&doc);
         assert_eq!(
@@ -1458,7 +1579,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -1516,8 +1637,8 @@ mod tests {
         let action = rename_page_action(&meta, "Renamed via action");
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
-        qos_actions::replay(&mut doc_b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut doc_b, &env, &registry()).unwrap();
 
         assert_eq!(
             doc_a.get_heads(),
@@ -1547,8 +1668,8 @@ mod tests {
 
         let action = delete_page_action(projects);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
-        qos_actions::replay(&mut doc_b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut doc_b, &env, &registry()).unwrap();
 
         assert_eq!(
             doc_a.get_heads(),
@@ -1609,6 +1730,12 @@ mod tests {
                 assert_eq!(d.title, "Child");
                 assert_eq!(d.order, 2, "appended after the two existing children");
             }
+            NotesAction::UpdatePageTree { .. } => {
+                panic!("new-child built the wrong action: UpdatePageTree")
+            }
+            NotesAction::DuplicateSubtree { .. } => {
+                panic!("new-child built the wrong action: DuplicateSubtree")
+            }
             NotesAction::DeletePage { id } => {
                 panic!("new-child built the wrong action: DeletePage {{ id: {id:?} }}")
             }
@@ -1648,8 +1775,8 @@ mod tests {
 
         let action = upsert_page_action(&moved);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
-        qos_actions::replay(&mut doc_b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut doc_b, &env, &registry()).unwrap();
 
         assert_eq!(
             doc_a.get_heads(),
@@ -1717,7 +1844,7 @@ mod tests {
         let dispatch_encoded = |doc: &mut AutoCommit, enc: EncodedAction| {
             let decoded = registry().decode(&enc).unwrap();
             let mut tx = LocalTransport::new();
-            qos_actions::dispatch(doc, decoded.as_ref(), enc, &mut tx).unwrap();
+            tilo_actions::dispatch(doc, decoded.as_ref(), enc, &mut tx).unwrap();
         };
         let (mut via_a11y, ..) = seeded();
         let (mut via_affordance, ..) = seeded();
@@ -1773,8 +1900,8 @@ mod tests {
                 text: "hé".into(),
             }],
         );
-        let envelope = qos_actions::apply_local(&mut first, &insert, encode(&insert)).unwrap();
-        qos_actions::replay(&mut second, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut first, &insert, encode(&insert)).unwrap();
+        tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
 
         let splice = apply_block_ops_action(
             projects,
@@ -1787,8 +1914,8 @@ mod tests {
                 text: "x".into(),
             }],
         );
-        let envelope = qos_actions::apply_local(&mut first, &splice, encode(&splice)).unwrap();
-        qos_actions::replay(&mut second, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut first, &splice, encode(&splice)).unwrap();
+        tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
         assert_eq!(
             first.get_heads(),
             second.get_heads(),
@@ -1806,7 +1933,7 @@ mod tests {
                 text: "!".into(),
             }],
         );
-        let error = qos_actions::apply_local(&mut second, &stale, encode(&stale))
+        let error = tilo_actions::apply_local(&mut second, &stale, encode(&stale))
             .expect_err("a stale byte range must refuse, never clamp");
         assert!(matches!(error, ActionError::Refused(_)));
         assert_eq!(second.save(), before, "refusal leaves no partial mutation");
@@ -1825,7 +1952,7 @@ mod tests {
                 text: "Original".into(),
             }],
         );
-        qos_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
+        tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
         let resource = block_resource(
             projects,
             &NoteBlockResource {
@@ -1866,8 +1993,8 @@ mod tests {
             new_tag_action(tag, "Release"),
             set_tag_assignment_action(projects, tag, true),
         ] {
-            let envelope = qos_actions::apply_local(&mut first, &action, encode(&action)).unwrap();
-            qos_actions::replay(&mut second, &envelope, &registry()).unwrap();
+            let envelope = tilo_actions::apply_local(&mut first, &action, encode(&action)).unwrap();
+            tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
         }
         assert_eq!(
             first.get_heads(),
@@ -1880,8 +2007,8 @@ mod tests {
         );
 
         let remove = delete_tag_action(tag);
-        let envelope = qos_actions::apply_local(&mut first, &remove, encode(&remove)).unwrap();
-        qos_actions::replay(&mut second, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut first, &remove, encode(&remove)).unwrap();
+        tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
         assert_eq!(
             first.get_heads(),
             second.get_heads(),

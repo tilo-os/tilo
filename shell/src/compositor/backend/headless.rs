@@ -4,7 +4,7 @@
 //! into, so this is the third path alongside [`super::WinitBackend`]
 //! (host-window) and [`super::DrmBackend`] (TTY) — needed because
 //! neither of those works in CI, in a distrobox without a display, or
-//! under SSH without X-forwarding, and `QOS_TEST_CONTROL` needs a
+//! under SSH without X-forwarding, and `TILO_TEST_CONTROL` needs a
 //! backend to boot in order to drive the live binary headlessly.
 //!
 //! No `winit::*` imports (the entire point is to be display-free), no
@@ -21,11 +21,11 @@ use super::{Backend, BackendEvent, Output, OutputId};
 /// Env-var that overrides the synthetic output's dimensions. Format is
 /// `WxH` (e.g. `1280x720`). Anything malformed or absent falls back to
 /// the `shots --mode offscreen` default. Mirrors the env-var-driven
-/// shape of `QOS_TEST_CONTROL` / `NIRIOS_TEST_STATE_DUMP` so the
+/// shape of `TILO_TEST_CONTROL` / `TILO_TEST_STATE_DUMP` so the
 /// whole headless surface stays opt-in without CLI bloat.
-pub const HEADLESS_SIZE_ENV: &str = "NIRIOS_HEADLESS_SIZE";
+pub const HEADLESS_SIZE_ENV: &str = "TILO_HEADLESS_SIZE";
 
-/// Default size when `NIRIOS_HEADLESS_SIZE` is unset. Matches the
+/// Default size when `TILO_HEADLESS_SIZE` is unset. Matches the
 /// `bin/shots` default so a fresh `--backend headless` launch produces
 /// frames comparable to a `cargo run --bin shots` screenshot.
 pub const DEFAULT_WIDTH: u32 = 1600;
@@ -102,7 +102,7 @@ impl HeadlessBackend {
     }
 }
 
-/// Parse `NIRIOS_HEADLESS_SIZE` if present. Returns `None` on
+/// Parse `TILO_HEADLESS_SIZE` if present. Returns `None` on
 /// missing/empty/malformed values so `native::run` falls through to
 /// the [`DEFAULT_WIDTH`] / [`DEFAULT_HEIGHT`] constants without an
 /// extra `eprintln!` flush.
@@ -179,7 +179,7 @@ mod tests {
     //! without llvmpipe these surface as an `Err` from
     //! `HeadlessBackend::new`, so we run them serially under
     //! `cargo test -- --test-threads 1` (the default for the
-    //! quick-desktop lib suite).
+    //! tilo-desktop lib suite).
     use super::*;
 
     #[test]

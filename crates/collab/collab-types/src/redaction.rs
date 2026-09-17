@@ -68,7 +68,7 @@ impl OpId {
     /// Cuts one canonical-encode pass.
     pub fn from_signing_bytes(author: Ed25519PublicKey, seq: u64, signing_bytes: &[u8]) -> Self {
         let mut hasher = Sha256::new();
-        hasher.update(b"qos-redact-op-id-v1\0");
+        hasher.update(b"tilo-redact-op-id-v1\0");
         hasher.update(author.as_bytes());
         hasher.update(seq.to_le_bytes());
         hasher.update(signing_bytes);

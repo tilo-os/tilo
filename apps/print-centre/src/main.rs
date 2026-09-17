@@ -26,7 +26,7 @@ extern crate runtime_dylib;
 
 fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.qos.print-centre", print_centre::app_root)
+        &LaunchSpec::new("dev.tilo.print-centre", print_centre::app_root)
             .shot_root(shot_root)
             .scenarios(&[
                 "active",

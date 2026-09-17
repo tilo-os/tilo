@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+# Customization, downloads and device review never need elevated rights. The
+# binary asks polkit to authenticate only its short-lived writer helper after
+# the user has typed the exact target name.
+if [ -n "${APPIMAGE:-}" ]; then
+  export TILO_IMAGER_APPIMAGE="$APPIMAGE"
+fi
+exec "$here/tilo-imager-bin" "$@"

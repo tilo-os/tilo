@@ -1,4 +1,4 @@
-//! Sheets as a retained qOS global-search source.
+//! Sheets as a retained Tilo global-search source.
 //!
 //! The app refreshes this catalogue only after its Automerge heads change.
 //! Palette opens and individual keystrokes receive cheap clones of this
@@ -152,8 +152,8 @@ impl SearchProvider for SheetSearchProvider {
 
     fn resolve_action_resource(
         &self,
-        address: &qos_actions::ActionAddress,
-    ) -> Option<qos_actions::Resource> {
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<tilo_actions::Resource> {
         let cell = self
             .cells
             .read()

@@ -80,7 +80,7 @@ pub struct SettingsApp {
     account_commands: ui::LocalState<Option<crate::panes::accounts::AccountViewCommand>>,
     account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
     local_operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
-    local_operation: Option<qos_actions::InvocationId>,
+    local_operation: Option<tilo_actions::InvocationId>,
     local_operation_token: Option<String>,
     /// Deterministic, secret-free inventory used only by visual acceptance
     /// captures. Live construction always leaves this `None`.
@@ -90,7 +90,7 @@ pub struct SettingsApp {
     /// Live construction always leaves this false.
     deterministic_hardware_for_shot: bool,
     account_probe: Option<(
-        qos_actions::InvocationId,
+        tilo_actions::InvocationId,
         std::sync::mpsc::Receiver<Result<String, String>>,
     )>,
     rect: vello::kurbo::Rect,
@@ -111,7 +111,7 @@ impl SettingsApp {
         if accounts::config_root().is_some()
             && let Err(error) = crate::accounts::recover_account_mutation()
         {
-            tracing::warn!(target: "qos::settings", %error, "could not recover interrupted account mutation");
+            tracing::warn!(target: "tilo::settings", %error, "could not recover interrupted account mutation");
         }
         Self {
             selected: Category::DEFAULT,
@@ -451,7 +451,7 @@ impl SettingsApp {
     )]
     fn start_local_device_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &mut automerge::AutoCommit,
@@ -459,7 +459,7 @@ impl SettingsApp {
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         use automerge::transaction::Transactable;
 
-        if kind != qos_actions::OperationKind::Effect {
+        if kind != tilo_actions::OperationKind::Effect {
             return Err("device-local settings commands must be effect operations".into());
         }
         if self.local_operation.is_some() {
@@ -1316,11 +1316,11 @@ impl Widget for SettingsApp {
     }
 
     /// Publish the settings resource tree to the shell's one Ctrl+K palette,
-    /// delegating to the [`ResourceProvider`](qos_actions::ResourceProvider) impl
+    /// delegating to the [`ResourceProvider`](tilo_actions::ResourceProvider) impl
     /// in [`crate::actions`]. Level-triggered: recomputed each frame from the
     /// shared document.
-    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     /// Resolve canonical Settings resources at activation time as well as
@@ -1328,8 +1328,8 @@ impl Widget for SettingsApp {
     /// only stable action addresses, so this is the authoritative path that
     /// re-checks an address against the current resource surface before the
     /// action door opens it.
-    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     #[allow(
@@ -1338,14 +1338,14 @@ impl Widget for SettingsApp {
     )]
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &automerge::AutoCommit,
         _path: &automerge::ObjId,
     ) -> Result<bool, String> {
         if type_id == crate::actions::UPDATE_OPERATION_TYPE
-            && kind == qos_actions::OperationKind::View
+            && kind == tilo_actions::OperationKind::View
         {
             let operation: crate::actions::UpdateOperation =
                 serde_json::from_slice(payload).map_err(|error| error.to_string())?;
@@ -1361,7 +1361,7 @@ impl Widget for SettingsApp {
             self.select(Category::ExternalAccounts);
             return match (kind, operation) {
                 (
-                    qos_actions::OperationKind::View,
+                    tilo_actions::OperationKind::View,
                     crate::actions::AccountOperation::Add { kind },
                 ) => {
                     let kind = match kind.as_str() {
@@ -1376,7 +1376,7 @@ impl Widget for SettingsApp {
                     Ok(true)
                 }
                 (
-                    qos_actions::OperationKind::View,
+                    tilo_actions::OperationKind::View,
                     crate::actions::AccountOperation::Edit { id },
                 ) => {
                     self.account_commands
@@ -1384,7 +1384,7 @@ impl Widget for SettingsApp {
                     Ok(true)
                 }
                 (
-                    qos_actions::OperationKind::View,
+                    tilo_actions::OperationKind::View,
                     crate::actions::AccountOperation::Reauthenticate { id },
                 ) => {
                     self.account_commands.set(Some(
@@ -1393,7 +1393,7 @@ impl Widget for SettingsApp {
                     Ok(true)
                 }
                 (
-                    qos_actions::OperationKind::Effect,
+                    tilo_actions::OperationKind::Effect,
                     crate::actions::AccountOperation::SubmitForm,
                 ) => {
                     self.account_commands
@@ -1401,7 +1401,7 @@ impl Widget for SettingsApp {
                     Ok(true)
                 }
                 (
-                    qos_actions::OperationKind::View,
+                    tilo_actions::OperationKind::View,
                     crate::actions::AccountOperation::CancelForm,
                 ) => {
                     self.account_commands
@@ -1409,7 +1409,7 @@ impl Widget for SettingsApp {
                     Ok(true)
                 }
                 (
-                    qos_actions::OperationKind::Effect,
+                    tilo_actions::OperationKind::Effect,
                     crate::actions::AccountOperation::SubmitReauthentication,
                 ) => {
                     self.account_commands.set(Some(
@@ -1418,7 +1418,7 @@ impl Widget for SettingsApp {
                     Ok(true)
                 }
                 (
-                    qos_actions::OperationKind::View,
+                    tilo_actions::OperationKind::View,
                     crate::actions::AccountOperation::CancelReauthentication,
                 ) => {
                     self.account_commands.set(Some(
@@ -1427,13 +1427,13 @@ impl Widget for SettingsApp {
                     Ok(true)
                 }
                 (
-                    qos_actions::OperationKind::View,
+                    tilo_actions::OperationKind::View,
                     crate::actions::AccountOperation::Open { .. },
                 ) => Ok(true),
                 _ => Err("operation kind does not match account operation".into()),
             };
         }
-        if kind != qos_actions::OperationKind::View
+        if kind != tilo_actions::OperationKind::View
             || type_id != crate::actions::OPEN_PANE_OPERATION_TYPE
         {
             return Ok(false);
@@ -1454,8 +1454,8 @@ impl Widget for SettingsApp {
     )]
     fn start_resource_operation_with_document(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &mut automerge::AutoCommit,
@@ -1474,7 +1474,7 @@ impl Widget for SettingsApp {
                 | crate::actions::PRINTER_OPERATION_TYPE
                 | crate::actions::USER_OPERATION_TYPE
                 | crate::actions::AGENT_MODEL_OPERATION_TYPE
-        ) && kind == qos_actions::OperationKind::Effect
+        ) && kind == tilo_actions::OperationKind::Effect
         {
             let start = self.start_local_device_operation(kind, type_id, payload, doc, path)?;
             if matches!(start, Some(ui::widget::ResourceOperationStart::Accepted)) {
@@ -1490,7 +1490,7 @@ impl Widget for SettingsApp {
         self.select(Category::ExternalAccounts);
         match (kind, operation) {
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 operation @ (crate::actions::AccountOperation::Add { .. }
                 | crate::actions::AccountOperation::Edit { .. }
                 | crate::actions::AccountOperation::Reauthenticate { .. }
@@ -1505,9 +1505,9 @@ impl Widget for SettingsApp {
                     path,
                 )?;
             }
-            (qos_actions::OperationKind::View, crate::actions::AccountOperation::Open { .. }) => {}
+            (tilo_actions::OperationKind::View, crate::actions::AccountOperation::Open { .. }) => {}
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 operation @ (crate::actions::AccountOperation::SubmitForm
                 | crate::actions::AccountOperation::SubmitReauthentication),
             ) => {
@@ -1520,7 +1520,7 @@ impl Widget for SettingsApp {
                 )?;
             }
             (
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::AccountOperation::Remove { id },
             ) => {
                 let stored = accounts::AccountStore::load()
@@ -1538,7 +1538,10 @@ impl Widget for SettingsApp {
                 self.refresh_account_resources();
                 self.refresh_shell_children();
             }
-            (qos_actions::OperationKind::Effect, crate::actions::AccountOperation::Test { id }) => {
+            (
+                tilo_actions::OperationKind::Effect,
+                crate::actions::AccountOperation::Test { id },
+            ) => {
                 if self.account_probe.is_some() {
                     return Err("an account connection check is already running".into());
                 }
@@ -1563,17 +1566,17 @@ impl Widget for SettingsApp {
             _ => return Err("operation kind does not match account operation".into()),
         }
         Ok(Some(ui::widget::ResourceOperationStart::Completed(
-            qos_actions::ActionOutput::default(),
+            tilo_actions::ActionOutput::default(),
         )))
     }
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         doc: &automerge::AutoCommit,
         path: &automerge::ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if self.local_operation == Some(invocation) {
             // These contracts explicitly advertise `cancellable: false`.
             // Once the pane has admitted a system command it may be touching
@@ -1589,9 +1592,9 @@ impl Widget for SettingsApp {
                     self.local_operation_token = None;
                     self.local_operation_status
                         .set(crate::actions::LocalOperationStatus::Idle);
-                    return Some(qos_actions::InvocationUpdate::Succeeded {
+                    return Some(tilo_actions::InvocationUpdate::Succeeded {
                         invocation,
-                        output: qos_actions::ActionOutput {
+                        output: tilo_actions::ActionOutput {
                             value: Some(serde_json::Value::String(message)),
                             resources: Vec::new(),
                         },
@@ -1604,9 +1607,9 @@ impl Widget for SettingsApp {
                     self.local_operation_token = None;
                     self.local_operation_status
                         .set(crate::actions::LocalOperationStatus::Idle);
-                    return Some(qos_actions::InvocationUpdate::Failed {
+                    return Some(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "device_local_operation_failed".into(),
                             message,
                             details: None,
@@ -1624,7 +1627,7 @@ impl Widget for SettingsApp {
         {
             if cancellation_requested {
                 self.account_probe = None;
-                return Some(qos_actions::InvocationUpdate::Cancelled {
+                return Some(tilo_actions::InvocationUpdate::Cancelled {
                     invocation,
                     message: Some("connection check cancelled".into()),
                 });
@@ -1636,16 +1639,16 @@ impl Widget for SettingsApp {
             if let Some(result) = result {
                 self.account_probe = None;
                 return Some(match result {
-                    Ok(message) => qos_actions::InvocationUpdate::Succeeded {
+                    Ok(message) => tilo_actions::InvocationUpdate::Succeeded {
                         invocation,
-                        output: qos_actions::ActionOutput {
+                        output: tilo_actions::ActionOutput {
                             value: Some(serde_json::Value::String(message)),
                             resources: Vec::new(),
                         },
                     },
-                    Err(message) => qos_actions::InvocationUpdate::Failed {
+                    Err(message) => tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "account_connection_failed".into(),
                             message,
                             details: None,
@@ -1796,11 +1799,11 @@ mod tests {
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let start = app
             .start_resource_operation_with_document(
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::UPDATE_OPERATION_TYPE,
                 &payload,
                 &mut doc,
@@ -1832,7 +1835,7 @@ mod tests {
             });
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &root),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         assert!(
             app.poll_resource_operation(invocation, false, &doc, &root)
@@ -1850,11 +1853,11 @@ mod tests {
         let root = automerge::ROOT;
         let operation = crate::actions::NetworkOperation::Refresh;
         let payload = serde_json::to_vec(&operation).expect("network operation serializes");
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let start = app
             .start_resource_operation_with_document(
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::NETWORK_OPERATION_TYPE,
                 &payload,
                 &mut doc,
@@ -1886,7 +1889,7 @@ mod tests {
             });
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &root),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 
@@ -1899,11 +1902,11 @@ mod tests {
         let root = automerge::ROOT;
         let operation = crate::actions::BluetoothOperation::Refresh;
         let payload = serde_json::to_vec(&operation).expect("Bluetooth operation serializes");
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let start = app
             .start_resource_operation_with_document(
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::BLUETOOTH_OPERATION_TYPE,
                 &payload,
                 &mut doc,
@@ -1930,7 +1933,7 @@ mod tests {
             });
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &root),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 
@@ -1939,11 +1942,11 @@ mod tests {
         let mut app = SettingsApp::new();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
         app.start_resource_operation_with_document(
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::UPDATE_OPERATION_TYPE,
             &payload,
             &mut doc,
@@ -1965,7 +1968,7 @@ mod tests {
             });
         assert!(matches!(
             app.poll_resource_operation(invocation, true, &doc, &root),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 
@@ -1974,11 +1977,11 @@ mod tests {
         let mut app = SettingsApp::new();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
         app.start_resource_operation_with_document(
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::UPDATE_OPERATION_TYPE,
             &payload,
             &mut doc,
@@ -2007,7 +2010,7 @@ mod tests {
             });
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &root),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 
@@ -2016,14 +2019,14 @@ mod tests {
         let mut app = SettingsApp::new();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let daily = crate::actions::UpdateOperation::SetSchedule {
             schedule: "Daily".into(),
         };
         let payload = serde_json::to_vec(&daily).unwrap();
         app.start_resource_operation_with_document(
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::UPDATE_OPERATION_TYPE,
             &payload,
             &mut doc,
@@ -2055,7 +2058,7 @@ mod tests {
             });
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &root),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 
@@ -2064,11 +2067,11 @@ mod tests {
         let mut app = SettingsApp::new();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
         app.start_resource_operation_with_document(
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::UPDATE_OPERATION_TYPE,
             &payload,
             &mut doc,
@@ -2085,7 +2088,7 @@ mod tests {
             });
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &root),
-            Some(qos_actions::InvocationUpdate::Failed { .. })
+            Some(tilo_actions::InvocationUpdate::Failed { .. })
         ));
     }
 
@@ -2100,7 +2103,7 @@ mod tests {
         .unwrap();
         assert!(
             app.start_local_device_operation(
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::UPDATE_OPERATION_TYPE,
                 &payload,
                 &mut doc,

@@ -1,4 +1,4 @@
-//! Music — qOS native streaming + library app, built on the CRDT-native
+//! Music — Tilo native streaming + library app, built on the CRDT-native
 //! `ui` toolkit.
 //!
 //! Architecture:
@@ -77,7 +77,7 @@ pub use search_type::{MusicSearchProvider, SearchHit, SearchableType};
 
 use ui::widget::Widget;
 
-/// The searchable result types Music contributes to qOS's global search. An OS
+/// The searchable result types Music contributes to Tilo's global search. An OS
 /// search host registers these descriptors (id, display name, whether hits
 /// carry a cover) once, then drives one of the providers per query. Exposing
 /// this list keeps the host's integration a one-liner
@@ -114,12 +114,12 @@ pub fn app_root_with_args(
     let mut app = MusicApp::new();
     app.enable_mpris();
     if let Some(uri) = args.positionals().first() {
-        let position_ms = std::env::var("QOS_MEDIA_HANDOFF_POSITION_MS")
+        let position_ms = std::env::var("TILO_MEDIA_HANDOFF_POSITION_MS")
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(0);
         let resume_playing =
-            std::env::var("QOS_MEDIA_HANDOFF_RESUME_PLAYING").is_ok_and(|value| value == "1");
+            std::env::var("TILO_MEDIA_HANDOFF_RESUME_PLAYING").is_ok_and(|value| value == "1");
         app = app.with_media_handoff(uri.clone(), position_ms, resume_playing);
     }
     Ok(Box::new(app))
@@ -130,7 +130,7 @@ pub fn app_root_with_args(
 /// normally need live input (an opened overlay sidebar, an open context menu)
 /// is pre-snapped here.
 ///
-/// Recognised scenarios (combine with `QOS_MUSIC_VIEW` to pick the screen):
+/// Recognised scenarios (combine with `TILO_MUSIC_VIEW` to pick the screen):
 /// `sidebar`/`collapsed` — nav sidebar open/collapsed; `context` — track
 /// context menu open; `new-playlist` — inline create-playlist prompt open;
 /// `empty` — a genuinely empty library's Home state; `search-focus` — search
@@ -182,7 +182,7 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
 
 /// Build a Music app for a **live** screenshot: networking stays enabled so the
 /// warm-up loop in the binary can fetch real Home/artist/album content + real
-/// cover art before capturing the frame. `QOS_MUSIC_VIEW` picks the screen.
+/// cover art before capturing the frame. `TILO_MUSIC_VIEW` picks the screen.
 pub fn live_shot_app() -> MusicApp {
     MusicApp::new()
 }

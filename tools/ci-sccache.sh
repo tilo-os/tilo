@@ -6,26 +6,35 @@
 # script is the single place that controls that fail-open behaviour.
 set -euo pipefail
 
-mode="${1:?usage: ci-sccache.sh <prepare|report>}"
+mode="${1:?usage: ci-sccache.sh <prepare|prepare-shell|report>}"
 
 case "$mode" in
-  prepare)
+  prepare|prepare-shell)
     if path="$(command -v sccache 2>/dev/null)"; then
       # Forgejo runner-level environment variables intentionally provide the
       # production defaults, and take precedence over workflow `env` entries.
       # A canary needs a fresh namespace, though, so carry its request under a
-      # qOS-specific name and make it authoritative after runner injection.
+      # Tilo-specific name and make it authoritative after runner injection.
       # Restarting matters: sccache reads its backend configuration when its
       # long-lived server starts, and `--zero-stats` below may start it.
-      if [ -n "${QOS_SCCACHE_KEY_PREFIX:-}" ]; then
-        export SCCACHE_S3_KEY_PREFIX="$QOS_SCCACHE_KEY_PREFIX"
+      if [ -n "${TILO_SCCACHE_KEY_PREFIX:-}" ]; then
+        export SCCACHE_S3_KEY_PREFIX="$TILO_SCCACHE_KEY_PREFIX"
         sccache --stop-server >/dev/null 2>&1 || true
       fi
-      if sccache --zero-stats; then
-        if [ -n "${GITHUB_ENV:-}" ]; then
+      compiler="${RUSTC:-}"
+      if [ -z "$compiler" ]; then
+        compiler="$(command -v rustc 2>/dev/null || true)"
+      fi
+      # `--zero-stats` proves only that the local server can start. Some
+      # backends authenticate lazily on the first compiler request, so probe
+      # the exact wrapper path Cargo will use before advertising the cache.
+      if sccache --zero-stats \
+        && [ -n "$compiler" ] \
+        && "$path" "$compiler" -vV >/dev/null; then
+        if [ "$mode" = prepare ] && [ -n "${GITHUB_ENV:-}" ]; then
           printf 'RUSTC_WRAPPER=%s\n' "$path" >> "$GITHUB_ENV"
-          if [ -n "${QOS_SCCACHE_KEY_PREFIX:-}" ]; then
-            printf 'SCCACHE_S3_KEY_PREFIX=%s\n' "$QOS_SCCACHE_KEY_PREFIX" >> "$GITHUB_ENV"
+          if [ -n "${TILO_SCCACHE_KEY_PREFIX:-}" ]; then
+            printf 'SCCACHE_S3_KEY_PREFIX=%s\n' "$TILO_SCCACHE_KEY_PREFIX" >> "$GITHUB_ENV"
           fi
         else
           export RUSTC_WRAPPER="$path"
@@ -36,17 +45,17 @@ case "$mode" in
         # Clearing the wrapper makes cache outages a performance degradation,
         # not an immediate failure of every rustc invocation in the job.
         sccache --stop-server >/dev/null 2>&1 || true
-        if [ -n "${GITHUB_ENV:-}" ]; then
+        if [ "$mode" = prepare ] && [ -n "${GITHUB_ENV:-}" ]; then
           echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
         else
           unset RUSTC_WRAPPER || true
         fi
-        echo '::warning::sccache backend is unavailable; compiling normally'
+        echo '::warning::sccache wrapper or backend is unavailable; compiling normally'
       fi
     else
       # An old builder image may briefly overlap its replacement. Never leave
       # the workflow-level wrapper pointing at a nonexistent executable.
-      if [ -n "${GITHUB_ENV:-}" ]; then
+      if [ "$mode" = prepare ] && [ -n "${GITHUB_ENV:-}" ]; then
         echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
       else
         unset RUSTC_WRAPPER || true

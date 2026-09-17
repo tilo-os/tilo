@@ -1,5 +1,5 @@
 //! OS-level action wrappers (brightness, audio, Wi-Fi, Bluetooth, power-profile) shared
-//! between the qOS compositor (`shell`) and the standalone Settings app (`apps/settings`).
+//! between the Tilo compositor (`shell`) and the standalone Settings app (`apps/settings`).
 //! Both needed the same brightnessctl/wpctl/nmcli/bluetoothctl/powerprofilesctl bindings, and
 //! the Settings app must not depend on the compositor (they're peers, not parent/child), so
 //! the bindings live here as a single source of truth for both.
@@ -17,7 +17,7 @@
 //! ## Dispatcher trait
 //!
 //! Bluetooth is the exception to the CLI wrappers: it uses the persistent
-//! `qos-bluez` D-Bus client because discovery and pairing are connection-bound.
+//! `tilo-bluez` D-Bus client because discovery and pairing are connection-bound.
 //!
 //! [`Dispatcher`] is the side-effect interface used by the click handlers. The default
 //! production impl ([`RealDispatcher`]) calls the free functions in the per-domain modules;
@@ -301,7 +301,7 @@ impl Dispatcher for RealDispatcher {
 /// ```
 pub fn log_result(op: &str, result: Result<(), String>) {
     if let Err(e) = result {
-        warn!(target: "qos::os_actions", op = op, error = %e, "os action failed");
+        warn!(target: "tilo::os_actions", op = op, error = %e, "os action failed");
     }
 }
 
@@ -310,7 +310,7 @@ pub fn log_get<T>(op: &str, result: Result<T, String>) -> Option<T> {
     match result {
         Ok(v) => Some(v),
         Err(e) => {
-            warn!(target: "qos::os_actions", op = op, error = %e, "os get failed");
+            warn!(target: "tilo::os_actions", op = op, error = %e, "os get failed");
             None
         }
     }

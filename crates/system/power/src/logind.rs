@@ -140,7 +140,7 @@ impl LogindManager {
     pub async fn delegate_handled_keys(&self) -> zbus::Result<LogindInhibitor> {
         self.inhibit(
             "handle-lid-switch:handle-power-key:handle-suspend-key",
-            "qOS compositor",
+            "Tilo compositor",
             "compositor owns lid / power-key policy",
             "block",
         )
@@ -197,9 +197,9 @@ mod tests {
         let Some(m) = manager_or_skip("inhibit").await else {
             return;
         };
-        let why = format!("qos-power test {}", std::process::id());
+        let why = format!("tilo-power test {}", std::process::id());
         let holder = m
-            .inhibit("idle:sleep", "qOS power test", &why, "block")
+            .inhibit("idle:sleep", "Tilo power test", &why, "block")
             .await
             .expect("Inhibit call");
         assert_eq!(holder.what(), "idle:sleep");

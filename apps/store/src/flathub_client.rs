@@ -26,7 +26,7 @@ pub fn api_base() -> String {
 }
 
 fn http_timeout() -> Duration {
-    std::env::var("QOS_STORE_HTTP_TIMEOUT")
+    std::env::var("TILO_STORE_HTTP_TIMEOUT")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .map_or_else(
@@ -119,7 +119,7 @@ pub struct ScreenshotRef {
 
 fn client() -> Result<Client, FlathubError> {
     Client::builder()
-        .user_agent("qos-store/0.1 (Flathub)")
+        .user_agent("tilo-store/0.1 (Flathub)")
         .timeout(http_timeout())
         .build()
         .map_err(|e| FlathubError::Http(e.to_string()))

@@ -1,4 +1,4 @@
-//! Passwords — the user-facing view of qOS credential custody.
+//! Passwords — the user-facing view of Tilo credential custody.
 //!
 //! The live view never contains sample entries and never reveals a password.
 //! Apps obtain credentials through `accounts::CredentialBroker`; this process
@@ -233,7 +233,7 @@ mod tests {
     use super::*;
     #[test]
     fn empty_password_is_generated_and_crud_round_trips() {
-        let root = std::env::temp_dir().join(format!("qos-passwords-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("tilo-passwords-test-{}", std::process::id()));
         let mut model = PasswordsModel::open_in(&root);
         let id = model
             .save_login("Example", "ada", "", Some("https://example.com/login"))
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn search_finds_context_but_never_the_secret_itself() {
         let root = std::env::temp_dir().join(format!(
-            "qos-passwords-search-{}-{:?}",
+            "tilo-passwords-search-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -298,7 +298,7 @@ mod tests {
         use accounts::SecretItemKind;
 
         let root = std::env::temp_dir().join(format!(
-            "qos-passwords-kinds-{}-{:?}",
+            "tilo-passwords-kinds-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

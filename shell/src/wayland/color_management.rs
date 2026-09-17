@@ -24,14 +24,17 @@
 
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_os = "linux")]
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
     backend::{ClientId, GlobalId},
     protocol::{wl_output::WlOutput, wl_surface::WlSurface},
 };
 
+#[cfg(target_os = "linux")]
 use smithay::wayland::compositor::{self as wl_compositor};
 
+#[cfg(target_os = "linux")]
 use wayland_protocols::wp::color_management::v1::server::{
     wp_color_management_output_v1::{self, WpColorManagementOutputV1},
     wp_color_management_surface_feedback_v1::{self, WpColorManagementSurfaceFeedbackV1},
@@ -54,6 +57,7 @@ use crate::collab::hdr_metadata::{ContentLightLevel, Hdr10Metadata, MasteringDis
 /// Keep event emission below aligned with this value: `ready2` was added in
 /// version 2 and sending it on a version-1 image-description object disconnects
 /// clients with "has no event 2".
+#[cfg(target_os = "linux")]
 const MAX_VERSION: u32 = 1;
 
 /// Advertised capability set for `wp_color_manager_v1`.
@@ -89,6 +93,7 @@ pub struct ColorManagerState {
     /// The global's id, held so the caller can revoke it when
     /// shutting down (currently unused, but the id is cheap to keep
     /// and it saves a `create_global` return dance).
+    #[cfg(target_os = "linux")]
     pub global: Option<GlobalId>,
 }
 
@@ -123,6 +128,7 @@ impl Default for ColorManagerState {
             // Media-relative w/ BPC (=4). Saturation (=2) + Absolute
             // (=3) aren't yet plumbed into the wgpu shader.
             supported_render_intents: vec![0, 1, 4],
+            #[cfg(target_os = "linux")]
             global: None,
         }
     }
@@ -134,6 +140,7 @@ impl ColorManagerState {
     /// process-wide compositor state so the delegate dispatch impls
     /// route back to the right advertised-capability list.
     #[must_use]
+    #[cfg(target_os = "linux")]
     pub fn new<D>(display: &DisplayHandle) -> Self
     where
         D: GlobalDispatch<WpColorManagerV1, ()> + 'static,
@@ -173,16 +180,23 @@ pub struct ParametricBuilder {
 
 #[derive(Debug, Default)]
 struct ParametricBuilderInner {
-    primaries_named: Option<Primaries>,
+    primaries_named: Option<ColorPrimaries>,
     /// Explicit CIE 1931 xy primaries (R, G, B, W) — each i32 is
     /// x/y × `1_000_000` per the protocol wire encoding.
     primaries_custom: Option<CustomPrimaries>,
-    tf_named: Option<TransferFunction>,
+    tf_named: Option<TransferCharacteristics>,
     /// Pure-power transfer exponent × `10_000`. Mutually exclusive with
     /// `tf_named` per the protocol's "set exactly once" rule.
     tf_power_eexp: Option<u32>,
     /// Primary color volume luminance range: (`min_lum` × `10_000`,
     /// `max_lum`, `reference_lum`) — cd/m².
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the Linux Wayland dispatcher consumes this shared color state; retain the complete model"
+        )
+    )]
     luminances: Option<(u32, u32, u32)>,
     /// Mastering display primaries in the same wire encoding as
     /// `primaries_custom`.
@@ -194,6 +208,13 @@ struct ParametricBuilderInner {
     /// Max frame-average light level — cd/m².
     max_fall: Option<u32>,
     /// Set once `create` runs so a second `create` is caught cleanly.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the Linux Wayland dispatcher consumes this shared color state; retain the complete model"
+        )
+    )]
     consumed: bool,
 }
 
@@ -235,12 +256,12 @@ impl ParametricBuilder {
         };
         // Required: primaries + transfer.
         let primaries = match (primaries_named, primaries_custom) {
-            (Some(p), _) => primaries_named_to_color(p),
+            (Some(p), _) => p,
             (None, Some(c)) => guess_primaries_from_custom(c),
             (None, None) => return None,
         };
         let transfer = match (tf_named, tf_power_eexp) {
-            (Some(t), _) => transfer_named_to_color(t),
+            (Some(t), _) => t,
             (None, Some(exp)) => match exp {
                 // Common named power curves.
                 22_000 => TransferCharacteristics::Bt709,
@@ -301,6 +322,7 @@ impl ParametricBuilder {
 
     /// Mark the builder as consumed so the second `create` request
     /// can be caught with `already_set`.
+    #[cfg(target_os = "linux")]
     fn mark_consumed(&self) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.consumed = true;
@@ -317,6 +339,7 @@ fn clamp_to_u16(v: u32) -> u16 {
     v.min(u32::from(u16::MAX)) as u16
 }
 
+#[cfg(target_os = "linux")]
 fn primaries_named_to_color(p: Primaries) -> ColorPrimaries {
     match p {
         Primaries::Srgb => ColorPrimaries::Bt709,
@@ -329,6 +352,7 @@ fn primaries_named_to_color(p: Primaries) -> ColorPrimaries {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn transfer_named_to_color(t: TransferFunction) -> TransferCharacteristics {
     match t {
         TransferFunction::Bt1886 | TransferFunction::Gamma22 => TransferCharacteristics::Bt709,
@@ -407,23 +431,45 @@ impl ImageDescriptionData {
         (self.identity >> 32) as u32
     }
 
-    fn information(&self) -> Option<(Option<Primaries>, Option<TransferFunction>)> {
+    fn information_colors(
+        &self,
+    ) -> Option<(Option<ColorPrimaries>, Option<TransferCharacteristics>)> {
         self.queryable.then(|| {
             let primaries = match self.colorimetry.primaries {
+                ColorPrimaries::Bt709 => Some(ColorPrimaries::Bt709),
+                ColorPrimaries::Bt2020 => Some(ColorPrimaries::Bt2020),
+                ColorPrimaries::DisplayP3 => Some(ColorPrimaries::DisplayP3),
+                ColorPrimaries::Unspecified => None,
+            };
+            let transfer = match self.colorimetry.transfer {
+                TransferCharacteristics::Bt709 => Some(TransferCharacteristics::Bt709),
+                TransferCharacteristics::Srgb => Some(TransferCharacteristics::Srgb),
+                TransferCharacteristics::SmpteSt2084 => Some(TransferCharacteristics::SmpteSt2084),
+                TransferCharacteristics::AribStdB67 => Some(TransferCharacteristics::AribStdB67),
+                TransferCharacteristics::Unspecified => None,
+            };
+            (primaries, transfer)
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn information(&self) -> Option<(Option<Primaries>, Option<TransferFunction>)> {
+        let (primaries, transfer) = self.information_colors()?;
+        Some((
+            primaries.and_then(|value| match value {
                 ColorPrimaries::Bt709 => Some(Primaries::Srgb),
                 ColorPrimaries::Bt2020 => Some(Primaries::Bt2020),
                 ColorPrimaries::DisplayP3 => Some(Primaries::DisplayP3),
                 ColorPrimaries::Unspecified => None,
-            };
-            let transfer = match self.colorimetry.transfer {
+            }),
+            transfer.and_then(|value| match value {
                 TransferCharacteristics::Bt709 => Some(TransferFunction::Bt1886),
                 TransferCharacteristics::Srgb => Some(TransferFunction::ExtSrgb),
                 TransferCharacteristics::SmpteSt2084 => Some(TransferFunction::St2084Pq),
                 TransferCharacteristics::AribStdB67 => Some(TransferFunction::Hlg),
                 TransferCharacteristics::Unspecified => None,
-            };
-            (primaries, transfer)
-        })
+            }),
+        ))
     }
 
     fn protocol_primaries(&self) -> (i32, i32, i32, i32, i32, i32, i32, i32) {
@@ -481,6 +527,13 @@ struct ColorManagementSurfaceInner {
     /// Guards `get_surface` from creating a second per-surface manager.
     /// Set the first time a `wp_color_management_surface_v1` is minted
     /// for this `wl_surface`.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the Linux Wayland dispatcher consumes this shared color state; retain the complete model"
+        )
+    )]
     manager_attached: bool,
 }
 
@@ -497,12 +550,14 @@ impl ColorManagementSurfaceData {
         self.current().map(|d| (d.colorimetry, d.hdr))
     }
 
+    #[cfg(target_os = "linux")]
     fn set_current(&self, data: ImageDescriptionData) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.current = Some(data);
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn clear_current(&self) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.current = None;
@@ -515,6 +570,7 @@ impl ColorManagementSurfaceData {
 /// Public so the flatpak-share encoder can look up the client's
 /// declared colorimetry without depending on the wayland protocol
 /// module.
+#[cfg(target_os = "linux")]
 pub fn surface_current_colorimetry(
     surface: &WlSurface,
 ) -> Option<(Colorimetry, Option<Hdr10Metadata>)> {
@@ -536,6 +592,7 @@ pub struct ColorManagementOutputData {
     // pure descriptor contract use `None`; live output resources always use
     // `Some`. Color metadata is updated separately by the DRM path below.
     #[allow(dead_code)]
+    #[cfg(target_os = "linux")]
     output: Option<WlOutput>,
     /// Colorimetry the compositor tells clients this output actually
     /// displays. `default_sdr` on winit / headless; populated from the
@@ -548,6 +605,7 @@ pub struct ColorManagementOutputData {
 impl ColorManagementOutputData {
     fn from_color(color: Colorimetry, hdr: Option<Hdr10Metadata>) -> Self {
         Self {
+            #[cfg(target_os = "linux")]
             output: None,
             color: Arc::new(Mutex::new(color)),
             hdr: Arc::new(Mutex::new(hdr)),
@@ -558,6 +616,7 @@ impl ColorManagementOutputData {
     /// the DRM backend calls [`Self::set_display_color`] when an EDID
     /// arrives.
     #[must_use]
+    #[cfg(target_os = "linux")]
     pub fn new(output: WlOutput) -> Self {
         Self {
             output: Some(output),
@@ -594,6 +653,7 @@ impl ColorManagementOutputData {
 /// the target `wl_surface` so subsequent set/unset requests know
 /// which surface to mutate.
 #[derive(Debug, Clone)]
+#[cfg(target_os = "linux")]
 pub struct ColorManagementSurfaceUserData {
     // Retains the protocol surface identity; pending/current color state lives
     // in the compositor surface data map and is applied on wl_surface.commit.
@@ -601,6 +661,7 @@ pub struct ColorManagementSurfaceUserData {
     surface: WlSurface,
 }
 
+#[cfg(target_os = "linux")]
 impl ColorManagementSurfaceUserData {
     /// Create a new user-data instance for a `wp_color_management_surface_v1`.
     #[must_use]
@@ -613,12 +674,14 @@ impl ColorManagementSurfaceUserData {
 /// Minimal — carries the `wl_surface` so `get_preferred*` can hand
 /// back the compositor's preferred description.
 #[derive(Debug, Clone)]
+#[cfg(target_os = "linux")]
 pub struct ColorManagementSurfaceFeedbackData {
     // Retains the surface identity for preferred-description feedback.
     #[allow(dead_code)]
     surface: WlSurface,
 }
 
+#[cfg(target_os = "linux")]
 impl ColorManagementSurfaceFeedbackData {
     /// Create a new user-data instance for a `wp_color_management_surface_feedback_v1`.
     #[must_use]
@@ -631,6 +694,7 @@ impl ColorManagementSurfaceFeedbackData {
 // Dispatch impls
 // -----------------------------------------------------------------------------
 
+#[cfg(target_os = "linux")]
 impl<D> GlobalDispatch<WpColorManagerV1, (), D> for ColorManagerState
 where
     D: GlobalDispatch<WpColorManagerV1, ()>
@@ -680,6 +744,7 @@ where
     }
 }
 
+#[cfg(target_os = "linux")]
 impl<D> Dispatch<WpColorManagerV1, (), D> for ColorManagerState
 where
     D: Dispatch<WpColorManagerV1, ()>
@@ -789,6 +854,7 @@ where
     }
 }
 
+#[cfg(target_os = "linux")]
 impl<D> Dispatch<WpImageDescriptionCreatorParamsV1, Arc<ParametricBuilder>, D> for ColorManagerState
 where
     D: Dispatch<WpImageDescriptionCreatorParamsV1, Arc<ParametricBuilder>>
@@ -826,7 +892,7 @@ where
                     return;
                 };
                 set_builder_field_once(builder, creator, "transfer function already set", |i| {
-                    set_if_none(&mut i.tf_named, tf)
+                    set_if_none(&mut i.tf_named, transfer_named_to_color(tf))
                 });
             }
             wp_image_description_creator_params_v1::Request::SetTfPower { eexp } => {
@@ -843,7 +909,7 @@ where
                     return;
                 };
                 set_builder_field_once(builder, creator, "primaries already set", |i| {
-                    set_if_none(&mut i.primaries_named, primaries)
+                    set_if_none(&mut i.primaries_named, primaries_named_to_color(primaries))
                 });
             }
             wp_image_description_creator_params_v1::Request::SetPrimaries {
@@ -928,6 +994,7 @@ where
 /// `true` and sets `*slot` if it was `None`; `false` (no write) if the
 /// caller had already set it. The `bool` is what
 /// [`set_builder_field_once`] uses to decide whether to post `AlreadySet`.
+#[cfg(target_os = "linux")]
 fn set_if_none<T>(slot: &mut Option<T>, val: T) -> bool {
     if slot.is_some() {
         return false;
@@ -943,6 +1010,7 @@ fn set_if_none<T>(slot: &mut Option<T>, val: T) -> bool {
 /// what the client set first, mirroring the spec. Split out of the
 /// `WpImageDescriptionCreatorParamsV1` dispatch (formerly a
 /// `macro_rules!` defined inline) to keep that match short.
+#[cfg(target_os = "linux")]
 fn set_builder_field_once(
     builder: &ParametricBuilder,
     creator: &WpImageDescriptionCreatorParamsV1,
@@ -975,6 +1043,7 @@ fn set_builder_field_once(
 /// advertises it via the v1 `ready` event, or posts `IncompleteSet` when a
 /// required field is still missing. Split out of the
 /// `WpImageDescriptionCreatorParamsV1` dispatch to keep that match short.
+#[cfg(target_os = "linux")]
 fn create_image_description<D>(
     creator: &WpImageDescriptionCreatorParamsV1,
     builder: &Arc<ParametricBuilder>,
@@ -1002,6 +1071,7 @@ fn create_image_description<D>(
     }
 }
 
+#[cfg(target_os = "linux")]
 impl<D> Dispatch<WpImageDescriptionV1, ImageDescriptionData, D> for ColorManagerState
 where
     D: Dispatch<WpImageDescriptionV1, ImageDescriptionData>
@@ -1044,6 +1114,7 @@ where
     }
 }
 
+#[cfg(target_os = "linux")]
 impl<D> Dispatch<WpColorManagementSurfaceV1, ColorManagementSurfaceUserData, D>
     for ColorManagerState
 where
@@ -1132,6 +1203,7 @@ where
     }
 }
 
+#[cfg(target_os = "linux")]
 impl<D> Dispatch<WpColorManagementSurfaceFeedbackV1, ColorManagementSurfaceFeedbackData, D>
     for ColorManagerState
 where
@@ -1170,6 +1242,7 @@ where
     }
 }
 
+#[cfg(target_os = "linux")]
 impl<D> Dispatch<WpColorManagementOutputV1, ColorManagementOutputData, D> for ColorManagerState
 where
     D: Dispatch<WpColorManagementOutputV1, ColorManagementOutputData>
@@ -1198,6 +1271,7 @@ where
 
 // The interface has no client requests other than object destruction; the
 // compositor emits its complete event sequence when get_information creates it.
+#[cfg(target_os = "linux")]
 impl<D> Dispatch<WpImageDescriptionInfoV1, ImageDescriptionData, D> for ColorManagerState
 where
     D: Dispatch<WpImageDescriptionInfoV1, ImageDescriptionData> + 'static,
@@ -1224,6 +1298,7 @@ where
 /// Wire the `color-management-v1` dispatch impls onto a concrete
 /// compositor state. `$ty` must own a `ColorManagerState` and
 /// implement `AsRef<ColorManagerState>` for it.
+#[cfg(target_os = "linux")]
 #[macro_export]
 macro_rules! delegate_color_management {
     ($ty:ty) => {
@@ -1283,31 +1358,13 @@ mod tests {
     #[test]
     fn advertised_capabilities_include_bt2020_and_pq() {
         let cfg = ColorManagerState::default();
-        assert!(
-            cfg.supported_primaries
-                .contains(&(Primaries::Bt2020 as u32))
-        );
-        assert!(cfg.supported_primaries.contains(&(Primaries::Srgb as u32)));
-        assert!(
-            cfg.supported_primaries
-                .contains(&(Primaries::DisplayP3 as u32))
-        );
-        assert!(
-            cfg.supported_transfers
-                .contains(&(TransferFunction::St2084Pq as u32))
-        );
-        assert!(
-            cfg.supported_transfers
-                .contains(&(TransferFunction::Hlg as u32))
-        );
-        assert!(
-            cfg.supported_features
-                .contains(&(Feature::Parametric as u32))
-        );
-        assert!(
-            cfg.supported_features
-                .contains(&(Feature::SetPrimaries as u32))
-        );
+        assert!(cfg.supported_primaries.contains(&(6)));
+        assert!(cfg.supported_primaries.contains(&(1)));
+        assert!(cfg.supported_primaries.contains(&(9)));
+        assert!(cfg.supported_transfers.contains(&(11)));
+        assert!(cfg.supported_transfers.contains(&(13)));
+        assert!(cfg.supported_features.contains(&(1)));
+        assert!(cfg.supported_features.contains(&(2)));
     }
 
     #[test]
@@ -1315,8 +1372,8 @@ mod tests {
         let b = ParametricBuilder::default();
         {
             let mut inner = b.inner.lock().unwrap();
-            inner.primaries_named = Some(Primaries::Bt2020);
-            inner.tf_named = Some(TransferFunction::St2084Pq);
+            inner.primaries_named = Some(ColorPrimaries::Bt2020);
+            inner.tf_named = Some(TransferCharacteristics::SmpteSt2084);
         }
         let desc = b.build().expect("builder produces description");
         assert_eq!(desc.colorimetry.primaries, ColorPrimaries::Bt2020);
@@ -1332,7 +1389,7 @@ mod tests {
         let b = ParametricBuilder::default();
         assert!(b.build().is_none());
         {
-            b.inner.lock().unwrap().primaries_named = Some(Primaries::Srgb);
+            b.inner.lock().unwrap().primaries_named = Some(ColorPrimaries::Bt709);
         }
         // Still missing transfer.
         assert!(b.build().is_none());
@@ -1343,8 +1400,8 @@ mod tests {
         let b = ParametricBuilder::default();
         {
             let mut inner = b.inner.lock().unwrap();
-            inner.primaries_named = Some(Primaries::Srgb);
-            inner.tf_named = Some(TransferFunction::Bt1886);
+            inner.primaries_named = Some(ColorPrimaries::Bt709);
+            inner.tf_named = Some(TransferCharacteristics::Bt709);
         }
         let desc = b.build().unwrap();
         assert!(desc.hdr.is_none(), "SDR builder must not emit HDR metadata");
@@ -1355,8 +1412,11 @@ mod tests {
         let output =
             ColorManagementOutputData::from_color(Colorimetry::sdr_bt709(), None).snapshot();
         assert_eq!(
-            output.information(),
-            Some((Some(Primaries::Srgb), Some(TransferFunction::Bt1886)))
+            output.information_colors(),
+            Some((
+                Some(ColorPrimaries::Bt709),
+                Some(TransferCharacteristics::Bt709)
+            ))
         );
         assert_eq!(
             output.protocol_primaries(),
@@ -1369,9 +1429,9 @@ mod tests {
         let builder = ParametricBuilder::default();
         {
             let mut inner = builder.inner.lock().unwrap();
-            inner.primaries_named = Some(Primaries::Bt2020);
-            inner.tf_named = Some(TransferFunction::St2084Pq);
+            inner.primaries_named = Some(ColorPrimaries::Bt2020);
+            inner.tf_named = Some(TransferCharacteristics::SmpteSt2084);
         }
-        assert_eq!(builder.build().unwrap().information(), None);
+        assert_eq!(builder.build().unwrap().information_colors(), None);
     }
 }

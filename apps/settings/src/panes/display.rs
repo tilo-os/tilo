@@ -321,7 +321,7 @@ impl DisplayPane {
             .spawn(move || {
                 while let Ok(percent) = brightness_rx.recv() {
                     if let Err(error) = worker_dispatcher.set_brightness(percent) {
-                        tracing::warn!(target: "qos::settings", op = "set_brightness", %error, "display worker dispatch failed");
+                        tracing::warn!(target: "tilo::settings", op = "set_brightness", %error, "display worker dispatch failed");
                     }
                 }
             })
@@ -908,7 +908,7 @@ impl DisplayPane {
         let mut p = SystemPrefs::load();
         f(&mut p.display);
         if let Err(e) = p.save() {
-            warn!(target: "qos::settings", op = "display_prefs_save", error = %e, "failed to persist display prefs");
+            warn!(target: "tilo::settings", op = "display_prefs_save", error = %e, "failed to persist display prefs");
         }
     }
 
@@ -1261,7 +1261,7 @@ impl DisplayPane {
                 if let Some(sender) = &self.brightness_tx {
                     let _ = sender.send(percent);
                 } else if let Err(e) = self.dispatcher.set_brightness(percent) {
-                    warn!(target: "qos::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
+                    warn!(target: "tilo::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
                 }
             }
         }
@@ -1619,7 +1619,7 @@ impl DisplayPane {
         match next.validate_for(&descriptors) {
             Ok(()) => self.pending_candidate = Some(next),
             Err(error) => {
-                warn!(target: "qos::settings", ?error, "rejected invalid display configuration");
+                warn!(target: "tilo::settings", ?error, "rejected invalid display configuration");
             }
         }
     }
@@ -1646,7 +1646,7 @@ impl DisplayPane {
             match self.pending_candidate.clone() {
                 Some(candidate) => {
                     if let Err(error) = DisplayTransaction::request(candidate) {
-                        warn!(target: "qos::settings", %error, "failed to stage display configuration");
+                        warn!(target: "tilo::settings", %error, "failed to stage display configuration");
                         self.finish_display_operation(Err(format!(
                             "Display configuration could not be staged: {error}"
                         )));
@@ -1662,7 +1662,7 @@ impl DisplayPane {
             match DisplayTransaction::load() {
                 Some(mut transaction) => {
                     if let Err(error) = transaction.request_confirmation() {
-                        warn!(target: "qos::settings", %error, "failed to confirm display configuration");
+                        warn!(target: "tilo::settings", %error, "failed to confirm display configuration");
                         self.finish_display_operation(Err(format!(
                             "Display configuration could not be kept: {error}"
                         )));
@@ -1678,7 +1678,7 @@ impl DisplayPane {
             match DisplayTransaction::load() {
                 Some(mut transaction) => {
                     if let Err(error) = transaction.request_revert() {
-                        warn!(target: "qos::settings", %error, "failed to revert display configuration");
+                        warn!(target: "tilo::settings", %error, "failed to revert display configuration");
                         self.finish_display_operation(Err(format!(
                             "Display configuration could not be reverted: {error}"
                         )));

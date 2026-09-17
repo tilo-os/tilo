@@ -1,19 +1,19 @@
-# The qOS app model
+# The Tilo app model
 
-qOS distributes every executable — apps, services, format providers, plugins,
+Tilo distributes every executable — apps, services, format providers, plugins,
 and the shared runtime itself — as a signed, content-addressed bundle called
 a `.qpkg`. This directory documents everything an outside publisher needs to
 build one, ship it, and expect it to run.
 
 For the shortest path from an idea to a native app, start with
-[`app-development.md`](../app-development.md). It covers `qos-dev new`, the
+[`app-development.md`](../app-development.md). It covers `tilo-dev new`, the
 edit/restart and test/inspection loop, the standard live/headless lifecycle,
-the professional-widget quality bar, and the app-aware `qos-dev package`
+the professional-widget quality bar, and the app-aware `tilo-dev package`
 command that builds, signs, verifies, and publishes a `.qpkg`.
 
 ## The promise
 
-You give qOS a manifest and a payload. In return:
+You give Tilo a manifest and a payload. In return:
 
 - Your package has a **stable identity**: a BLAKE3 hash of the signed root
   is the `qpkg:` URL. Two identical bundles collide; any change flips the
@@ -31,18 +31,18 @@ You give qOS a manifest and a payload. In return:
   and never panics, so the same binary is shippable as a Flatpak.
 - The **runtime is a separate bundle**. Your `.qpkg` carries your code and
   your declared deps; the loader (ld-linux, libc, libgcc_s) lives in a
-  content-addressed `qos-runtime/<version>` bundle the launcher mounts into
+  content-addressed `tilo-runtime/<version>` bundle the launcher mounts into
   the sandbox at start.
 
 ## The tools
 
 | Tool                | What it does                                                       |
 | ------------------- | ------------------------------------------------------------------ |
-| `qos-pkg`           | Pack / sign / verify / inspect a `.qpkg`.                          |
-| `qos-install`       | Install / list / remove / run installed packages; trust registry; runtime bundle management. |
-| `qos-launcher`      | The privileged spawn point — bwrap + Landlock + exec. Called by `qos-install run` (or via PATH shims). |
-| `qos-cli-shim`      | Tiny wrapper the installer drops in `~/.local/share/qos-apps/bin/` for every `[cli].commands` entry. |
-| `qos-runtime-bundle`| Build / verify a `qos-runtime` bundle from a host root. Usually invoked via `qos-install runtime install`. |
+| `tilo-pkg`           | Pack / sign / verify / inspect a `.qpkg`.                          |
+| `tilo-install`       | Install / list / remove / run installed packages; trust registry; runtime bundle management. |
+| `tilo-launcher`      | The privileged spawn point — bwrap + Landlock + exec. Called by `tilo-install run` (or via PATH shims). |
+| `tilo-cli-shim`      | Tiny wrapper the installer drops in `~/.local/share/tilo-apps/bin/` for every `[cli].commands` entry. |
+| `tilo-runtime-bundle`| Build / verify a `tilo-runtime` bundle from a host root. Usually invoked via `tilo-install runtime install`. |
 
 ## The flow
 
@@ -53,10 +53,10 @@ You give qOS a manifest and a payload. In return:
   │src/main.rs  ├──╮   │signed-root     │    │  entry[..]            │    │ + seccomp filter     │
   │Cargo.lock   │  │   │manifest.toml   │─╮  │payloads/              │    │ + Landlock ruleset   │
   │manifest.toml│  │   │collection.qcl  │ │  │  <pkg-id>/            │──▶ │  cwd=payload/        │
-  └─────────────┘  ╰─▶ │blobs/<hex>...  │─╯  │    manifest.toml       │    │  QOS_SVC_*_FD=<fd>   │
+  └─────────────┘  ╰─▶ │blobs/<hex>...  │─╯  │    manifest.toml       │    │  TILO_SVC_*_FD=<fd>   │
                        └────────────────┘    │    bin/<entrypoint>    │    │ identity broker fd   │
-      cargo build       qos-pkg pack          └───────────────────────┘    └──────────────────────┘
-      (release)         (BLAKE3 + sign)       qos-install install          qos-install run
+      cargo build       tilo-pkg pack          └───────────────────────┘    └──────────────────────┘
+      (release)         (BLAKE3 + sign)       tilo-install install          tilo-install run
                                               (verify + unpack + register) (fork + exec bwrap)
 ```
 

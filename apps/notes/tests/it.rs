@@ -52,3 +52,17 @@ mod two_peer_sync;
 mod welcome_page_renders_all_block_kinds;
 #[path = "workspace_persistence.rs"]
 mod workspace_persistence;
+
+#[path = "canonical_import.rs"]
+mod canonical_import;
+
+#[path = "canonical_component.rs"]
+mod canonical_component;
+#[path = "support/component.rs"]
+mod component_support;
+
+#[path = "canonical_actions.rs"]
+mod canonical_actions;
+
+#[path = "canonical_views.rs"]
+mod canonical_views;

@@ -4,7 +4,7 @@
 //! a **stable, non-metered** connection (home Wi-Fi / ethernet) — never on a
 //! metered cellular link where it would burn the user's data. This module
 //! answers "is the connection metered?" from `NetworkManager` when it's available
-//! (the qOS default), with an env override for tests + headless boxes and a
+//! (the Tilo default), with an env override for tests + headless boxes and a
 //! sensible default (assume unmetered / stable) when NM can't be reached.
 
 use std::sync::OnceLock;
@@ -14,9 +14,9 @@ use std::sync::OnceLock;
 pub fn is_metered() -> bool {
     // Consult NetworkManager once, cached for the process lifetime.
     static CACHED: OnceLock<bool> = OnceLock::new();
-    // Deterministic override first: tests + operators set `QOS_MUSIC_METERED=1`
+    // Deterministic override first: tests + operators set `TILO_MUSIC_METERED=1`
     // (metered) or `=0` (stable) to force the decision.
-    if let Ok(v) = std::env::var("QOS_MUSIC_METERED") {
+    if let Ok(v) = std::env::var("TILO_MUSIC_METERED") {
         return v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes");
     }
     *CACHED.get_or_init(|| nm_metered().unwrap_or(false))
@@ -67,12 +67,12 @@ mod tests {
     #[test]
     fn env_override_forces_metered_state() {
         // SAFETY: single-threaded test mutating a process env var it owns.
-        unsafe { std::env::set_var("QOS_MUSIC_METERED", "1") };
+        unsafe { std::env::set_var("TILO_MUSIC_METERED", "1") };
         assert!(is_metered());
         assert!(!connection_is_stable());
-        unsafe { std::env::set_var("QOS_MUSIC_METERED", "0") };
+        unsafe { std::env::set_var("TILO_MUSIC_METERED", "0") };
         assert!(!is_metered());
         assert!(connection_is_stable());
-        unsafe { std::env::remove_var("QOS_MUSIC_METERED") };
+        unsafe { std::env::remove_var("TILO_MUSIC_METERED") };
     }
 }

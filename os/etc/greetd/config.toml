@@ -1,7 +1,7 @@
-# greetd display manager — drops the user into nirios's Wayland session.
+# greetd display manager — drops the user into tilo's Wayland session.
 #
-# The login prompt is now a GRAPHICAL greeter (`qos-greeter`, built on the
-# qOS `ui` toolkit) instead of the text-mode tuigreet. greetd can't host a
+# The login prompt is now a GRAPHICAL greeter (`tilo-greeter`, built on the
+# Tilo `ui` toolkit) instead of the text-mode tuigreet. greetd can't host a
 # GUI itself, so the greeter runs inside `cage` — a single-window kiosk
 # wlroots compositor — which provides the Wayland display the greeter draws
 # into. `cage -s` makes cage exit when its child exits; on successful auth
@@ -13,7 +13,7 @@
 # the wayland-N socket itself — it is NOT wrapped in cage. Only the greeter
 # needs cage, because greetd has no display for it.
 #
-# Chain: greetd → cage → qos-greeter → (greetd StartSession) → shell.
+# Chain: greetd → cage → tilo-greeter → (greetd StartSession) → shell.
 #
 # WLR_NO_HARDWARE_CURSORS=1: force cage/wlroots to composite a SOFTWARE cursor
 # instead of programming the DRM hardware-cursor plane. The virtio-gpu HW
@@ -25,5 +25,5 @@
 vt = 1
 
 [default_session]
-command = "env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/qos-greeter"
+command = "env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-greeter"
 user = "greetd"

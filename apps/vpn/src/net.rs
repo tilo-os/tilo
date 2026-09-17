@@ -12,7 +12,7 @@
 //!
 //! Reads here are read-only (they observe, they never mutate networking), so
 //! unlike the bring-up/teardown commands in [`crate::config`] they are not
-//! behind the `QOS_VPN_ALLOW_EXEC` write-gate. The *app* only polls them for a
+//! behind the `TILO_VPN_ALLOW_EXEC` write-gate. The *app* only polls them for a
 //! tunnel it actually connected, which keeps unit tests free of subprocesses.
 
 use std::process::Command;
@@ -361,7 +361,7 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
 
         // Gated-refusal: with execution disabled, the mutating command must be
         // refused — the UI can never claim connected without a real success.
-        unsafe { std::env::remove_var("QOS_VPN_ALLOW_EXEC") };
+        unsafe { std::env::remove_var("TILO_VPN_ALLOW_EXEC") };
         let refused = config::execute(&plan);
         assert!(
             refused.is_err() && refused.unwrap_err().contains("execution disabled"),

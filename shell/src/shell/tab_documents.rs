@@ -309,14 +309,14 @@ mod tests {
     #[test]
     #[serial_test::serial(record_state_dir)]
     fn both_tabs_come_back_with_their_own_content_after_a_restart() {
-        const PACKAGE: &str = "dev.qos.test-tab-documents";
+        const PACKAGE: &str = "dev.tilo.test-tab-documents";
 
         let tmp = tempfile::tempdir().expect("temp dir");
         // SAFETY: serialised on `record_state_dir`; no other thread reads
         // these between the writes here and the reads below.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
 
         {
@@ -359,17 +359,17 @@ mod tests {
     #[test]
     #[serial_test::serial(record_state_dir)]
     fn a_frame_offers_every_open_tab_to_its_writer() {
-        const PACKAGE: &str = "dev.qos.test-frame-writeback";
+        const PACKAGE: &str = "dev.tilo.test-frame-writeback";
 
         let tmp = tempfile::tempdir().expect("temp dir");
         // SAFETY: serialised on `record_state_dir`.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("TILO_PACKAGE_ID");
         }
 
         let store = RecordStore::open(PACKAGE);
-        let (mut host, _chrome) = crate::shell::build_nirios_overlay_host_with_records(
+        let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_records(
             tree_with_two_note_tabs(),
             false,
             store.clone(),

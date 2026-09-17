@@ -6,17 +6,17 @@
 //! ┌ Store header (search box + refresh)  ─────────────────────────┐
 //! │ [    Search…                       ] [ Refresh ]              │
 //! ├───────────────────────────────────────────────────────────────┤
-//! │ [ All | qOS | Flatpak | Installed ]      ← filter chip row    │
+//! │ [ All | Tilo | Flatpak | Installed ]      ← filter chip row    │
 //! ├───────────────────────────────────────────────────────────────┤
 //! │ Categories: [ All | Games | Productivity | System | Utils ]   │
 //! ├───────────────────────────────────────────────────────────────┤
 //! │  ┌───────────────────────────────────────────────────────┐    │
-//! │  │  [icon]  Notes                v0.1.0 · qOS main [Add] │    │
+//! │  │  [icon]  Notes                v0.1.0 · Tilo main [Add] │    │
 //! │  │  [ ⎔  ]  A CRDT notes app                             │    │
 //! │  └───────────────────────────────────────────────────────┘    │
 //! │  ... more cards, spanning to the window bottom ...            │
 //! │                                    ╭─────────────────────────╮ │
-//! │                                    │ Installing dev.qos.notes…│ │  ← transient bubble
+//! │                                    │ Installing dev.tilo.notes…│ │  ← transient bubble
 //! └────────────────────────────────────╰─────────────────────────╯─┘
 //! ```
 //!
@@ -39,7 +39,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Politeness, Role};
-use ui::qos_actions::{
+use ui::tilo_actions::{
     ActionAddress, ActionArgs, ActionBinding, ActionContract, ActionParam, ActionSpec,
     Availability, ConfirmationPolicy, ControlInvocation, EncodedAction, ExecutionLocus,
     ExecutionMode, OperationKind, ParamType, Resource, ResultSpec, RetryPolicy, RiskLevel,
@@ -176,7 +176,7 @@ fn short_publisher(item: &StoreItem) -> String {
     item.publisher_pubkey_hex.as_deref().map_or_else(
         || match item.source {
             crate::StoreSource::Flathub => "Flathub / upstream metadata".into(),
-            crate::StoreSource::Qos { .. } => "Not disclosed".into(),
+            crate::StoreSource::Tilo { .. } => "Not disclosed".into(),
         },
         |key| {
             let prefix = key.chars().take(12).collect::<String>();
@@ -189,21 +189,21 @@ fn full_publisher(item: &StoreItem) -> String {
     item.publisher_pubkey_hex.as_deref().map_or_else(
         || match item.source {
             crate::StoreSource::Flathub => "Flathub / upstream metadata".into(),
-            crate::StoreSource::Qos { .. } => "Not disclosed".into(),
+            crate::StoreSource::Tilo { .. } => "Not disclosed".into(),
         },
         |key| format!("ed25519:{key}"),
     )
 }
 
-/// Human-facing device state must distinguish qOS's content-addressed,
+/// Human-facing device state must distinguish Tilo's content-addressed,
 /// fetch-on-open cache from a conventional Flatpak installation.
 fn device_state_label(item: &StoreItem) -> String {
     match (&item.source, &item.installed) {
-        (crate::StoreSource::Qos { .. }, crate::InstalledState::Not) => {
+        (crate::StoreSource::Tilo { .. }, crate::InstalledState::Not) => {
             "Available on demand · fetched when opened\nNot kept on this device".into()
         }
         (
-            crate::StoreSource::Qos { .. },
+            crate::StoreSource::Tilo { .. },
             crate::InstalledState::Installed {
                 version,
                 available,
@@ -364,7 +364,7 @@ fn bounded_detail_card(
 
 fn report_envelope(report: &ReportRecord, item: Option<&StoreItem>, note: &str) -> ReportEnvelope {
     ReportEnvelope {
-        format: "qos.store.report-envelope.v1".into(),
+        format: "tilo.store.report-envelope.v1".into(),
         app_id: report.app_id.clone(),
         status: report.status.clone(),
         publisher_fingerprint: item.and_then(|item| item.publisher_pubkey_hex.clone()),
@@ -519,7 +519,7 @@ fn store_app_resource(item: &StoreItem, flatpak_available: bool) -> Resource {
         add_store_item_action(
             &mut resource,
             // Keep the published action address identical to the serialized
-            // action code. In particular, a Flatpak removal is not the qOS
+            // action code. In particular, a Flatpak removal is not the Tilo
             // `remove` operation: using a generic id here made the card's
             // typed binding point at an action that the live resource tree
             // did not publish, so the host quite correctly rejected it.
@@ -544,7 +544,7 @@ fn store_app_resource(item: &StoreItem, flatpak_available: bool) -> Resource {
     }
     let review_label = match item.trust {
         crate::StoreTrust::PublisherSigned => "Signature verified · no independent review",
-        crate::StoreTrust::Flathub => "Flathub distribution · no qOS review",
+        crate::StoreTrust::Flathub => "Flathub distribution · no Tilo review",
     };
     resource.children.push(Resource::new(
         format!("app:{}:review", item.id),
@@ -805,7 +805,7 @@ pub struct StoreApp {
     /// Retained global-search projection. It is rebuilt only after a changed
     /// worker snapshot and resolves palette addresses against live rows.
     search_index: crate::search_provider::StoreSearchIndex,
-    /// Active source-side filter (`All | qOS | Flatpak | Installed`). Kept
+    /// Active source-side filter (`All | Tilo | Flatpak | Installed`). Kept
     /// locally: browsing one catalogue must not navigate collaborators.
     active_filter: SourceFilter,
     /// Active category or `None` for "all categories".
@@ -850,10 +850,10 @@ pub struct StoreApp {
     /// Root of the built layout so events can be routed to the
     /// composed sub-tree.
     root: Option<Box<dyn Widget>>,
-    pending_lifecycle_actions: Vec<(String, ActionKind, qos_actions::InvocationId)>,
-    pending_lifecycle_refresh: Option<qos_actions::InvocationId>,
-    pending_lifecycle_remote: Vec<(RemoteIntent, qos_actions::InvocationId)>,
-    completed_invocations: Vec<qos_actions::InvocationUpdate>,
+    pending_lifecycle_actions: Vec<(String, ActionKind, tilo_actions::InvocationId)>,
+    pending_lifecycle_refresh: Option<tilo_actions::InvocationId>,
+    pending_lifecycle_remote: Vec<(RemoteIntent, tilo_actions::InvocationId)>,
+    completed_invocations: Vec<tilo_actions::InvocationUpdate>,
     pending_search: Option<String>,
     pending_detail: Option<String>,
     remotes: Vec<crate::flathub_client::Remote>,
@@ -867,11 +867,11 @@ pub struct StoreApp {
     report_notes: HashMap<String, String>,
     pending_control_invocation: Option<ControlInvocation>,
     report_export: Option<(
-        qos_actions::InvocationId,
+        tilo_actions::InvocationId,
         ui::portal::PortalChannel,
         Vec<u8>,
     )>,
-    pending_moderation: Vec<(ModerationIntent, qos_actions::InvocationId)>,
+    pending_moderation: Vec<(ModerationIntent, tilo_actions::InvocationId)>,
     /// List position survives the composed widget tree being rebuilt after a
     /// filter, search result, or catalogue update.
     scroll_offset: Rc<Cell<(f32, f32)>>,
@@ -965,36 +965,36 @@ impl StoreApp {
 
     pub fn take_lifecycle_actions(
         &mut self,
-    ) -> Vec<(String, ActionKind, qos_actions::InvocationId)> {
+    ) -> Vec<(String, ActionKind, tilo_actions::InvocationId)> {
         std::mem::take(&mut self.pending_lifecycle_actions)
     }
 
-    pub fn take_lifecycle_refresh(&mut self) -> Option<qos_actions::InvocationId> {
+    pub fn take_lifecycle_refresh(&mut self) -> Option<tilo_actions::InvocationId> {
         self.pending_lifecycle_refresh.take()
     }
 
-    pub fn take_lifecycle_remote(&mut self) -> Vec<(RemoteIntent, qos_actions::InvocationId)> {
+    pub fn take_lifecycle_remote(&mut self) -> Vec<(RemoteIntent, tilo_actions::InvocationId)> {
         std::mem::take(&mut self.pending_lifecycle_remote)
     }
 
     pub fn complete_lifecycle_invocation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         error: Option<String>,
     ) {
         self.completed_invocations.push(match error {
-            Some(message) => qos_actions::InvocationUpdate::Failed {
+            Some(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "store.operation_failed".into(),
                     message,
                     details: None,
                     retryable: false,
                 },
             },
-            None => qos_actions::InvocationUpdate::Succeeded {
+            None => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             },
         });
     }
@@ -1013,7 +1013,7 @@ impl StoreApp {
 
     pub fn take_moderation_requests(
         &mut self,
-    ) -> Vec<(ModerationIntent, qos_actions::InvocationId)> {
+    ) -> Vec<(ModerationIntent, tilo_actions::InvocationId)> {
         std::mem::take(&mut self.pending_moderation)
     }
 
@@ -1060,7 +1060,7 @@ impl StoreApp {
         self.structure_dirty = true;
     }
 
-    /// Open a stable catalogue identity supplied by the shell's `qos-store:`
+    /// Open a stable catalogue identity supplied by the shell's `tilo-store:`
     /// URI route. This is deliberately presentation-only: the user still
     /// sees provenance and chooses the current, revalidated install action.
     pub fn open_catalogue_item(&mut self, id: String) {
@@ -1073,8 +1073,8 @@ impl StoreApp {
     pub fn show_safety_for_shot(&mut self) {
         self.safety_open = true;
         self.reports.push(ReportRecord {
-            id: "report:dev.qos.notes".into(),
-            app_id: "dev.qos.notes".into(),
+            id: "report:dev.tilo.notes".into(),
+            app_id: "dev.tilo.notes".into(),
             status: "Draft · not submitted".into(),
         });
         self.structure_dirty = true;
@@ -1082,7 +1082,7 @@ impl StoreApp {
 
     pub fn show_moderation_case_for_shot(&mut self, status: &str) {
         self.show_safety_for_shot();
-        self.report_notes.insert("dev.qos.notes".into(), "The app contacted a third-party host while its offline mode was enabled. The exported trace contains the exact destination and time.".into());
+        self.report_notes.insert("dev.tilo.notes".into(), "The app contacted a third-party host while its offline mode was enabled. The exported trace contains the exact destination and time.".into());
         if let Some(report) = self.reports.first_mut() {
             report.id = "case-8d10fce04f126f0c2f293c16".into();
             report.status = status.into();
@@ -1457,7 +1457,7 @@ impl StoreApp {
             .items
             .iter()
             .map(|item| match &item.source {
-                StoreSource::Qos { .. } => "qOS catalogue",
+                StoreSource::Tilo { .. } => "Tilo catalogue",
                 StoreSource::Flathub => "Flathub",
             })
             .collect::<std::collections::BTreeSet<_>>()
@@ -1514,7 +1514,7 @@ impl StoreApp {
     )]
     fn build_desktop_detail(&self, item: &StoreItem, theme: &Theme) -> Box<dyn Widget> {
         let source = match &item.source {
-            StoreSource::Qos { registry_name } => format!("qOS · {registry_name}"),
+            StoreSource::Tilo { registry_name } => format!("Tilo · {registry_name}"),
             StoreSource::Flathub => "Flatpak · Flathub".to_string(),
         };
         let trust_label = match item.trust {
@@ -1582,7 +1582,7 @@ impl StoreApp {
                 "Identity and package integrity are verified. This is not an independent quality review."
             }
             crate::StoreTrust::Flathub => {
-                "This app is distributed by Flathub. qOS has not independently reviewed it."
+                "This app is distributed by Flathub. Tilo has not independently reviewed it."
             }
         };
         let mut report = ui::widget::Button::new(
@@ -1800,12 +1800,12 @@ impl StoreApp {
             return Some(self.build_desktop_detail(item, theme));
         }
         let source = match &item.source {
-            crate::StoreSource::Qos { registry_name } => format!("qOS · {registry_name}"),
+            crate::StoreSource::Tilo { registry_name } => format!("Tilo · {registry_name}"),
             crate::StoreSource::Flathub => "Flatpak · Flathub".to_string(),
         };
         let locally_retained = matches!(
             &item.source,
-            crate::StoreSource::Qos { registry_name } if registry_name == "Installed on this device"
+            crate::StoreSource::Tilo { registry_name } if registry_name == "Installed on this device"
         );
         let trust_summary = if locally_retained {
             "Verified when installed. Current registry metadata is unavailable, so update availability is unknown."
@@ -1815,7 +1815,7 @@ impl StoreApp {
                     "Publisher identity and package integrity are verified. This is not an independent quality review."
                 }
                 crate::StoreTrust::Flathub => {
-                    "Distributed by Flathub. qOS has not independently reviewed this app."
+                    "Distributed by Flathub. Tilo has not independently reviewed this app."
                 }
             }
         };
@@ -2362,7 +2362,7 @@ impl StoreApp {
                     "Save a bounded JSON evidence envelope through the system file picker",
                 ))];
                 if let Some(item) = item
-                    && let StoreSource::Qos { registry_name } = &item.source
+                    && let StoreSource::Tilo { registry_name } = &item.source
                 {
                     if report.id.starts_with("case-") {
                         for (action, label, type_id, reason) in [
@@ -3654,14 +3654,14 @@ impl StoreApp {
             ui::portal::PortalOutcome::Opened(path) => match atomic_file::write(&path, &bytes) {
                 Ok(()) => {
                     self.status_line = format!("Exported report evidence to {}.", path.display());
-                    qos_actions::InvocationUpdate::Succeeded {
+                    tilo_actions::InvocationUpdate::Succeeded {
                         invocation,
-                        output: qos_actions::ActionOutput::default(),
+                        output: tilo_actions::ActionOutput::default(),
                     }
                 }
-                Err(error) => qos_actions::InvocationUpdate::Failed {
+                Err(error) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "store.report_export_failed".into(),
                         message: format!("Could not export report evidence: {error}"),
                         details: None,
@@ -3669,13 +3669,13 @@ impl StoreApp {
                     },
                 },
             },
-            ui::portal::PortalOutcome::Cancelled => qos_actions::InvocationUpdate::Cancelled {
+            ui::portal::PortalOutcome::Cancelled => tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("Export cancelled".into()),
             },
-            ui::portal::PortalOutcome::Failed(message) => qos_actions::InvocationUpdate::Failed {
+            ui::portal::PortalOutcome::Failed(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "store.report_export_failed".into(),
                     message,
                     details: None,
@@ -3874,7 +3874,7 @@ impl Widget for StoreApp {
                     })
                 },
             )
-            .requiring(ui::qos_actions::PermissionRequirement::Admin)
+            .requiring(ui::tilo_actions::PermissionRequirement::Admin)
             .privileged()
             .execution(ExecutionMode::Background { cancellable: false })
             .returns(ResultSpec::Job),
@@ -3893,7 +3893,7 @@ impl Widget for StoreApp {
                 &vec!["remove".to_string(), remote.name.clone()],
             ) {
                 resource.actions.push(remove.with_contract(ActionContract {
-                    permission: ui::qos_actions::PermissionRequirement::Admin,
+                    permission: ui::tilo_actions::PermissionRequirement::Admin,
                     risk: RiskLevel::Destructive,
                     confirmation: ConfirmationPolicy::Confirm,
                     retry: RetryPolicy::Idempotent,
@@ -3960,7 +3960,7 @@ impl Widget for StoreApp {
                 report_resource.actions.push(export);
             }
             if let Some(item) = self.items.iter().find(|item| item.id == report.app_id)
-                && let StoreSource::Qos { registry_name } = &item.source
+                && let StoreSource::Tilo { registry_name } = &item.source
             {
                 if report.id.starts_with("case-") {
                     for (action, label, type_id, reason) in [
@@ -4041,7 +4041,7 @@ impl Widget for StoreApp {
                     crate::StoreTrust::PublisherSigned => {
                         "Signature verified · no independent review"
                     }
-                    crate::StoreTrust::Flathub => "Flathub distribution · no qOS review",
+                    crate::StoreTrust::Flathub => "Flathub distribution · no Tilo review",
                 };
                 return Some(Resource::new(id, "store.review", label));
             }
@@ -4212,7 +4212,7 @@ impl Widget for StoreApp {
     )]
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
@@ -4235,7 +4235,7 @@ impl Widget for StoreApp {
             }
             let envelope: ReportEnvelope =
                 serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-            if envelope.format != "qos.store.report-envelope.v1"
+            if envelope.format != "tilo.store.report-envelope.v1"
                 || envelope.app_id.trim().is_empty()
                 || envelope.evidence_note.len() > 65_536
             {
@@ -4267,7 +4267,7 @@ impl Widget for StoreApp {
                 serde_json::from_slice(payload)
                     .map_err(|_| "invalid moderation request".to_string())?;
             if registry_name.trim().is_empty()
-                || envelope.format != "qos.store.report-envelope.v1"
+                || envelope.format != "tilo.store.report-envelope.v1"
                 || envelope.app_id.trim().is_empty()
                 || envelope.evidence_note.trim().chars().count() < 8
                 || envelope.evidence_note.chars().count() > 4_096
@@ -4279,11 +4279,11 @@ impl Widget for StoreApp {
                 .iter()
                 .find(|item| item.id == envelope.app_id)
                 .ok_or_else(|| "the reported app is no longer in this catalogue".to_string())?;
-            let StoreSource::Qos {
+            let StoreSource::Tilo {
                 registry_name: current_registry,
             } = &item.source
             else {
-                return Err("reports can only be submitted to the app's qOS registry".into());
+                return Err("reports can only be submitted to the app's Tilo registry".into());
             };
             if current_registry != &registry_name {
                 return Err("the report target no longer matches this app's registry".into());
@@ -4340,11 +4340,11 @@ impl Widget for StoreApp {
                 .iter()
                 .find(|item| item.id == report.app_id)
                 .ok_or_else(|| "the moderated app is no longer in this catalogue".to_string())?;
-            let StoreSource::Qos {
+            let StoreSource::Tilo {
                 registry_name: current_registry,
             } = &item.source
             else {
-                return Err("this moderation case no longer has a qOS registry target".into());
+                return Err("this moderation case no longer has a Tilo registry target".into());
             };
             if current_registry != &registry_name {
                 return Err("the moderation case no longer matches this app's registry".into());
@@ -4438,11 +4438,11 @@ impl Widget for StoreApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         let index = self
             .completed_invocations
             .iter()
@@ -4693,7 +4693,7 @@ mod tests {
 
     fn item(name: &str, source: StoreSource, cat: &str, installed: InstalledState) -> StoreItem {
         let trust = match &source {
-            StoreSource::Qos { .. } => StoreTrust::PublisherSigned,
+            StoreSource::Tilo { .. } => StoreTrust::PublisherSigned,
             StoreSource::Flathub => StoreTrust::Flathub,
         };
         StoreItem {
@@ -4726,16 +4726,16 @@ mod tests {
         app.set_items(vec![
             item(
                 "Notes",
-                StoreSource::Qos {
-                    registry_name: "qOS".into(),
+                StoreSource::Tilo {
+                    registry_name: "Tilo".into(),
                 },
                 "Productivity",
                 InstalledState::Not,
             ),
             item(
                 "Terminal",
-                StoreSource::Qos {
-                    registry_name: "qOS".into(),
+                StoreSource::Tilo {
+                    registry_name: "Tilo".into(),
                 },
                 "System",
                 InstalledState::Installed {
@@ -4762,8 +4762,8 @@ mod tests {
         for index in 0..(RESOURCE_SNAPSHOT_LIMIT + 17) {
             let mut entry = item(
                 "Utility",
-                StoreSource::Qos {
-                    registry_name: "qOS".into(),
+                StoreSource::Tilo {
+                    registry_name: "Tilo".into(),
                 },
                 "Utilities",
                 InstalledState::Not,
@@ -4856,29 +4856,29 @@ mod tests {
     }
 
     #[test]
-    fn device_copy_distinguishes_qos_on_demand_from_flatpak_installation() {
-        let qos = item(
+    fn device_copy_distinguishes_tilo_on_demand_from_flatpak_installation() {
+        let tilo = item(
             "Notes",
-            StoreSource::Qos {
-                registry_name: "qOS".into(),
+            StoreSource::Tilo {
+                registry_name: "Tilo".into(),
             },
             "Productivity",
             InstalledState::Not,
         );
         let flatpak = item("Chess", StoreSource::Flathub, "Games", InstalledState::Not);
         assert_eq!(
-            device_state_label(&qos),
+            device_state_label(&tilo),
             "Available on demand · fetched when opened\nNot kept on this device"
         );
         assert_eq!(device_state_label(&flatpak), "Not installed");
-        assert_eq!(qos.action_kind(true).label(), "Open");
+        assert_eq!(tilo.action_kind(true).label(), "Open");
         assert_eq!(flatpak.action_kind(true).label(), "Install");
     }
 
     #[test]
-    fn filter_qos_hides_flatpak() {
+    fn filter_tilo_hides_flatpak() {
         let mut app = seeded_app();
-        app.set_active_filter(SourceFilter::Qos);
+        app.set_active_filter(SourceFilter::Tilo);
         let names: Vec<&str> = app
             .visible_items()
             .iter()
@@ -5035,16 +5035,16 @@ mod tests {
     fn source_filter_is_local_and_re_filters_the_catalogue() {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
-        app.source_filter_state.set("qOS".into());
+        app.source_filter_state.set("Tilo".into());
         app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(app.active_filter(), SourceFilter::Qos);
+        assert_eq!(app.active_filter(), SourceFilter::Tilo);
         let names: Vec<&str> = app
             .visible_items()
             .iter()
             .map(|i| i.name.as_str())
             .collect();
         assert!(names.contains(&"Notes"));
-        assert!(!names.contains(&"Chess"), "qOS filter hides Flatpak items");
+        assert!(!names.contains(&"Chess"), "Tilo filter hides Flatpak items");
     }
 
     #[test]
@@ -5064,11 +5064,11 @@ mod tests {
         let mut first = seeded_app();
         let mut second = seeded_app();
         let mut doc = AutoCommit::new();
-        first.source_filter_state.set("qOS".into());
+        first.source_filter_state.set("Tilo".into());
         first.category_filter_state.set("Games".into());
         first.sync(&mut doc, &automerge::ROOT);
         second.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(first.active_filter(), SourceFilter::Qos);
+        assert_eq!(first.active_filter(), SourceFilter::Tilo);
         assert_eq!(first.active_category(), Some("Games"));
         assert_eq!(second.active_filter(), SourceFilter::All);
         assert_eq!(second.active_category(), None);
@@ -5085,10 +5085,10 @@ mod tests {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
         let heads = doc.get_heads();
-        let encoded = qos_actions::EncodedAction::encode_operation(
+        let encoded = tilo_actions::EncodedAction::encode_operation(
             crate::browse_actions::STORE_BROWSE_OPERATION_TYPE,
             &crate::browse_actions::BrowseOperation::SetSource {
-                source: "qOS".into(),
+                source: "Tilo".into(),
             },
         )
         .unwrap();
@@ -5102,11 +5102,11 @@ mod tests {
             )
             .unwrap()
         );
-        assert_eq!(app.active_filter(), SourceFilter::Qos);
+        assert_eq!(app.active_filter(), SourceFilter::Tilo);
         assert!(
             app.visible_items()
                 .iter()
-                .all(|item| matches!(item.source, StoreSource::Qos { .. }))
+                .all(|item| matches!(item.source, StoreSource::Tilo { .. }))
         );
         assert_eq!(
             doc.get_heads(),
@@ -5133,7 +5133,7 @@ mod tests {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
         let heads = doc.get_heads();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         assert_eq!(
             app.start_resource_operation(
                 invocation,
@@ -5184,7 +5184,7 @@ mod tests {
     fn exported_refresh_is_accepted_until_worker_completion() {
         let mut app = seeded_app();
         let doc = AutoCommit::new();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let started = app
             .start_resource_operation(
                 invocation,
@@ -5204,7 +5204,7 @@ mod tests {
         app.complete_lifecycle_invocation(invocation, None);
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 
@@ -5215,7 +5215,7 @@ mod tests {
         let payload = serde_json::to_vec(&vec!["id.notes", "open"]).unwrap();
         let first = app
             .start_resource_operation(
-                qos_actions::InvocationId::new(),
+                tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
                 "store.app",
                 &payload,
@@ -5232,7 +5232,7 @@ mod tests {
         assert_eq!(app.take_lifecycle_actions().len(), 1);
         assert!(
             app.start_resource_operation(
-                qos_actions::InvocationId::new(),
+                tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
                 "store.app",
                 &payload,
@@ -5252,7 +5252,7 @@ mod tests {
         let mut app = seeded_app();
         let doc = AutoCommit::new();
         let result = app.start_resource_operation(
-            qos_actions::InvocationId::new(),
+            tilo_actions::InvocationId::new(),
             OperationKind::Effect,
             "store.app",
             &serde_json::to_vec(&vec!["id.notes", "remove"]).unwrap(),
@@ -5319,7 +5319,7 @@ mod tests {
         }
         assert!(
             app.start_resource_operation(
-                qos_actions::InvocationId::new(),
+                tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
                 "store.app",
                 &serde_json::to_vec(&vec!["id.chess", "flatpak-remove"]).unwrap(),
@@ -5361,7 +5361,7 @@ mod tests {
     fn moderation_effect_waits_for_authoritative_case_before_materializing_status() {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.reports.push(ReportRecord {
             id: "report:id.notes".into(),
             app_id: "id.notes".into(),
@@ -5382,7 +5382,7 @@ mod tests {
                 invocation,
                 OperationKind::Effect,
                 "store.moderation",
-                &serde_json::to_vec(&("qOS", &envelope)).unwrap(),
+                &serde_json::to_vec(&("Tilo", &envelope)).unwrap(),
                 &doc,
                 &automerge::ROOT,
             )
@@ -5449,7 +5449,7 @@ mod tests {
         for _ in 0..MAX_PENDING_EXTERNAL_OPERATIONS {
             assert!(
                 app.start_resource_operation(
-                    qos_actions::InvocationId::new(),
+                    tilo_actions::InvocationId::new(),
                     OperationKind::Effect,
                     "store.remote",
                     &payload,
@@ -5461,7 +5461,7 @@ mod tests {
         }
         assert!(
             app.start_resource_operation(
-                qos_actions::InvocationId::new(),
+                tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
                 "store.remote",
                 &payload,
@@ -5523,10 +5523,10 @@ mod tests {
         );
         let doc = AutoCommit::new();
         let accepted = app.start_resource_operation(
-            qos_actions::InvocationId::new(),
+            tilo_actions::InvocationId::new(),
             OperationKind::Effect,
             "store.moderation",
-            &serde_json::to_vec(&("qOS", &current)).unwrap(),
+            &serde_json::to_vec(&("Tilo", &current)).unwrap(),
             &doc,
             &automerge::ROOT,
         );
@@ -5536,10 +5536,10 @@ mod tests {
         let mut stale = current;
         stale.evidence_note = "Different text that was never saved in this draft.".into();
         let rejected = app.start_resource_operation(
-            qos_actions::InvocationId::new(),
+            tilo_actions::InvocationId::new(),
             OperationKind::Effect,
             "store.moderation",
-            &serde_json::to_vec(&("qOS", stale)).unwrap(),
+            &serde_json::to_vec(&("Tilo", stale)).unwrap(),
             &doc,
             &automerge::ROOT,
         );
@@ -5579,8 +5579,8 @@ mod tests {
     fn trust_sheet_uses_a_scannable_publisher_identity_summary() {
         let mut signed = item(
             "Signed",
-            StoreSource::Qos {
-                registry_name: "qOS".into(),
+            StoreSource::Tilo {
+                registry_name: "Tilo".into(),
             },
             "Utilities",
             InstalledState::Not,

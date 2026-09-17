@@ -184,7 +184,7 @@ mod tests {
         );
     }
 
-    /// `nir` matches nothing else about the tab, isolating a body-only match.
+    /// `tilo` matches nothing else about the tab, isolating a body-only match.
     #[test]
     fn finds_a_word_that_only_appears_in_the_body_the_app_wrote() {
         let handle = tree_with_note_tab(7, "Notes");
@@ -194,12 +194,12 @@ mod tests {
         seed_note_body(
             &chrome_st,
             7,
-            "Welcome to nirios.\n\nThese notes sync live with anyone \
+            "Welcome to tilo.\n\nThese notes sync live with anyone \
              invited to this workspace.",
         );
         let provider = NotesProvider::new();
         let out = provider.query(SearchContext {
-            needle: "nir",
+            needle: "tilo",
             wanted: &[ResourceKind::Note],
             chrome: &chrome_st,
             doc: &doc,
@@ -214,7 +214,7 @@ mod tests {
         assert_eq!(out[0].score, 40, "a body hit scores 40");
         let snippet = out[0].subtitle.as_deref().unwrap_or_default();
         assert!(
-            snippet.contains("nirios"),
+            snippet.contains("tilo"),
             "the row must show the matching line: {snippet:?}"
         );
         assert!(

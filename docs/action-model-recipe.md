@@ -1,6 +1,6 @@
 # Building an app on the resource + action model
 
-Every collaborative operation in a qOS app is an **action**: a small serializable
+Every collaborative operation in a Tilo app is an **action**: a small serializable
 value that deterministically mutates the shared Automerge document. Actions are
 the single path by which app state changes — so undo, multi-peer replay, and the
 Ctrl+K command palette all work from one implementation, for free.
@@ -175,7 +175,7 @@ weakened assertion:
 
 ## Adoption status (2026-09-01)
 
-The `qos_actions` spine, unified Ctrl+K palette/action door, and framework
+The `tilo_actions` spine, unified Ctrl+K palette/action door, and framework
 `ActionHost` are broadly adopted across the app catalogue. Generic dispatch
 retains the document actor, infers app ownership when a caller omits it, and can
 inherit ambient purpose/work-group context from a task or agent run while

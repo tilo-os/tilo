@@ -462,7 +462,7 @@ fn build_inputs_card(theme: &Theme) -> Box<dyn Widget> {
                 .push(Box::new(Breadcrumb::new(vec![
                     "Home".into(),
                     "Projects".into(),
-                    "qOS".into(),
+                    "Tilo".into(),
                     "ui".into(),
                 ]))),
         ),
@@ -646,7 +646,7 @@ fn build_banners_card() -> Box<dyn Widget> {
         Box::new(
             col(10.0)
                 .push(Box::new(
-                    Banner::info("A new version of qOS is available.")
+                    Banner::info("A new version of Tilo is available.")
                         .with_message("Restart to finish updating."),
                 ))
                 .push(Box::new(Banner::success("Your changes were saved.")))
@@ -696,7 +696,7 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
     seed_gallery_state(state);
 
     // ---- Header -----------------------------------------------------------
-    let header = col(4.0).push(title("qOS UI Toolkit")).push(dim(
+    let header = col(4.0).push(title("Tilo UI Toolkit")).push(dim(
         "Component gallery — one showcase of every general-purpose widget, light & dark",
         theme,
     ));

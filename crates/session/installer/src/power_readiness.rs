@@ -6,7 +6,7 @@
 //! a charging laptop all proceed.  Only a definitive low-and-discharging
 //! reading asks the person to connect power before destructive work begins.
 
-use qos_power_mgmt::{BatterySnapshot, BatteryState};
+use tilo_power_mgmt::{BatterySnapshot, BatteryState};
 
 /// Enough headroom for a normal offline install without making a healthy
 /// laptop wait for an arbitrary full charge.
@@ -27,11 +27,11 @@ pub fn insufficient_battery_percent(snapshot: BatterySnapshot, on_battery: bool)
         .then_some(snapshot.percent)
 }
 
-/// Read the live machine through qOS's shared, bus-free sysfs model.
+/// Read the live machine through Tilo's shared, bus-free sysfs model.
 pub fn current_insufficient_battery_percent() -> Option<u8> {
     insufficient_battery_percent(
-        qos_power_mgmt::sysfs_battery_snapshot(),
-        qos_power_mgmt::sysfs_on_battery(),
+        tilo_power_mgmt::sysfs_battery_snapshot(),
+        tilo_power_mgmt::sysfs_on_battery(),
     )
 }
 

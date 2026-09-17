@@ -27,12 +27,12 @@ use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+use ui::tilo_actions::{
     ActionContract, ActionSpec, Availability, ConfirmationPolicy, ExecutionMode, OperationKind,
     PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
-use ui::text_render::{TextRenderer, TextWeight};
-use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonFace, FlapState, SegmentedFace, SplitLayout, TextInput, ToggleGroup, Widget,
 };
@@ -332,8 +332,8 @@ pub struct DisksApp {
     live: bool,
     /// Receiver for the currently-running background action, if any.
     action_rx: Option<mpsc::Receiver<ActionResult>>,
-    action_invocation: Option<qos_actions::InvocationId>,
-    completed_action: Option<qos_actions::InvocationUpdate>,
+    action_invocation: Option<tilo_actions::InvocationId>,
+    completed_action: Option<tilo_actions::InvocationUpdate>,
     /// One-time first-frame setup: the live seed and the initial layout
     /// settle. Grouped so they don't pile up as same-shaped bools next to
     /// `dirty` and `live`.
@@ -3422,7 +3422,7 @@ impl Widget for DisksApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
@@ -3470,11 +3470,11 @@ impl Widget for DisksApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if self
             .completed_action
             .as_ref()
@@ -3570,18 +3570,18 @@ impl Widget for DisksApp {
         if let Some(res) = result {
             if let Some(invocation) = self.action_invocation.take() {
                 self.completed_action = Some(match &res.error {
-                    Some(error) => qos_actions::InvocationUpdate::Failed {
+                    Some(error) => tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "disks.operation_failed".into(),
                             message: error.clone(),
                             details: None,
                             retryable: false,
                         },
                     },
-                    None => qos_actions::InvocationUpdate::Succeeded {
+                    None => tilo_actions::InvocationUpdate::Succeeded {
                         invocation,
-                        output: qos_actions::ActionOutput::default(),
+                        output: tilo_actions::ActionOutput::default(),
                     },
                 });
             }
@@ -3599,9 +3599,9 @@ impl Widget for DisksApp {
         if clear {
             self.action_rx = None;
             if !had_result && let Some(invocation) = self.action_invocation.take() {
-                self.completed_action = Some(qos_actions::InvocationUpdate::Failed {
+                self.completed_action = Some(tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "disks.worker_disconnected".into(),
                         message: "disk operation worker disconnected without a result".into(),
                         details: None,
@@ -3913,6 +3913,7 @@ impl Widget for DisksApp {
                         .confirm_body(&format!("/dev/{expected}"), self.live),
                 )
                 .with_bounds(ml.card)
+                .with_hashed_key("disks.confirmation-dialog")
                 .with_state(AccessState::new().modal(true));
             dialog.children.push(
                 AccessNode::new(Role::TextInput)
@@ -3952,7 +3953,9 @@ impl Widget for DisksApp {
             );
             root.children.push(dialog);
         } else {
-            let mut toolbar = AccessNode::new(Role::Toolbar).with_name("Storage controls");
+            let mut toolbar = AccessNode::new(Role::Toolbar)
+                .with_name("Storage controls")
+                .with_hashed_key("disks.toolbar");
             if let Some(menu) = lay.hamburger {
                 toolbar.children.push(
                     AccessNode::new(Role::Button)
@@ -3977,7 +3980,9 @@ impl Widget for DisksApp {
             root.children.push(toolbar);
 
             if self.list_open() {
-                let mut list = AccessNode::new(Role::List).with_name("Drives");
+                let mut list = AccessNode::new(Role::List)
+                    .with_name("Drives")
+                    .with_hashed_key("disks.drives");
                 let n = self.topo.drives.len();
                 for (i, drive) in self.topo.drives.iter().enumerate() {
                     let Some(&bounds) = lay.cards.get(i) else {
@@ -4008,7 +4013,9 @@ impl Widget for DisksApp {
                 root.children.push(list);
             }
 
-            let mut tabs = AccessNode::new(Role::TabBar).with_name("Drive details");
+            let mut tabs = AccessNode::new(Role::TabBar)
+                .with_name("Drive details")
+                .with_hashed_key("disks.drive-details");
             for (bounds, tab) in &lay.tabs {
                 tabs.children.push(
                     AccessNode::new(Role::Tab)
@@ -4027,6 +4034,7 @@ impl Widget for DisksApp {
             if let Some(drive) = self.drive() {
                 let mut actions = AccessNode::new(Role::Group)
                     .with_name(format!("Actions for /dev/{}", drive.name))
+                    .with_hashed_key("disks.drive-actions")
                     .with_bounds(lay.action_bar);
                 for (bounds, action, enabled) in &lay.action_buttons {
                     actions.children.push(
@@ -4085,6 +4093,7 @@ impl Widget for DisksApp {
             root.children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(self.status.clone())
+                    .with_hashed_key("disks.status")
                     .with_live(Politeness::Polite),
             );
         }
@@ -4671,7 +4680,7 @@ mod tests {
     #[test]
     fn worker_result_becomes_terminal_lifecycle_update() {
         let (mut app, mut doc) = seeded_app();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let (tx, rx) = mpsc::channel();
         app.action_invocation = Some(invocation);
         app.action_rx = Some(rx);
@@ -4684,7 +4693,7 @@ mod tests {
         app.sync(&mut doc, &ui::automerge::ROOT);
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &ui::automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 

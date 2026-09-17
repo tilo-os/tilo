@@ -21,19 +21,19 @@ pub const DISABLED_ALPHA: f32 = 0.45;
 /// Result of admitting an effect/view operation into a widget.
 ///
 /// `Accepted` is deliberately distinct from success: the widget must later
-/// report progress and exactly one terminal [`qos_actions::InvocationUpdate`]
+/// report progress and exactly one terminal [`tilo_actions::InvocationUpdate`]
 /// from [`Widget::poll_resource_operation`]. This keeps queued and streaming
 /// work from being reported as completed merely because it entered a queue.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ResourceOperationStart {
-    Completed(qos_actions::ActionOutput),
+    Completed(tilo_actions::ActionOutput),
     Accepted,
 }
 
 /// Machine-readable classification of a control's activation path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlBindingKind {
-    Action(qos_actions::ActionAddress),
+    Action(tilo_actions::ActionAddress),
     /// A framework-owned CRDT edit stream. The host supplies authorship,
     /// collaboration, history boundaries, undo, and permissions directly;
     /// this avoids turning every keystroke or slider tick into a heavyweight
@@ -116,70 +116,164 @@ pub fn semantic_action_bindings(
 pub(crate) fn collect_widget_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
-    resources: &mut Vec<qos_actions::Resource>,
+    resources: &mut Vec<tilo_actions::Resource>,
 ) {
-    resources.extend(widget.resources(doc));
-    widget.for_each_child(&mut |child| collect_widget_resources(child, doc, resources));
+    fn visit(
+        widget: &dyn Widget,
+        doc: &AutoCommit,
+        inherited: Option<crate::bound_dispatch::CallbackBinding>,
+        resources: &mut Vec<tilo_actions::Resource>,
+    ) {
+        let boundary = widget.callback_binding();
+        let binding = boundary.clone().or(inherited);
+        let Ok(_entry) = binding
+            .as_ref()
+            .map(crate::bound_dispatch::CallbackBinding::enter)
+            .transpose()
+        else {
+            return;
+        };
+        // Boundary adapters expose their real root as a child. Collect each
+        // declaration once, and release its document borrow before descending.
+        if boundary.is_none() {
+            if let Some(binding) = &binding {
+                if let Ok(found) = binding.read_document(doc, |doc, _| widget.resources(doc)) {
+                    resources.extend(found);
+                }
+            } else {
+                resources.extend(widget.resources(doc));
+            }
+        }
+        widget.for_each_child(&mut |child| visit(child, doc, binding.clone(), resources));
+    }
+    visit(widget, doc, None, resources);
 }
 
-/// Resolve one lazily published resource from the retained widget tree.
+/// Test traversal probe; production callers retain bound provenance.
+#[cfg(test)]
 pub(crate) fn resolve_widget_resource(
     widget: &dyn Widget,
     doc: &AutoCommit,
     id: &str,
-) -> Option<qos_actions::Resource> {
-    if let Some(resource) = widget.resource(doc, id) {
-        return Some(resource);
+) -> Option<tilo_actions::Resource> {
+    resolve_bound_resource(widget, doc, None, &mut |widget, doc| {
+        widget.resource(doc, id)
+    })
+}
+
+#[cfg(test)]
+fn resolve_bound_resource<R>(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    inherited: Option<crate::bound_dispatch::CallbackBinding>,
+    lookup: &mut dyn FnMut(&dyn Widget, &AutoCommit) -> Option<R>,
+) -> Option<R> {
+    let boundary = widget.callback_binding();
+    let binding = boundary.clone().or(inherited);
+    let _entry = binding
+        .as_ref()
+        .map(crate::bound_dispatch::CallbackBinding::enter)
+        .transpose()
+        .ok()?;
+    if boundary.is_none() {
+        let found = if let Some(binding) = &binding {
+            binding
+                .read_document(doc, |doc, _| lookup(widget, doc))
+                .ok()
+                .flatten()
+        } else {
+            lookup(widget, doc)
+        };
+        if found.is_some() {
+            return found;
+        }
     }
     widget
         .children()
         .into_iter()
-        .find_map(|child| resolve_widget_resource(child, doc, id))
+        .find_map(|child| resolve_bound_resource(child, doc, binding.clone(), lookup))
 }
 
 /// One bounded page from a widget-owned remote root catalogue.  `next_cursor`
 /// is meaningful only while `exhausted` is false and is never interpreted by
 /// a different widget or document revision.
 pub struct ActionDirectoryResourcePage {
-    pub resources: Vec<qos_actions::Resource>,
+    pub resources: Vec<tilo_actions::Resource>,
     pub next_cursor: Vec<u8>,
     pub exhausted: bool,
 }
 
-/// Return the retained widget at a stable pre-order position without asking it
-/// to materialize resources.  The app-owned cursor binds this ordinal to the
-/// directory revision, so a structural change invalidates instead of shifting
-/// a caller into an unrelated sibling.
-pub(crate) fn action_directory_widget_at<'a>(
-    widget: &'a dyn Widget,
-    target: usize,
-    ordinal: &mut usize,
-) -> Option<&'a dyn Widget> {
-    if *ordinal == target {
-        return Some(widget);
-    }
-    *ordinal = ordinal.saturating_add(1);
-    for child in widget.children() {
-        if let Some(found) = action_directory_widget_at(child, target, ordinal) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-/// Ask the resource's owning widget for its explicit directory disclosure
-/// capability without traversing or materialising any lazy descendants.
-pub(crate) fn resolve_action_directory_visibility(
+/// Read a bounded page without allowing its retained widget reference or
+/// originating binding to escape the traversal.
+#[allow(
+    clippy::option_option,
+    reason = "outer None means end of traversal; inner None means this ordinal has no bounded provider"
+)]
+pub(crate) fn action_directory_page_at(
     widget: &dyn Widget,
     doc: &AutoCommit,
-    id: &str,
-) -> Option<qos_actions::ActionAddress> {
-    widget.action_directory_visibility(doc, id).or_else(|| {
-        widget
-            .children()
-            .into_iter()
-            .find_map(|child| resolve_action_directory_visibility(child, doc, id))
-    })
+    target: usize,
+    cursor: &[u8],
+    max_results: usize,
+) -> Option<
+    Option<(
+        ActionDirectoryResourcePage,
+        Option<crate::bound_dispatch::CallbackBinding>,
+    )>,
+> {
+    fn visit(
+        widget: &dyn Widget,
+        doc: &AutoCommit,
+        target: usize,
+        ordinal: &mut usize,
+        inherited: Option<crate::bound_dispatch::CallbackBinding>,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<
+        Option<(
+            ActionDirectoryResourcePage,
+            Option<crate::bound_dispatch::CallbackBinding>,
+        )>,
+    > {
+        let boundary = widget.callback_binding();
+        let binding = boundary.clone().or(inherited);
+        let _entry = binding
+            .as_ref()
+            .map(crate::bound_dispatch::CallbackBinding::enter)
+            .transpose()
+            .ok()?;
+        if *ordinal == target {
+            if boundary.is_some() {
+                return Some(None);
+            }
+            return Some(
+                (if let Some(binding) = &binding {
+                    binding
+                        .read_document(doc, |doc, _| {
+                            widget.action_directory_resource_page(doc, cursor, max_results)
+                        })
+                        .ok()
+                        .flatten()
+                } else {
+                    widget.action_directory_resource_page(doc, cursor, max_results)
+                })
+                .map(|page| (page, binding)),
+            );
+        }
+        *ordinal = ordinal.saturating_add(1);
+        widget.children().into_iter().find_map(|child| {
+            visit(
+                child,
+                doc,
+                target,
+                ordinal,
+                binding.clone(),
+                cursor,
+                max_results,
+            )
+        })
+    }
+    visit(widget, doc, target, &mut 0, None, cursor, max_results)
 }
 
 /// Last-resort accessible label for controls whose constructor already
@@ -199,15 +293,15 @@ pub(crate) fn humanize_control_id(id: &str) -> String {
 /// Widgets call [`emit`](Self::emit) from any interaction path and expose the
 /// queue through [`Widget::take_control_invocation`].
 pub struct ActionEmitter<I> {
-    binding: qos_actions::ActionBinding<I>,
-    pending: VecDeque<qos_actions::ControlInvocation>,
+    binding: tilo_actions::ActionBinding<I>,
+    pending: VecDeque<tilo_actions::ControlInvocation>,
     available: bool,
 }
 
 const ACTION_EMITTER_QUEUE_LIMIT: usize = 64;
 
 impl<I> ActionEmitter<I> {
-    pub fn new(binding: qos_actions::ActionBinding<I>) -> Self {
+    pub fn new(binding: tilo_actions::ActionBinding<I>) -> Self {
         Self {
             binding,
             pending: VecDeque::new(),
@@ -221,7 +315,7 @@ impl<I> ActionEmitter<I> {
     ///
     /// Returns an error when `input` cannot be encoded against the action's
     /// declared parameter contract.
-    pub fn emit(&mut self, input: I) -> Result<(), qos_actions::ActionBindingError> {
+    pub fn emit(&mut self, input: I) -> Result<(), tilo_actions::ActionBindingError> {
         if self.available {
             let invocation = self.binding.invoke(input)?;
             if self.pending.len() >= ACTION_EMITTER_QUEUE_LIMIT {
@@ -237,17 +331,17 @@ impl<I> ActionEmitter<I> {
         Ok(())
     }
 
-    pub fn take(&mut self) -> Option<qos_actions::ControlInvocation> {
+    pub fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.pending.pop_front()
     }
 
-    pub fn binding(&self) -> &qos_actions::ActionBinding<I> {
+    pub fn binding(&self) -> &tilo_actions::ActionBinding<I> {
         &self.binding
     }
 
     /// Refresh whether the bound action is in the host's current,
     /// permission-filtered resource surface.
-    pub fn refresh_availability(&mut self, allowed: &HashSet<qos_actions::ActionAddress>) {
+    pub fn refresh_availability(&mut self, allowed: &HashSet<tilo_actions::ActionAddress>) {
         self.available = allowed.contains(self.binding.address());
         if !self.available {
             self.pending.clear();
@@ -268,8 +362,10 @@ impl<I> ActionEmitter<I> {
 }
 
 #[cfg(test)]
-pub(crate) fn test_bool_action_binding() -> qos_actions::ActionBinding<bool> {
-    use qos_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
+pub(crate) fn test_bool_action_binding() -> tilo_actions::ActionBinding<bool> {
+    use tilo_actions::{
+        ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
+    };
     let spec = ActionSpec::typed_operation(
         "set",
         "Set",
@@ -280,7 +376,7 @@ pub(crate) fn test_bool_action_binding() -> qos_actions::ActionBinding<bool> {
         |args| EncodedAction::encode_operation("test.set_bool", &args.boolean("value")).unwrap(),
     );
     let resource = Resource::new("test:control", "test", "Test").with_action(spec.clone());
-    qos_actions::ActionBinding::new(&resource, &spec, |value| {
+    tilo_actions::ActionBinding::new(&resource, &spec, |value| {
         serde_json::json!({"value": value})
             .as_object()
             .unwrap()
@@ -290,8 +386,10 @@ pub(crate) fn test_bool_action_binding() -> qos_actions::ActionBinding<bool> {
 }
 
 #[cfg(test)]
-pub(crate) fn test_string_action_binding() -> qos_actions::ActionBinding<String> {
-    use qos_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
+pub(crate) fn test_string_action_binding() -> tilo_actions::ActionBinding<String> {
+    use tilo_actions::{
+        ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
+    };
     let spec = ActionSpec::typed_operation(
         "set",
         "Set",
@@ -302,7 +400,7 @@ pub(crate) fn test_string_action_binding() -> qos_actions::ActionBinding<String>
         |args| EncodedAction::encode_operation("test.set_string", &args.text("value")).unwrap(),
     );
     let resource = Resource::new("test:control", "test", "Test").with_action(spec.clone());
-    qos_actions::ActionBinding::new(&resource, &spec, |value| {
+    tilo_actions::ActionBinding::new(&resource, &spec, |value| {
         serde_json::json!({"value": value})
             .as_object()
             .unwrap()
@@ -312,8 +410,10 @@ pub(crate) fn test_string_action_binding() -> qos_actions::ActionBinding<String>
 }
 
 #[cfg(test)]
-pub(crate) fn test_number_action_binding() -> qos_actions::ActionBinding<f64> {
-    use qos_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
+pub(crate) fn test_number_action_binding() -> tilo_actions::ActionBinding<f64> {
+    use tilo_actions::{
+        ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
+    };
     let spec = ActionSpec::typed_operation(
         "set",
         "Set",
@@ -324,7 +424,7 @@ pub(crate) fn test_number_action_binding() -> qos_actions::ActionBinding<f64> {
         |args| EncodedAction::encode_operation("test.set_number", &args.number("value")).unwrap(),
     );
     let resource = Resource::new("test:control", "test", "Test").with_action(spec.clone());
-    qos_actions::ActionBinding::new(&resource, &spec, |value| {
+    tilo_actions::ActionBinding::new(&resource, &spec, |value| {
         serde_json::json!({"value": value})
             .as_object()
             .unwrap()
@@ -334,6 +434,46 @@ pub(crate) fn test_number_action_binding() -> qos_actions::ActionBinding<f64> {
 }
 
 pub trait Widget {
+    /// Owning lifecycle path: capture and close nested components before removing
+    /// their live trees, transferring all recovery reports to the caller.
+    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.children_mut()
+            .into_iter()
+            .flat_map(Widget::close_components)
+            .collect()
+    }
+    /// Drain inert close-report ownership once; never invoke ordinary app callbacks
+    /// through a closed component. Bound owners override this to use cached metadata.
+    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.children_mut()
+            .into_iter()
+            .flat_map(Widget::take_component_close_reports)
+            .collect()
+    }
+
+    /// Runtime binding inherited by descendants in a matching layout topology.
+    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+        None
+    }
+
+    #[doc(hidden)]
+    #[allow(
+        private_interfaces,
+        reason = "opaque toolkit-only request prevents a public root/registry decoder loan"
+    )]
+    fn visit_components(
+        &mut self,
+        request: &mut crate::bound_dispatch::ComponentRequest<'_>,
+    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+        for child in self.children_mut() {
+            if request.target.is_some() && request.found {
+                break;
+            }
+            child.visit_components(request)?;
+        }
+        Ok(())
+    }
+
     /// Session-local broker requests emitted by an application widget. These
     /// are never document mutations; the host drains them onto its already
     /// authenticated collaboration channel.
@@ -436,6 +576,38 @@ pub trait Widget {
     ) -> taffy::Size<f32> {
         taffy::Size::ZERO
     }
+    /// Adjust this node's style using its allocated size, before final geometry
+    /// is applied. Return true only when the style changed. Do not replace
+    /// children or mutate widget structure here. The shared host solver repeats
+    /// layout at most eight times and skips a frame that does not settle.
+    /// Overrides affect only this node; the host visits every registered widget.
+    fn adjust_layout_style(&mut self, _taffy: &mut TaffyTree<()>, _node: NodeId) -> bool {
+        false
+    }
+
+    /// Read-only resolved decisions for widgets with an explicit layout policy.
+    /// `None` means the widget has no such policy; ordinary manual widgets remain
+    /// valid. Values are available after build/settlement and carry real origins.
+    fn layout_info(&self) -> Option<LayoutInfo> {
+        None
+    }
+
+    /// Renderer-aware prepaint policy adjustment. The default preserves the
+    /// existing self-node-only `adjust_layout_style` contract. An override may
+    /// measure its owned children through ordinary references, entering their
+    /// callback binding when present. Never reenter descendants through the raw
+    /// node map while borrowing their parent, change topology, or build another
+    /// layout tree. Change only this node's style; inherited decisions may be
+    /// retained for child hooks. Return true if styles or those decisions change.
+    fn adjust_layout_with_measure(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut TextRenderer,
+    ) -> bool {
+        self.adjust_layout_style(taffy, node)
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);
     fn draw(
         &mut self,
@@ -547,6 +719,13 @@ pub trait Widget {
 
     fn get_rect(&self) -> vello::kurbo::Rect;
 
+    /// Absolute logical clip applied to ordinary children during painting and
+    /// pointer routing. Inspectors and enclosing scroll regions must respect
+    /// this boundary instead of treating clipped descendants as visible extent.
+    fn child_clip_rect(&self) -> Option<vello::kurbo::Rect> {
+        None
+    }
+
     /// One-shot request to hand app content to the shared floating-surface
     /// host. Shell and in-app hosts consume the same description, so `PiP` does
     /// not require a second rendering/widget API.
@@ -566,7 +745,7 @@ pub trait Widget {
     /// One-shot request to open the host's action palette directly at a typed
     /// resource action. Parameter collection and permission checks remain host
     /// policy; widgets only name an address already present in `resources()`.
-    fn take_action_palette_request(&mut self) -> Option<qos_actions::ActionAddress> {
+    fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
         self.children_mut()
             .into_iter()
             .find_map(Widget::take_action_palette_request)
@@ -810,7 +989,7 @@ pub trait Widget {
         // their widget-specific implementations because they do not carry
         // this reserved prefix.
         let Some((_, encoded_path)) = target
-            .strip_prefix("qos.key-action:")
+            .strip_prefix("tilo.key-action:")
             .and_then(|target| target.rsplit_once(':'))
         else {
             return false;
@@ -876,7 +1055,7 @@ pub trait Widget {
     /// Drain semantic provenance for the native transaction currently asking
     /// the host to commit. Use this for CRDT-native edits such as flowing text;
     /// replayable discrete operations should continue through `ActionHost`.
-    fn take_commit_context(&mut self) -> Option<qos_actions::ActionContext> {
+    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
         self.children_mut()
             .into_iter()
             .find_map(Widget::take_commit_context)
@@ -884,7 +1063,7 @@ pub trait Widget {
     /// Drain one queued action-bound control intent from this subtree.
     /// Custom-painted widgets can own an [`ActionEmitter`] and override this
     /// method; they do not need to use the toolkit's [`Button`].
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.children_mut()
             .into_iter()
             .find_map(Widget::take_control_invocation)
@@ -902,7 +1081,7 @@ pub trait Widget {
     /// then recurse into children.
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &HashSet<qos_actions::ActionAddress>,
+        allowed: &HashSet<tilo_actions::ActionAddress>,
     ) {
         for child in self.children_mut() {
             child.refresh_control_action_availability(allowed);
@@ -1097,11 +1276,11 @@ pub trait Widget {
         None
     }
 
-    /// The tree of [`qos_actions::Resource`]s this widget currently has
+    /// The tree of [`tilo_actions::Resource`]s this widget currently has
     /// open, each with the actions it exports to Ctrl+K — e.g. a playing
     /// video plus its comments. `doc` lets a provider enumerate resources
     /// living in the CRDT.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         Vec::new()
     }
 
@@ -1129,7 +1308,7 @@ pub trait Widget {
 
     /// Resolve an addressable resource omitted from the contextual snapshot.
     /// Large apps override this through their `ResourceProvider` index.
-    fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<qos_actions::Resource> {
+    fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<tilo_actions::Resource> {
         None
     }
 
@@ -1144,7 +1323,7 @@ pub trait Widget {
         &self,
         _doc: &AutoCommit,
         _resource_id: &str,
-    ) -> Option<qos_actions::ActionAddress> {
+    ) -> Option<tilo_actions::ActionAddress> {
         None
     }
 
@@ -1162,8 +1341,8 @@ pub trait Widget {
     fn activate_search_result(&mut self, _action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {}
 
     /// The affordance-driven twin of the Ctrl+K palette: when a widget's own
-    /// control dispatches the same [`qos_actions`] action its
-    /// [`ActionSpec`](qos_actions::ActionSpec) exports, it reports the
+    /// control dispatches the same [`tilo_actions`] action its
+    /// [`ActionSpec`](tilo_actions::ActionSpec) exports, it reports the
     /// document heads captured **just before** here, so the host can record
     /// one undo boundary the same way a palette dispatch does. Rising-edge:
     /// reading MUST clear it.
@@ -1239,13 +1418,13 @@ pub trait Widget {
     /// the retained widget tree.
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         for child in self.children_mut() {
@@ -1266,14 +1445,14 @@ pub trait Widget {
     /// or fails while routing it through the retained widget tree.
     fn invoke_resource_operation_v2(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<qos_actions::ActionOutput>, String> {
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         self.invoke_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(qos_actions::ActionOutput::default))
+            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
     }
 
     /// Admit an exported non-document operation with a stable invocation id.
@@ -1288,8 +1467,8 @@ pub trait Widget {
     /// while routing the payload through the retained widget tree.
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -1317,14 +1496,20 @@ pub trait Widget {
     /// perform its effect and dispatch the exact replayable metadata action in
     /// one host-owned turn instead of publishing a permanently disabled UI.
     ///
+    /// The default preserves a widget's existing read-only admission override.
+    /// Transparent containers that host mutable handlers must forward this
+    /// method to their children (as `Column`, `Row`, `Container` and `TileHost` do).
+    /// They must not then call the read-only fallback: that would visit a
+    /// declining handler twice. Custom containers retain this forwarding duty.
+    ///
     /// # Errors
     ///
     /// Returns the same admission/operation failures as
     /// [`Self::start_resource_operation`].
     fn start_resource_operation_with_document(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &mut AutoCommit,
@@ -1341,11 +1526,11 @@ pub trait Widget {
     /// recursively polls retained children.
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         doc: &AutoCommit,
         path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         for child in self.children_mut() {
             if let Some(update) =
                 child.poll_resource_operation(invocation, cancellation_requested, doc, path)
@@ -1575,6 +1760,9 @@ impl TaffyTreeExt for TaffyTree<()> {
 
 pub type Element = Box<dyn Widget>;
 
+pub(crate) mod layout;
+pub use layout::{WidgetLayoutError, compute_widget_layout};
+
 mod button;
 pub use button::{Button, ButtonFace, ButtonInteract, ButtonStyle, face_colors};
 mod checkbox;
@@ -1582,8 +1770,16 @@ pub use checkbox::{Checkbox, CheckboxFace, CheckboxInteract};
 mod column;
 pub use column::Column;
 mod composition;
+mod composition_parts;
 mod form;
+mod form_composition;
+mod layout_info;
 pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
+pub use form_composition::{Field, Form, FormPage, FormSection};
+pub use layout_info::{
+    Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
+    PageLayout, SectionLayout,
+};
 mod row;
 pub use row::Row;
 mod toggle;
@@ -1684,6 +1880,7 @@ pub use scrollable::{ScrollAxis, Scrollable};
 mod tile_host;
 pub use tile_host::{AppKind, TileContent, TileHost};
 mod app_widget;
+pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{AppCommand, AppHostIntent, AppWidget, IconDescriptor};
 pub mod command_palette;
 pub mod input_hint;
@@ -1800,7 +1997,10 @@ pub mod banner;
 pub use banner::{Banner, BannerKind};
 pub mod chip;
 pub use chip::{Chip, ChipLead, ChipStyle};
+mod card_composition;
+pub use card_composition::{Actions, ContentCard};
 pub mod card;
+pub mod collaboration_overview;
 pub use card::{Card, CardGrid, card_column_width, card_columns};
 mod section;
 pub use section::{DEFAULT_SECTION_GAP, Section};

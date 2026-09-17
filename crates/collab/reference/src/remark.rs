@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use qos_actions::EncodedAction;
+use tilo_actions::EncodedAction;
 
 use crate::delivery::{Delivery, Destination, Id, MentionRef, deliver};
 use crate::direct::DirectRoom;
@@ -81,7 +81,7 @@ impl Remark {
     /// Encode as the chat app's own `SendMessage` action.
     ///
     /// `id`, `author` and `ts` are minted by the caller at authoring time, as
-    /// every qOS action requires, so the change replays byte-identically on every
+    /// every Tilo action requires, so the change replays byte-identically on every
     /// peer. A delivery the action cannot express is [`Undeliverable`] rather
     /// than downgraded — see the module docs.
     ///

@@ -1,6 +1,6 @@
 //! The toolkit's permission gate.
 //!
-//! There is exactly **one** permission model in qOS: the capability
+//! There is exactly **one** permission model in Tilo: the capability
 //! model in [`collab_types::caps`] — `(subject × scope × verb)`
 //! evaluated by [`decide_capability`], deny-biased and fail-closed. This
 //! module is the toolkit-side *adapter*, not a second model:
@@ -98,6 +98,19 @@ impl PermissionScope {
         }
     }
 
+    /// One exported operation within an app. An app-wide capability still
+    /// covers this through [`Scope::App`], while [`Scope::Action`] can grant or
+    /// deny the individual operation without widening the rest of the app.
+    pub fn action(app_id: impl Into<String>, action_id: impl Into<String>, op: Verb) -> Self {
+        Self {
+            resource: ResourceRef::Action {
+                app: app_id.into(),
+                action: action_id.into(),
+            },
+            op,
+        }
+    }
+
     pub fn app_kind(kind: AppKind, op: Verb) -> Self {
         Self::app(kind.app_id(), op)
     }
@@ -120,7 +133,7 @@ impl PermissionScope {
 /// before a gated widget ever sees an event. Construct with
 /// [`PermissionContext::permissive`] (the local unrestricted user) or
 /// [`PermissionContext::from_capabilities`] (a real actor + capabilities).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PermissionContext {
     /// The acting person's id, when the actor names one. Empty for an
     /// app / agent / token actor, which is not a person.
@@ -370,5 +383,33 @@ mod tests {
         )));
         assert!(!ctx.check(&PermissionScope::path("/etc/shadow", Verb::Read)));
         assert!(ctx.user().0.is_empty(), "an app is not a person");
+    }
+
+    #[test]
+    fn action_grant_is_narrow_while_app_grant_covers_every_action() {
+        let actor = Actor::agent("scribe");
+        let narrow = PermissionContext::from_capabilities(
+            actor.clone(),
+            vec![CapOverride::grant(
+                Subject::agent("scribe"),
+                Scope::Action {
+                    app: "notes".into(),
+                    action: "note.open".into(),
+                },
+                Verb::Read,
+            )],
+        );
+        assert!(narrow.check(&PermissionScope::action("notes", "note.open", Verb::Read)));
+        assert!(!narrow.check(&PermissionScope::action("notes", "note.delete", Verb::Read)));
+
+        let broad = PermissionContext::from_capabilities(
+            actor,
+            vec![CapOverride::grant(
+                Subject::agent("scribe"),
+                Scope::App("notes".into()),
+                Verb::Read,
+            )],
+        );
+        assert!(broad.check(&PermissionScope::action("notes", "note.delete", Verb::Read)));
     }
 }

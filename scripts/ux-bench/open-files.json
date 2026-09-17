@@ -1,0 +1,83 @@
+{
+  "name": "Open Files from desktop",
+  "goal": "Open Files through the visible command palette and reach its contents",
+  "viewport": [
+    1280,
+    800
+  ],
+  "budget": {
+    "clicks": 0,
+    "keys": 7
+  },
+  "steps": [
+    {
+      "op": "input",
+      "action": {
+        "modifiers": [
+          "meta"
+        ]
+      }
+    },
+    {
+      "op": "input",
+      "action": {
+        "key": "k"
+      }
+    },
+    {
+      "op": "input",
+      "action": {
+        "modifiers": []
+      }
+    },
+    {
+      "op": "input",
+      "action": {
+        "type": "Files"
+      }
+    },
+    {
+      "op": "checkpoint",
+      "name": "find-files",
+      "checks": [
+        {
+          "kind": "semantic",
+          "expectation": {
+            "target": "command_palette_input",
+            "expanded": true
+          }
+        }
+      ]
+    },
+    {
+      "op": "input",
+      "action": {
+        "key": "Enter"
+      }
+    },
+    {
+      "op": "checkpoint",
+      "name": "files-open",
+      "checks": [
+        {
+          "kind": "visible",
+          "target": "semantic:Files"
+        },
+        {
+          "kind": "state",
+          "pointer": "/tab_titles/0",
+          "equals": "Files"
+        },
+        {
+          "kind": "state",
+          "pointer": "/active_tabs/0/content/AppPlaceholder/kind",
+          "equals": "FileExplorer"
+        },
+        {
+          "kind": "visible",
+          "target": "semantic:Document-000.txt"
+        }
+      ]
+    }
+  ]
+}

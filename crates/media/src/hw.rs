@@ -12,7 +12,7 @@
 //! `GStreamer` instantiated, so a consumer (and a test) can assert on the real
 //! decoder by name.
 //!
-//! `QOS_MEDIA_HWDEC` overrides the policy:
+//! `TILO_MEDIA_HWDEC` overrides the policy:
 //!
 //! | value | effect |
 //! |---|---|
@@ -46,7 +46,7 @@ impl DecoderKind {
         !matches!(self, DecoderKind::Software)
     }
 
-    /// The family name used by `QOS_MEDIA_HWDEC` and reported in logs.
+    /// The family name used by `TILO_MEDIA_HWDEC` and reported in logs.
     pub fn as_str(self) -> &'static str {
         match self {
             DecoderKind::Va => "va",
@@ -103,7 +103,7 @@ impl DecoderKind {
     }
 }
 
-/// The hardware-decode policy for this process, from `QOS_MEDIA_HWDEC`.
+/// The hardware-decode policy for this process, from `TILO_MEDIA_HWDEC`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HwPolicy {
     /// Prefer hardware; fall back to software when none can decode the stream.
@@ -119,13 +119,13 @@ impl HwPolicy {
     /// [`HwPolicy::Auto`] with a warning — a typo must not silently disable
     /// hardware decode.
     pub fn from_env() -> Self {
-        match std::env::var("QOS_MEDIA_HWDEC") {
+        match std::env::var("TILO_MEDIA_HWDEC") {
             Err(_) => HwPolicy::Auto,
             Ok(v) => Self::parse(&v),
         }
     }
 
-    /// Parse one `QOS_MEDIA_HWDEC` value. Separated from the environment read
+    /// Parse one `TILO_MEDIA_HWDEC` value. Separated from the environment read
     /// so the mapping is exercised directly, without mutating process state.
     pub fn parse(v: &str) -> Self {
         match v.trim().to_ascii_lowercase().as_str() {
@@ -138,7 +138,7 @@ impl HwPolicy {
             "d3d11" | "d3d" => HwPolicy::Force(DecoderKind::D3d),
             other => {
                 tracing::warn!(
-                    "QOS_MEDIA_HWDEC={other:?} is not a known value \
+                    "TILO_MEDIA_HWDEC={other:?} is not a known value \
                      (auto|off|va|nvcodec|v4l2|vulkan|d3d11); using auto"
                 );
                 HwPolicy::Auto
@@ -471,7 +471,7 @@ mod tests {
             ("v4l2", HwPolicy::Force(DecoderKind::V4l2)),
             ("vulkan", HwPolicy::Force(DecoderKind::Vulkan)),
         ] {
-            assert_eq!(HwPolicy::parse(v), want, "QOS_MEDIA_HWDEC={v:?}");
+            assert_eq!(HwPolicy::parse(v), want, "TILO_MEDIA_HWDEC={v:?}");
         }
         assert_eq!(
             HwPolicy::parse("wat"),

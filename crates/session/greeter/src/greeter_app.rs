@@ -70,7 +70,7 @@ const SESSION_PATH: &str = "greeter.session";
 /// Rising-edge boolean flags raised by the secondary power-action buttons.
 /// Consumed in [`GreeterApp::sync`], which routes them through logind via
 /// `systemctl reboot` / `systemctl poweroff` (authorised for the `greetd`
-/// user by os/etc/polkit-1/rules.d/49-qos-greeter-power.rules).
+/// user by os/etc/polkit-1/rules.d/49-tilo-greeter-power.rules).
 const REBOOT_PATH: &str = "greeter.reboot";
 const POWEROFF_PATH: &str = "greeter.poweroff";
 
@@ -736,13 +736,13 @@ impl GreeterApp {
     /// (see `main.rs`), mirroring how the live App syncs fields.
     pub fn for_shot(scenario: AuthScenario) -> Self {
         // A snapshot may point at a fixture directory via
-        // `QOS_GREETER_SESSIONS_DIR`, so the session picker can be captured
+        // `TILO_GREETER_SESSIONS_DIR`, so the session picker can be captured
         // on a machine whose real sessions directory holds a single entry.
         // Deliberately confined to this snapshot constructor:
         // `GreeterApp::new` — the live path — always reads the system
         // location, so nothing in the environment can redirect what a real
         // login is offered.
-        let dir = std::env::var("QOS_GREETER_SESSIONS_DIR")
+        let dir = std::env::var("TILO_GREETER_SESSIONS_DIR")
             .unwrap_or_else(|_| DEFAULT_SESSIONS_DIR.to_string());
         let sessions = crate::sessions::read_sessions(std::path::Path::new(&dir));
         let personal = matches!(
@@ -817,7 +817,7 @@ impl GreeterApp {
 
     /// Label for the session picker — the session's own human-readable
     /// name, never the internal desktop id it is launched under. The id
-    /// (`nirios`) is a `DesktopNames=` contract with the portal; it is not
+    /// (`tilo`) is a `DesktopNames=` contract with the portal; it is not
     /// something to show the person logging in.
     #[cfg(test)]
     fn session_label(&self) -> String {
@@ -1037,7 +1037,7 @@ impl GreeterApp {
                 BRAND_GAP,
                 vec![
                     Box::new(
-                        Text::new("qOS desktop")
+                        Text::new("Tilo Desktop")
                             .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(c.text_dim),
                     ),
@@ -1053,7 +1053,7 @@ impl GreeterApp {
             Box::new(VStack::new(
                 BRAND_GAP,
                 vec![
-                    Box::new(Text::new("qOS").with_size(38.0)),
+                    Box::new(Text::new("Tilo").with_size(38.0)),
                     Box::new(
                         Text::new("Sign in to continue")
                             .with_size(13.0)
@@ -1239,7 +1239,7 @@ impl GreeterApp {
     /// Invoke logind for `action` via `systemctl`. `systemctl reboot` /
     /// `systemctl poweroff` issue `org.freedesktop.login1.Manager.{Reboot,
     /// PowerOff}` over D-Bus; polkit authorises these for the `greetd` user
-    /// through os/etc/polkit-1/rules.d/49-qos-greeter-power.rules (logind
+    /// through os/etc/polkit-1/rules.d/49-tilo-greeter-power.rules (logind
     /// also permits an *active* local session by default, but the greeter's
     /// session class is "greeter" and may not register as active, so the
     /// explicit rule makes it deterministic). Compiled out under `cfg(test)`
@@ -1318,12 +1318,12 @@ impl GreeterApp {
     }
 
     /// Environment handed to greetd's `StartSession`. Mirrors the
-    /// `DesktopNames=nirios` advertised by the session `.desktop` files.
+    /// `DesktopNames=tilo` advertised by the session `.desktop` files.
     fn session_env() -> Vec<String> {
         vec![
             "XDG_SESSION_TYPE=wayland".to_string(),
-            "XDG_SESSION_DESKTOP=nirios".to_string(),
-            "XDG_CURRENT_DESKTOP=nirios".to_string(),
+            "XDG_SESSION_DESKTOP=tilo".to_string(),
+            "XDG_CURRENT_DESKTOP=tilo".to_string(),
         ]
     }
 
@@ -1822,11 +1822,11 @@ mod tests {
     fn test_sessions() -> Vec<Session> {
         vec![
             Session {
-                name: "qOS".to_string(),
+                name: "Tilo".to_string(),
                 argv: vec!["/usr/bin/shell".into(), "--backend".into(), "drm".into()],
             },
             Session {
-                name: "qOS with peer sync".to_string(),
+                name: "Tilo with peer sync".to_string(),
                 argv: vec![
                     "/usr/bin/shell".into(),
                     "--backend".into(),
@@ -2073,9 +2073,9 @@ mod tests {
     #[test]
     fn session_label_reflects_selection() {
         let mut app = GreeterApp::with_sessions(test_sessions());
-        assert_eq!(app.session_label(), "qOS");
+        assert_eq!(app.session_label(), "Tilo");
         app.selected_session = 1;
-        assert_eq!(app.session_label(), "qOS with peer sync");
+        assert_eq!(app.session_label(), "Tilo with peer sync");
     }
 
     #[test]
@@ -2141,14 +2141,14 @@ mod tests {
     }
 
     /// The greeter must never put the internal desktop id in front of the
-    /// user. `nirios` is a `DesktopNames=`/`UseIn=` contract with the
+    /// user. `tilo` is a `DesktopNames=`/`UseIn=` contract with the
     /// portal, not a name anyone logging in should have to read.
     #[test]
     fn session_label_is_the_human_name_not_the_desktop_id() {
         let app = GreeterApp::with_sessions(test_sessions());
         let label = app.session_label();
         assert!(
-            !label.contains("nirios"),
+            !label.contains("tilo"),
             "internal desktop id leaked into the greeter: {label:?}"
         );
         assert!(
@@ -2214,13 +2214,13 @@ mod tests {
         assert_eq!(app.selected_session, 0);
         assert_eq!(
             GreeterApp::read_text(&doc, &root, SESSION_PATH).as_deref(),
-            Some("qOS"),
+            Some("Tilo"),
         );
 
-        choose_session(&mut doc, &root, "qOS with peer sync");
+        choose_session(&mut doc, &root, "Tilo with peer sync");
         app.sync(&mut doc, &root);
         assert_eq!(app.selected_session, 1);
-        assert_eq!(app.session_label(), "qOS with peer sync");
+        assert_eq!(app.session_label(), "Tilo with peer sync");
         assert!(
             app.sessions[app.selected_session]
                 .argv
@@ -2228,7 +2228,7 @@ mod tests {
             "the choice must reach the argv handed to greetd"
         );
 
-        choose_session(&mut doc, &root, "qOS");
+        choose_session(&mut doc, &root, "Tilo");
         app.sync(&mut doc, &root);
         assert_eq!(app.selected_session, 0);
     }
@@ -2241,7 +2241,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
-        choose_session(&mut doc, &root, "qOS with peer sync");
+        choose_session(&mut doc, &root, "Tilo with peer sync");
         app.sync(&mut doc, &root);
         assert_eq!(app.selected_session, 1);
 

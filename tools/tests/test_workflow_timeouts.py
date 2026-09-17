@@ -36,7 +36,35 @@ class WorkflowTimeoutTests(unittest.TestCase):
             ],
         )
 
-    def test_fast_repository_workflows_are_bounded(self) -> None:
+    def test_default_audit_covers_yml_and_yaml_workflows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workflows = Path(directory)
+            (workflows / "bounded.yml").write_text(
+                "jobs:\n  bounded:\n    timeout-minutes: 10\n",
+                encoding="utf-8",
+            )
+            (workflows / "unbounded.yaml").write_text(
+                "jobs:\n  unbounded:\n    runs-on: runner\n",
+                encoding="utf-8",
+            )
+
+            violations = audit(workflows)
+
+        self.assertEqual(
+            [str(item) for item in violations],
+            ["unbounded.yaml: job 'unbounded' has no positive timeout-minutes"],
+        )
+
+    def test_explicit_missing_workflow_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            violations = audit(Path(directory), ("missing.yml",))
+
+        self.assertEqual(
+            [str(item) for item in violations],
+            ["missing.yml: job '<missing workflow>' has no positive timeout-minutes"],
+        )
+
+    def test_every_repository_workflow_is_bounded(self) -> None:
         self.assertEqual(audit(ROOT / ".forgejo" / "workflows"), [])
 
 

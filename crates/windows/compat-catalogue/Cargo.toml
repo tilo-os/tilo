@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "qOS Windows compatibility catalogue and deterministic Wine/Proton/VM route resolver"
+description = "Tilo Windows compatibility catalogue and deterministic Wine/Proton/VM route resolver"
 
 [lib]
 name = "compat_catalogue"

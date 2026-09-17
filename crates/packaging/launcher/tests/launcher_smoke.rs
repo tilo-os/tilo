@@ -1,6 +1,6 @@
 //! Launcher smoke tests.
 //!
-//! These tests invoke the *library* surface of `qos-launcher` (so we
+//! These tests invoke the *library* surface of `tilo-launcher` (so we
 //! don't need to first build the binary) against ad-hoc fixtures. Each
 //! test that actually spawns bwrap is `#[ignore]`d by default — bwrap
 //! may not be installed everywhere, and typically needs `CAP_SYS_ADMIN`
@@ -9,7 +9,7 @@
 //! Run the live-bwrap ones explicitly:
 //!
 //! ```bash
-//! cargo test -p qos-launcher -- --ignored
+//! cargo test -p tilo-launcher -- --ignored
 //! ```
 //!
 //! The non-ignored tests cover manifest-handling and service-resolution
@@ -168,7 +168,7 @@ fn hello_world_runs() {
         no_services: false,
         runtime_root: None,
         bwrap_bin: Some(bwrap),
-        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_qos-launcher"))),
+        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
         minimal_libs: false,
         landlock_enforce: true,
         mode: launcher::run::LaunchMode::Gui,
@@ -260,7 +260,7 @@ fn manifest_declared_runtime_missing_bundle_fails() {
         std::env::set_var("XDG_RUNTIME_DIR", dir.path());
     }
     let mut m = hello_manifest(dir.path(), BTreeMap::new());
-    m.runtime = Some("qos-runtime/nope-9.9.9".to_string());
+    m.runtime = Some("tilo-runtime/nope-9.9.9".to_string());
     let opts = RunOptions {
         no_services: true,
         landlock_enforce: false,
@@ -281,7 +281,7 @@ fn manifest_declared_runtime_missing_bundle_fails() {
     );
 }
 
-/// Build a valid unsigned runtime bundle under `<xdg_data_home>/qos-runtime/<version>/`
+/// Build a valid unsigned runtime bundle under `<xdg_data_home>/tilo-runtime/<version>/`
 /// from a fake host rootfs and return its resolved path.
 fn install_unsigned_bundle(xdg_data_home: &Path, version: &str) -> PathBuf {
     let host = tempfile::tempdir().unwrap();
@@ -290,7 +290,7 @@ fn install_unsigned_bundle(xdg_data_home: &Path, version: &str) -> PathBuf {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, format!("stub {rel}")).unwrap();
     }
-    let dest = xdg_data_home.join("qos-runtime").join(version);
+    let dest = xdg_data_home.join("tilo-runtime").join(version);
     runtime_bundle::build_bundle_with(
         &dest,
         version,
@@ -320,7 +320,7 @@ fn install_signed_bundle(
     let id_path = host.path().join("id.json");
     std::fs::write(&id_path, identity.to_json_bytes()).unwrap();
 
-    let dest = xdg_data_home.join("qos-runtime").join(version);
+    let dest = xdg_data_home.join("tilo-runtime").join(version);
     runtime_bundle::build_bundle_with(
         &dest,
         version,
@@ -336,7 +336,7 @@ fn install_signed_bundle(
 }
 
 /// When an app manifest declares a runtime bundle, the launcher's argv
-/// should: bind the bundle at /usr/lib/qos-runtime/<v>/, set
+/// should: bind the bundle at /usr/lib/tilo-runtime/<v>/, set
 /// `LD_LIBRARY_PATH` to <mount>/lib, and NOT include the --minimal-libs
 /// loader binds even if the flag is on.
 #[test]
@@ -364,7 +364,7 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
         icon: None,
         version: "0.0.0".to_string(),
         kind: "app".to_string(),
-        runtime: Some("qos-runtime/smoke-1.0.0".to_string()),
+        runtime: Some("tilo-runtime/smoke-1.0.0".to_string()),
         entrypoint: Entrypoint {
             bin: "bin/hello".to_string(),
             r#type: launcher::manifest::EntrypointType::Gui,
@@ -401,13 +401,13 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
     assert!(
         argv.windows(3).any(|w| w[0] == "--ro-bind"
             && w[1] == bundle_dir.display().to_string()
-            && w[2] == "/usr/lib/qos-runtime/smoke-1.0.0"),
+            && w[2] == "/usr/lib/tilo-runtime/smoke-1.0.0"),
         "runtime bind not in argv: {argv:?}"
     );
     assert!(
         argv.windows(3).any(|w| w[0] == "--setenv"
             && w[1] == "LD_LIBRARY_PATH"
-            && w[2] == "/usr/lib/qos-runtime/smoke-1.0.0/lib"),
+            && w[2] == "/usr/lib/tilo-runtime/smoke-1.0.0/lib"),
         "LD_LIBRARY_PATH setenv not in argv: {argv:?}"
     );
 
@@ -453,7 +453,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
     }
 
     // Build a signed bundle folding in stand-ins for the two shared
-    // objects a thin app links (Rust std + qOS runtime dylib), exercising
+    // objects a thin app links (Rust std + Tilo runtime dylib), exercising
     // the same `extra_libs` path the real bake uses.
     let version = "thin-smoke-1";
     let host = tempfile::tempdir().unwrap();
@@ -470,7 +470,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
     let id_path = host.path().join("id.json");
     std::fs::write(&id_path, identity.to_json_bytes()).unwrap();
 
-    let bundle_dir = user_home.path().join("qos-runtime").join(version);
+    let bundle_dir = user_home.path().join("tilo-runtime").join(version);
     runtime_bundle::build_bundle_with(
         &bundle_dir,
         version,
@@ -489,13 +489,13 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
     assert!(bundle_dir.join("lib/libruntime_dylib.so").exists());
 
     let m = MinimalManifest {
-        package_id: "dev.qos.thin".to_string(),
+        package_id: "dev.tilo.thin".to_string(),
         name: None,
         category: None,
         icon: None,
         version: "0.1.0".to_string(),
         kind: "app".to_string(),
-        runtime: Some(format!("qos-runtime/{version}")),
+        runtime: Some(format!("tilo-runtime/{version}")),
         entrypoint: Entrypoint {
             bin: "bin/thin".to_string(),
             r#type: launcher::manifest::EntrypointType::Cli,
@@ -543,7 +543,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
         None,
         &CapabilityPlan::empty(),
     );
-    let mount = format!("/usr/lib/qos-runtime/{version}");
+    let mount = format!("/usr/lib/tilo-runtime/{version}");
     assert!(
         argv.windows(3).any(|w| w[0] == "--ro-bind"
             && w[1] == resolved_path.display().to_string()
@@ -750,7 +750,7 @@ fn unsigned_bundle_is_refused_unless_opted_in() {
     let _bundle = install_unsigned_bundle(user_home.path(), "sig-refuse-1");
 
     let mut m = hello_manifest(dir.path(), BTreeMap::new());
-    m.runtime = Some("qos-runtime/sig-refuse-1".to_string());
+    m.runtime = Some("tilo-runtime/sig-refuse-1".to_string());
 
     let opts = RunOptions {
         no_services: true,
@@ -794,7 +794,7 @@ fn trusted_publisher_file_gates_mount() {
     let (_bundle, identity) = install_signed_bundle(user_home.path(), "trust-file-1");
 
     let mut m = hello_manifest(dir.path(), BTreeMap::new());
-    m.runtime = Some("qos-runtime/trust-file-1".to_string());
+    m.runtime = Some("tilo-runtime/trust-file-1".to_string());
     let opts = RunOptions {
         no_services: true,
         landlock_enforce: false,
@@ -812,7 +812,7 @@ fn trusted_publisher_file_gates_mount() {
     )
     .unwrap();
     unsafe {
-        std::env::set_var("QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
+        std::env::set_var("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
     }
     launcher::run::resolve_runtime_test_helper(&m, &opts).expect("trusted pubkey ok");
 
@@ -842,7 +842,7 @@ fn trusted_publisher_file_gates_mount() {
     // 4. No trust file: any signed publisher works (verifies the env
     //    override above, since the default /etc file isn't readable here).
     unsafe {
-        std::env::remove_var("QOS_LAUNCHER_TRUSTED_PUBLISHERS_FILE");
+        std::env::remove_var("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE");
     }
     launcher::run::resolve_runtime_test_helper(&m, &opts).expect("no trust file = any signed");
 }
@@ -865,7 +865,7 @@ fn signed_bundle_publisher_pin_enforced() {
     let (_bundle, identity) = install_signed_bundle(user_home.path(), "sig-pin-1");
 
     let mut m = hello_manifest(dir.path(), BTreeMap::new());
-    m.runtime = Some("qos-runtime/sig-pin-1".to_string());
+    m.runtime = Some("tilo-runtime/sig-pin-1".to_string());
 
     // Default: accepted.
     let opts = RunOptions {

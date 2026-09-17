@@ -9,7 +9,7 @@
 //!                                      ...with the version-history strip open
 //!
 //! Collaboration: launched from the shell, the compositor's broker is
-//! reached through the `QOS_SVC_COLLAB_FD` descriptor the launcher injects —
+//! reached through the `TILO_SVC_COLLAB_FD` descriptor the launcher injects —
 //! nothing to configure. A raw process started outside a session has no
 //! collaboration service; the descriptor is inherited, not a socket path an
 //! app can fabricate.
@@ -57,7 +57,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
 
-use qos_actions::Action;
+use tilo_actions::Action;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
@@ -93,7 +93,7 @@ fn distinct_actor(prefix: &str, have: &automerge::ActorId) -> String {
 
 /// The name this replica is given, if anything has named it. `QUICK_APP_ID` is
 /// how a dev run points two instances at one shell and gets a readable history;
-/// `QOS_USER_ID` is the session's own identity, but doesn't reach a sandboxed
+/// `TILO_USER_ID` is the session's own identity, but doesn't reach a sandboxed
 /// app (the launcher builds its environment from an allowlist, and this isn't on
 /// it) — so in the product neither answers, and the actor comes from
 /// [`distinct_actor`].
@@ -103,7 +103,7 @@ fn named_actor(prefix: &str) -> Option<String> {
     {
         return Some(id);
     }
-    match std::env::var("QOS_USER_ID") {
+    match std::env::var("TILO_USER_ID") {
         Ok(user) if !user.is_empty() => Some(format!("{prefix}-{user}")),
         _ => None,
     }
@@ -111,7 +111,7 @@ fn named_actor(prefix: &str) -> Option<String> {
 
 fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.qos.word-processor", live_root)
+        &LaunchSpec::new_with_args("dev.tilo.word-processor", live_root)
             .max_positionals(1)
             .allowed_flags(&[
                 "--history",
@@ -342,6 +342,8 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
 }
 
 fn start_live(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     let (mut state, widget) = build(file_arg(args))?;
     {
         // Give this instance a distinct CRDT actor so two editors are
@@ -350,7 +352,7 @@ fn start_live(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         // it was launched into, pumps remote ops into `State`, broadcasts
         // local deltas and caret/selection presence, and feeds the
         // resulting `PresenceCtx` into the widget's draw — all of it
-        // without an app saying so. `QUICK_APP_ID`/`QOS_USER_ID` name a
+        // without an app saying so. `QUICK_APP_ID`/`TILO_USER_ID` name a
         // known replica; a sandboxed launch has neither, so the fallback has
         // to be sound on its own — see [`distinct_actor`].
         let app_id =
@@ -368,12 +370,12 @@ fn start_live(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         // The set is in-memory: this app's durable form is the file on disk,
         // not a per-record automerge store. What the set gives it is
         // identity, routing, and the room's index of which documents it holds.
-        let room_id = std::env::var("QOS_WORKSPACE_ID")
+        let room_id = std::env::var("TILO_WORKSPACE_ID")
             .or_else(|_| std::env::var("QUICK_CLUSTER_ID"))
             .unwrap_or_else(|_| "00000000-0000-0000-0000-000000000000".into());
-        let (room, room_autosave) = ui::persist::open_room("dev.qos.word-processor", &room_id);
+        let (room, room_autosave) = ui::persist::open_room("dev.tilo.word-processor", &room_id);
         let records = ui::RecordSet::in_memory().with_home(room_id);
-        let mut app = App::new(state, widget)
+        let mut app = App::from_scoped_parts(wake_scope, state, widget)
             .with_autosave(room_autosave)
             .with_records(records, room.doc);
         // Register the word processor's action decoder so the Ctrl+K palette and
@@ -518,9 +520,9 @@ fn render_shot(
     out: &Path,
 ) -> Result<(), Box<dyn Error>> {
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
     // theme-driven chrome can be proven across palettes; defaults to dark.
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
@@ -530,7 +532,7 @@ fn render_shot(
     } else {
         theme
     };
-    let reduce_motion = ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+    let reduce_motion = ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
         .iter()
         .filter_map(|key| std::env::var(key).ok())
         .any(|value| {

@@ -24,7 +24,7 @@ use crate::tokens::TextRole;
 use crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use qos_actions::{ActionAddress, ActionInput, ControlInvocation, FlatAction, PROMPTED_PARAM};
+use tilo_actions::{ActionAddress, ActionInput, ControlInvocation, FlatAction, PROMPTED_PARAM};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SearchScope {
@@ -288,7 +288,7 @@ impl CommandEntry {
     }
 
     /// The row `id` is the flattened composite key, so the host resolves the
-    /// selection back to a replayable `qos_actions::Action`; a
+    /// selection back to a replayable `tilo_actions::Action`; a
     /// [`ActionInput::Prompted`] action becomes an argument-collecting row.
     pub fn from_flat_action(fa: &FlatAction<'_>) -> Self {
         let mut entry = CommandEntry::new(
@@ -574,7 +574,7 @@ impl CommandPalette {
     /// "Go to line", while retaining the palette's shared text selection,
     /// clipboard and IME behavior.
     /// Internal compatibility path for toolkit-owned, non-application UI.
-    /// qOS applications cannot use this to manufacture an outcome that
+    /// Tilo applications cannot use this to manufacture an outcome that
     /// bypasses the resource/action catalogue; use [`Self::open_action_argument`].
     #[cfg(test)]
     fn open_argument(
@@ -2494,18 +2494,18 @@ mod tests {
 
     #[test]
     fn immediate_resource_action_enqueues_an_address_not_a_private_outcome() {
-        let spec = qos_actions::ActionSpec::operation(
+        let spec = tilo_actions::ActionSpec::operation(
             "save",
             "Save",
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             "test.save",
             &(),
         )
         .unwrap();
         let resources = vec![
-            qos_actions::Resource::new("document:1", "document", "Document").with_action(spec),
+            tilo_actions::Resource::new("document:1", "document", "Document").with_action(spec),
         ];
-        let flat = qos_actions::flatten(&resources);
+        let flat = tilo_actions::flatten(&resources);
         let mut palette = CommandPalette::commands();
         palette.set_entries(vec![CommandEntry::from_flat_action(&flat[0])]);
         palette.open();
@@ -2519,18 +2519,18 @@ mod tests {
 
     #[test]
     fn prompted_resource_action_binds_its_declared_argument() {
-        let spec = qos_actions::ActionSpec::prompted(
+        let spec = tilo_actions::ActionSpec::prompted(
             "rename",
             "Rename",
             "New name",
             "name…",
-            qos_actions::ExecutionLocus::ClientLocal,
-            |name| qos_actions::EncodedAction::encode_operation("test.rename", &name).unwrap(),
+            tilo_actions::ExecutionLocus::ClientLocal,
+            |name| tilo_actions::EncodedAction::encode_operation("test.rename", &name).unwrap(),
         );
         let resources = vec![
-            qos_actions::Resource::new("document:1", "document", "Document").with_action(spec),
+            tilo_actions::Resource::new("document:1", "document", "Document").with_action(spec),
         ];
-        let flat = qos_actions::flatten(&resources);
+        let flat = tilo_actions::flatten(&resources);
         let entry = CommandEntry::from_flat_action(&flat[0]);
         let mut palette = CommandPalette::commands();
         palette.open_action_argument(entry, Some("Project Atlas".into()));

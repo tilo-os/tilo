@@ -219,7 +219,7 @@ enum FirewallEffect {
 }
 
 struct PendingFirewallEffect {
-    invocation: qos_actions::InvocationId,
+    invocation: tilo_actions::InvocationId,
     effect: FirewallEffect,
 }
 
@@ -237,7 +237,7 @@ pub struct FirewallApp {
     /// on wide windows, a summoned overlay drawer when narrow.
     rail: SidebarDrawer,
     /// `--shots` hook: force the overlay rail open so the narrow drawer state
-    /// can be captured headlessly (`QOS_FIREWALL_RAIL_OPEN=1`).
+    /// can be captured headlessly (`TILO_FIREWALL_RAIL_OPEN=1`).
     force_rail_open: bool,
 
     rect: Rect,
@@ -264,7 +264,7 @@ pub struct FirewallApp {
     /// and replays byte-identically on peers — the same path Ctrl+K takes.
     actions: ui::ActionHost,
     pending_effect: Option<PendingFirewallEffect>,
-    completed_effect: Option<qos_actions::InvocationUpdate>,
+    completed_effect: Option<tilo_actions::InvocationUpdate>,
 }
 
 impl Default for FirewallApp {
@@ -352,7 +352,7 @@ impl FirewallApp {
                 .docked_width(RAIL_W)
                 .overlay_width(RAIL_W.max(264.0))
                 .breakpoint(NARROW_BREAKPOINT),
-            force_rail_open: std::env::var("QOS_FIREWALL_RAIL_OPEN").as_deref() == Ok("1"),
+            force_rail_open: std::env::var("TILO_FIREWALL_RAIL_OPEN").as_deref() == Ok("1"),
             rect: Rect::ZERO,
             node: None,
             layout: Layout::default(),
@@ -389,7 +389,7 @@ impl FirewallApp {
     }
 
     /// Dispatch one [`FirewallAction`] — the single CRDT-mutation path shared
-    /// with the Ctrl+K palette. The action is applied through the qOS action
+    /// with the Ctrl+K palette. The action is applied through the Tilo action
     /// executor (a pinned actor + committed change, so it replays byte-identically
     /// on peers), exactly as the palette does. The document heads captured just
     /// before the first action of an event are stashed so the host records
@@ -407,7 +407,7 @@ impl FirewallApp {
             state,
             crate::actions::FIREWALL_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Firewall", "Firewall", action),
+            tilo_actions::ActionContext::for_action("org.tilo.Firewall", "Firewall", action),
         );
         // Adopt the mutated config so the in-memory view matches the document.
         if let Some(cfg) = FirewallDoc::load(state) {
@@ -419,13 +419,13 @@ impl FirewallApp {
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// test.
     #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
     /// The configuration Ctrl+K builds its resource tree from, or `None` when the
     /// firewall is unavailable / has no zones (nothing to act on). Exposed to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`], which can't read the app's private fields directly.
     pub(crate) fn firewall_resource_ctx(&self) -> Option<FirewallConfig> {
         if !self.available || self.config.zones.is_empty() {
@@ -979,7 +979,7 @@ impl FirewallApp {
                 self.status = match self.backend.mode() {
                     Mode::Live => format!("Applied {n} firewall-cmd commands"),
                     Mode::DryRun => {
-                        format!("Dry-run: {n} commands planned (set QOS_FIREWALL_APPLY=1)")
+                        format!("Dry-run: {n} commands planned (set TILO_FIREWALL_APPLY=1)")
                     }
                 };
                 Ok(())
@@ -1083,13 +1083,13 @@ impl Widget for FirewallApp {
                 }
             };
             self.completed_effect = Some(match result {
-                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                     invocation: effect.invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
-                Err(message) => qos_actions::InvocationUpdate::Failed {
+                Err(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation: effect.invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "firewall.apply_failed".into(),
                         message,
                         details: None,
@@ -1400,60 +1400,60 @@ impl Widget for FirewallApp {
 
     /// Publish the open configuration + its zones/rules so the host's Ctrl+K
     /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     #[allow(
         clippy::expect_used,
         reason = "the empty string operation payload is always serializable"
     )]
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if !self.available {
             return vec![
-                qos_actions::Resource::new(
+                tilo_actions::Resource::new(
                     "firewall.recovery",
                     "firewall.recovery",
                     "Firewall service recovery",
                 )
                 .with_action(
-                    qos_actions::ActionSpec::operation(
+                    tilo_actions::ActionSpec::operation(
                         "retry",
                         "Retry firewalld connection",
-                        qos_actions::OperationKind::Effect,
+                        tilo_actions::OperationKind::Effect,
                         "firewall.retry",
                         &"",
                     )
                     .expect("firewall retry payload is serializable")
-                    .with_contract(qos_actions::ActionContract {
-                        retry: qos_actions::RetryPolicy::Idempotent,
-                        discovery: qos_actions::DiscoveryScope::Launchable,
-                        execution: qos_actions::ExecutionMode::Background { cancellable: true },
-                        result: qos_actions::ResultSpec::Job,
+                    .with_contract(tilo_actions::ActionContract {
+                        retry: tilo_actions::RetryPolicy::Idempotent,
+                        discovery: tilo_actions::DiscoveryScope::Launchable,
+                        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                        result: tilo_actions::ResultSpec::Job,
                         tags: vec!["security".into(), "firewall".into(), "recovery".into()],
-                        ..qos_actions::ActionContract::default()
+                        ..tilo_actions::ActionContract::default()
                     }),
                 ),
             ];
         }
-        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
         if let Some(root) = resources.first_mut() {
             root.actions.push(
-                qos_actions::ActionSpec::operation(
+                tilo_actions::ActionSpec::operation(
                     "apply",
                     "Apply firewall configuration",
-                    qos_actions::OperationKind::Effect,
+                    tilo_actions::OperationKind::Effect,
                     "firewall.apply",
                     &"",
                 )
                 .expect("firewall apply payload is serializable")
-                .with_contract(qos_actions::ActionContract {
-                    permission: qos_actions::PermissionRequirement::Admin,
-                    risk: qos_actions::RiskLevel::Privileged,
-                    confirmation: qos_actions::ConfirmationPolicy::Confirm,
-                    retry: qos_actions::RetryPolicy::Idempotent,
-                    discovery: qos_actions::DiscoveryScope::Launchable,
-                    execution: qos_actions::ExecutionMode::Background { cancellable: true },
-                    result: qos_actions::ResultSpec::Job,
-                    ..qos_actions::ActionContract::default()
+                .with_contract(tilo_actions::ActionContract {
+                    permission: tilo_actions::PermissionRequirement::Admin,
+                    risk: tilo_actions::RiskLevel::Privileged,
+                    confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                    retry: tilo_actions::RetryPolicy::Idempotent,
+                    discovery: tilo_actions::DiscoveryScope::Launchable,
+                    execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                    result: tilo_actions::ResultSpec::Job,
+                    ..tilo_actions::ActionContract::default()
                 }),
             );
         }
@@ -1462,13 +1462,13 @@ impl Widget for FirewallApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         _payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != qos_actions::OperationKind::Effect {
+        if kind != tilo_actions::OperationKind::Effect {
             return Ok(false);
         }
         match type_id {
@@ -1481,14 +1481,14 @@ impl Widget for FirewallApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != qos_actions::OperationKind::Effect {
+        if kind != tilo_actions::OperationKind::Effect {
             return Ok(None);
         }
         if self.pending_effect.is_some() {
@@ -1512,11 +1512,11 @@ impl Widget for FirewallApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested
             && self
                 .pending_effect
@@ -1524,7 +1524,7 @@ impl Widget for FirewallApp {
                 .is_some_and(|pending| pending.invocation == invocation)
         {
             self.pending_effect = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("cancelled before firewall changes were applied".into()),
             });
@@ -3742,7 +3742,7 @@ mod tests {
     /// builds. Proven on the production method, not a reconstruction of it.
     #[test]
     fn delete_button_dispatches_the_palette_action() {
-        use qos_actions::ActionInput;
+        use tilo_actions::ActionInput;
 
         let mut a = app_with_rect();
         let mut doc = AutoCommit::new();
@@ -3785,11 +3785,11 @@ mod tests {
         let mut app = FirewallApp::new_demo();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let started = app
             .start_resource_operation(
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 "firewall.apply",
                 &serde_json::to_vec(&"").unwrap(),
                 &doc,
@@ -3809,7 +3809,7 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 
@@ -3818,10 +3818,10 @@ mod tests {
         let mut app = FirewallApp::new_demo();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.start_resource_operation(
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             "firewall.apply",
             &serde_json::to_vec(&"").unwrap(),
             &doc,
@@ -3830,7 +3830,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             app.poll_resource_operation(invocation, true, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
         assert!(app.pending_effect.is_none());
     }

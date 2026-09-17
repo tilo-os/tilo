@@ -1,17 +1,28 @@
 //! `org.freedesktop.impl.portal.Email` backend.
-use super::desktop_services::{EmailRequest, document_portal_path_from_uri};
+#[cfg(target_os = "linux")]
+use super::desktop_services::EmailRequest;
+use super::desktop_services::document_portal_path_from_uri;
+#[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+#[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call, lockdown};
+#[cfg(target_os = "linux")]
 use crate::shell::portal_dialog::{PortalDialogQueue, ReviewDecision, ReviewRequest};
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
-use zbus::zvariant::{ObjectPath, OwnedValue};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+use zbus::zvariant::OwnedValue;
+#[cfg(target_os = "linux")]
 pub struct EmailBackend {
     ctx: PortalContext,
     lifecycle: PortalLifecycle,
     dialogs: PortalDialogQueue,
 }
+#[cfg(target_os = "linux")]
 impl EmailBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self::with_lifecycle(ctx, PortalLifecycle::new())
@@ -25,6 +36,7 @@ impl EmailBackend {
         }
     }
 }
+#[cfg(target_os = "linux")]
 fn string(options: &HashMap<String, OwnedValue>, key: &str, max: usize) -> Option<String> {
     options
         .get(key)?
@@ -65,6 +77,7 @@ fn attachment_uris(values: &[String]) -> bool {
     })
 }
 
+#[cfg(target_os = "linux")]
 fn compose_detail(request: &EmailRequest) -> String {
     let mut recipients = request.addresses.clone();
     recipients.extend(request.cc.iter().map(|address| format!("Cc: {address}")));
@@ -87,6 +100,7 @@ fn compose_detail(request: &EmailRequest) -> String {
     detail
 }
 #[interface(name = "org.freedesktop.impl.portal.Email")]
+#[cfg(target_os = "linux")]
 impl EmailBackend {
     async fn compose_email(
         &self,
@@ -207,6 +221,6 @@ mod tests {
         // The helper additionally verifies that a file URI lies under the
         // live document portal mount; arbitrary host paths fail that check.
         assert!(!attachment_uris(&["file:///home/me/private.pdf".into()]));
-        assert!(!attachment_uris(&["document://qos/abc".into()]));
+        assert!(!attachment_uris(&["document://tilo/abc".into()]));
     }
 }

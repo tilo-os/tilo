@@ -19,12 +19,12 @@ chrono-tz = "0.10"
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
+ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
 vello.workspace = true
 taffy.workspace = true
 automerge.workspace = true
 winit.workspace = true
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 
 [features]

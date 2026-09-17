@@ -2,7 +2,7 @@
 //!
 //! This crate is built with `--target wasm32-wasip2 --release`. The output
 //! `.wasm` is a Component Model component implementing the
-//! `qos:format-provider/format-provider` interface; the qos-format-host
+//! `tilo:format-provider/format-provider` interface; the tilo-format-host
 //! daemon loads it via wasmtime 46.
 //!
 //! The guest binds itself to the WIT package shipped by `format-provider-wit`
@@ -40,7 +40,7 @@ mod guest {
         world: "provider",
     });
 
-    use exports::qos::format_provider::format_provider::{CodecError, Confidence, Detected, Guest};
+    use exports::tilo::format_provider::format_provider::{CodecError, Confidence, Detected, Guest};
 
     struct Component;
 

@@ -465,7 +465,7 @@ mod tests {
 
     #[test]
     fn a_name_is_derived_from_the_path() {
-        let img = OpenImage::from_path("/var/tmp/qos/home/user/harbour.png", 1, 1);
+        let img = OpenImage::from_path("/var/tmp/tilo/home/user/harbour.png", 1, 1);
         assert_eq!(img.name, "harbour.png");
     }
 }

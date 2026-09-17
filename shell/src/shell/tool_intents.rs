@@ -103,14 +103,14 @@ fn spawn_at(
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = Arc::clone(&shutdown);
     let thread = std::thread::Builder::new()
-        .name("qos-tool-intents".into())
+        .name("tilo-tool-intents".into())
         .spawn(move || {
             while !worker_shutdown.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let handler = Arc::clone(&handler);
                         let _ = std::thread::Builder::new()
-                            .name("qos-tool-client".into())
+                            .name("tilo-tool-client".into())
                             .spawn(move || serve_client(stream, &handler));
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -174,6 +174,12 @@ fn apply_workspace_settings(chrome: &Chrome, request: &ToolRequest) -> Result<()
 }
 
 fn serve_client(stream: UnixStream, handler: &Handler) {
+    // Darwin inherits the listener's nonblocking flag on accept. This worker
+    // uses blocking framed I/O; an empty receive is not the end of a session.
+    if let Err(error) = stream.set_nonblocking(false) {
+        tracing::warn!(%error, "cannot configure blocking service connection");
+        return;
+    }
     let mut reader = BufReader::new(stream);
     loop {
         let mut line = String::new();

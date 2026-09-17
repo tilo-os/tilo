@@ -40,7 +40,7 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 }
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.qos.windows", live_root)
+        &LaunchSpec::new_with_args("dev.tilo.windows", live_root)
             .max_positionals(1)
             .shot_root(shot_root)
             .scenarios(&[
@@ -68,7 +68,7 @@ fn configure_app(app: &mut ui::App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::ActionInput;
+    use tilo_actions::ActionInput;
 
     /// Regression for the production launch boundary. Pull an action from the
     /// real Windows widget surface, then pass a host through the exact callback
@@ -82,7 +82,7 @@ mod tests {
             !resources.is_empty(),
             "Windows publishes a resource surface"
         );
-        for action in qos_actions::flatten(&resources)
+        for action in tilo_actions::flatten(&resources)
             .into_iter()
             .map(|action| action.action)
         {
@@ -93,11 +93,11 @@ mod tests {
             );
         }
 
-        let published = qos_actions::flatten(&resources)
+        let published = tilo_actions::flatten(&resources)
             .into_iter()
             .map(|action| action.action)
             .find(|action| {
-                action.kind == qos_actions::OperationKind::Document
+                action.kind == tilo_actions::OperationKind::Document
                     && matches!(action.input, ActionInput::Immediate(_))
             })
             .expect("Windows publishes a replayable route action");

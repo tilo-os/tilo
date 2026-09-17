@@ -93,7 +93,7 @@ mod relay_workspace_ids_serde {
 
 /// The one configuration file installed on a home peer.
 ///
-/// qOS currently has one global Files namespace and one certified filesystem
+/// Tilo currently has one global Files namespace and one certified filesystem
 /// transport identity per device. Shell rooms are mapped through
 /// [`HomePeerBundle::relay_workspace_ids`]; configuring several filesystem
 /// bundles would bind competing endpoints under that same certified `NodeId`.
@@ -213,7 +213,7 @@ pub fn aggregate_status(states: &[FullReplicaStatus]) -> FullReplicaStatus {
     aggregate
 }
 
-/// Atomically write the status consumed by `qos-relay` and status tooling.
+/// Atomically write the status consumed by `tilo-relay` and status tooling.
 ///
 /// # Errors
 ///

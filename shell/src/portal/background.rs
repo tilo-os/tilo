@@ -1,9 +1,9 @@
-//! `org.freedesktop.impl.portal.Background` backed by qOS's launcher.
+//! `org.freedesktop.impl.portal.Background` backed by Tilo's launcher.
 //!
 //! The portal never executes the `commandline` supplied by an application.
 //! A successful autostart change is delegated to the signed package launcher,
 //! which resolves the authenticated application id to its installed desktop
-//! entry. This preserves qOS's app/workspace isolation and avoids a second,
+//! entry. This preserves Tilo's app/workspace isolation and avoids a second,
 //! unsafe autostart mechanism.
 
 use std::collections::{BTreeSet, HashMap};
@@ -16,12 +16,19 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
-use zbus::zvariant::{ObjectPath, OwnedValue};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+use zbus::zvariant::OwnedValue;
 
 use super::desktop_services::PortalResult;
-use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+use super::lifecycle::PortalLifecycle;
+#[cfg(target_os = "linux")]
+use super::lifecycle::{LifecycleEntry, LifecycleResource};
+#[cfg(target_os = "linux")]
 use super::{
     PortalContext,
     auth::{authenticate_call, authenticate_frontend_call},
@@ -33,6 +40,7 @@ pub const RUNNING: u32 = 1;
 pub const ACTIVE: u32 = 2;
 
 const MAX_TRACKED_APPS: usize = 256;
+#[cfg(target_os = "linux")]
 const MAX_NAME_BYTES: usize = 512;
 const MAX_COMMAND_ARGUMENTS: usize = 64;
 const MAX_COMMAND_ARGUMENT_BYTES: usize = 4096;
@@ -51,7 +59,7 @@ pub enum BackgroundConsent {
     Deny,
 }
 
-/// qOS-owned boundary for background UI and package-registered autostart.
+/// Tilo-owned boundary for background UI and package-registered autostart.
 ///
 /// `set_autostart` must only create/remove an entry for the signed package
 /// identified by `app_id`; it intentionally receives no executable path or
@@ -68,11 +76,19 @@ pub trait BackgroundService: Send + Sync {
 }
 
 #[derive(Clone)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+    )
+)]
 pub struct BackgroundServiceHandle(Arc<dyn BackgroundService>);
 impl BackgroundServiceHandle {
     pub fn new(service: Arc<dyn BackgroundService>) -> Self {
         Self(service)
     }
+    #[cfg(target_os = "linux")]
     fn request_background(
         &self,
         request: BackgroundConsentRequest,
@@ -80,9 +96,11 @@ impl BackgroundServiceHandle {
     ) -> PortalResult<()> {
         self.0.request_background(request, reply)
     }
+    #[cfg(target_os = "linux")]
     fn set_autostart(&self, app_id: &str, enabled: bool) -> PortalResult<bool> {
         self.0.set_autostart(app_id, enabled)
     }
+    #[cfg(target_os = "linux")]
     fn cancel_background(&self, handle: &str) {
         self.0.cancel_background(handle);
     }
@@ -95,10 +113,10 @@ impl BackgroundService for UnavailableBackgroundService {
         _: BackgroundConsentRequest,
         _: oneshot::Sender<PortalResult<BackgroundConsent>>,
     ) -> PortalResult<()> {
-        PortalResult::Unavailable("qOS background-permission chrome is not attached".into())
+        PortalResult::Unavailable("Tilo background-permission chrome is not attached".into())
     }
     fn set_autostart(&self, _: &str, _: bool) -> PortalResult<bool> {
-        PortalResult::Unavailable("qOS package launcher is not attached".into())
+        PortalResult::Unavailable("Tilo package launcher is not attached".into())
     }
 }
 
@@ -108,7 +126,7 @@ struct AutostartFile {
     packages: BTreeSet<String>,
 }
 
-/// qOS's production Background adapter.  Consent is shown through the shell
+/// Tilo's production Background adapter.  Consent is shown through the shell
 /// review queue and autostart state is a private durable list of installed GUI
 /// package ids. On session restore the compositor calls
 /// [`Self::launch_enabled_in_workspace`], which re-validates each package and
@@ -168,7 +186,7 @@ impl ShellBackgroundService {
 
     /// Launch the persisted entries once at desktop-session startup. The
     /// atomic guard prevents a D-Bus activation/retry from spawning another
-    /// copy in the same qOS process; each package is still validated by the
+    /// copy in the same Tilo process; each package is still validated by the
     /// launcher at the point of launch.
     pub fn launch_at_session_start(&self, tree: &crate::shell::state::WorkspaceTreeHandle) {
         if self.startup_launched.swap(true, Ordering::AcqRel) {
@@ -311,19 +329,36 @@ struct AppState {
 
 #[derive(Clone)]
 pub struct BackgroundBackend {
+    #[cfg(target_os = "linux")]
     ctx: PortalContext,
     apps: Arc<Mutex<HashMap<String, AppState>>>,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     service: BackgroundServiceHandle,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     lifecycle: PortalLifecycle,
 }
 
 impl BackgroundBackend {
-    /// Creates a backend that denies requests until qOS's launcher/chrome
+    /// Creates a backend that denies requests until Tilo's launcher/chrome
     /// service is wired using [`Self::with_service`].
+    #[cfg(target_os = "linux")]
     pub fn new(ctx: PortalContext) -> Self {
         Self::with_lifecycle(ctx, PortalLifecycle::new())
     }
 
+    #[cfg(target_os = "linux")]
     pub fn with_lifecycle(ctx: PortalContext, lifecycle: PortalLifecycle) -> Self {
         Self::with_service_and_lifecycle(
             ctx,
@@ -332,12 +367,14 @@ impl BackgroundBackend {
         )
     }
 
+    #[cfg(target_os = "linux")]
     pub fn with_service(ctx: PortalContext, service: BackgroundServiceHandle) -> Self {
         Self::with_service_and_lifecycle(ctx, service, PortalLifecycle::new())
     }
 
+    #[cfg(target_os = "linux")]
     pub fn with_service_and_lifecycle(
-        ctx: PortalContext,
+        #[cfg(target_os = "linux")] ctx: PortalContext,
         service: BackgroundServiceHandle,
         lifecycle: PortalLifecycle,
     ) -> Self {
@@ -431,6 +468,7 @@ impl BackgroundBackend {
             .map(|entry| entry.autostart_enabled)
     }
 
+    #[cfg(target_os = "linux")]
     async fn authenticated(
         &self,
         hdr: zbus::message::Header<'_>,
@@ -443,6 +481,7 @@ impl BackgroundBackend {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[interface(name = "org.freedesktop.impl.portal.Background")]
 impl BackgroundBackend {
     async fn get_app_state(
@@ -532,7 +571,7 @@ impl BackgroundBackend {
         }
     }
 
-    /// Deprecated upstream API. qOS accepts it only after a background grant,
+    /// Deprecated upstream API. Tilo accepts it only after a background grant,
     /// and passes solely the verified package id to the launcher. The argv is
     /// parsed only for size/control-character limits then discarded.
     async fn enable_autostart(
@@ -581,6 +620,7 @@ impl BackgroundBackend {
     ) -> zbus::Result<()>;
 }
 
+#[cfg(target_os = "linux")]
 pub fn spawn_running_monitor(connection: zbus::Connection, backend: BackgroundBackend) {
     let task_connection = connection.clone();
     connection
@@ -623,6 +663,7 @@ fn response_with_result(allowed: bool) -> (u32, HashMap<String, OwnedValue>) {
 fn valid_app_key(value: &str) -> bool {
     !value.is_empty() && value.len() <= 255 && !value.chars().any(char::is_control)
 }
+#[cfg(target_os = "linux")]
 fn valid_name(value: &str) -> bool {
     !value.is_empty() && value.len() <= MAX_NAME_BYTES && !value.chars().any(char::is_control)
 }
@@ -647,7 +688,7 @@ fn default_path() -> PathBuf {
         // A missing private state/runtime directory must make persistence
         // fail; shared /tmp would let another user pre-seed portal state.
         .unwrap_or_else(|| PathBuf::from("/dev/null"))
-        .join("qos/portal/background-autostart.json")
+        .join("tilo/portal/background-autostart.json")
 }
 
 #[cfg(test)]
@@ -656,17 +697,25 @@ mod tests {
 
     #[test]
     fn state_is_bounded_and_values_are_validated() {
-        let (grants, _) = crate::portal::GrantStoreHandle::test_with_workspace(
-            crate::shell::state::Workspace::test_default(
-                crate::shell::state::WorkspaceId(1),
-                "test",
-            ),
-        );
-        let backend = BackgroundBackend::new(PortalContext::new_with_null_spawners(
-            grants,
-            crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoDeny),
-            crate::portal::CallerMap::new(),
-        ));
+        let backend = BackgroundBackend {
+            #[cfg(target_os = "linux")]
+            ctx: {
+                let (grants, _) = crate::portal::GrantStoreHandle::test_with_workspace(
+                    crate::shell::state::Workspace::test_default(
+                        crate::shell::state::WorkspaceId(1),
+                        "test",
+                    ),
+                );
+                PortalContext::new_with_null_spawners(
+                    grants,
+                    crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoDeny),
+                    crate::portal::CallerMap::new(),
+                )
+            },
+            apps: Arc::new(Mutex::new(HashMap::new())),
+            service: BackgroundServiceHandle::new(Arc::new(UnavailableBackgroundService)),
+            lifecycle: PortalLifecycle::new(),
+        };
         assert!(backend.set_app_state("org.example.App", ACTIVE));
         assert_eq!(backend.app_state("org.example.App"), Some(ACTIVE));
         assert!(!backend.set_app_state("org.example.Bad", 3));

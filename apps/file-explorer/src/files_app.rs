@@ -1,4 +1,4 @@
-//! `FileExplorerWidget` — the qOS file explorer's `AppWidget`.
+//! `FileExplorerWidget` — the Tilo file explorer's `AppWidget`.
 //!
 //! The widget owns all app state (current dir, entries, multi-selection,
 //! sort, view mode, navigation history) and rebuilds its child widget tree
@@ -23,7 +23,7 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use thumbnail::{ThumbKey, ThumbnailService};
-use ui::qos_actions::{
+use ui::tilo_actions::{
     ActionContract, ActionSpec, Availability, ConfirmationPolicy, EncodedAction, ExecutionMode,
     OperationKind, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
@@ -138,12 +138,14 @@ const fn metadata_refresh_interval(entry_count: usize) -> std::time::Duration {
 /// when there is no persistence dir. `None` when neither location is
 /// writable — previews then fall back to type badges (see [`ThumbCtx`]).
 fn build_thumb_service(config_dir: Option<&Path>) -> Option<ThumbnailService> {
+    #[cfg(test)]
+    crate::model::fixture_io_guard::ambient_io("build_thumb_service");
     let dir = config_dir.map_or_else(
-        || std::env::temp_dir().join("qos-file-explorer-thumbnails"),
+        || std::env::temp_dir().join("tilo-file-explorer-thumbnails"),
         |d| d.join("thumbnails"),
     );
     ThumbnailService::open(&dir, 4).ok().or_else(|| {
-        let fallback = std::env::temp_dir().join("qos-file-explorer-thumbnails");
+        let fallback = std::env::temp_dir().join("tilo-file-explorer-thumbnails");
         ThumbnailService::open(&fallback, 4).ok()
     })
 }
@@ -250,7 +252,7 @@ fn template_resource_id(path: &str) -> String {
     // must be cryptographically infeasible rather than merely improbable. The
     // 128-bit SHA-256 prefix is stable, opaque, and far beyond the collision
     // bound of the small, local Templates catalogue; SHA-2 is already part of
-    // the qOS shared cryptographic stack.
+    // the Tilo shared cryptographic stack.
     let digest = Sha256::digest(path.as_bytes());
     format!("files.template:{}", hex_prefix(&digest, 16))
 }
@@ -456,11 +458,38 @@ fn named_delivery_status_key(delivery: collab_types::NamedShareDeliveryStateV1) 
     }
 }
 
+/// Explicit initial presentation data for an embedded Files view.
+/// Paths here are data, not authorization; the host must separately enforce its grants.
+/// Injected views never discover ambient accounts, identities or workspace roots.
+#[derive(Clone)]
+pub struct StartupInputs {
+    pub initial_dir: PathBuf,
+    pub workspace_roots: Vec<PathBuf>,
+    pub record_roots: Vec<PathBuf>,
+    pub remote_accounts: Vec<crate::remote_accounts::RemoteAccount>,
+    pub trusted_humans: crate::identity_directory::TrustedHumanDirectory,
+}
+
+/// Optional services supplied by an embedding host. Absence never selects
+/// the standalone thumbnail cache or global document opener.
+#[derive(Clone)]
+pub struct HostedFileServices {
+    pub thumbnails: Option<Arc<ThumbnailService>>,
+    pub document_opener: Option<Rc<RefCell<DocumentOpener>>>,
+}
+
+enum FileServices {
+    Legacy,
+    Hosted(HostedFileServices),
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each boolean is independent named UI state for loading, clipboard, rename, layout, or visibility"
 )]
 pub struct FileExplorerWidget {
+    services: FileServices,
+    startup_accounts: Option<Vec<crate::remote_accounts::RemoteAccount>>,
     current_path: PathBuf,
     home_path: Option<PathBuf>,
     entries: Vec<Entry>,
@@ -576,7 +605,7 @@ pub struct FileExplorerWidget {
     /// …). Drives the standard favourites so a German desktop shows
     /// *Dokumente / Bilder / Musik*, not hard-coded English names.
     user_dirs: favorites::UserDirs,
-    /// The qOS collaborative-workspace roots the FUSE driver mounts, surfaced as
+    /// The Tilo collaborative-workspace roots the FUSE driver mounts, surfaced as
     /// first-class System locations in the sidebar. Resolved once at startup.
     workspace_roots: Vec<PathBuf>,
     /// Durable global-search projections. These are retained for the widget's
@@ -635,8 +664,8 @@ pub struct FileExplorerWidget {
     history_preview_result: HistoryPreviewResult,
     merge_preflight_result: MergePreflightResult,
     merge_preflight_pending: Option<(uuid::Uuid, collab_types::FileVersionId)>,
-    resource_invocation: Option<qos_actions::InvocationId>,
-    resource_result: Option<qos_actions::InvocationUpdate>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
+    resource_result: Option<tilo_actions::InvocationUpdate>,
     /// One bounded remote DAV browse at a time. The worker owns the network
     /// request; the UI thread only adopts the resulting metadata projection.
     remote_browse_result: RemoteBrowseResult,
@@ -677,9 +706,9 @@ impl FileExplorerWidget {
         // The same home the start directory is resolved against
         // (`crate::model::default_start_dir`), and for the same reason.
         // Under a sandbox this process's `HOME` is its own per-package
-        // directory — `/run/qos/app` — while the directory actually
+        // directory — `/run/tilo/app` — while the directory actually
         // opened is the user's real home, bound by a grant and named by
-        // `QOS_USER_HOME`. Reading `dirs::home_dir()` here made the two
+        // `TILO_USER_HOME`. Reading `dirs::home_dir()` here made the two
         // disagree, and the breadcrumb is where a disagreement shows:
         // `format_path` abbreviates a path to `~` only when it lies
         // under the home it was handed, so a home it does not recognise
@@ -760,7 +789,58 @@ impl FileExplorerWidget {
         home: Option<PathBuf>,
         user_dirs: favorites::UserDirs,
     ) -> Self {
-        let cwd = initial_path();
+        Self::with_inputs(config_dir, home, user_dirs, None, FileServices::Legacy)
+    }
+
+    /// Build with host-supplied startup data and legacy thumbnail/opener services.
+    /// Use [`Self::with_startup_inputs_and_services`] to supply services explicitly,
+    /// including their absence.
+    pub fn with_startup_inputs(inputs: StartupInputs) -> Self {
+        Self::with_inputs(
+            None,
+            None,
+            favorites::UserDirs::default(),
+            Some(inputs),
+            FileServices::Legacy,
+        )
+    }
+
+    /// Build with exact host services; absent services remain unavailable.
+    pub fn with_startup_inputs_and_services(
+        inputs: StartupInputs,
+        services: HostedFileServices,
+    ) -> Self {
+        Self::with_inputs(
+            None,
+            None,
+            favorites::UserDirs::default(),
+            Some(inputs),
+            FileServices::Hosted(services),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Declare the complete stable widget state in one auditable constructor."
+    )]
+    fn with_inputs(
+        config_dir: Option<PathBuf>,
+        home: Option<PathBuf>,
+        user_dirs: favorites::UserDirs,
+        inputs: Option<StartupInputs>,
+        services: FileServices,
+    ) -> Self {
+        let injected = inputs.is_some();
+        let inputs = inputs.unwrap_or_else(|| StartupInputs {
+            initial_dir: initial_path(),
+            workspace_roots: crate::model::workspace_roots(),
+            record_roots: crate::model::workspace_record_authority_roots(),
+            remote_accounts: crate::remote_accounts::load(),
+            trusted_humans: crate::identity_directory::TrustedHumanDirectory::load_default()
+                .unwrap_or_default(),
+        });
+        let cwd = inputs.initial_dir;
+
         let zoom_level = config_dir.as_deref().map_or(0, config::load_zoom);
         // Favourites: persisted list when we have a home + config dir, else the
         // built-in defaults so the sidebar is never empty. Standard entries
@@ -771,30 +851,39 @@ impl FileExplorerWidget {
             (None, _) => Vec::new(),
         };
         let show_hidden = false;
-        let workspace_roots = crate::model::workspace_roots();
+        let workspace_roots = inputs.workspace_roots;
         // Construct each durable namespace once. Subsequent refreshes are
         // revision-gated by `refresh_external_search_catalogs`, never by palette input.
         let places_search = crate::search_provider::PlacesSearchProvider::new(&favorites);
-        let mut collaborative_record_pager = crate::model::WorkspaceRecordIndexPager::new(
-            &crate::model::workspace_record_authority_roots(),
-        );
+        let mut collaborative_record_pager =
+            crate::model::WorkspaceRecordIndexPager::new(&inputs.record_roots);
         let initial_collaborative_page = collaborative_record_pager.next_page();
         let collaborative_search = crate::search_provider::CollaborativeRecordSearchProvider::new(
             &initial_collaborative_page.records,
         );
-        let remote_accounts = crate::remote_accounts::load();
+        let remote_accounts = inputs.remote_accounts;
         let remote_accounts_search =
             crate::search_provider::RemoteAccountSearchProvider::new(&remote_accounts);
-        let mut entries = read_dir_sync(&cwd).unwrap_or_default();
+        let mut entries = if injected {
+            crate::model::read_dir_with_workspace_roots(&cwd, &workspace_roots)
+        } else {
+            read_dir_sync(&cwd)
+        }
+        .unwrap_or_default();
         if !show_hidden {
             entries.retain(|e| !e.name.starts_with('.'));
         }
         sort_entries(SortBy::Name, SortOrder::Ascending, &mut entries);
         let cmds = new_sink();
-        let thumbs = build_thumb_service(config_dir.as_deref()).map(Arc::new);
-        let trusted_humans =
-            crate::identity_directory::TrustedHumanDirectory::load_default().unwrap_or_default();
+        let thumbs = match &services {
+            FileServices::Legacy => build_thumb_service(config_dir.as_deref()).map(Arc::new),
+            FileServices::Hosted(hosted) => hosted.thumbnails.clone(),
+        };
+        let trusted_humans = inputs.trusted_humans;
+        let startup_accounts = injected.then_some(remote_accounts);
         Self {
+            services,
+            startup_accounts,
             current_path: cwd,
             home_path: home,
             entries,
@@ -951,13 +1040,19 @@ impl FileExplorerWidget {
     /// Refresh external metadata after an explicit directory refresh/navigation
     /// or completed remote operation. The mount portion consumes a single
     /// bounded continuation page, never its entire authority.
+    fn remote_account_snapshot(&self) -> Vec<crate::remote_accounts::RemoteAccount> {
+        self.startup_accounts
+            .clone()
+            .unwrap_or_else(crate::remote_accounts::load)
+    }
+
     fn refresh_external_search_catalogs(&mut self) {
         let page = self.advance_collaborative_search_page();
         if page.truncated {
             self.status = Some("Collaborative search needs a refresh to continue.".to_string());
         }
         self.remote_accounts_search_revision = self.remote_accounts_search_revision.wrapping_add(1);
-        let accounts = crate::remote_accounts::load();
+        let accounts = self.remote_account_snapshot();
         self.remote_accounts_search
             .refresh(self.remote_accounts_search_revision, &accounts);
     }
@@ -1529,6 +1624,14 @@ impl FileExplorerWidget {
         self.load(path);
     }
 
+    fn read_directory(&self, path: &Path) -> Result<Vec<Entry>, String> {
+        if self.startup_accounts.is_some() {
+            crate::model::read_dir_with_workspace_roots(path, &self.workspace_roots)
+        } else {
+            read_dir_sync(path)
+        }
+    }
+
     /// Re-read `path` into the view without touching history (shared by
     /// navigate/back/forward/refresh).
     fn load(&mut self, path: PathBuf) {
@@ -1542,7 +1645,7 @@ impl FileExplorerWidget {
         self.scroll_offset.set((0.0, 0.0));
         // Opening the Trash for the first time (nothing deleted yet) should show
         // an empty folder, not a "no such directory" error, so materialise it.
-        if fileops::is_trash_dir(&path) {
+        if matches!(self.services, FileServices::Legacy) && fileops::is_trash_dir(&path) {
             let _ = fileops::ensure_trash_dir();
         }
         let loaded = if let Some((archive_path, prefix)) = crate::archive::location(&path) {
@@ -1584,7 +1687,7 @@ impl FileExplorerWidget {
                 })
                 .map_err(|error| error.to_string())
         } else {
-            read_dir_sync(&path)
+            self.read_directory(&path)
         };
         match loaded {
             Ok(mut entries) => {
@@ -1671,6 +1774,9 @@ impl FileExplorerWidget {
     }
 
     fn refresh_trusted_identities(&mut self, path: Option<&Path>) -> bool {
+        if self.startup_accounts.is_some() && path.is_none() {
+            return false;
+        }
         let next = path.map_or_else(
             crate::identity_directory::TrustedHumanDirectory::load_default,
             crate::identity_directory::TrustedHumanDirectory::load,
@@ -1703,7 +1809,7 @@ impl FileExplorerWidget {
             .primary()
             .and_then(|index| self.entries.get(index))
             .map(|entry| (entry.record_id, entry.path.clone()));
-        let Ok(mut entries) = read_dir_sync(&self.current_path) else {
+        let Ok(mut entries) = self.read_directory(&self.current_path) else {
             // A transient unmount/reconnect must not replace a still-useful
             // view with an error page. Explicit Refresh remains the path that
             // surfaces directory errors to the user.
@@ -2651,14 +2757,14 @@ impl FileExplorerWidget {
                         .and_then(|name| name.to_str())
                         .unwrap_or("File")
                         .to_string();
-                    let context = ui::qos_actions::ActionContext::for_resource(
+                    let context = ui::tilo_actions::ActionContext::for_resource(
                         action.clone(),
                         record_id.clone(),
                         "files.entry",
                         resource_label.clone(),
                     )
-                    .with_app("org.qos.Files", "Files")
-                    .with_facet(ui::qos_actions::ActionFacet::new(
+                    .with_app("org.tilo.Files", "Files")
+                    .with_facet(ui::tilo_actions::ActionFacet::new(
                         "version",
                         version.id.clone(),
                     ));
@@ -3799,7 +3905,7 @@ impl FileExplorerWidget {
     /// read, focuses the document if it is already open, and launches —
     /// all in one place, shared with every other surface that can open a
     /// file. Only when no host installed a route (a standalone run, off a
-    /// qOS session) does this fall back to the desktop default handler
+    /// Tilo session) does this fall back to the desktop default handler
     /// (`open::that`, via `CommandRunner::open_default`).
     ///
     /// A refusal from the host is shown in the status bar naming the
@@ -3835,7 +3941,14 @@ impl FileExplorerWidget {
             self.navigate(path);
             return Ok(false);
         }
-        match ask_host_to_open(&path) {
+        let result = match &self.services {
+            FileServices::Legacy => ask_host_to_open(&path),
+            FileServices::Hosted(hosted) => Some(hosted.document_opener.as_ref().map_or_else(
+                || Err("Document opening is unavailable".into()),
+                |open| open.borrow_mut()(&path),
+            )),
+        };
+        match result {
             Some(Ok(())) => {}
             Some(Err(reason)) => self.status = Some(reason),
             None => runner.open_default(&path)?,
@@ -3922,7 +4035,7 @@ impl FileExplorerWidget {
         );
         // The chrome + body panes are normally built inside `build_layout`.
         // When this widget is hosted inside a shell's TabBar (e.g. the Files
-        // tab on a qOS shell that boots Notes-active), `build_layout` doesn't
+        // tab on a Tilo shell that boots Notes-active), `build_layout` doesn't
         // run for inactive tabs — so switching to Files later produces a widget
         // with no chrome built and nothing visible renders even though
         // `self.rect` is correct. Flag structure-dirty here so the host runs a
@@ -4833,7 +4946,7 @@ pub trait CommandRunner {
         cwd: &std::path::Path,
     ) -> std::io::Result<()>;
     /// Open `path` with the system default handler. This is the fallback for
-    /// every file type qOS has no registered app for (images, PDFs, video,
+    /// every file type Tilo has no registered app for (images, PDFs, video,
     /// audio, plain text, …) so double-click/Enter/Open never silently do
     /// nothing.
     ///
@@ -4848,6 +4961,8 @@ pub struct SystemRunner;
 
 impl CommandRunner for SystemRunner {
     fn spawn(&mut self, program: &str, cwd: &std::path::Path) -> std::io::Result<()> {
+        #[cfg(test)]
+        crate::model::fixture_io_guard::ambient_io("SystemRunner process");
         std::process::Command::new(program)
             .current_dir(cwd)
             .spawn()
@@ -4859,6 +4974,8 @@ impl CommandRunner for SystemRunner {
         arg: &std::path::Path,
         cwd: &std::path::Path,
     ) -> std::io::Result<()> {
+        #[cfg(test)]
+        crate::model::fixture_io_guard::ambient_io("SystemRunner process");
         std::process::Command::new(program)
             .arg(arg)
             .current_dir(cwd)
@@ -4866,6 +4983,8 @@ impl CommandRunner for SystemRunner {
             .map(|_c| ())
     }
     fn open_default(&mut self, path: &std::path::Path) -> std::io::Result<()> {
+        #[cfg(test)]
+        crate::model::fixture_io_guard::ambient_io("SystemRunner::open_default");
         open::that(path)
     }
 }
@@ -4934,7 +5053,7 @@ thread_local! {
 ///
 /// With nothing installed — the explorer run standalone, with no
 /// compositor to ask — activation falls back to the desktop's own
-/// handler. That is the honest answer off a qOS session, not a second
+/// handler. That is the honest answer off a Tilo session, not a second
 /// implementation of the decision.
 pub fn set_document_opener<F>(opener: F)
 where
@@ -4951,6 +5070,8 @@ pub fn clear_document_opener() {
 
 /// Ask the host to open `path`. `None` when no host installed a route.
 fn ask_host_to_open(path: &std::path::Path) -> Option<Result<(), String>> {
+    #[cfg(test)]
+    crate::model::fixture_io_guard::ambient_io("ask_host_to_open");
     DOCUMENT_OPENER.with(|slot| slot.borrow_mut().as_mut().map(|open| open(path)))
 }
 
@@ -5933,13 +6054,13 @@ impl FileExplorerWidget {
             .resource_invocation
             .take()
             .map(|invocation| match &result {
-                Ok(_) => qos_actions::InvocationUpdate::Succeeded {
+                Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
-                Err(message) => qos_actions::InvocationUpdate::Failed {
+                Err(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "files.share_failed".into(),
                         message: message.clone(),
                         details: None,
@@ -6010,13 +6131,13 @@ impl FileExplorerWidget {
             .resource_invocation
             .take()
             .map(|invocation| match &result {
-                Ok(_) => qos_actions::InvocationUpdate::Succeeded {
+                Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
-                Err(error) => qos_actions::InvocationUpdate::Failed {
+                Err(error) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "files.remote_dav_failed".into(),
                         message: error.message().into(),
                         details: None,
@@ -6189,13 +6310,13 @@ impl FileExplorerWidget {
             .resource_invocation
             .take()
             .map(|invocation| match &result {
-                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
-                Err(message) => qos_actions::InvocationUpdate::Failed {
+                Err(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "files.history_failed".into(),
                         message: message.clone(),
                         details: None,
@@ -7194,7 +7315,7 @@ impl Widget for FileExplorerWidget {
             // The hand-positioned recovery Button still publishes through the
             // normal action door; this handler delegates its stable control
             // resource back to the retained widget.
-            "qos.ui.control.invoke",
+            "tilo.ui.control.invoke",
         ]
     }
 
@@ -7280,7 +7401,7 @@ impl Widget for FileExplorerWidget {
         // permission and never opens the credential vault; opening one shows
         // its truthful lifecycle/mount state rather than fabricating a remote
         // directory that this sandbox cannot actually access.
-        for account in crate::remote_accounts::load() {
+        for account in self.remote_account_snapshot() {
             let resource_id = crate::remote_accounts::resource_id(&account.id);
             let payload = vec!["details".to_string(), account.id.to_string()];
             let mut resource =
@@ -7506,7 +7627,7 @@ impl Widget for FileExplorerWidget {
                         permission: PermissionRequirement::Write,
                         retry: RetryPolicy::AtMostOnce,
                         // The FUSE/host filesystem owns durable history. This
-                        // external effect has no qOS action inverse, so never
+                        // external effect has no Tilo action inverse, so never
                         // advertise an undo boundary we cannot honor.
                         ..ActionContract::default()
                     }),
@@ -7731,7 +7852,7 @@ impl Widget for FileExplorerWidget {
     ) -> Result<bool, String> {
         match (kind, type_id) {
             (OperationKind::Effect, "files.refresh") => self.refresh(),
-            (_, "qos.ui.control.invoke") => {
+            (_, "tilo.ui.control.invoke") => {
                 // A shared Button publishes its own canonical resource.  This
                 // root also publishes the contained toolbar/menu controls, so
                 // intercepting the type here and trying only the error-state
@@ -8033,7 +8154,7 @@ impl Widget for FileExplorerWidget {
     )]
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
@@ -8152,18 +8273,18 @@ impl Widget for FileExplorerWidget {
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )))
         }
     }
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &automerge::AutoCommit,
         _path: &automerge::ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         self.poll_share_result();
         self.poll_history_result();
         self.poll_remote_browse_result();
@@ -8775,7 +8896,7 @@ impl Widget for FileExplorerWidget {
         v
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.state_retry.take_control_invocation().or_else(|| {
             self.children_mut()
                 .into_iter()
@@ -8785,6 +8906,9 @@ impl Widget for FileExplorerWidget {
 
     fn name(&self) -> &'static str {
         "FileExplorerWidget"
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
@@ -9153,7 +9277,7 @@ mod open_with_tests {
         clear_document_opener();
     }
 
-    /// With no host installed — the explorer run outside a qOS session —
+    /// With no host installed — the explorer run outside a Tilo session —
     /// activation still opens the file, via the desktop's own handler,
     /// rather than doing nothing.
     #[test]
@@ -9920,7 +10044,7 @@ mod command_path_tests {
 
     #[test]
     fn entry_resource_uses_a_wire_safe_id_and_renames_through_the_action_door() {
-        use ui::qos_actions::{ActionAddress, door};
+        use ui::tilo_actions::{ActionAddress, door};
 
         let d = tempfile::tempdir().unwrap();
         // A control separator is a legal Unix filename byte but must not leak
@@ -9959,7 +10083,7 @@ mod command_path_tests {
                 .expect("rename action is exported")
                 .contract
                 .reversible,
-            "an external filesystem rename has no qOS action-history inverse"
+            "an external filesystem rename has no Tilo action-history inverse"
         );
         assert!(
             Widget::invoke_resource_operation(
@@ -10206,7 +10330,7 @@ mod command_path_tests {
                 Some(PathBuf::from("/home/tester")),
             )
         };
-        let sub = PathBuf::from("/home/tester/Projects/qos");
+        let sub = PathBuf::from("/home/tester/Projects/tilo");
         let mut w = make();
         let before = w.favorites().len();
         w.apply_command(FileCommand::AddFavorite(sub.clone()));
@@ -10628,8 +10752,8 @@ mod command_path_tests {
         // Production discovers this from the mounted workspace root. Mark the
         // isolated fixture as a collaborative root so the listing reads the
         // record/sync xattrs whose refresh behavior this test exercises.
-        let previous_roots = std::env::var_os("QOS_WORKSPACE_ROOTS");
-        unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", dir.path()) };
+        let previous_roots = std::env::var_os("TILO_WORKSPACE_ROOTS");
+        unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", dir.path()) };
         let before = dir.path().join("before.txt");
         let after = dir.path().join("after.txt");
         std::fs::write(&before, b"shared").unwrap();
@@ -10655,9 +10779,9 @@ mod command_path_tests {
         assert_eq!(widget.selection.primary(), Some(0));
         assert_eq!(widget.scroll_offset.get(), (0.0, 137.0));
         if let Some(previous_roots) = previous_roots {
-            unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", previous_roots) };
+            unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", previous_roots) };
         } else {
-            unsafe { std::env::remove_var("QOS_WORKSPACE_ROOTS") };
+            unsafe { std::env::remove_var("TILO_WORKSPACE_ROOTS") };
         }
     }
 
@@ -11063,7 +11187,7 @@ mod command_path_tests {
         xattr::set(
             dir.path(),
             crate::model::SHARE_CONTROL_XATTR,
-            b"/run/qos/app/qos-fs-share.sock",
+            b"/run/tilo/app/tilo-fs-share.sock",
         )
         .unwrap();
         let root_key = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
@@ -11072,25 +11196,25 @@ mod command_path_tests {
         let device_key = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
         let device =
             collab_types::Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
-        let mut certificate = qos_user_identity::DeviceCert {
+        let mut certificate = tilo_user_identity::DeviceCert {
             user_public_key: person_bytes,
             device_public_key: device_key.verifying_key().to_bytes(),
             device_label: "Ada's laptop".into(),
-            capabilities: qos_user_identity::DeviceCapabilities::member(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
         };
-        qos_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+        tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
         let mut w = FileExplorerWidget::new();
         w.workspace_roots = vec![dir.path().to_path_buf()];
         w.trusted_humans = crate::identity_directory::TrustedHumanDirectory::from_projection_v2(
-            qos_user_identity::TrustedIdentityProjectionV2 {
-                schema_version: qos_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
-                humans: vec![qos_user_identity::GovernedHumanIdentityV2 {
+            tilo_user_identity::TrustedIdentityProjectionV2 {
+                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
                     root_public_key: person_bytes,
                     display_name: "Ada Lovelace".to_string(),
-                    devices: vec![qos_user_identity::GovernedDeviceIdentityV2 { certificate }],
+                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 { certificate }],
                 }],
             },
         )
@@ -11174,27 +11298,27 @@ mod command_path_tests {
             root: &ed25519_dalek::SigningKey,
             name: &str,
             devices: &[(u8, &str, Option<u64>)],
-        ) -> qos_user_identity::TrustedIdentityProjectionV2 {
+        ) -> tilo_user_identity::TrustedIdentityProjectionV2 {
             let devices = devices
                 .iter()
                 .map(|(seed, label, expires_at_ns)| {
                     let device = ed25519_dalek::SigningKey::from_bytes(&[*seed; 32]);
-                    let mut certificate = qos_user_identity::DeviceCert {
+                    let mut certificate = tilo_user_identity::DeviceCert {
                         user_public_key: root.verifying_key().to_bytes(),
                         device_public_key: device.verifying_key().to_bytes(),
                         device_label: (*label).into(),
-                        capabilities: qos_user_identity::DeviceCapabilities::member(),
+                        capabilities: tilo_user_identity::DeviceCapabilities::member(),
                         issued_at_ns: 1,
                         expires_at_ns: *expires_at_ns,
                         signature: [0; 64],
                     };
-                    qos_user_identity::sign_device_cert(&mut certificate, root).unwrap();
-                    qos_user_identity::GovernedDeviceIdentityV2 { certificate }
+                    tilo_user_identity::sign_device_cert(&mut certificate, root).unwrap();
+                    tilo_user_identity::GovernedDeviceIdentityV2 { certificate }
                 })
                 .collect();
-            qos_user_identity::TrustedIdentityProjectionV2 {
-                schema_version: qos_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
-                humans: vec![qos_user_identity::GovernedHumanIdentityV2 {
+            tilo_user_identity::TrustedIdentityProjectionV2 {
+                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
                     root_public_key: root.verifying_key().to_bytes(),
                     display_name: name.into(),
                     devices,
@@ -11253,7 +11377,7 @@ mod command_path_tests {
 
         std::fs::write(
             &path,
-            serde_json::to_vec(&qos_user_identity::TrustedIdentityProjectionV2::empty()).unwrap(),
+            serde_json::to_vec(&tilo_user_identity::TrustedIdentityProjectionV2::empty()).unwrap(),
         )
         .unwrap();
         assert!(widget.refresh_trusted_identities(Some(&path)));
@@ -11316,11 +11440,11 @@ mod command_path_tests {
             Widget::resource(&widget, &doc, &address.resource)
                 .expect("late record materializes exactly for this address"),
         );
-        let spec = ui::qos_actions::door::resolve(&resources, &address)
+        let spec = ui::tilo_actions::door::resolve(&resources, &address)
             .expect("search reveal action is exported");
         let kind = spec.kind;
         let encoded =
-            ui::qos_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
+            ui::tilo_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
                 .expect("reveal action encodes");
         assert!(
             Widget::invoke_resource_operation(
@@ -11367,7 +11491,7 @@ mod command_path_tests {
             let response = collab_types::ShareControlResponseV1 {
                 protocol_version: collab_types::SHARE_CONTROL_VERSION,
                 result: collab_types::ShareControlResultV1::BearerCreatedV2 {
-                    uri: "qos-file://bounded".into(),
+                    uri: "tilo-file://bounded".into(),
                 },
             };
             let response = collab_types::canonical_bytes(&response).unwrap();
@@ -12093,12 +12217,12 @@ mod responsive_body_tests {
         h.left_release();
         let intent = Widget::take_control_invocation(&mut h.w)
             .expect("the shared button emits a resource action");
-        assert_eq!(intent.address.resource, "qos.control:files.retry");
+        assert_eq!(intent.address.resource, "tilo.control:files.retry");
         assert_eq!(intent.address.action, "invoke");
         assert!(
             h.w.invoke_resource_operation(
-                qos_actions::OperationKind::Effect,
-                "qos.ui.control.invoke",
+                tilo_actions::OperationKind::Effect,
+                "tilo.ui.control.invoke",
                 br#""files.retry""#,
                 &h.state.doc,
                 &h.state.root,
@@ -12117,8 +12241,8 @@ mod responsive_body_tests {
         let mut h = H::new(None, 1200.0, 720.0);
         assert!(
             h.w.invoke_resource_operation(
-                qos_actions::OperationKind::Effect,
-                "qos.ui.control.invoke",
+                tilo_actions::OperationKind::Effect,
+                "tilo.ui.control.invoke",
                 br#""files.view_menu""#,
                 &h.state.doc,
                 &h.state.root,
@@ -12451,7 +12575,7 @@ mod responsive_body_tests {
         let mut h = H::from_widget(w, 1200.0, 720.0);
         assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
         let before = h.w.favorites().len();
-        let folder = PathBuf::from("/home/tester/Projects/qos");
+        let folder = PathBuf::from("/home/tester/Projects/tilo");
 
         // Begin the drag (what the file view emits once a folder press travels).
         assert!(h.w.apply_command(FileCommand::BeginDrag {
@@ -12759,9 +12883,9 @@ mod breadcrumb_home_tests {
     /// to be measured against the same one.
     ///
     /// Under a sandbox this process's `HOME` is its own per-package
-    /// directory (`/run/qos/app`) while the directory actually opened is
+    /// directory (`/run/tilo/app`) while the directory actually opened is
     /// the user's real home, bound by a grant and named by
-    /// `QOS_USER_HOME`. `new` resolved the start directory from the
+    /// `TILO_USER_HOME`. `new` resolved the start directory from the
     /// second and the breadcrumb's home from the first, so
     /// [`crate::model::format_path`] was measuring against a directory
     /// nothing is under — and the trail rendered as an absolute path
@@ -12770,20 +12894,20 @@ mod breadcrumb_home_tests {
     fn breadcrumb_home_is_the_granted_user_home_not_the_process_home() {
         let granted = tempfile::tempdir().expect("tempdir");
         let granted_path = granted.path().to_path_buf();
-        // Only `QOS_USER_HOME` is touched: `HOME` is left as the machine's,
+        // Only `TILO_USER_HOME` is touched: `HOME` is left as the machine's,
         // which is precisely the disagreement under test — the override has
         // to win over whatever `dirs::home_dir()` says, and it does not say
         // this temp dir.
         // SAFETY: the value is read on the two lines below and by nothing
         // else in this crate's tests.
-        unsafe { std::env::set_var("QOS_USER_HOME", &granted_path) };
+        unsafe { std::env::set_var("TILO_USER_HOME", &granted_path) };
 
         let resolved = crate::model::user_home();
         let widget_home = FileExplorerWidget::new()
             .home_path()
             .map(std::path::Path::to_path_buf);
 
-        unsafe { std::env::remove_var("QOS_USER_HOME") };
+        unsafe { std::env::remove_var("TILO_USER_HOME") };
 
         assert_eq!(
             resolved.as_deref(),
@@ -12826,5 +12950,171 @@ mod breadcrumb_home_tests {
             crate::model::format_path(&granted_path, widget_home.as_deref()),
             "~",
         );
+    }
+}
+
+#[cfg(test)]
+mod injected_startup_tests {
+    use super::*;
+    use crate::model::fixture_io_guard::{DenyAmbientIo, OwnedListings};
+
+    struct ClearOpener;
+    impl Drop for ClearOpener {
+        fn drop(&mut self) {
+            clear_document_opener();
+        }
+    }
+
+    fn startup(path: &Path) -> StartupInputs {
+        StartupInputs {
+            initial_dir: path.to_path_buf(),
+            workspace_roots: Vec::new(),
+            record_roots: Vec::new(),
+            remote_accounts: Vec::new(),
+            trusted_humans: crate::identity_directory::TrustedHumanDirectory::default(),
+        }
+    }
+
+    fn absent_services() -> HostedFileServices {
+        HostedFileServices {
+            thumbnails: None,
+            document_opener: None,
+        }
+    }
+
+    fn owned_child(parent: &Path) -> PathBuf {
+        let child = parent.join("files");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::write(child.join("Welcome.txt"), b"Shell capture fixture\n").unwrap();
+        child
+    }
+
+    #[test]
+    fn injected_startup_and_reload_keep_the_host_directory_and_catalogs() {
+        let parent = tempfile::tempdir().unwrap();
+        let child = owned_child(parent.path());
+        let guard = DenyAmbientIo::new();
+        let listings = OwnedListings::new(&child);
+        let account = crate::remote_accounts::RemoteAccount {
+            id: accounts::AccountId::from("host-fixture".to_string()),
+            kind: crate::remote_accounts::RemoteAccountKind::WebDav,
+            label: "Host fixture".to_string(),
+            host: "fixture.invalid".to_string(),
+            health: crate::remote_accounts::RemoteAccountHealth::Disabled,
+        };
+        let mut inputs = startup(&child);
+        inputs.remote_accounts.push(account.clone());
+        let mut widget =
+            FileExplorerWidget::with_startup_inputs_and_services(inputs, absent_services());
+        assert_eq!(widget.current_path, child);
+        assert_eq!(widget.displayed_entries().len(), 1);
+        assert_eq!(widget.displayed_entries()[0].name, "Welcome.txt");
+        ui::widget::Widget::set_focus(&mut widget, true);
+        let mut document = automerge::AutoCommit::new();
+        ui::widget::Widget::sync(&mut widget, &mut document, &automerge::ROOT);
+        widget.refresh_external_search_catalogs();
+        assert!(!widget.refresh_trusted_identities(None));
+        widget.refresh_metadata_if_due(Instant::now() + LIVE_METADATA_REFRESH_INTERVAL);
+        widget.refresh();
+        assert_eq!(widget.current_path, child);
+        assert!(widget.workspace_roots.is_empty());
+        assert_eq!(widget.remote_account_snapshot(), vec![account]);
+        assert_eq!(
+            widget.trusted_humans,
+            crate::identity_directory::TrustedHumanDirectory::default()
+        );
+        assert_eq!(guard.attempts(), 0);
+        assert!(
+            listings
+                .observations()
+                .iter()
+                .all(|(path, workspace)| path == &child && !workspace)
+        );
+    }
+
+    #[test]
+    fn injected_services_absence_never_builds_thumbnails_or_uses_global_opener() {
+        let parent = tempfile::tempdir().unwrap();
+        let child = owned_child(parent.path());
+        let guard = DenyAmbientIo::new();
+        let listings = OwnedListings::new(&child);
+        let calls = Rc::new(Cell::new(0));
+        set_document_opener({
+            let calls = calls.clone();
+            move |_| {
+                calls.set(calls.get() + 1);
+                Err("test TLS opener must remain unused".into())
+            }
+        });
+        let _clear = ClearOpener;
+        let mut widget = FileExplorerWidget::with_startup_inputs_and_services(
+            startup(&child),
+            absent_services(),
+        );
+        assert!(widget.thumbs.is_none());
+        crate::command::push(&widget.cmds, FileCommand::Activate(0));
+        assert!(widget.drain_commands());
+        assert_eq!(
+            widget.status_line(),
+            Some("Document opening is unavailable")
+        );
+        assert_eq!(calls.get(), 0);
+        assert_eq!(guard.attempts(), 0);
+        assert_eq!(listings.observations(), vec![(child, false)]);
+    }
+
+    #[test]
+    fn injected_listing_and_refresh_use_only_explicit_workspace_roots() {
+        let parent = tempfile::tempdir().unwrap();
+        let child = owned_child(parent.path());
+        let guard = DenyAmbientIo::new();
+        let listings = OwnedListings::new(&child);
+        let mut inputs = startup(&child);
+        inputs
+            .workspace_roots
+            .push(parent.path().join("unrelated-workspace"));
+        let mut widget =
+            FileExplorerWidget::with_startup_inputs_and_services(inputs, absent_services());
+        std::fs::write(child.join("Reload.txt"), b"reload").unwrap();
+        assert!(widget.apply_command(FileCommand::Refresh));
+        assert_eq!(widget.displayed_entries().len(), 2);
+        std::fs::write(child.join("Metadata.txt"), b"metadata").unwrap();
+        assert!(widget.refresh_metadata_preserving_view());
+        assert_eq!(widget.displayed_entries().len(), 3);
+        assert_eq!(
+            listings.observations(),
+            vec![
+                (child.clone(), false),
+                (child.clone(), false),
+                (child, false)
+            ]
+        );
+        assert_eq!(guard.attempts(), 0);
+    }
+
+    #[test]
+    fn fixture_io_guards_stop_before_following_io() {
+        let parent = tempfile::tempdir().unwrap();
+        let child = owned_child(parent.path());
+        let guard = DenyAmbientIo::new();
+        let listings = OwnedListings::new(&child);
+        let reached = Cell::new(0);
+        let denied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::model::fixture_io_guard::ambient_io("guard negative control");
+            reached.set(reached.get() + 1);
+        }));
+        assert!(denied.is_err());
+        assert_eq!(reached.get(), 0);
+        assert_eq!(guard.attempts(), 1);
+        let denied = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::model::fixture_io_guard::observe_owned_listing(
+                &parent.path().join("sibling"),
+                false,
+            );
+            reached.set(reached.get() + 1);
+        }));
+        assert!(denied.is_err());
+        assert_eq!(reached.get(), 0);
+        assert!(listings.observations().is_empty());
     }
 }

@@ -25,7 +25,7 @@ mapfile -t frozen_consumers < <(
   grep -lE 'from=rpms|enablerepo=frozen|RPMS_REF' \
     "$repo/os/Containerfile" \
     "$repo/os/Containerfile.host" \
-    "$repo/os/containers/qos-relay/Containerfile" \
+    "$repo/os/containers/tilo-relay/Containerfile" \
     "$repo/os/dev/composefs/Containerfile" \
     "$repo/os/kernel/Containerfile"
 )
@@ -79,9 +79,9 @@ has "$workflow" './os/dev/cache-github-assets.sh' \
   'snapshot materializes checksum-verified external inputs'
 has "$workflow" 'github-assets=os/external-assets/cache' \
   'snapshot receives only the materialized external-input cache'
-has "$snapshot" '/qos-assets/virtio-win-0.1.302-1.noarch.rpm' \
+has "$snapshot" '/tilo-assets/virtio-win-0.1.302-1.noarch.rpm' \
   'snapshot caches the content-pinned virtio RPM for selective extraction'
-has "$repo/os/Containerfile" '# qos-rpm-snapshot-package: virtio-win' \
+has "$repo/os/Containerfile" '# tilo-rpm-snapshot-package: virtio-win' \
   'selectively extracted virtio media remains in the frozen package manifest'
 if grep -q '^    virtio-win \\$' "$repo/os/Containerfile"; then
   bad 'the full duplicated virtio-win RPM payload is still installed in the OS'
@@ -109,7 +109,7 @@ first_instruction="$(grep -m1 -E '^(ARG|FROM) ' "$snapshot")"
 [ "$first_instruction" = 'ARG BASE_REF' ] \
   && ok 'BASE_REF is globally declared before the first snapshot stage' \
   || bad 'BASE_REF must be declared before the first FROM'
-has "$snapshot" '/repo/qos-direct-package-specs.txt' \
+has "$snapshot" '/repo/tilo-direct-package-specs.txt' \
   'snapshot publishes its direct package manifest'
 has "$snapshot" 'dnf install -y --downloadonly --setopt=reposdir=/repo ${PACKAGES}' \
   'snapshot proves the frozen repo resolves the complete transaction offline'

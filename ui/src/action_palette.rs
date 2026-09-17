@@ -1,8 +1,8 @@
 //! `ActionPalette` — the one Ctrl+K surface for a `ui::App`.
 //!
-//! The **resource + action model** ([`qos_actions`]) is the foundation: the
+//! The **resource + action model** ([`tilo_actions`]) is the foundation: the
 //! focused app instance publishes a tree of open [`Resource`]s, each
-//! exporting [`ActionSpec`](qos_actions::ActionSpec)s — the operations
+//! exporting [`ActionSpec`](tilo_actions::ActionSpec)s — the operations
 //! Ctrl+K offers. An app can also fold in *searchable content* via
 //! [`SearchProvider`](crate::search::SearchProvider)s (contacts, files, …);
 //! their hits can address an exported resource action and therefore enter the
@@ -16,9 +16,9 @@
 //! [`SearchField`](crate::widget::SearchField); results render through
 //! [`SearchResultsView`](crate::widget::SearchResultsView), grouped by kind.
 //! An action row resolves to its [`EncodedAction`] and
-//! [`dispatch_with_context`](qos_actions::dispatch_with_context)es through `qos_actions` — the same
+//! [`dispatch_with_context`](tilo_actions::dispatch_with_context)es through `tilo_actions` — the same
 //! path a remote peer replays — with a
-//! [`Prompted`](qos_actions::ActionInput::Prompted) action first collecting
+//! [`Prompted`](tilo_actions::ActionInput::Prompted) action first collecting
 //! its argument in the field. A canonical search hit resolves to that same
 //! action machinery. Only a legacy content row hands its opaque `action_id`
 //! back to the app to navigate.
@@ -27,7 +27,7 @@
 //! [`take_dispatch`](ActionPalette::take_dispatch) (actions) and
 //! [`take_navigation`](ActionPalette::take_navigation) (content).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId};
@@ -42,7 +42,7 @@ use crate::search::{SearchCursor, SearchGroup, SearchProvider, SearchResult, fuz
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, SearchResultsView, Widget};
-use qos_actions::{
+use tilo_actions::{
     ActionContext, ActionInput, ActionRegistry, ActionTransport, ConfirmationPolicy, Dispatched,
     EncodedAction, OperationKind, Resource, flatten,
 };
@@ -66,6 +66,7 @@ const PROVIDER_HIT_BUDGET: usize = 32;
 /// Diagnostics for one bounded progressive-search step.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SearchAdvance {
+    /// Query candidates or retained authorization rows checked in this step.
     pub inspected: usize,
     pub added: usize,
     pub pending: bool,
@@ -77,9 +78,10 @@ pub struct SearchAdvance {
 enum RowResolution {
     /// An exported action, deliberately retained as an inert address. It is
     /// resolved against the latest resource forest only when activated.
-    Address(qos_actions::ActionAddress),
+    Address(tilo_actions::ActionAddress),
+    Bound(crate::bound_dispatch::BoundActionTarget),
     /// A legacy search-provider hit — hand the opaque id back to the app.
-    Navigate(String),
+    Navigate(String, Option<crate::bound_dispatch::CallbackBinding>),
 }
 
 /// A resource-scoped action's path to an [`EncodedAction`].
@@ -104,7 +106,7 @@ enum ActionKind {
     /// multi-parameter action, then uses the `ActionSpec`'s strict binder.
     Typed {
         prompt: String,
-        spec: Box<qos_actions::ActionSpec>,
+        spec: Box<tilo_actions::ActionSpec>,
         context: ActionContext,
         kind: OperationKind,
         confirmation: ConfirmationPolicy,
@@ -113,7 +115,8 @@ enum ActionKind {
 
 /// Live state while the field is collecting a prompted action's argument.
 struct ArgState {
-    address: qos_actions::ActionAddress,
+    bound: Option<crate::bound_dispatch::BoundActionTarget>,
+    address: tilo_actions::ActionAddress,
 }
 
 struct ConfirmState {
@@ -130,8 +133,9 @@ enum PendingInput {
 
 /// A palette activation after address resolution and argument collection.
 pub struct PendingOperation {
+    pub(crate) bound: Option<crate::bound_dispatch::BoundActionTarget>,
     /// The address whose current authority must still be present at dispatch.
-    pub address: qos_actions::ActionAddress,
+    pub address: tilo_actions::ActionAddress,
     pub encoded: EncodedAction,
     pub context: ActionContext,
     pub kind: OperationKind,
@@ -149,7 +153,7 @@ impl PendingOperation {
             PendingInput::Immediate | PendingInput::Invalid => None,
             PendingInput::Text(value) => Some(value.clone()),
             PendingInput::Json(value) => {
-                Some(format!("{}{}", qos_actions::ARGUMENTS_JSON_PREFIX, value))
+                Some(format!("{}{}", tilo_actions::ARGUMENTS_JSON_PREFIX, value))
             }
         }
     }
@@ -157,6 +161,13 @@ impl PendingOperation {
     pub fn confirmation_evidence(&self) -> &serde_json::Value {
         &self.confirmation_evidence
     }
+}
+
+/// Retained display validation belongs to the provider that produced the row.
+/// None hides the row until its finite queued check completes.
+struct ProviderRowValidation {
+    provider: usize,
+    permissions: Option<crate::permissions::PermissionContext>,
 }
 
 /// The unified Ctrl+K palette: a [`SearchField`] over a [`SearchResultsView`],
@@ -171,8 +182,11 @@ pub struct ActionPalette {
     action_rows: Vec<SearchResult>,
     provider_rows: Vec<SearchResult>,
     provider_index: HashMap<String, RowResolution>,
+    provider_validation: HashMap<String, ProviderRowValidation>,
+    validation_queue: VecDeque<String>,
     /// The focused instance's open resources (their exported actions are rows).
     resources: Vec<Resource>,
+    bound_resources: Vec<crate::bound_dispatch::BoundResourceSnapshot>,
     /// Searchable-content sources folded in as navigable result groups.
     providers: Vec<Box<dyn SearchProvider>>,
     provider_cursors: Vec<Option<SearchCursor>>,
@@ -191,7 +205,7 @@ pub struct ActionPalette {
     pending_dispatch: Option<PendingOperation>,
     ambient_context: Option<ActionContext>,
     /// A navigation target, set on activation, drained by `take_navigation`.
-    pending_nav: Option<String>,
+    pending_nav: Option<(String, Option<crate::bound_dispatch::CallbackBinding>)>,
     /// The palette's outer rect (field + results), set by `layout`.
     rect: Rect,
     /// The field's own layout tree, rebuilt each `layout` so its `handle_event`
@@ -200,7 +214,21 @@ pub struct ActionPalette {
     field_node: Option<NodeId>,
     /// A text renderer kept for the field's per-frame measure pass, so `layout`
     /// does not construct a font system every frame the palette is open.
-    measure: TextRenderer,
+    measure: Option<TextRenderer>,
+    field_source: PaletteFieldSource,
+}
+
+enum PaletteFieldSource {
+    Factory(fn() -> SearchField),
+    Language(String),
+}
+impl PaletteFieldSource {
+    fn build(&self) -> SearchField {
+        match self {
+            Self::Factory(factory) => factory(),
+            Self::Language(language) => SearchField::with_language(language),
+        }
+    }
 }
 
 impl Default for ActionPalette {
@@ -212,8 +240,29 @@ impl Default for ActionPalette {
 impl ActionPalette {
     /// A closed palette. Load resources / providers, then `open`.
     pub fn new() -> Self {
+        Self::with_inputs(TextRenderer::new(), SearchField::new)
+    }
+
+    /// A closed palette that owns an explicitly configured layout renderer.
+    pub fn with_text_renderer(renderer: TextRenderer) -> Self {
+        let language = renderer.font_system.locale().to_owned();
+        Self::with_source(Some(renderer), PaletteFieldSource::Language(language))
+    }
+
+    /// Use the host's explicit font construction input for the real initializer.
+    pub(crate) fn with_inputs(measure: TextRenderer, field_factory: fn() -> SearchField) -> Self {
+        Self::with_source(Some(measure), PaletteFieldSource::Factory(field_factory))
+    }
+
+    pub(crate) fn with_host_text(language: String) -> Self {
+        Self::with_source(None, PaletteFieldSource::Language(language))
+    }
+
+    fn with_source(measure: Option<TextRenderer>, field_source: PaletteFieldSource) -> Self {
         Self {
-            field: SearchField::new().with_placeholder("Search actions and results"),
+            field: field_source
+                .build()
+                .with_placeholder("Search actions and results"),
             results: SearchResultsView::new()
                 .with_empty_text("No matches")
                 .with_test_id("action-palette-results"),
@@ -222,7 +271,10 @@ impl ActionPalette {
             action_rows: Vec::new(),
             provider_rows: Vec::new(),
             provider_index: HashMap::new(),
+            provider_validation: HashMap::new(),
+            validation_queue: VecDeque::new(),
             resources: Vec::new(),
+            bound_resources: Vec::new(),
             providers: Vec::new(),
             provider_cursors: Vec::new(),
             provider_complete: Vec::new(),
@@ -239,7 +291,8 @@ impl ActionPalette {
             rect: Rect::ZERO,
             field_taffy: TaffyTree::new(),
             field_node: None,
-            measure: TextRenderer::new(),
+            measure,
+            field_source,
         }
     }
 
@@ -272,7 +325,7 @@ impl ActionPalette {
             .values()
             .filter_map(|resolution| match resolution {
                 RowResolution::Address(address) => Some(address.resource.clone()),
-                RowResolution::Navigate(_) => None,
+                RowResolution::Navigate(..) | RowResolution::Bound(_) => None,
             })
             .collect::<Vec<_>>();
         ids.sort_unstable();
@@ -303,13 +356,36 @@ impl ActionPalette {
 
     /// Open (focus) the palette: reset the query, argument, and any pending
     /// outcome, and rebuild the (empty-query) result set.
+    pub(crate) fn load_bound_resources(
+        &mut self,
+        snapshots: Vec<crate::bound_dispatch::BoundResourceSnapshot>,
+    ) {
+        self.bound_resources = snapshots;
+        let query = self.field.value().to_string();
+        self.rebuild(&query);
+    }
+    pub(crate) fn activate_bound(
+        &mut self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+    ) -> bool {
+        let key = target.key();
+        if self.index.contains_key(&key) {
+            self.resolve_activation(&key);
+            true
+        } else {
+            false
+        }
+    }
     pub fn open(&mut self) {
         self.open = true;
         self.arg = None;
         self.confirm = None;
         self.pending_dispatch = None;
         self.pending_nav = None;
-        self.field = SearchField::new().with_placeholder("Search actions and results");
+        self.field = self
+            .field_source
+            .build()
+            .with_placeholder("Search actions and results");
         self.field.set_focused(true);
         self.rebuild("");
     }
@@ -348,10 +424,28 @@ impl ActionPalette {
         self.results.is_empty()
     }
 
-    /// Advance at most one provider by one bounded page. The host calls this
-    /// once per redraw while `pending` is true, so a large corpus remains
-    /// responsive while exact matches eventually become visible.
+    /// Advance one bounded query page or one finite retained-validation step.
+    /// A completed-query external redraw may start a fresh validation pass;
+    /// its final step returns pending=false so it never schedules another pass.
     pub fn advance_search_page(&mut self) -> SearchAdvance {
+        // Prompt/confirmation owns the empty result surface. Preserve any
+        // partial pass until the existing exit/open rebuild restarts search.
+        if self.in_argument_mode() {
+            return SearchAdvance {
+                generation: self.search_generation,
+                ..SearchAdvance::default()
+            };
+        }
+        if self.validation_queue.is_empty() && self.provider_complete.iter().all(|done| *done) {
+            for (key, validation) in &mut self.provider_validation {
+                validation.permissions = None;
+                self.validation_queue.push_back(key.clone());
+            }
+        }
+        self.queue_stale_provider_rows();
+        if !self.validation_queue.is_empty() {
+            return self.validate_provider_rows();
+        }
         let generation = self.search_generation;
         let provider_count = self.providers.len();
         if provider_count == 0 || self.provider_complete.iter().all(|done| *done) {
@@ -390,12 +484,14 @@ impl ActionPalette {
                 ..SearchAdvance::default()
             };
         };
+        let binding = provider.callback_binding();
         let page = provider.search_page(
             &self.search_query,
             cursor.as_ref(),
             PROVIDER_HIT_BUDGET,
             PROVIDER_HIT_BUDGET,
         );
+        let results = self.checked_provider_hits(provider.as_ref(), binding.as_ref(), page.results);
         let complete = page.next.is_none();
         if let Some(slot) = self.provider_cursors.get_mut(provider_index) {
             *slot = page.next;
@@ -405,9 +501,11 @@ impl ActionPalette {
         }
 
         let inspected = page.inspected;
-        let added = self.merge_provider_page(page.results);
+        let added = self.merge_provider_page(results, binding.as_ref(), provider_index);
+        self.queue_stale_provider_rows();
         self.refresh_progressive_results();
-        let pending = self.provider_complete.iter().any(|done| !*done);
+        let pending =
+            !self.validation_queue.is_empty() || self.provider_complete.iter().any(|done| !*done);
         self.results.set_empty_text(if pending {
             "Searching…"
         } else {
@@ -429,27 +527,224 @@ impl ActionPalette {
         }
     }
 
-    fn merge_provider_page(&mut self, results: Vec<SearchResult>) -> usize {
+    fn bound_provider_hit_allowed(
+        &self,
+        provider: &dyn SearchProvider,
+        binding: &crate::bound_dispatch::CallbackBinding,
+        address: Option<&tilo_actions::ActionAddress>,
+    ) -> bool {
+        let Ok(_entry) = binding.enter() else {
+            return false;
+        };
+        let Some(address) = address else {
+            return binding
+                .permissions
+                .borrow()
+                .check(&crate::permissions::PermissionScope::app(
+                    &binding.app_id,
+                    collab_types::caps::Verb::Read,
+                ));
+        };
+        // Provider resolution runs through its captured owner. Eager resources
+        // remain a valid source for providers that emit only canonical hits.
+        let resource = provider.resolve_action_resource(address).or_else(|| {
+            self.bound_resources
+                .iter()
+                .find(|snapshot| snapshot.binding.same_component(binding))
+                .and_then(|snapshot| {
+                    snapshot
+                        .resources
+                        .iter()
+                        .find(|resource| {
+                            tilo_actions::door::resolve(std::slice::from_ref(resource), address)
+                                .is_some()
+                        })
+                        .cloned()
+                })
+        });
+        resource
+            .and_then(|resource| crate::bound_dispatch::filter_resource(binding, resource))
+            .is_some_and(|resource| tilo_actions::door::resolve(&[resource], address).is_some())
+    }
+
+    fn checked_provider_hits(
+        &self,
+        provider: &dyn SearchProvider,
+        binding: Option<&crate::bound_dispatch::CallbackBinding>,
+        hits: Vec<SearchResult>,
+    ) -> Vec<(SearchResult, Option<crate::permissions::PermissionContext>)> {
+        hits.into_iter()
+            .filter_map(|hit| {
+                let Some(binding) = binding else {
+                    return Some((hit, None));
+                };
+                let permissions = binding.permissions.borrow().clone();
+                (self.bound_provider_hit_allowed(provider, binding, hit.action_address().as_ref())
+                    && permissions == *binding.permissions.borrow())
+                .then_some((hit, Some(permissions)))
+            })
+            .collect()
+    }
+
+    fn provider_row_binding(
+        &self,
+        key: &str,
+    ) -> Option<(
+        &crate::bound_dispatch::CallbackBinding,
+        Option<&tilo_actions::ActionAddress>,
+    )> {
+        match self.provider_index.get(key)? {
+            RowResolution::Bound(target) => Some((&target.binding, Some(&target.address.address))),
+            RowResolution::Navigate(_, Some(binding)) => Some((binding, None)),
+            _ => None,
+        }
+    }
+
+    fn provider_row_is_current(&self, key: &str) -> bool {
+        let Some(validation) = self.provider_validation.get(key) else {
+            return true;
+        };
+        self.provider_row_binding(key).is_some_and(|(binding, _)| {
+            !binding.closing.get()
+                && binding.lifetime.is_active()
+                && validation
+                    .permissions
+                    .as_ref()
+                    .is_some_and(|permissions| *permissions == *binding.permissions.borrow())
+        })
+    }
+
+    fn queue_stale_provider_rows(&mut self) {
+        let stale = self
+            .provider_validation
+            .iter()
+            .filter(|(key, validation)| {
+                validation.permissions.is_some() && !self.provider_row_is_current(key)
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for key in stale {
+            if let Some(validation) = self.provider_validation.get_mut(&key) {
+                validation.permissions = None;
+                self.validation_queue.push_back(key);
+            }
+        }
+    }
+
+    fn validate_provider_rows(&mut self) -> SearchAdvance {
+        let before = self.results.len();
+        let mut inspected = 0usize;
+        let mut denied = std::collections::HashSet::new();
+        for _ in 0..PROVIDER_HIT_BUDGET {
+            let Some(key) = self.validation_queue.pop_front() else {
+                break;
+            };
+            let Some(validation) = self.provider_validation.get(&key) else {
+                continue;
+            };
+            inspected = inspected.saturating_add(1);
+            let allowed = self
+                .provider_row_binding(&key)
+                .and_then(|(binding, address)| {
+                    let permissions = binding.permissions.borrow().clone();
+                    let provider = self.providers.get(validation.provider)?;
+                    (self.bound_provider_hit_allowed(provider.as_ref(), binding, address)
+                        && permissions == *binding.permissions.borrow()
+                        && !binding.closing.get()
+                        && binding.lifetime.is_active())
+                    .then_some(permissions)
+                });
+            if let Some(permissions) = allowed {
+                if let Some(validation) = self.provider_validation.get_mut(&key) {
+                    validation.permissions = Some(permissions);
+                }
+            } else {
+                denied.insert(key);
+            }
+        }
+        self.provider_rows
+            .retain(|row| !denied.contains(&row.action_id));
+        self.provider_index.retain(|key, _| !denied.contains(key));
+        self.provider_validation
+            .retain(|key, _| !denied.contains(key));
+        // A callback may revoke an owner checked earlier in this same pass.
+        // Hide those rows now and enqueue each only on Some -> None transition.
+        self.queue_stale_provider_rows();
+        self.refresh_progressive_results();
+        let pending =
+            !self.validation_queue.is_empty() || self.provider_complete.iter().any(|done| !*done);
+        self.results.set_empty_text(if pending {
+            "Searching…"
+        } else {
+            "No matches"
+        });
+        self.search_announcement = Some(format!(
+            "{} results{}",
+            self.results.len(),
+            if pending { ", still searching" } else { "" }
+        ));
+        SearchAdvance {
+            inspected,
+            added: self.results.len().saturating_sub(before),
+            pending,
+            generation: self.search_generation,
+        }
+    }
+
+    fn merge_provider_page(
+        &mut self,
+        results: Vec<(SearchResult, Option<crate::permissions::PermissionContext>)>,
+        binding: Option<&crate::bound_dispatch::CallbackBinding>,
+        provider: usize,
+    ) -> usize {
         let before = self.provider_rows.len();
         let mut known = self
             .provider_rows
             .iter()
             .map(|row| row.action_id.clone())
             .collect::<std::collections::HashSet<_>>();
-        for hit in results {
-            let row_id = format!("{NAV_PREFIX}{}", hit.action_id);
+        for (hit, permissions) in results {
+            let row_id = binding.map_or_else(
+                || format!("{NAV_PREFIX}{}", hit.action_id),
+                |binding| format!("{NAV_PREFIX}{}:{}", binding.lifetime_id, hit.action_id),
+            );
             if !known.insert(row_id.clone()) {
                 continue;
             }
             let resolution = if hit.has_action_address() {
-                hit.action_address().map(RowResolution::Address)
+                hit.action_address().map(|address| {
+                    binding.map_or_else(
+                        || RowResolution::Address(address.clone()),
+                        |binding| {
+                            RowResolution::Bound(crate::bound_dispatch::BoundActionTarget {
+                                binding: (*binding).clone(),
+                                address: crate::bound_dispatch::BoundActionAddress {
+                                    instance_id: binding.instance_id,
+                                    address: address.clone(),
+                                },
+                            })
+                        },
+                    )
+                })
             } else {
-                Some(RowResolution::Navigate(hit.action_id.clone()))
+                Some(RowResolution::Navigate(
+                    hit.action_id.clone(),
+                    binding.cloned(),
+                ))
             };
             let Some(resolution) = resolution else {
                 continue;
             };
             self.provider_index.insert(row_id.clone(), resolution);
+            if permissions.is_some() {
+                self.provider_validation.insert(
+                    row_id.clone(),
+                    ProviderRowValidation {
+                        provider,
+                        permissions,
+                    },
+                );
+            }
             let mut row = SearchResult::new(hit.kind, hit.title, row_id).with_score(hit.score);
             if let Some(subtitle) = hit.subtitle {
                 row = row.with_subtitle(subtitle);
@@ -459,9 +754,8 @@ impl ActionPalette {
             }
             self.provider_rows.push(row);
         }
-        // Retain only what can be displayed. Later pages are merged and
-        // reranked, so a stronger late exact hit displaces a broad early hit
-        // without memory growing with the corpus.
+        // Retain display candidates per kind. The number of kinds is not
+        // capped; retained authorization work is bounded separately.
         self.provider_rows =
             rank_and_group(&self.search_query, std::mem::take(&mut self.provider_rows))
                 .into_iter()
@@ -473,6 +767,8 @@ impl ActionPalette {
             .map(|row| row.action_id.as_str())
             .collect::<std::collections::HashSet<_>>();
         self.provider_index
+            .retain(|row_id, _| retained.contains(row_id.as_str()));
+        self.provider_validation
             .retain(|row_id, _| retained.contains(row_id.as_str()));
         self.provider_rows.len().saturating_sub(before)
     }
@@ -508,7 +804,7 @@ impl ActionPalette {
     /// Used by accessibility activation so consequential resource nodes cannot
     /// jump around the palette's policy flow.
     pub fn activate_address(&mut self, resource: &str, action: &str) -> bool {
-        let id = format!("{resource}{}{action}", qos_actions::KEY_SEP);
+        let id = format!("{resource}{}{action}", tilo_actions::KEY_SEP);
         if self.index.contains_key(&id) {
             self.resolve_activation(&id);
             true
@@ -526,10 +822,10 @@ impl ActionPalette {
         doc: &mut AutoCommit,
         registry: &ActionRegistry,
         transport: &mut dyn ActionTransport,
-    ) -> Option<Result<Dispatched, qos_actions::ActionError>> {
+    ) -> Option<Result<Dispatched, tilo_actions::ActionError>> {
         let pending = self.take_operation()?;
         if pending.kind != OperationKind::Document {
-            return Some(Err(qos_actions::ActionError::Refused(format!(
+            return Some(Err(tilo_actions::ActionError::Refused(format!(
                 "{} operation requires the owning widget",
                 pending.kind.as_str()
             ))));
@@ -548,8 +844,8 @@ impl ActionPalette {
     /// widget and document operations to the deterministic executor.
     pub fn take_operation(&mut self) -> Option<PendingOperation> {
         let mut pending = self.pending_dispatch.take()?;
-        let authority = self.authority_for(&pending.address)?;
-        let spec = qos_actions::door::resolve(&authority, &pending.address)?;
+        let authority = self.authority_for(&pending.address, pending.bound.as_ref())?;
+        let spec = tilo_actions::door::resolve(&authority, &pending.address)?;
         if !spec.contract.availability.is_available()
             || spec.kind != pending.kind
             || spec.contract.confirmation != pending.confirmation
@@ -558,24 +854,46 @@ impl ActionPalette {
         }
         pending.encoded = match &pending.input {
             PendingInput::Immediate => {
-                qos_actions::door::encode(&authority, &pending.address, None).ok()?
+                tilo_actions::door::encode(&authority, &pending.address, None).ok()?
             }
             PendingInput::Text(value) => {
-                qos_actions::door::encode(&authority, &pending.address, Some(value)).ok()?
+                tilo_actions::door::encode(&authority, &pending.address, Some(value)).ok()?
             }
             PendingInput::Json(value) => {
                 let arguments =
                     serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(value)
                         .ok()?;
-                qos_actions::door::encode_json(&authority, &pending.address, &arguments).ok()?
+                tilo_actions::door::encode_json(&authority, &pending.address, &arguments).ok()?
             }
             PendingInput::Invalid => pending.encoded.clone(),
         };
         Some(pending)
     }
 
-    fn authority_for(&self, address: &qos_actions::ActionAddress) -> Option<Vec<Resource>> {
-        qos_actions::door::resolve(&self.resources, address)
+    fn authority_for(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        bound: Option<&crate::bound_dispatch::BoundActionTarget>,
+    ) -> Option<Vec<Resource>> {
+        if let Some(target) = bound {
+            let _entry = target.binding.enter().ok()?;
+            let snapshot = self
+                .bound_resources
+                .iter()
+                .find(|snapshot| snapshot.binding.same_component(&target.binding))?;
+            let resources = snapshot
+                .resources
+                .iter()
+                .cloned()
+                .filter_map(|resource| {
+                    crate::bound_dispatch::filter_resource(&target.binding, resource)
+                })
+                .collect::<Vec<_>>();
+            return tilo_actions::door::resolve(&resources, address)
+                .is_some()
+                .then_some(resources);
+        }
+        tilo_actions::door::resolve(&self.resources, address)
             .is_some()
             .then(|| self.resources.clone())
     }
@@ -583,7 +901,31 @@ impl ActionPalette {
     /// Drain a completed content activation: the opaque `action_id` of the
     /// chosen search-provider row, for the app to navigate to.
     pub fn take_navigation(&mut self) -> Option<String> {
+        if self
+            .pending_nav
+            .as_ref()
+            .is_some_and(|(_, binding)| binding.is_none())
+        {
+            self.pending_nav.take().map(|(id, _)| id)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn take_scoped_navigation(
+        &mut self,
+    ) -> Option<(String, Option<crate::bound_dispatch::CallbackBinding>)> {
         self.pending_nav.take()
+    }
+
+    pub(crate) fn referenced_bound_targets(&self) -> Vec<crate::bound_dispatch::BoundActionTarget> {
+        self.index
+            .values()
+            .filter_map(|resolution| match resolution {
+                RowResolution::Bound(target) => Some(target.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     fn dispatch_encoded(
@@ -592,15 +934,15 @@ impl ActionPalette {
         registry: &ActionRegistry,
         transport: &mut dyn ActionTransport,
         context: ActionContext,
-    ) -> Result<Dispatched, qos_actions::ActionError> {
-        if encoded.type_id == qos_actions::resource::INVALID_ARGUMENTS_TYPE {
-            return Err(qos_actions::ActionError::Refused(
+    ) -> Result<Dispatched, tilo_actions::ActionError> {
+        if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE {
+            return Err(tilo_actions::ActionError::Refused(
                 String::from_utf8_lossy(&encoded.payload).into_owned(),
             ));
         }
         let action = registry.decode(encoded)?;
         let actor = doc.get_actor().to_bytes().to_vec();
-        qos_actions::dispatch_by_with_context(
+        tilo_actions::dispatch_by_with_context(
             doc,
             action.as_ref(),
             encoded.clone(),
@@ -613,8 +955,13 @@ impl ActionPalette {
     /// Resolve a chosen row id into a pending outcome (or the argument step).
     fn resolve_activation(&mut self, id: &str) {
         match self.index.get(id).cloned() {
-            Some(RowResolution::Address(address)) => {
-                let Some(kind) = self.action_kind_for_address(&address) else {
+            Some(resolution @ (RowResolution::Address(_) | RowResolution::Bound(_))) => {
+                let (address, bound) = match resolution {
+                    RowResolution::Address(address) => (address, None),
+                    RowResolution::Bound(target) => (target.address.address.clone(), Some(target)),
+                    RowResolution::Navigate(..) => return,
+                };
+                let Some(kind) = self.action_kind_for_address(&address, bound.as_ref()) else {
                     let query = self.field.value().to_string();
                     self.rebuild(&query);
                     return;
@@ -628,6 +975,7 @@ impl ActionPalette {
                     } => {
                         self.queue_or_confirm(
                             PendingOperation {
+                                bound,
                                 address,
                                 encoded,
                                 context,
@@ -642,31 +990,36 @@ impl ActionPalette {
                     ActionKind::Prompted { prompt, .. } => {
                         // Repurpose the field to collect the argument; clear the result
                         // list so only the prompt shows.
-                        self.field = SearchField::new();
+                        self.field = self.field_source.build();
                         self.field.set_placeholder(&prompt);
                         self.field.set_focused(true);
                         self.results.set_groups(Vec::new());
-                        self.arg = Some(ArgState { address });
+                        self.arg = Some(ArgState { bound, address });
                     }
                     ActionKind::Typed { prompt, .. } => {
-                        self.field = SearchField::new();
+                        self.field = self.field_source.build();
                         self.field.set_placeholder(&prompt);
                         self.field.set_focused(true);
                         self.results.set_groups(Vec::new());
-                        self.arg = Some(ArgState { address });
+                        self.arg = Some(ArgState { bound, address });
                     }
                 }
             }
-            Some(RowResolution::Navigate(target)) => {
-                self.pending_nav = Some(target);
+            Some(RowResolution::Navigate(target, binding)) => {
+                self.pending_nav = Some((target, binding));
                 self.open = false;
             }
             None => {}
         }
     }
 
-    fn action_kind_for_address(&self, address: &qos_actions::ActionAddress) -> Option<ActionKind> {
-        let fa = flatten(&self.resources)
+    fn action_kind_for_address(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        bound: Option<&crate::bound_dispatch::BoundActionTarget>,
+    ) -> Option<ActionKind> {
+        let resources = self.authority_for(address, bound)?;
+        let fa = flatten(&resources)
             .into_iter()
             .find(|fa| fa.key == address.encode())?;
         if !fa.action.contract.availability.is_available() {
@@ -686,7 +1039,7 @@ impl ActionPalette {
                 .action
                 .params()
                 .first()
-                .is_some_and(|parameter| parameter.ty != qos_actions::ParamType::Text);
+                .is_some_and(|parameter| parameter.ty != tilo_actions::ParamType::Text);
         Some(match &fa.action.input {
             ActionInput::Immediate(enc) => ActionKind::Immediate {
                 encoded: enc.clone(),
@@ -747,12 +1100,47 @@ impl ActionPalette {
                 }
                 index.insert(
                     fa.key.clone(),
-                    RowResolution::Address(qos_actions::ActionAddress::new(
+                    RowResolution::Address(tilo_actions::ActionAddress::new(
                         fa.resource_id.as_str(),
                         fa.action.id.as_str(),
                     )),
                 );
                 rows.push(r);
+            }
+        }
+
+        for snapshot in &self.bound_resources {
+            let Ok(_entry) = snapshot.binding.enter() else {
+                continue;
+            };
+            for resource in snapshot.resources.iter().cloned().filter_map(|resource| {
+                crate::bound_dispatch::filter_resource(&snapshot.binding, resource)
+            }) {
+                for fa in flatten(&[resource]) {
+                    if !fa.action.contract.availability.is_available() {
+                        continue;
+                    }
+                    let title = format!(
+                        "{} — {} · {}",
+                        fa.resource_label, fa.action.label, snapshot.binding.instance_id
+                    );
+                    if fuzzy_score(query, &title).is_none() {
+                        continue;
+                    }
+                    let target = crate::bound_dispatch::BoundActionTarget {
+                        binding: snapshot.binding.clone(),
+                        address: crate::bound_dispatch::BoundActionAddress {
+                            instance_id: snapshot.binding.instance_id,
+                            address: tilo_actions::ActionAddress::new(
+                                fa.resource_id.as_str(),
+                                &fa.action.id,
+                            ),
+                        },
+                    };
+                    let key = target.key();
+                    rows.push(SearchResult::new(ACTIONS_KIND, title, key.clone()));
+                    index.insert(key, RowResolution::Bound(target));
+                }
             }
         }
 
@@ -763,6 +1151,8 @@ impl ActionPalette {
         self.base_index = index;
         self.provider_rows.clear();
         self.provider_index.clear();
+        self.provider_validation.clear();
+        self.validation_queue.clear();
         self.provider_cursors = vec![None; self.providers.len()];
         self.provider_complete = vec![false; self.providers.len()];
         self.next_provider = 0;
@@ -779,7 +1169,12 @@ impl ActionPalette {
 
     fn refresh_progressive_results(&mut self) {
         let mut rows = self.action_rows.clone();
-        rows.extend(self.provider_rows.iter().cloned());
+        rows.extend(
+            self.provider_rows
+                .iter()
+                .filter(|row| self.provider_row_is_current(&row.action_id))
+                .cloned(),
+        );
         let groups = rank_and_group(&self.search_query, rows);
         let mut index = self.base_index.clone();
         for row in groups.iter().flat_map(|group| &group.results) {
@@ -800,13 +1195,73 @@ impl ActionPalette {
                   for taffy's f32-based layout loses no visually \
                   meaningful precision"
     )]
+    #[allow(
+        clippy::expect_used,
+        reason = "private palette ownership mismatch is an invariant violation"
+    )]
+    /// # Panics
+    /// Internal host-text palettes must use `layout_with_text` with their owning renderer.
     pub fn layout(&mut self, theme: &Theme, origin: Point, width: f64) {
+        let text = self
+            .measure
+            .as_mut()
+            .expect("host-text palette requires layout_with_text");
+        Self::layout_field(
+            &mut self.field,
+            &mut self.results,
+            &mut self.field_taffy,
+            &mut self.field_node,
+            &mut self.rect,
+            theme,
+            origin,
+            width,
+            text,
+        );
+    }
+
+    pub(crate) fn layout_with_text(
+        &mut self,
+        theme: &Theme,
+        origin: Point,
+        width: f64,
+        text: &mut TextRenderer,
+    ) {
+        assert!(self.measure.is_none(), "owned-text palette requires layout");
+        Self::layout_field(
+            &mut self.field,
+            &mut self.results,
+            &mut self.field_taffy,
+            &mut self.field_node,
+            &mut self.rect,
+            theme,
+            origin,
+            width,
+            text,
+        );
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::cast_possible_truncation,
+        reason = "disjoint palette state borrows share one bounded logical-pixel layout algorithm"
+    )]
+    fn layout_field(
+        field: &mut SearchField,
+        results: &mut SearchResultsView,
+        field_taffy: &mut TaffyTree<()>,
+        field_node: &mut Option<NodeId>,
+        rect: &mut Rect,
+        theme: &Theme,
+        origin: Point,
+        width: f64,
+        tr: &mut TextRenderer,
+    ) {
         // Field: build a fresh 2-node tree so `handle_event` can resolve the
         // inner text input's node, then place it at the top of the card.
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = self.field.build_layout(&mut taffy, theme, &mut node_map);
-        let tr = &mut self.measure;
+        let node = field.build_layout(&mut taffy, theme, &mut node_map);
+
         let Ok(()) = taffy.compute_layout_with_measure(
             node,
             Size {
@@ -824,16 +1279,15 @@ impl ActionPalette {
             // rather than panicking the app.
             return;
         };
-        self.field.apply_layout(&taffy, node, origin);
-        self.field_taffy = taffy;
-        self.field_node = Some(node);
+        field.apply_layout(&taffy, node, origin);
+        *field_taffy = taffy;
+        *field_node = Some(node);
 
         // Results overlay directly under the field.
         let top = origin.y + FIELD_H + GAP;
-        let h = self.results.desired_height();
-        self.results
-            .set_rect(Rect::new(origin.x, top, origin.x + width, top + h));
-        self.rect = Rect::new(origin.x, origin.y, origin.x + width, top + h);
+        let h = results.desired_height();
+        results.set_rect(Rect::new(origin.x, top, origin.x + width, top + h));
+        *rect = Rect::new(origin.x, origin.y, origin.x + width, top + h);
     }
 
     /// The palette's outer rect after the last `layout`.
@@ -924,7 +1378,8 @@ impl ActionPalette {
                 let value = self.field.value().to_string();
                 if let Some(state) = self.arg.take() {
                     let address = state.address;
-                    let Some(fresh) = self.action_kind_for_address(&address) else {
+                    let bound = state.bound;
+                    let Some(fresh) = self.action_kind_for_address(&address, bound.as_ref()) else {
                         self.exit_argument_mode();
                         return true;
                     };
@@ -938,7 +1393,7 @@ impl ActionPalette {
                         } => {
                             let encoded = build(&value);
                             let input = if encoded.type_id
-                                == qos_actions::resource::INVALID_ARGUMENTS_TYPE
+                                == tilo_actions::resource::INVALID_ARGUMENTS_TYPE
                             {
                                 PendingInput::Invalid
                             } else {
@@ -962,11 +1417,11 @@ impl ActionPalette {
                                     .map_err(|error| error.to_string())
                             })
                             .unwrap_or_else(|error| EncodedAction {
-                                type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                                 payload: error.into_bytes(),
                             });
                             let input = if encoded.type_id
-                                == qos_actions::resource::INVALID_ARGUMENTS_TYPE
+                                == tilo_actions::resource::INVALID_ARGUMENTS_TYPE
                             {
                                 PendingInput::Invalid
                             } else {
@@ -981,6 +1436,7 @@ impl ActionPalette {
                     };
                     self.queue_or_confirm(
                         PendingOperation {
+                            bound,
                             address,
                             encoded,
                             context,
@@ -1027,7 +1483,10 @@ impl ActionPalette {
         self.arg = None;
         self.confirm = None;
         // Restore the query field and result set.
-        self.field = SearchField::new().with_placeholder("Search actions and results");
+        self.field = self
+            .field_source
+            .build()
+            .with_placeholder("Search actions and results");
         self.field.set_focused(true);
         self.rebuild("");
     }
@@ -1042,7 +1501,7 @@ impl ActionPalette {
             ConfirmationPolicy::Confirm => "CONFIRM".to_string(),
             ConfirmationPolicy::Phrase { phrase } => phrase,
         };
-        self.field = SearchField::new();
+        self.field = self.field_source.build();
         self.field
             .set_placeholder(&format!("Type {expected} to confirm"));
         self.field.set_focused(true);
@@ -1134,14 +1593,19 @@ fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
 }
 
 #[cfg(test)]
+pub(crate) fn observed_field_language(palette: &ActionPalette) -> &str {
+    crate::widget::search_field::observed_language(&palette.field)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue};
-    use qos_actions::{
+    use serde::{Deserialize, Serialize};
+    use tilo_actions::{
         Action, ActionError, ActionRegistry, ActionSpec, Doc, ExecutionLocus, LocalTransport,
     };
-    use serde::{Deserialize, Serialize};
     use winit::event::KeyEvent;
 
     /// A minimal replayable action: set a string under a root key.
@@ -1232,7 +1696,7 @@ mod tests {
                     vec![SearchResult::for_action(
                         "People",
                         "Ada Lovelace",
-                        qos_actions::ActionAddress::new("test.thing:1", "mark"),
+                        tilo_actions::ActionAddress::new("test.thing:1", "mark"),
                     )]
                 })
                 .unwrap_or_default()
@@ -1260,7 +1724,7 @@ mod tests {
                     SearchResult::for_action(
                         "Large corpus",
                         format!("Item {id}"),
-                        qos_actions::ActionAddress::new(format!("lazy.item:{id}"), "open"),
+                        tilo_actions::ActionAddress::new(format!("lazy.item:{id}"), "open"),
                     )
                 })
                 .collect()
@@ -1268,7 +1732,7 @@ mod tests {
 
         fn resolve_action_resource(
             &self,
-            address: &qos_actions::ActionAddress,
+            address: &tilo_actions::ActionAddress,
         ) -> Option<Resource> {
             address.resource.strip_prefix("lazy.item:")?;
             Some(
@@ -1322,7 +1786,7 @@ mod tests {
                     SearchResult::for_action(
                         "Items",
                         format!("Broad candidate {id}"),
-                        qos_actions::ActionAddress::new(&resource_id, "open"),
+                        tilo_actions::ActionAddress::new(&resource_id, "open"),
                     ),
                 )
                 .expect("valid broad candidate");
@@ -1335,7 +1799,7 @@ mod tests {
                 SearchResult::for_action(
                     "Items",
                     "The only exact abc d result",
-                    qos_actions::ActionAddress::new(target_id, "open"),
+                    tilo_actions::ActionAddress::new(target_id, "open"),
                 ),
             )
             .expect("valid exact target");
@@ -1410,7 +1874,7 @@ mod tests {
         assert!(labels.iter().any(|l| l == "Ada Lovelace"), "{labels:?}");
     }
 
-    /// Activating an ACTION row dispatches through `qos_actions` and mutates the
+    /// Activating an ACTION row dispatches through `tilo_actions` and mutates the
     /// CRDT — the real replay path.
     #[test]
     fn activating_an_action_dispatches_and_mutates() {
@@ -1462,7 +1926,7 @@ mod tests {
         p.load_open_resources(&[thing_resource()]);
         p.set_ambient_context(Some(
             ActionContext::default()
-                .with_app("org.qos.Agent", "Agent")
+                .with_app("org.tilo.Agent", "Agent")
                 .with_purpose("Prepare launch")
                 .with_group("issue:42", "Launch", "issue"),
         ));
@@ -1538,7 +2002,7 @@ mod tests {
         let pending = p.take_operation().expect("broker operation pending");
         assert_eq!(
             pending.address,
-            qos_actions::ActionAddress::new("test.thing:1", "mark")
+            tilo_actions::ActionAddress::new("test.thing:1", "mark")
         );
         assert_eq!(pending.encoded.type_id, NOTE_TYPE);
         assert_eq!(pending.kind, OperationKind::Document);
@@ -1582,7 +2046,7 @@ mod tests {
     #[test]
     fn disabled_canonical_action_is_refused_at_activation() {
         let mut disabled = thing_resource();
-        disabled.actions[0].contract.availability = qos_actions::Availability::Unavailable {
+        disabled.actions[0].contract.availability = tilo_actions::Availability::Unavailable {
             code: "offline".into(),
             reason: "The service went offline".into(),
         };
@@ -1672,11 +2136,11 @@ mod tests {
                 },
             )
             .unwrap()
-            .with_contract(qos_actions::ActionContract {
+            .with_contract(tilo_actions::ActionContract {
                 confirmation: ConfirmationPolicy::Phrase {
                     phrase: "MARK THING".into(),
                 },
-                ..qos_actions::ActionContract::default()
+                ..tilo_actions::ActionContract::default()
             }),
         );
         let mut palette = ActionPalette::new();

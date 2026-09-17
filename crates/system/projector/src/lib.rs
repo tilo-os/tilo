@@ -1,4 +1,4 @@
-//! Wire contract shared by the qOS shell and projection broker.
+//! Wire contract shared by the Tilo shell and projection broker.
 
 #![cfg_attr(
     test,
@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
-const VIDEO_PACKET_MAGIC: [u8; 8] = *b"QOSPRJ01";
+const VIDEO_PACKET_MAGIC: [u8; 8] = *b"TLOPRJ01";
 const MAX_VIDEO_PACKET_BYTES: usize = 16 * 1024 * 1024;
 
 /// Wireless-display protocols understood by the projection broker.

@@ -1,0 +1,23 @@
+[package]
+name = "collab-probe"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Sandboxed CRDT collaboration probe — reaches the broker exactly as a packaged app does."
+
+[[bin]]
+name = "tilo-collab-probe"
+path = "src/main.rs"
+
+[dependencies]
+collab-types = { path = "../../collab/collab-types" }
+runtime-collab = { path = "../../runtime/runtime-collab" }
+runtime-identity = { path = "../../runtime/runtime-identity" }
+runtime-portal = { path = "../../runtime/runtime-portal" }
+automerge.workspace = true
+postcard.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
+
+[lints]
+workspace = true

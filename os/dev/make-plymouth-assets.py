@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate dependency-free PNG assets for the qOS Plymouth theme."""
+"""Generate dependency-free PNG assets for the Tilo Plymouth theme."""
 
 import math
 import os
@@ -117,12 +117,12 @@ def text_png(path, text, size, color, weight="Regular"):
 
 def main(directory):
     os.makedirs(directory, exist_ok=True)
-    png(os.path.join(directory, "qos-logo.png"), 220, 220, logo_pixel)
+    png(os.path.join(directory, "tilo-logo.png"), 220, 220, logo_pixel)
     png(os.path.join(directory, "entry.png"), 360, 56,
         rounded_rect(360, 56, 14, (31, 34, 51), (91, 79, 156), 2))
     png(os.path.join(directory, "lock.png"), 26, 26, lock_pixel)
     png(os.path.join(directory, "bullet.png"), 8, 8, circle_pixel(8, (226, 224, 255)))
-    text_png(os.path.join(directory, "unlock-heading.png"), "Unlock qOS", 30,
+    text_png(os.path.join(directory, "unlock-heading.png"), "Unlock Tilo", 30,
              (240, 240, 250), "SemiBold")
     text_png(os.path.join(directory, "unlock-help.png"),
              "Enter your disk passphrase or recovery key", 18, (158, 163, 186))

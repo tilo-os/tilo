@@ -1,4 +1,4 @@
-//! `collab-types` — the cryptographic foundation for qOS Spaces,
+//! `collab-types` — the cryptographic foundation for Tilo Spaces,
 //! Channels, and role-based access control.
 //!
 //! Self-contained: pure types, pure functions, no I/O, no async runtime,
@@ -67,6 +67,7 @@ pub mod mls_governance;
 pub mod op;
 pub mod ownership_transfer;
 pub mod peer;
+pub mod permission_profile;
 pub mod recipient_control;
 pub mod redaction;
 pub mod role;
@@ -133,6 +134,7 @@ pub use ownership_transfer::{
     OwnershipTransferCancellationV1, OwnershipTransferError, OwnershipTransferProposalV1,
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
+pub use permission_profile::{PermissionProfile, PermissionProfileError, PermissionProfileRule};
 pub use recipient_control::{
     MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_FRAME_BYTES,
     MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION, MAX_RECIPIENT_MOUNT_PATH_BYTES,

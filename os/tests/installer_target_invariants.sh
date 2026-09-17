@@ -5,18 +5,18 @@
 set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-backend="$repo_root/os/usr/libexec/qos-install"
-encryptor="$repo_root/os/usr/libexec/qos-disk-encrypt"
-guided_partitioner="$repo_root/os/usr/libexec/qos-guided-partition"
+backend="$repo_root/os/usr/libexec/tilo-install"
+encryptor="$repo_root/os/usr/libexec/tilo-disk-encrypt"
+guided_partitioner="$repo_root/os/usr/libexec/tilo-guided-partition"
 containerfile="$repo_root/os/Containerfile.installer"
 production_containerfile="$repo_root/os/Containerfile"
 builder="$repo_root/os/dev/build-custom-installer.sh"
-firstboot_user="$repo_root/os/usr/libexec/qos-firstboot-user"
-profile_extractor="$repo_root/os/usr/libexec/qos-installer-profile-extract"
+firstboot_user="$repo_root/os/usr/libexec/tilo-firstboot-user"
+profile_extractor="$repo_root/os/usr/libexec/tilo-installer-profile-extract"
 installer_app="$repo_root/crates/session/installer/src/installer_app.rs"
 media_profile="$repo_root/crates/session/installer/src/media_profile.rs"
-preflight="$repo_root/os/usr/libexec/qos-verified-boot-install-preflight"
-secret_policy="$repo_root/os/usr/libexec/qos-startup-secret-policy"
+preflight="$repo_root/os/usr/libexec/tilo-verified-boot-install-preflight"
+secret_policy="$repo_root/os/usr/libexec/tilo-startup-secret-policy"
 prediction_signer="$repo_root/os/dev/sign-target-prediction.sh"
 # shellcheck source=lib/containerfile.sh
 . "$repo_root/os/tests/lib/containerfile.sh"
@@ -36,7 +36,7 @@ else
   bad "installer profile routing regressed to an all-or-nothing shortcut"
 fi
 
-unlock_placeholder=qos.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000
+unlock_placeholder=tilo.unlock=000000000000000000000000000000000000000000000000000000000000000000000000000
 sample_uuid=00000000-0000-0000-0000-000000000000
 unlock_options="rd.luks.options=$sample_uuid=tpm2-device=auto,fido2-device=auto"
 if [ "${#unlock_placeholder}" -eq "${#unlock_options}" ] \
@@ -46,32 +46,32 @@ else
   bad "encrypted-root producer and sealed UKI hardware-token options disagree"
 fi
 
-karg_deletes="$(grep -c -- '--karg-delete qos.install' "$backend" || true)"
+karg_deletes="$(grep -c -- '--karg-delete tilo.install' "$backend" || true)"
 if [ "$karg_deletes" -eq 2 ] \
-   && grep -Fq 'append root=qos-auto /boot/qos-target/qos-target.efi' "$containerfile" \
-   && grep -Fq 'append rd.luks.options=tpm2-device=auto,fido2-device=auto /boot/qos-target/qos-target.efi' "$containerfile" \
-   && grep -Fq 'remove qos.install /boot/qos-target/qos-target.efi' "$containerfile" \
+   && grep -Fq 'append root=tilo-auto /boot/tilo-target/tilo-target.efi' "$containerfile" \
+   && grep -Fq 'append rd.luks.options=tpm2-device=auto,fido2-device=auto /boot/tilo-target/tilo-target.efi' "$containerfile" \
+   && grep -Fq 'remove tilo.install /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && grep -Fq 'install -m 0644 "$TARGET_VARIANT" "$TARGET_UKI.new"' "$backend" \
    && grep -Fq 'mv -f "$TARGET_UKI.new" "$TARGET_UKI"' "$backend" \
-   && ! grep -Fq 'qos-uki-cmdline set "qos.root=' "$backend"; then
+   && ! grep -Fq 'tilo-uki-cmdline set "tilo.root=' "$backend"; then
   ok "encrypted installs atomically promote a target-independent UKI without per-machine measured bytes"
 else
   bad "target-independent UKI handoff is incomplete (legacy deletions: $karg_deletes)"
 fi
 
-if grep -Fq 'qos-uki-cmdline remove systemd.show_status' "$containerfile" \
-   && grep -Fq 'qos-uki-cmdline remove rd.udev.log_level' "$containerfile" \
-   && grep -Fq 'qos-uki-cmdline remove loglevel' "$containerfile" \
-   && grep -Fq 'qos-uki-cmdline remove vt.global_cursor_default' "$containerfile" \
-   && grep -Fq 'qos-uki-cmdline append qos.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000' "$containerfile" \
-   && grep -Fq 'qos-uki-cmdline show | grep -qw qos.mode=normal' "$containerfile" \
-   && grep -Fq 'qos-uki-cmdline show | grep -qw qos.install' "$containerfile"; then
+if grep -Fq 'tilo-uki-cmdline remove systemd.show_status' "$containerfile" \
+   && grep -Fq 'tilo-uki-cmdline remove rd.udev.log_level' "$containerfile" \
+   && grep -Fq 'tilo-uki-cmdline remove loglevel' "$containerfile" \
+   && grep -Fq 'tilo-uki-cmdline remove vt.global_cursor_default' "$containerfile" \
+   && grep -Fq 'tilo-uki-cmdline append tilo.unlock=000000000000000000000000000000000000000000000000000000000000000000000000000' "$containerfile" \
+   && grep -Fq 'tilo-uki-cmdline show | grep -qw tilo.mode=normal' "$containerfile" \
+   && grep -Fq 'tilo-uki-cmdline show | grep -qw tilo.install' "$containerfile"; then
   ok "installer reserves measured UKI cmdline space without losing splash or mode"
 else
   bad "installer UKI cmdline headroom or required boot markers are incomplete"
 fi
 
-if grep -Fq '"$INSTALLER_CONTEXT/rootfs/usr/share/qos/greetd-config.toml"' "$builder" \
+if grep -Fq '"$INSTALLER_CONTEXT/rootfs/usr/share/tilo/greetd-config.toml"' "$builder" \
    && grep -Fq 'COPY rootfs/ /' "$containerfile" \
    && grep -Fq 'greetd-config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend" \
    && grep -Fq '[initial_session]' "$backend" \
@@ -81,11 +81,11 @@ else
   bad "installed system would ask for a second login after disk authentication"
 fi
 
-if grep -Fq ': "${TMPDIR:=${QOS_INSTALLER_OUTPUT}/.tmp}"' "$builder" \
+if grep -Fq ': "${TMPDIR:=${TILO_INSTALLER_OUTPUT}/.tmp}"' "$builder" \
    && grep -Fq 'export TMPDIR' "$builder" \
    && grep -Fq 'INSTALLER_SCRATCH="$TMPDIR"' "$builder" \
-   && grep -Fq 'mktemp -d "$INSTALLER_SCRATCH/qos-installer-context.XXXXXX"' "$builder" \
-   && ! grep -Fq 'mktemp -d /tmp/qos-installer-context' "$builder"; then
+   && grep -Fq 'mktemp -d "$INSTALLER_SCRATCH/tilo-installer-context.XXXXXX"' "$builder" \
+   && ! grep -Fq 'mktemp -d /tmp/tilo-installer-context' "$builder"; then
   ok "large installer staging stays on the output filesystem"
 else
   bad "installer staging can exhaust a small system temporary filesystem"
@@ -94,7 +94,7 @@ fi
 if grep -Fq 'root_gib=$(((image_bytes * 3 + gib - 1) / gib))' "$builder" \
    && grep -Fq '[ "$root_gib" -ge 40 ] || root_gib=40' "$builder" \
    && grep -Fq -- '--root-min "${root_gib}G"' "$builder" \
-   && grep -Fq 'QOS_INSTALLER_WORK_DISK=' "$repo_root/os/dev/_common.sh" \
+   && grep -Fq 'TILO_INSTALLER_WORK_DISK=' "$repo_root/os/dev/_common.sh" \
    && grep -Fq "qemu-img create -f qcow2 -F qcow2 -b '\$disk' '\$work_disk'" "$repo_root/os/dev/vm.sh" \
    && grep -Fq -- '-drive file=$work_disk,format=qcow2,if=virtio' "$repo_root/os/dev/vm.sh"; then
   ok "live media is capacity-sized and VM cycles preserve the release artifact"
@@ -102,7 +102,7 @@ else
   bad "live-media capacity or pristine-artifact VM isolation regressed"
 fi
 
-if grep -Fq 'rm -f "$DEPLOY_ETC/sudoers.d/qos-installer"' "$backend"; then
+if grep -Fq 'rm -f "$DEPLOY_ETC/sudoers.d/tilo-installer"' "$backend"; then
   ok "live-installer sudo privilege is removed from the target"
 else
   bad "target does not remove the live-installer sudo privilege"
@@ -116,7 +116,7 @@ else
   bad "installer Wi-Fi profiles are not safely preserved for first boot"
 fi
 
-if grep -Fq 'code.sandbox.example/qos/qos:*|code.sandbox.example/qos/qos@sha256:*' "$backend"; then
+if grep -Fq 'code.sandbox.example/qos/tilo:*|code.sandbox.example/qos/tilo@sha256:*' "$backend"; then
   ok "installed update origin is restricted to the signature-required repository"
 else
   bad "installer can record an update origin outside the signature-required policy"
@@ -168,15 +168,15 @@ fi
 identity_error="$(
   id() { printf 0; }
   export -f id
-  QOS_INSTALL_TRANSIENT=1 "$backend" \
-    --disk /dev/qos-test-missing --confirm-erase /dev/qos-test-missing \
+  TILO_INSTALL_TRANSIENT=1 "$backend" \
+    --disk /dev/tilo-test-missing --confirm-erase /dev/tilo-test-missing \
     --user identitytest --pin --yes </dev/null 2>&1 || true
 )"
 stable_error="$(
   id() { printf 0; }
   export -f id
-  QOS_INSTALL_TRANSIENT=1 "$backend" \
-    --disk /dev/qos-test-missing --confirm-erase /dev/qos-test-missing \
+  TILO_INSTALL_TRANSIENT=1 "$backend" \
+    --disk /dev/tilo-test-missing --confirm-erase /dev/tilo-test-missing \
     --expect-disk-size-bytes 68719476736 --expect-disk-devnum 252:0 \
     --user identitytest --pin --yes </dev/null 2>&1 || true
 )"
@@ -188,15 +188,15 @@ else
 fi
 
 if grep -Fq 'ENCRYPT=1' "$backend" \
-   && grep -Fq 'native qOS requires --pin' "$backend" \
+   && grep -Fq 'native Tilo requires --pin' "$backend" \
    && grep -Fq 'ENROL_ARGS+=(--passphrase)' "$backend" \
-   && grep -Fq 'qos-verified-boot-install-preflight' "$backend" \
+   && grep -Fq 'tilo-verified-boot-install-preflight' "$backend" \
    && grep -Fq 'POLICY_MODE=(--tpm-pin)' "$backend" \
    && grep -Fq 'ENROL_ARGS+=(--require-tpm-prediction)' "$backend" \
-   && grep -Fq 'qos-startup-secret-policy' "$backend"; then
-  ok "native qOS requires encryption and permits a short PIN only after exact verified-boot preflight"
+   && grep -Fq 'tilo-startup-secret-policy' "$backend"; then
+  ok "native Tilo requires encryption and permits a short PIN only after exact verified-boot preflight"
 else
-  bad "native qOS installer can bypass encryption or the startup secret"
+  bad "native Tilo installer can bypass encryption or the startup secret"
 fi
 
 if [ -x "$secret_policy" ] \
@@ -218,8 +218,8 @@ fi
 
 if [ -x "$preflight" ] \
    && containerfile_has_copy "$production_containerfile" \
-        os/usr/libexec/qos-verified-boot-install-preflight \
-        /usr/libexec/qos-verified-boot-install-preflight \
+        os/usr/libexec/tilo-verified-boot-install-preflight \
+        /usr/libexec/tilo-verified-boot-install-preflight \
    && grep -Fq 'openssl dgst -sha256 -verify "$pub" -signature "$prediction.uki.sig" "$uki"' "$preflight" \
    && grep -Fq "grep -Eq '^signature [1-9][0-9]*\$'" "$preflight" \
    && grep -Fq 'd.get("pcrs") != [11]' "$preflight"; then
@@ -233,32 +233,32 @@ if [ -x "$prediction_signer" ] \
    && grep -Fq 'policy-digest --json=short --bank=sha256 --phase=enter-initrd' "$prediction_signer" \
    && grep -Fq '"$signer" sign-efi' "$prediction_signer" \
    && grep -Fq '"$signer" export-efi-cert' "$prediction_signer" \
-   && grep -Fq 'QOS_EFI_SIGNING_CERT_SHA256' "$prediction_signer" \
+   && grep -Fq 'TILO_EFI_SIGNING_CERT_SHA256' "$prediction_signer" \
    && grep -Fq -- '--cert /work/efi-signing.crt' "$prediction_signer" \
    && grep -Fq 'verify-authenticode-envelope.py' "$prediction_signer" \
    && grep -Fq 'sign-sha256-rsa-pkcs1 "$work/target.efi" "$prediction.uki.sig"' "$prediction_signer" \
-   && grep -Fq 'broker signed the prediction with a key other than qOS' "$prediction_signer" \
+   && grep -Fq 'broker signed the prediction with a key other than Tilo' "$prediction_signer" \
    && ! grep -Eq 'PRIVATE[_-]?KEY|private-key' "$prediction_signer" \
-   && grep -Fq 'QOS_REQUIRE_PCR_PREDICTION' "$repo_root/os/dev/build-custom-installer.sh" \
-   && grep -Fq 'sign-target-prediction.sh" "$QOS_IMAGE"' "$repo_root/os/dev/build-image.sh" \
+   && grep -Fq 'TILO_REQUIRE_PCR_PREDICTION' "$repo_root/os/dev/build-custom-installer.sh" \
+   && grep -Fq 'sign-target-prediction.sh" "$TILO_IMAGE"' "$repo_root/os/dev/build-image.sh" \
    && grep -Fq 'if [[ "$publish" == true ]]; then' "$os_image_workflow" \
-   && grep -Fq "echo 'QOS_REQUIRE_PCR_PREDICTION=1' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
-   && grep -Fq "echo 'QOS_REQUIRE_PCR_PREDICTION=0' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
+   && grep -Fq "echo 'TILO_REQUIRE_PCR_PREDICTION=1' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
+   && grep -Fq "echo 'TILO_REQUIRE_PCR_PREDICTION=0' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
    && grep -Fq 'PROTECTED_PCR_PREDICTION_SIGNER:' "$os_image_workflow" \
    && grep -Fq "github.event.inputs.publish == 'true'" "$os_image_workflow" \
-   && ! grep -Fq 'QOS_PCR_PREDICTION_SIGNER: ${{ vars.QOS_PCR_PREDICTION_SIGNER }}' "$os_image_workflow" \
-   && grep -Fq 'QOS_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-image.sh" \
-   && grep -Fq 'QOS_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-custom-installer.sh" \
+   && ! grep -Fq 'TILO_PCR_PREDICTION_SIGNER: ${{ vars.TILO_PCR_PREDICTION_SIGNER }}' "$os_image_workflow" \
+   && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-image.sh" \
+   && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-custom-installer.sh" \
    && grep -Fq 'sign-target-prediction.sh "$repro_image"' "$os_image_workflow" \
    && grep -Fq 'enable-openid-connect: true' "$os_image_workflow" \
-   && grep -Fq "QOS_PCR_PREDICTION_SIGNER: \${{ startsWith(github.ref, 'refs/tags/imager-v')" \
+   && grep -Fq "TILO_PCR_PREDICTION_SIGNER: \${{ startsWith(github.ref, 'refs/tags/imager-v')" \
       "$repo_root/.forgejo/workflows/release-imager.yml"; then
   ok "release prediction path uses systemd-measure and a broker signer without private-key custody"
 else
   bad "release PCR prediction path can bypass authoritative measurement or protected signing"
 fi
 
-disk_encrypt="$repo_root/os/usr/libexec/qos-disk-encrypt"
+disk_encrypt="$repo_root/os/usr/libexec/tilo-disk-encrypt"
 if grep -Fq 'enrolling the supplied strong passphrase as a LUKS key slot' "$disk_encrypt" \
    && grep -Fq 'verified TPM enrollment prerequisites changed after review' "$disk_encrypt" \
    && ! grep -Fq -- '--tpm2-pcrs=' "$disk_encrypt" \
@@ -268,17 +268,17 @@ else
   bad "disk helper can create a PCR-7-only TPM slot"
 fi
 
-if grep -Fq 'qos-rollback "${rollback_args[@]}" enroll --device "$dev"' "$encryptor" \
+if grep -Fq 'tilo-rollback "${rollback_args[@]}" enroll --device "$dev"' "$encryptor" \
    && grep -Fq -- '--require-tpm-prediction' "$encryptor" \
-   && grep -Fq 'install -d -m 0755 /usr/share/qos/pcr-predictions' "$production_containerfile" \
-   && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth qos-rollback"' "$production_containerfile" \
-   && grep -Fq 'qos-rollback-initrd-unlock' "$production_containerfile" \
-   && grep -Fq 'qos-root-discover' "$production_containerfile" \
-   && grep -Fq 'qos-root-generator' "$production_containerfile" \
+   && grep -Fq 'install -d -m 0755 /usr/share/tilo/pcr-predictions' "$production_containerfile" \
+   && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback"' "$production_containerfile" \
+   && grep -Fq 'tilo-rollback-initrd-unlock' "$production_containerfile" \
+   && grep -Fq 'tilo-root-discover' "$production_containerfile" \
+   && grep -Fq 'tilo-root-generator' "$production_containerfile" \
    && ! grep -Fq -- '--tpm2-pcrs=' "$encryptor" \
    && grep -Fq -- '--recovery-key "$dev"' "$encryptor" \
    && grep -Fq -- '--fido2-device=auto "$dev"' "$encryptor"; then
-  ok "signed prediction enrollment and same-disk qOS root unlock ship together and fail closed"
+  ok "signed prediction enrollment and same-disk Tilo root unlock ship together and fail closed"
 else
   bad "installer TPM enrollment/early-unlock prerequisites are inconsistent"
 fi
@@ -293,11 +293,11 @@ else
 fi
 
 if grep -Fq 'systemctl mask sshd.service' "$containerfile" \
-   && ! grep -Fq 'tester:quickdesktop:wheel' "$builder" \
-   && grep -Fq -- '--dev-login requires a non-empty QOS_INSTALLER_DEV_PASSWORD' "$builder" \
-   && grep -Fq 'append qos.install' "$containerfile" \
-   && grep -Fq 'show | grep -qw qos.mode=normal' "$containerfile" \
-   && grep -Fq 'show | grep -qw qos.install' "$containerfile"; then
+   && ! grep -Fq 'tester:tilo:wheel' "$builder" \
+   && grep -Fq -- '--dev-login requires a non-empty TILO_INSTALLER_DEV_PASSWORD' "$builder" \
+   && grep -Fq 'append tilo.install' "$containerfile" \
+   && grep -Fq 'show | grep -qw tilo.mode=normal' "$containerfile" \
+   && grep -Fq 'show | grep -qw tilo.install' "$containerfile"; then
   ok "release installer has no public debug credential and masks SSH"
 else
   bad "release installer still exposes a known debug login or SSH"
@@ -306,9 +306,9 @@ fi
 if grep -Fq 'StandardInput=file:$INPUT' "$backend" \
    && grep -Fq 'StandardOutput=append:$OUTPUT' "$backend" \
    && grep -Fq 'tail --pid="$RUNNER"' "$backend" \
-   && grep -Fq 'mktemp -d /run/qos-installer/bridge/run.XXXXXX' "$backend" \
-   && grep -Fq 'chcon --reference=/run/qos-installer/bridge "$BRIDGE" "$INPUT" "$OUTPUT"' "$backend" \
-   && grep -Fq 'ExecStart=/usr/bin/install -d -m 0700 /run/qos-installer/bridge' "$repo_root/os/usr/lib/systemd/system/qos-installer-setup.service" \
+   && grep -Fq 'mktemp -d /run/tilo-installer/bridge/run.XXXXXX' "$backend" \
+   && grep -Fq 'chcon --reference=/run/tilo-installer/bridge "$BRIDGE" "$INPUT" "$OUTPUT"' "$backend" \
+   && grep -Fq 'ExecStart=/usr/bin/install -d -m 0700 /run/tilo-installer/bridge' "$repo_root/os/usr/lib/systemd/system/tilo-installer-setup.service" \
    && ! grep -Fq -- '--pipe --collect' "$backend"; then
   ok "privileged handoff keeps secrets out of D-Bus fd passing and journald"
 else
@@ -323,10 +323,10 @@ else
 fi
 
 if [ -x "$profile_extractor" ] \
-   && grep -Fq 'QOS_INSTALL_PROFILE_V1' "$profile_extractor" \
+   && grep -Fq 'TILO_INSTALL_PROFILE_V1' "$profile_extractor" \
    && grep -Fq 'sha256sum "$payload"' "$profile_extractor" \
-   && grep -Fq 'ExecStart=/usr/libexec/qos-installer-profile-extract' \
-      "$repo_root/os/usr/lib/systemd/system/qos-installer-setup.service"; then
+   && grep -Fq 'ExecStart=/usr/libexec/tilo-installer-profile-extract' \
+      "$repo_root/os/usr/lib/systemd/system/tilo-installer-setup.service"; then
   ok "live installer extracts and verifies the embedded setup profile before greetd"
 else
   bad "host setup profile is not securely transported into the live installer"
@@ -361,9 +361,9 @@ else
   bad "installed greeter configuration can retain a transient /run SELinux label"
 fi
 
-if grep -Fq 'ConditionKernelCommandLine=!qos.install' \
-      "$repo_root/os/usr/lib/systemd/system/qos-rollback-harden.service" \
-   && grep -Fq 'ConditionKernelCommandLine=!qos.install' \
+if grep -Fq 'ConditionKernelCommandLine=!tilo.install' \
+      "$repo_root/os/usr/lib/systemd/system/tilo-rollback-harden.service" \
+   && grep -Fq 'ConditionKernelCommandLine=!tilo.install' \
       "$repo_root/os/usr/lib/systemd/system/shell-firstboot.service"; then
   ok "disposable live boots cannot consume first-boot state or mutate TPM lockout policy"
 else
@@ -413,11 +413,11 @@ if [ -x "$guided_partitioner" ] \
    && grep -Fq 'flock -x 9' "$guided_partitioner" \
    && grep -Fq 'partition map changed after review' "$guided_partitioner" \
    && grep -Fq 'sfdisk --append --no-reread --lock=no --wipe never --wipe-partitions never' "$guided_partitioner" \
-   && grep -Fq 'mkfs.vfat -n QOS-EFI "$EFI_PARTITION"' "$guided_partitioner" \
+   && grep -Fq 'mkfs.vfat -n TILO-EFI "$EFI_PARTITION"' "$guided_partitioner" \
    && grep -Fq 'sfdisk --part-type "$DISK" "$part_number" 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab' "$backend" \
    && grep -Fq 'validate_partition_identity "$ROOT_PARTITION"' "$backend" \
    && ! grep -Eq 'sfdisk .*--delete|parted .* (move|resize)|resize2fs|ntfsresize' "$guided_partitioner"; then
-  ok "guided alongside locks and revalidates the reviewed GPT map before appending only qOS partitions"
+  ok "guided alongside locks and revalidates the reviewed GPT map before appending only Tilo partitions"
 else
   bad "guided alongside can mutate storage outside its reviewed free extent"
 fi

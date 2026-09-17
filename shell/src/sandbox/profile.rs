@@ -6,7 +6,7 @@
 //!
 //! This is not the enforcement point: nothing in the compositor spawns an
 //! application through this type. Apps are launched by execing
-//! `qos-launcher`, which builds its own bubblewrap namespace from the
+//! `tilo-launcher`, which builds its own bubblewrap namespace from the
 //! package manifest **and** the workspace capabilities the shell hands it
 //! (`launcher::capabilities`, via [`crate::shell::launcher`]) — that is
 //! where a grant becomes a mount and a revocation becomes a missing one.

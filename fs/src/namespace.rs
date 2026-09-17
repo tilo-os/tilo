@@ -32,7 +32,7 @@ const TRASH_ID: &str = "TRASH";
 const ROOT_RECORD_ID_KEY: &str = "root_record_id";
 const RECORD_ID_KEY: &str = "record_id";
 const CONTENT_REVISION_KEY: &str = "content_revision_v1";
-const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"qos.collaborative-fs.namespace-record-id.v1";
+const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"tilo.collaborative-fs.namespace-record-id.v1";
 
 pub const MAX_LIVE_RECORD_BLOB_SCAN: usize = 100_000;
 
@@ -645,7 +645,7 @@ impl Namespace {
 
     fn update_record_index_revision(&mut self) {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"qos.fs.namespace-record-index.v1\\0");
+        hasher.update(b"tilo.fs.namespace-record-index.v1\\0");
         hasher.update(&(self.record_index_order.len() as u64).to_be_bytes());
         for record_id in &self.record_index_order {
             let Some(record) = self.record_index.get(record_id) else {

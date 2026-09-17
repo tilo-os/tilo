@@ -309,7 +309,7 @@ impl ChatApp {
             c.border_standard,
         );
 
-        // One contextual destination: the qOS workspace that owns this Chat
+        // One contextual destination: the Tilo workspace that owns this Chat
         // instance. Other workspaces are reachable only through Inbox.
         if let Some(ws) = self.workspaces.iter().find(|ws| ws.id == self.context_ws) {
             let active = !self.inbox_open;
@@ -369,7 +369,7 @@ impl ChatApp {
 
         let header = self.draw_sidebar_header(scene, tf, tr, theme, side, hits);
         self.draw_sidebar_tree(scene, tf, tr, theme, presence, side, header, hits);
-        // qOS stays calm while a workspace is private. The shell already owns
+        // Tilo stays calm while a workspace is private. The shell already owns
         // the current person's identity; repeating an "Available" row in a
         // one-person Chat workspace only turns an empty conversation into
         // collaboration chrome. It becomes useful once there is someone to be
@@ -410,7 +410,7 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            "Conversations across qOS workspaces",
+            "Conversations across Tilo workspaces",
             10.5,
             c.text_dim,
             side.x0 + 16.0,
@@ -1305,7 +1305,7 @@ impl ChatApp {
                         .workspaces
                         .iter()
                         .find(|workspace| workspace.id == ch.workspace)
-                        .map_or("qOS workspace", |workspace| workspace.name.as_str());
+                        .map_or("Tilo workspace", |workspace| workspace.name.as_str());
                     if ch.topic.is_empty() {
                         format!("From {source}")
                     } else {

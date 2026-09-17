@@ -9,19 +9,19 @@ use crate::{
 };
 
 const LIBVIRT_URI: &str = "qemu:///system";
-const METADATA_MARKER: &str = "<qos:windows-appliance xmlns:qos='https://qos.dev/vm/1'/>";
-const METADATA_ELEMENT: &str = "<qos:windows-appliance";
-const METADATA_NAMESPACE: &str = "https://qos.dev/vm/1";
-const INSTALL_MEDIA: &str = "/var/lib/qos/windows/install-media.iso";
-const GUEST_TOOLS_MEDIA: &str = "/var/lib/qos/windows/qos-guest-tools.iso";
-/// Fedora's virtio-win package is shipped by qOS as a host-owned, read-only
+const METADATA_MARKER: &str = "<tilo:windows-appliance xmlns:tilo='https://tilo.dev/vm/1'/>";
+const METADATA_ELEMENT: &str = "<tilo:windows-appliance";
+const METADATA_NAMESPACE: &str = "https://tilo.dev/vm/1";
+const INSTALL_MEDIA: &str = "/var/lib/tilo/windows/install-media.iso";
+const GUEST_TOOLS_MEDIA: &str = "/var/lib/tilo/windows/tilo-guest-tools.iso";
+/// Fedora's virtio-win package is shipped by Tilo as a host-owned, read-only
 /// setup aid. It is detached before the appliance becomes launchable.
 const VIRTIO_DRIVERS_MEDIA: &str = "/usr/share/virtio-win/virtio-win.iso";
 /// The second NIC is never present in the persistent domain definition. It is
 /// attached live only while an authenticated, purpose-bound egress lease is
 /// active. Keeping a separate MAC makes cleanup deterministic after a retry.
 const EGRESS_MAC: &str = "52:54:00:71:4f:51";
-const EGRESS_NETWORK: &str = "qos-windows-egress";
+const EGRESS_NETWORK: &str = "tilo-windows-egress";
 const MAX_EGRESS_SECONDS: u64 = 30 * 60;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -198,7 +198,7 @@ impl<R: CommandRunner> LibvirtBackend<R> {
         })
     }
 
-    /// Detach only the exact partition recorded by qOS at attachment time.
+    /// Detach only the exact partition recorded by Tilo at attachment time.
     pub fn detach_graphics(
         &self,
         config: &ApplianceConfig,
@@ -256,7 +256,7 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
             if !xml.contains(&expected_uuid)
                 || !xml.contains(&expected_smbios_serial)
                 || !xml.contains(&expected_smbios_uuid)
-                || !xml.contains("<serial>qos-windows-system</serial>")
+                || !xml.contains("<serial>tilo-windows-system</serial>")
                 || !xml.contains("<mac address='52:54:00:71:4f:53'/>")
                 || !xml.contains(METADATA_ELEMENT)
                 || !xml.contains(METADATA_NAMESPACE)
@@ -503,7 +503,7 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <name>{}</name><uuid>{}</uuid>\
 <metadata>{METADATA_MARKER}</metadata>\
 <!-- Stable SMBIOS identity is part of the activation device identity. -->\
-<sysinfo type='smbios'><system><entry name='manufacturer'>qOS</entry>\
+<sysinfo type='smbios'><system><entry name='manufacturer'>Tilo</entry>\
 <entry name='product'>Windows compatibility appliance</entry><entry name='serial'>{}</entry>\
 <entry name='uuid'>{}</entry></system></sysinfo>\
 <memory unit='MiB'>{}</memory><currentMemory unit='MiB'>{}</currentMemory>\
@@ -525,7 +525,7 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <controller type='scsi' index='0' model='virtio-scsi'><driver iothread='1'/></controller>\
 <controller type='virtio-serial' index='0'/>\
 <disk type='file' device='disk'><driver name='qemu' type='qcow2' cache='none' io='native' discard='unmap' detect_zeroes='unmap'/>\
-<source file='{disk}'/><target dev='sda' bus='scsi'/><serial>qos-windows-system</serial></disk>\
+<source file='{disk}'/><target dev='sda' bus='scsi'/><serial>tilo-windows-system</serial></disk>\
 <!-- Setup media use Windows-inbox SATA; only the installed system disk uses virtio-scsi. -->\
 <disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='{INSTALL_MEDIA}'/><target dev='sdb' bus='sata'/><readonly/></disk>\
 <disk type='file' device='cdrom'><driver name='qemu' type='raw'/><source file='{GUEST_TOOLS_MEDIA}'/><target dev='sdc' bus='sata'/><readonly/></disk>\
@@ -578,7 +578,7 @@ pub enum VmBackendError {
     Virsh { code: Option<i32>, stderr: String },
     #[error("libvirt returned non-UTF-8 output")]
     InvalidUtf8(#[from] std::string::FromUtf8Error),
-    #[error("an existing domain named qos-windows-appliance is not the configured qOS appliance")]
+    #[error("an existing domain named tilo-windows-appliance is not the configured Tilo appliance")]
     ForeignDomainCollision,
     #[error("the appliance domain disappeared while it was being started")]
     DomainDisappeared,
@@ -629,8 +629,8 @@ mod tests {
     fn config() -> ApplianceConfig {
         ApplianceConfig::recommended(
             "01234567-89ab-cdef-0123-456789abcdef",
-            "/var/lib/qos/windows/a&b.qcow2",
-            "/var/lib/qos/windows/nvram.fd",
+            "/var/lib/tilo/windows/a&b.qcow2",
+            "/var/lib/tilo/windows/nvram.fd",
         )
     }
 
@@ -646,7 +646,7 @@ mod tests {
                 && xml
                     .contains("<entry name='serial'>01234567-89ab-cdef-0123-456789abcdef</entry>")
         );
-        assert!(xml.contains("<serial>qos-windows-system</serial>"));
+        assert!(xml.contains("<serial>tilo-windows-system</serial>"));
         assert!(xml.contains("<listen type='none'/>"));
         assert!(xml.contains("<sound model='ich9'>"));
         assert!(xml.contains("name='com.redhat.spice.0'"));
@@ -668,9 +668,9 @@ mod tests {
     #[test]
     fn foreign_same_named_domain_is_refused() {
         let runner = Runner::new(vec![
-            CommandOutput::successful("qos-windows-appliance\n"),
+            CommandOutput::successful("tilo-windows-appliance\n"),
             CommandOutput::successful(
-                "<domain><name>qos-windows-appliance</name><uuid>ffffffff-ffff-ffff-ffff-ffffffffffff</uuid></domain>",
+                "<domain><name>tilo-windows-appliance</name><uuid>ffffffff-ffff-ffff-ffff-ffffffffffff</uuid></domain>",
             ),
         ]);
         let backend = LibvirtBackend::new(runner);
@@ -699,9 +699,9 @@ mod tests {
     fn an_explicit_partition_is_attached_persistently_only_while_shut_off() {
         let domain = render_domain_xml(&config()).unwrap();
         let runner = Runner::new(vec![
-            CommandOutput::successful("qos-windows-appliance\n"),
+            CommandOutput::successful("tilo-windows-appliance\n"),
             CommandOutput::successful(domain.as_str()),
-            CommandOutput::successful("qos-windows-appliance\n"),
+            CommandOutput::successful("tilo-windows-appliance\n"),
             CommandOutput::successful("shut off\n"),
             CommandOutput::successful("Device attached\n"),
         ]);
@@ -732,9 +732,9 @@ mod tests {
     fn graphics_attachment_refuses_a_running_guest() {
         let domain = render_domain_xml(&config()).unwrap();
         let runner = Runner::new(vec![
-            CommandOutput::successful("qos-windows-appliance\n"),
+            CommandOutput::successful("tilo-windows-appliance\n"),
             CommandOutput::successful(domain.as_str()),
-            CommandOutput::successful("qos-windows-appliance\n"),
+            CommandOutput::successful("tilo-windows-appliance\n"),
             CommandOutput::successful("running\n"),
         ]);
         let backend = LibvirtBackend::new(runner);

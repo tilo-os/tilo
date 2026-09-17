@@ -363,7 +363,7 @@ impl AccessNode {
                     .map(u64::to_string)
                     .collect::<Vec<_>>()
                     .join("/");
-                let target = format!("qos.key-action:{namespace}:{encoded}");
+                let target = format!("tilo.key-action:{namespace}:{encoded}");
                 node.semantic_key = Some(target.clone());
                 node.action_target = Some(target);
             }
@@ -550,7 +550,7 @@ pub struct AccessibleTextSelection {
 }
 
 /// Stored in the per-user settings CRDT and mirrored into spawned sandboxes
-/// via `QOS_A11Y_*` env vars. Defaults are all-off so existing single-user
+/// via `TILO_A11Y_*` env vars. Defaults are all-off so existing single-user
 /// setups are unaffected until a user opts in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub struct A11ySettings {

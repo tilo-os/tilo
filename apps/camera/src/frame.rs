@@ -485,7 +485,7 @@ mod tests {
 
     #[test]
     fn scanner_frame_decodes_its_own_qr() {
-        let payload = "WIFI:T:WPA2;S:qOS Guest;P:hunter2;H:false;;";
+        let payload = "WIFI:T:WPA2;S:Tilo Guest;P:hunter2;H:false;;";
         let (frame, scanned) = scanner_frame(2, 900, 560, payload);
         assert_eq!(frame.rgba.len(), 900 * 560 * 4);
         let scanned = scanned.expect("the composited QR must decode");

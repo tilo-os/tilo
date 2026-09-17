@@ -3,13 +3,13 @@
 ## Exportable histories
 
 The fork changes also live in two standalone histories, disconnected from the
-qOS application history. Their root commits are pristine Cargo registry
+Tilo application history. Their root commits are pristine Cargo registry
 sources; every following commit is a reviewable topic change:
 
 - `vendor-upstream/vello-0.9` contains `vello` and `vello_encoding` together,
   because the adaptive allocator API crosses the crate boundary. Its baseline
   is crates.io `vello` 0.9.0 plus `vello_encoding` 0.9.0. The series is split
-  into eight dependency-ordered review commits rather than one qOS-sized patch:
+  into eight dependency-ordered review commits rather than one Tilo-sized patch:
   encoding budget/accounting, renderer measurement, atlas diagnostics, the
   clipped-image PTCL floor, the viewport-scaled line floor, and compatibility
   lint cleanup, separation of budget readback from debug-buffer capture, and
@@ -20,7 +20,7 @@ sources; every following commit is a reviewable topic change:
   [atlas-drop diagnostics](https://github.com/linebender/vello/pull/1862), and
   [toolchain-compatible lint attributes](https://github.com/linebender/vello/pull/1863).
   This keeps diagnostics and compatibility cleanup out of the performance PR
-  while retaining the dependency-ordered 0.9 history used by qOS.
+  while retaining the dependency-ordered 0.9 history used by Tilo.
 - `vendor-upstream/winit-0.30.13` contains winit alone, based on crates.io
   `winit` 0.30.13. It retains the registry metadata and updates
   `Cargo.toml.orig` alongside Cargo's normalized manifest, making the topic
@@ -42,7 +42,7 @@ Published crate checksums used for the baselines:
 - `winit-0.30.13.crate`:
   `a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d`
 
-The qOS build does not depend on these refs. They are review/export artifacts;
+The Tilo build does not depend on these refs. They are review/export artifacts;
 the existing portable path overrides remain authoritative until the upstream
 changes are accepted and the vendoring can be removed.
 

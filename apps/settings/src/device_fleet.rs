@@ -7,11 +7,11 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use qos_user_identity::{
+use serde::{Deserialize, Serialize};
+use tilo_user_identity::{
     DeviceCert, RevocationEntry, RevocationReason, revocation_signing_digest, verify_device_cert,
     verify_revocation_entry,
 };
-use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,8 +66,9 @@ fn load_stored(dir: &Path, identity_id: &str) -> io::Result<StoredFleet> {
 }
 
 fn current_device_key() -> io::Result<[u8; 32]> {
-    let paths = qos_user_identity::IdentityPaths::under(super::panes::device_mesh::identity_root());
-    qos_user_identity::persist::read_device_key(&paths.device_privkey)
+    let paths =
+        tilo_user_identity::IdentityPaths::under(super::panes::device_mesh::identity_root());
+    tilo_user_identity::persist::read_device_key(&paths.device_privkey)
         .map_err(|error| io::Error::other(error.to_string()))
         .map(|key| key.verifying_key().to_bytes())
 }

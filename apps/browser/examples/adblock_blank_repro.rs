@@ -99,7 +99,7 @@ fn main() {
                 let want = std::env::var("REPRO_LISTS").unwrap_or_default();
                 let dir = dirs::cache_dir()
                     .unwrap()
-                    .join("qos-browser")
+                    .join("tilo-browser")
                     .join("filters");
                 let texts: Vec<String> = std::fs::read_dir(&dir)
                     .unwrap()
@@ -197,7 +197,7 @@ fn analyze() {
     let want = std::env::var("REPRO_LISTS").unwrap_or_default();
     let dir = dirs::cache_dir()
         .unwrap()
-        .join("qos-browser")
+        .join("tilo-browser")
         .join("filters");
     let mut texts = Vec::new();
     let mut names = Vec::new();
