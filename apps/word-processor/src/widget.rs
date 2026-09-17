@@ -4531,56 +4531,42 @@ impl WordProcessorWidget {
         let right = panel.x1 - pad;
         let inner_w = right - x0;
         let mut y = panel.y0 + 14.0;
-
-        // A visible dismissal affordance matters on narrow screens: the
-        // inspector overlays the document there, so relying only on a tap in
-        // the dimmed background makes the way back needlessly undiscoverable.
-        let close = Rect::new(right - 62.0, y, right, y + 24.0);
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            PanelButton {
-                rect: close,
-                label: &t("panel-close"),
-                active: false,
-                centered: true,
-            },
-        );
-        self.panel_hits.push((close, PanelHit::Close));
-        y += 30.0;
-
-        // When an image is selected, the panel becomes an image inspector
-        // (resize + flip) instead of the paragraph editor.
-        if self.selected_image_id().is_some() {
-            self.draw_image_inspector(scene, transform, tr, x0, right, y);
-            scene.pop_layer();
-            return;
-        }
-
-        let Some(key) = self.focused_style_key() else {
-            tr.draw_text(
-                scene,
-                &t("panel-caret-hint"),
-                12.5,
-                cc.text_dim,
-                transform * Affine::translate((x0, y)),
-                Some(num::f32_of_f64(inner_w)),
-            );
-            scene.pop_layer();
-            return;
-        };
-        // A snapshot of the focused style, threaded through every panel
-        // section below that reads it.
-        let st = self.sheet.get(&key);
-
         let mut ctx = PanelDrawCtx {
             scene,
             transform,
             tr,
             cc,
         };
+
+        // A visible dismissal affordance matters on narrow screens: the
+        // inspector overlays the document there, so relying only on a tap in
+        // the dimmed background makes the way back needlessly undiscoverable.
+        y = self.draw_panel_close_button(&mut ctx, right, y);
+
+        // When an image is selected, the panel becomes an image inspector
+        // (resize + flip) instead of the paragraph editor.
+        if self.selected_image_id().is_some() {
+            self.draw_image_inspector(ctx.scene, ctx.transform, ctx.tr, x0, right, y);
+            ctx.scene.pop_layer();
+            return;
+        }
+
+        let Some(key) = self.focused_style_key() else {
+            ctx.tr.draw_text(
+                ctx.scene,
+                &t("panel-caret-hint"),
+                12.5,
+                ctx.cc.text_dim,
+                ctx.transform * Affine::translate((x0, y)),
+                Some(num::f32_of_f64(inner_w)),
+            );
+            ctx.scene.pop_layer();
+            return;
+        };
+        // A snapshot of the focused style, threaded through every panel
+        // section below that reads it.
+        let st = self.sheet.get(&key);
+
         y = self.draw_panel_this_paragraph(&mut ctx, x0, right, y);
         y = self.draw_panel_style_header(&mut ctx, x0, right, y, &key, &st);
         y = self.draw_panel_font_weight(&mut ctx, x0, right, y, &st);
@@ -4617,7 +4603,7 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                PanelButton {
+                &PanelButton {
                     rect: r,
                     label: &t("panel-new-style"),
                     active: false,
@@ -4628,6 +4614,24 @@ impl WordProcessorWidget {
         }
 
         ctx.scene.pop_layer();
+    }
+
+    fn draw_panel_close_button(&mut self, ctx: &mut PanelDrawCtx<'_>, right: f64, y: f64) -> f64 {
+        let close = Rect::new(right - 62.0, y, right, y + 24.0);
+        draw_btn(
+            ctx.scene,
+            ctx.transform,
+            ctx.tr,
+            &ctx.cc,
+            &PanelButton {
+                rect: close,
+                label: &t("panel-close"),
+                active: false,
+                centered: true,
+            },
+        );
+        self.panel_hits.push((close, PanelHit::Close));
+        y + 30.0
     }
 
     /// Scale the complete inspector as one coherent surface at large system
@@ -4719,7 +4723,7 @@ impl WordProcessorWidget {
                     ctx.transform,
                     ctx.tr,
                     &ctx.cc,
-                    PanelButton {
+                    &PanelButton {
                         rect: r,
                         label,
                         active: cur == *val,
@@ -4749,7 +4753,7 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                PanelButton {
+                &PanelButton {
                     rect: r,
                     label: &label,
                     active: false,
@@ -4830,7 +4834,7 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                PanelButton {
+                &PanelButton {
                     rect: r,
                     label: &name,
                     active: id.as_str() == key,
@@ -4882,7 +4886,7 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                PanelButton {
+                &PanelButton {
                     rect: r,
                     label: &fl,
                     active: false,
@@ -4911,7 +4915,7 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                PanelButton {
+                &PanelButton {
                     rect: rb,
                     label: &t("panel-bold"),
                     active: st.bold,
@@ -4923,7 +4927,7 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                PanelButton {
+                &PanelButton {
                     rect: ri,
                     label: &t("panel-italic"),
                     active: st.italic,
@@ -5012,7 +5016,7 @@ impl WordProcessorWidget {
                 ctx.transform,
                 ctx.tr,
                 &ctx.cc,
-                PanelButton {
+                &PanelButton {
                     rect: btn,
                     label: &t("panel-colour-custom"),
                     active: self.color_picker.is_open(),
@@ -5031,10 +5035,6 @@ impl WordProcessorWidget {
     /// Flip toggles, crop controls, and placement controls. Registers its controls
     /// as `panel_hits` so pointer and assistive-technology activation share one
     /// dispatch path.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the inspector's one ordered drawing/hit-registration sequence keeps every object control in visual tab order"
-    )]
     fn draw_image_inspector(
         &mut self,
         scene: &mut Scene,
@@ -5077,51 +5077,19 @@ impl WordProcessorWidget {
         panel_divider(scene, transform, &cc, x0, right, y);
         y += 12.0;
 
-        // ---- Size (aspect-locked scale steppers) --------------------------
-        // Leave a label column on the left; the two buttons share the right side.
-        tr.draw_text(
-            scene,
-            &t("panel-image-size"),
-            12.5,
-            cc.text,
-            transform * Affine::translate((x0, y + 5.0)),
-            None,
-        );
-        let bw = ((inner_w - 60.0) / 2.0 - 6.0).clamp(48.0, 92.0);
-        let rs = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 26.0);
-        let rl = Rect::new(right - bw, y, right, y + 26.0);
-        draw_btn(
+        let mut ctx = PanelDrawCtx {
             scene,
             transform,
             tr,
-            &cc,
-            PanelButton {
-                rect: rs,
-                label: &t("panel-image-smaller"),
-                active: false,
-                centered: true,
-            },
-        );
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            PanelButton {
-                rect: rl,
-                label: &t("panel-image-larger"),
-                active: false,
-                centered: true,
-            },
-        );
-        self.panel_hits.push((rs, PanelHit::ImageScale(0.9)));
-        self.panel_hits.push((rl, PanelHit::ImageScale(1.1)));
-        y += 34.0;
+            cc,
+        };
+        let (next_y, bw) = self.draw_panel_image_size(&mut ctx, x0, right, y, inner_w);
+        y = next_y;
 
         self.draw_panel_image_flip(
-            scene,
-            transform,
-            tr,
+            ctx.scene,
+            ctx.transform,
+            ctx.tr,
             &ImageFlipRow {
                 geometry: PanelRow { x0, right, y },
                 button_width: bw,
@@ -5129,111 +5097,144 @@ impl WordProcessorWidget {
         );
         y += 38.0;
 
-        // ---- Crop ---------------------------------------------------------
-        // Cropping keeps the object's display frame, while changing the source
-        // window inside it. A small deterministic inset is an accessible,
-        // keyboard/palette-equivalent starting point; Reset is always available
-        // once a crop exists.
-        tr.draw_text(
-            scene,
-            &t("panel-image-crop"),
+        y = self.draw_panel_image_crop(&mut ctx, x0, right, y, bw);
+        self.draw_panel_image_placement(&mut ctx, x0, right, y, inner_w);
+    }
+
+    fn draw_panel_image_size(
+        &mut self,
+        ctx: &mut PanelDrawCtx<'_>,
+        x0: f64,
+        right: f64,
+        y: f64,
+        inner_w: f64,
+    ) -> (f64, f64) {
+        ctx.tr.draw_text(
+            ctx.scene,
+            &t("panel-image-size"),
             12.5,
-            cc.text,
-            transform * Affine::translate((x0, y + 5.0)),
+            ctx.cc.text,
+            ctx.transform * Affine::translate((x0, y + 5.0)),
             None,
         );
-        let crop = Rect::new(right - bw * 2.0 - 6.0, y, right - bw - 6.0, y + 26.0);
-        let reset = Rect::new(right - bw, y, right, y + 26.0);
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            PanelButton {
-                rect: crop,
-                label: &t("panel-image-crop-inset"),
-                active: false,
-                centered: true,
-            },
+        let button_width = ((inner_w - 60.0) / 2.0 - 6.0).clamp(48.0, 92.0);
+        let smaller = Rect::new(
+            right - button_width * 2.0 - 6.0,
+            y,
+            right - button_width - 6.0,
+            y + 26.0,
         );
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            PanelButton {
-                rect: reset,
-                label: &t("panel-image-crop-reset"),
-                active: false,
-                centered: true,
-            },
-        );
-        self.panel_hits.push((crop, PanelHit::ImageCropInset));
-        self.panel_hits.push((reset, PanelHit::ImageCropReset));
-        y += 38.0;
+        let larger = Rect::new(right - button_width, y, right, y + 26.0);
+        for (rect, label, scale) in [
+            (smaller, t("panel-image-smaller"), 0.9),
+            (larger, t("panel-image-larger"), 1.1),
+        ] {
+            draw_btn(
+                ctx.scene,
+                ctx.transform,
+                ctx.tr,
+                &ctx.cc,
+                &PanelButton {
+                    rect,
+                    label: &label,
+                    active: false,
+                    centered: true,
+                },
+            );
+            self.panel_hits.push((rect, PanelHit::ImageScale(scale)));
+        }
+        (y + 34.0, button_width)
+    }
 
-        // ---- Object placement --------------------------------------------
-        // Keep Position as a real heading, rather than competing with three
-        // controls in the same horizontal row. This preserves the label at both
-        // desktop widths and the 390px inspector overlay.
-        tr.draw_text(
-            scene,
+    fn draw_panel_image_crop(
+        &mut self,
+        ctx: &mut PanelDrawCtx<'_>,
+        x0: f64,
+        right: f64,
+        y: f64,
+        button_width: f64,
+    ) -> f64 {
+        ctx.tr.draw_text(
+            ctx.scene,
+            &t("panel-image-crop"),
+            12.5,
+            ctx.cc.text,
+            ctx.transform * Affine::translate((x0, y + 5.0)),
+            None,
+        );
+        let crop = Rect::new(
+            right - button_width * 2.0 - 6.0,
+            y,
+            right - button_width - 6.0,
+            y + 26.0,
+        );
+        let reset = Rect::new(right - button_width, y, right, y + 26.0);
+        for (rect, label, hit) in [
+            (crop, t("panel-image-crop-inset"), PanelHit::ImageCropInset),
+            (reset, t("panel-image-crop-reset"), PanelHit::ImageCropReset),
+        ] {
+            draw_btn(
+                ctx.scene,
+                ctx.transform,
+                ctx.tr,
+                &ctx.cc,
+                &PanelButton {
+                    rect,
+                    label: &label,
+                    active: false,
+                    centered: true,
+                },
+            );
+            self.panel_hits.push((rect, hit));
+        }
+        y + 38.0
+    }
+
+    fn draw_panel_image_placement(
+        &mut self,
+        ctx: &mut PanelDrawCtx<'_>,
+        x0: f64,
+        right: f64,
+        mut y: f64,
+        inner_w: f64,
+    ) {
+        ctx.tr.draw_text(
+            ctx.scene,
             &t("panel-image-position"),
             12.5,
-            cc.text,
-            transform * Affine::translate((x0, y)),
+            ctx.cc.text,
+            ctx.transform * Affine::translate((x0, y)),
             None,
         );
         y += 20.0;
-        let placement_gap = 6.0;
-        let placement_w = ((inner_w - placement_gap * 2.0) / 3.0).max(48.0);
-        let free = Rect::new(x0, y, x0 + placement_w, y + 26.0);
-        let left = Rect::new(
-            free.x1 + placement_gap,
-            y,
-            free.x1 + placement_gap + placement_w,
-            y + 26.0,
-        );
-        let right_wrap = Rect::new(left.x1 + placement_gap, y, right, y + 26.0);
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            PanelButton {
-                rect: free,
-                label: &t("panel-image-free"),
-                active: false,
-                centered: true,
-            },
-        );
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            PanelButton {
-                rect: left,
-                label: &t("panel-image-wrap-left"),
-                active: false,
-                centered: true,
-            },
-        );
-        draw_btn(
-            scene,
-            transform,
-            tr,
-            &cc,
-            PanelButton {
-                rect: right_wrap,
-                label: &t("panel-image-wrap-right"),
-                active: false,
-                centered: true,
-            },
-        );
-        self.panel_hits.push((free, PanelHit::ImageFreePosition));
-        self.panel_hits.push((left, PanelHit::ImageWrapLeft));
-        self.panel_hits.push((right_wrap, PanelHit::ImageWrapRight));
+        let gap = 6.0;
+        let width = ((inner_w - gap * 2.0) / 3.0).max(48.0);
+        let free = Rect::new(x0, y, x0 + width, y + 26.0);
+        let left = Rect::new(free.x1 + gap, y, free.x1 + gap + width, y + 26.0);
+        let right_wrap = Rect::new(left.x1 + gap, y, right, y + 26.0);
+        for (rect, label, hit) in [
+            (free, t("panel-image-free"), PanelHit::ImageFreePosition),
+            (left, t("panel-image-wrap-left"), PanelHit::ImageWrapLeft),
+            (
+                right_wrap,
+                t("panel-image-wrap-right"),
+                PanelHit::ImageWrapRight,
+            ),
+        ] {
+            draw_btn(
+                ctx.scene,
+                ctx.transform,
+                ctx.tr,
+                &ctx.cc,
+                &PanelButton {
+                    rect,
+                    label: &label,
+                    active: false,
+                    centered: true,
+                },
+            );
+            self.panel_hits.push((rect, hit));
+        }
     }
 
     /// The image inspector's Flip section: Horizontal / Vertical mirror
@@ -5276,7 +5277,7 @@ impl WordProcessorWidget {
             transform,
             tr,
             &cc,
-            PanelButton {
+            &PanelButton {
                 rect: rh,
                 label: &t("panel-image-flip-h"),
                 active: fh,
@@ -5288,7 +5289,7 @@ impl WordProcessorWidget {
             transform,
             tr,
             &cc,
-            PanelButton {
+            &PanelButton {
                 rect: rv,
                 label: &t("panel-image-flip-v"),
                 active: fv,
@@ -5330,7 +5331,7 @@ impl WordProcessorWidget {
             transform,
             tr,
             &cc,
-            PanelButton {
+            &PanelButton {
                 rect: minus,
                 label: "−",
                 active: false,
@@ -5342,7 +5343,7 @@ impl WordProcessorWidget {
             transform,
             tr,
             &cc,
-            PanelButton {
+            &PanelButton {
                 rect: plus,
                 label: "+",
                 active: false,
@@ -5542,14 +5543,14 @@ fn draw_btn(
     transform: Affine,
     tr: &mut TextRenderer,
     cc: &ChromeColors,
-    button: PanelButton<'_>,
+    button: &PanelButton<'_>,
 ) {
     let PanelButton {
         rect: r,
         label,
         active,
         centered: center,
-    } = button;
+    } = *button;
     let bg = if active { cc.accent } else { cc.chip };
     let fg = if active { cc.on_accent } else { cc.text };
     scene.fill(
@@ -10407,7 +10408,7 @@ impl WordProcessorWidget {
             transform,
             tr,
             &cc,
-            PanelButton {
+            &PanelButton {
                 rect: self.thread_cancel,
                 label: &t("review-cancel-reply"),
                 active: false,
@@ -10419,7 +10420,7 @@ impl WordProcessorWidget {
             transform,
             tr,
             &cc,
-            PanelButton {
+            &PanelButton {
                 rect: self.thread_submit,
                 label: &t("review-send-reply"),
                 active: true,
