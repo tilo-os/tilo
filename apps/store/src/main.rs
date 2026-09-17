@@ -97,10 +97,7 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchErr
         .filter(|value| value.starts_with("tilo-store:"))
         .map(|value| parse_store_uri(value))
         .transpose()?;
-    Ok(Box::new(LiveStore::new(
-        StoreWorker::spawn(opened_ref),
-        store_target,
-    )))
+    Ok(Box::new(LiveStore::new(opened_ref, store_target)))
 }
 
 /// Decode the sole Store deep-link shape. The launcher already validates the
@@ -157,12 +154,20 @@ struct LiveStore {
 }
 
 impl LiveStore {
-    fn new(worker: StoreWorker, store_target: Option<String>) -> Self {
-        let mut inner = StoreApp::new().with_image_store(store::images::image_store());
+    fn new(opened_ref: Option<FlatpakRef>, store_target: Option<String>) -> Self {
+        // Catalogue indexing belongs to the serialized worker, but the
+        // palette reads this same retained directory through StoreApp.
+        let search_index = store::search_provider::StoreSearchIndex::default();
+        let mut inner = StoreApp::new()
+            .with_image_store(store::images::image_store())
+            .with_search_index(search_index.clone());
         if let Some(id) = store_target {
             inner.open_catalogue_item(id);
         }
-        Self { inner, worker }
+        Self {
+            inner,
+            worker: StoreWorker::spawn(opened_ref, search_index),
+        }
     }
 }
 
@@ -227,10 +232,10 @@ impl ui::widget::Widget for LiveStore {
                 None => snap.detail.is_none(),
             };
             if applies_items {
-                self.inner.set_items(snap.items);
+                self.inner.set_items_from_worker(snap.items);
             }
             if let Some(detail) = snap.detail {
-                self.inner.set_detail(detail);
+                self.inner.set_detail_from_worker(detail);
             }
             self.inner.set_remotes(snap.remotes);
             self.inner.set_status_line(snap.status_line);
