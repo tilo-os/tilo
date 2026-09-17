@@ -4614,6 +4614,24 @@ pub fn run() {
     {
         runtime.set_realtime_adapter(adapter);
     }
+    let mut remote_capture_runtime = realtime_fabric_bridge
+        .as_ref()
+        .and_then(
+            crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::realtime_capture_broker,
+        )
+        .map(|capture| {
+            std::sync::Arc::new(std::sync::Mutex::new(
+                crate::shell::remote_capture_runtime::RemoteCaptureFabricRuntime::production(
+                    capture,
+                ),
+            ))
+        });
+    if let Some(remote_capture) = remote_capture_runtime.as_ref() {
+        crate::shell::remote_capture_runtime::install_active_runtime(remote_capture);
+        if let Some(runtime) = device_fabric_runtime.as_mut() {
+            runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
+        }
+    }
     let identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
@@ -5940,6 +5958,9 @@ pub fn run() {
             {
                 runtime.set_realtime_adapter(adapter);
             }
+            if let Some(remote_capture) = remote_capture_runtime.as_ref() {
+                runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
+            }
             let (width, height) = combined_geometry(backend.outputs());
             let display =
                 (width > 0 && height > 0).then_some(crate::shell::device_fabric::DisplayRect {
@@ -6259,6 +6280,22 @@ pub fn run() {
                 ) && let Some(adapter) = bridge.adapter()
                 {
                     runtime.set_realtime_adapter(adapter);
+                }
+                remote_capture_runtime = realtime_fabric_bridge
+                    .as_ref()
+                    .and_then(crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::realtime_capture_broker)
+                    .map(|capture| {
+                        std::sync::Arc::new(std::sync::Mutex::new(
+                            crate::shell::remote_capture_runtime::RemoteCaptureFabricRuntime::production(
+                                capture,
+                            ),
+                        ))
+                    });
+                if let Some(remote_capture) = remote_capture_runtime.as_ref() {
+                    crate::shell::remote_capture_runtime::install_active_runtime(remote_capture);
+                    if let Some(runtime) = device_fabric_runtime.as_mut() {
+                        runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
+                    }
                 }
                 if let Some(net) = peer_sync.as_ref() {
                     attach_peer_presence(&mut frame_builder, broker, net);
