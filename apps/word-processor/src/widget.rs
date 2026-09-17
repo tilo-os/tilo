@@ -9683,10 +9683,6 @@ impl Widget for WordProcessorWidget {
         false
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the frame compositor keeps its ordered page/chrome layers together"
-    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -9774,70 +9770,9 @@ impl Widget for WordProcessorWidget {
 
         self.draw_remote_overlays(scene, fg.ctf, text_renderer, theme, presence);
 
-        // Contextual styles panel on the right (between toolbar and layout bar).
-        if self.styles_panel_visible() {
-            let overlay = self.styles_panel_overlay();
-            if overlay {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.scrim.with_alpha_factor(0.35),
-                    None,
-                    &Rect::new(full.x0, full.y0 + fg.tb_h, full.x1, fg.layout_bar_top),
-                );
-            }
-            let panel = Rect::new(
-                if overlay {
-                    (full.x1 - self.styles_panel_width()).max(full.x0)
-                } else {
-                    fg.canvas_right
-                },
-                full.y0 + fg.tb_h,
-                full.x1,
-                fg.layout_bar_top,
-            );
-            self.draw_styles_panel_responsive(scene, transform, text_renderer, panel);
-        } else {
-            self.panel_rect = Rect::ZERO;
-            self.panel_hits.clear();
-        }
-
-        // Document outline / navigation pane on the left (between toolbar and
-        // layout bar). Drawn after `self.laid` is set so the active-heading
-        // highlight reflects this frame's pagination.
-        if self.outline.is_open() {
-            let outline_band =
-                Rect::new(full.x0, full.y0 + fg.tb_h, fg.canvas_left, fg.history_top);
-            let entries = self.outline_entries();
-            let active = self.active_outline_block();
-            let cc = self.chrome;
-            self.outline.draw(
-                scene,
-                transform,
-                text_renderer,
-                outline_band,
-                &entries,
-                active.as_deref(),
-                OutlinePalette {
-                    background: cc.bar,
-                    border: cc.border,
-                    chip: cc.chip,
-                    text: cc.text,
-                    text_dim: cc.text_dim,
-                },
-            );
-        } else {
-            self.outline.clear_frame();
-        }
-
-        if fg.history_h > 0.0 {
-            let band = Rect::new(full.x0, fg.history_top, full.x1, fg.layout_bar_top);
-            self.history
-                .draw(scene, transform, text_renderer, theme, presence, band);
-        }
-
-        let lbar = Rect::new(full.x0, fg.layout_bar_top, full.x1, fg.content_bottom);
-        self.draw_layout_bar(scene, transform, text_renderer, theme, lbar);
+        self.draw_styles_panel_layer(scene, transform, text_renderer, theme, &fg);
+        self.draw_outline_layer(scene, transform, text_renderer, &fg);
+        self.draw_frame_footer(scene, transform, text_renderer, theme, presence, &fg);
     }
 
     fn handle_event(
@@ -10342,6 +10277,97 @@ impl CommentThreadLayout {
 }
 
 impl WordProcessorWidget {
+    fn draw_styles_panel_layer(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        fg: &FrameGeometry,
+    ) {
+        if !self.styles_panel_visible() {
+            self.panel_rect = Rect::ZERO;
+            self.panel_hits.clear();
+            return;
+        }
+        let full = self.rect;
+        let overlay = self.styles_panel_overlay();
+        if overlay {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.scrim.with_alpha_factor(0.35),
+                None,
+                &Rect::new(full.x0, full.y0 + fg.tb_h, full.x1, fg.layout_bar_top),
+            );
+        }
+        let panel = Rect::new(
+            if overlay {
+                (full.x1 - self.styles_panel_width()).max(full.x0)
+            } else {
+                fg.canvas_right
+            },
+            full.y0 + fg.tb_h,
+            full.x1,
+            fg.layout_bar_top,
+        );
+        self.draw_styles_panel_responsive(scene, transform, text_renderer, panel);
+    }
+
+    /// Draw the document outline after pagination so its active-heading state
+    /// reflects the frame being presented.
+    fn draw_outline_layer(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        fg: &FrameGeometry,
+    ) {
+        if !self.outline.is_open() {
+            self.outline.clear_frame();
+            return;
+        }
+        let full = self.rect;
+        let outline_band = Rect::new(full.x0, full.y0 + fg.tb_h, fg.canvas_left, fg.history_top);
+        let entries = self.outline_entries();
+        let active = self.active_outline_block();
+        let colors = self.chrome;
+        self.outline.draw(
+            scene,
+            transform,
+            text_renderer,
+            outline_band,
+            &entries,
+            active.as_deref(),
+            OutlinePalette {
+                background: colors.bar,
+                border: colors.border,
+                chip: colors.chip,
+                text: colors.text,
+                text_dim: colors.text_dim,
+            },
+        );
+    }
+
+    fn draw_frame_footer(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        fg: &FrameGeometry,
+    ) {
+        let full = self.rect;
+        if fg.history_h > 0.0 {
+            let band = Rect::new(full.x0, fg.history_top, full.x1, fg.layout_bar_top);
+            self.history
+                .draw(scene, transform, text_renderer, theme, presence, band);
+        }
+        let layout_bar = Rect::new(full.x0, fg.layout_bar_top, full.x1, fg.content_bottom);
+        self.draw_layout_bar(scene, transform, text_renderer, theme, layout_bar);
+    }
+
     /// Draw the expanded, durable comment thread above the inline margin
     /// anchor. The panel is on-demand, retaining the compact canvas as the
     /// primary surface while keeping each persisted reply visible and usable.
