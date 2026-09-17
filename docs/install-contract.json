@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "product": "Tilo",
   "imager": {
     "hosts": [
@@ -25,7 +25,11 @@
   },
   "completeSystem": {
     "architectures": ["x86_64", "aarch64"],
-    "minimumUsbGiB": 8,
+    "usbCapacity": {
+      "requirement": "expanded-image-size",
+      "catalogField": "image_size",
+      "unit": "bytes"
+    },
     "minimumVmMemoryGiB": 4,
     "minimumVmDiskGiB": 40,
     "alongside": {
