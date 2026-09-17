@@ -46,9 +46,9 @@
 //!
 //! # Current boundaries
 //!
-//! - The daemon does not yet execute app or compute jobs. [`mesh`] defines the
-//!   capability-bounded placement seam so later workers share host selection,
-//!   identity and workspace authorization instead of becoming a second grid.
+//! - App backends are not executed here. Compute packages run only through
+//!   [`compute::ComputeWorker`], which binds certified routes and content
+//!   digests to the normal signed-package launcher sandbox.
 //! - No content byte transfer — content hydration continues to
 //!   travel over `iroh-blobs` inside the `fs/` crate; the relay
 //!   handles only the CRDT-directory tier.
@@ -73,6 +73,7 @@ pub mod auth;
 pub mod client;
 pub mod coedit;
 pub mod compute;
+pub mod compute_transport;
 pub mod config;
 pub mod daemon;
 pub mod home_peer;
@@ -90,8 +91,14 @@ pub use auth::PeerRole;
 pub use client::{ClientError, RelayClient};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
 pub use compute::{
-    ComputeError, ComputeJobLifecycle, ComputeJobPhase, ComputeJobSpec, ComputeResourceLimits,
-    admit_compute_job,
+    ComputeContentStore, ComputeError, ComputeExecutionError, ComputeJobLifecycle, ComputeJobPhase,
+    ComputeJobResult, ComputeJobSpec, ComputePackageCatalogue, ComputeResourceLimits,
+    ComputeSandbox, ComputeSandboxInvocation, ComputeWorker, InstalledComputeCatalogue,
+    LauncherComputeSandbox, admit_compute_job,
+};
+pub use compute_transport::{
+    ComputeJobBinding, ComputeResultUpdate, ComputeRouteOutcome, ComputeStatusUpdate,
+    ComputeTransportError, ComputeWorkerAdvertisement,
 };
 pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use daemon::{Relay, RelayError, RelayHandle};
