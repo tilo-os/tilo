@@ -26,7 +26,7 @@ def run(*args, success=True, env=None):
 
 
 def bootloader_selection(root, original, signed, certificate, metadata, machine):
-    """Prove native bootctl's directory copy, not FAT, firmware or OS bootability."""
+    """Prove native bootctl's tmpfs copy, not FAT, firmware or OS bootability."""
     architecture = platform.machine()
     target = root / 'bootctl-root'
     source = target / 'usr/lib/systemd/boot/efi'
@@ -78,21 +78,31 @@ def bootloader_selection(root, original, signed, certificate, metadata, machine)
     verify(wrong_key, success=False)
 
     # Never fall back to the host loader, write EFI variables, or open a disk.
-    # This is the same ESP-check relaxation bootc uses, on ordinary directories.
+    # Relaxation skips FAT and partition checks, but systemd still requires
+    # STATX_ATTR_MOUNT_ROOT. A private tmpfs supplies a real filesystem root.
     environment = {'PATH': os.defpath, 'LANG': 'C.UTF-8',
                    'SYSTEMD_RELAX_ESP_CHECKS': '1',
                    'KERNEL_INSTALL_CONF_ROOT': str(target / 'etc/kernel')}
-    run('/usr/bin/bootctl', 'install', '--root', str(target), '--esp-path=/boot',
-        '--install-source=image', '--no-variables', '--random-seed=no',
-        '--entry-token=literal:tilo-fixture', env=environment)
     destinations = [target / 'boot/EFI/systemd' / original.name,
                     target / 'boot/EFI/BOOT' / f'BOOT{machine.upper()}.EFI']
-    for destination in destinations:
-        assert destination.is_file() and not destination.is_symlink()
-        assert destination.read_bytes() == signed.read_bytes()
-        verify(destination)
-    assert not (target / 'boot/loader/random-seed').exists()
-    print(json.dumps({'result': 'pass', 'proof': 'native bootctl directory copy only',
+    esp = target / 'boot'
+    run('/usr/bin/mount', '-t', 'tmpfs', '-o', 'size=32M,mode=0700,nodev,nosuid,noexec',
+        'tilo-fixture-esp', str(esp))
+    try:
+        try:
+            run('/usr/bin/bootctl', 'install', '--root', str(target), '--esp-path=/boot',
+                '--install-source=image', '--no-variables', '--random-seed=no',
+                '--entry-token=literal:tilo-fixture', env=environment)
+        except RuntimeError as error:
+            raise RuntimeError(f'bootctl install into disposable tmpfs ESP failed: {error}') from error
+        for destination in destinations:
+            assert destination.is_file() and not destination.is_symlink()
+            assert destination.read_bytes() == signed.read_bytes()
+            verify(destination)
+        assert not (esp / 'loader/random-seed').exists()
+    finally:
+        run('/usr/bin/umount', str(esp))
+    print(json.dumps({'result': 'pass', 'proof': 'native bootctl tmpfs copy only',
                       'architecture': architecture,
                       'bootctl_version': run('/usr/bin/bootctl', '--version').decode().splitlines()[0],
                       'rpm_nevras': run('rpm', '-qf', '--qf', '%{NEVRA}\n',
@@ -106,6 +116,10 @@ def bootloader_selection(root, original, signed, certificate, metadata, machine)
 def main():
     if os.getuid() != 0:
         raise SystemExit('disposable signer fixture requires root')
+    # The already privileged CI container supplies CAP_SYS_ADMIN. Isolate mount
+    # changes again and disable propagation before creating the temporary ESP.
+    os.unshare(os.CLONE_NEWNS)
+    run('/usr/bin/mount', '--make-rprivate', '/')
     with tempfile.TemporaryDirectory(prefix='tilo-signer-fixture-', dir='/var/lib') as directory:
         root = Path(directory)
         home = root / 'identity'
