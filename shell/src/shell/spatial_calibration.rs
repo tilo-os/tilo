@@ -5,7 +5,8 @@
 //! personal device with a live display advertisement. Proposals carry their
 //! previous placement and are never applied implicitly.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::time::{Duration, Instant};
 
 use crate::shell::device_fabric::{DisplayEdge, DisplayRect};
 use crate::shell::personal_continuity::DeviceId;
@@ -17,6 +18,8 @@ pub const MAX_RANGE_MM: u32 = 3_000;
 pub const HIGH_LATENCY_MS: u32 = 120;
 pub const STALE_HEALTH_MS: u64 = 15_000;
 pub const MAX_ACTIVE_ROUTES: u8 = 16;
+pub const HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(10);
+pub const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpatialEvidenceKind {
@@ -53,6 +56,59 @@ pub struct CalibrationProposal {
     pub evidence_kind: SpatialEvidenceKind,
     pub confidence_milli: u16,
     pub expires_unix_ms: u64,
+}
+
+/// Bounded compositor-owned sensor observations and reversible apply history.
+///
+/// Hardware adapters may record an observation only after resolving it to an
+/// already certified peer. `propose_layout` deliberately re-checks that
+/// binding against the current fabric snapshot so proximity can never enroll
+/// or resurrect a device.
+#[derive(Default)]
+pub struct SpatialCalibrationState {
+    evidence: VecDeque<SpatialEvidence>,
+    previous: BTreeMap<DeviceId, DisplayRect>,
+}
+
+impl SpatialCalibrationState {
+    pub fn record_sensor_evidence(&mut self, evidence: SpatialEvidence) -> bool {
+        if evidence.peer.as_str().is_empty()
+            || evidence.range_mm > MAX_RANGE_MM
+            || evidence.confidence_milli > 1_000
+        {
+            return false;
+        }
+        if self.evidence.len() >= MAX_CALIBRATION_PROPOSALS {
+            self.evidence.pop_front();
+        }
+        self.evidence.push_back(evidence);
+        true
+    }
+
+    #[must_use]
+    pub fn proposals(
+        &self,
+        local: &DeviceId,
+        devices: &[CalibrationDevice],
+        now_unix_ms: u64,
+    ) -> Vec<CalibrationProposal> {
+        let evidence = self.evidence.iter().cloned().collect::<Vec<_>>();
+        propose_layout(local, devices, &evidence, now_unix_ms)
+    }
+
+    pub fn remember_apply(&mut self, proposal: &CalibrationProposal) {
+        self.previous
+            .insert(proposal.peer.clone(), proposal.previous);
+        self.evidence.retain(|item| item.peer != proposal.peer);
+    }
+
+    pub fn dismiss(&mut self, peer: &DeviceId) {
+        self.evidence.retain(|item| &item.peer != peer);
+    }
+
+    pub fn take_revert(&mut self, peer: &DeviceId) -> Option<DisplayRect> {
+        self.previous.remove(peer)
+    }
 }
 
 fn adjacent_rect(local: DisplayRect, target: DisplayRect, edge: DisplayEdge) -> DisplayRect {
@@ -202,6 +258,132 @@ pub struct DeviceHealthView {
     pub energy_saver: bool,
     pub active_routes: u8,
     pub degraded: Vec<DeviceDegradedReason>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeviceHealthReport {
+    pub probe_nonce: [u8; 16],
+    pub power: DevicePower,
+    pub energy_saver: bool,
+}
+
+impl DeviceHealthReport {
+    #[must_use]
+    pub fn valid(self) -> bool {
+        self.probe_nonce != [0; 16]
+            && match self.power {
+                DevicePower::Charging(percent) | DevicePower::Battery(percent) => percent <= 100,
+                DevicePower::Unknown | DevicePower::External => true,
+            }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PendingHealthProbe {
+    nonce: [u8; 16],
+    sent: Instant,
+}
+
+#[derive(Clone, Debug)]
+struct MeasuredHealth {
+    measured: Instant,
+    latency_ms: u32,
+    power: DevicePower,
+    energy_saver: bool,
+}
+
+/// Exact-peer probe state. Latency is measured locally and remote reports are
+/// accepted only as replies to the current random nonce for that same peer.
+#[derive(Default)]
+pub struct DeviceHealthTracker {
+    pending: BTreeMap<DeviceId, PendingHealthProbe>,
+    measured: BTreeMap<DeviceId, MeasuredHealth>,
+}
+
+impl DeviceHealthTracker {
+    pub fn begin_probe(&mut self, peer: DeviceId, nonce: [u8; 16], now: Instant) -> bool {
+        self.prune(now);
+        if nonce == [0; 16]
+            || (!self.pending.contains_key(&peer)
+                && self.pending.len() >= MAX_CALIBRATION_PROPOSALS)
+        {
+            return false;
+        }
+        self.pending
+            .insert(peer, PendingHealthProbe { nonce, sent: now });
+        true
+    }
+
+    pub fn accept_report(
+        &mut self,
+        peer: &DeviceId,
+        report: DeviceHealthReport,
+        now: Instant,
+    ) -> bool {
+        self.prune(now);
+        let Some(pending) = self.pending.get(peer) else {
+            return false;
+        };
+        if !report.valid() || pending.nonce != report.probe_nonce || now < pending.sent {
+            return false;
+        }
+        let latency_ms =
+            u32::try_from(now.duration_since(pending.sent).as_millis()).unwrap_or(u32::MAX);
+        self.pending.remove(peer);
+        self.measured.insert(
+            peer.clone(),
+            MeasuredHealth {
+                measured: now,
+                latency_ms,
+                power: report.power,
+                energy_saver: report.energy_saver,
+            },
+        );
+        true
+    }
+
+    pub fn forget_peer(&mut self, peer: &DeviceId) {
+        self.pending.remove(peer);
+        self.measured.remove(peer);
+    }
+
+    #[must_use]
+    pub fn observation(
+        &self,
+        peer: &DeviceId,
+        certified: bool,
+        online: bool,
+        active_routes: u8,
+        now: Instant,
+        now_unix_ms: u64,
+    ) -> DeviceHealthObservation {
+        let measured = self.measured.get(peer);
+        let age_ms = measured
+            .and_then(|item| now.checked_duration_since(item.measured))
+            .and_then(|age| u64::try_from(age.as_millis()).ok())
+            .unwrap_or(STALE_HEALTH_MS.saturating_add(1));
+        DeviceHealthObservation {
+            peer: peer.clone(),
+            certified,
+            online,
+            observed_unix_ms: now_unix_ms.saturating_sub(age_ms),
+            latency_ms: measured.map(|item| item.latency_ms),
+            power: measured.map_or(DevicePower::Unknown, |item| item.power),
+            energy_saver: measured.is_some_and(|item| item.energy_saver),
+            active_routes,
+        }
+    }
+
+    fn prune(&mut self, now: Instant) {
+        self.pending.retain(|_, probe| {
+            now.checked_duration_since(probe.sent)
+                .is_some_and(|age| age <= HEALTH_PROBE_TIMEOUT)
+        });
+        self.measured.retain(|_, item| {
+            now.checked_duration_since(item.measured)
+                .is_some_and(|age| age <= HEALTH_PROBE_TIMEOUT.saturating_mul(4))
+        });
+    }
 }
 
 /// Build bounded user-facing health for certified devices only.
@@ -402,5 +584,63 @@ mod tests {
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].reachability, DeviceReachability::Online);
         assert!(views[0].degraded.is_empty());
+    }
+
+    #[test]
+    fn health_probe_is_exact_peer_nonce_bound_and_one_shot() {
+        let now = Instant::now();
+        let peer = id("tablet");
+        let other = id("phone");
+        let mut tracker = DeviceHealthTracker::default();
+        assert!(tracker.begin_probe(peer.clone(), [4; 16], now));
+        let report = DeviceHealthReport {
+            probe_nonce: [4; 16],
+            power: DevicePower::Battery(64),
+            energy_saver: true,
+        };
+        assert!(!tracker.accept_report(&other, report, now + Duration::from_millis(8)));
+        assert!(!tracker.accept_report(
+            &peer,
+            DeviceHealthReport {
+                probe_nonce: [5; 16],
+                ..report
+            },
+            now + Duration::from_millis(8),
+        ));
+        assert!(tracker.accept_report(&peer, report, now + Duration::from_millis(12)));
+        assert!(!tracker.accept_report(&peer, report, now + Duration::from_millis(13)));
+        let observation = tracker.observation(
+            &peer,
+            true,
+            true,
+            2,
+            now + Duration::from_millis(12),
+            20_000,
+        );
+        assert_eq!(observation.latency_ms, Some(12));
+        assert_eq!(observation.power, DevicePower::Battery(64));
+        assert!(observation.energy_saver);
+    }
+
+    #[test]
+    fn calibration_state_requires_a_reversible_explicit_apply() {
+        let local = id("local");
+        let tablet = id("tablet");
+        let devices = vec![display("local", 0, true), display("tablet", 800, true)];
+        let mut state = SpatialCalibrationState::default();
+        assert!(state.record_sensor_evidence(SpatialEvidence {
+            peer: tablet.clone(),
+            edge: DisplayEdge::Right,
+            range_mm: 120,
+            confidence_milli: 880,
+            observed_unix_ms: 10_000,
+            kind: SpatialEvidenceKind::UltraWideband,
+        }));
+        let proposal = state.proposals(&local, &devices, 10_001).remove(0);
+        assert_eq!(devices[1].rect, Some(proposal.previous));
+        state.remember_apply(&proposal);
+        assert!(state.proposals(&local, &devices, 10_001).is_empty());
+        assert_eq!(state.take_revert(&tablet), Some(proposal.previous));
+        assert_eq!(state.take_revert(&tablet), None);
     }
 }
