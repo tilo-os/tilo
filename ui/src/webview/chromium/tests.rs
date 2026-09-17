@@ -448,6 +448,34 @@ fn capability_commands_and_events_round_trip() {
         .is_err()
     );
     assert!(validate_event(&json!({"event":"download","id":1,"state":"invented"})).is_err());
+    let update = json!({
+        "event":"download","id":9,"state":"failed","path":"","name":"archive.zip",
+        "url":"https://downloads.test/archive.zip","retryable":true,"received":128.0,"total":1024.0,
+        "error":"connection reset"
+    });
+    assert!(validate_event(&update).is_ok());
+    assert_eq!(
+        decode_event(&update),
+        Some(WebViewEvent::DownloadUpdated {
+            id: 9,
+            state: "failed".into(),
+            path: String::new(),
+            name: "archive.zip".into(),
+            url: "https://downloads.test/archive.zip".into(),
+            retryable: true,
+            received: 128,
+            total: 1024,
+            error: "connection reset".into(),
+        })
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::RetryDownload { id: 9 }),
+        Some(json!({"op":"download_retry","id":9}))
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::CancelAllDownloads),
+        Some(json!({"op":"download_cancel_all"}))
+    );
 }
 
 #[test]
@@ -665,6 +693,8 @@ fn runtime_download_queue_coalesces_progress_and_is_bounded() {
         state: state.into(),
         path: "/tmp/file".into(),
         name: "file".into(),
+        url: "https://downloads.test/file".into(),
+        retryable: true,
         received,
         total: 1000,
         error: String::new(),
@@ -689,6 +719,53 @@ fn runtime_download_queue_coalesces_progress_and_is_bounded() {
         decode_event(&json!({"event":"close_blocked","tab":2})),
         Some(WebViewEvent::TabCloseBlocked)
     );
+    assert_eq!(
+        decode_event(&json!({"event":"tab_detached","tab":2})),
+        Some(WebViewEvent::TabDetached)
+    );
+    assert_eq!(
+        decode_event(&json!({"event":"download_runtime","admitted":2,"detached":1,"accepting":true,"error":""})),
+        Some(WebViewEvent::DownloadRuntime {
+            admitted: 2,
+            detached: 1,
+            accepting: true,
+            error: String::new(),
+        })
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn detached_acknowledgment_releases_visible_route_before_physical_close() {
+    let mut packet = Vec::new();
+    protocol::write_json(&mut packet, &json!({"event":"tab_detached","tab":2})).unwrap();
+    let encoded: String = packet
+        .iter()
+        .map(|byte| format!("\\{:03o}", byte))
+        .collect();
+    let (dir, host) = helper_fixture(&format!(
+        "profile=${{1#--profile=}}\nwhile [ ! -f \"$profile/detach-ready\" ]; do sleep 0.01; done\nprintf '{encoded}'\nexec cat >/dev/null"
+    ));
+    let first = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
+    let detached = first.create_tab().unwrap();
+    let routes = first.runtime.routes.clone();
+    std::fs::write(dir.path().join("profile/detach-ready"), b"ready").unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let mut saw_detach = false;
+    while !saw_detach {
+        saw_detach = detached
+            .drain_events()
+            .contains(&WebViewEvent::TabDetached);
+        assert!(std::time::Instant::now() < deadline, "detach acknowledgment");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        !routes.lock().unwrap().contains_key(&2),
+        "route is retired before detach is observable"
+    );
+    drop(detached);
+    assert_eq!(routes.lock().unwrap().len(), 1);
+    assert!(first.create_tab().is_ok(), "detached transfer owner does not use a visible slot");
 }
 
 #[test]

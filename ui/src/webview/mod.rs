@@ -274,6 +274,10 @@ pub enum WebViewCommand {
     CancelDownload {
         id: u32,
     },
+    /// Retry a user-selected network GET without navigating the visible page.
+    RetryDownload { id: u32 },
+    /// Stop admitting downloads and cancel every pending or active transfer.
+    CancelAllDownloads,
 }
 
 /// Navigation / UI state changes from the engine to the host app, folded
@@ -290,6 +294,9 @@ pub enum WebViewEvent {
         message: String,
     },
     TabClosed,
+    /// The visible route is retired while CEF remains alive solely as a
+    /// bounded transfer owner. Physical destruction still emits `TabClosed`.
+    TabDetached,
     TabCloseBlocked,
     ContextMenu {
         id: u32,
@@ -331,8 +338,17 @@ pub enum WebViewEvent {
         state: String,
         path: String,
         name: String,
+        url: String,
+        retryable: bool,
         received: u64,
         total: u64,
+        error: String,
+    },
+    /// Runtime-wide native ownership evidence used by explicit window exit.
+    DownloadRuntime {
+        admitted: u32,
+        detached: u32,
+        accepting: bool,
         error: String,
     },
     UriChanged(String),
@@ -439,7 +455,7 @@ pub trait WebViewEngine: Send + Sync {
     fn drain_events(&self) -> Vec<WebViewEvent>;
 
     /// Request native close admission. True allows immediate local close; false
-    /// completes asynchronously through TabClosed or TabCloseBlocked.
+    /// completes asynchronously through TabClosed, TabDetached or TabCloseBlocked.
     fn request_close(&self) -> bool {
         true
     }

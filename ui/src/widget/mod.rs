@@ -427,7 +427,24 @@ pub(crate) fn test_number_action_binding() -> qos_actions::ActionBinding<f64> {
     .unwrap()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowCloseAdmission {
+    Allow,
+    Defer,
+}
+
 pub trait Widget {
+    /// Admit or defer the primary native window's ordinary close request.
+    /// Roots that defer must later produce a one-shot close intent.
+    fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
+        WindowCloseAdmission::Allow
+    }
+
+    /// One-shot approval after an earlier deferred ordinary window close.
+    fn take_window_close_intent(&mut self) -> bool {
+        false
+    }
+
     /// Owning lifecycle path: capture and close nested components before removing
     /// their live trees, transferring all recovery reports to the caller.
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
@@ -2044,6 +2061,16 @@ mod a11y_tree_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_window_close_defaults_to_immediate_exit() {
+        let mut spacer = Spacer::new();
+        assert_eq!(
+            spacer.on_window_close_requested(),
+            WindowCloseAdmission::Allow
+        );
+        assert!(!spacer.take_window_close_intent());
+    }
 
     /// Pinned so a future edit that removes the default blanket-breaks
     /// every widget impl that hasn't opted into a stable test id.

@@ -249,7 +249,9 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ContextMenuAction { .. }
             | WebViewCommand::StopFinding
             | WebViewCommand::SetZoomLevel(_)
-            | WebViewCommand::CancelDownload { .. } => {}
+            | WebViewCommand::CancelDownload { .. }
+            | WebViewCommand::RetryDownload { .. }
+            | WebViewCommand::CancelAllDownloads => {}
             WebViewCommand::RequestMediaElement { request_id } => {
                 let event = inner.media_element.clone().map_or(
                     WebViewEvent::MediaElementUnavailable { request_id },

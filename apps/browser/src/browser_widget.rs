@@ -593,6 +593,18 @@ impl BrowserWidget {
     pub(crate) fn take_native_closed(&mut self) -> bool {
         std::mem::take(&mut self.native_closed)
     }
+    pub(crate) fn download_exit_requires_choice(&self) -> bool {
+        self.capabilities.exit_requires_choice()
+    }
+    pub(crate) fn download_exit_cleanup_complete(&self) -> bool {
+        self.capabilities.exit_cleanup_complete()
+    }
+    pub(crate) fn download_exit_status(&self) -> Option<String> {
+        self.capabilities.toolbar_status()
+    }
+    pub(crate) fn cancel_downloads_for_exit(&self) {
+        self.capabilities.cancel_all(&self.engine);
+    }
     pub(crate) fn inherit_workspace_state(&mut self, other: &Self) {
         self.window_scale = other.window_scale;
         self.capabilities.share_downloads(&other.capabilities);
@@ -1653,6 +1665,16 @@ impl BrowserWidget {
             library_resource,
             library_action,
         );
+        let download_status = self.capabilities.toolbar_status().map(|status| {
+            self.bind_button(
+                Button::new("browser.download-status", &status, None)
+                    .with_accessible_name(&format!("Downloads: {status}"))
+                    .tooltip("Show downloads")
+                    .with_size(if self.compact_chrome { 72.0 } else { 152.0 }, 40.0),
+                "browser.downloads",
+                "show",
+            )
+        });
         // On a phone-width window the disabled bookmark affordance was
         // consuming the only useful address-bar width. Bookmarks remain in
         // the Library/resource surface; keep the toolbar focused on finding
@@ -1668,6 +1690,9 @@ impl BrowserWidget {
             toolbar = toolbar.push(Box::new(history_pause_btn));
         }
         toolbar = toolbar.push(Box::new(library_btn));
+        if let Some(download_status) = download_status {
+            toolbar = toolbar.push(Box::new(download_status));
+        }
         if !self.compact_chrome {
             toolbar = toolbar.push(Box::new(pip_btn));
         }
@@ -2371,6 +2396,9 @@ impl BrowserWidget {
                 WebViewEvent::TabClosed => {
                     self.native_closed = true;
                 }
+                WebViewEvent::TabDetached => {
+                    self.native_closed = true;
+                }
                 WebViewEvent::TabCloseBlocked => {
                     self.close_blocked = true;
                     self.structure_dirty = true;
@@ -2414,7 +2442,8 @@ impl BrowserWidget {
                 event @ (WebViewEvent::PermissionRequested { .. }
                 | WebViewEvent::PermissionClosed { .. }
                 | WebViewEvent::DownloadRequested { .. }
-                | WebViewEvent::DownloadUpdated { .. }) => {
+                | WebViewEvent::DownloadUpdated { .. }
+                | WebViewEvent::DownloadRuntime { .. }) => {
                     self.capabilities.apply(event);
                     self.structure_dirty = true;
                 }
