@@ -49,8 +49,9 @@ for a in "$@"; do
   esac
 done
 
-# Development trust currently stages a container only: the isolated update
-# origin and disk/VM integration are separate required work.
+# Development trust currently stages a container only: registry provisioning and
+# signed disk/VM integration are separate required work.
+_tilo_profile_args=()
 _tilo_trust_args=(--build-arg TILO_PUBLIC_TRUST_MODE=production --build-arg TILO_PUBLIC_TRUST_MANIFEST_SHA256=)
 case "${TILO_PUBLIC_TRUST_MODE:-production}" in
   production)
@@ -63,6 +64,9 @@ case "${TILO_PUBLIC_TRUST_MODE:-production}" in
       || die "development trust requires TILO_IMAGE=localhost/tilo-development:<tag>"
     [ -n "${TILO_PUBLIC_TRUST_BUNDLE:-}" ] && [ -n "${TILO_PUBLIC_TRUST_MANIFEST_SHA256:-}" ] \
       || die "development trust requires a public bundle and independently pinned manifest digest"
+    python3 "$TILO_OS_DIR/dev/hardware_profile.py" --development-target "${TILO_TARGET_IMGREF:-}" >/dev/null \
+      || die "development trust requires an explicit isolated development registry origin"
+    _tilo_profile_args=(--development-trust)
     _tilo_trust_result=$(python3 "$TILO_OS_DIR/dev/development-trust.py" validate \
       "$TILO_PUBLIC_TRUST_BUNDLE" --expected-manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256") \
       || die "invalid development public trust bundle"
@@ -85,7 +89,7 @@ if [ "$TILO_HARDWARE_PROFILE" != generic ]; then
       || die "TILO_SKIP_BUILD cannot apply a hardware profile; rebuild the image with its firmware and device tree"
     python3 "$TILO_OS_DIR/dev/hardware_profile.py" "$TILO_HARDWARE_PROFILE" \
       "$TILO_OS_DIR/hardware/profiles" "$(uname -m)" "$TILO_OS_DIR/hardware/firmware" \
-      "${TILO_TARGET_IMGREF:-}" \
+      "${TILO_TARGET_IMGREF:-}" "${_tilo_profile_args[@]}" \
       || die "hardware-profile build inputs are invalid; see os/hardware/README.md"
 fi
 
@@ -296,7 +300,7 @@ else
 fi
 
 if [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ]; then
-  msg "Development container staged: $TILO_IMAGE. Disk/VM preparation remains incomplete until the isolated development origin and signature policy are implemented."
+  msg "Development container staged: $TILO_IMAGE. Disk/VM preparation remains incomplete until the isolated signed registry and disk/VM path are prepared."
   exit 0
 fi
 
