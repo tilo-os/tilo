@@ -536,7 +536,7 @@ mod tests {
         let long = Avatar::from_initials("Tilo", 40.0);
         assert_eq!(
             long.display_initials(),
-            "QU",
+            "TI",
             "must truncate to first 2 chars after uppercasing",
         );
 

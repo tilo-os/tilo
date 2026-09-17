@@ -311,7 +311,10 @@ mod tests {
     #[test]
     fn unnamed_aggregate_titles_describe_outcomes_instead_of_schema_counts() {
         let mut first = entry(1, "Ada", 100);
-        let mut second = entry(2, "Maren", 110);
+        let mut second = entry(2, "Ada", 110);
+        // Automatic groups keep authors separate; only explicit work groups
+        // span people. These two changes belong to the same actor.
+        second.author = first.author.clone();
         for item in [&mut first, &mut second] {
             item.op_class = OpClass::Govern;
             item.text_delta = None;
