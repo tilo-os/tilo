@@ -17,6 +17,7 @@ on:
       - os/tests/development_signer.py
       - os/tests/test_development_signer.py
       - os/tests/test_development_loader.py
+      - os/tests/development_stage_reuse.py
       - os/tests/Containerfile.development-source
       - .forgejo/workflows/development-source.yml
 
@@ -53,7 +54,7 @@ jobs:
           trap cleanup EXIT
           mkdir "$context/dev"
           cp os/dev/{verify-development-source.py,development-trust.py,install-public-trust.py,hardware_profile.py,development-signer.py,setup-development-signer.py,verify-authenticode-envelope.py,verify-development-loader.py} "$context/dev/"
-          cp os/tests/{development_source_registry.py,development_signer.py,test_development_signer.py,test_development_loader.py} "$context/"
+          cp os/tests/{development_source_registry.py,development_signer.py,test_development_signer.py,test_development_loader.py,development_stage_reuse.py} "$context/"
           cp "$(command -v cosign)" "$context/cosign"
           cp os/tests/Containerfile.development-source "$context/Containerfile"
           docker build --file "$context/Containerfile" --tag "$image" "$context"
