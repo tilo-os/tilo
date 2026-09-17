@@ -3910,11 +3910,14 @@ impl CalendarApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) -> Vec<(Rect, Action)> {
-        let Some(chrome) = self.sidebar.draw_chrome(
+        let mut paint = PaintContext {
             scene,
-            t,
-            tr,
+            transform: t,
+            text: tr,
             theme,
+        };
+        let Some(chrome) = self.sidebar.draw_chrome(
+            &mut paint,
             self.rect,
             self.content_rect,
             self.detail_rect,
@@ -3923,12 +3926,6 @@ impl CalendarApp {
             self.last_mouse,
         ) else {
             return Vec::new();
-        };
-        let mut paint = PaintContext {
-            scene,
-            transform: t,
-            text: tr,
-            theme,
         };
         let mut hits: Vec<_> = chrome
             .hits
