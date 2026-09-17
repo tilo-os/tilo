@@ -369,16 +369,70 @@ impl NumberInput {
     /// Format `value` for display: `decimals`-precision number plus the
     /// unit suffix (space-separated when a suffix is present).
     fn format_value(&self) -> String {
+        self.format_display(self.value)
+    }
+
+    /// `value` formatted exactly as [`Self::format_value`] would show it.
+    fn format_display(&self, value: f64) -> String {
         let n = if self.decimals == 0 {
-            format!("{}", round_to_i64(self.value))
+            format!("{}", round_to_i64(value))
         } else {
-            format!("{:.*}", self.decimals, self.value)
+            format!("{:.*}", self.decimals, value)
         };
         if self.suffix.is_empty() {
             n
         } else {
             format!("{} {}", n, self.suffix)
         }
+    }
+
+    /// Control width that holds `display` in the field beside two
+    /// `height`-square steppers: `field_padding` either side of the text,
+    /// the two buttons and the gaps between, never below `minimum.width`.
+    fn required_width(
+        minimum: Size<f32>,
+        field_padding: f32,
+        display: &str,
+        text: &mut TextRenderer,
+    ) -> f32 {
+        let (value_width, _) = text.measure(display, super::text_input::FONT_SIZE, None);
+        minimum
+            .width
+            .max(value_width + field_padding * 2.0 + minimum.height * 2.0 + px_f32(GAP * 2.0))
+            .ceil()
+    }
+
+    /// The footprint `build_layout` starts from: the configured size, text-
+    /// scaled when the width is automatic, the height never below the
+    /// pointer target.
+    fn base_footprint(&self, theme: &Theme) -> Size<f32> {
+        let scale = if self.automatic_minimum.is_some() {
+            f64::from(theme.text_scale)
+        } else {
+            1.0
+        };
+        Size {
+            width: px_f32(self.width * scale),
+            height: px_f32((self.height * scale).max(f64::from(self.interaction.minimum_target()))),
+        }
+    }
+
+    /// Width this control needs so **every** value it can show fits — the
+    /// current value and the finite ends of its range, formatted with the
+    /// configured precision and suffix — beside its steppers. A host laying
+    /// its own rows (a font-size stepper in an inspector) reserves this
+    /// instead of guessing the field's type size; it is the same rule the
+    /// widget applies to itself in `adjust_layout_with_measure`, so a slot
+    /// sized from it never clips a value the widget would have held.
+    pub fn preferred_width(&self, theme: &Theme, text: &mut TextRenderer) -> f64 {
+        let minimum = self.base_footprint(theme);
+        let padding = px_f32(self.field.text_padding_x(theme));
+        let widest = [self.value, self.min, self.max]
+            .into_iter()
+            .filter(|value| value.is_finite())
+            .map(|value| Self::required_width(minimum, padding, &self.format_display(value), text))
+            .fold(minimum.width, f32::max);
+        f64::from(widest)
     }
 
     /// Overwrite the embedded field's text with the canonical value's
@@ -528,15 +582,7 @@ impl Widget for NumberInput {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let scale = if self.automatic_minimum.is_some() {
-            f64::from(theme.text_scale)
-        } else {
-            1.0
-        };
-        let size = Size {
-            width: px_f32(self.width * scale),
-            height: px_f32((self.height * scale).max(f64::from(self.interaction.minimum_target()))),
-        };
+        let size = self.base_footprint(theme);
         if self.automatic_minimum.is_some() {
             self.automatic_minimum = Some(size);
             self.field_padding = px_f32(self.field.text_padding_x(theme));
@@ -546,6 +592,10 @@ impl Widget for NumberInput {
                 width: Dimension::length(size.width),
                 height: Dimension::length(size.height),
             },
+            // A fixed target: in a row that overflows, the fluid field beside
+            // it gives, not the stepper (taffy would otherwise squeeze this
+            // leaf below its own size — see `Toggle::build_layout`).
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -561,12 +611,7 @@ impl Widget for NumberInput {
         let Some(minimum) = self.automatic_minimum else {
             return false;
         };
-        let (value_width, _) =
-            text.measure(&self.format_value(), super::text_input::FONT_SIZE, None);
-        let width = minimum
-            .width
-            .max(value_width + self.field_padding * 2.0 + minimum.height * 2.0 + px_f32(GAP * 2.0))
-            .ceil();
+        let width = Self::required_width(minimum, self.field_padding, &self.format_value(), text);
         let Ok(current) = tree.style(node) else {
             return false;
         };
@@ -1150,6 +1195,39 @@ mod tests {
         assert_eq!(n.format_value(), "1.15");
         let n = NumberInput::new(42.0);
         assert_eq!(n.format_value(), "42");
+    }
+
+    /// `preferred_width` reserves room for the widest value the control can
+    /// show — the ends of its range, formatted with precision and suffix —
+    /// beside its two steppers, never less than the configured width. A host
+    /// slot sized from it holds every value the widget itself would hold.
+    #[test]
+    fn preferred_width_fits_the_widest_value_in_range() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let input = NumberInput::new(1.0)
+            .with_range(0.0, 1000.0)
+            .with_precision(2)
+            .with_suffix("px");
+        let preferred = input.preferred_width(&theme, &mut text);
+
+        let (widest, _) = text.measure("1000.00 px", super::super::text_input::FONT_SIZE, None);
+        let padding = px_f32(input.field.text_padding_x(&theme));
+        let height = px_f32(DEFAULT_HEIGHT.max(f64::from(input.interaction.minimum_target())));
+        let required = f64::from(widest + padding * 2.0 + height * 2.0 + px_f32(GAP * 2.0));
+        assert!(
+            preferred + 1e-6 >= required,
+            "preferred {preferred} must hold the widest value ({required})"
+        );
+        assert!(preferred >= DEFAULT_WIDTH, "never below the configured width");
+        assert!(
+            preferred < required + 1.0,
+            "preferred {preferred} should be the widest value's need rounded up, not more (required {required})"
+        );
+
+        // A narrow range needs no more than the configured width.
+        let compact = NumberInput::new(3.0).with_range(0.0, 9.0);
+        assert_eq!(compact.preferred_width(&theme, &mut text), DEFAULT_WIDTH);
     }
 
     /// New clamps the initial value into range.
