@@ -60,11 +60,13 @@ fn build_widget(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 extern crate runtime_dylib;
 
 fn live(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let wake_scope = ui::wake::WakeScope::new();
+    let _wake_entry = wake_scope.enter();
     // The package document is the record index; each PDF's markup lives in a
     // separate record so annotations from two files cannot collide.
     let records = ui::RecordSet::open(APP_ID);
     let (room, autosave) = ui::persist::open_room(APP_ID, records.home());
-    let mut app = ui::App::new(ui::State::new(), build_widget(args)?)
+    let mut app = ui::App::from_scoped_parts(wake_scope, ui::State::new(), build_widget(args)?)
         .with_autosave(autosave)
         .with_records(records, room.doc);
     pdf_viewer::actions::register(app.action_registry_mut());

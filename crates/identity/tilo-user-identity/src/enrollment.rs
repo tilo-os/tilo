@@ -47,8 +47,8 @@ use crate::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes, si
 use crate::cert::DeviceCapabilities;
 
 /// Signing-domain tag for `EnrollmentToken`. Frozen wire ABI:
-/// `tilo-enrollment-v1` + NUL.
-pub const ENROLLMENT_PREIMAGE_TAG: &[u8] = b"tilo-enrollment-v1\0";
+/// `qos-enrollment-v1` + NUL.
+pub const ENROLLMENT_PREIMAGE_TAG: &[u8] = b"qos-enrollment-v1\0";
 
 /// A signed enrollment intent minted by a trusted device.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

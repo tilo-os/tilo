@@ -2034,3 +2034,129 @@ mod tests {
         assert!(out[0].subtitle.as_deref().unwrap().contains("Shortcut"));
     }
 }
+
+/// Tiny session-owned catalog of apps the native host can actually construct.
+/// It shares application visibility policy and action dispatch with package apps.
+pub struct NativeApplicationsProvider;
+
+impl SearchProvider for NativeApplicationsProvider {
+    fn id(&self) -> &'static str {
+        "native-applications"
+    }
+    fn name(&self) -> &'static str {
+        "Applications"
+    }
+    fn resource_kinds(&self) -> &[ResourceKind] {
+        &[ResourceKind::Application]
+    }
+    fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
+        format!("{:?}", ctx.chrome.hosted_inputs.native_apps())
+    }
+    fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+        if !ctx.wanted.contains(&ResourceKind::Application) {
+            return Vec::new();
+        }
+        let needle = ctx.needle.to_lowercase();
+        ctx.chrome
+            .hosted_inputs
+            .native_apps()
+            .iter()
+            .filter_map(|app| {
+                let score = match_score(
+                    &needle,
+                    &app.display_name.to_lowercase(),
+                    &app.package_id.to_lowercase(),
+                    None,
+                    None,
+                )?;
+                let id = app.package_id;
+                Some(SearchResult::nullary_fallible(
+                    ResourceKind::Application,
+                    self.id(),
+                    id,
+                    format!("Open {}", app.display_name),
+                    Some(ctx.chrome.open_target.result_hint().into()),
+                    score,
+                    move |_doc, _root, chrome: &Chrome| {
+                        let app = chrome
+                            .borrow()
+                            .hosted_inputs
+                            .native_apps()
+                            .iter()
+                            .find(|app| app.package_id == id)
+                            .cloned()
+                            .ok_or_else(|| {
+                                ActionError::Refused(
+                                    "This application is no longer available".into(),
+                                )
+                            })?;
+                        let mut state = chrome.borrow_mut();
+                        let destination = match state.open_target {
+                            OpenTarget::Beside => crate::shell::window_actions::Destination::Beside,
+                            OpenTarget::Here(_) => crate::shell::window_actions::Destination::Here,
+                        };
+                        crate::shell::window_actions::open_hosted(
+                            &mut state,
+                            app.kind,
+                            app.display_name,
+                            destination,
+                        );
+                        Ok(())
+                    },
+                ))
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod native_application_tests {
+    use super::*;
+    use crate::shell::{
+        chrome_state::ChromeState,
+        hosted_inputs::HostedTileInputs,
+        state::{AppKind, WorkspaceTree},
+    };
+
+    #[test]
+    fn native_files_search_opens_the_real_hosted_app_and_revalidates_availability() {
+        let directory = tempfile::tempdir().unwrap();
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        chrome.borrow_mut().hosted_inputs =
+            HostedTileInputs::for_host_directory(directory.path()).unwrap();
+        let mut doc = automerge::AutoCommit::new();
+        let results = NativeApplicationsProvider.query(SearchContext {
+            needle: "Files",
+            wanted: &[ResourceKind::Application],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "org.tilo.Files");
+        (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).unwrap();
+        assert_eq!(chrome.borrow().active_app_title().as_deref(), Some("Files"));
+        assert!(
+            chrome
+                .borrow()
+                .tree()
+                .active_workspace()
+                .unwrap()
+                .strips
+                .iter()
+                .flat_map(|s| &s.window_groups)
+                .flat_map(|g| &g.tabs)
+                .any(|tab| matches!(
+                    &tab.tile,
+                    crate::shell::state::TileContent::AppPlaceholder {
+                        kind: AppKind::FileExplorer,
+                        ..
+                    }
+                ))
+        );
+        chrome.borrow_mut().hosted_inputs = HostedTileInputs::default();
+        assert!(
+            (results[0].on_open)(&mut doc, &automerge::ROOT, &chrome, &ActionArgs::none()).is_err()
+        );
+    }
+}

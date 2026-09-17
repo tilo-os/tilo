@@ -470,3 +470,7 @@ cargo test -p shell --test control_socket_test -- --ignored --test-threads 1
 
 The test spawns the binary itself. It is intentionally separate from the
 offscreen lanes until the native compositor can run without a host display.
+
+## Desktop UX journeys
+
+The [UX testing bench](ux-testing-bench.md) runs native macOS desktop journeys with interaction budgets, layout/contrast checks, scroll evidence and HTML reports.

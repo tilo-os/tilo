@@ -184,6 +184,27 @@ impl Column {
 }
 
 impl Widget for Column {
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        // This container owns no operation handler. Preserve mutable admission
+        // down the retained tree without a second read-only fallback traversal.
+        for child in self.children_mut() {
+            if let Some(started) = child.start_resource_operation_with_document(
+                invocation, kind, type_id, payload, doc, path,
+            )? {
+                return Ok(Some(started));
+            }
+        }
+        Ok(None)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         for child in &mut self.children {
             child.sync(state, path);
@@ -213,25 +234,32 @@ impl Widget for Column {
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
 
+        let resolved_gap = self.gap_override.unwrap_or(theme.gap_standard);
+
         let node = taffy.parent_node(
             Style {
-                // Intrinsic-height columns run as a Block stack: flex layout
-                // in taffy 0.9 silently truncates children once the
-                // container's main-axis budget runs out (even with
-                // flex_shrink: 0.0), leaving an outer Scrollable thinking
-                // content stops where taffy stopped. Block has no axis
-                // budget, so content grows to its true sum.
+                // Intrinsic-height columns use a one-column implicit Grid.
+                // Taffy's Block layout ignores `gap`, while flex layout can
+                // truncate the intrinsic main axis to a Scrollable's viewport.
+                // Grid honors row gaps and intrinsically sizes every implicit
+                // row, preserving both scroll extent and the one widget / one
+                // direct Taffy child identity expected by host traversal.
                 display: if self.intrinsic_height {
-                    taffy::Display::Block
+                    taffy::Display::Grid
                 } else {
                     taffy::Display::Flex
                 },
                 flex_direction: taffy::FlexDirection::Column,
                 align_items: Some(taffy::AlignItems::FlexStart),
+                // A parent may legitimately stretch or explicitly size this
+                // Column taller than its content. Pack implicit Grid rows at
+                // the start so surplus block space does not inflate the
+                // requested gap between them.
+                align_content: self.intrinsic_height.then_some(taffy::AlignContent::Start),
                 flex_shrink: 0.0, // Prevent vertical squashing
                 gap: taffy::Size {
                     width: length(0.0_f32),
-                    height: length(self.gap_override.unwrap_or(theme.gap_standard)),
+                    height: length(resolved_gap),
                 },
                 padding: {
                     let base = if self.no_padding {
@@ -274,12 +302,11 @@ impl Widget for Column {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        // The larger of own size and content bounds: taffy can clamp a
-        // Block container's reported size to its parent's available main
-        // axis (notably inside a Scrollable), and `layout.size` alone would
-        // make `should_cull` discard the subtree once scrolling pushed the
-        // under-reported rect off the viewport, even with children still on
-        // screen.
+        // The larger of own size and content bounds: constrained Grid/Flex
+        // layouts can report a viewport-sized box with taller overflowing
+        // content, and `layout.size` alone would make `should_cull` discard
+        // the subtree once scrolling pushed the box off the viewport, even
+        // with children still on screen.
         let w = f64::from(layout.size.width.max(layout.content_size.width));
         let h = f64::from(layout.size.height.max(layout.content_size.height));
         self.rect = vello::kurbo::Rect::new(
@@ -628,6 +655,353 @@ mod tests {
             .iter()
             .filter(|t| matches!(**t, DrawTag::IMAGE) || **t == DrawTag::COLOR)
             .count()
+    }
+
+    #[test]
+    fn intrinsic_column_applies_requested_gap_to_geometry_and_content_height() {
+        let mut col = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_gap(20.0)
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ));
+
+        let _ = lay_out(&mut col);
+
+        assert_eq!(col.children[0].get_rect().y0, 0.0);
+        assert_eq!(col.children[1].get_rect().y0, 30.0);
+        assert_eq!(col.get_rect().height(), 40.0);
+    }
+
+    #[test]
+    fn intrinsic_column_keeps_requested_gap_when_parent_stretches_height() {
+        let theme = Theme::dark();
+        let mut col = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_gap(20.0)
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ));
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let column_node = col.build_layout(&mut taffy, &theme, &mut node_map);
+        let host_node = taffy.parent_node(
+            Style {
+                size: taffy::Size {
+                    width: length(400.0_f32),
+                    height: length(300.0_f32),
+                },
+                ..Default::default()
+            },
+            &[column_node],
+        );
+
+        taffy
+            .compute_layout_with_measure(
+                host_node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(300.0),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = node_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, &mut tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )
+            .unwrap();
+        col.apply_layout(&taffy, column_node, Point::ZERO);
+
+        assert_eq!(taffy.layout(column_node).unwrap().size.height, 300.0);
+        assert_eq!(col.get_rect().height(), 300.0);
+        assert_eq!(col.children[0].get_rect().y0, 0.0);
+        assert_eq!(col.children[1].get_rect().y0, 30.0);
+        assert_eq!(
+            col.children[1].get_rect().y0 - col.children[0].get_rect().y1,
+            20.0
+        );
+    }
+
+    #[test]
+    fn intrinsic_column_zero_gap_keeps_children_tightly_stacked() {
+        let mut col = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_gap(0.0)
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ));
+
+        let _ = lay_out(&mut col);
+
+        assert_eq!(col.children[0].get_rect().y0, 0.0);
+        assert_eq!(col.children[1].get_rect().y0, 10.0);
+        assert_eq!(col.get_rect().height(), 20.0);
+    }
+
+    #[test]
+    fn intrinsic_column_uses_default_theme_gap() {
+        let mut col = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ));
+
+        let _ = lay_out(&mut col);
+
+        // The dark theme's default gap is 12 px.
+        assert_eq!(col.children[1].get_rect().y0, 22.0);
+        assert_eq!(col.get_rect().height(), 32.0);
+    }
+
+    #[test]
+    fn intrinsic_column_inserts_one_gap_between_each_of_three_children() {
+        let mut col = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_gap(7.0)
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ));
+
+        let _ = lay_out(&mut col);
+
+        assert_eq!(col.children[0].get_rect().y0, 0.0);
+        assert_eq!(col.children[1].get_rect().y0, 17.0);
+        assert_eq!(col.children[2].get_rect().y0, 34.0);
+        assert_eq!(col.get_rect().height(), 44.0);
+    }
+
+    #[test]
+    fn intrinsic_column_gap_is_additive_with_explicit_padding() {
+        let mut col = Column::new()
+            .with_intrinsic_height()
+            .with_vertical_padding(5.0)
+            .with_horizontal_padding(7.0, 11.0)
+            .with_extra_top_padding(3.0)
+            .with_extra_bottom_padding(4.0)
+            .with_gap(20.0)
+            .push(Box::new(
+                Container::new().with_no_padding().with_size(10.0, 10.0),
+            ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_size(10.0, 10.0),
+            ));
+
+        let _ = lay_out(&mut col);
+
+        assert_eq!(col.children[0].get_rect().x0, 7.0);
+        assert_eq!(col.children[0].get_rect().y0, 8.0);
+        assert_eq!(col.children[1].get_rect().y0, 38.0);
+        assert_eq!(col.get_rect().height(), 57.0);
+    }
+
+    #[test]
+    fn intrinsic_column_gap_is_additive_with_child_margins() {
+        let theme = Theme::dark();
+        let mut col = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_gap(20.0)
+            .push(Box::new(
+                Container::new().with_no_padding().with_size(10.0, 10.0),
+            ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_size(10.0, 10.0),
+            ));
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let node = col.build_layout(&mut taffy, &theme, &mut node_map);
+
+        let mut first_style = taffy.style(col.child_nodes[0]).unwrap().clone();
+        first_style.margin.top = length(2.0_f32);
+        first_style.margin.bottom = length(3.0_f32);
+        taffy.set_style(col.child_nodes[0], first_style).unwrap();
+        let mut second_style = taffy.style(col.child_nodes[1]).unwrap().clone();
+        second_style.margin.top = length(4.0_f32);
+        second_style.margin.bottom = length(6.0_f32);
+        taffy.set_style(col.child_nodes[1], second_style).unwrap();
+
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = node_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, &mut tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )
+            .unwrap();
+        col.apply_layout(&taffy, node, Point::ZERO);
+
+        assert_eq!(col.children[0].get_rect().y0, 2.0);
+        assert_eq!(col.children[1].get_rect().y0, 39.0);
+        assert_eq!(col.get_rect().height(), 55.0);
+    }
+
+    #[test]
+    fn nested_intrinsic_column_keeps_taffy_and_widget_sibling_geometry_aligned() {
+        let inner = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_gap(20.0)
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(30.0),
+            ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(30.0),
+            ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(30.0),
+            ));
+        let mut outer = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_gap(0.0)
+            .push(Box::new(inner))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ));
+
+        let (mut taffy, node) = lay_out(&mut outer);
+
+        assert_eq!(taffy.children(node).unwrap(), outer.child_nodes);
+        assert_eq!(
+            taffy.layout(outer.child_nodes[0]).unwrap().size.width,
+            800.0
+        );
+        assert_eq!(
+            taffy.layout(outer.child_nodes[0]).unwrap().size.height,
+            130.0
+        );
+        assert_eq!(outer.children[0].get_rect().width(), 800.0);
+        assert_eq!(outer.children[0].get_rect().height(), 130.0);
+        assert_eq!(
+            taffy.layout(outer.child_nodes[1]).unwrap().location.y,
+            130.0
+        );
+        assert_eq!(outer.children[1].get_rect().y0, 130.0);
+        assert_eq!(outer.get_rect().height(), 140.0);
+
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+        outer.apply_layout(&taffy, node, Point::ZERO);
+        assert_eq!(
+            taffy.layout(outer.child_nodes[0]).unwrap().size.height,
+            130.0
+        );
+        assert_eq!(outer.children[0].get_rect().height(), 130.0);
+        assert_eq!(outer.children[1].get_rect().y0, 130.0);
+    }
+
+    #[test]
+    fn intrinsic_column_in_row_respects_parent_center_alignment() {
+        let short_column = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_gap(0.0)
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ));
+        let mut row = Row::new()
+            .no_wrap()
+            .push(Box::new(short_column))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(30.0),
+            ));
+
+        let _ = lay_out(&mut row);
+
+        assert_eq!(row.get_rect().height(), 30.0);
+        assert_eq!(row.children()[0].get_rect().height(), 10.0);
+        assert_eq!(row.children()[0].get_rect().y0, 10.0);
+        assert_eq!(row.children()[1].get_rect().y0, 0.0);
+    }
+
+    #[test]
+    fn intrinsic_column_gap_contributes_to_scrollable_content_height() {
+        use crate::widget::{ScrollAxis, Scrollable};
+
+        let inner = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_gap(20.0)
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(30.0),
+            ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(30.0),
+            ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(30.0),
+            ));
+        let mut scroll = Scrollable::new(ScrollAxis::Vertical)
+            .with_height(50.0)
+            .with_child(Box::new(inner));
+
+        let (taffy, scroll_node) = lay_out(&mut scroll);
+
+        let inner = scroll.children()[0];
+        let inner_node = taffy.children(scroll_node).unwrap()[0];
+        assert_eq!(scroll.get_rect().height(), 50.0);
+        assert_eq!(taffy.layout(inner_node).unwrap().size.height, 130.0);
+        assert_eq!(inner.get_rect().height(), 130.0);
+        assert_eq!(inner.children()[2].get_rect().y0, 100.0);
+        assert_eq!(scroll.max_offset_y(), 80.0);
+    }
+
+    #[test]
+    fn horizontal_scrollable_keeps_cross_axis_stretch() {
+        use crate::widget::{ScrollAxis, Scrollable};
+
+        let mut scroll = Scrollable::new(ScrollAxis::Horizontal)
+            .with_height(50.0)
+            .with_child(Box::new(
+                Container::new().with_no_padding().with_width(1_200.0),
+            ));
+
+        let _ = lay_out(&mut scroll);
+
+        assert_eq!(scroll.get_rect().height(), 50.0);
+        assert_eq!(scroll.children()[0].get_rect().height(), 50.0);
     }
 
     /// Regression: a bare leading `Row[Text]` at the head of an

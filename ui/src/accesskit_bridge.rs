@@ -342,11 +342,26 @@ pub fn resolve_node_id<S: BuildHasher>(
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     id: AkNodeId,
 ) -> Option<A11yTarget> {
+    resolve_node_id_impl::<S, false>(root, node_map, id)
+}
+/// Host traversal retaining the originating component through every callback.
+pub(crate) fn resolve_node_id_bound<S: BuildHasher>(
+    root: &dyn Widget,
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
+    id: AkNodeId,
+) -> Option<A11yTarget> {
+    resolve_node_id_impl::<S, true>(root, node_map, id)
+}
+fn resolve_node_id_impl<S: BuildHasher, const BOUND: bool>(
+    root: &dyn Widget,
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
+    id: AkNodeId,
+) -> Option<A11yTarget> {
     if id == ROOT_ID {
         return Some(A11yTarget::Root);
     }
     if is_synthetic_id(id) {
-        return search_synthetic(root, &reverse_node_map(node_map), id);
+        return search_synthetic::<BOUND>(root, &reverse_node_map(node_map), id);
     }
     let widget_id = id.0 & !TEXT_RUN_ID_BASE;
     // A structural fallback id names a widget with no taffy node: nothing to
@@ -363,13 +378,16 @@ pub fn resolve_node_id<S: BuildHasher>(
 /// Depth-first hunt for the widget whose synthetic subtree contains `wanted`,
 /// mirroring [`visit`]'s traversal so the ids line up with the ones
 /// [`build_tree_update`] emitted.
-fn search_synthetic(
+fn search_synthetic<const BOUND: bool>(
     w: &dyn Widget,
     ptr_to_taffy: &HashMap<*const (), TaffyNodeId>,
     wanted: AkNodeId,
 ) -> Option<A11yTarget> {
+    let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
+        return None;
+    };
     for child in w.children() {
-        if let Some(hit) = search_synthetic(child, ptr_to_taffy, wanted) {
+        if let Some(hit) = search_synthetic::<BOUND>(child, ptr_to_taffy, wanted) {
             return Some(hit);
         }
     }
@@ -545,6 +563,15 @@ pub fn resolve_synthetic_target<'a>(
     visit_synthetic_widget(root, target.0, &mut 0)
 }
 
+pub(crate) fn build_tree_update_bound<S: BuildHasher>(
+    root: &dyn Widget,
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
+    focused: Option<TaffyNodeId>,
+    scale: f64,
+) -> TreeUpdate {
+    build_tree_update_with_resources_bound(root, node_map, focused, scale, &[])
+}
+
 pub fn build_tree_update<S: BuildHasher>(
     root: &dyn Widget,
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
@@ -558,7 +585,26 @@ pub fn build_tree_update<S: BuildHasher>(
 /// resource/action surface used by the palette, shell and collaboration API.
 /// Immediate operations expose `Click`; prompted operations expose `SetValue`
 /// with the supplied value becoming their argument.
-pub fn build_tree_update_with_resources<S: std::hash::BuildHasher>(
+pub fn build_tree_update_with_resources<S: BuildHasher>(
+    root: &dyn Widget,
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
+    focused: Option<TaffyNodeId>,
+    scale: f64,
+    resources: &[tilo_actions::Resource],
+) -> TreeUpdate {
+    build_tree_update_with_resources_impl::<S, false>(root, node_map, focused, scale, resources)
+}
+/// Host traversal retaining the originating component through every callback.
+pub(crate) fn build_tree_update_with_resources_bound<S: BuildHasher>(
+    root: &dyn Widget,
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
+    focused: Option<TaffyNodeId>,
+    scale: f64,
+    resources: &[tilo_actions::Resource],
+) -> TreeUpdate {
+    build_tree_update_with_resources_impl::<S, true>(root, node_map, focused, scale, resources)
+}
+fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
     root: &dyn Widget,
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
@@ -581,7 +627,7 @@ pub fn build_tree_update_with_resources<S: std::hash::BuildHasher>(
     root_node.set_label("Tilo application window");
 
     let mut root_children: Vec<AkNodeId> = Vec::new();
-    visit(
+    visit::<BOUND>(
         root,
         &ptr_to_taffy,
         scale,
@@ -693,7 +739,7 @@ fn append_resource_nodes(
 // active descendant) alongside the tree it is reading; bundling them would only
 // move the arity into a struct.
 #[allow(clippy::too_many_arguments)]
-fn visit(
+fn visit<const BOUND: bool>(
     w: &dyn Widget,
     ptr_to_taffy: &HashMap<*const (), TaffyNodeId>,
     scale: f64,
@@ -703,6 +749,9 @@ fn visit(
     parent_children: &mut Vec<AkNodeId>,
     active_descendant: &mut Option<AkNodeId>,
 ) {
+    let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
+        return;
+    };
     let access = w.accessibility();
     let w_ptr = std::ptr::from_ref::<dyn Widget>(w).cast::<()>();
     let taffy_id = ptr_to_taffy.get(&w_ptr).copied();
@@ -726,7 +775,7 @@ fn visit(
                     .or_default()
                     .push((child_path, child));
             } else {
-                visit(
+                visit::<BOUND>(
                     child,
                     ptr_to_taffy,
                     scale,
@@ -743,7 +792,7 @@ fn visit(
         // may nominate an active descendant.
         let owns_focus = taffy_id.is_some() && taffy_id == focused;
         for (ordinal, synth) in access_node.children.iter().enumerate() {
-            visit_synthetic(
+            visit_synthetic::<BOUND>(
                 synth,
                 id,
                 ordinal,
@@ -795,7 +844,7 @@ fn visit(
         // Presentational: collapse out, reparent children onto the parent.
         *walk_counter = walk_counter.saturating_add(1);
         for child in w.children() {
-            visit(
+            visit::<BOUND>(
                 child,
                 ptr_to_taffy,
                 scale,
@@ -823,7 +872,7 @@ fn visit(
     clippy::too_many_arguments,
     reason = "the keyed semantic walk threads geometry, hosted retained children, focus, ids, and output accumulators together so the exported and action-resolver trees cannot drift"
 )]
-fn visit_synthetic(
+fn visit_synthetic<const BOUND: bool>(
     access: &AccessNode,
     parent_id: AkNodeId,
     ordinal: usize,
@@ -860,7 +909,7 @@ fn visit_synthetic(
             nested.entry(child_index).or_default().push((path, child));
         }
         for (i, child) in access.children.iter().enumerate() {
-            visit_synthetic(
+            visit_synthetic::<BOUND>(
                 child,
                 id,
                 i,
@@ -877,7 +926,7 @@ fn visit_synthetic(
         }
     } else {
         for child in direct {
-            visit(
+            visit::<BOUND>(
                 child,
                 ptr_to_taffy,
                 scale,

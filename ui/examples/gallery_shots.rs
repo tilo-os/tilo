@@ -38,7 +38,16 @@ fn shoot(theme: &Theme, out: &Path, scale: f64) {
     let mut state = State::new();
     let mut root = gallery_scene::build_showcase(&mut state, theme);
 
-    let mut tr = TextRenderer::new();
+    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+        "en-US",
+    );
+    #[allow(
+        clippy::expect_used,
+        reason = "gallery shots require the checked-in typography fixture"
+    )]
+    let mut tr =
+        TextRenderer::with_font_catalog(&catalog).expect("checked-in typography font catalog");
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 

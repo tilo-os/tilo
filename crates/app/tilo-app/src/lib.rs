@@ -23,6 +23,12 @@ pub use ui_core::*;
 
 /// The usual imports for application code that prefers a prelude.
 pub mod prelude {
+    pub use ui_core::application::{
+        AppComponent, ApplicationCatalog, ApplicationDefinition, ComponentRunnerInputs,
+        HostContext, LaunchTarget, PreparedComponentInputs, RestoreInput,
+    };
+    pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
+    pub use ui_core::launch::ComponentHostPreparer;
     pub use ui_core::tilo_actions;
     pub use ui_core::widget::Widget;
     pub use ui_core::{LocalState, State, Theme};

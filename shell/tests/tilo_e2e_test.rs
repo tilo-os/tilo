@@ -729,6 +729,14 @@ fn topbar_with_overview_btn_hit() -> (
 /// same viewport — topbar geometry is DPI/width-driven, so the rects match.
 #[test]
 fn full_root_click_toggles_overview_via_topbar_button() {
+    fn overview_hit(widget: &dyn Widget) -> Option<Point> {
+        widget
+            .test_rects()
+            .into_iter()
+            .find(|(name, rect)| name == "topbar_overview_button" && rect.area() > 0.0)
+            .map(|(_, rect)| rect.center())
+            .or_else(|| widget.children().into_iter().find_map(overview_hit))
+    }
     use automerge::AutoCommit;
     use std::collections::HashMap;
     use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
@@ -742,7 +750,6 @@ fn full_root_click_toggles_overview_via_topbar_button() {
     const H: f32 = 900.0;
 
     let tree = WorkspaceTree::bootstrap_default();
-    let hit = probe_overview_btn_hit(&tree, W, H);
 
     let (mut root, chrome) = build_tilo_root_with_chrome(&tree);
     assert!(!chrome.borrow().overlays.overview);
@@ -788,6 +795,8 @@ fn full_root_click_toggles_overview_via_topbar_button() {
     let presence = PresenceCtx::default();
     root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
+    let hit = overview_hit(root.as_ref()).expect("painted root exports its overview button");
+
     let mut state = AutoCommit::new();
     let root_path = automerge::ROOT.clone();
     let modifiers = winit::event::Modifiers::default();
@@ -811,71 +820,6 @@ fn full_root_click_toggles_overview_via_topbar_button() {
         !chrome.borrow().overlays.overview,
         "second click on the overview button must close the overview overlay"
     );
-}
-
-/// Draws a throwaway sibling `TopBarChrome` at a `w`x`h` viewport, purely to
-/// read back `overview_btn_rect` — topbar geometry is DPI/width-driven, so
-/// the rect matches the one inside the full `build_tilo_root` tree at the
-/// same viewport. Split out of
-/// [`full_root_click_toggles_overview_via_topbar_button`] to keep it under
-/// the line limit.
-fn probe_overview_btn_hit(tree: &WorkspaceTree, w: f32, h: f32) -> vello::kurbo::Point {
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
-    use ui::presence::PresenceCtx;
-    use ui::text_render::TextRenderer;
-    use ui::theme::Theme;
-    use vello::Scene;
-    use vello::kurbo::{Affine, Point};
-
-    let probe_chrome = ChromeState::new(tree.clone());
-    let mut probe = TopBarChrome::from_tree(tree).with_chrome(probe_chrome);
-    let theme = Theme::dark();
-    let mut probe_taffy: TaffyTree<()> = TaffyTree::new();
-    let mut probe_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let pnode = probe.build_layout(&mut probe_taffy, &theme, &mut probe_map);
-    let pvp = probe_taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(w),
-                    height: Dimension::length(h),
-                },
-                ..Default::default()
-            },
-            &[pnode],
-        )
-        .unwrap();
-    probe_taffy
-        .compute_layout_with_measure(
-            pvp,
-            Size {
-                width: AvailableSpace::Definite(w),
-                height: AvailableSpace::Definite(h),
-            },
-            |_, _, _, _, _| taffy::Size::ZERO,
-        )
-        .expect("probe compute_layout");
-    // The real tree's outer Container + foreground Column are both
-    // `with_no_padding`, so the topbar lands flush at y=0/x=0 — zero offset.
-    let topbar_offset = 0.0_f64;
-    probe.apply_layout(
-        &probe_taffy,
-        pnode,
-        Point::new(topbar_offset, topbar_offset),
-    );
-    let mut probe_scene = Scene::new();
-    let mut probe_tr = TextRenderer::new();
-    let probe_presence = PresenceCtx::default();
-    probe.draw(
-        &mut probe_scene,
-        Affine::IDENTITY,
-        &mut probe_tr,
-        &theme,
-        &probe_presence,
-    );
-    let btn = probe.overview_btn_rect();
-    Point::new(f64::midpoint(btn.x0, btn.x1), f64::midpoint(btn.y0, btn.y1))
 }
 
 /// One cursor-move + left-press at `hit`, mirroring how a real click event
